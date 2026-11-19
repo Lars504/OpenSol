@@ -9,10 +9,10 @@ import numpy as np
 
 from ...core.constants import C0, ETA0
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import float_list, norm_relative_error, skip_result, solver_role
+from ...model.selftest_helpers import (float_list, norm_relative_error, normalized_result, skip_result,
+                                       solver_role)
 from ...model.spec import (DomainSpec, FeatureSpec, GeometrySpec, MeshSpec, ModelSpec, PhysicsSpec, SolverSpec,
                            StudySpec)
-from .selftests import normalized_result
 from .selftests_bor import (_BOX_R_CELLS, _BOX_Z_ROWS, _CAVITY_CELL, _CAVITY_CELLS, _CAVITY_TARGET, _DIPOLE_CELL,
                             _DIPOLE_CURRENT, _DIPOLE_PML, _DIPOLE_WAVELENGTH, _DIPOLE_WINDOW, _EIGEN_STUDY, _IDENTITY_SOURCE_ROW,
                             _IDENTITY_TOLERANCE, _PATTERN_TOLERANCE, _PHYSICS, _POWER_TOLERANCE, _RADIATION_THETA,
@@ -68,7 +68,7 @@ _OFFAXIS_DOMAIN = (1.2e-6, 1.8e-6)    # = _DIPOLE_WINDOW cells of _DIPOLE_CELL
 _OFFAXIS_BOX = (0.6e-6, 0.9e-6)
 _OFFAXIS_FAR_FIELD_BOX = (0.95e-6, 0.65e-6)   # far-field box: r extent, half height about the source row
 
-# ---- wavelength batch (solver_plan Part II stage 3): the axial z dipole (m = 0) in a smaller box of its own (the
+# ---- wavelength batch: the axial z dipole (m = 0) in a smaller box of its own (the
 # check compares line block with SuperLU only), frequency_domain at two wavelengths (already a multi-shift batch,
 # below fdfd_line_block.MAX_BATCH_WAVELENGTHS = 8: one batch), SuperLU vs a line_block shifted node
 _BATCH_WAVELENGTHS = (0.95e-6, 1.05e-6)
@@ -632,7 +632,7 @@ BOR_ORDER_SELFTEST_CASES = (
         name='em_bor_line_block_wavelengths',
         label='EM body of revolution: line-block wavelength batches',
         description=(
-            'solver_plan Part II stage 3: model runs of em_fdfd_bor (frequency_domain at '
+            'Model runs of em_fdfd_bor (frequency_domain at '
             f'{", ".join(f"{wavelength * 1e6:g}" for wavelength in _BATCH_WAVELENGTHS)} um, m = 0) of a z '
             f'point_source in the axis cell of a {_BATCH_DOMAIN[0] * 1e6:g} x {_BATCH_DOMAIN[1] * 1e6:g} um domain '
             f'with a closed flux box ({_BATCH_BOX[1] * 1e6:g} um side, +-{_BATCH_BOX[0] * 1e6:g} um; the check compares '

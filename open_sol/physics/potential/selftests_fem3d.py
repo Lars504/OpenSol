@@ -1,4 +1,4 @@
-"""Electrostatics / electric currents on tetrahedron meshes (FEMPotentialPhysics3D, piezo_3d_plan stage 6): a layered
+"""Electrostatics / electric currents on tetrahedron meshes (FEMPotentialPhysics3D): a layered
 anisotropic parallel-plate capacitor along each axis (builtin Kuhn meshes, exact in P1 / P2), a coaxial capacitor on
 gmsh tetrahedra (skipped without gmsh) and a resistor bar (current and Joule power); model runs read through feature
 results (held tables), scalar outputs and derived integrals. Registered by definition.register."""

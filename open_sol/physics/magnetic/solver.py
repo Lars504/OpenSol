@@ -20,7 +20,7 @@ from .saturation import (ANDERSON_DEPTH, TENSOR_NONLINEAR_METHODS, bh_curve, ref
                          Float32StallWatch, saturation_reluctivity, tabulated_reluctivity)
 
 _ANCHOR_TEXT = 'magnetic insulation face, held potential or external-field ring'
-_REMEDY_TEXT = 'Keep magnetic insulation (the default) on at least one face, or add an external field.'
+REMEDY_TEXT = 'Keep magnetic insulation (the default) on at least one face, or add an external field.'
 _DERIVED_FIELDS = ('B_x', 'B_y', 'B_abs', 'H_x', 'H_y', 'w_mag')
 
 
@@ -96,7 +96,7 @@ class MagneticPhysics(MirrorTotals, DiffusionPhysicsBase):
         # saturation loop (kept_preconditioner)
         system = DiffusionSystem(
             domain, precision, tol, max_iter, label=lambda: f"{self.type_label} '{self.name}'",
-            unknown_name='vector potential', anchor_text=_ANCHOR_TEXT, remedy_text=_REMEDY_TEXT,
+            unknown_name='vector potential', anchor_text=_ANCHOR_TEXT, remedy_text=REMEDY_TEXT,
             compute_residual=compute_residual, axisymmetric=False,
             linear_solver=kept_preconditioner_solver(linear_solver))
         insulation = ScalarBoundaryConfig(**{face: BCSide('dirichlet', value=0.0) for face in FACES})
@@ -540,23 +540,27 @@ class MagneticPhysics(MirrorTotals, DiffusionPhysicsBase):
     def _saturating_flux_magnitude(self):
         """float64 cell-centre |B| (k,) of the saturating cells from the latest solve, as _update_fields computes it
         (saturating cells carry no remanence; a magnet neighbour's face terms enter their H)."""
+        flat = self._nonlinear_flat
+        flux_x, flux_y = self._physical_flux_at_centres()
+        # |B| = hypot(H_x / nu_xx, H_y / nu_yy) with (H_x, H_y) = +-(-flux_y, flux_x): the signs drop out
+        B_x = flux_y.reshape(-1)[flat] / self._nu_xx.reshape(-1)[flat]
+        B_y = flux_x.reshape(-1)[flat] / self._nu_yy.reshape(-1)[flat]
+        return self.xp.hypot(B_x, B_y).astype(np.float64)
+
+    def _physical_flux_at_centres(self):
+        """Window (flux_x, flux_y) = -c grad u plus the remanence face terms, averaged to the centres (held cells 0):
+        the one flux source of _update_fields and _saturating_flux_magnitude."""
         system = self.system
         xp = self.xp
-        flat = self._nonlinear_flat
         flux_x, flux_y = system.flux_at_centres()   # -c grad u; held cells 0
-        flux_x = flux_x.reshape(-1)[flat]
-        flux_y = flux_y.reshape(-1)[flat]
         if self._remanence_drives is not None:   # flux * length = operator part + face term
             face_drive_x, face_drive_y = self._remanence_drives
-            free = ~system.fixed_user.reshape(-1)[flat]
-            flux_x = flux_x + xp.where(free, (0.5 * (face_drive_x[:-1, :] + face_drive_x[1:, :])
-                                              / system.dy_window_device[None, :]).reshape(-1)[flat], 0.0)
-            flux_y = flux_y + xp.where(free, (0.5 * (face_drive_y[:, :-1] + face_drive_y[:, 1:])
-                                              / system.dx_window_device[:, None]).reshape(-1)[flat], 0.0)
-        # |B| = hypot(H_x / nu_xx, H_y / nu_yy) with (H_x, H_y) = +-(-flux_y, flux_x): the signs drop out
-        B_x = flux_y / self._nu_xx.reshape(-1)[flat]
-        B_y = flux_x / self._nu_yy.reshape(-1)[flat]
-        return xp.hypot(B_x, B_y).astype(np.float64)
+            free = ~system.fixed_user
+            flux_x += xp.where(free, 0.5 * (face_drive_x[:-1, :] + face_drive_x[1:, :])
+                               / system.dy_window_device[None, :], 0.0)
+            flux_y += xp.where(free, 0.5 * (face_drive_y[:, :-1] + face_drive_y[:, 1:])
+                               / system.dx_window_device[:, None], 0.0)
+        return flux_x, flux_y
 
     def _saturated_log_reluctivity(self, flux_magnitude, field_magnitude):
         """ln (nu_xx, nu_yy) float64 (2, k) of the curves on the saturating cells at their float64 cell-centre |B| =
@@ -655,18 +659,12 @@ class MagneticPhysics(MirrorTotals, DiffusionPhysicsBase):
         fields = self.fields
         self._write_potential_field()
 
-        flux_x, flux_y = system.flux_at_centres()   # -c grad u; held cells 0
+        flux_x, flux_y = self._physical_flux_at_centres()
         free = ~system.fixed_user
         materials = self.domain.materials
         names = materials.property_names()
         remanence_x = xp.where(free, materials.remanence_x[window], 0.0) if 'remanence_x' in names else 0.0
         remanence_y = xp.where(free, materials.remanence_y[window], 0.0) if 'remanence_y' in names else 0.0
-        if self._remanence_drives is not None:   # flux * length = operator part + face term
-            face_drive_x, face_drive_y = self._remanence_drives
-            flux_x += xp.where(free, 0.5 * (face_drive_x[:-1, :] + face_drive_x[1:, :])
-                               / system.dy_window_device[None, :], 0.0)
-            flux_y += xp.where(free, 0.5 * (face_drive_y[:, :-1] + face_drive_y[:, 1:])
-                               / system.dx_window_device[:, None], 0.0)
         sign = -1.0 if self._axisymmetric else 1.0   # flux = (H_y, -H_x) planar, (-H_z, H_r) axisymmetric
         H_x = -sign * flux_y
         H_y = sign * flux_x

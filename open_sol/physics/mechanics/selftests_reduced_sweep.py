@@ -1,4 +1,4 @@
-"""Self-tests of the solid reduced frequency sweeps (experiment plan A3 / A4): frequency_response.HarmonicSystem's
+"""Self-tests of the solid reduced frequency sweeps: frequency_response.HarmonicSystem's
 reduced model and its precomputed record rows against direct solves (CPU, synthetic pencil), and the driven lossy bar on
 triangles with sweep_method adaptive / modal against the direct sweep (probe, reaction table, live field)."""
 import math

@@ -1,7 +1,7 @@
-"""FEMPhysics3D: 3D EM resonances on a TetrahedronMesh (igor3d_plan section 7): Nedelec first kind degree 1 / 2,
+"""FEMPhysics3D: 3D EM resonances on a TetrahedronMesh: Nedelec first kind degree 1 / 2,
 materials and a Cartesian PML shell frozen at the target omega, resonances by the em_fdfd_3d eigen layer
 (eigenfrequency.solve_resonances, squared Cayley map, sparse mass, host SuperLU or a cuDSS factor). Scripts use it
-directly; em_fdfd_3d on a 'tetrahedra' mesh wraps it (fem_solver3d.FEMResonancePhysics3D, igor3d_plan T4b)."""
+directly; em_fdfd_3d on a 'tetrahedra' mesh wraps it (fem_solver3d.FEMResonancePhysics3D)."""
 # Formulation (exp(+j omega t), unconjugated Galerkin: complex symmetric with PML / loss): curl (Lambda / mu)^-1 curl E
 # = k^2 eps Lambda E, k = omega / C0, Lambda = diag(s_y s_z / s_x, s_x s_z / s_y, s_x s_y / s_z) of the complex
 # coordinate stretches s = kappa + sigma / (alpha + j omega_t eps0) (em3d CPML grading over the shell width beyond each
@@ -9,7 +9,7 @@ directly; em_fdfd_3d on a 'tetrahedra' mesh wraps it (fem_solver3d.FEMResonanceP
 # curl W, M = int W . eps' W; A = -K + k_t^2 M on the free dofs (eigenfrequency.py sign, B = -M sparse). Walls:
 # pec / antisymmetric faces and the outer side of a PML shell (the industry-standard default exterior) fix the
 # tangential dofs; pmc / symmetric faces are natural (mirror planes = window faces); PEC elements drop out with every
-# dof they touch. Periodic faces (Bloch, igor3d_plan T6): the mesh's two sides must match node for node with the same
+# dof they touch. Periodic faces (Bloch): the mesh's two sides must match node for node with the same
 # node order (the builtin Kuhn split does; fem.dofs3d.periodic_dof_partners raises otherwise); each hi-side dof stands
 # for its lo-side master times e^{-j k L} per crossed period (fem.dofs3d.bloch_masters: F(x + L) = F(x) e^{-j k L}, L =
 # the node extent), u = P u_free, and the test space is the conjugate one, so A_free = P^H A P (likewise K, M, W):
@@ -27,6 +27,7 @@ import numpy as np
 
 from ...core.constants import C0, EPS0, MU0
 from ...fem.assembly3d import element_blocks_csr, nedelec_blocks_3d
+from ...fem.dofs import bloch_prolongation
 from ...fem.dofs3d import bloch_masters, nedelec_dofs_3d
 from ...fem.mesh3d import OUTER_FACES_3D
 from ...fem.sampling3d import PointLocator3D, evaluate_nedelec_3d
@@ -40,7 +41,7 @@ ELEMENT_ORDERS = (1, 2)
 FIELD_CACHE_POINTS = 500_000   # sampled points whose E / H (96 B each) fields_located keeps per selected resonance
 _FIXED_FACE_TYPES = frozenset(('pec', 'antisymmetric', 'cpml'))   # tangential E 0 on the mesh's outer side
 # host SuperLU size rule (MUMPS / PARDISO keep it): FEM unknowns x this ~ the Yee E unknowns of equal fill (denser
-# rows: ~18 / ~45 nonzeros vs Yee's 13); uncalibrated first figures (igor3d_plan 7.2 T8)
+# rows: ~18 / ~45 nonzeros vs Yee's 13); uncalibrated first figures
 YEE_EQUIVALENT_UNKNOWNS = {1: 1.5, 2: 3.5}
 
 
@@ -290,7 +291,9 @@ class FEMPhysics3D:
             curl, mass, energy = element_blocks_csr(dofs.n_dofs, element_dofs, (curl, mass, energy), free=free)
         else:
             curl, mass, energy = element_blocks_csr(dofs.n_dofs, element_dofs, (curl, mass, energy))
-            free, prolongation = self._bloch_prolongation(pinned)
+            unpinned = np.ones(dofs.n_dofs, dtype=bool)
+            unpinned[pinned] = False   # a master is pinned with any dof it stands for (PEC or wall on either side)
+            free, prolongation = bloch_prolongation(self.bloch.master, self.bloch.phase, unpinned)
             adjoint = prolongation.conj().T.tocsr()
             curl, mass, energy = ((adjoint @ matrix @ prolongation).tocsr() for matrix in (curl, mass, energy))
         target_squared = (omega / C0) ** 2
@@ -302,19 +305,6 @@ class FEMPhysics3D:
         return FEMSystem3D(omega=omega, free=free, operator=operator, curl=curl, mass=mass, energy=energy,
                            in_window=in_window, equilibration=equilibration, prolongation=prolongation,
                            symmetric=self.bloch is None or not self.bloch.complex_phase)
-
-    def _bloch_prolongation(self, pinned):
-        """(free masters (n,) int64, CSR (n_dofs, n) u = P u_free with the Bloch phases): a master is pinned with any
-        dof it stands for (a PEC element or wall touching either side)."""
-        import scipy.sparse
-        master, phase = self.bloch.master, self.bloch.phase
-        free = np.setdiff1d(np.unique(master), master[pinned])
-        column = np.full(self.dofs.n_dofs, -1, dtype=np.int64)
-        column[free] = np.arange(free.size)
-        rows = np.flatnonzero(column[master] >= 0)
-        prolongation = scipy.sparse.csr_matrix((phase[rows], (rows, column[master[rows]])),
-                                               shape=(self.dofs.n_dofs, free.size))
-        return free, prolongation
 
     # ---- eigenfrequency study ----
     def solve_eigenfrequencies(self, n_resonances):

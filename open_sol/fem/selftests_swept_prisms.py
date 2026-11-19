@@ -1,4 +1,4 @@
-"""Self-tests of swept prism layers (experiment plan D5; CPU, no gmsh, specs() empty, check({}) directly): the
+"""Self-tests of swept prism layers (CPU, no gmsh, specs() empty, check({}) directly): the
 minimum-vertex split (conformity, counts, volume, a P2 patch test, periodic partners) and the model path (estimate vs
 built, layer planes, conforming walls, refusals)."""
 import math
@@ -223,7 +223,7 @@ SWEPT_PRISMS_SELFTEST_CASES = (
         name='fem_swept_prisms_split',
         label='Tetrahedron meshes: swept prism layers, the minimum-vertex split',
         description=(
-            'CPU checks of fem.prism_layers (plan D5, no model): a 6 x 6 cell triangulation of a 1 x 0.8 um square '
+            'CPU checks of fem.prism_layers (no model): a 6 x 6 cell triangulation of a 1 x 0.8 um square '
             '(regular boundary nodes, jittered interior, alternating diagonals) swept through 3 graded layers (0.1 / '
             '0.15 / 0.25 um). '
             'Elements / nodes / edges / faces = swept_counts; volume = the box and the boundary faces = its '
@@ -238,7 +238,7 @@ SWEPT_PRISMS_SELFTEST_CASES = (
         name='fem_swept_prisms_model',
         label='Tetrahedron meshes: swept prism layers of a model',
         description=(
-            "CPU checks of MeshSpec.sweep_axis 'z' (plan D5, builtin 2D mesher): a 4 x 3 x 0.6 um box holding a "
+            "CPU checks of MeshSpec.sweep_axis 'z' (builtin 2D mesher): a 4 x 3 x 0.6 um box holding a "
             'plate box (z 0.2 .. 0.4 um, refinement dx_z 0.05 um), a z cylinder through the height and a sphere, dx '
             '0.25 um. The layer planes of the estimate are the built ones (exact) and hold the plate faces; '
             f'estimated elements within {_ESTIMATE_RTOL:g} of the built ones; the plate object_faces area = its '

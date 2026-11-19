@@ -13,11 +13,10 @@ WATER = Material(
     electrical=dict(sigma_dc=5.5e-6, eps_dc=80.1),
     # dynamic viscosity at 20 C: a fluid in laminar_flow
     fluid=dict(viscosity=1.002e-3),
-    description='Liquid water at 1.55 um and 20 C (n = 1.3154) with its absorption (extinction 1.49e-4, about '
-                '12 /cm) as sigma_e. That sigma_e reproduces the absorption only near 1.55 um (sigma_e = 2 n kappa '
-                'omega eps0) and is an optical loss proxy, not a conductivity (sigma_dc is pure water); the index is '
-                "non-dispersive. alpha = 0 because a liquid region is its container's (every measured dndT, solid "
-                'or liquid, includes the density change).',
+    description='Liquid water at 20 C, n = 1.3154, its absorption (extinction 1.49e-4, ~12 /cm) as sigma_e = 2 n '
+                'kappa omega eps0: an optical loss proxy valid near 1.55 um only, not a conductivity (sigma_dc is '
+                "pure water). alpha = 0: a liquid region follows its container (measured dndT includes the density "
+                'change).',
     summary='Liquid water at 1550 nm and 20 degrees Celsius: refractive index 1.315, with its absorption of about 12 '
             'per centimetre.\n\n'
             'The optical values hold only near 1550 nm.',

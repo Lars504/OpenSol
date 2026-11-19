@@ -108,7 +108,8 @@ def _divider_geometry():
 
 def _terminal_divider_specs(graded=False, with_plates=False):
     """'run': sigma 10 / 30 S/m halves between the non-conducting terminals left (1 V) and right (0 V), a probe in uniform
-    cell (49, 5); with_plates adds the uncoupled electrostatics plates (eps_dc 2 / 6, eps_dc 1 terminal blocks)."""
+    cell (49, 5); with_plates adds the uncoupled electrostatics plates (eps_dc 2 / 6, eps_dc 1 terminal blocks). Heat's
+    diffusion_cpu_gpu runs the default call (uniform, currents only) with _check_terminal_divider: keep it so."""
     probe_x, probe_y = (cell_centre(index, _CELL) for index in _PROBE_CELL)
     title = 'Self-test: two-conductor divider with terminals (electric currents)'
     physics = [(_CURRENTS, CURRENTS_TYPE_NAME, [FeatureSpec('left', 'terminal', ['left'], {'voltage': _VOLTAGE}),

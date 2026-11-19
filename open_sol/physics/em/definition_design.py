@@ -15,55 +15,44 @@ _FIXED_LINE_FEATURES = ('line_source', 'gaussian_beam', 'mode_source', 'mode_mon
 
 _PARAMS = (
     Param('eps_min', 'float', 2.085, label='Permittivity at density 0', unit='1', min=1.0,
-          help='Relative permittivity of a design cell at density 0 (the void or cladding material, e.g. silica 2.085 '
-               'at 1.55 um); a cell holds eps = eps_min + rho_bar (eps_max - eps_min) of its filtered, projected '
-               'density rho_bar. em_fdfd_ez writes eps_r, em_fdfd_hz eps_xx and eps_yy.',
+          help='Void or cladding, e.g. silica 2.085 at 1.55 um.',
           tip='Permittivity of the design area where the design is empty, usually the cladding: 2.085 for glass '
               'at 1550 nm.'),
     Param('eps_max', 'float', 12.08, label='Permittivity at density 1', unit='1', min=1.0,
-          help='Relative permittivity of a design cell at density 1 (the solid material, e.g. silicon 12.08 at 1.55 '
-               'um). sigma_e, poles and mu_r of the design cells stay those of the material painted there and are not '
-               'optimised: paint a lossless, non-dispersive material.',
+          help="Solid, e.g. silicon 12.08 at 1.55 um. sigma_e, poles and mu_r of design cells stay the material's, "
+               'not optimised: paint a lossless, non-dispersive material.',
           tip='Permittivity of the design area where the design is filled, usually the core material: 12.08 for '
               'silicon at 1550 nm.'),
     Param('initial_density', 'float', 0.5, label='Initial density', unit='1', min=0.0, max=1.0,
-          help='Density rho of every design cell before the first iteration (also the fixed design outside an '
-               'optimization study). 0.5 (grey) leaves the optimiser free in both directions; 0 or 1 starts from the '
-               'void or solid design.',
+          help='rho of every design cell before the first iteration (the fixed design outside an optimization '
+               'study); 0.5 leaves the optimiser free both ways.',
           tip='Starting fill of the design area, from 0 (empty) to 1 (filled). 0.5 is a neutral start.'),
     Param('filter_radius', 'float', 1e-7, label='Filter radius', unit='m', min=0.0,
-          help='Radius R of the conic density filter rho_tilde_a = sum_b w_ab A_b rho_b / sum_b w_ab A_b, w_ab = '
-               'max(0, R - |c_a - c_b|) over the design cells (A_b cell area, c cell centre): it sets the smallest '
-               'feature (~R) and suppresses checkerboards. 0 = no filter. Use >= 2 cells; typical 50-150 nm. Host '
-               'memory grows as cells x (R / dx)^2.',
+          help='Radius R of the conic filter rho_tilde_a = sum_b w_ab A_b rho_b / sum_b w_ab A_b, w_ab = max(0, R - '
+               '|c_a - c_b|) (A cell area, c cell centre): smallest feature ~R, no checkerboards; 0 = none. Use >= 2 '
+               'cells; typical 50-150 nm. Host memory ~ cells x (R / dx)^2.',
           tip='Smallest feature the design can form, roughly. Larger gives smoother, easier to make shapes; 0 turns '
               'smoothing off. Use at least two mesh cells.'),
     Param('projection_beta', 'float', 0.0, label='Projection sharpness', unit='1', min=0.0,
-          help='Steepness beta of the tanh projection rho_bar = (tanh(beta eta) + tanh(beta (rho_tilde - eta))) / '
-               '(tanh(beta eta) + tanh(beta (1 - eta))) that pushes the filtered density toward 0 or 1; 0 = no '
-               'projection (rho_bar = rho_tilde). Larger beta gives a more binary design (the grayness series shows '
-               'the remaining grey) but a stiffer problem with more local optima; typical 0-8, or 8-32 as the final '
-               'value of the optimization study continuation_stages (earlier stages use a smaller beta).',
+          help='beta of rho_bar = (tanh(beta eta) + tanh(beta (rho_tilde - eta))) / (tanh(beta eta) + tanh(beta (1 - '
+               'eta))); 0 = none. Larger: more binary, stiffer, more local optima; typical 0-8, or 8-32 as the final '
+               'value of the optimization study continuation_stages.',
           tip='How strongly intermediate fills are pushed to empty or filled: 0 keeps them, 4 to 8 makes the design '
               'nearly black and white but harder to optimise.'),
     Param('projection_eta', 'float', 0.5, label='Projection threshold', unit='1', min=0.0, max=1.0,
-          help='Threshold eta of the tanh projection (unused at projection_beta 0): filtered densities above it move '
-               'toward 1, below it toward 0; 0.5 is neutral, lower erodes less (dilated design).',
+          help='eta of the projection: filtered densities above it move toward 1; 0.5 neutral, lower dilates.',
           tip='Fill level that separates empty from filled when sharpening is on. 0.5 is neutral.'),
 )
 _DESCRIPTION = (
-    'Density design region on the selected domains (window cells only): each cell carries a density rho in [0, 1], '
-    'filtered by a conic filter of filter_radius and projected by a tanh of projection_beta / projection_eta to '
-    'rho_bar, and gets eps = eps_min + rho_bar (eps_max - eps_min) in its permittivity arrays (em_fdfd_ez: eps_r; '
-    'em_fdfd_hz: eps_xx and eps_yy, an isotropic change), overwriting the material permittivity there (sigma_e, poles '
-    'and mu_r stay the material\'s). The optimization study varies rho to maximise the adjoint_objective sum J; any '
-    'other study solves the initial_density design. Design regions of one physics must not share cells. Keep the '
-    'region off every source, port and objective line and the cells beyond their hi faces (the adjoint gradient is '
-    'not exact there). Output field design_density = rho_bar (0 outside every design region). Result \'xy\' versus '
-    'iteration (0 = initial design, one point per accepted L-BFGS-B iteration): series objective (J of the whole '
-    'model, W/m) and grayness (mean 4 rho_bar (1 - rho_bar) of this region, 0 = binary); extras n_cells, eps_min, '
-    'eps_max, mean_density and final_grayness of the current design, and note (non-empty outside an optimization '
-    'study, whose result is one point: iteration 0 with objective NaN).')
+    'Density design region on the selected domains (window cells only): each cell has a density rho in [0, 1], '
+    'filtered and projected to rho_bar, and gets eps = eps_min + rho_bar (eps_max - eps_min) (em_fdfd_ez: eps_r; '
+    'em_fdfd_hz: eps_xx and eps_yy), overwriting the material permittivity. The optimization study varies rho to '
+    'maximise the adjoint_objective sum J; other studies solve the initial_density design. Regions of one physics '
+    'must not share cells; keep them off source, port and objective lines and the cells past their hi faces (inexact '
+    "gradient there). Output field design_density = rho_bar (0 outside). Result 'xy' versus iteration (0 = initial, "
+    'one point per accepted L-BFGS-B iteration): series objective (J of the model, W/m) and grayness (mean 4 rho_bar '
+    '(1 - rho_bar), 0 = binary); extras n_cells, eps_min, eps_max, mean_density, final_grayness and note (non-empty '
+    'outside an optimization study: iteration 0, objective NaN).')
 _SUMMARY = ('Marks an area whose material an optimization study may change cell by cell, between two permittivities, '
             'to improve the optimisation objectives.')
 

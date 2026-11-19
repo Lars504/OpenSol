@@ -1,4 +1,4 @@
-"""Machine profile of the run-time estimate (time_estimation_plan section 3): microbenchmarks per backend, stored as
+"""Machine profile of the run-time estimate: microbenchmarks per backend, stored as
 measured (size, seconds) curves in the user's cache folder and priced by log-log interpolation. Loading is GUI-thread
 safe (json only); run_profile runs the benchmarks (gpu: on the GPU-owning thread)."""
 import datetime

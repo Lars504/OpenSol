@@ -1,4 +1,4 @@
-"""Physics-neutral complex resonances of a harmonic FEM pencil K u = omega^2 M u (new_modules_plan S8): shift-invert
+"""Physics-neutral complex resonances of a harmonic FEM pencil K u = omega^2 M u: shift-invert
 ARPACK about a target frequency [Hz] (solvers.arpack_shift_invert), PML modes dropped by their energy share outside
 the window, an optional region energy fraction; HarmonicResonance / HarmonicResonanceSolve with the duck-typed text,
 summary and info['warnings'] of the eigenfrequency study, and the resonance table rows. Host numpy, scipy inside

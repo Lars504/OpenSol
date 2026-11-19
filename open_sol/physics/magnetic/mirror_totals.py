@@ -1,9 +1,10 @@
-"""Mirror-plane factors of the totals the magnetic solvers report themselves (symmetry 2.5): every model mirror plane
+"""Mirror-plane factors of the totals the magnetic solvers report themselves: every model mirror plane
 (core.mirror.mirror_faces; a magnetic symmetry face is one) doubles the window energy and losses, and a coil reaching a
 plane joins its image (stranded: in series, solid: in parallel); numpy only."""
 import numpy as np
 
-from ...core.mirror import MIRROR_FACES, touch_factor
+from ...core.constants import FACES_3D
+from ...core.mirror import touch_factor
 
 
 class MirrorTotals:
@@ -19,9 +20,9 @@ class MirrorTotals:
         never the axisymmetric axis x_lo (the ring weights already count the revolution) nor its r_max cylinder x_hi
         (no mirror image)."""
         faces = {str(face): int(sign) for face, sign in dict(faces).items()}
-        bad = [face for face, sign in faces.items() if face not in MIRROR_FACES or sign not in (1, -1)]
+        bad = [face for face, sign in faces.items() if face not in FACES_3D or sign not in (1, -1)]
         if bad:
-            raise ValueError(f'{self.type_label}: mirror faces need a face of {MIRROR_FACES} and a sign +1 / -1, got '
+            raise ValueError(f'{self.type_label}: mirror faces need a face of {FACES_3D} and a sign +1 / -1, got '
                              f"{', '.join(f'{face}: {faces[face]}' for face in bad)}")
         if getattr(self, 'axisymmetric', False) and ('x_lo' in faces or 'x_hi' in faces):
             raise ValueError(f"{self.type_label} '{self.name}': x_lo (the rotation axis) and x_hi (the r_max cylinder) "
@@ -57,7 +58,7 @@ def tensor_touched_faces(mask) -> set:
     z)."""
     mask = np.asarray(mask, dtype=bool)
     touched = set()
-    for face in MIRROR_FACES[:2 * mask.ndim]:
+    for face in FACES_3D[:2 * mask.ndim]:
         layer = np.take(mask, 0 if face.endswith('lo') else -1, axis='xyz'.index(face[0]))
         if bool(layer.any()):
             touched.add(face)

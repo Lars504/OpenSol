@@ -1,7 +1,7 @@
 """Optomechanical overlaps on FEM meshes against an axisymmetric (em_fdfd_bor) optical resonance: moving-boundary edge
 integrals and the cylindrical photoelastic volume integral with 2 pi r weights, and the g0 table of a solved triangles
 resonance against axisymmetric triangle or tetrahedra solids (host numpy)."""
-# Conventions (optomechanics.py header for the 2D Yee version; new_modules_plan.md O1). The (r, z) cross-section is the
+# Conventions (optomechanics.py header for the 2D Yee version). The (r, z) cross-section is the
 # drawing plane of em_fdfd_bor on triangles: r = x - the window's x_lo edge (the axis), z = y. Optical fields are
 # cylindrical (E_r, E_phi, E_z) samples [V/m] of one resonance ~ exp(j omega t - j m phi): every product E_a* E_b is
 # phi-independent, so an integral over the body of revolution is 2 pi int r (...) dA (both numerator and energy carry
@@ -21,12 +21,14 @@ resonance against axisymmetric triangle or tetrahedra solids (host numpy)."""
 # through axis_point (3D point = axis_point + (r cos phi, r sin phi, z)); the phi-average of q . n (n = n_r e_r(phi) +
 # n_z e_z) is exact for the travelling resonance, so the crown (m != 0) parts drop out. The uniform phi grid averages a
 # displacement of azimuthal orders up to n_phi - 2 exactly (q . n carries orders m +- 1).
-# Model wiring (O2, axisymmetric_coupling_table; OptomechanicalCoupling.evaluate dispatches here for em_fdfd_bor
-# optics): the optical samples come from the solved FEMBORPhysics (its `assembly`, fem_bor.electric_field_at) on the
-# window, non-PEC elements (interfaces touching PEC / the PML ring dropped); the solid is sampled by point location in
-# its own mesh, so it may sit on another mesh of the same drawing. An interface sample is located SIDE_SHIFT x its edge
-# length off the edge into each side: a side counts as solid when that point lies in a stiff element, q_n comes from
-# side 0 when it is solid, else side 1, else 0 (the zero-padded mode would move void interfaces next to the solid).
+# Model wiring (axisymmetric_coupling_table; OptomechanicalCoupling.evaluate dispatches here for em_fdfd_bor optics and
+# for solids whose modal_overlap_data kind is not 'tensor'; a 3D solid is wired but no model holds it with the 2D
+# em_fdfd_bor yet): the optical samples come from the solved FEMBORPhysics (its `assembly`, fem_bor.electric_field_at)
+# on the window, non-PEC elements (interfaces touching PEC / the PML ring dropped); the solid is sampled by point
+# location in its own mesh, so it may sit on another mesh of the same drawing. An interface sample is located SIDE_SHIFT
+# x its edge length off the edge into each side: a side counts as solid when that point lies in a stiff element, q_n
+# comes from side 0 when it is solid, else side 1, else 0 (the zero-padded mode would move void interfaces next to the
+# solid).
 # Prescribed q_n (no mode): value x (solid(side 0) - solid(side 1)) = the outward normal motion of the solid, phi-
 # averaged for a 3D solid. An axisymmetric solid of azimuthal order m >= 1 (cos(m phi) amplitudes U_r, U_z, U_phi)
 # couples through the ring mean of cos(m phi) over RING_POINTS angles (round-off for 0 < m < RING_POINTS), its
@@ -39,7 +41,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from ...core.constants import C0, EPS0, HBAR
+from ...core.constants import C0, EPS0, FREE_MESH_KINDS, HBAR
 from ...fem.elements import element_geometry
 from ...fem.indicators import edge_sides
 from ...fem.quadrature import triangle_rule
@@ -564,7 +566,7 @@ def axisymmetric_coupling_table(coupling, optical, solid, data) -> dict:
         raise ValueError(f"optomechanical_coupling '{coupling.name}': em_fdfd_bor optics take forward scattering of "
                          'standing vibration modes only (no guided k_z)')
     kind = data.get('kind', 'tensor')
-    if kind not in ('triangles', 'tetrahedra'):
+    if kind not in FREE_MESH_KINDS:
         raise ValueError(f"optomechanical_coupling '{coupling.name}': em_fdfd_bor optics need the solid on a triangles "
                          f'mesh (geometry axisymmetric) or a tetrahedra mesh, not a {kind} one')
     samples = bor_optical_samples(optical, coupling.optical_mode)

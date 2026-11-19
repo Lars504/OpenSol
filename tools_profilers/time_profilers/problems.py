@@ -77,7 +77,8 @@ class ProblemClass:
     """Metadata of one problem class: the physics type / role / study / grid kind whose solver choices
     (solver_catalog) it profiles, the size knob and its default / --quick sizes, and builder(size) -> Problem;
     ignored_settings {SolverType name: (setting, ...)}: choice settings the problem's consumer ignores (the catalogue
-    pins them to what 'auto' / the default resolves to instead of one identical row per value)."""
+    pins them to what 'auto' / the default resolves to instead of one identical row per value). Each is a claim about
+    open_sol's consumer code: recheck it when that consumer changes; never list a choice that only seems redundant."""
     name: str
     description: str
     physics_type: str
@@ -220,7 +221,8 @@ def _roller_box_reference(cells, cell, lame_lambda, mu, density, count) -> list:
     up to MODES_REFERENCE_MAX_ORDER per axis) the 3 x 3 symbol of the 1D linear-element symbols K(t) = (2 / h)(1 - cos
     t), M(t) = (h / 3)(2 + cos t), S(t) = sin t (B_aa = c11 K_a M_b M_c + c66 M_a (K_b M_c + M_b K_c), B_ab = (c12 +
     c66) S_a S_b M_c) over rho M_x M_y M_z, component a present for 0 < p_a < N_a (selftests_eigenfrequency's
-    _discrete_modes_3d, parametrised)."""
+    _discrete_modes_3d, parametrised). Exact only for uniform cells, rollers on all six faces and the trilinear
+    consistent mass: a change of the box geometry or supports needs a new reference, never a looser comparison."""
     c11, c12, c66 = lame_lambda + 2.0 * mu, lame_lambda, mu
     eigenvalues = []
     for orders in np.ndindex(*(min(count_a, MODES_REFERENCE_MAX_ORDER) + 1 for count_a in cells)):
@@ -285,23 +287,32 @@ def automatic_linear_values(backend) -> dict:
 
 def elastic_modes_system(problem, backend) -> ModesSystem:
     """ModesSystem of a 'modes' problem on the backend, as the solid_mechanics_3d build makes it: a Domain3D of the
-    box cells (no PML), the Automatic 'linear' PCGSolver (pcg create + solid_linear_solver: max_iterations 0 = twice
-    the auto limit), ElasticSystem3D.prepare, rollers (hold_face of the normal component on every face, as the roller
-    feature), assemble with the element Lame values (float64 constants: the model paints float32 E / nu and derives
-    them per cell) and the density."""
+    box cells (no PML), the Automatic 'linear' solver through the pcg SolverType's create and the build's
+    definition_common.solid_linear_solver (on stand-ins of the build context), ElasticSystem3D.prepare, rollers
+    (hold_face of the normal component on every face, as the roller feature), assemble with the element Lame values
+    (float64 constants: the model paints float32 E / nu and derives them per cell) and the density."""
+    from types import SimpleNamespace
     from open_sol.core.constants import FACES_3D
     from open_sol.core.domain3d import Domain3D
+    from open_sol.model.builder import BuiltSolver
+    from open_sol.model.schema import get_registry
+    from open_sol.physics.mechanics.definition_common import solid_linear_solver
     from open_sol.physics.mechanics.system3d import ElasticSystem3D
-    from open_sol.solvers.pcg import PCGSolver, resolve_max_iterations
+    from open_sol.solvers.roles import ResolvedSolver, SolverRequest
     eigen = problem.eigen
     cells, cell = eigen['cells'], eigen['cell']
     domain = Domain3D.from_widths(*(np.full(count, cell) for count in cells), {},
                                   *(count * cell for count in cells), backend=backend)
     values = automatic_linear_values(backend)
-    max_iterations = int(values['max_iterations']) or 2 * resolve_max_iterations(0, domain)
-    linear_solver = PCGSolver(precision=values['precision'], tolerance=values['tolerance'],
-                              max_iterations=max_iterations, label=_modes_label, backend=backend,
-                              preconditioner=values['preconditioner'])
+    registry = get_registry()
+    pcg_type = registry.solver_type('pcg')
+    solver_role = registry.physics_type(MODES_PHYSICS_TYPE).solver_roles['linear']
+    physics_name = _modes_label()
+    context = SimpleNamespace(domain=domain, solver_records={})
+    runtime = pcg_type.create(context, SolverRequest(physics_name, 'linear', solver_role, values, backend))
+    context.solver_records[physics_name] = {'linear': BuiltSolver(ResolvedSolver(pcg_type, values), backend, runtime)}
+    linear_solver = solid_linear_solver(context, SimpleNamespace(name=physics_name))
+    max_iterations = int(linear_solver.max_iterations)
     # precision / tol / max_iter are the linear solver's (ElasticSystemBase takes them from it)
     system = ElasticSystem3D('float64', values['tolerance'], max_iterations, label=_modes_label,
                              linear_solver=linear_solver, backend=backend)

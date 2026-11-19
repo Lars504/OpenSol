@@ -25,7 +25,7 @@ from ..eigenfrequency import resonance_table_result
 from ..fdfd_monitors import _ascending_wavelength, probe_phasor_result
 from ..harmonic import cell_permeability, cell_permittivity, shown_phasor_fields
 from ..materials import register_em_arrays
-from ..placement import box_cells, flux_line_cells, port_cells
+from ..placement import box_cells, flux_line_cells, port_cells, window_cell
 from ..renderer_bor import BORRenderer
 from ..yee_grid import cpml_grading_cell_size
 from .host_fdfd import HostFDFDBase, direct_text, is_cudss
@@ -551,8 +551,7 @@ class BORPhysics(HostFDFDBase, PhysicsSolver):
         the cell containing (x = r, y = z), phasor current e^{j phase} (phase in degrees, FDTD sign)."""
         if component not in BOR_SOURCE_COMPONENTS:
             raise ValueError(f'point source component must be one of {BOR_SOURCE_COMPONENTS}, got {component!r}')
-        self.domain.validate_physical_pos(x, y, 'Point source')
-        ix, iy = self.domain.pos_to_cell(x, y)
+        ix, iy = window_cell(self.domain, x, y, 'Point source')
         return self._add_source(BORPointCurrent(ix, iy, component,
                                                 float(current) * cmath.exp(1j * math.radians(float(phase)))))
 

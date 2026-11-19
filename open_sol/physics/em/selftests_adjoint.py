@@ -8,8 +8,7 @@ import numpy as np
 from ...model.schema import SelfTestCase
 from ...model.spec import (DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec,
                            ModelSpec, PhysicsSpec, StudySpec)
-from ...model.selftest_helpers import single_value, vertical_line
-from .selftests import normalized_result
+from ...model.selftest_helpers import normalized_result, single_value, vertical_line
 from .selftests_fdfd import cpu_specs
 from .selftests_mode_ports import _SILICA_EPS_R, _SILICON_EPS_R, _SLAB_SIZE
 

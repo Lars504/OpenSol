@@ -237,65 +237,50 @@ def _default_stored_fields(spec):
 
 _OPTIMIZATION_PARAMS = (
     Param('max_iterations', 'int', 20, label='Maximum iterations', min=1, max=10000,
-          help=f'L-BFGS-B iterations at most; each needs one or more evaluations (line-search trials, at most '
-               f'{_EVALUATIONS_PER_ITERATION} x max_iterations in all), and one evaluation = per FDFD physics one '
-               'assembly, one solve (recycled factor or a new factorisation) and one transposed (adjoint) solve. '
-               'Typical 20-200. With continuation_stages > 1 it holds per stage.',
+          help=f'L-BFGS-B iterations per continuation stage; each needs one or more evaluations (at most '
+               f'{_EVALUATIONS_PER_ITERATION} x max_iterations in all), one evaluation = per FDFD physics one '
+               'assembly, one solve and one transposed (adjoint) solve. Typical 20-200.',
           tip='Largest number of design updates (per sharpening stage). Each costs one or a few field solves; 20 to '
               '200 is typical.'),
     Param('continuation_stages', 'int', 1, label='Sharpening stages', unit='1', min=1, max=20,
-          help='Beta continuation of the design_region tanh projection: L-BFGS-B runs this many times in a row, stage '
-               's (1 .. n) with projection_beta x beta_growth^(s - n), so the last stage uses the design_region value '
-               'and the first ones optimise a smoother (greyer) problem. 1 = no continuation. Regions with '
-               'projection_beta 0 stay unprojected. Typical 3-5 with a final beta 8-32.',
+          help='Beta continuation of the design_region projection: stage s (1 .. n) runs L-BFGS-B with '
+               'projection_beta x beta_growth^(s - n), so the last uses the design_region value. 1 = none; '
+               'projection_beta 0 regions stay unprojected. Typical 3-5 with a final beta 8-32.',
           tip='Number of rounds in which the design is pushed step by step toward empty or filled cells. 1 uses the '
               'projection sharpness of the design regions from the start.'),
     Param('beta_growth', 'float', 2.0, label='Sharpening growth', unit='1', min=1.0, min_exclusive=True,
-          help='Factor between the projection betas of consecutive continuation stages (unused at continuation_stages '
-               '1); typical 1.5-2.',
+          help='Projection beta factor between consecutive continuation stages; typical 1.5-2.',
           tip='How much sharper each round is than the one before; 2 doubles it. Unused with one stage.'),
     Param('tolerance', 'float', 1e-5, label='Relative tolerance', unit='1', min=0.0,
-          help='L-BFGS-B ftol on the scaled objective f = -J / |J0| (J0 = J of the initial design): stop once an '
-               'iteration lowers f by at most tolerance * max(|f|, 1); 0 runs all max_iterations. Typical 1e-4 to '
-               '1e-6.',
+          help='L-BFGS-B ftol on f = -J / |J0|: stop once an iteration lowers f by at most tolerance * max(|f|, 1); '
+               '0 runs all max_iterations. Typical 1e-4 to 1e-6.',
           tip='The optimisation stops when an update improves the objective by less than this fraction. 0 always '
               'runs the maximum number of iterations.'),
     _LIVE_UPDATE_PARAM,
 )
 _DESCRIPTION = (
-    'Density-based topology optimisation over the design_region features of em_fdfd_ez / em_fdfd_hz physics: '
-    'maximises J = the sum of weight * quantity of every adjoint_objective of every physics (use weight -1 to '
-    'minimise a quantity), each physics solved at its own wavelength setting (several physics of one polarisation '
-    'at different wavelengths share the permittivity arrays, so one design region serves a broadband objective). '
-    'Each design cell has a density rho in [0, 1], filtered and projected to rho_bar and mapped to eps = eps_min + '
-    'rho_bar (eps_max - eps_min) (see design_region). scipy L-BFGS-B with bounds [0, 1] minimises -J / |J0| (J0 = J '
-    'of the initial design); every evaluation writes the densities, solves every physics (scipy_splu re-uses the '
-    'previous factor as a GMRES preconditioner while the design changes little) and takes dJ/d eps of the '
-    'objectives from one transposed solve (eps_sensitivity), then dJ/d rho by the transposed projection and filter. '
-    'Stops at max_iterations, at the tolerance or after 5 x max_iterations evaluations, per continuation stage '
-    '(continuation_stages > 1: the projection beta grows by beta_growth per stage up to the design_region value; '
-    'iterations count on across stages, objective_initial is J at the first stage beta). Snapshots: the initial '
-    'design (iteration 0) and every accepted iteration, labelled "iteration k: J = <value> W/m" (em_eme: no unit, '
-    'J is a power fraction); with stored_fields '
-    '[] they hold every output field, among them "<physics>.design_density" of every physics with a design_region '
-    '(the design per iteration), plus "final: J = ..." when the last evaluated state differs; afterwards the physics hold '
-    'the returned design (Results.field, design_density). Each design_region result is J and its grayness versus '
-    'iteration; summary key optimization {iterations, evaluations, design_cells, objective_initial, objective_final, '
-    'continuation_stages, message}; ticks = iterations. Every '
-    'physics must be em_fdfd_ez / em_fdfd_hz / em_fdfd_nonlinear / em_eme; couplings and state-dependent material '
-    'properties are not supported. '
-    'The gradient is exact for the discrete model except on source, port and objective lines (keep design regions '
-    'off them); sigma_e, poles and mu_r of the design cells are not optimised. An em_fdfd_nonlinear physics '
-    'takes part with its design_region (writing eps_r, eps_xx and eps_yy) and the adjoint_objective features of its '
-    'channels: each evaluation solves the channels and their adjoint (undepleted: one transposed solve per channel in '
-    'reverse solve order; pump_depleted: the transposed fixed point by GMRES, each product one transposed solve per '
-    'channel; no free carriers, and iteration_method newton with a chi3 medium) (inverse-designed harmonic '
-    'generation; the chi2 / chi3 tensors and poling stay fixed). An em_eme physics (polarization ez or hz, '
-    'section_tolerance 0) takes part with its design_region (ez: eps_r; hz: eps_xx '
-    'and eps_yy) and adjoint_objective features (port power fractions, unit 1: the labels and log lines show J '
-    'without a unit, the design_region objective series has unit 1): each evaluation re-solves the changed sections '
-    'and takes dJ/d eps from the cascade adjoint (one adjoint cascade field, no extra mode solve; exact for n_modes '
-    '0).')
+    'Density-based topology optimisation over the design_region features: maximises J = the sum of weight * quantity '
+    'of every adjoint_objective of every physics (weight -1 minimises), each physics at its own wavelength setting '
+    '(several physics of one polarisation at different wavelengths share the permittivity arrays: one design region '
+    'serves a broadband objective). Densities rho in [0, 1] are filtered, projected and mapped to eps (see '
+    'design_region). scipy L-BFGS-B with bounds [0, 1] minimises -J / |J0| (J0 = J of the initial design); each '
+    'evaluation writes the densities, solves every physics (scipy_splu reuses the previous factor as a GMRES '
+    'preconditioner while the design changes little) and takes dJ/d eps from one transposed solve (eps_sensitivity). '
+    'Stops at max_iterations, the tolerance or 5 x max_iterations evaluations, per continuation stage (iterations '
+    'count on across stages, objective_initial is J at the first stage beta). Snapshots: the initial design '
+    '(iteration 0) and every accepted iteration, labelled "iteration k: J = <value> W/m" (em_eme: no unit, a power '
+    'fraction), plus "final: J = ..." when the last evaluated state differs; default stored fields include '
+    '"<physics>.design_density"; afterwards the physics hold the returned design. Each design_region result is J and '
+    'its grayness versus iteration; summary optimization {iterations, evaluations, design_cells, objective_initial, '
+    'objective_final, continuation_stages, message}; ticks = iterations. Physics: em_fdfd_ez / em_fdfd_hz / '
+    'em_fdfd_nonlinear / em_eme only; no couplings or state-dependent material properties. The gradient is exact for '
+    'the discrete model except on source, port and objective lines (keep design regions off them); sigma_e, poles '
+    'and mu_r of design cells are not optimised. em_fdfd_nonlinear: design_region writes eps_r, eps_xx, eps_yy; '
+    'objectives of its channels; the adjoint is one transposed solve per channel in reverse order (undepleted) or the '
+    'transposed fixed point by GMRES (pump_depleted; no free carriers, and iteration_method newton with a chi3 '
+    'medium); chi2 / chi3 tensors and poling stay fixed. em_eme (polarization ez or hz, section_tolerance 0): '
+    'design_region (ez: eps_r; hz: eps_xx, eps_yy) and port power fraction objectives (unit 1); each evaluation '
+    're-solves the changed sections, dJ/d eps from the cascade adjoint (exact for n_modes 0).')
 
 
 def _time_counts(values):

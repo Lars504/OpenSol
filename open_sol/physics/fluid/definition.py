@@ -15,7 +15,8 @@ from ...model.definition_helpers import (HALF_STORAGE_STEPPER_ROLE, evaluates_to
                                          selected_material_data, uses_time, validate_points_inside)
 from ...solvers.explicit_kernels import stepper_precision
 from ...model.geometry import expand_entities
-from ...model.schema import FeatureType, Issue, Param, PhysicsType, coupling_writes, feature_path
+from ...model.schema import (STATIONARY_STUDY, TIME_DEPENDENT_STUDY, FeatureType, Issue, Param, PhysicsType,
+                              coupling_writes, feature_path)
 from .lattice import N_DIRECTIONS
 from .renderer import FluidRenderer
 from .selftests import HEATED_MICROCHANNEL_DESCRIPTION, HEATED_MICROCHANNEL_LABEL, heated_microchannel_spec
@@ -51,39 +52,37 @@ _SETTINGS = (
               '- Transient: the flow evolves in time from rest.\n\n'
               "Only a 'Time dependent' study runs transient flow; every other study solves the steady state.",
           help='stationary: each solve marches the lattice to a steady state (re-solved only when a material, force '
-               'or face changed; quasi-static, dt_limit inf); transient: one or more lattice steps per runner step '
-               '(dt_limit = dt_lbm). Only a time_dependent study runs transient flow; every other study solves the '
-               'steady state (transient is ignored there). Transient flow cannot share a time-dependent study with '
-               'an FDTD wave physics (its femtosecond step is far below dt_lbm: validation error), nor with '
-               'elastic_waves when the acoustic step gives the least viscous fluid tau < 1/2 + 1e-3 (3 nu dt / dx^2, e.g. '
-               'water on 10 um cells; validation error, a warning below 1/2 + 0.02).'),
+               'or face changed; dt_limit inf); transient: one or more lattice steps per runner step (dt_limit = '
+               'dt_lbm), only in a time_dependent study (other studies solve the steady state). Transient flow cannot '
+               'share a time_dependent study with an FDTD wave physics (step far below dt_lbm: validation error), nor '
+               'with elastic_waves when the acoustic step gives the least viscous fluid tau < 1/2 + 1e-3 (3 nu dt / '
+               'dx^2, e.g. water on 10 um cells; validation error, a warning below 1/2 + 0.02).'),
     Param('relaxation_time', 'float', 1.0, label='Lattice relaxation time', unit='1', min=0.5, min_exclusive=True,
           max=5.0,
           tip='Numerical setting that fixes the time step of the flow solver from the viscosity and the cell size.\n\n'
               'Larger values take larger steps and reach a steady state sooner but allow less flow speed; 1 suits '
               'most models.',
-          help='TRT relaxation time tau+ of the most viscous fluid: dt_lbm = (tau - 1/2) dx^2 / (3 nu_max), nu = '
-               'viscosity / rho; other fluids get tau = 1/2 + 3 nu dt_lbm / dx^2. The lattice Mach number sqrt(3) u '
-               'dt_lbm / dx must stay small (validation warns above 0.2 for numeric inlet velocities, the run warns '
-               'above 0.2 and fails above 0.7): lower tau for fast flow, raise it (up to ~2) to reach a steady state '
-               'in fewer steps. Steady results do not depend on tau (TRT with the magic parameter 3/16). Typical 1.'),
+          help='TRT tau+ of the most viscous fluid: dt_lbm = (tau - 1/2) dx^2 / (3 nu_max), nu = viscosity / rho; '
+               'other fluids get tau = 1/2 + 3 nu dt_lbm / dx^2. The lattice Mach number sqrt(3) u dt_lbm / dx must '
+               'stay small (validation warns above 0.2 for numeric inlet velocities; the run warns above 0.2, fails '
+               'above 0.7): lower tau for fast flow, raise it (up to ~2) to reach a steady state in fewer steps. '
+               'Steady results do not depend on tau (weakly with conformal_boundaries: interpolated walls).'),
     Param('tolerance', 'float', 1e-6, label='Steady-state tolerance', unit='1', min=0.0, min_exclusive=True,
           tip='How close to the final steady flow each steady solve gets, relative to the peak speed.\n\n'
               'Keep 1e-6. The single-precision solver cannot get much closer: smaller values stop at its rounding '
               'limit instead.',
-          help='Steady march stops when the remaining velocity change, extrapolated from the geometric decay between '
-               'check intervals (rate r: change * r / (1 - r)), is <= tolerance * peak lattice speed on two checks in a '
-               'row, or when the change stops decreasing below 1e-5 of the peak (float32 rounding noise, ~1e-7..1e-6: '
-               'a tolerance below that floor stops there, never better). Typical 1e-6, error ~ tolerance.'),
+          help='A steady march stops when the remaining velocity change, extrapolated from the geometric decay between '
+               'checks (rate r: change * r / (1 - r)), is <= tolerance * peak lattice speed on two checks in a row, or '
+               'when the change stops decreasing below 1e-5 of the peak (float32 noise floor ~1e-7..1e-6: a smaller '
+               'tolerance stops there). Error ~ tolerance.'),
     Param('max_steps', 'int', 0, label='Lattice step limit', min=0,
           tip='Largest number of solver steps per steady solve; 0 picks a limit from the grid size.\n\n'
               'A solve that reaches the limit keeps its unfinished flow and logs a warning.',
-          help='Lattice step limit per steady march; 0 = auto: 30 decay times L^2 / (pi^2 nu_lat) of the slowest '
-               'diffusive mode (L = longest window axis in cells, doubled on an axis with exactly one slip / pressure '
-               'face such as a free-surface film, halved on a periodic axis; nu_lat the smallest lattice viscosity), at '
-               'least 10 of the largest check intervals (checks start every max(100, 3.5 L) steps and double while '
-               'one sees less than 5 % of a decay). A steady march needs ~ L^2 lattice steps (a 500-cell axis ~1e6 steps). A march '
-               'that hits the limit keeps its result and logs a warning.'),
+          help='Per steady march; 0 = auto: 30 decay times L^2 / (pi^2 nu_lat) of the slowest diffusive mode (L = '
+               'longest window axis in cells, doubled on an axis with exactly one slip / pressure face such as a '
+               'free-surface film, halved on a periodic axis; nu_lat the smallest lattice viscosity), at least 10 of '
+               'the largest check intervals (checks start every max(100, 3.5 L) steps, doubling while one sees < 5 % '
+               'of a decay). A march hitting the limit keeps its result and logs a warning.'),
 )
 
 
@@ -91,10 +90,10 @@ _SETTINGS = (
 _MATERIAL_PROPERTIES = (
     optional_material_param(
         'viscosity', 'Dynamic viscosity', 'Pa s', FLUID_PROPERTY_ARRAYS['viscosity'], 0.0,
-        help_text='Dynamic viscosity mu of a fluid. Cells with viscosity > 0 are fluid; unset or 0 = solid (a '
-                  'no-slip obstacle: its boundary is a halfway bounce-back wall). Fluid cells also need rho. May depend '
-                  'on x, y and state fields (e.g. water 2.414e-5 * 10**(247.8 / (heat_T - 140)); a stationary study '
-                  'iterates). Typical: water 1.0e-3 (20 C), air 1.81e-5, glycerol 1.4, silicone oil 1e-2.',
+        help_text='Dynamic viscosity mu. Cells with viscosity > 0 are fluid (they also need rho); unset or 0 = a solid '
+                  'no-slip obstacle. May follow state fields (e.g. water 2.414e-5 * 10**(247.8 / (heat_T - 140)); a '
+                  'stationary study iterates). Typical: water 1.0e-3 (20 C), air 1.81e-5, glycerol 1.4, silicone oil '
+                  '1e-2.',
         tip='Viscosity of a liquid or gas; it makes the material a fluid in a flow physics. Empty means a solid that '
             'the flow goes around.\n\nTypical: water 1.0e-3, air 1.81e-5.'),
     optional_material_param(
@@ -296,7 +295,7 @@ def _validate_periodic(vctx, physics_spec, feature_spec, values):
 
 def _time_mode(vctx, settings_values):
     """'transient' only in a time-dependent study with time_mode transient, else 'stationary'."""
-    if vctx.study_type == 'time_dependent' and (settings_values or {}).get('time_mode') == 'transient':
+    if vctx.study_type == TIME_DEPENDENT_STUDY and (settings_values or {}).get('time_mode') == 'transient':
         return 'transient'
     return 'stationary'
 
@@ -399,7 +398,7 @@ def _validate_flow(vctx, physics_spec, settings_values):
     path = ('physics', physics_spec.name)
     issues = []
     time_mode = (settings_values or {}).get('time_mode')
-    if time_mode == 'transient' and vctx.study_type != 'time_dependent':
+    if time_mode == 'transient' and vctx.study_type != TIME_DEPENDENT_STUDY:
         issues.append(Issue('info', path, "time_mode 'transient' is ignored outside a time-dependent study: the flow is "
                                           'solved as a steady state'))
     issues.extend(_mesh_issues(vctx, path))
@@ -434,8 +433,7 @@ def _validate_flow(vctx, physics_spec, settings_values):
 
 # ---- physics factory callbacks ----
 def _create_flow(ctx, physics_spec, values):
-    time_mode = values['time_mode'] if ctx.study_type == 'time_dependent' else 'stationary'
-    return FluidPhysics(ctx.domain, time_mode=time_mode, relaxation_time=values['relaxation_time'],
+    return FluidPhysics(ctx.domain, time_mode=_time_mode(ctx, values), relaxation_time=values['relaxation_time'],
                         tolerance=values['tolerance'], max_steps=values['max_steps'],
                         precision=stepper_precision(ctx.solvers(physics_spec.name)))
 
@@ -556,8 +554,7 @@ def _memory_estimate(settings_values, mesh, context):
 
 
 # ---- type ----
-_TIME_VALUE_TEXT = (' Or (not both) of time t [s] with parameters, re-set at the start of every runner step (t = 0 '
-                    'outside a time_dependent study; stationary flow re-marches to a steady state after each change).')
+_TIME_VALUE_TEXT = ' Stationary flow re-marches to a steady state after each change in t.'
 
 
 def _velocity_param(name, label, default, help_text, tip):
@@ -569,24 +566,21 @@ _FACE_ONLY = dict(allow_interior=False, requires_uniform_mesh=True)
 _FEATURES = (
     FeatureType('wall', 'Wall', 'boundary_condition', 'boundary', **_FACE_ONLY,
                 params=(_velocity_param('tangential_velocity', 'Wall velocity', 0.0,
-                                        'Velocity of the wall along itself: +x on y_lo / y_hi, +y on x_lo / x_hi (a '
-                                        'lid-driven cavity); 0 = a fixed wall. May depend on x, y (evaluated at the '
-                                        'centres of the cells along the face).',
+                                        'Along the wall: +x on y_lo / y_hi, +y on x_lo / x_hi (a lid-driven cavity); '
+                                        'x, y at the centres of the face cells.',
                                         'Speed of the wall moving along itself; 0 for a fixed wall.'),),
                 summary='No-slip wall on the selected domain edges, fixed or sliding along itself. Edges without a '
                         'flow condition are fixed walls.',
-                description='No-slip wall on outer faces: halfway bounce-back (the wall sits on the face), moving '
-                            'along itself at tangential_velocity. Unreferenced outer faces are fixed walls, and solid '
-                            'cells (no viscosity) are walls on their faces; a later boundary feature on the same face '
-                            'wins (validation warning).',
+                description='No-slip halfway bounce-back (the wall sits on the face), moving along itself at '
+                            'tangential_velocity. A later boundary feature on the same face wins (validation '
+                            'warning).',
                 apply=_apply_wall),
     FeatureType('slip_wall', 'Slip wall (symmetry)', 'boundary_condition', 'boundary', **_FACE_ONLY,
                 summary='Wall without friction on the selected domain edges: no flow through it, free flow along it. '
                         'Use it on a symmetry line.',
-                description='Free-slip face (specular reflection of the lattice populations): zero normal velocity '
-                            'and zero shear stress, i.e. a symmetry line of the flow. A slip_wall alone makes no '
-                            'model mirror plane (results do not unfold across it, integrals do not double); the '
-                            'symmetry feature is the same face as a model mirror plane.',
+                description='Free slip (specular reflection of the populations): zero normal velocity and shear '
+                            'stress, a symmetry line of the flow, but no model mirror plane (results do not unfold, '
+                            'integrals do not double): the symmetry feature is the same face as one.',
                 apply=_apply_slip),
     FeatureType(_SYMMETRY_FEATURE, 'Symmetry', 'boundary_condition', 'boundary', **_FACE_ONLY,
                 summary='Makes the selected domain edges mirror planes, so only half (or a quarter) of a flow that '
@@ -610,99 +604,87 @@ _FEATURES = (
                 apply=_apply_slip, validate=_validate_symmetry),
     FeatureType('inlet_velocity', 'Velocity inlet', 'boundary_condition', 'boundary', **_FACE_ONLY,
                 params=(_velocity_param('velocity', 'Inflow velocity', 1e-3,
-                                        "Normal velocity into the domain (> 0 inflow, < 0 outflow); with profile "
-                                        "'parabolic' the mean over each run of fluid cells along the face. May depend "
-                                        'on x, y (evaluated at the centres of the cells along the face). Typical '
-                                        'microfluidics 1e-4 - 1e-2.',
+                                        "Normal velocity into the domain (< 0 outflow); with profile 'parabolic' the "
+                                        'mean over each run of fluid cells along the face; x, y at the centres of the '
+                                        'face cells. Typical microfluidics 1e-4 - 1e-2.',
                                         "Speed of the flow entering through the edge; with a parabolic profile its "
                                         'average.'),
                         Param('profile', 'choice', 'uniform', label='Profile', choices=('uniform', 'parabolic'),
                               choice_labels=(('uniform', 'Uniform'), ('parabolic', 'Parabolic (fully developed)')),
-                              help='uniform: the velocity value per cell; parabolic: the value times the discrete '
-                                   'Poiseuille shape s (w - s) of each run of fluid cells along the face, normalised '
-                                   'to mean 1 (fully developed channel inflow, peak 1.5 x the value). A run ending on '
-                                   'a slip_wall / symmetry face takes the half parabola s (2 w - s) of its mirror '
-                                   'image (zero shear at that face; uniform between two of them).',
+                              help='uniform: the value per cell; parabolic: the value times the discrete Poiseuille '
+                                   'shape s (w - s) of each run of fluid cells along the face, mean 1 (peak 1.5 x the '
+                                   'value); a run ending on a slip_wall / symmetry face takes the half parabola s (2 w '
+                                   '- s) of its mirror image.',
                               tip='Uniform: the same speed across the edge. Parabolic: the fully developed profile of '
                                   'a channel, zero at its walls.')),
                 summary='Flow entering through the selected domain edges at a given speed.',
-                description='Prescribed velocity on outer faces (moving-wall bounce-back with the face velocity, '
-                            'normal to the face; solid cells along the face stay solid). Combine with a pressure face '
-                            'elsewhere (validation warning otherwise: without one the inflow must balance the outflow '
-                            'exactly).',
+                description='Moving-wall bounce-back with the face-normal velocity (solid cells along the face stay '
+                            'solid). Combine with a pressure face elsewhere (validation warns: without one inflow and '
+                            'outflow must balance exactly).',
                 apply=_apply_inlet),
     FeatureType('pressure', 'Pressure', 'boundary_condition', 'boundary', **_FACE_ONLY,
                 params=(Param('pressure', 'float', 0.0, label='Pressure', unit='Pa', field_dependent=True,
                               time_dependent=True,
-                              help='Gauge pressure on the face (pressure is relative: 0 at an open outlet). May '
-                                   'depend on x, y (evaluated at the centres of the cells along the face).'
+                              help='Gauge pressure (0 at an open outlet); x, y at the centres of the face cells.'
                                    + _TIME_VALUE_TEXT,
                               tip='Pressure on the edge, relative to the surroundings; 0 for an open outlet.'),),
                 summary='Inlet or outlet at a given pressure on the selected domain edges; flow follows the pressure '
                         'difference.',
-                description='Prescribed pressure on outer faces (anti-bounce-back with the velocity of the boundary '
-                            'cell), an open inlet or outlet. The pressure field is gauge pressure: a model without a '
-                            'pressure face keeps a zero mean.',
+                description='Anti-bounce-back with the boundary cell velocity: an open inlet or outlet. A model '
+                            'without a pressure face keeps a zero mean pressure.',
                 apply=_apply_pressure),
     FeatureType('periodic', 'Periodic pair', 'boundary_condition', 'boundary', min_entities=2, max_entities=2,
                 **_FACE_ONLY,
                 summary='Connects two opposite domain edges: flow leaving one re-enters through the other, as in an '
                         'infinitely long channel.',
-                description="Periodic pair: both faces of one axis (['x_lo', 'x_hi'] or ['y_lo', 'y_hi']); the "
-                            'lattice wraps around. Drive such a channel with a body_force. Only the flow is periodic '
-                            '(heat and the other physics keep their own face conditions).',
+                description="Both faces of one axis (['x_lo', 'x_hi'] or ['y_lo', 'y_hi']); the lattice wraps "
+                            'around. Drive such a channel with a body_force. Only the flow is periodic (other physics '
+                            'keep their own face conditions).',
                 apply=_apply_periodic, validate=_validate_periodic),
     FeatureType('body_force', 'Body force', 'domain_condition', 'domain',
                 params=(Param('f_x', 'float', 0.0, label='Body force x', unit='N/m^3', field_dependent=True,
                               time_dependent=True,
-                              help='Body force per volume along x (Guo forcing); a pressure gradient dp/dx of a '
-                                   'periodic channel is f_x = -dp/dx (an oscillating one, e.g. F cos(omega t), gives '
-                                   'Womersley flow). May depend on x, y.' + _TIME_VALUE_TEXT,
+                              help='Guo forcing; a periodic channel pressure gradient dp/dx is f_x = -dp/dx (an '
+                                   'oscillating one, e.g. F cos(omega t), gives Womersley flow).' + _TIME_VALUE_TEXT,
                               tip='Force per volume along x pushing the fluid, for example a pressure gradient.'),
                         Param('f_y', 'float', 0.0, label='Body force y', unit='N/m^3', field_dependent=True,
                               time_dependent=True,
-                              help='Body force per volume along y, e.g. gravity -rho g = -9.79e3 for water (a '
-                                   'hydrostatic pressure gradient builds up against it). May depend on x, y.'
-                                   + _TIME_VALUE_TEXT,
+                              help='E.g. gravity -rho g = -9.79e3 for water (a hydrostatic pressure gradient builds up '
+                                   'against it).' + _TIME_VALUE_TEXT,
                               tip='Force per volume along y, for example gravity.')),
                 summary='Pushes the fluid in the selected domains with a force per volume, such as gravity or a '
                         'pressure gradient.',
-                description='Applied body force density on the selected cells (several add; held in the solver '
-                            'state body_force_x_ext / _y_ext, not an output field; the coupled slots body_force_x / '
-                            'body_force_y and their output fields are separate, e.g. a buoyancy field_transfer from '
-                            'heat T). Solid cells ignore it. The same feature as the solid_mechanics body_force.',
+                description='Force density on the selected cells (several add; solid cells ignore it), held in the '
+                            'solver state body_force_x_ext / _y_ext, separate from the coupled slots body_force_x / _y '
+                            '(output fields). The same feature as the solid_mechanics body_force.',
                 apply=_apply_body_force),
     FeatureType('initial_velocity', 'Initial values', 'domain_condition', 'domain',
                 params=(Param('u_x', 'float', 0.0, label='Initial velocity x', unit='m/s', field_dependent=True,
-                              help='Velocity along x at t = 0 on the selected cells; may depend on x, y (cell '
-                                   'centres). E.g. the Taylor-Green vortex U sin(k x) cos(k y).',
+                              help='At the cell centres, e.g. the Taylor-Green vortex U sin(k x) cos(k y).',
                               tip='Flow velocity along x at the start.'),
                         Param('u_y', 'float', 0.0, label='Initial velocity y', unit='m/s', field_dependent=True,
-                              help='Velocity along y at t = 0 on the selected cells; may depend on x, y.',
+                              help='At the cell centres.',
                               tip='Flow velocity along y at the start.'),
                         Param('pressure', 'float', 0.0, label='Initial pressure', unit='Pa', field_dependent=True,
-                              help='Gauge pressure at t = 0 on the selected cells; may depend on x, y. 0 is fine for '
-                                   'slow flow (an inconsistent start pressure only launches weak sound waves that '
-                                   'the viscosity damps).',
+                              help='Gauge pressure; 0 is fine for slow flow (an inconsistent start only launches weak '
+                                   'sound waves that the viscosity damps).',
                               tip='Pressure at the start, relative to the surroundings.')),
                 summary='Starting flow (velocity and pressure) of the selected domains for transient flow.',
-                description='Initial values of transient flow: the lattice populations of the selected fluid cells '
-                            'start at the equilibrium of (u_x, u_y, pressure) at the cell centres instead of rest '
-                            '(several features: a later one wins its cells; solid cells stay at rest). The velocity '
-                            'should be divergence free (an incompressible flow): a divergent start relaxes through '
-                            'sound waves. A stationary flow only starts its first steady march from it.',
+                description='Transient flow: the populations of the selected fluid cells start at the equilibrium of '
+                            '(u_x, u_y, pressure) instead of rest (a later feature wins its cells; solid cells stay at '
+                            'rest). Keep the velocity divergence free: a divergent start relaxes through sound waves. '
+                            'Stationary flow only starts its first steady march from it.',
                 apply=_apply_initial_velocity, memory_estimate=_initial_velocity_memory),
     FeatureType('flow_probe', 'Flow probe', 'probe', 'point', object_kinds=('point',), max_entities=1,
                 result_kind='timeseries',
                 params=(Param('component', 'choice', 'u_abs', label='Quantity', choices=tuple(PROBE_QUANTITIES),
                               choice_labels=(('u_abs', 'Flow speed'), ('u_x', 'Velocity x'), ('u_y', 'Velocity y'),
                                              ('pressure', 'Pressure')),
-                              help='Field sampled: u_abs (flow speed |u|), u_x, u_y [m/s] or pressure [Pa].',
+                              help='u_abs = |u|, u_x, u_y [m/s] or pressure [Pa].',
                               tip='Which flow quantity is recorded.'),),
                 summary='Records the flow speed, a velocity component or the pressure at a point.',
-                description='Samples the chosen quantity of the cell containing the point: stationary flow once per '
-                            'steady solve and at every stationary iteration (t = 0); transient flow after every '
-                            'runner step, at its end time.',
+                description='The cell containing the point: stationary flow once per steady solve and every '
+                            'stationary iteration (t = 0); transient flow after every runner step, at its end time.',
                 apply=_apply_flow_probe, result=_flow_probe_result, validate=validate_points_inside),
 )
 
@@ -717,36 +699,32 @@ LAMINAR_FLOW = PhysicsType(
     group='fluid',
     summary='Slow, smooth flow of liquids and gases through channels and around obstacles, driven by inlets, '
             'pressures or forces. Materials without viscosity are solid walls.',
-    description='2D incompressible laminar flow per unit z length by a D2Q9 lattice-Boltzmann method (TRT collision '
-                'with the magic parameter 3/16, He-Luo incompressible equilibrium, Guo forcing) on the physical '
-                'window, which needs a uniform mesh of square cells (no PML; outputs edge-extended into an EM PML '
-                'ring). Cells with viscosity > 0 are fluid (they also need rho), the others solid no-slip walls '
-                '(halfway bounce-back on their faces; with solver_defaults.conformal_boundaries interpolated '
-                'Bouzidi bounce-back at the drawn wall position along each link); unreferenced outer faces are '
-                'fixed no-slip walls, symmetry faces free-slip model mirror planes (a drawn half). On a mirror plane '
-                'of another physics (EM bc symmetric / antisymmetric, a heat symmetry face) the flow face must be '
-                'free slip (validation warns otherwise; a periodic pair there is an error). Steady '
-                'flow is exact for Poiseuille channels and second-order accurate otherwise, valid at low Mach '
-                'number (lattice Mach < 0.2) and laminar Reynolds numbers; a steady solve needs ~ L^2 lattice steps '
-                '(L = longest window axis in cells), each a single GPU kernel (on the cpu backend its numba twin '
-                'when numba is installed, else the far slower numpy twin: small models; half_storage stays GPU '
-                'only). Outputs: the flow velocity u_x, u_y and its magnitude u_abs [m/s] (u is the velocity here, '
-                'the displacement in solid_mechanics), gauge pressure [Pa], vorticity [1/s]. Couple it to heat with '
-                'fluid_heat_convection; buoyancy is a field_transfer of heat T into body_force_y. The instance is '
-                'usually named fluid.',
+    description='2D incompressible laminar flow per unit z length: D2Q9 lattice Boltzmann (TRT collision with the magic '
+                'parameter 3/16, He-Luo incompressible equilibrium, Guo forcing) on the window, which needs a uniform '
+                'mesh of square cells (no PML; outputs edge-extended into an EM PML ring). Solid cells (no viscosity) '
+                'are no-slip halfway bounce-back walls (solver_defaults.conformal_boundaries: interpolated Bouzidi '
+                'bounce-back at the drawn wall position); unreferenced outer faces are fixed no-slip walls, symmetry '
+                'faces free-slip model mirror planes (a drawn half). On a mirror plane of another physics (EM bc '
+                'symmetric / antisymmetric, a heat symmetry face) the flow face must be free slip (validation warns; '
+                'a periodic pair there is an error). Steady flow is exact for Poiseuille channels, second-order '
+                'otherwise; valid at lattice Mach < 0.2 and laminar Reynolds numbers. A steady solve needs ~ L^2 '
+                'lattice steps (L = longest window axis in cells; a 500-cell axis ~1e6), each one GPU kernel (cpu '
+                'backend: the numba twin when installed, else the far slower numpy twin; half_storage GPU only). '
+                'pressure is gauge pressure. Heat: fluid_heat_convection; buoyancy is a field_transfer of heat T into '
+                'body_force_y.',
     settings=_SETTINGS,
     features=_FEATURES,
     material_properties=_MATERIAL_PROPERTIES,
     material_schema=dict(FLUID_SCHEMA),
     state_fields=_STATE_FIELDS,
     output_fields=_FIELD_INFOS,
-    source_slots={'body_force_x': ('N/m^3', 'Coupled body force density along x (e.g. buoyancy), added to the '
-                                            'body_force features; each transfer replaces it.'),
-                  'body_force_y': ('N/m^3', 'Coupled body force density along y, e.g. Boussinesq buoyancy +rho g beta (T '
-                                       '- T0) from heat T by field_transfer (g = 9.81 the magnitude, gravity along '
-                                       '-y: warm fluid is pushed along +y); each transfer replaces it.')},
-    supported_studies=('stationary', 'time_dependent'),
-    default_study={'type': 'stationary'},
+    source_slots={'body_force_x': ('N/m^3', 'Coupled force density along x (e.g. buoyancy), added to the body_force '
+                                            'features; replaced by each transfer.'),
+                  'body_force_y': ('N/m^3', 'Coupled force density along y, e.g. Boussinesq buoyancy +rho g beta (T - '
+                                            'T0) from heat T by field_transfer (g = 9.81, gravity along -y: warm '
+                                            'fluid is pushed along +y); replaced by each transfer.')},
+    supported_studies=(STATIONARY_STUDY, TIME_DEPENDENT_STUDY),
+    default_study={'type': STATIONARY_STUDY},
     create=_create_flow,
     steps_in_time=_steps_in_time,
     validate=_validate_flow,

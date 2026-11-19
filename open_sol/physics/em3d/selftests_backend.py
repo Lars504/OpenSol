@@ -1,4 +1,4 @@
-"""CPU vs GPU backend cases of em_fdtd_3d (solver_plan S6, core.kernels twins): existing analytic 3D FDTD cases run on
+"""CPU vs GPU backend cases of em_fdtd_3d (core.kernels twins): existing analytic 3D FDTD cases run on
 solver_defaults.backend 'cpu' (numpy twins of every engine, CPML, source, TFSF, monitor, mode-port and pole kernel;
 numba twins of the single-precision field kernels when installed) and 'gpu' through physics/em
 selftests_backend.backend_parity_case, plus the CPU case em3d_kernels_numba (numba vs numpy field kernel twins);

@@ -15,10 +15,10 @@ from dataclasses import replace
 
 import numpy as np
 
+from .constants import AXISYMMETRIC, AZIMUTHAL_ORDER_SETTING, FACES_3D, GEOMETRY_SETTING
 from .harmonic_probe import phasor_series
 
 MIRROR_SIGNS = {'symmetric': 1, 'antisymmetric': -1}
-MIRROR_FACES = ('x_lo', 'x_hi', 'y_lo', 'y_hi', 'z_lo', 'z_hi')
 _VECTOR_KINDS = tuple(f'{vector}_{axis}' for vector in ('polar', 'axial') for axis in 'xyz')
 _PHASE_PREFIX = 'phase_'
 # FieldInfo.parity values: 'phase_<kind>' = the argument [rad] of a phasor of that kind (an odd image adds pi)
@@ -56,8 +56,6 @@ EVEN_ONLY_BC_TYPES = frozenset({'elastic_waves'})
 AXIS_UNFOLD_TYPES = {'heat': 1, 'electric_currents': 1, 'electrostatics': 1, 'drift_diffusion': 1,
                      'solid_mechanics': 1, 'elastic_waves': 1, 'pressure_acoustics': 1,
                      'magnetostatics': -1, 'magnetic_fields_ac': -1}
-_AXISYMMETRIC_GEOMETRY = ('geometry', 'axisymmetric')   # definition_helpers GEOMETRY_SETTING / AXISYMMETRIC
-_AZIMUTHAL_ORDER_SETTING = 'azimuthal_order'            # definition_helpers AZIMUTHAL_ORDER_SETTING
 # Feature params every parity-sector copy sets ({type: {feature type: {param: value}}}): a membrane port then drives
 # an incident mode of a guide ending on a mirror plane in the sector of its parity only, at twice its amplitude
 SECTOR_FEATURE_PARAMS = {'membrane': {'port': {'sector_drive': True}}}
@@ -67,7 +65,7 @@ def own_mirror_faces(physics_spec) -> dict:
     """{face: sign} of the faces one PhysicsSpec sets to 'symmetric' (+1) / 'antisymmetric' (-1) itself."""
     settings = physics_spec.settings if isinstance(physics_spec.settings, dict) else {}
     faces = {}
-    for face in MIRROR_FACES:
+    for face in FACES_3D:
         value = settings.get(f'bc_{face}')
         sign = MIRROR_SIGNS.get(value) if isinstance(value, str) else None
         if sign is not None:
@@ -96,7 +94,7 @@ def feature_mirror_faces(spec, physics_spec) -> dict:
     faces = {}
     for _, sign, entities in _enabled_feature_entities(spec, physics_spec, MIRROR_FEATURES.get(physics_spec.type, {})):
         for name in entities or ():
-            if name in MIRROR_FACES:
+            if name in FACES_3D:
                 faces[name] = sign
     return faces
 
@@ -138,10 +136,9 @@ def unfold_faces(spec, physics) -> dict:
     if physics_spec is None or physics_spec.type not in AXIS_UNFOLD_TYPES:
         return faces
     settings = physics_spec.settings if isinstance(physics_spec.settings, dict) else {}
-    key, axisymmetric = _AXISYMMETRIC_GEOMETRY
-    if settings.get(key) != axisymmetric:
+    if settings.get(GEOMETRY_SETTING) != AXISYMMETRIC:
         return faces
-    order = settings.get(_AZIMUTHAL_ORDER_SETTING, 0)
+    order = settings.get(AZIMUTHAL_ORDER_SETTING, 0)
     if isinstance(order, bool) or order not in (0, 0.0, '0'):
         raise ValueError(f"'{physics}' has azimuthal_order {order!r}: its fields are cos(m phi) amplitudes, which "
                          'image as (-1)^m across the rotation axis, so the axis is unfolded at azimuthal_order 0 only')

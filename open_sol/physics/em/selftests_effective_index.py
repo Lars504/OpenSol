@@ -6,10 +6,10 @@ import math
 import numpy as np
 
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import analytic_slab_index, float_list, single_value, vertical_line, worst_item
+from ...model.selftest_helpers import (analytic_slab_index, float_list, normalized_result, single_value, vertical_line,
+                                       worst_item)
 from ...model.spec import (DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec, PhysicsSpec,
                            StudySpec)
-from .selftests import normalized_result
 
 _PHYSICS_NAME = 'em'
 _WAVELENGTH = 1.55e-6              # m

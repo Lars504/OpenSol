@@ -1,4 +1,4 @@
-"""Finite elements on triangle meshes (solver_plan S7.5, mesh_implementation_plan section 2): mesh data, the own
+"""Finite elements on triangle meshes: mesh data, the own
 conforming Delaunay mesher, quality, optional gmsh file IO, elements / quadrature / dofs / assembly, sampling; the
 tetrahedron stack (mesh3d, assembly3d, diffusion3d, elasticity3d, ...) is imported by module. Host numpy at module
 level (scipy inside functions); it imports nothing from model / physics (model.triangle_meshing feeds it the geometry).

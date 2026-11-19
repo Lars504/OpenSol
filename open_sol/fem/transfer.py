@@ -1,4 +1,4 @@
-"""Transfers between tensor grids and triangle meshes (mesh plan 2.9 / 1.4), the GridTransfer interface
+"""Transfers between tensor grids and triangle meshes, the GridTransfer interface
 (apply(array, out=None)) over one host CSR. Kinds: 'interpolate' (fields: bilinear from window cell centres, FE
 evaluation; clamped into the source window = edge extension into padding / the PML ring) and 'conservative'
 (densities: the window integral is preserved exactly; tensor padding and ring elements get 0). Host numpy (scipy
@@ -7,9 +7,9 @@ import math
 
 import numpy as np
 
-from .assembly import CsrAccumulator, _weights, element_areas
+from .assembly import CsrAccumulator, _to_csr, _weights, element_areas
 from .elements import element_geometry, lagrange_values
-from .mesher import MERGE_TOLERANCE
+from .mesher import clamp_into_window
 from .quadrature import subdivided_rule
 from .sampling import locator
 
@@ -115,14 +115,6 @@ def _axis_weights(centres, values):
     return lower, lower + 1, 1.0 - fraction, fraction
 
 
-def _csr(rows, cols, values, shape):
-    from scipy.sparse import coo_matrix
-
-    if not len(rows):
-        return coo_matrix(shape).tocsr()
-    return coo_matrix((np.concatenate(values), (np.concatenate(rows), np.concatenate(cols))), shape=shape).tocsr()
-
-
 # ---- triangle helpers ----
 def _require(kind, target=None):
     if kind not in TRANSFER_KINDS:
@@ -165,11 +157,7 @@ def _samples(dofs, positions, degree, subdivisions, axisymmetric):
 def _basis_rows(dofs, points):
     """(point indices, dofs (k, n), basis values (k, n)) of points [m] inside the dof map's elements (clamped into the
     mesh window first)."""
-    x0, y0, x1, y1 = dofs.mesh.window
-    inset = MERGE_TOLERANCE * max(x1 - x0, y1 - y0)
-    clamped = np.column_stack([np.clip(points[:, 0], x0 + inset, x1 - inset),
-                               np.clip(points[:, 1], y0 + inset, y1 - inset)])
-    location = locator(dofs.mesh, dofs.geometry_order).locate(clamped)
+    location = locator(dofs.mesh, dofs.geometry_order).locate(clamp_into_window(points, dofs.mesh.window))
     position = np.where(location.found, dofs.element_position[np.maximum(location.element, 0)], -1)
     inside = np.flatnonzero(position >= 0)
     values = lagrange_values(dofs.order, location.reference[inside])
@@ -181,7 +169,7 @@ def _evaluation_matrix(dofs, points, n_rows, row_of_point=None):
     inside, element_dofs, values = _basis_rows(dofs, points)
     rows = inside if row_of_point is None else row_of_point[inside]
     rows = np.broadcast_to(rows[:, None], element_dofs.shape).ravel()
-    return _csr([rows], [element_dofs.ravel()], [values.ravel()], (n_rows, dofs.n_dofs))
+    return _to_csr([rows], [element_dofs.ravel()], [values.ravel()], (n_rows, dofs.n_dofs))
 
 
 def _lagrange_check(dofs, role):
@@ -206,7 +194,7 @@ def tensor_to_triangles(kind, x_edges, y_edges, window, target, axisymmetric=Fal
                                                                       (lower_x, upper_y), (upper_x, upper_y))])
         values = np.concatenate([weight_lx * weight_ly, weight_ux * weight_ly, weight_lx * weight_uy,
                                  weight_ux * weight_uy])
-        matrix = _csr([rows], [cols], [values], (target.n_dofs, grid.nx * grid.ny))
+        matrix = _to_csr([rows], [cols], [values], (target.n_dofs, grid.nx * grid.ny))
         return FEMTransfer(kind, matrix, grid.shape, (target.n_dofs,))
     positions = _window_positions(target)
     n_window = grid.n_window[0] * grid.n_window[1]
@@ -218,14 +206,14 @@ def tensor_to_triangles(kind, x_edges, y_edges, window, target, axisymmetric=Fal
         rows.append(np.repeat(target.element_dofs[part, 0], weights.shape[1]))
         cols.append(ix * grid.n_window[1] + iy)
         values.append(weights.ravel())
-    overlap = _csr(rows, cols, values, (target.n_dofs, n_window))
+    overlap = _to_csr(rows, cols, values, (target.n_dofs, n_window))
     if _covers_window(target):
         overlap = _normalise_columns(overlap, target, grid, axisymmetric)
     areas = np.zeros(target.n_dofs)
     areas[target.element_dofs[:, 0]] = element_areas(target, axisymmetric)
     coo = overlap.tocoo()
     full_cols = grid.full_index(coo.col // grid.n_window[1], coo.col % grid.n_window[1])
-    matrix = _csr([coo.row], [full_cols], [coo.data / areas[coo.row]], (target.n_dofs, grid.nx * grid.ny))
+    matrix = _to_csr([coo.row], [full_cols], [coo.data / areas[coo.row]], (target.n_dofs, grid.nx * grid.ny))
     return FEMTransfer(kind, matrix, grid.shape, (target.n_dofs,))
 
 
@@ -245,7 +233,7 @@ def _normalise_columns(overlap, target, grid, axisymmetric):
         element = locator(target.mesh, target.geometry_order).locate(centres).element
         position = np.where(element >= 0, target.element_position[np.maximum(element, 0)], -1)
         hit = position >= 0
-        extra = _csr([target.element_dofs[position[hit], 0]], [empty[hit]], [measures[empty[hit]]], overlap.shape)
+        extra = _to_csr([target.element_dofs[position[hit], 0]], [empty[hit]], [measures[empty[hit]]], overlap.shape)
         overlap = (overlap + extra).tocsr()
     return overlap
 

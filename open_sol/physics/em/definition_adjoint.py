@@ -12,11 +12,9 @@ from .memory_estimates import adjoint_objective_memory_estimate
 _MODE_QUANTITIES = tuple(quantity for quantity in OBJECTIVE_QUANTITIES if quantity != 'flux')
 _PARAMS = (
     Param('quantity', 'choice', 'flux', label='Quantity', choices=OBJECTIVE_QUANTITIES,
-          help='Monitor quantity of this objective term, in W/m: flux = the time-averaged Poynting power through the '
-               'line (as flux_monitor, > 0 toward +x / +y); mode_power_positive / mode_power_negative = |a|^2 of '
-               'mode mode_number travelling toward +normal / -normal (as mode_monitor power_positive / '
-               'power_negative). The objective J is the sum of weight * quantity over every enabled adjoint_objective '
-               'of the physics.',
+          help='W/m: flux = time-averaged Poynting power through the line (as flux_monitor, > 0 toward +x / +y); '
+               'mode_power_positive / _negative = |a|^2 of mode mode_number toward +normal / -normal (as mode_monitor '
+               'power_positive / _negative).',
           tip='What this objective measures on its line.\n\n'
               '- Power through the line: all light crossing it, positive toward +x or +y.\n'
               '- Mode power forward or backward: the power of one guided mode travelling toward +x / +y or the other '
@@ -28,28 +26,23 @@ _PARAMS = (
                               tip=MODE_NUMBER_TIP_START.format(verb='measure')),
             visible_if=(('quantity', _MODE_QUANTITIES),)),
     Param('weight', 'float', 1.0, label='Weight', unit='1',
-          help='Factor of this term in J = sum of weight * quantity: 1 to maximise the quantity, -1 to minimise it '
-               '(the gradient points to increasing J), 0 to record the quantity without contributing.',
+          help='Factor in J = sum of weight * quantity over the enabled objectives of the physics: 1 maximises the '
+               'quantity, -1 minimises it, 0 only records it.',
           tip='How much this measurement counts in the total objective: 1 to increase it, -1 to decrease it, 0 to only '
               'record it.'),
 )
 _DESCRIPTION = (
     'Objective term for the adjoint sensitivity: a flux_monitor or mode_monitor quantity on an axis-aligned line '
-    'times weight. Every solve records the quantity; the output field eps_sensitivity is dJ/d eps_r per unit area '
-    '[W/m^3] of J = sum of weight * quantity over the enabled objectives, from one extra sparse solve with the '
-    'transposed operator on the forward factorisation (no new factorisation with scipy_splu), computed when the field '
-    'is read (snapshot, derived value). A small permittivity change d eps in a region R changes J by the integral of '
-    'eps_sensitivity * d eps over R; for em_fdfd_hz it is the sum of the eps_xx and eps_yy terms (an isotropic '
-    'change, an off-diagonal eps_xy held fixed), and its output field eps_xy_sensitivity is dJ/d eps_xy per unit '
-    'area from the same solve (zero where the solve drops eps_xy: PEC cells, the outer two rows of a wall or mirror '
-    'face). For em_fdfd_hz the face fields an objective reads and the right-hand side of dipole and line source face '
-    'currents are differentiated with the face permittivity; line source calibrations, port modes and a mode '
-    'monitor\'s mode are held fixed, so the gradient is exact only in cells off every line source, port and mode '
-    'monitor line and off the cells beyond their hi faces (they depend on the permittivity there too); sigma_e, '
-    'poles and mu_r are not differentiated. An optimization study maximises J, summed over every physics, by varying '
-    'the densities of the design_region features. Result \'xy\' versus vacuum wavelength: series value (the '
-    'quantity, W/m) and weighted (weight * value, W/m); extras frequency, wavelength, quantity and weight. Keep the line off a TFSF '
-    f'outline and a mode_source interface face, as for the monitors. The line covers {SPAN_CELLS}.')
+    'times weight. Output field eps_sensitivity = dJ/d eps_r per unit area [W/m^3] from one extra transposed solve on '
+    'the forward factorisation, computed when read (snapshot, derived value): d eps over a region R changes J by the '
+    'integral of eps_sensitivity d eps over R. em_fdfd_hz: the sum of the eps_xx and eps_yy terms (eps_xy fixed), plus '
+    'eps_xy_sensitivity = dJ/d eps_xy per unit area (0 where the solve drops eps_xy: PEC cells, the outer two rows of '
+    'a wall or mirror face). Line source calibrations and port / monitor modes are held fixed, so the gradient is '
+    'exact only off every line source, port and mode monitor line and the cells past their hi faces; sigma_e, poles '
+    'and mu_r are not differentiated. An optimization study maximises J, summed over every physics, over the '
+    "design_region densities. Result 'xy' versus vacuum wavelength: series value (the quantity, W/m) and weighted "
+    '(weight * value); extras frequency, wavelength, quantity, weight. Keep the line off a TFSF outline and a '
+    f'mode_source interface face. The line covers {SPAN_CELLS}.')
 _SUMMARY = ('Marks a power measurement on a line as a goal, so the solver also maps where a small change of the '
             'material would raise or lower it (the objective sensitivity field). Use it to guide device design.')
 

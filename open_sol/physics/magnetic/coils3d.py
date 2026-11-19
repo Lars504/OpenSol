@@ -1,4 +1,4 @@
-"""Coil drive of magnetostatics_3d (magnetostatics_3d_plan decision 5, section 4.2): T per ampere along the coil axis
+"""Coil drive of magnetostatics_3d: T per ampere along the coil axis
 from the winding mask, per slice normal to the axis 1 in the enclosed hole, a distance ramp across the winding and 0
 outside, over the winding's axial length; on voxel windows (coil_drive_per_ampere) or as Nedelec-1 edge integrals on a
 tetrahedron mesh (coil_edge_drive_per_ampere, the ramp from a winding lattice). Host numpy / scipy."""

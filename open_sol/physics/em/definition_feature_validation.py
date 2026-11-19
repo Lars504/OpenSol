@@ -11,6 +11,7 @@ from ...model.definition_helpers import validate_points_inside, wavelength_range
 from ...model.expressions import evaluate_scalar
 from ...model.geometry import line_orientation, preview_pixel_centers
 from ...model.schema import PERMITTIVITY_PROPERTY_NAMES, Issue, feature_path
+from .boundaries import PINNED_FACE_TYPES, WALL_SIGNS
 from .definition_common import _effective_material, _window_axes, raw_settings
 from .memory_estimates import _DFT_SPECTRA
 from .placement import TFSF_POLARIZATION_AXES
@@ -564,11 +565,12 @@ def _source_line_issues(vctx, physics_spec, feature_spec, values, polarization):
 # face k = hi face of cell k, n = cells along the axis): H_z pec / antisymmetric zero the tangential E there
 # (apply_exy_walls); E_z pmc / symmetric copy the E_z row across it, so its curl vanishes and the tangential H stays
 # frozen (apply_h_walls, re-applied after injection, also zeroes the pmc faces 0 / n - 2). The FDFD pins the same cells
-# and zeroes the same faces' weights (solvers/fdfd_2d._WALL_SIGNS). Runtime twins (scripts): mode_ports._PINNED_*_WALLS.
-# A mirror face's outermost cell is the ghost padded outside the window, so only its plane face can hold a feature.
-_PINNED_CELL_BCS = {side: ('pec', 'pmc', 'symmetric', 'antisymmetric') for side in ('lo', 'hi')}
-_PINNED_FACE_BCS = {'ez': {side: ('pmc', 'symmetric') for side in ('lo', 'hi')},
-                    'hz': {side: ('pec', 'antisymmetric') for side in ('lo', 'hi')}}
+# and zeroes the same faces' weights. Both sets come from boundaries.WALL_SIGNS / PINNED_FACE_TYPES (also read by
+# mode_ports for scripts). A mirror face's outermost cell is the ghost padded outside the window, so only its plane
+# face can hold a feature.
+_PINNED_CELL_BCS = frozenset(bc.value for bc in WALL_SIGNS['ez'])
+_PINNED_FACE_BCS = {polarization: frozenset(bc.value for bc in types)
+                    for polarization, types in PINNED_FACE_TYPES.items()}
 
 
 def _pinned_positions(settings, axis, n_cells, polarization):
@@ -577,9 +579,9 @@ def _pinned_positions(settings, axis, n_cells, polarization):
     pinned_cells, pinned_faces = {}, {}
     for side, outer_cell, wall_face in (('lo', 0, 0), ('hi', n_cells - 1, n_cells - 2)):
         bc_type = settings.get(f'bc_{axis}_{side}', 'cpml')
-        if bc_type in _PINNED_CELL_BCS[side]:
+        if bc_type in _PINNED_CELL_BCS:
             pinned_cells[outer_cell] = side
-        if bc_type in _PINNED_FACE_BCS[polarization][side]:
+        if bc_type in _PINNED_FACE_BCS[polarization]:
             pinned_faces[wall_face] = side
     return pinned_cells, pinned_faces
 
@@ -1008,7 +1010,7 @@ def validate_far_field(vctx, physics_spec, feature_spec, values, time_domain=Tru
                                                  f"the structure in vacuum"))
     settings = raw_settings(physics_spec)
     for axis in 'xy':
-        if all(settings.get(f'bc_{axis}_{side}') in ('symmetric', 'antisymmetric') for side in ('lo', 'hi')):
+        if all(settings.get(f'bc_{axis}_{side}') in MIRROR_SIGNS for side in ('lo', 'hi')):
             issues.append(Issue('error', path, f'mirror faces on both {axis} sides make an infinite array of images, '
                                                'which the far field cannot unfold: keep a mirror on one side at most'))
     if time_domain:

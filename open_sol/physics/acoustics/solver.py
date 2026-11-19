@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 import numpy as np
-from ...core.backend import cp, host_copy, to_host, write_host_into
+from ...core.backend import check_backend_array, cp, host_copy, to_host, write_host_into
 
 from ...core.constants import DTYPE, EPS0, FACES
 from ...core.solver_base import PhysicsSolver
@@ -465,11 +465,8 @@ class AcousticPhysics(PhysicsSolver):
         if array is not None and self.precision != 'single':
             raise ValueError(f"half_storage elastic_waves takes no coupled source ('{name}'): the fp16 storage scale is "
                              'set from the features at the build, so a coupled amplitude could overflow')
-        if array is not None and not (isinstance(array, self.xp.ndarray) and array.dtype == DTYPE
-                                      and array.shape == (self.nx, self.ny)):
-            raise TypeError(f"inject_source('{name}', ...) needs a {self.xp.__name__} float32 array of shape "
-                            f"{(self.nx, self.ny)}, got {type(array).__name__} {getattr(array, 'dtype', '')} "
-                            f"{getattr(array, 'shape', '')}")
+        if array is not None:
+            check_backend_array(array, (self.nx, self.ny), DTYPE, f"inject_source('{name}', ...) array", xp=self.xp)
         if name == HEATING_SLOT:
             self._heating = array
         elif self.piezoelectric and array is not None:
@@ -682,7 +679,8 @@ class AcousticPhysics(PhysicsSolver):
 
     def enable_bound_charge(self, permittivity_xx, permittivity_yy, permittivity_xy) -> None:
         """Two-way piezo: allocate the bound-charge buffers and re-derive dt from the stiffened c^D = c^E + e^T eps^-1 e
-        (relative eps_dc arrays of the electrostatics, full grid, kept by reference)."""
+        (relative eps_dc arrays of the electrostatics, full grid, kept by reference: dt is not re-derived when they
+        change at run time)."""
         if not self.piezoelectric:
             raise ValueError("elastic_waves has no piezo_e* arrays: the two-way piezoelectric coupling needs a "
                              "piezoelectric material")

@@ -1,4 +1,4 @@
-"""CPU vs GPU backend case of em_fdfd_nonlinear (solver_plan S8 E): undepleted SHG strips (E_z, and the H_z pump with
+"""CPU vs GPU backend case of em_fdfd_nonlinear: undepleted SHG strips (E_z, and the H_z pump with
 the C collocation), pump-depleted Kerr SPM (picard: lagged operator term + Anderson; newton: tangents + real GMRES), a
 surface chi2 dipole layer, the three 2D-material line sheets, the cascade / pump-depleted adjoint gradients and the SHG
 optimisation run on solver_defaults.backend 'cpu' against 'gpu'; no physics imports. Without a usable GPU api.selftest

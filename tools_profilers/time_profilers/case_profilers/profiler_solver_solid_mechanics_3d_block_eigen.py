@@ -9,9 +9,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from profiler_harness import case_specs, main  # noqa: E402
+from profiler_harness import case_specs, main, refined  # noqa: E402
 from profiler_solver_solid_mechanics_3d_tensor import (  # noqa: E402
-    BLOCK_EIGEN_LEVELS_CASE, MODES_CASE, MODES_REFINEMENT, PARTS, _production, _refined)
+    BLOCK_EIGEN_LEVELS_CASE, MODES_CASE, MODES_REFINEMENT, PARTS, _production)
 
 LEVELS_REFINEMENT = 6     # 54 x 30 x 24 cells, ~1.3e5 dofs: four multigrid levels (27 x 15 x 12, 14 x 8 x 6, 7 x 4 x 3)
 BLOCK_EIGEN_NODE = 'block_eigen_modes'   # = selftests_eigenfrequency._BLOCK_EIGEN_NODE (the levels case's node)
@@ -30,7 +30,7 @@ def _with_block_eigen(spec, **settings):
 def _specs():
     """{run: ModelSpec}: the refined roller boxes, each with its own block_eigen node, linear on production settings."""
     box = case_specs(MODES_CASE)['lowest']
-    fine, levels = _refined(box, MODES_REFINEMENT), _refined(box, LEVELS_REFINEMENT)
+    fine, levels = refined(box, MODES_REFINEMENT), refined(box, LEVELS_REFINEMENT)
     return {'modes_fine_double': _with_block_eigen(_production(fine), precision='double'),
             'modes_fine_jacobi': _with_block_eigen(_production(fine), preconditioner='jacobi'),
             'modes_levels': _with_block_eigen(_production(levels)),

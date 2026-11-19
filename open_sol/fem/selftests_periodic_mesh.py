@@ -1,4 +1,4 @@
-"""Self-tests of periodic / Bloch triangle meshes (new_modules_plan G3; CPU, specs() empty, check({}) meshes directly):
+"""Self-tests of periodic / Bloch triangle meshes (CPU, specs() empty, check({}) meshes directly):
 matching opposite window sides (built-in mesher, mirror + periodic, gmsh when installed), P1 / P2 periodic dof
 partners and Bloch masters, and the P2 Bloch Laplacian band of a square cell vs |k + G|^2. Written, not run:
 tolerances are first estimates."""
@@ -199,7 +199,7 @@ PERIODIC_MESH_SELFTEST_CASES = (
         name='fem_periodic_triangle_mesh',
         label='Periodic triangle mesh: matching sides, partners, Bloch masters',
         description=(
-            'CPU checks of TriangleSizing.periodic_axes (new_modules_plan G3: fem.mesher.periodic_pslg + paired '
+            'CPU checks of TriangleSizing.periodic_axes (fem.mesher.periodic_pslg + paired '
             'window-side splits, gmsh Transfinite side lines): a 1 um square cell, h 0.1 um, an off-centre disc '
             'refined to h / 3, a bar on x_lo only and a point on y_hi only (the sides start unmatched). Unperiodic '
             'mesh: periodic_node_partners refuses it. Periodic x + y, x only, and mirror_x + periodic x + y: node and '

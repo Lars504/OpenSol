@@ -8,14 +8,15 @@ from ...core.domain import containing_cell
 from ...core.memory_estimate import COMPLEX64_BYTES, COMPLEX128_BYTES, FLOAT32_BYTES, BOOL_BYTES, MemoryEstimate
 from ...core.kernels import numba_available
 from ...core.time_estimate import Elementwise, PythonCalls, explicit_step_estimate
-from ...model.definition_helpers import (HALF_STORAGE_STEPPER_ROLE, resolved_stepper_precision, validate_points_inside,
-                                         wavelength_range_issues)
+from ...model.definition_helpers import (HALF_STORAGE_STEPPER_ROLE, resolved_stepper_precision, selected_material_data,
+                                         validate_points_inside, wavelength_range_issues)
 from ...solvers.explicit_kernels import stepper_precision
 from ...model.definition_resonance import resonance_monitor_feature
 from ...model.expressions import ExpressionError, referenced_names
 from ...model.geometry import expand_entities
 from ...core.renderer import FieldInfo
-from ...model.schema import DomainRequirements, FeatureType, Issue, Param, PhysicsType, array_owner, feature_path
+from ...model.schema import (FREQUENCY_DOMAIN_STUDY, DomainRequirements, FeatureType, Issue, Param, PhysicsType,
+                             array_owner, feature_path)
 from ..em.definition_common import (EM_FAMILY, FLUX_PARAMS, POINT_SOURCE_SIGN, _monitor_wavelengths,
                                     _q_accum_referenced, background_permittivity, boundary_settings_params,
                                     em_material_params, make_pole,
@@ -57,21 +58,18 @@ _NUMPY_PASSES_PER_LAUNCH = 4           # the cpu 'fused' profile call: 4 numpy p
 _NUMPY_BYTES_PER_LAUNCH_CELL = 20
 
 # ---- settings ----
-_BC_HELP = ('Boundary of this face of the 3D box: cpml absorbs outgoing waves in pml_cells extra cells added outside '
-            'the domain (the z faces too); pec = tangential E 0 at the centres of the outermost domain cell layer '
-            '(that layer becomes perfect conductor); pmc = tangential H 0 on the outer face of the outermost cell '
-            '(the grid edge: pec and pmc walls lie half a cell apart, so a cavity differs in width by one cell '
-            'between them); periodic must be set on both faces of the axis (with the Bloch phase bloch_k<axis>, 0 = '
-            'plain periodic). '
-            'Mirror planes (any face, E parity as the 2D types): symmetric = E mirror-even (tangential H and normal E '
-            '0 on the plane, a PMC mirror), antisymmetric = E mirror-odd (tangential E odd: a PEC mirror), on the '
-            'domain edge itself: one ghost cell is added outside it (its material copied from the edge cell; on a '
-            'graded z axis its width follows the PML grading, so a z mirror wants uniform z cells near it), so draw '
-            'the structure about the edge; heat in the model has its face on the same plane. Each mirror halves '
-            'memory and time. Flux planes and boxes reaching a mirror face count their image (x 2 per face, result '
-            'extra mirror_factor), mode ports solve the whole mirrored mode (powers of the full structure), the far '
-            'field adds the images of its box currents (the unfolded pattern; mirrors on both faces of one axis are '
-            'then an error); a dipole half a cell from the plane is mirrored with it.')
+_BC_HELP = ('cpml absorbs outgoing waves in pml_cells extra cells outside the domain (z faces too); pec = tangential E '
+            '0 at the centres of the outermost cell layer (it becomes conductor); pmc = tangential H 0 on the outer '
+            'face of the outermost cell (pec and pmc walls lie half a cell apart: a cavity differs by one cell in '
+            'width); periodic on both faces of an axis, Bloch phase bloch_k<axis>. Mirror planes on the domain edge '
+            'itself (any face): symmetric = E mirror-even (PMC plane: tangential H and normal E 0), antisymmetric = E '
+            'mirror-odd (PEC plane); a ghost cell outside (edge-cell material; on a graded z axis its width follows '
+            'the PML grading: keep z cells uniform near a z mirror) holds the image, so draw the structure about the '
+            'edge; the other physics of the model have their faces on the same plane. Each mirror halves memory and '
+            'time. Results count the unfolded structure: flux planes / boxes reaching a mirror face are doubled per '
+            'such face (extra mirror_factor), mode ports solve the whole mirrored mode (full-structure powers), the '
+            'far field adds the box-current images (at most one mirror per axis); a dipole half a cell from the plane '
+            'is mirrored with it.')
 _BC_TIP = ('What happens to waves at this face of the box.\n\n'
            '- Absorbing layer: waves leave without reflection, as into open space.\n'
            '- Perfect metal wall: a perfect mirror.\n'
@@ -97,27 +95,25 @@ def _settings():
                     max=1.0,
                     tip='Time step as a fraction of the largest stable time step.\n\n'
                         'Keep 0.99. Lower it only if the build reports an instability.',
-                    help='Time step as a fraction of the 3D CFL limit: dt = factor / (C0 sqrt(1/dx^2 + 1/dy^2 + '
-                         '1/dz^2)) of the finest cells; 0.99 default. Dispersive poles need eps_r mu_r >= factor^2 + '
-                         'mu_r (omega_p dt)^2 / 4 per Drude pole (about delta_eps (omega_0 dt)^2 / 4 per Lorentz '
-                         'pole); the build checks every material (with the finest widths) and names the largest '
-                         'stable factor.')
+                    help='Fraction of the 3D CFL limit: dt = factor / (C0 sqrt(1/dx^2 + 1/dy^2 + 1/dz^2)) of the '
+                         'finest cells. Dispersive poles need eps_r mu_r >= factor^2 + mu_r (omega_p dt)^2 / 4 per '
+                         'Drude pole (about delta_eps (omega_0 dt)^2 / 4 per Lorentz pole); the build checks every '
+                         'material and names the largest stable factor.')
     return faces + pml + _BLOCH_PARAMS + (courant, _TRACK_ABSORPTION)
 
 
+# axis-free (the label and visible_if name the axis), so describe prints it once for bloch_kx / _ky / _kz
 _BLOCH_HELP = (
-    'Bloch wave vector along {axis} in rad/m (symmetry 2.8), used only when bc_{axis}_lo and bc_{axis}_hi are periodic: '
-    'the fields repeat with the phase exp(-j k{axis} L) per period L (the meshed period; exp(+j omega t), so k{axis} > 0 '
-    'for a wave travelling toward +{axis}); k{axis} and k{axis} + 2 pi / L are the same state; 0 = plain periodic. Any '
-    'k != 0 steps a second (imaginary) field set: field and CPML memory, pole states and time per step double. Dipoles '
-    'and mode sources drive the real set only (every period image repeats them with the Bloch phase: a dipole and a '
-    'resonance monitor per swept k give the bands of a photonic-crystal slab or metasurface); the TFSF plane wave is '
-    'refused (normal incidence only); mode ports solve their cross-section modes at the Bloch k of the port plane\'s '
-    'periodic transverse axes (the Bloch mode; the mode source drives it into the real set like a dipole). DFT '
-    'monitors (flux, field map, mode monitor, far field, harmonic FDTD) accumulate F_re + j F_im, the response '
-    'at +k for every positive frequency; probes, field plots, expressions and couplings read the real set only. '
-    'Absorbed power (track_absorption, q_accum, em_heat_joule) is refused. Typical: k{axis} = k0 sin(theta) of the '
-    'incidence angle in vacuum, or pi / L at the zone edge.')
+    'Bloch wave vector k along this axis, used only when both its faces are periodic: fields repeat with exp(-j k L) '
+    'per period L (the meshed period; exp(+j omega t), so k > 0 travels toward +axis); k and k + 2 pi / L are the '
+    'same state; 0 = plain periodic. k != 0 steps a second (imaginary) field set: field and CPML memory, pole states '
+    'and step time double. Dipoles and mode sources drive the real set only (period images repeat them with the '
+    'Bloch phase: a dipole plus a resonance monitor per swept k gives slab / metasurface bands); mode ports solve '
+    "their cross-section mode at the Bloch k of the port plane's periodic axes. DFT monitors (flux, field map, mode "
+    'monitor, harmonic FDTD) give the +k response at every positive frequency; probes, field plots, '
+    'expressions and couplings read the real set. Refused with k != 0: the TFSF plane wave (normal incidence only) '
+    'and absorbed power (track_absorption, q_accum, em_heat_joule). Typical k = k0 sin(theta) (vacuum incidence '
+    'angle) or pi / L (zone edge).')
 _BLOCH_TIP = ('Phase step of the wave from one period to the next along {axis}, in radians per metre, for periodic '
               'faces.\n\n'
               '0 means no phase step. Swept with a resonance finder it gives a band diagram. Any other value doubles '
@@ -193,30 +189,28 @@ def _domain_requirements(settings_values):
 
 # ---- materials ----
 _INDEX_TEXT = ('em_fdtd_3d stores materials as a uint16 index of distinct (eps_xx, eps_yy, eps_zz, sigma_e, mu_r, '
-               'sigma_m) combinations: values that vary continuously (x, y expressions, thermo-optic or other field '
-               'dependence) are re-quantised to at most 65534 levels per array (bins, member mean; the max deviation '
-               'is logged, e.g. ~1e-5 in eps over a range of 1), refreshed at every material change.')
+               'sigma_m) combinations: continuously varying values (x, y expressions, thermo-optic) are re-quantised '
+               'to at most 65534 levels per array (max deviation logged, e.g. ~1e-5 in eps over a range of 1) at '
+               'every material change.')
 _COMPONENT_TEXT = ('Setting any of eps_xx, eps_yy, eps_zz (or dndT_xx / _yy / _zz) on any material allocates the '
-                   'eps_xx and eps_yy arrays (8 B per cell; otherwise E_x and E_y read eps_r) and makes '
-                   'heat_em_thermo_optic write all three components.')
-_MATERIAL_HELPS = {
-    'eps_r': ('Real relative permittivity (>= 1), n^2 of a lossless dielectric, seen by every E component unless '
-              'eps_xx / eps_yy / eps_zz override one (it is stored in the eps_r array, which holds eps_zz). Each E '
-              'face takes the width-weighted mean of its two cells (solver_defaults.subpixel_smoothing averages '
-              'interface faces anisotropically, re-quantised into a uint16 face index). May depend on x, y, z '
-              f'and on physics fields. {_INDEX_TEXT} For a dispersive material it is the '
-              'background eps_inf.'),
-    'eps_zz': (f'z component of the relative permittivity (>= 1), the only one E_z sees; overrides eps_r for E_z. '
-               f'Diagonal anisotropy only (crystal axes along x, y, z). {_COMPONENT_TEXT}'),
-    'eps_xx': (f'x component of the relative permittivity (>= 1), the only one E_x sees; overrides eps_r for E_x, '
-               f'e.g. a uniaxial crystal with its optic axis along x: eps_xx = n_e^2, eps_r = n_o^2. {_COMPONENT_TEXT}'),
-    'eps_yy': f'y component of the relative permittivity (>= 1), the only one E_y sees. {_COMPONENT_TEXT}',
-    'sigma_e': ('Ohmic loss J = sigma_e E in S/m, default 0 (isotropic, face mean like eps_r); model metals with a '
-                'Drude pole. Counted in absorbed_power / em_heat_joule.'),
-    'mu_r': 'Real relative permeability (>= 1); each H edge takes the value of its lower cell (i, j, k).',
-    'sigma_m': ('Magnetic conductivity in Ohm/m (semi-implicit, each H edge takes its lower cell), default 0; '
-                'sigma_m = sigma_e mu0 / eps0 matches the impedance of free space. Not counted in absorbed_power. '
-                'Setting it on any material allocates its array (4 B per cell).'),
+                   'eps_xx and eps_yy arrays (8 B per cell; else E_x, E_y read eps_r) and makes heat_em_thermo_optic '
+                   'write all three.')
+_MATERIAL_HELPS = {   # shared by em_fdfd_3d (definition_fdfd3d imports _MATERIAL_PROPERTIES)
+    'eps_r': ('n^2 of a lossless dielectric, seen by every E component unless eps_xx / eps_yy / eps_zz override it '
+              '(stored in the eps_r array, which holds eps_zz). Each E face takes the width-weighted mean of its two '
+              'cells (solver_defaults.subpixel_smoothing: anisotropic average on interface faces, in a uint16 face '
+              f'index). May also use z. {_INDEX_TEXT} Dispersive material: the background eps_inf.'),
+    'eps_zz': (f'The only component E_z sees; overrides eps_r for E_z. Diagonal anisotropy only (crystal axes along x, '
+               f'y, z). {_COMPONENT_TEXT}'),
+    'eps_xx': (f'The only component E_x sees; overrides eps_r for E_x, e.g. a uniaxial crystal with its optic axis '
+               f'along x: eps_xx = n_e^2, eps_r = n_o^2. {_COMPONENT_TEXT}'),
+    'eps_yy': f'The only component E_y sees; overrides eps_r for E_y. {_COMPONENT_TEXT}',
+    'sigma_e': ('Ohmic loss J = sigma_e E (isotropic, face mean like eps_r); model metals with a Drude pole. Counted '
+                'in absorbed_power / em_heat_joule.'),
+    'mu_r': 'Real relative permeability; each H edge takes its lower cell (i, j, k).',
+    'sigma_m': ('Semi-implicit, each H edge takes its lower cell; sigma_m = sigma_e mu0 / eps0 matches the free-space '
+                'impedance. Not counted in absorbed_power. Setting it on any material allocates its array (4 B per '
+                'cell).'),
 }
 _MATERIAL_TIPS = {
     'eps_zz': ("Permittivity for the electric field along z. When set it replaces 'Relative permittivity' for that "
@@ -230,10 +224,9 @@ _OPTIONAL_MATERIAL_SCHEMA = {'eps_xx': (1.0, _ANISOTROPY_TRIGGERS), 'eps_yy': (1
                              'sigma_m': (0.0, ('sigma_m',))}
 _Q_ACCUM_INFO = FieldInfo('q_accum', 'Absorbed energy density', unit='J/m^3', cmap='magma')
 _TRACK_ABSORPTION = next(param for param in settings_params(_BC_HELP, 'unused', (
-    'Accumulate J.E losses (output absorbed_power in W/m^3, state q_accum in J/m^3: sigma_e on the faces split '
-    'between the two cells by their half-cell conductance, Drude / Lorentz work time-centred on the pole faces and '
-    'split to the dispersive cells) also without an em_heat_joule coupling; costs a pass over the box of the '
-    'conducting cells and the pole boxes per step plus 8 B per cell (q_accum and the last window).'))
+    'Accumulate J.E losses also without an em_heat_joule coupling: output absorbed_power [W/m^3], state q_accum '
+    '[J/m^3] (face sigma_e split between the two cells by half-cell conductance, pole work time-centred and split to '
+    'the dispersive cells). Costs a pass over the conducting-cell and pole boxes per step plus 8 B per cell.'))
                          if param.name == 'track_absorption')
 
 
@@ -284,49 +277,47 @@ _DIPOLE_PARAMS = (
     Param('dipole_axis', 'choice', 'z', label='Dipole direction', choices=AXES,
           choice_labels=(('x', 'Along x'), ('y', 'Along y'), ('z', 'Along z')),
           tip='Direction of the current element. It radiates most perpendicular to it and nothing along it.',
-          help='Direction of the current element: it drives the one E face of that direction nearest the point (the '
-               'containing cell on the other two axes); radiates most broadside, nothing along its axis.'),
+          help='Drives the one E face of this direction nearest the point (containing cell on the other two axes); '
+               'radiates most broadside, nothing along its axis.'),
     *waveform_params(),
     Param('current_moment', 'float', 1e-12, label='Current moment', unit='A m',
           tip='Peak current times length of the tiny current element. Fields scale linearly with it; the default '
               'is fine.',
-          help='Peak current moment I l in A m, injected as J = I l / V on the cell volume V of its E face (dual '
-               'length along the dipole times the two cell widths across it), so the radiated field does not depend '
-               'on the mesh: a cw dipole in vacuum radiates eta0 k^2 (I l)^2 / (12 pi) W (1e-12 A m at 1 um: '
-               '~4e-10 W). ' + POINT_SOURCE_SIGN),
+          help='Peak current moment I l, injected as J = I l / V on the volume V of its E face (dual length along '
+               'the dipole x the two cell widths across), so the radiated field is mesh-independent: a cw dipole in '
+               'vacuum radiates eta0 k^2 (I l)^2 / (12 pi) W (1e-12 A m at 1 um: ~4e-10 W). ' + POINT_SOURCE_SIGN),
 )
 _PROBE_PARAMS = (
     Param('component', 'choice', 'ez', label='Field component', choices=tuple(COMPONENT_AXES),
           choice_labels=tuple((name, f"{'Electric' if name[0] == 'e' else 'Magnetic'} field along {name[1]} "
                                      f"({name[0].upper()}_{name[1]})") for name in COMPONENT_AXES),
           tip='Field recorded at the point; electric fields in V/m, magnetic fields in A/m.',
-          help='Raw Yee sample of the cell containing the point: E_x / E_y / E_z on its +x / +y / +z face, H_x / '
-               'H_y / H_z on its (+y +z) / (+x +z) / (+x +y) edge; H samples are dt/2 older than the recorded time.'),
+          help='Raw Yee sample of the containing cell (E on its + faces, H on its + edges, as the field list); H '
+               'samples are dt/2 older than the recorded time.'),
 )
 _FLUX_PLANE_PARAMS = (
     Param('normal', 'choice', 'z', label='Plane normal', choices=AXES,
           choice_labels=tuple((axis, f'Along {axis}') for axis in AXES),
           tip='Axis the plane is perpendicular to; positive flux flows toward its + direction.',
-          help='Axis normal to the plane; power > 0 flows toward +normal.'),
+          help='Power > 0 flows toward +normal.'),
     Param('position', 'float', 0.0, label='Plane position', unit='m',
           tip='Coordinate of the plane along its normal, from the lower domain edge. It snaps to the nearest cell '
               'edge.',
-          help='Coordinate [m] along the normal; the plane snaps to the nearest cell edge of the physical window and '
-               'must have a cell on both sides (an edge on a non-PML outer face is refused). The plane spans the '
-               'whole physical window across.'),
+          help='Coordinate along the normal; snaps to the nearest cell edge of the physical window, which needs a '
+               'cell on both sides (an edge on a non-PML outer face is refused).'),
 ) + FLUX_PARAMS
 _DFT_PLANE_PARAMS = (
     Param('position', 'float', 0.0, label='Layer height', unit='m',
           tip='Height of the horizontal layer whose field map is recorded.',
-          help='Height z [m] of the recorded window layer (the cell containing it, an edge goes to the upper cell); '
-               'the layer is always normal to z.'),
+          help='Height z of the recorded layer (always normal to z): the containing cell, an edge goes to the upper '
+               'cell.'),
 ) + spectral_params(5, 'Each wavelength stores three complex64 window layers (24 B per window xy cell).',
                     'Each wavelength stores one field map; a few are typical.')
 _FLUX_TEXT = ("Result 'flux_spectrum': power a.u. (dt-weighted spectra, Re(E x H*) without the 1/2, E averaged across "
-              'the plane and over two time steps as the 2D flux monitor), power_per_cw in W = power / (2 |S|^2) '
-              'when every source shares one waveform (the cw time-averaged power at unit source amplitude). With a '
-              'half_storage stepper the spectra carry the fp16 field noise (~1e-3 of the peak field, ~-60 dB in '
-              'power): integrated powers keep ~1e-3, deep spectral nulls are not resolved.')
+              'the plane and over two steps as the 2D flux monitor), power_per_cw [W] = power / (2 |S|^2) when every '
+              'source shares one waveform (cw time-averaged power at unit source amplitude). half_storage stepper: '
+              'fp16 field noise (~1e-3 of the peak field, ~-60 dB in power), so integrated powers keep ~1e-3 and deep '
+              'spectral nulls are not resolved.')
 
 
 def _apply_dipole(ctx, solver, feature_spec, values, selection):
@@ -480,11 +471,11 @@ def _pec_memory(values, n_selected_cells, mesh):
 _FEATURES = (
     FeatureType('dipole_source', 'Dipole source', 'source', 'point', params=_DIPOLE_PARAMS, object_kinds=('point',),
                 max_entities=1,
-                description='Electric point dipole (current element) along x, y or z on the E face nearest the point '
-                            '(point z param = height, mid-height when unset); calibrated to the live face coefficient, '
-                            'so the moment holds in any medium. A dipole in the outermost cell layer of a pec face '
-                            'parallel to it is refused (its tangential E is pinned there); normal to a pec face it may '
-                            'sit next to it (e.g. a monopole on a ground plane).',
+                description='Electric point dipole (current element) on the E face nearest the point (point z param = '
+                            'height, mid-height when unset); calibrated to the live face coefficient, so the moment '
+                            'holds in any medium. Refused in the outermost cell layer of a pec face parallel to it '
+                            '(tangential E pinned there); normal to a pec face it may sit next to it (e.g. a monopole '
+                            'on a ground plane).',
                 summary='A tiny oscillating current element that radiates a spherical wave.',
                 apply=_apply_dipole, validate=_validate_dipole),
     FeatureType('field_probe', 'Field probe', 'probe', 'point', params=_PROBE_PARAMS, object_kinds=('point',),
@@ -497,24 +488,23 @@ _FEATURES = (
         em_resonance_probe(_PROBE_PARAMS[0], ('hx', 'hy', 'hz'), _apply_probe, validate_point=_validate_point),
         RESONANCE_SUMMARY,
         description_note='3D: the raw Yee sample of the field_probe (point z param = height, mid-height when unset); '
-                         'H samples are dt/2 older, which the reference time accounts for.'),
+                         'the reference time accounts for the dt/2 older H samples.'),
     FeatureType('flux_plane', 'Flux plane', 'monitor', None, params=_FLUX_PLANE_PARAMS, result_kind='flux_spectrum',
-                description='Spectral power through a plane across the whole physical window at the cell edge nearest '
-                            f'position, > 0 toward +normal. {_FLUX_TEXT}',
+                description=f'Spectral power through a plane spanning the whole physical window. {_FLUX_TEXT}',
                 summary='Measures the power crossing a plane, per wavelength.',
                 apply=_apply_flux_plane, result=object_result(flux_result, with_solver=True),
                 validate=_validate_flux_plane, memory_estimate=_flux_plane_memory),
     FeatureType('flux_box', 'Flux box', 'monitor', 'domain', params=FLUX_PARAMS, object_kinds=('box',),
                 max_entities=1, result_kind='flux_spectrum',
-                description='Net outward spectral power through the six faces of a box object, each face snapped to '
-                            'the nearest cell edge (trapezoid weights along the face edges, corners shared); every face '
-                            f'needs a cell on both sides. {_FLUX_TEXT} Enclose a source to get its radiated power.',
+                description='Net outward spectral power through the six faces of a box object, each snapped to the '
+                            'nearest cell edge (trapezoid weights along face edges, corners shared); every face needs '
+                            f'a cell on both sides. {_FLUX_TEXT} Enclose a source to get its radiated power.',
                 summary='Measures the total power leaving a box, per wavelength.',
                 apply=_apply_flux_box, result=object_result(flux_result, with_solver=True),
                 validate=_validate_flux_box, memory_estimate=box_face_spectra_memory),
     FeatureType('dft_plane', 'Field map layer', 'monitor', None, params=_DFT_PLANE_PARAMS, result_kind='dft_fields',
-                description="Running DFT of E_x, E_y, E_z averaged to the cell centres of one window layer (cells "
-                            f"containing z). Result 'dft_fields': x / y centres and the extra 'z' [m]; quantity "
+                description="Running DFT of E_x, E_y, E_z averaged to the cell centres of one window layer. Result "
+                            f"'dft_fields': x / y centres and the extra 'z' [m]; quantity "
                             f"'{DFT_PLANE_QUANTITY}'; intensity (a.u.) with freq_index; intensity_per_cw_factor as "
                             'the 2D DFT monitor.',
                 summary='Records the field pattern of a horizontal layer at chosen wavelengths.',
@@ -522,14 +512,12 @@ _FEATURES = (
                 memory_estimate=_dft_plane_memory),
     FeatureType('pec_domain', 'Perfect electric conductor', 'domain_condition', 'domain',
                 description='Perfect electric conductor cells: every E face between two selected cells is pinned to 0 '
-                            '(the surface lies at the centres of the outermost conductor cells; the normal E on the '
-                            "surface stays free). Select objects: 'all' is refused. With "
-                            'solver_defaults.conformal_boundaries (Dey-Mittra) every H face between four cell centres '
-                            'that the drawn surface cuts takes the free lengths of its four E edges (bisected along '
-                            'the links from the free centre) over its free area, floored so the unchanged time step '
-                            'stays stable; E faces between two conductor cells stay pinned, faces touching a pec wall '
-                            'layer, the window edge or another pec_domain without the option stay staircased, and '
-                            'sources, ports, poles and the stability check keep the cell mask.',
+                            '(the surface lies at the centres of the outermost conductor cells; normal E on it free). '
+                            "Select objects: 'all' is refused. solver_defaults.conformal_boundaries (Dey-Mittra): "
+                            'every H face between four cell centres cut by the drawn surface takes the free lengths of '
+                            'its four E edges over its free area, floored so the time step stays stable; faces '
+                            'touching a pec wall layer, the window edge or a pec_domain without the option stay '
+                            'staircased; sources, ports, poles and the stability check keep the cell mask.',
                 summary='Makes the selected objects perfect metal.',
                 apply=_apply_pec, validate=_validate_pec, memory_estimate=_pec_memory),
 ) + SOURCE_FEATURES   # plane wave, mode source / monitor, far field (definition_sources3d)
@@ -552,17 +540,10 @@ def _half_storage_issues(vctx, physics_spec, settings_values, path):
     if resolved_stepper_precision(vctx.solvers(physics_spec)) != 'half_storage':
         return []
     issues = []
-    if vctx.study_type == 'frequency_domain':
+    if vctx.study_type == FREQUENCY_DOMAIN_STUDY:
         issues.append(Issue('error', path, 'half_storage (fp16 fields) does not run the harmonic FDTD of a '
                                            'frequency_domain study: use a single-precision stepper solver'))
-    from ...materials import effective_material_data   # lazy: physics -> materials only inside functions
-    for material in vctx.spec.materials:
-        if not material.selection:
-            continue
-        try:
-            _, dispersion = effective_material_data(material.library, material.properties, material.dispersion)
-        except ValueError:   # reported at the material
-            continue
+    for material, _, dispersion in selected_material_data(vctx.spec):   # unresolved: reported at the material
         if dispersion:
             issues.append(Issue('error', path, f"material '{material.name}' has dispersion poles, which half_storage "
                                                '(fp16 fields) does not support: use a single-precision stepper solver'))
@@ -718,28 +699,19 @@ EM_FDTD_3D = PhysicsType(
     family=EM_FAMILY,
     group='em',
     default_instance_name='em',
-    description=('3D finite-difference time-domain solver (Yee): E_x, E_y, E_z on the +x / +y / +z faces of each cell '
-                 'in V/m, H_x, H_y, H_z on its (+y +z) / (+x +z) / (+x +y) edges in A/m, H half a time step earlier. '
-                 'Materials eps_r or the diagonal eps_xx / eps_yy / eps_zz, sigma_e, mu_r, sigma_m plus Drude / '
-                 'Lorentz poles (on the bounding box of their material), stored as a uint16 material index with '
-                 'coefficient tables (at most 65534 distinct combinations; continuously varying values, e.g. '
-                 'thermo-optic, are re-quantised to fit). Boundaries per face: cpml (z faces too), pec, pmc, '
-                 'periodic (optional Bloch wave vector: a second, imaginary field set), symmetric / antisymmetric '
-                 'mirror. Sources: electric point dipole, TFSF plane wave, mode source (A5 cross-section modes); '
-                 'monitors: field probe, resonance finder, flux plane, flux box, DFT field-map layer, mode monitor, '
-                 'far-field pattern; '
-                 'outputs the raw components, e_abs, e_intensity, h_abs (cell centres), eps_r (the eps_zz array '
-                 'E_z sees) and '
-                 'absorbed_power, shown as z cut planes. Couplings: heat_em_thermo_optic (index slots of the '
-                 'allocated permittivity arrays) and em_heat_joule into 3D heat. Memory ~26 B per cell plus 12 B of '
-                 'material arrays (+8 B with eps_xx / eps_yy, +4 B with sigma_m, +8 B while tracking absorption); a '
-                 "stepper solver with precision half_storage stores the fields as fp16 (14 B per cell; time_dependent "
-                 'only, no dispersion poles, plane wave, mode ports or resonance finder; ~1e-3 relative noise floor, '
-                 'fields stored in units scaled from the dipole moments and read back in V/m, A/m). It '
-                 'advances one 3D Courant step per runner tick (every must be 1); the instance is usually named '
-                 "'em'. Runs on the gpu and the cpu backend (cpu: numpy twins of every kernel, numba for the Yee "
-                 'updates, CPML and ohmic loss when installed, far slower: small models and tests; half_storage '
-                 f'gpu only). {HARMONIC_FDTD_TEXT}'),
+    description=('3D finite-difference time-domain (Yee): E_x, E_y, E_z on the +x / +y / +z cell faces, H_x, H_y, H_z '
+                 'on the (+y +z) / (+x +z) / (+x +y) edges, H half a step earlier. Materials eps_r or diagonal eps_xx '
+                 '/ eps_yy / eps_zz, sigma_e, mu_r, sigma_m, Drude / Lorentz poles (on their material bounding box), '
+                 'stored as a uint16 material index (see eps_r). Periodic faces take an optional Bloch k (a second, '
+                 'imaginary field set). Outputs the raw components, e_abs, e_intensity, h_abs (cell centres), eps_r '
+                 '(the eps_zz array) and absorbed_power, shown as z cut planes. Couplings: heat_em_thermo_optic (index '
+                 'slots of the allocated permittivity arrays), em_heat_joule into 3D heat. Memory ~26 B per cell plus '
+                 '12 B of material arrays (+8 B with eps_xx / eps_yy, +4 B with sigma_m, +8 B tracking absorption). A '
+                 'stepper solver with precision half_storage stores fp16 fields (14 B per cell; gpu and '
+                 'time_dependent only; no poles, plane wave, mode ports or resonance finder; ~1e-3 relative noise '
+                 'floor). One 3D Courant step per runner tick (every must be 1). cpu backend: numpy twins of every '
+                 'kernel (numba for the Yee updates, CPML and ohmic loss when installed), far slower: small models and '
+                 f'tests. {HARMONIC_FDTD_TEXT}'),
     summary=('Light in 3D, simulated step by step in time, so one short pulse gives a whole spectrum. Use it for '
              'structures that are not uniform along any axis, for example antennas, particles and waveguide ends.'),
     settings=_settings(),
@@ -751,7 +723,7 @@ EM_FDTD_3D = PhysicsType(
                   _Q_ACCUM_INFO),
     output_fields=tuple(EMRenderer3D.field_infos.values()),
     source_slots=source_slot_docs(_SLOT_ARRAYS),
-    supported_studies=('time_dependent', 'frequency_domain'),
+    supported_studies=('time_dependent', FREQUENCY_DOMAIN_STUDY),
     default_study={'type': 'time_dependent', 'settings': {'duration': 50e-15}},
     uses_dispersion=True,
     create=_create,

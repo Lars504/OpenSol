@@ -1,6 +1,6 @@
 """Nonlinear susceptibility tensors (numpy only, GUI-thread safe): crystal-class Voigt d -> rank-3 chi(2), rotations to
 the model axes, isotropic / cubic chi(3) and the n2 / beta_TPA <-> chi(3) conversion."""
-# Conventions (nonlinear_optics_plan 2.1): exp(+j omega t); P_k = eps0 2^(1-n) sum chi(n) : E..E over ordered signed
+# Conventions: exp(+j omega t); P_k = eps0 2^(1-n) sum chi(n) : E..E over ordered signed
 # source tuples, so d [m/V] = chi(2) / 2 and Im chi(3) < 0 is loss. A rotation R maps crystal axes to model axes
 # (column a = crystal axis a in model coordinates): T'_{ij..} = R_ia R_jb .. T_ab..
 import itertools

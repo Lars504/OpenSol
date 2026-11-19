@@ -43,8 +43,9 @@ from .model.meshing import (MESH_ESTIMATE_ERRORS, built_mesh_estimates, estimate
                             estimate_meshes, fitted_memory_estimate, line_block_hint, mesh_transfers,
                             mesh_values, physics_settings)
 from .model.scene_3d import build_scene, object_cut_targets, plane_outlines
-from .model.schema import (ISSUE_LEVELS, Issue, get_registry, node_label, resolve_values, resolved_solvers,
-                           solver_backend, solver_grid)
+from .model.schema import (EIGENFREQUENCY_STUDY, FREQUENCY_DOMAIN_STUDY, FREQUENCY_RESPONSE_STUDY, ISSUE_LEVELS,
+                           OPTOMECHANICS_STUDY, TIME_DEPENDENT_STUDY, Issue, get_registry, node_label, resolve_values,
+                           resolved_solvers, solver_backend, solver_grid)
 from .solvers.roles import resolved_precision
 from .model.selftest_cache import CACHE_FILE, DependencyTrace, SelftestCache, environment_key, file_hash
 from .model.selftest_examples import (ANALYTIC_REPORT_FILE, analytic_report, example_record, failed_example_record,
@@ -57,7 +58,7 @@ from .model.study import (BuildFailed, Built, LiveFrame, LiveResults, LogEvent, 
                           run_study, tick_count_text)
 from .model.study_sectors import ordered_sector_specs
 from .model.time_estimate import estimate_overheads, estimate_time, estimated_runs, stored_profile
-from .model.templates import make_template, template_entries
+from .model.templates import make_template, template_entries, template_model
 from .model.validate import internal_error_text, refused_on_estimated_counts, validate
 from .viz.common import line_profile
 from .viz.field_viewer import (MAX_VOLUME_FRAMES, ViewerFlow, ViewerFrame, ViewerGeometry, ViewerLayer, ViewerMirror,
@@ -98,8 +99,8 @@ _DERIVED_SERIES_QUANTITY = 'derived_series:'   # Results.sweep_figure quantity p
 # oscillate (modes, harmonic responses: the page animates them)
 _MOTION_FIELDS = {'solid_mechanics': (('u', 'v'), ('u_x', 'u_y'), ('u_x_im', 'u_y_im'), 'youngs_modulus'),
                   'membrane': (('n',), ('w_re',), ('w_im',), '')}
-_OSCILLATING_STUDIES = ('eigenfrequency', 'frequency_response', 'optomechanics')
-_MODE_STUDIES = ('eigenfrequency', 'optomechanics')   # their displacements have an arbitrary amplitude
+_OSCILLATING_STUDIES = (EIGENFREQUENCY_STUDY, FREQUENCY_RESPONSE_STUDY, OPTOMECHANICS_STUDY)
+_MODE_STUDIES = (EIGENFREQUENCY_STUDY, OPTOMECHANICS_STUDY)   # their displacements have an arbitrary amplitude
 _NEGLIGIBLE_IMAGINARY = 1e-6   # imaginary displacement parts below this x the real maximum: a real (standing) mode
 # study summary keys copied into summary.json when the study set them (optimization, thermal_noise, mode_analysis,
 # eigenfrequency / optomechanics, nonlinear_frequency_domain, frequency_response; convergence: StudySpec.adaptation,
@@ -355,7 +356,7 @@ def _study_estimate(spec, registry, parameters, meshes):
     n_steps = (round(duration / dt_estimate) if dt_estimate and isinstance(duration, (int, float))
                else None)
     n_wavelengths = (len(resolved_wavelengths(study_values))
-                     if spec.study.type == 'frequency_domain' and study_values else None)
+                     if spec.study.type == FREQUENCY_DOMAIN_STUDY and study_values else None)
     sweep = spec.study.sweep
     n_sweep_values = 1 if sweep is None else (len(sweep.point_values()) or None)
     total_steps = None if n_steps is None or n_sweep_values is None else n_steps * n_sweep_values
@@ -2773,7 +2774,7 @@ def _templates_validate_case(registry, record):
     details = {}
     for entry in template_entries(registry):
         try:
-            issues = validate(entry.factory(), registry)
+            issues = validate(template_model(entry), registry)
         except Exception as exc:   # a crashing factory is a template error, not a selftest crash
             issues = [Issue('error', ('model',), f'the template factory failed: {_error_text(exc)}')]
         errors = [_issue_record(issue) for issue in issues if issue.level == 'error']
@@ -3040,6 +3041,9 @@ def _variant_spec(spec, variant, registry):
                                      f"({type_name}) has no precision {variant.precision!r}")
                 continue
             node_name = f'{variant.name}_{physics_spec.name}_{role}'
+            if node_name in nodes:
+                raise ValueError(f"variant '{variant.name}': the case already has a solver node '{node_name}' (the "
+                                 'variant node pattern <variant>_<physics>_<role>): rename that node')
             spec.solvers.append(SolverSpec(node_name, type_name, dict(settings, precision=variant.precision)))
             if node is not None:
                 replaced.add(node.name)
@@ -3080,7 +3084,7 @@ def _run_timing(summary, run_seconds):
     without a machine profile)."""
     build = summary.get('build') or {}
     study_seconds, ticks, n_cells = summary.get('study_seconds'), summary.get('ticks'), build.get('n_cells')
-    time_stepped = (summary.get('model') or {}).get('study_type') == 'time_dependent'
+    time_stepped = (summary.get('model') or {}).get('study_type') == TIME_DEPENDENT_STUDY
     cell_ticks_per_second = (n_cells * ticks / study_seconds
                              if time_stepped and study_seconds and ticks and n_cells else None)
     before_output = summary.get('wall_time')

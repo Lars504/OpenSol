@@ -18,7 +18,7 @@ from .backend import cp, cupy_installed
 
 __all__ = [
     'LEAK_TOLERANCE_BYTES', 'DEFAULT_BUDGET_FRACTION', 'DEFAULT_HEADROOM_BYTES', 'DeviceInfo', 'MemoryStatus',
-    'device_info', 'budget_device_info', 'memory_status', 'cpu_device_info', 'cpu_memory_status', 'pool_used_bytes', 'pool_reserved_bytes', 'set_budget', 'budget_bytes', 'pool_room_bytes', 'pool_high_water_bytes', 'release_all',
+    'device_info', 'budget_device_info', 'memory_status', 'cpu_device_info', 'cpu_memory_status', 'pool_used_bytes', 'pool_reserved_bytes', 'set_budget', 'budget_bytes', 'pool_room_bytes', 'pool_high_water_bytes', 'release_cached_blocks', 'release_all',
     'is_out_of_memory', 'out_of_memory_message', 'drop_exception_frames', 'owned_bytes', 'format_bytes',
     'MemoryLedger', 'ledger_text',
 ]
@@ -41,7 +41,7 @@ _budget = None             # pool limit [bytes] applied by set_budget in this pr
 _budget_settings = None    # (fraction, headroom_bytes) of that set_budget call
 _budget_query = None       # (device id, free, total) [bytes] of that set_budget call's driver query
 _device_names = {}         # device id -> name (fixed for the process: queried once)
-_released = {'high_water': 0}   # largest pool reserved bytes pool_room_bytes released since the last release_all
+_released = {'high_water': 0}   # largest pool reserved bytes release_cached_blocks released since the last release_all
 
 
 @dataclass(frozen=True)
@@ -214,13 +214,21 @@ def pool_room_bytes(release_cached=False) -> int | None:
     used_bytes, reserved_bytes = int(pool.used_bytes()), int(pool.total_bytes())
     device_room = int(cp.cuda.Device().mem_info[0]) + reserved_bytes - used_bytes
     if release_cached and device_room < _budget - used_bytes and reserved_bytes > used_bytes:
-        _released['high_water'] = max(_released['high_water'], reserved_bytes)
-        pool.free_all_blocks()
+        release_cached_blocks()
     return max(min(_budget - used_bytes, device_room), 0)
 
 
+def release_cached_blocks() -> None:
+    """Return the default pool's cached blocks to the device mid-run (before sizing to the free device memory: a cuDSS
+    plan, the cusolver_qr workspace), keeping the reserved bytes for pool_high_water_bytes; never a bare
+    free_all_blocks, which would hide the run's earlier peak. No gc, no plan-cache clear (release_all between jobs)."""
+    pool = cp.get_default_memory_pool()
+    _released['high_water'] = max(_released['high_water'], int(pool.total_bytes()))
+    pool.free_all_blocks()
+
+
 def pool_high_water_bytes() -> int:
-    """pool_reserved_bytes, or the larger reserved bytes a pool_room_bytes release returned since the last release_all
+    """pool_reserved_bytes, or the larger reserved bytes a release_cached_blocks call returned since the last release_all
     (the run memory measurement: a release mid-run would hide the earlier peak)."""
     return max(pool_reserved_bytes(), _released['high_water'])
 

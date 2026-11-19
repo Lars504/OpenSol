@@ -1,4 +1,4 @@
-"""Self-tests of the tetrahedral FEM core (igor3d_plan section 7, T1 / T2; CPU, specs() empty, check({}) on structured
+"""Self-tests of the tetrahedral FEM core (CPU, specs() empty, check({}) on structured
 Kuhn meshes, no gmsh): quadrature exactness, mesh conformity, Nedelec tangential continuity, point location and the
 degree-1 reproduction of constant fields; the Lagrange assembly / face integral / interface-face patch checks. error =
 number of failed sub-checks (tolerance 0), values in details."""
@@ -235,7 +235,7 @@ TETRAHEDRA_SELFTEST_CASES = (
     SelfTestCase(
         name='fem_tetrahedra_core',
         label='FEM tetrahedra: quadrature, conformity, Nedelec continuity',
-        description='CPU checks of the tetrahedral FEM core (igor3d_plan section 7) on a graded 3 x 3 x 3 Kuhn box '
+        description='CPU checks of the tetrahedral FEM core on a graded 3 x 3 x 3 Kuhn box '
                     'mesh (162 tetrahedra, no gmsh): the reference-tetrahedron rules of degree 1-8 integrate every '
                     'monomial up to their degree (1e-13); V - E + F - T = 1, element volumes sum to the box (1e-12), '
                     'every boundary face carries one outer-face tag; random Nedelec degree 1 and 2 fields have equal '

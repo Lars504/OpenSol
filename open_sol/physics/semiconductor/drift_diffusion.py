@@ -30,7 +30,9 @@ _CHORD_START = 1e-2
 _CHORD_CONTRACTION = 0.25
 # block layout of a Newton system's COO values: (row side, row component, column side, column component) per block, a
 # side being the face's lower site, its upper site or every site; face blocks hold one value per face, site blocks one
-# per site, concatenated in layout order (_PinnedPattern expands the scalar site graph from it)
+# per site, concatenated in layout order (_PinnedPattern expands the scalar site graph from it). A new Jacobian term is
+# a block here plus its values at the same position in _coupled_system / _poisson_system, and changes the entry counts
+# the estimates price (definition._COO_ENTRIES_PER_CELL / _CSR_ENTRIES_PER_CELL / _POISSON_COO_ENTRIES_PER_CELL)
 _LO, _HI, _SITE = 0, 1, 2
 _POISSON_LAYOUT = ((_LO, 0, _LO, 0), (_LO, 0, _HI, 0), (_HI, 0, _HI, 0), (_HI, 0, _LO, 0), (_SITE, 0, _SITE, 0))
 _COUPLED_LAYOUT = (
@@ -129,8 +131,7 @@ class DriftDiffusionCore:
         """Scale, equilibrium and pinned unknowns, once set_inputs has written the per-site arrays vt, semiconductor
         (bool), charge_fraction (semiconductor share of the control volume), n_intrinsic, doping (both 0 off the
         semiconductor), lifetime_n / _p, radiative, auger_n / _p, generation (per control volume), contact_cells /
-        contact_index,
-        gate_cells / gate_index, and the face arrays poisson_conductance, carrier_n, carrier_p."""
+        contact_index, gate_cells / gate_index, and the face arrays poisson_conductance, carrier_n, carrier_p."""
         self.scale = float(max(np.max(np.abs(self.doping)), np.max(self.n_intrinsic)))
         self.u_equilibrium, self.n_equilibrium, self.p_equilibrium = neutral_equilibrium(self.doping, self.n_intrinsic)
         self.pinned = np.zeros((self.n_cells, COMPONENTS), dtype=bool)
@@ -549,6 +550,8 @@ class DriftDiffusionCore:
         if back_end == 'scipy_splu':
             factor = self.linear_solver.factorize_host(pattern.host_csr(data), real=True)
             return factor.solve_host(rhs), factor
+        if back_end != 'cusolver_qr':   # a new back end with a kept factor joins KEPT_FACTOR_BACK_ENDS
+            raise ValueError(f"{self.label()}: no Newton solve path for the 'linear' back end {back_end!r}")
         import cupy as cp
         import cupyx.scipy.sparse
         grid_x, grid_y = self._qr_grid(components)

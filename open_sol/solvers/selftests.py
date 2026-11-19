@@ -1,4 +1,4 @@
-"""CPU vs GPU parity self-tests of the solver runtimes (solver_plan S6 / stage B): pcg, sparse_direct and line_block on
+"""CPU vs GPU parity self-tests of the solver runtimes: pcg, sparse_direct and line_block on
 small synthetic 2D grid operators, each backend against a scipy reference, the cuDSS eigen factorization against
 SuperLU and the cuDSS sparse_direct back ends against scipy. No model run; the gpu half is skipped without a usable GPU.
 The block_eigen LOBPCG on 3D grid pencils against their exact / dense eigenvalues, on both backends. Also the CPU checks of the solver_defaults.precision resolution (S9) with the Automatic diffusion multigrid (mesh M0) and
@@ -6,7 +6,7 @@ of eigsh_shifted with its shift on an eigenvalue. The MUMPS / PARDISO host direc
 against scipy (skipped without their wrappers)."""
 import numpy as np
 
-from ..model.schema import SelfTestCase
+from ..model.schema import EIGENFREQUENCY_STUDY, SelfTestCase
 from ..model.selftest_helpers import SubChecks, norm_relative_error, skip_without_cudss
 
 _GRID = (30, 20)                  # nx, ny of the synthetic operators (i * ny + j unknown order)
@@ -459,7 +459,8 @@ def _cudss_role_checks(failed):
         physics_type = registry.physics_type(physics_name)
         for back_end in CUDSS_BACK_ENDS:
             offered = back_end in offered_back_ends
-            misfit = solver_misfit(sparse_type, {'back_end': back_end}, physics_type, 'linear', 'stationary', 'gpu')
+            misfit = solver_misfit(sparse_type, {'back_end': back_end}, physics_type, 'linear', 'stationary', 'gpu',
+                                   'tensor')
             if bool(misfit) == offered:
                 failed.append(f'{physics_name}_{back_end}_offered_{offered}')
     for back_end in CUDSS_BACK_ENDS:
@@ -1182,7 +1183,7 @@ _EIGEN_ROLE_CASES = (
     ('solid_2d_block_node_misfit', 'solid_mechanics', 'auto', ('block_eigen', {}), 'gpu',
      ('block_eigen', 'mixed', None, False, False)),
 )
-_EIGEN_ROLE_STUDY = 'eigenfrequency'
+_EIGEN_ROLE_STUDY = EIGENFREQUENCY_STUDY
 
 
 def _precision_spec(physics_type, role, study, precision, node, backend, size_z=None):
@@ -1335,7 +1336,7 @@ def _host_fit_checks(registry, checks):
             'host_size_errors': size_errors}
 
 
-# --- Automatic multigrid of the diffusion types (mesh plan M0 / D16) ------------------------------------------------
+# --- Automatic multigrid of the diffusion types ------------------------------------------------
 
 # (check name, physics type, default precision, node (type, settings) or None, backend,
 #  expected (resolved type, resolved precision, resolved preconditioner or None))
@@ -2478,7 +2479,7 @@ SOLVER_SELFTEST_CASES = (
                     'Laplacian and diagonal-dominant) and q^2 0, 0.5, two complex right-hand sides; every shift '
                     'accepted and each solution against the per-shift scipy spsolve (relative error <= '
                     f'{_PARITY_TOLERANCE:g}; refinement to a 1e-9 residual). '
-                    'factorize_operators (Part II stage 3): a batch of three complex non-symmetric grid operators '
+                    'factorize_operators: a batch of three complex non-symmetric grid operators '
                     '(the sparse_direct case operator with fresh random diagonals), each shift solved against its '
                     'own scipy spsolve with the same tolerance, accepted, and invalid after the next set_operator. '
                     'Not yet run with two omega values.',
@@ -2617,7 +2618,7 @@ SOLVER_SELFTEST_CASES = (
                     'precision and whether the default is reported ignored; node settings are never written; '
                     'with_default_precision directly (fills without a role, a role refusing mixed (a pcg role of the '
                     'default precisions) and an explicit precision leave the settings). Also the Automatic linear solver multigrid resolution of the diffusion types '
-                    '(mesh plan M0, rows multigrid_*): heat, '
+                    '(rows multigrid_*): heat, '
                     'electric_currents, electrostatics and magnetostatics Automatic on the gpu backend resolve pcg '
                     'double with preconditioner multigrid (single with solver_defaults.precision single); '
                     'solver_defaults.precision mixed, a pcg node with precision mixed and a node filled with mixed '

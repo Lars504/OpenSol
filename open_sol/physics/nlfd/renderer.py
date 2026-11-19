@@ -49,9 +49,8 @@ class NonlinearRenderer(PhysicsRenderer):
         """The type's FieldInfo, carrying the selected channel's own mirror parity (plane_signs) where it differs from
         the physics' faces (an even generated channel under an antisymmetric face)."""
         info = super().field_info(component)
-        config = self.nl.boundary_config
         signs = self.nl.plane_signs(self.nl.selected_channel)
-        if any(sign != (-1 if getattr(config, face).value == 'antisymmetric' else 1) for face, sign in signs.items()):
+        if signs != self.nl.face_signs:
             return replace(info, plane_signs=plane_signs_text(signs))
         return info
 

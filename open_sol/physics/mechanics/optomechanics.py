@@ -1,9 +1,9 @@
 """Vacuum optomechanical coupling g0 between one optical mode and the solid vibration modes of a 2D model (host numpy):
 moving-boundary face sums and the photoelastic overlap of the nodal mode shape, effective mass and zero-point motion."""
-# Conventions (optomechanics_plan.md): exp(+j omega t) peak phasors; Q = nodal mode shape on the window nodes. Faces lie
-# between window cells a (lo) and b (hi) along x or y, Delta eps = eps_a - eps_b (Q_d > 0 moves a into b), Q_d of a
-# face = the mean of its two corner nodes (the exact edge mean of bilinear u). Moving boundary per face (Johnson et al.,
-# PRE 65, 066611): Q_d [eps0 Delta eps |E_par|^2 - Delta(1/eps_nn) |D_n|^2 / eps0] l_f; photoelastic per cell:
+# Conventions: exp(+j omega t) peak phasors; Q = nodal mode shape on the window nodes. Faces lie between window cells a
+# (lo) and b (hi) along x or y, Delta eps = eps_a - eps_b (Q_d > 0 moves a into b), Q_d of a face = the mean of its two
+# corner nodes (the exact edge mean of bilinear u; the periodic seam is not summed). Moving boundary per face (Johnson
+# et al., PRE 65, 066611): Q_d [eps0 Delta eps |E_par|^2 - Delta(1/eps_nn) |D_n|^2 / eps0] l_f; photoelastic per cell:
 # eps0 E* Delta eps E dA, Delta eps_ii = -eps_ii^2 (p11 S_ii + p12 (S_jj + S_kk)) of the element-centre strain S of Q
 # (solid cells only; plane strain S_zz = S_xz = S_yz = 0) plus the shear term Delta eps_xy = -eps_xx eps_yy 2 p44 S_xy
 # (Voigt: Delta(1/eps)_6 = p44 x the engineering shear; unset p44 = (p11 - p12) / 2, isotropic), summed as
@@ -106,7 +106,8 @@ def photoelastic_changes(eps_xx, eps_yy, eps_zz, p11, p12, strain_xx, strain_yy,
 
 
 def shear_photoelastic_coefficient(p11, p12, p44=None):
-    """p44 per cell: the given values, the isotropic (p11 - p12) / 2 where p44 is None or NaN (unset)."""
+    """p44 per cell: the given values, the isotropic (p11 - p12) / 2 where p44 is None or NaN (unset). The one
+    resolution of photoelastic_p44 (default NaN): never compute with the raw array."""
     isotropic = 0.5 * (np.asarray(p11, dtype=np.float64) - np.asarray(p12, dtype=np.float64))
     if p44 is None:
         return isotropic

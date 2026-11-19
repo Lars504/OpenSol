@@ -7,10 +7,9 @@ import numpy as np
 
 from ...core.constants import C0, MU0
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import float_list, vertical_line
+from ...model.selftest_helpers import float_list, normalized_result, vertical_line
 from ...model.spec import (DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec, ParameterSpec,
                            PhysicsSpec, StudySpec)
-from .selftests import normalized_result
 
 # em_harmonic_fdtd_vs_fdfd: y-periodic strip 4 x 0.5 um, CPML along x, uniform 20 nm mesh (50 cells per vacuum
 # wavelength, 25 in the cylinder), window cell k spanning [20 k, 20 (k + 1)] nm. A vertical line source at the

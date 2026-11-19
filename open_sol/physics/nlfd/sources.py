@@ -15,7 +15,8 @@ and the C / C* collocation that keeps the discrete power exchange exact."""
 # z). For a real tensor with full permutation symmetry, sum_k W_k = 0 for any fields once every term of the table acts.
 # Sources never read a channel's FDFDPhysics directly: they read the ChannelFieldStore snapshot (ez E_z, hz E_x / E_y
 # on their faces), captured after each channel solve, so a channel's own solve (SPM, back-action) cannot change what
-# its sources returned for that solve, and the pump-depleted mixing writes the store only.
+# its sources returned for that solve, and the pump-depleted mixing writes the store only (physics.face_fields() inside
+# a source would also recurse for hz self-terms).
 # Arrays live on the run backend (ChannelFieldStore.xp = domain.xp: cupy or numpy); every math function takes xp.
 import numpy as np
 
@@ -444,7 +445,7 @@ class NonlinearPolarizationPhasor:
 
 
 class KerrOperatorTerm:
-    """Lagged Kerr permittivity of one channel (pump-depleted, plan decision 7): the diagonal M_aa of its chi(3)
+    """Lagged Kerr permittivity of one channel (pump-depleted): the diagonal M_aa of its chi(3)
     |E_m|^2 E terms goes into the channel operator (FDFDPhysics.set_extra_permittivity on the media's union box), and
     the same operator change applied to the stored previous field is subtracted again as a source, so a fixed point
     solves the rhs form of every term (the operator part only stabilises the iteration; ez: the two cancel exactly).
@@ -490,7 +491,7 @@ class KerrOperatorTerm:
                                                          (1, 0, store.periodic_x, store.cell_dx, previous[1])):
             full = xp.zeros(store.shape, dtype=xp.complex128)
             full[self.box] = delta[component]
-            face_delta = face_average(full, axis, periodic, widths, xp=xp)
+            face_delta = face_average(full, axis, periodic, widths, xp=xp)   # M is periodic: no Bloch factor
             del full
             face_delta *= (1j * omega * EPS0) * faces
             currents.append(face_delta)
@@ -580,7 +581,7 @@ class FreeCarriers:
             return
         self.refresh(fields)
         omega = self._store.channels[target].omega
-        for medium in self.media:
+        for medium in self.media:   # N (float64) first: cupy's float32 n0 x a Python complex is complex64
             coefficient = self._state[medium.name][0] * medium.carriers.index * (
                 EPS0 * medium.carriers.permittivity_factor(omega))
             for component in density:

@@ -1,4 +1,4 @@
-"""Self-tests of 1D models (symmetry plan 2.20, DomainSpec.size_y null): a heated two-layer slab / cylinder / sphere
+"""Self-tests of 1D models (DomainSpec.size_y null): a heated two-layer slab / cylinder / sphere
 and a two-dielectric slab / coax / spherical capacitor against the exact discrete chains and their closed forms, plus
 the banded solver on synthetic operators (CPU); registered by study.register."""
 import math

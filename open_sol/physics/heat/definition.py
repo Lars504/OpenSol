@@ -4,10 +4,10 @@ import math
 from dataclasses import replace
 
 from ...core.backend import to_host
-from ...core.constants import N_A
+from ...core.constants import FREE_MESH_KINDS, N_A
 from ...core.memory_estimate import (COMPLEX128_BYTES, FLOAT32_BYTES, FLOAT64_BYTES, MemoryEstimate, combine,
                                      diffusion_system_estimate, host_lu_bytes, window_cell_count)
-from ...core.mirror import feature_mirror_faces, mirror_faces
+from ...core.mirror import MIRROR_SIGNS, feature_mirror_faces, mirror_faces
 from ...core.renderer import FieldInfo
 from ...core.time_estimate import (HeldValues, HostStream, TimeEstimate, TimeItem, Transfer, combine as combine_time,
                                    diffusion_time_estimate)
@@ -25,7 +25,8 @@ from ...model.definition_helpers import (
     reports_model_checks, selected_material_data, time_following_values, uses_time, validate_points_inside,
 )
 from ...model.geometry import expand_entities
-from ...model.schema import FeatureType, Issue, Param, PhysicsType, SolverRole, feature_path
+from ...model.schema import (STATIONARY_STUDY, TIME_DEPENDENT_STUDY, FeatureType, Issue, Param, PhysicsType, SolverRole,
+                              feature_path)
 from ...model.spec import RESERVED_ENTITY_NAMES
 from ...solvers.host_direct import HOST_DIRECT_BACK_ENDS
 from ...solvers.line_block import (MAX_CHUNK_SHIFTS, operator_bytes as line_block_operator_bytes,
@@ -76,36 +77,30 @@ _SETTINGS = (
               '- Steady state: the temperature reached after a long time, without heat storage.\n'
               '- Transient: the temperature evolves in time, using density and heat capacity.\n\n'
               "Only a 'Time dependent' study runs transient heat; every other study solves the steady state.",
-          help='stationary: a steady solve at every heat step (quasi-static, no heat capacity); transient: '
-               'implicit Euler with rho*cp in steps <= time_step. Only a time_dependent study runs transient heat: '
-               'every other study (stationary, frequency_domain) solves the steady state (transient is ignored '
-               'there); with EM in a time-dependent study each heat step spans every * dt_EM.'),
+          help='stationary: a steady solve at every heat step (no heat capacity); transient: implicit Euler with '
+               'rho*cp in steps <= time_step, in a time_dependent study only (every other study solves the steady '
+               'state).'),
     Param('T0', 'float', 293.15, label='Reference temperature', unit='K', min=0.0, min_exclusive=True,
           tip='Starting temperature of every cell, and the temperature at which the refractive indices of the '
               'materials apply.\n\nTypically 293.15 K.',
           help='Initial temperature of every cell and reference of the thermo-optic change n = n0 + dndT (T - T0). '
                'Cells that neither conduct, lose heat nor (transient, rho and cp set) store heat keep T0 (or their '
-               'initial temperature) and ignore heat sources. Typical 293.15 K.'),
+               'initial temperature) and ignore heat sources.'),
     Param('time_step', 'float', 1e-3, label='Time step', unit='s', min=0.0, min_exclusive=True,
           visible_if=(('time_mode', ('transient',)),),
           tip='Largest time step of transient heat. Any step is stable, but keep it well below the time heat needs to '
               'spread over the region you care about.\n\n'
               "With a wave physics in the model, each heat step is 'Step every' wave time steps, and must not exceed "
               'this value.',
-          help='Largest implicit-Euler step (the heat dt_limit). Heat alone steps by time_step (every must be 1); '
-               'with EM each heat step is every * dt_EM, which must not exceed time_step. Implicit Euler is stable '
-               'for any step but first-order accurate: keep it well below the diffusion time rho*cp*L^2/k of '
-               'interest. T is the temperature at the end of the step just taken, so the heat time label and '
-               'probe times run up to (every - 1) * dt_EM ahead of the snapshot time (the last may exceed the '
-               'duration).'),
+          help='Largest implicit-Euler step (heat dt_limit). Heat alone steps by time_step (every must be 1); with EM '
+               'each heat step is every * dt_EM <= time_step. Stable for any step but first order: keep it well '
+               'below the diffusion time rho*cp*L^2/k of interest. T is at the end of the step just taken, so heat '
+               'time labels and probe times run up to (every - 1) * dt_EM ahead of the snapshot time.'),
     geometry_param(
         '2D conduction per unit z length (W/m)',
-        "(r, z) conduction; every conductance, face and cell volume is weighted by 2 pi r (x-faces at their own r, "
-        'y-faces and volumes at the cell-centre r; 2 pi r_c dr dz is the exact ring volume; object-perimeter heat_flux '
-        '/ convection likewise), so densities (Q W/m^3, heat flux W/m^2, h W/(m^2 K)) keep their units, a '
-        "point_heat_source P is the ring's total power in W (on the axis cell a point source) and the 'integral' of Q "
-        "the body's total power in W; k_xy is not available (validation error); out_of_plane_convection stays a "
-        'volumetric loss h * sides / thickness; azimuthal_order m != 0 weights by pi r instead',
+        '(r, z) conduction, every conductance, face and cell volume (and object-perimeter heat_flux / convection) '
+        'weighted by 2 pi r (pi r for azimuthal_order m != 0): densities keep their units, point_heat_source P is the '
+        "ring's total power in W and the 'integral' of Q the body's total power in W; k_xy is a validation error",
         'powers are per metre of depth.',
         'Point sources are rings (on the axis: a point) with their total power in watts.'),
     AZIMUTHAL_ORDER_PARAM,
@@ -131,104 +126,85 @@ _CONDUCTIVITY_COMPONENT_TEXT = ('Thermal conductivity along {axis} of a material
 _THERMO_OPTIC_COMPONENT_TEXT = 'Refractive index change per kelvin for light with its electric field along {axis}'
 _MATERIAL_PROPERTIES = (   # isotropic entries before their components (components override)
     _material_property('k', 'Thermal conductivity', _CONDUCTIVITY_UNIT, 0.0,
-                       'Isotropic conductivity: sets k_xx, k_yy and k_zz (component entries override it; k_zz acts only '
-                       'in 3D models); unset (no '
-                       'library value) means 0, so those cells do not conduct. May depend on x, y (z in 3D) and state '
-                       'fields such as T (e.g. k_300*(300/T)**1.3; a stationary study then iterates). Typical: silica 1.38, '
-                       'silicon 130, aluminium 237, gold 317, silver 429, water 0.6.',
+                       'Sets k_xx, k_yy and k_zz (component entries override it; k_zz acts only in 3D); unset (no '
+                       'library value) = 0: no conduction. E.g. k_300*(300/T)**1.3 (a stationary study iterates). '
+                       'Silica 1.38, silicon 130, aluminium 237, gold 317, silver 429, water 0.6.',
                        tip='How well the material conducts heat. Empty takes the library value; a material with '
                            'neither does not conduct.\n\nTypical: silica 1.38, silicon 130, gold 317, water 0.6.'),
     _material_property('k_xx', 'Thermal conductivity along x', _CONDUCTIVITY_UNIT, 0.0,
-                       'Conductivity along x; overrides k for this axis.',
+                       'Overrides k for this axis.',
                        tip=_component_tip(_CONDUCTIVITY_COMPONENT_TEXT.format(axis='x'), 'Thermal conductivity')),
     _material_property('k_yy', 'Thermal conductivity along y', _CONDUCTIVITY_UNIT, 0.0,
-                       'Conductivity along y; overrides k for this axis.',
+                       'Overrides k for this axis.',
                        tip=_component_tip(_CONDUCTIVITY_COMPONENT_TEXT.format(axis='y'), 'Thermal conductivity')),
     _material_property('k_zz', 'Thermal conductivity along z', _CONDUCTIVITY_UNIT, 0.0,
-                       'Conductivity along z (3D models only; a 2D model has no z conduction); overrides k for this '
-                       'axis.',
+                       'Overrides k for this axis (3D only; 2D has no z conduction).',
                        tip="Thermal conductivity along z of a layered or anisotropic material, used only in 3D models. "
                            "Replaces 'Thermal conductivity' for this direction."),
     _material_property('k_xy', 'Thermal conductivity, cross term', _CONDUCTIVITY_UNIT,
                        tip='Cross term of a rotated crystal: heat also flows sideways to the temperature gradient. '
                            'Usually empty.\n\nKeep it smaller than both the x and y values. Not available in 3D '
                            'models.',
-                       help_text='Off-diagonal conductivity (cross conduction, e.g. a rotated anisotropic crystal); '
-                                 'keep k_xy^2 < k_xx*k_yy (validation error for plain numbers). Needs a 2D Cartesian '
-                                 'planar model (validation error otherwise); uniform or graded meshes. '
-                                 'Cross heat flows only inside 2x2 cell blocks that all conduct (area-weighted mean '
-                                 'k_xy of the block), never through the outer faces; the heat_flux_abs field includes it '
-                                 '(block values averaged over each cell\'s blocks). On strongly graded cells keep '
-                                 'k_xy^2 clearly below k_xx*k_yy: the discrete operator is guaranteed positive for '
-                                 'k_xy^2 < k_xx*k_yy * 4 r_x / (1 + r_x)^2 * 4 r_y / (1 + r_y)^2 (r = width ratio of '
-                                 'neighbouring cells; each factor 0.99 at r = 1.2).'),
+                       help_text='Off-diagonal k (cross conduction of a rotated anisotropic crystal); 2D Cartesian '
+                                 'planar only. Keep k_xy^2 < k_xx k_yy (validation error for plain numbers; on '
+                                 'strongly graded cells clearly below: the discrete operator is positive below it '
+                                 'times 4 r / (1 + r)^2 per axis, r = neighbour width ratio, 0.99 at r = 1.2). Cross '
+                                 'heat flows only inside 2x2 cell blocks that all conduct, never through outer faces; '
+                                 'heat_flux_abs includes it.'),
     _material_property('rho', 'Density', 'kg/m^3', 0.0,
                        tip="Mass density. Only transient heat uses it, together with 'Specific heat capacity', to "
                            'store heat.\n\nTypical: silica 2200, silicon 2329, water 998.',
-                       help_text='Density; used only by transient heat (heat capacity rho*cp). Unset = 0: no heat '
-                                 'capacity, so transient heat treats those cells quasi-statically (conducting ones '
-                                 'follow their neighbours, non-conducting ones keep their temperature and ignore heat '
-                                 'sources; validation warns when heat is transient). Typical: silica 2200, silicon '
-                                 '2329, water 998.'),
+                       help_text='Transient heat only (capacity rho*cp). Unset = 0: no capacity, so those cells are '
+                                 'quasi-static (conducting ones follow their neighbours, others keep their temperature '
+                                 'and ignore heat sources; validation warns). Silica 2200, silicon 2329, water 998.'),
     _material_property('cp', 'Specific heat capacity', 'J/(kg K)', 0.0,
                        tip='Heat stored per kilogram and kelvin; only transient heat uses it.\n\n'
                            'Typical: silica 746, silicon 700, water 4182.\n\n'
                            'Cells without density or heat capacity store no heat: they follow their surroundings at '
                            'once.',
-                       help_text='Specific heat capacity; used only by transient heat (heat capacity rho*cp). Unset = '
-                                 '0: no heat capacity (see rho). Typical: silica 746, silicon 700, water 4182.'),
+                       help_text='Transient heat only; unset = 0 (see rho). Silica 746, silicon 700, water 4182.'),
     _material_property('dndT', 'Thermo-optic coefficient', '1/K',
                        tip='Change of the refractive index per kelvin, used by the thermo-optic coupling.\n\n'
                            'Use the measured value of the free material. Typical: silica 1e-5, silicon 1.8e-4, water '
                            '-9e-5.',
-                       help_text='Isotropic thermo-optic coefficient dn/dT: sets dndT_xx, dndT_yy and dndT_zz '
-                                 '(component entries override it), read by heat_em_thermo_optic (n = n0 + dndT '
-                                 '(T - T0)). Use the measured dn/dT of the free material: it already contains the '
-                                 'density change of expansion; alpha adds only the growth of the structure. On a '
-                                 'dispersive (Drude / Lorentz) material it shifts only the background permittivity, '
-                                 'not the pole part (see heat_em_thermo_optic). Typical: '
-                                 'silica 1e-5, silicon 1.8e-4, water -9e-5.'),
+                       help_text='dn/dT: sets dndT_xx, dndT_yy and dndT_zz (component entries override it), read by '
+                                 'heat_em_thermo_optic (n = n0 + dndT (T - T0)). Use the measured dn/dT of the free '
+                                 'material (it contains the density change of expansion; alpha adds only the growth '
+                                 'of the structure). Dispersive materials: shifts only the background permittivity. '
+                                 'Silica 1e-5, silicon 1.8e-4, water -9e-5.'),
     _material_property('dndT_xx', 'Thermo-optic coefficient along x', '1/K',
                        tip=_component_tip(_THERMO_OPTIC_COMPONENT_TEXT.format(axis='x, in the plane'),
                                           'Thermo-optic coefficient'),
-                       help_text='dn/dT of n_xx: em_fdtd_hz, em_fdfd_hz and em_modes use it for eps_xx; overrides '
-                                 'dndT for this component.'),
+                       help_text='Overrides dndT for n_xx (eps_xx of em_fdtd_hz, em_fdfd_hz, em_modes).'),
     _material_property('dndT_yy', 'Thermo-optic coefficient along y', '1/K',
                        tip=_component_tip(_THERMO_OPTIC_COMPONENT_TEXT.format(axis='y, in the plane'),
                                           'Thermo-optic coefficient'),
-                       help_text='dn/dT of n_yy: em_fdtd_hz, em_fdfd_hz and em_modes use it for eps_yy; overrides '
-                                 'dndT for this component.'),
+                       help_text='Overrides dndT for n_yy (eps_yy of em_fdtd_hz, em_fdfd_hz, em_modes).'),
     _material_property('dndT_zz', 'Thermo-optic coefficient along z', '1/K',
                        tip=_component_tip(_THERMO_OPTIC_COMPONENT_TEXT.format(axis='z, out of the plane'),
                                           'Thermo-optic coefficient')
                            + '\n\nSetting only the x and y values leaves light with an out-of-plane electric field '
                              'unchanged.',
-                       help_text='dn/dT of n_zz, the out-of-plane index E_z sees (eps_zz of em_fdtd_ez, em_fdfd_ez '
-                                 'and em_modes); set by dndT, which this entry overrides. Without dndT and dndT_zz it '
-                                 'is 0, so the E_z types see no thermo-optic change even when dndT_xx / dndT_yy are '
-                                 'set. Typical: z-cut lithium niobate (dn_e/dT) 3.3e-5.'),
+                       help_text='Overrides dndT for n_zz, the out-of-plane index E_z sees (eps_zz of em_fdtd_ez, '
+                                 'em_fdfd_ez, em_modes). Without dndT and dndT_zz it is 0: E_z types see no change '
+                                 'even with dndT_xx / dndT_yy set. z-cut lithium niobate (dn_e/dT) 3.3e-5.'),
     _material_property('alpha', 'Thermal expansion coefficient', '1/K',
                        tip='Growth in length per kelvin. The thermo-optic coupling uses it to lengthen the optical path '
                            'of the heated structure.\n\n'
                            "A thin film on a substrate grows with the substrate, so enter the substrate's value there. "
                            'Leave it empty for liquids.',
-                       help_text='Linear thermal expansion coefficient: sets alpha_xx and alpha_yy (and alpha_zz when '
-                                 'a solid_mechanics or solid_mechanics_3d physics is present, which turns alpha dT '
-                                 'into thermal strain and '
-                                 'stress through heat_solid_thermal_strain). '
-                                 'heat_em_thermo_optic scales eps by (1 + alpha_xx dT)(1 + alpha_yy dT), i.e. n by '
-                                 'about (1 + alpha dT): the in-plane growth of the structure on the fixed grid (dropped '
-                                 'when solid_em_strain_optic maps the solid strain instead; a film clamped to a substrate grows with the '
-                                 'substrate\'s alpha: library values are free-crystal, so override them, e.g. LN on Si '
-                                 '2.6e-6 instead of 1.5e-5). '
-                                 'Per cell this is first-order, exact only for an alpha uniform over the mode. Leave 0 '
-                                 'for liquids: their region is the container\'s. Typical: silica 5.5e-7, silicon '
-                                 '2.6e-6, gold 1.4e-5.'),
+                       help_text='Linear expansion: sets alpha_xx and alpha_yy (and alpha_zz with a solid_mechanics / '
+                                 'solid_mechanics_3d physics: thermal strain via heat_solid_thermal_strain). '
+                                 'heat_em_thermo_optic scales eps by (1 + alpha_xx dT)(1 + alpha_yy dT), the in-plane '
+                                 'growth on the fixed grid, first order per cell (dropped when solid_em_strain_optic '
+                                 'maps the solid strain). A film clamped to a substrate grows with the substrate: '
+                                 'override the free-crystal library value (LN on Si 2.6e-6, not 1.5e-5). Leave 0 for '
+                                 'liquids. Silica 5.5e-7, silicon 2.6e-6, gold 1.4e-5.'),
     _material_property('alpha_xx', 'Thermal expansion along x', '1/K',
-                       help_text='Expansion coefficient along x (see alpha).',
+                       help_text='Overrides alpha for this axis.',
                        tip=_component_tip('Thermal expansion along x', 'Thermal expansion coefficient')),
     _material_property('alpha_yy', 'Thermal expansion along y', '1/K',
-                       help_text='Expansion coefficient along y (see alpha).',
+                       help_text='Overrides alpha for this axis.',
                        tip=_component_tip('Thermal expansion along y', 'Thermal expansion coefficient')),
 )
 
@@ -247,24 +223,20 @@ def _temperature_param(help_text, tip, time_dependent=False, follows_parameters=
                  help=help_text, tip=tip, time_dependent=time_dependent, follows_parameters=follows_parameters)
 
 
-_TIME_VALUE_TEXT = ('May depend on time t [s] (parameters and t only), re-set at the start of every heat step of a '
-                    'time_dependent study (the implicit step from t_n to t_n + dt sees the value at t_n; t = 0 in '
-                    'other studies).')
 _TEMPERATURE_BOUNDS = _temperature_param('', '')   # min / max of a temperature evaluated at a time t
 
 
 def _heat_transfer_coefficient_param():
     return Param('h', 'float', 10.0, label='Heat transfer coefficient', unit='W/(m^2 K)', min=0.0,
-                 help='Heat lost per unit area and kelvin of T - T_ext; h = 0 removes no heat and does not anchor a '
-                      'steady solve. Typical: still air 5-25, forced air 10-200, water 500-10000.',
+                 help='Loss h (T - T_ext) per area; h = 0 does not anchor a steady solve. Still air 5-25, forced air '
+                      '10-200, water 500-10000.',
                  tip='Heat lost per area and per kelvin above the ambient temperature; 0 removes nothing.\n\n'
                      'Typical: still air 5 to 25, forced air 10 to 200, water 500 to 10000.')
 
 
 def _ambient_temperature_param():
     return Param('T_ext', 'float', 293.15, label='Ambient temperature', unit='K', min=0.0, min_exclusive=True,
-                 help='Temperature of the surrounding fluid that the loss h (T - T_ext) drives toward; typically '
-                      'room temperature, 293.15 K.',
+                 help='Temperature of the surrounding fluid.',
                  tip='Temperature of the surrounding fluid that the surface cools or warms toward.\n\n'
                      'Usually room temperature, 293.15 K.')
 
@@ -529,7 +501,7 @@ def _time_mode(vctx, physics_spec, settings_values=None):
 
 def _is_steady(study_type, time_mode):
     """True when heat is solved as a steady state (any study but time_dependent, or stationary time_mode)."""
-    return study_type != 'time_dependent' or time_mode != 'transient'
+    return study_type != TIME_DEPENDENT_STUDY or time_mode != 'transient'
 
 
 def _study_text(vctx):
@@ -661,7 +633,7 @@ def _cadence_issues(vctx, physics_spec, settings, steady, path):
             return [Issue('error', path, f'transient heat with every = {every} advances {every} * {dt_sync:.4g} s '
                                          f'per step, more than its time_step {time_step:.4g} s; {remedy}')]
     em_dt = getattr(vctx.mesh, 'dt', None)
-    if vctx.study_type == 'time_dependent' and em_dt and every < MIN_EM_STEPS_PER_SOLVE:
+    if vctx.study_type == TIME_DEPENDENT_STUDY and em_dt and every < MIN_EM_STEPS_PER_SOLVE:
         return [Issue('warning', path,
                       f'heat is solved every {every} EM step(s) ({every * em_dt:.3g} s), and one CG solve costs far '
                       'more than an EM step: set every to a few hundred (one heat solve per Joule averaging window)')]
@@ -771,7 +743,7 @@ def _mode_pair_issues(vctx, path, values):
             issues.append(Issue('error', path, f"{role}_mode {values[f'{role}_mode']} exceeds n_modes "
                                                f"{mode_values['n_modes']} of '{name}'"))
     mirrors = [face for face in ('x_lo', 'x_hi', 'y_lo', 'y_hi')
-               if mode_values.get(f'bc_{face}') in ('symmetric', 'antisymmetric')]
+               if mode_values.get(f'bc_{face}') in MIRROR_SIGNS]
     if mirrors and values['collected_selection'] == 'te_and_tm':
         issues.append(Issue('warning', path, f"collected_selection te_and_tm with the mirror face(s) "
                                              f"{', '.join(mirrors)} of '{name}': a mirror keeps one mode family "
@@ -809,7 +781,7 @@ def _illumination_issues(vctx, path, values):
         issues.append(Issue('error', path, f"illumination_physics '{name}' solves at {wavelength:.6g} m, mode_physics "
                                            f"'{mode_spec.name}' at {mode_wavelength:.6g} m: set equal wavelengths"))
     mirrors = [face for face in ('x_lo', 'x_hi', 'y_lo', 'y_hi')
-               if mode_values.get(f'bc_{face}') in ('symmetric', 'antisymmetric')]
+               if mode_values.get(f'bc_{face}') in MIRROR_SIGNS]
     if mirrors:
         issues.append(Issue('info', path, f"mirror face(s) {', '.join(mirrors)}: the illumination is mirrored with the "
                                           'parity of the collected mode, so only illumination of that parity is '
@@ -832,7 +804,7 @@ def _thermorefractive_noise_memory(values, n_selected_cells, mesh):
 
 
 def _triangle_issues(vctx, settings_values, path):
-    """Rules of heat on a triangle mesh (FEMHeatPhysics, mesh plan T4): no azimuthal order m != 0, no thermal_noise
+    """Rules of heat on a triangle mesh (FEMHeatPhysics): no azimuthal order m != 0, no thermal_noise
     study (its operator is the finite-volume one)."""
     issues = []
     if azimuthal_order_of(settings_values):
@@ -855,7 +827,7 @@ def _validate_heat(vctx, physics_spec, settings_values):
     issues = []
     time_mode = _time_mode(vctx, physics_spec, settings_values)
     steady = _is_steady(vctx.study_type, time_mode)
-    if time_mode == 'transient' and vctx.study_type != 'time_dependent':
+    if time_mode == 'transient' and vctx.study_type != TIME_DEPENDENT_STUDY:
         issues.append(Issue('info', path, f"time_mode 'transient' is ignored in a {_study_text(vctx)} study: heat "
                                           'is solved as a steady state (only a time-dependent study runs it '
                                           'transient)'))
@@ -898,10 +870,10 @@ def _create_heat(ctx, physics_spec, values):
     """HeatPhysics on ctx.domain (insulated faces until features apply) with the build's linear (pcg) and, in a
     thermal_noise study, shifted solvers; every study but time_dependent forces steady mode; thermal_noise needs no
     anchor (never CG-solved). Triangles: FEMHeatPhysics; tetrahedra: FEMHeatPhysics3D."""
-    time_mode = values['time_mode'] if ctx.study_type == 'time_dependent' else 'stationary'
+    time_mode = values['time_mode'] if ctx.study_type == TIME_DEPENDENT_STUDY else 'stationary'
     solvers = ctx.solvers(physics_spec.name)
     time_step = values['time_step'] if time_mode == 'transient' else math.inf
-    if ctx.domain.grid_kind == 'triangles':   # FEM (mesh plan T4): discretization order, no azimuthal order / noise
+    if ctx.domain.grid_kind == 'triangles':   # FEM: discretization order, no azimuthal order / noise
         return FEMHeatPhysics(ctx.domain, T0=values['T0'], order=element_order(values), time_mode=time_mode,
                               time_step=time_step, axisymmetric=is_axisymmetric(values),
                               linear_solver=solvers['linear'])
@@ -947,14 +919,15 @@ def _memory_estimate(settings_values, mesh, context):
     the window voxels, 9 slots with a cylindrical sector's phi wrap) at the linear solver's precision with its flux
     post-processing (transient phase), a cuDSS 'linear' factor (fem.diffusion.cudss_diffusion_estimate) and the
     line_block noise solver's run items; element meshes: the FEM system on the active elements."""
-    transient = context.spec.study.type == 'time_dependent' and settings_values['time_mode'] == 'transient'
+    transient = context.spec.study.type == TIME_DEPENDENT_STUDY and settings_values['time_mode'] == 'transient'
     cudss = cudss_back_end(context.solvers)
     refactorizes = _operator_follows_state(context, transient)
-    if mesh.kind in ('triangles', 'tetrahedra'):   # FEMHeatPhysics[3D]: T, Q, Q_ext, |q| per element + the FEM system
+    if mesh.kind in FREE_MESH_KINDS:   # FEMHeatPhysics[3D]: T, Q, Q_ext, |q| per element + the FEM system
         estimator = fem_diffusion_estimate if mesh.kind == 'triangles' else fem_diffusion_estimate_3d
         return estimator(mesh, element_order(settings_values), element_fields=4, direct=linear_solver_direct(context),
                          multigrid=linear_solver_multigrid(context), cudss=cudss, refactorizes=refactorizes,
-                         active_fraction=_active_fraction(context, mesh, transient))
+                         active_fraction=_active_fraction(context, mesh, transient),
+                         precision=linear_solver_precision(context), mixed=linear_solver_mixed(context))
     fields = MemoryEstimate.from_items((('T, Q, Q_ext (3 x float32)', 3 * FLOAT32_BYTES * int(mesh.n_cells)),))
     precision = linear_solver_precision(context)
     # flux: heat_flux_magnitude (renderer reads, snapshots, error_indicator) after a solve; backend: where a multigrid
@@ -998,7 +971,7 @@ def _time_estimate(settings_values, mesh, context):
     held = None if transient else _HELD_TEMPERATURE   # implicit steps: the capacity term is not in the estimate
     # the operator is re-assembled only when k changes (a coupling writing Q leaves the build's factorisation)
     operator_changes = material_follows_state(context, ('k', 'k_xx', 'k_yy', 'k_zz', 'k_xy'))
-    if mesh.kind in ('triangles', 'tetrahedra'):
+    if mesh.kind in FREE_MESH_KINDS:
         order = element_order(settings_values)
         unknowns, entries = fem_time_system(mesh, order)
         estimate = diffusion_time_estimate(context, unknowns, 3 if mesh.kind == 'tetrahedra' else 2,
@@ -1152,15 +1125,12 @@ _NOISE_PARAMS = (
                          ('illumination', 'Illumination scattered into a waveguide mode'),
                          ('expression', 'Expression')),
           help="mode_pair: X = amplitude scattered into collected_mode per incident amplitude (1 W modes of "
-               "mode_physics, Lorentz reciprocity): w = omega eps0 / 4 sum_i 2 n_i dndT_i E_inc,i E_partner,i with the "
-               "partner mode travelling against the collected direction (backward collection of a forward mode: "
-               "E_t . E_t + E_z E_z of the same forward mode, i.e. |E_t|^2 - |E_z|^2; forward collection of the same "
-               "mode: |E|^2, then X is the thermorefractive phase noise in rad), q0 = |beta_inc +- beta_coll|; n_i = "
-               "sqrt(Re eps_ii) (eps_xx, eps_yy, eps_r = eps_zz), dndT_xx / _yy / _zz of the heat materials. "
-               "illumination: the same with E_inc = the field [V/m] of illumination_physics (an em_fdfd_ez / _hz "
-               "physics solving the same cross-section at k_z = 0, e.g. a gaussian_beam from the top): X = amplitude "
-               "[W^0.5] scattered into collected_mode for that illumination, q0 = beta_coll, S in W/Hz (scales with "
-               "the source amplitude squared). expression: w = weight (x, y), q0 = axial_wavenumber.",
+               "mode_physics, Lorentz reciprocity): w = omega eps0 / 4 sum_i 2 n_i dndT_i E_inc,i E_partner,i, the "
+               "partner travelling against the collected direction (backward collection of a forward mode: |E_t|^2 "
+               "- |E_z|^2; forward collection of the same mode: |E|^2, X = phase noise in rad), q0 = |beta_inc +- "
+               "beta_coll|, n_i = sqrt(Re eps_ii). illumination: E_inc = the field [V/m] of illumination_physics "
+               "(e.g. a gaussian_beam from the top), X in W^0.5, q0 = beta_coll, S in W/Hz (scales with the source "
+               "amplitude squared). expression: w = weight, q0 = axial_wavenumber.",
           tip='What the noise is measured on.\n\n'
               '- Scattering between two waveguide modes: light of one mode scattered by temperature fluctuations '
               'into another (or the same) mode, using the modes of a mode-analysis physics.\n'
@@ -1169,137 +1139,110 @@ _NOISE_PARAMS = (
               '- Expression: a weighting function you give.'),
     Param('illumination_physics', 'ref', None, label='Illumination physics', ref_kind='physics', optional=True,
           visible_if=_ILLUMINATION,
-          help='Name of the em_fdfd_ez or em_fdfd_hz physics whose solution is the incident field: it solves the '
-               'cross-section (xy, light along z uniform: normal incidence in the cross-section plane, k_z = 0) as a '
-               'background physics of the thermal_noise study, at the wavelength of mode_physics and with its '
-               'boundary settings. em_fdfd_ez = E along the waveguide (E_z), em_fdfd_hz = E in the cross-section '
-               "(E_x, E_y). With a mirror face the illumination has the collected mode's parity (validation info).",
+          help='em_fdfd_ez (E along the waveguide) or em_fdfd_hz (E in the cross-section) physics giving the incident '
+               'field: it solves the cross-section at k_z = 0 as a background physics of the thermal_noise study, at '
+               "the wavelength of mode_physics. With a mirror face the illumination has the collected mode's parity "
+               '(validation info).',
           tip='The frequency-domain wave physics that computes the illuminating light on the same cross-section.'),
     Param('mode_physics', 'ref', None, label='Mode physics', ref_kind='physics', optional=True,
           visible_if=_COLLECTED,
-          help='Name of the em_modes physics (same model, straight waveguide) whose modes give the weighting; the '
-               'thermal_noise study solves it first. A mirror face lies on the window edge (its em ghost cell is '
-               'outside the window), where an insulated heat face is the matching even mirror (the whole mirrored '
-               'cross-section counts). The outermost cells of its pec / pmc faces are ghosts outside the wall plane '
-               '(weighting 0) that keep the heat condition of that face (e.g. a temperature sink), on the window '
-               'edge one cell outside the em wall plane.',
+          help='em_modes physics (same model, straight waveguide) whose modes give the weighting; the thermal_noise '
+               'study solves it first. Its ghost cells outside pec / pmc wall planes weigh 0.',
           tip='The waveguide mode physics whose modes scatter or collect the light.'),
     Param('incident_selection', 'choice', 'collected', label='Incident mode', choices=INCIDENT_SELECTIONS,
           choice_labels=(('collected', 'Same as each collected mode'), ('te', 'Fundamental quasi-TE'),
                          ('tm', 'Fundamental quasi-TM'), ('number', 'By mode number')),
           visible_if=_MODE_PAIR,
-          help="Incident mode of a mode_pair weighting: collected = the collected mode itself (backscatter / phase "
-               "noise of each collected mode), te / tm = the fundamental quasi-TE / quasi-TM mode (the highest-ranked "
-               "mode with te_fraction > 0.5 / <= 0.5), number = incident_mode.",
+          help='collected = the collected mode itself (backscatter / phase noise), te / tm = the fundamental quasi-TE '
+               '/ quasi-TM mode (as collected_selection), number = incident_mode.',
           tip='Which waveguide mode carries the incoming light: the collected mode itself, the fundamental mode of '
               'one polarisation, or a mode number.'),
     Param('incident_mode', 'int', 1, label='Incident mode number', min=1,
           visible_if=(('incident_selection', ('number',)),),
-          help='Mode number (em_modes rank, 1 = highest Re n_eff) of the incident light when incident_selection is '
-               'number; <= n_modes of mode_physics.',
+          help='em_modes rank (1 = highest Re n_eff), <= n_modes of mode_physics.',
           tip='Number of the waveguide mode that carries the incoming light (1 = highest effective index).'),
     Param('incident_direction', 'choice', 'forward', label='Incident direction', choices=DIRECTIONS,
           choice_labels=(('forward', 'Forward (+z)'), ('backward', 'Backward (-z)')),
           visible_if=_MODE_PAIR,
-          help='Travel direction of the incident mode along z (backward: E_z sign flipped, beta -> -beta).',
+          help='backward: E_z sign flipped, beta -> -beta.',
           tip='Direction along the waveguide in which the incoming light travels.'),
     Param('collected_selection', 'choice', 'te', label='Collected mode', choices=COLLECTED_SELECTIONS,
           choice_labels=(('te', 'Fundamental quasi-TE'), ('tm', 'Fundamental quasi-TM'),
                          ('te_and_tm', 'Both fundamental modes'), ('number', 'By mode number')),
           visible_if=_COLLECTED,
-          help='Collected (detected) mode(s): te / tm = the fundamental quasi-TE (E_x dominant) / quasi-TM mode, i.e. '
-               'the highest-ranked mode (largest Re n_eff) with te_fraction > 0.5 / <= 0.5 (run error when the solve '
-               'found none: raise n_modes; a mirror face keeps one family only); te_and_tm = both in one run, each '
-               'its own spectrum (series psd_te*, psd_tm*, extras with suffix _te / _tm; one set of factorisations '
-               'per mode, as their beta differ); number = collected_mode. The resolved mode number, n_eff and '
-               'te_fraction are in the result (collected_mode, collected_n_eff, collected_te_fraction).',
+          help='te / tm = the fundamental quasi-TE (E_x dominant) / quasi-TM mode: the highest-ranked mode with '
+               'te_fraction > 0.5 / <= 0.5 (run error when none: raise n_modes; a mirror face keeps one family '
+               'only); te_and_tm = both in one run, one spectrum each (prefix psd_te / psd_tm, extras suffix _te / '
+               '_tm; twice the factorisations); number = collected_mode.',
           tip='Which waveguide mode collects the scattered light: the fundamental mode of one polarisation, both of '
               'them (one spectrum each, about twice the time), or a mode number.'),
     Param('collected_mode', 'int', 1, label='Collected mode number', min=1,
           visible_if=(('collected_selection', ('number',)),),
-          help='Mode number (em_modes rank, 1 = highest Re n_eff) of the collected light when collected_selection is '
-               'number; <= n_modes of mode_physics.',
+          help='em_modes rank (1 = highest Re n_eff), <= n_modes of mode_physics.',
           tip='Number of the waveguide mode that collects the scattered light (1 = highest effective index).'),
     Param('collected_direction', 'choice', 'backward', label='Collected direction', choices=DIRECTIONS,
           choice_labels=(('forward', 'Forward scattering'), ('backward', 'Backscattering')),
           visible_if=_COLLECTED,
-          help='Travel direction of the collected light: backward = backscattering (q0 = beta_inc + beta_coll), '
-               'forward = forward scattering (q0 = |beta_inc - beta_coll|, 0 for the same mode); illumination: q0 = '
-               'beta_coll either way (only the sign of the E_z cross term differs).',
+          help='backward: q0 = beta_inc + beta_coll; forward: q0 = |beta_inc - beta_coll| (0 for the same mode); '
+               'illumination: q0 = beta_coll either way (only the sign of the E_z cross term differs).',
           tip='Direction in which the collected light travels: backward for light scattered back toward the source.'),
     Param('weight', 'float', 1.0, label='Weighting function', unit='1/(K m^3)', field_dependent=True,
           visible_if=_EXPRESSION,
-          help='w(x, y): X = integral w dT dV (per unit z length times the axial profile); X has the units of w '
-               'times K m^3, the PSD those squared per Hz. Evaluated at the cell centres; may depend on x and y.',
+          help='w(x, y) at the cell centres: X = integral w dT dV (per unit z length times the axial profile), in '
+               'units of w times K m^3.',
           tip='Weighting of the temperature change at each point; the noise is computed for the weighted '
               'integral of the temperature.'),
     Param('axial_wavenumber', 'float', 0.0, label='Axial wavenumber', unit='1/m', min=0.0, visible_if=_EXPRESSION,
-          help='q0 of the weighting phase exp(-j q0 z) along the waveguide axis; 0 = uniform along z.',
+          help='q0 of the weighting phase exp(-j q0 z) along z; 0 = uniform.',
           tip='How fast the weighting oscillates along the waveguide (radians per metre); 0 for none.'),
     Param('axial_profile', 'choice', 'uniform', label='Axial profile', choices=AXIAL_PROFILES,
           choice_labels=(('uniform', 'Uniform over a length'), ('gaussian', 'Gaussian spot')),
-          help='Envelope g(z) of the weighting along z. uniform: g = 1 over interaction_length L, S = L S_2D(q0) '
-               '(asymptotic in L: exact once L >> 1/q0 and the thermal diffusion length sqrt(D / omega); at q0 = 0 '
-               'and low f the finite-L integral is the right one, use gaussian). gaussian: g = exp(-z^2 / waist^2) '
-               '(a Gaussian illumination spot of 1/e^2 intensity radius waist), S = integral dq/2pi |g~(q - q0)|^2 '
-               'S_2D(q) by axial_points-point Gauss-Hermite (exact for any waist).',
+          help='Envelope g(z) along z. uniform: g = 1 over interaction_length L, S = L S_2D(q0) (exact once L >> '
+               '1/q0 and the diffusion length sqrt(D / omega); at q0 = 0 and low f use gaussian). gaussian: g = '
+               'exp(-z^2 / waist^2) (1/e^2 intensity radius waist), S = integral dq/2pi |g~(q - q0)|^2 S_2D(q) by '
+               'Gauss-Hermite (exact for any waist).',
           tip='How the illuminated part of the waveguide is shaped along its length.'),
     Param('interaction_length', 'float', 1e-4, label='Interaction length', unit='m', min=0.0, min_exclusive=True,
           visible_if=(('axial_profile', ('uniform',)),),
-          help='Length L along z over which the weighting acts (uniform profile); the PSD scales with L.',
+          help='L of the uniform profile; the PSD scales with L.',
           tip='Length of waveguide over which the light interacts with the fluctuations.'),
     Param('waist', 'float', 1e-5, label='Spot radius', unit='m', min=0.0, min_exclusive=True,
           visible_if=(('axial_profile', ('gaussian',)),),
-          help='w0 of g(z) = exp(-z^2 / w0^2) (gaussian profile); integral |g|^2 dz = w0 sqrt(pi / 2).',
+          help='w0 of g(z) = exp(-z^2 / w0^2); integral |g|^2 dz = w0 sqrt(pi / 2).',
           tip='Radius along the waveguide of a Gaussian illumination spot (where the intensity falls to 13.5 %).'),
     Param('axial_points', 'int', 8, label='Axial samples', min=1, max=64,
           visible_if=(('axial_profile', ('gaussian',)),),
-          help='Gauss-Hermite nodes of the q integral (gaussian profile); each costs one factorisation per frequency '
-               '(nodes with equal |q| are merged, so q0 = 0 halves the cost). 6-12 typical.',
+          help='Gauss-Hermite nodes of the q integral, one factorisation per frequency each (equal |q| merged: q0 = '
+               '0 halves the cost). 6-12 typical.',
           tip='Number of samples of the spot spectrum; each costs one solve per frequency.'),
 )
 _NOISE_DESCRIPTION = (
-    'One-sided power spectral density of X = integral w(x, y) g(z) exp(-j q0 z) dT dV over the selected cells '
-    '(thermal_noise study only; elsewhere the result stays empty): S_X(f) = 4 k_B T0^2 integral dq/2pi |g~(q - q0)|^2 '
-    'Re sum conj(w) u dA, (j 2 pi f rho cp + k_zz q^2 - div k grad) u = w on the heat window. Assumptions: uniform '
-    'temperature T0, z-invariant cross-section, dT of the isobaric (entropy) fluctuations only (pressure / Brillouin '
-    'fluctuations and the sound speed are not modelled), dndT the measured isobaric coefficient. Held cells (temperature '
-    'on objects, fixed_temperature_domain) and Dirichlet faces do not fluctuate; insulated faces act as mirrors. '
-    'mode_pair / illumination: an em mirror face lies on the window edge (keep the heat face there insulated: the even '
-    'mirror) and doubles the result (the whole mirrored cross-section counts); w = 0 on the ghost cells outside em '
-    'pec / pmc wall planes, which keep the heat boundary condition of that face. Every '
-    'selected cell with w != 0 needs rho and cp > 0 (infinite variance otherwise: validation and run error). '
-    'mode_pair: X = complex amplitude scattered into the collected mode per incident amplitude, both modes normalised '
-    'to 1 W, so S is the PSD of the scattered field in (power fraction) / Hz and |X|^2 the scattered power per incident '
-    'power; a heterodyne beat with a local oscillator of power P_LO carries 4 P_LO P_in S per Hz of optical power '
-    'squared. illumination: X = amplitude [W^0.5] scattered into the collected mode by the FDFD illumination as '
-    'solved (its source amplitude sets the scale; g(z) multiplies it along the waveguide), S in W/Hz: the PSD of the '
-    'collected scattered field; the static (mean) scattering of the structure is not part of it. Units of S: 1/Hz '
-    '(mode_pair), W/Hz (illumination) or (w K m^3)^2 / Hz. Result: xy over the study frequencies, series psd '
-    '(all selected cells combined) and psd_db (10 log10 psd). When the selection covers several materials, also '
-    'psd_<material> (self term: w on that material\'s cells alone; psd_other for weighted cells in no material), '
-    'psd_cross = psd - sum of the self terms (interference between materials, may be negative; its integral over '
-    'all f is 0) and psd_<material>_db; a material name that makes two series collide is a run error. Extra keys '
-    'variance (exact integral of psd over all f: k_B T0^2 integral |w g|^2 / (rho cp) dV, the equal-time variance of '
-    'X), contribution_variances (the same per material, summing to variance), static_variance (the part of variance '
-    'that never relaxes: at q = 0 the mean dT of a connected region without temperature anchor (no Dirichlet / h > 0 '
-    'face, held cell or volumetric loss) is conserved, a delta at f = 0 outside every band; 0 otherwise), '
-    'band_fraction (share of the relaxing part variance - static_variance inside the solved band, trapezoid in ln '
-    'f), axial_wavenumber q0 [1/m], mirror_factor, axial_norm (integral '
-    '|g|^2 dz [m]) and, for mode_pair / illumination, wavelength [m] and the resolved collected_mode (number), '
-    'collected_n_eff, collected_te_fraction (and incident_mode). collected_selection te_and_tm solves both fundamental '
-    'modes in one run: every series gets the prefix psd_te / psd_tm instead of psd (psd_te_<material>, psd_tm_cross, '
-    '...) and every extra key the suffix _te / _tm. Cost: one host SuperLU of the window per frequency, axial sample '
-    'and collected mode (each material adds one back substitution).')
+    'One-sided PSD of X = integral w(x, y) g(z) exp(-j q0 z) dT dV over the selected cells (thermal_noise study '
+    'only; elsewhere the result stays empty): S_X(f) = 4 k_B T0^2 integral dq/2pi |g~(q - q0)|^2 Re sum conj(w) u dA, '
+    '(j 2 pi f rho cp + k_zz q^2 - div k grad) u = w on the heat window. Assumes uniform T0, a z-invariant '
+    'cross-section and isobaric (entropy) fluctuations only (no pressure / Brillouin part; dndT the measured '
+    'isobaric coefficient). Held cells and Dirichlet faces do not fluctuate; insulated faces act as mirrors. An em '
+    'mirror face lies on the window edge (keep the heat face there insulated) and doubles the result. Every selected '
+    'cell with w != 0 needs rho and cp > 0 (validation and run error). mode_pair: modes normalised to 1 W, so S is in '
+    '(power fraction) / Hz and |X|^2 the scattered power per incident power; a heterodyne beat with local oscillator '
+    'P_LO carries 4 P_LO P_in S. illumination: S in W/Hz, the scattered field as solved (static mean scattering '
+    'excluded). expression: S in (w K m^3)^2 / Hz. Result xy over the study frequencies: series psd (all cells) and '
+    'psd_db; with several materials also psd_<material> (self term; psd_other for cells in no material), psd_cross = '
+    "psd - sum of the self terms (may be negative, integral 0) and psd_<material>_db (a colliding material name is a "
+    'run error). Extra keys: variance (exact integral of psd: k_B T0^2 integral |w g|^2 / (rho cp) dV), '
+    'contribution_variances (per material), static_variance (the never-relaxing q = 0 part of a region without '
+    'temperature anchor, a delta at f = 0), band_fraction (share of variance - static_variance inside the solved '
+    'band), axial_wavenumber,mirror_factor, axial_norm (integral |g|^2 dz [m]); mode_pair / illumination also wavelength, '
+    'collected_mode, collected_n_eff, collected_te_fraction (and incident_mode). Cost: one host SuperLU of the window '
+    'per frequency, axial sample and collected mode.')
 
 _SHARED_NOISE_PARAMS = {param.name: param for param in _NOISE_PARAMS}
 _PARTICLE_PARAMS = (
     Param('weighting', 'choice', 'illumination', label='Weighting', choices=('illumination', 'mode_pair'),
           choice_labels=(('illumination', 'Illumination scattered into a waveguide mode'),
                          ('mode_pair', 'Scattering between two waveguide modes')),
-          help='As thermorefractive_noise, with dndT_i replaced by the isotropic index increment per particle dn/dc * '
-               'M / N_A: illumination: X = amplitude [W^0.5] scattered into collected_mode, S in W/Hz; mode_pair: X = '
-               'amplitude per incident amplitude (1 W modes), S in 1/Hz.',
+          help='As thermorefractive_noise with dndT_i -> dn/dc * M / N_A: illumination S in W/Hz, mode_pair S in '
+               '1/Hz.',
           tip='Which light the particles scatter: a frequency-domain illumination (for example a beam from the top) '
               'into a waveguide mode, or one waveguide mode into another (or itself, backward).'),
     *(_SHARED_NOISE_PARAMS[name] for name in ('illumination_physics', 'mode_physics', 'incident_selection',
@@ -1307,225 +1250,187 @@ _PARTICLE_PARAMS = (
                                               'collected_mode', 'collected_direction')),
     Param('refractive_increment', 'float', 1.85e-4, label='Refractive index increment', unit='m^3/kg', min=0.0,
           min_exclusive=True,
-          help='dn/dc of the particle in the liquid [m^3/kg] (1 mL/g = 1e-3 m^3/kg); proteins ~1.85e-4 (0.185 mL/g). '
-               'With molar_mass it sets the index increment per particle dn/dc * M / N_A [m^3] (the excess '
-               'polarisability alpha / eps0 = 2 n_liquid times it).',
+          help='dn/dc in the liquid (1 mL/g = 1e-3 m^3/kg); proteins ~1.85e-4. With molar_mass: the index '
+               'increment per particle dn/dc * M / N_A [m^3] (excess polarisability alpha / eps0 = 2 n_liquid times '
+               'it).',
           tip='Change of refractive index per mass concentration of the particle (dn/dc).\n\nProteins: about '
               '1.85e-4 m^3/kg (0.185 mL/g).'),
     Param('molar_mass', 'float', 66.5, label='Molar mass', unit='kg/mol', min=0.0, min_exclusive=True,
-          help='Molar mass M of the particle [kg/mol] (= kDa); BSA 66.5.',
+          help='M (kg/mol = kDa); BSA 66.5.',
           tip='Molar mass of the particle in kg/mol (equal to kDa). BSA: 66.5.'),
     Param('diffusivity', 'float', 5.9e-11, label='Diffusion coefficient', unit='m^2/s', min=0.0, min_exclusive=True,
-          help='Translational diffusion coefficient D of the particle in the liquid; Stokes-Einstein k_B T / (6 pi '
-               'eta R_h). BSA in water at 20-25 C: 5.9e-11 to 6.1e-11 m^2/s.',
+          help='Translational D in the liquid (Stokes-Einstein k_B T / (6 pi eta R_h)); BSA in water at 20-25 C: '
+               '5.9e-11 to 6.1e-11.',
           tip='How fast the particle diffuses. BSA in water: about 6e-11 m^2/s.'),
     Param('concentration', 'float', 1e-6, label='Concentration', unit='mol/m^3', min=0.0, min_exclusive=True,
-          help='Mean molar concentration c of the particles [mol/m^3] (1 nM = 1e-6 mol/m^3); n0 = c N_A per m^3. The '
-               'PSD scales with c; psd_single does not depend on it.',
+          help='Mean c (1 nM = 1e-6 mol/m^3); n0 = c N_A. The PSD scales with c, psd_single does not.',
           tip='Mean particle concentration in mol/m^3 (1 nM = 1e-6 mol/m^3). The spectrum scales with it.'),
     *(_SHARED_NOISE_PARAMS[name] for name in ('axial_profile', 'interaction_length', 'waist', 'axial_points')),
 )
 _PARTICLE_DESCRIPTION = (
     'Scattering spectrum of dilute particles (e.g. proteins) diffusing in the liquid on the selected cells '
-    '(thermal_noise study only; hosted by heat for its noise solver, independent of the heat materials): one-sided PSD '
-    'of X = integral w(x, y) g(z) exp(-j q0 z) dc dV, dc the number-density fluctuation of independent particles '
-    '(Poisson, <dc dc\'> = n0 delta, n0 = c N_A). S_X(f) = 4 n0 integral dq/2pi |g~(q - q0)|^2 Re sum conj(w) u dA with '
-    '(j 2 pi f + D q^2 - div D grad) u = w on the selected cells, which the particles cannot leave (no flux through '
-    'the selection edge or the window faces, which an em mirror plane shares). w is the mode-pair / '
-    'illumination weighting of thermorefractive_noise with dndT_i -> dn/dc * M / N_A, i.e. the scattered amplitude of '
-    'one particle at (x, y) (first Born / dipole approximation, isotropic polarisability, local field of the liquid). '
-    'Lineshape: about D (q0^2 + 1/d^2) / (2 pi), d the evanescent decay length (BSA, q0 = beta: ~1 kHz). The '
-    'coherent mean signal n0 integral w g exp(-j q0 z) dV (zero for a spot much longer than 1/q0) is not part of S. '
-    'Not modelled: hindered diffusion near walls, adsorption / binding, particle interactions. Result: xy as '
-    'thermorefractive_noise (psd, psd_db; prefix psd_te / psd_tm and key suffix _te / _tm with collected_selection '
-    'te_and_tm) plus psd_single = psd / (n0 V_s): the time-averaged PSD of one particle '
-    'diffusing within the sensing volume V_s = (integral |w g|^2 dV)^2 / integral |w g|^4 dV. Extra keys as '
-    'thermorefractive_noise plus bound_signal_max (|w|^2 of one particle held at the strongest cell at the spot '
-    'centre: the static signal of a bound particle, W or power fraction) at (bound_signal_x, bound_signal_y) [m], '
-    'sensing_volume [m^3], particles_in_sensing_volume (n0 V_s), index_increment [m^3] and number_density [1/m^3]. '
-    'Cost: one host SuperLU of the selected cells per frequency and axial sample.')
+    '(thermal_noise study only; independent of the heat materials): one-sided PSD of X = integral w(x, y) g(z) '
+    "exp(-j q0 z) dc dV, dc the Poisson number-density fluctuation (<dc dc'> = n0 delta, n0 = c N_A). S_X(f) = 4 n0 "
+    'integral dq/2pi |g~(q - q0)|^2 Re sum conj(w) u dA, (j 2 pi f + D q^2 - div D grad) u = w on the selected cells, '
+    'which the particles cannot leave. w = the thermorefractive_noise weighting with dndT_i -> dn/dc * M / N_A (first '
+    'Born / dipole, isotropic polarisability). Lineshape about D (q0^2 + 1/d^2) / (2 pi), d the evanescent decay '
+    'length (BSA, q0 = beta: ~1 kHz). The coherent mean signal is not part of S. Not modelled: hindered diffusion '
+    'near walls, binding, particle interactions. Result and extra keys as thermorefractive_noise plus series '
+    'psd_single = psd / (n0 V_s) (one particle in the sensing volume V_s = (integral |w g|^2 dV)^2 / integral |w '
+    'g|^4 dV) and keys bound_signal_max (|w|^2 of one particle bound at the strongest cell, W or power fraction) at '
+    '(bound_signal_x, bound_signal_y), sensing_volume, particles_in_sensing_volume, index_increment [m^3], '
+    'number_density. Cost: one host SuperLU of the selected cells per frequency and axial sample.')
 
 
 # ---- type ----
 _FEATURES = (
     FeatureType('temperature', 'Temperature', 'boundary_condition', 'boundary',
-                params=(_temperature_param('Held at the selected outer faces (on the face itself) or in the '
-                                           'boundary cells inside the selected objects. ' + _TIME_VALUE_TEXT
-                                           + ' A temperature of t acts on outer faces only (validation error for '
-                                             'objects in the selection).',
+                params=(_temperature_param('Held on the selected outer faces or in the boundary cells inside the '
+                                           'selected objects; follows reuse_build.'
+                                           + ' A value of t: outer faces only (validation error for objects).',
                                            'Temperature held on the selected domain edges, or in the boundary cells '
                                            'just inside the selected objects.\n\n'
                                            'On domain edges it may change in time: write it as an expression of t.',
                                            time_dependent=True, follows_parameters=True),),
                 summary='Holds the selected domain edges or object boundaries at a fixed temperature. A steady heat '
                         'solve needs at least one fixed temperature or cooling feature.',
-                description='Fixed temperature (Dirichlet). On outer faces T is imposed at the face (half-cell '
-                            'conductance 2 k / dx); on object perimeters the boundary cells inside the object are held '
-                            'at T, imposed on their faces toward the free cells as on an outer face (the window edge '
-                            'is no perimeter: select the outer face there). Unreferenced outer '
-                            'faces are insulated, and a later boundary feature on the same face wins (validation '
-                            'warning); on cells held by two features the later one wins, and held cells ignore heat '
-                            'flux / convection (validation warns when their objects may overlap). Anchors a steady '
-                            'solve. With solver_defaults.conformal_boundaries (2D) a perimeter holds T on the drawn '
-                            'outline instead (conductance k / (t d) along each link from outside, t >= 0.02).',
+                description='Fixed temperature (Dirichlet): outer faces at the face (half-cell conductance 2 k / dx); '
+                            'on object perimeters the boundary cells inside the object are held, the value on their '
+                            'faces toward the free cells (the window edge is no perimeter: select the outer face; '
+                            'conformal_boundaries: on the drawn outline). On cells held by two features the later one '
+                            'wins; held cells ignore heat_flux / convection (validation warns on possible overlaps). '
+                            'Anchors a steady solve.',
                 apply=_apply_temperature, validate=_validate_temperature, grids=_FEM_GRIDS),
     FeatureType('heat_flux', 'Heat flux', 'boundary_condition', 'boundary',
                 params=(Param('flux', 'float', 1e4, label='Inward heat flux', unit='W/m^2', time_dependent=True,
-                              help='> 0 heats the domain (outer faces) or the object (perimeters), < 0 extracts heat. '
-                                   'Typical 1e3-1e6 (sunlight ~1e3). ' + _TIME_VALUE_TEXT,
+                              help='> 0 heats the domain or the object, < 0 extracts heat. Typical 1e3-1e6 (sunlight '
+                                   '~1e3).',
                               tip='Heat flow per area into the domain or object; negative values extract heat.\n\n'
                                   'Typical 1e3 to 1e6; sunlight is about 1e3.'),),
                 summary='Feeds a given heat flow per area in through the selected domain edges or object boundaries.',
-                description='Prescribed heat flux, > 0 into the domain or the object. On outer faces a Neumann '
-                            'condition; on object perimeters it heats the boundary cells inside the object by flux * '
-                            'perimeter length / cell area (each exposed cell face weighted by its normal component, so '
-                            'slanted and curved perimeters get their true length to ~2 %). Does not anchor a steady '
-                            'solve. Polar / spherical domains weight each exposed face by its metric area. With '
-                            'solver_defaults.conformal_boundaries (2D: Cartesian, (r, z), polar, spherical) the drawn '
-                            'outline is used instead: each cut cell feeds flux * its chord of the outline into the '
-                            'object cell owning it (exact for straight edges; arcs about a polar origin too), '
-                            'whatever the cut-cell volumes.',
+                description='Prescribed heat flux. Outer faces: a Neumann condition; object perimeters: flux * '
+                            'perimeter length / cell area into the boundary cells inside the object (true perimeter '
+                            'length to ~2 %; conformal_boundaries: per cut-cell chord of the drawn outline). Does not '
+                            'anchor a steady solve.',
                 apply=make_apply_inward_flux('flux'), grids=_FEM_GRIDS),
     FeatureType('convection', 'Convective cooling', 'boundary_condition', 'boundary',
                 params=(_heat_transfer_coefficient_param(), _ambient_temperature_param()),
                 summary="Cools the selected domain edges or object boundaries toward a surrounding fluid at 'Ambient "
                         "temperature'.",
-                description='Convective loss h (T - T_ext) per unit area. On outer faces a Robin condition in series '
-                            'with the half cell; on object perimeters the boundary cells inside the object lose h * '
-                            'perimeter length / cell area * (T - T_ext) (each exposed cell face weighted by its normal '
-                            'component, so slanted and curved perimeters get their true length to ~2 %), on top of '
-                            'conduction to neighbouring cells (polar / spherical domains: the metric face areas). '
-                            'Anchors a steady solve when h > 0. With solver_defaults.conformal_boundaries (2D: '
-                            'Cartesian, (r, z), polar, spherical) on the drawn outline '
-                            'instead: each cut cell loses h L / (1 + h delta / k_n) * (T - T_ext) from the object cell '
-                            'owning it, L its chord of the outline, delta the distance from that cell centre to the '
-                            'chord, k_n the normal conductivity at build time.',
+                description='Convective loss h (T - T_ext) per area. Outer faces: a Robin condition in series with '
+                            'the half cell; object perimeters: the boundary cells inside the object lose h * perimeter '
+                            'length / cell area * (T - T_ext) (true perimeter length to ~2 %; conformal_boundaries: '
+                            'h L / (1 + h delta / k_n) per cut-cell chord L at distance delta). Anchors a steady solve '
+                            'when h > 0.',
                 apply=_apply_convection, grids=_FEM_GRIDS),
     FeatureType('radiation', 'Surface-to-ambient radiation', 'boundary_condition', 'boundary',
                 params=(Param('emissivity', 'float', 0.9, label='Surface emissivity', unit='1', min=0.0, max=1.0,
-                              help='Hemispherical emissivity eps of the surface (grey body): oxidised metals and '
-                                   'most dielectrics 0.8-0.95, silicon ~0.6, polished metals 0.02-0.1.',
+                              help='Hemispherical grey-body eps: oxidised metals and most dielectrics 0.8-0.95, '
+                                   'silicon ~0.6, polished metals 0.02-0.1.',
                               tip='How strongly the surface radiates compared with a black body: 1 = black, polished '
                                   'metal about 0.05.'),
                         Param('T_amb', 'float', 293.15, label='Ambient temperature', unit='K', min=0.0,
                               min_exclusive=True,
-                              help='Temperature of the surroundings the surface exchanges radiation with (a large '
-                                   'enclosure, e.g. the vacuum chamber walls).',
+                              help='Temperature of the enclosing surroundings (e.g. vacuum chamber walls).',
                               tip='Temperature of the surroundings that the surface radiates to.')),
                 summary='Lets the selected domain edges or object boundaries radiate heat to surroundings at a given '
                         'temperature, as a hot chip or a MEMS device in vacuum does.',
-                description='Grey-body radiation to an ambient enclosure: a loss eps sigma (T^4 - T_amb^4) per unit '
-                            'area (sigma = 5.67e-8 W/(m^2 K^4)) from the boundary cells of the selected outer faces '
-                            '(their face area) and object perimeters (staircase perimeter weights, also under '
-                            'conformal_boundaries). It adds to the face condition (Convective cooling on the same '
-                            'face: both act; on a Temperature face it is pointless) and uses the boundary cell '
-                            'temperature (error ~ h_r dx / (2 k), h_r = 4 eps sigma T^3 ~ 5 W/(m^2 K) at 300 K). '
-                            'Newton-linearised at the current temperature: a steady solve re-linearises and re-solves '
-                            'until the radiating temperatures change by < 1e-7 (relative; at most 50 solves, then a '
-                            'run warning), a transient step uses the temperature at its start. Anchors a steady '
-                            'solve when the emissivity is > 0. On triangles / tetrahedra: a Robin term per boundary '
-                            'edge / face linearised at its midpoint / centroid temperature (each re-linearisation '
-                            're-assembles and refactorises). No view factors or surface-to-surface exchange.',
+                description='Grey-body loss eps sigma (T^4 - T_amb^4) per area from the boundary cells of the '
+                            'selected outer faces and object perimeters (staircase weights, also under '
+                            'conformal_boundaries), at the boundary cell temperature (error ~ h_r dx / (2 k), h_r = 4 '
+                            'eps sigma T^3 ~ 5 W/(m^2 K) at 300 K). Adds to the face condition (with convection both '
+                            'act). Linearised: a steady solve re-solves until the radiating temperatures change by < '
+                            '1e-7 relative (at most 50 solves, then a run warning), a transient step uses its start '
+                            'temperature. Anchors a steady solve when eps > 0. No view factors or surface-to-surface '
+                            'exchange.',
                 apply=_apply_radiation, grids=_FEM_GRIDS),
     FeatureType(_SYMMETRY_FEATURE, 'Symmetry', 'boundary_condition', 'boundary', allow_interior=False,
                 summary='Makes the selected domain edges mirror planes, so only half (or a quarter) of a structure '
                         'that is the same on both sides of them needs to be drawn.',
-                description='Even mirror plane on outer faces (x_lo ... z_hi): the face is insulated (zero normal '
-                            'flux, as an unreferenced face, so the solve is unchanged) and becomes a model mirror '
-                            'plane (core.mirror): fields unfold T even across it (Unfold mirror planes, '
-                            'Results.field(unfold=True)), field derived integrals reaching it count twice (the '
-                            'unfolded structure, e.g. the power of a heat source on the plane), max / min include the '
-                            'image. A heat source on the plane is half the source of the unfolded model, a plane '
-                            'held at T_face is a temperature face instead (the odd mirror of T - T_face). Errors: '
-                            'another heat face feature on the same face, the x_lo axis of geometry axisymmetric (its '
-                            'r < 0 side unfolds without a feature; the ring weights already count the revolution) and '
-                            'its x_hi cylinder (no mirror image), a polar / spherical domain (a 1D slab mirrors), another physics with mirror bc settings (EM) that does not set '
-                            'the face symmetric / antisymmetric, parity_sectors (heat has no odd mirror feature).',
+                description='Even mirror plane on outer faces: the face stays insulated (the solve is unchanged) and '
+                            'becomes a model mirror plane: fields unfold T even across it '
+                            '(Results.field(unfold=True)), field derived integrals reaching it count twice, max / min '
+                            'include the image. A heat source on the plane is half the source of the unfolded model; a '
+                            'plane held at T_face is a temperature face instead. Errors: another heat face feature on '
+                            'the same face, the x_lo axis of geometry axisymmetric (it unfolds without a feature) and '
+                            'its x_hi cylinder, a polar / spherical domain (a 1D slab mirrors), an EM physics whose '
+                            'mirror bc is not symmetric / antisymmetric there, parity_sectors.',
                 validate=_validate_symmetry, grids=_FEM_GRIDS),
     FeatureType('heat_source', 'Heat source', 'domain_condition', 'domain',
                 params=(Param('Q', 'float', 1e12, label='Power density', unit='W/m^3', field_dependent=True,
                               time_dependent=True, follows_parameters=True,
-                              help='Heat per unit volume; in 2D, Q times the area is the power per unit z length '
-                                   '(W/m). May depend on x and y (3D models: also z); must be finite on the selected '
-                                   'cells. Or (not both) on time t: ' + _TIME_VALUE_TEXT,
+                              help='2D: Q times the area is the power per m of depth. Must be finite on the selected '
+                                   'cells. x, y (3D: z) or t, not both; follows reuse_build.',
                               tip='Heat generated per volume. The model is per metre of depth: power density times '
                                   'area gives watts per metre.\n\n'
                                   'A steady solve ignores it in cells that neither conduct nor lose heat.'),),
                 summary='Adds heat generated throughout the selected domains.',
-                description='Applied volumetric heat source: Q is added to Q_ext on the selected cells (several '
-                            'sources add; the coupled source Q of em_heat_joule is separate). A steady solve ignores '
-                            'it on cells that neither conduct nor lose heat.',
+                description='Adds Q to Q_ext on the selected cells (sources add; the coupled slot Q is separate). A '
+                            'steady solve ignores it on cells that neither conduct nor lose heat.',
                 apply=_apply_heat_source, grids=_FEM_GRIDS),
     FeatureType('point_heat_source', 'Point heat source', 'source', 'point',
                 params=(Param('P', 'float', 1.0, label='Power', unit='W/m', time_dependent=True,
                               follows_parameters=True,
                               space_units=(('axisymmetric', 'W'), ('3d', 'W')),
-                              help='Planar 2D: power per unit z length in W/m (a 2D point is a line source along z), '
-                                   'deposited in the '
-                                   'cell containing the point (Q_ext += P / cell area; a point exactly on a cell edge '
-                                   'goes to the cell on its +x / +y side). The temperature of that cell rises as the '
-                                   'cell shrinks (logarithmic singularity of a line source). With geometry '
-                                   "'axisymmetric' P is the ring's total power in W instead (a point on the axis "
-                                   'cell: a point source); in a 3D model P is the total power in W of a point source '
-                                   "at the point's height (Q_ext += P / cell volume). " + _TIME_VALUE_TEXT,
+                              help='Planar 2D: a line source along z, Q_ext += P / cell area in the cell containing '
+                                   'the point; its temperature grows as the cell shrinks (logarithmic singularity). '
+                                   "Axisymmetric: the ring's total power (on the axis cell a point source); 3D: a "
+                                   'point source. 1D: per the 1D total (slab W/m^2 although the unit reads W/m; '
+                                   'cylinder W/m; sphere W). Follows reuse_build.',
                               tip='Power per metre of depth, deposited in the cell that contains the point. In an '
-                                  'axisymmetric or 3D model it is the total power in watts instead.\n\n'
+                                  'axisymmetric or 3D model it is the total power in watts instead; in a 1D slab '
+                                  'model it is watts per square metre of the plane.\n\n'
                                   'The temperature at the point keeps rising as the mesh is refined, as for any ideal '
                                   'line source.'),),
                 object_kinds=('point',),
                 summary='Heat source at a point, which in 2D is a line running through the depth of the model.',
-                description='Line heat source along z (a point in 2D): P deposited in the cell containing each point; '
-                            'a coordinate exactly on a cell edge goes to the cell on its +x / +y side. Points outside '
-                            'the physical domain are an error.',
+                description='P deposited in the cell containing each point (on a cell edge: the cell on its +x / +y '
+                            'side; triangles: the mesh node; tetrahedra: the exact point load). Points outside the '
+                            'physical domain are an error.',
                 apply=_apply_point_heat_source, validate=validate_points_inside, grids=_FEM_GRIDS),
     FeatureType('fixed_temperature_domain', 'Fixed temperature (domain)', 'domain_condition', 'domain',
-                params=(_temperature_param('Temperature every selected cell is held at for the whole run.',
+                params=(_temperature_param('Held in every selected cell.',
                                            'Temperature the selected domains are held at for the whole run.'),),
                 summary='Holds the whole selected domains at a fixed temperature, like an ideal heat sink or '
                         'reservoir.',
-                description='Holds every selected cell at a fixed temperature for the whole run (the cells leave the '
-                            'solve, heat flows in or out freely): an ideal reservoir whose temperature sits on its '
-                            'faces toward the free cells (half-cell conductance 2 k / dx of the free neighbour, '
-                            "whatever the held cells' own k, so a k = 0 sink still conducts); the heat_flux_abs field reads 0 "
-                            'inside it. Anchors a steady solve. With solver_defaults.conformal_boundaries (2D) the '
-                            'temperature sits on the drawn edge instead: conductance k / (t d) of the free neighbour, '
-                            't d the distance from its centre to the edge along the link (t >= 0.02).',
+                description='Holds every selected cell at the temperature (heat flows in or out freely), the value on '
+                            'their faces toward the free cells (half-cell conductance 2 k / dx of the free neighbour, '
+                            "whatever the held cells' own k, so a k = 0 sink conducts; conformal_boundaries: on the "
+                            'drawn edge); heat_flux_abs reads 0 inside. Anchors a steady solve.',
                 apply=_apply_fixed_temperature_domain, grids=_FEM_GRIDS),
     FeatureType('out_of_plane_convection', 'Out-of-plane convection', 'domain_condition', 'domain',
                 params=(_heat_transfer_coefficient_param(), _ambient_temperature_param(),
                         Param('thickness', 'float', 1e-6, label='Layer thickness', unit='m', min=0.0,
                               min_exclusive=True,
-                              help='Out-of-plane (z) thickness of the slab the 2D model represents; the loss per '
-                                   'unit volume scales as 1 / thickness, so thin slabs cool strongly.',
+                              help='Out-of-plane (z) thickness of the slab; the loss scales as 1 / thickness.',
                               tip='Thickness of the layer the 2D model stands for, measured out of the plane.\n\n'
                                   'Thinner layers cool more strongly.'),
                         Param('sides', 'int', 2, label='Cooled sides', min=1, max=2,
-                              help='Number of cooled slab faces: 1 = one face (the other insulated), 2 = top and '
-                                   'bottom.',
+                              help='Cooled slab faces: 1 (the other insulated) or 2 (top and bottom).',
                               tip='Number of cooled surfaces: 2 for top and bottom, 1 when the other surface is '
                                   'insulated.')),
                 summary='Cools the selected domains through their top and bottom surfaces. Use it when the 2D model '
                         'stands for a thin membrane or chip layer.',
-                description='Convective loss through the top / bottom faces of a thin slab (2D model of a membrane '
-                            'or chip layer): volumetric loss h * sides / thickness * (T - T_ext) on the selected '
-                            'cells. Anchors a steady solve when h > 0.',
+                description='Convective loss through the top / bottom faces of a thin slab (2D membrane or chip '
+                            'layer): volumetric loss h * sides / thickness * (T - T_ext) on the selected cells (also '
+                            'when axisymmetric). Anchors a steady solve when h > 0.',
                 apply=_apply_out_of_plane_convection, grids=_BOTH_GRIDS),
     FeatureType('initial_temperature', 'Initial temperature', 'domain_condition', 'domain',
-                params=(_temperature_param('Temperature of the selected cells at t = 0; other cells start at T0.',
+                params=(_temperature_param('At t = 0; other cells start at T0.',
                                            'Temperature of the selected domains at time zero; other cells start at '
                                            "'Reference temperature'.\n\n"
                                            'A steady solve uses it only as a starting guess.'),),
                 summary='Starting temperature of the selected domains for transient heat.',
-                description='Temperature of the selected cells at t = 0 for transient heat. A steady solve uses it '
-                            'only as the starting guess and as the temperature of cells that neither conduct nor lose '
-                            'heat (validation info).',
+                description='Temperature of the selected cells at t = 0 for transient heat; a steady solve uses it '
+                            'only as the starting guess and for cells that neither conduct nor lose heat (validation '
+                            'info).',
                 apply=_apply_initial_temperature, validate=_validate_initial_temperature, grids=_FEM_GRIDS),
     FeatureType('temperature_probe', 'Temperature probe', 'probe', 'point',
                 object_kinds=('point',), max_entities=1, result_kind='timeseries',
                 summary='Records the temperature at a point after every heat solve.',
-                description='Temperature (K) of the cell containing the point, one sample after every heat solve '
-                            '(time-dependent study: every heat step; stationary study and the background stage of a '
-                            'frequency-domain study: one per fixed-point iteration, all at t = 0).',
+                description='Temperature (K) of the cell containing the point after every heat solve: '
+                            'time_dependent every heat step; stationary and the frequency-domain background stage one '
+                            'per fixed-point iteration, all at t = 0.',
                 apply=_apply_temperature_probe, result=_temperature_probe_result, validate=validate_points_inside,
                 grids=_FEM_GRIDS),
     FeatureType('thermorefractive_noise', 'Thermorefractive noise', 'monitor', 'domain',
@@ -1557,44 +1462,30 @@ HEAT_PHYSICS = PhysicsType(
     space_settings=AXISYMMETRIC_SPACE_SETTINGS,
     summary='Heat conduction in solids, either the steady state or changing in time. Domain edges without a boundary '
             'condition are insulated.',
-    description='Anisotropic heat conduction (finite volumes on the rise T - T0; Automatic linear solver: multigrid PCG '
-                'on the gpu backend and on 3D meshes, host SuperLU on the cpu in 2D, banded Cholesky in 1D, the sparse '
-                'direct solver on triangle / tetrahedron meshes: a double cuDSS Cholesky on the gpu backend when '
-                'nvmath-python is installed, host SuperLU otherwise or after a cuDSS refusal), 2D per unit z length or '
-                '3D (7-point stencil with k_zz; boundary features on outer faces x_lo ... z_hi only, no k_xy, no '
-                'out_of_plane_convection; fields are shown as z cuts): '
-                'steady state (quasi-static) or implicit-Euler transient (time_mode). Solves on the physical window '
-                'only (no PML; T is copied edge-extended into an EM PML ring). Unreferenced outer faces are '
-                'insulated (a later boundary feature on the same face wins), material properties are unset unless a '
-                'material or its library entry sets them (cells without k do not conduct), and a steady solve needs '
-                'an anchor: a temperature, h > 0 convection, a fixed-temperature domain or out-of-plane convection. '
-                'With EM in a time-dependent study set every to a few hundred EM steps (one CG solve costs far more '
-                f'than an EM step; validation warns below {MIN_EM_STEPS_PER_SOLVE}). '
-                'On a triangle mesh (MeshSpec kind triangles; 2D, planar or axisymmetric) finite elements of the '
-                'discretization order (quadratic default) on the conducting window elements: object perimeters are '
-                'their outline edges (temperature = Dirichlet there, convection = Robin, heat_flux = an edge source '
-                'heating both sides), a point is its mesh node, field T is nodal (other fields and every state slot '
-                'one value per element, T at the element centroid); no azimuthal_order, noise features or '
-                'thermal_noise study. On a tetrahedron mesh (MeshSpec kind tetrahedra; 3D Cartesian) the same with '
-                'Lagrange elements on tetrahedra (affine, diagonal k_xx / k_yy / k_zz): outer faces act on the window '
-                'faces, object boundaries are their interface faces (temperature = Dirichlet, convection = Robin, '
-                'heat_flux = a sheet source heating both sides), a point_heat_source is the exact point load at its '
-                '(x, y, z), probes evaluate T at the point; fields are sampled on the uniform lattice of the mesh '
-                '(field derived values are not available there yet); Automatic linear solver: sparse_direct (cuDSS on '
-                'the gpu backend with nvmath-python; host SuperLU otherwise, ~1e5 unknowns P2 before its 3D size '
-                'warning).',
+    description='Anisotropic heat conduction, finite volumes on the rise T - T0, 2D per unit z length or 3D (7-point '
+                'stencil with k_zz; boundary features on outer faces only, no k_xy, no out_of_plane_convection): '
+                'steady state or implicit-Euler transient (time_mode), on the physical window (T edge-extended into '
+                'an EM PML ring). Unreferenced outer faces are insulated (a later boundary feature on a face wins). A '
+                'steady solve needs an anchor: a temperature, h > 0 convection, radiation, a fixed-temperature domain '
+                'or out-of-plane convection. With EM in a time-dependent study set every to a few hundred EM steps '
+                f'(validation warns below {MIN_EM_STEPS_PER_SOLVE}). Triangle meshes (planar or axisymmetric): '
+                'elements of the discretization order on the conducting window elements; object perimeters are '
+                'outline edges (heat_flux heats both sides), a point is its mesh node, T nodal; no azimuthal_order, '
+                'noise features or thermal_noise study. Tetrahedra (3D): the same with interface faces; fields '
+                'sampled on the uniform mesh lattice (no field derived values yet); host SuperLU warns above ~1e5 P2 '
+                'unknowns.',
     settings=_SETTINGS,
     features=_FEATURES,
-    grids=('tensor', 'triangles', 'tetrahedra'),   # FEMHeatPhysics (mesh plan T4) / FEMHeatPhysics3D
+    grids=('tensor', 'triangles', 'tetrahedra'),   # FEMHeatPhysics / FEMHeatPhysics3D
     material_properties=_MATERIAL_PROPERTIES,
     material_schema=THERMAL_SCHEMA,
     state_fields=_STATE_FIELDS,
     output_fields=tuple(HeatRenderer.field_infos.values()),
-    source_slots={'volumetric_power': ('W/m^3', 'Heat source Q: each transfer replaces Q (copied; the PML ring is '
-                                                'ignored) with the sum of the additive heating couplings '
-                                                '(em_heat_joule, currents_heat_joule, fluid_heat_convection).')},
-    supported_studies=('stationary', 'time_dependent', THERMAL_NOISE_STUDY),
-    default_study={'type': 'stationary'},
+    source_slots={'volumetric_power': ('W/m^3', 'Field Q: each transfer replaces it (PML ring ignored) with the sum '
+                                                'of the heating couplings (em_heat_joule, currents_heat_joule, '
+                                                'fluid_heat_convection).')},
+    supported_studies=(STATIONARY_STUDY, TIME_DEPENDENT_STUDY, THERMAL_NOISE_STUDY),
+    default_study={'type': STATIONARY_STUDY},
     # linear: the CG solves; shifted: (j omega C + q^2 k_zz A + K) u = w of the noise spectra (sparse_direct =
     # host SuperLU per shift, the reference, or an opt-in MUMPS / PARDISO host factor through the same factorize_host /
     # solve_host; line_block = batched GPU solves, mixed or double)
@@ -1603,7 +1494,7 @@ HEAT_PHYSICS = PhysicsType(
                                         precisions=('mixed', 'double'),
                                         setting_choices={'back_end': ('auto', 'scipy_splu', 'cusolver_qr')
                                                          + HOST_DIRECT_BACK_ENDS})},
-    backends=('gpu', 'cpu'),   # numpy twins of the system / field kernels (solver_plan S6 stage 2)
+    backends=('gpu', 'cpu'),   # numpy twins of the system / field kernels
     conformal_boundaries=True,   # cut cells (held edges, insulated walls, perimeter heat_flux / convection; 2D)
     conformal_coordinates=('cartesian', 'polar', 'spherical'),   # cut cells on the logical (r, angle) cells too
     create=_create_heat,

@@ -1,4 +1,4 @@
-"""Element stiffness of the 3D solid on tetrahedra (piezo_3d_plan stage 1): the (n_elements, 6, 6) Voigt matrix from
+"""Element stiffness of the 3D solid on tetrahedra: the (n_elements, 6, 6) Voigt matrix from
 the isotropic Lame pair or the 21 c_IJ material arrays (per component, NaN = the isotropic value), its positive
 definiteness, the thermal stress per kelvin and the stress of a strain. Host numpy float64."""
 # Voigt order of the model axes 1 xx, 2 yy, 3 zz, 4 yz, 5 xz, 6 xy, engineering shear (S_4 = 2 strain_yz):

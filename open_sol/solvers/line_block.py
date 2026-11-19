@@ -1,4 +1,4 @@
-"""'line_block' shifted-solver runtime (solver_plan Part II): batched block-tridiagonal direct solves of
+"""'line_block' shifted-solver runtime: batched block-tridiagonal direct solves of
 (K + sum_i s_i M_i + sum_j t_j N_j) x = b, M_i diagonal, N_j sparse block-tridiagonal, on line-ordered grid unknowns: per
 shift a block Thomas factorisation (stored block inverses), equilibrated, refined against the complex128 operator;
 chunks of shifts (solve_shifted), a kept factor (factorize) or a kept batch of whole operators, one per shift
@@ -20,7 +20,7 @@ MEMORY_FRACTION = 0.6           # share of the free pool room (gpu_memory.pool_r
 MAX_CHUNK_SHIFTS = 64           # shifts factored together (keeps the run memory estimate bounded)
 UNBUDGETED_CHUNK_BYTES = 1 << 30   # chunk bytes without a budget (gpu: set_budget never called; cpu: RAM unknown)
 # block size up to which cp.linalg.inv runs batched; above it a loop of 2D inverses (cuBLAS *Batched is ~200x slower at
-# b ~ 800, solver_plan Part II section 5); the crossover is not measured yet
+# b ~ 800); the crossover is not measured yet
 BATCHED_INVERSE_MAX_BLOCK = 128
 
 
@@ -426,7 +426,7 @@ class LineBlockSolver:
     def factorize_operators(self, operators, layout, owner=None) -> LineBlockFactor:
         """LineBlockFactor of one batch of whole host scipy operators A_s (each block-tridiagonal in `layout`, no shift
         family: e.g. one FDFD Helmholtz operator per wavelength), shift index s = operators[s]; replaces the bound
-        operator (kept as owner). Size the batch with chunk_size(n, 1, layout, operator_shift_bytes(...))."""
+        operator (kept as owner; solve_shifted needs a new set_operator). Size the batch with batch_size."""
         from ..core.backend import sparse_module
         cp = self._xp()
         matrices = [self._checked_matrix(operator, layout, f'operator {index + 1}')

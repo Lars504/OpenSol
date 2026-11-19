@@ -36,8 +36,9 @@ class PlayerMode:
     displacement: np.ndarray               # complex (n_nodes, 3)
     k: float | None = None                 # abscissa in the band table's k unit (None: no band diagram position)
     k_index: int | None = None             # row of the band table this mode belongs to
-    band: int | None = None                # 1-based band number at its k
-    cell_phase: float = 0.0                # Bloch phase step per lattice period, radians (k a)
+    band: int | None = None                # 1-based rank of its frequency among the modes solved at its k
+    cell_phase: float = 0.0                # phase step per lattice period [rad]: open_sol Bloch modes satisfy
+    #                                        u(x + L) = u(x) exp(-j k L) (time exp(+j omega t)), so -k L
     q_factor: float | None = None
     label: str = ''
     stress: np.ndarray | None = None       # complex (n_nodes, 6): xx, yy, zz, xy, xz, yz (only its shape is drawn)

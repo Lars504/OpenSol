@@ -1,4 +1,4 @@
-"""Self-tests of RefinementSpec.where 'edges' / 'surface' on gmsh tetrahedra (plan D3 / D3b; CPU, specs() empty,
+"""Self-tests of RefinementSpec.where 'edges' / 'surface' on gmsh tetrahedra (CPU, specs() empty,
 check({}) directly), the gmsh Cylinder field's half-length axis and the sliver count that spares graded orthoschemes;
 gmsh meshes (skipped without gmsh) for the surface sizes and the cylinder field."""
 import math

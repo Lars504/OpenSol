@@ -1,4 +1,4 @@
-"""Interface-aware field sampling (igor 1.8; host numpy, GUI-thread safe): samples along the outline of domain objects
+"""Interface-aware field sampling (host numpy, GUI-thread safe): samples along the outline of domain objects
 with outward normals, and one-sided values read from the cells of one side only, extrapolated onto the outline.
 Windows are Cartesian or polar / spherical (CellFrame: logical cells, drawing-plane outlines)."""
 import math

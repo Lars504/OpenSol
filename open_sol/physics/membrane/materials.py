@@ -22,5 +22,5 @@ BENDING_ARRAY = 'bending_stiffness'     # present (any material sets it) = plate
 POISSON_ARRAY = 'plate_poisson_ratio'
 COEFFICIENT_ARRAYS = frozenset((*TENSION_ARRAYS, DENSITY_ARRAY, LOSS_ARRAY, BENDING_ARRAY, POISSON_ARRAY))
 
-# Source slots (new_modules_plan S9: solid -> membrane tension), added to the material tension per element / cell.
+# Source slots (solid -> membrane tension), added to the material tension per element / cell.
 COUPLED_TENSION_SLOTS = ('coupled_tension_xx', 'coupled_tension_yy', 'coupled_tension_xy')

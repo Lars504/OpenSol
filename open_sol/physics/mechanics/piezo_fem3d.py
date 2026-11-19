@@ -1,4 +1,4 @@
-"""Piezoelectric solid_mechanics_3d on tetrahedra (piezo_3d_plan stages 2 and 3, setting piezoelectric): the block-layout
+"""Piezoelectric solid_mechanics_3d on tetrahedra (setting piezoelectric): the block-layout
 coupled operator [[K_uu, K_uphi], [K_uphi^T, -K_phiphi]] with the potential on every window element (void ones
 dielectric), its massless-potential mass, the per-element e / eps tensors of the material arrays and the active potential
 dofs; host numpy, scipy inside functions. The electrode reduction and the static / modal solves are piezo.PiezoSystem

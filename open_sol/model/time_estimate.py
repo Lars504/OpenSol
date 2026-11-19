@@ -1,4 +1,4 @@
-"""Run-time estimate of a model (time_estimation_plan): per used mesh every physics' time recipe on a TimeContext (its
+"""Run-time estimate of a model: per used mesh every physics' time recipe on a TimeContext (its
 solver roles through their SolverType recipes, its array bytes from the memory estimate), multiplied by the study
 counts (time steps, wavelengths, iterations), priced on the machine profile. CPU, GUI-thread safe."""
 import itertools
@@ -14,7 +14,8 @@ from ..core.time_profile import load_profile, profile_from_dict, profile_path
 from . import meshing
 from .geometry import (bounding_box, domain_entities, domain_extent, domain_size_z, expand_entities, resolve_geometry,
                        z_extent)
-from .schema import get_registry, resolve_values, resolved_solvers, solver_backend
+from .schema import (FREE_MESH_KINDS, FREQUENCY_DOMAIN_STUDY, FREQUENCY_RESPONSE_STUDY, TIME_DEPENDENT_STUDY,
+                     get_registry, resolve_values, resolved_solvers, solver_backend)
 from .spec import outer_faces
 
 # a coupled fixed point (stationary study, background stage) solves the physics on or downstream of a coupling cycle
@@ -105,7 +106,7 @@ class TimeContext:
 
     @property
     def time_dependent(self) -> bool:
-        return self.study.type == 'time_dependent'
+        return self.study.type == TIME_DEPENDENT_STUDY
 
     def count(self, name, default=None):
         return self.study.counts.get(name, default)
@@ -172,13 +173,13 @@ class TimeContext:
         return math.prod(mesh.window_axis_cells)
 
     def longest_axis(self) -> int:
-        """Window cells along the longest axis (3D: z included; triangles / tetrahedra: 2 x the longest side over the
-        mean element size, as solvers.pcg.resolve_max_iterations)."""
+        """Window cells along the longest axis (3D: z included; triangles / tetrahedra: solvers.pcg.element_longest_axis,
+        as its resolve_max_iterations)."""
         mesh = self.mesh
         if mesh.kind != 'tensor':
+            from ..solvers.pcg import element_longest_axis
             sides = [high - low for low, high in zip(mesh.extent[0::2], mesh.extent[1::2])]
-            mean_size = (max(math.prod(sides), 1e-300) / max(int(mesh.n_cells), 1)) ** (1.0 / len(sides))
-            return max(int(2 * math.ceil(max(sides) / mean_size)), 1)
+            return element_longest_axis(sides, mesh.n_cells)
         return max(max(mesh.window_axis_cells), 1)
 
     def selection_window_cells(self, selection) -> tuple:
@@ -458,7 +459,7 @@ def _mesh_signature(spec, parameters, meshes):
     try:
         for name, mesh in sorted(meshes.items()):
             kind = getattr(mesh, 'kind', 'tensor')
-            if kind in ('triangles', 'tetrahedra'):
+            if kind in FREE_MESH_KINDS:
                 shapes = resolve_geometry(spec, parameters, errors={}) if shapes is None else shapes
                 key = meshing.element_mesh_key(mesh.sizing, meshing.element_window_size(spec, parameters, kind), shapes)
             else:
@@ -491,7 +492,7 @@ def _run_estimate(spec, parameters, registry, mesh_estimate, backend, ordering_k
                                        physics_spec.name in coupled, physics_spec.name in fixed_point, ordering_kept,
                                        plain_roles, continues_previous, live_parameters))
     estimate = combine((_with_study_steps(parts, study), TimeEstimate(snapshot_read_items(spec, meshes, study))))
-    if study.type == 'time_dependent':
+    if study.type == TIME_DEPENDENT_STUDY:
         missing = tuple(f"coupling '{coupling.name}' transfers" for coupling in spec.couplings if coupling.enabled)
         estimate = combine((estimate, TimeEstimate(not_estimated=missing)))
     return estimate
@@ -504,9 +505,9 @@ def _snapshot_count(study) -> tuple:
     setting = study.values.get('snapshots')
     if setting == 'none':
         return 0.0, 'exact'
-    if study.type == 'frequency_response':
+    if study.type == FREQUENCY_RESPONSE_STUDY:
         return (float(study.counts.get('harmonic_points', 1) or 1) if setting == 'all' else 1.0), 'exact'
-    if study.type == 'time_dependent':
+    if study.type == TIME_DEPENDENT_STUDY:
         interval, duration = float(study.values['output_interval']), float(study.values['duration'])
         if interval > 0.0:   # t = 0, interval, ... below the end, then the final state
             return float(math.ceil(duration / interval - 1e-9) + 1), 'exact'
@@ -578,7 +579,7 @@ def estimate_overheads(spec, parameters, registry=None, mesh_estimate=None, prof
                   else meshing.estimate_meshes(run_spec, run_parameters, registry, run_shapes))
         memory = (given_memory if given_memory is not None
                   else meshing.estimate_memory(run_spec, run_parameters, registry, meshes, shapes=run_shapes))
-        stages =float(len(memory.items) + len(memory.host_items) + 1)
+        stages = float(len(memory.items) + len(memory.host_items) + 1)
         kept_bytes = float(memory.gpu_steady)   # the last run's arrays are the ones written
         prefix = f'{run_label}: ' if run_label else ''
         build_items += [
@@ -733,7 +734,7 @@ def _with_study_steps(parts, study) -> TimeEstimate:
     max_duration); other studies run no steps. A stride-n physics steps at ticks 0, n, 2n, ... (ceil(ticks / n)) and
     runner.flush() steps every quasi-static physics once more."""
     finite = [part.dt_limit for part, _ in parts if math.isfinite(part.dt_limit)]
-    if study.type == 'time_dependent' and finite and study.counts.get('duration'):
+    if study.type == TIME_DEPENDENT_STUDY and finite and study.counts.get('duration'):
         dt_sync = min(finite)
         ticks = max(int(round(study.counts['duration'] / dt_sync)), 0)
         return combine(part.with_steps(-(-ticks // every) + (0 if math.isfinite(part.dt_limit) else 1), 'exact', every,
@@ -741,7 +742,7 @@ def _with_study_steps(parts, study) -> TimeEstimate:
                        for part, every in parts)
     stepped = []
     for part, every in parts:
-        if study.type == 'frequency_domain' and math.isfinite(part.dt_limit) and study.counts.get('max_duration'):
+        if study.type == FREQUENCY_DOMAIN_STUDY and math.isfinite(part.dt_limit) and study.counts.get('max_duration'):
             limit = study.counts['max_duration'] / part.dt_limit
             stepped.append(part.with_steps(HARMONIC_PULSE_FRACTION_GUESS * limit, 'guess', steps_limit=limit,
                                            measured_by_ticks=False))

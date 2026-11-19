@@ -1,4 +1,4 @@
-"""Heat on triangle meshes (mesh plan stage T4, FEMHeatPhysics): a heated cylinder in a held coaxial shell (quadratic
+"""Heat on triangle meshes (FEMHeatPhysics): a heated cylinder in a held coaxial shell (quadratic
 and linear elements, curved outlines) against the closed form, the decay rate of a transient slab against the
 implicit-Euler rate of the continuum mode, and the cpu vs gpu backends; model runs read through feature results
 (probes) only. Registered by definition.register. heat_fem_host_direct: the disc heater on the MUMPS / PARDISO back ends

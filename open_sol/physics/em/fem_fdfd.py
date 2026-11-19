@@ -13,7 +13,7 @@ and the eigen pencil of eigenfrequency.solve_resonances. Host numpy (scipy insid
 # (j omega eps0) (unstretched values in the PML ring: display only).
 # PML ring (fem_modes.pml_ring): s_x, s_y of the tensor CPML grading at the quadrature points; K takes T_xx s_y / s_x,
 # T_yy s_x / s_y, T_xy unchanged, M takes s_x s_y. The ring's outer side is pec (the industry-standard exterior, as
-# fem_modes). Walls (the Yee _WALL_SIGNS as essential / natural conditions; mirror planes = the window edge):
+# fem_modes). Walls (boundaries.WALL_SIGNS as essential / natural conditions; mirror planes = the window edge):
 #   ez: E_z = 0 on pec / antisymmetric faces, the ring's outer side and the closure of PEC elements (vertex contacts
 #       too); pmc / symmetric faces natural.
 #   hz: H_z = 0 on pmc / symmetric faces; pec / antisymmetric faces, the ring's outer side and PEC outlines natural.
@@ -45,7 +45,6 @@ POLARIZATIONS = ('ez', 'hz')
 # faces whose condition holds the out-of-plane unknown at 0 (a cpml face: the ring's pec outer side); others natural
 _ESSENTIAL_FACES = {'ez': frozenset({BCType.PEC, BCType.ANTISYMMETRIC, BCType.CPML}),
                     'hz': frozenset({BCType.PMC, BCType.SYMMETRIC})}
-_PERIODIC_TYPES = frozenset({BCType.PERIODIC, BCType.BLOCH})
 FEM_FDFD_DEGREE = TRIANGLE_DEGREES[-1]   # rule of every assembly: the PML stretch is no polynomial
 SAMPLE_DEGREE = 4                        # rule of the element means (state fields, q_abs)
 _CENTROID = np.array([[1.0 / 3.0, 1.0 / 3.0]])
@@ -122,9 +121,9 @@ def fem_fdfd_layout(mesh, order, boundary_config, polarization, pec=None) -> FEM
         raise ValueError(f'fem_fdfd_layout: order must be 1 or 2, got {order!r}')
     if polarization not in POLARIZATIONS:
         raise ValueError(f"fem_fdfd_layout: polarization must be 'ez' or 'hz', got {polarization!r}")
-    faces = {face: getattr(boundary_config, face) for face in FACE_BITS}
-    if any(kind in _PERIODIC_TYPES for kind in faces.values()):
+    if boundary_config.periodic_x or boundary_config.periodic_y:
         raise ValueError(f'em_fdfd_{polarization} on triangles: {PERIODIC_TEXT}')
+    faces = {face: getattr(boundary_config, face) for face in FACE_BITS}
     ring = pml_ring(mesh, boundary_config)
     pec = np.zeros(mesh.n_elements, dtype=bool) if pec is None else np.asarray(pec, dtype=bool)
     if pec.shape != (mesh.n_elements,):

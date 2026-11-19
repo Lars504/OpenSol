@@ -9,7 +9,9 @@ from dataclasses import dataclass
 from ..core.constants import C0, DTYPE
 from ..model.definition_helpers import evaluates_to, selected_material_data, study_duration
 from ..model.expressions import FIELD_COORDINATE_NAMES, compile_expression
-from ..model.schema import CouplingType, Issue, Param, effective_coupling_every, valid_every
+from ..model.schema import (TIME_DEPENDENT_STUDY, CouplingType, Issue, Param, coupling_reads_absorbed_power,
+                            effective_coupling_every, valid_every)
+from ..physics.heat.coupling import DNDT_ARRAYS
 from .coupling_term import CouplingTerm
 from .index_terms import after_source_step, index_slots, physics_and_type, writes_index_slots
 from .standard import THERMO_OPTIC_SLOTS, joule_heating, thermo_optic
@@ -17,13 +19,15 @@ from .standard import THERMO_OPTIC_SLOTS, joule_heating, thermo_optic
 HEAT_TYPE_NAME = 'heat'
 CURRENTS_TYPE_NAME = 'electric_currents'   # = physics.potential.definition.CURRENTS_TYPE_NAME (not imported here)
 # EM loss protocol (every solver of a family-'em' type): state()['q_accum'] always present (None allowed); a settable
-# getattr(solver, 'engine', solver).enable_q_accum; take_absorbed_power(merge_previous=False) -> mean W/m^3 since the
-# last call (merge_previous: also over the last completed window) or None.
+# getattr(solver, 'engine', solver).enable_q_accum; take_absorbed_power(merge_previous=False) -> FDTD: mean W/m^3 since
+# the last call, then reset (merge_previous: also over the last completed window), None for an empty window; FDFD: q_abs
+# of its last solve (never reset, None before the first). Each take resets an FDTD window: one reader per time-stepped
+# source (CouplingType.reads_absorbed_power, absorbed_power_reader_issues).
 _EM_FAMILY = 'em'
 _TRANSFER_NAMES = FIELD_COORDINATE_NAMES | {'value'}   # a field_transfer expression's names besides parameters
 _CW_RIPPLE_WARNING = 0.01   # relative cell-to-cell error of a CW Joule window mean above which validation warns
-_THERMO_OPTIC_DNDT = {'eps_r_update': 'dndT_zz', 'eps_xx_update': 'dndT_xx', 'eps_yy_update': 'dndT_yy'}
-# EM types whose plane is a cross-section transverse to the propagation (thermo-optic expansion on eps_zz only)
+# EM types whose plane is a cross-section transverse to the propagation (thermo-optic expansion on eps_zz only); a new
+# cross-section EM type joins it
 _CROSS_SECTION_EM_TYPES = frozenset({'em_modes'})
 _STRAIN_OPTIC_TYPE_NAME = 'solid_em_strain_optic'   # = physics.mechanics.selftests.STRAIN_OPTIC_COUPLING (not imported)
 _EXTENSION_PREFIX = 'definitions_'   # coupling/definitions_<topic>.py: register(registry, RegisteredPhysics)
@@ -38,6 +42,17 @@ def solid_supplies_deformation(spec, em_name):
                 and params.get('deformation', True) is not False):
             return True
     return False
+
+
+# ---- shared help texts (coupling/definitions_*.py import them) ----
+HEAT_SOURCE_SUM_TEXT = (
+    'Additive heat source (volumetric_power): every em_heat_joule / currents_heat_joule / fluid_heat_convection / '
+    'magnetic_heat_induction coupling into one heat physics sums, all with the same every (validation error '
+    'otherwise); no field_transfer into volumetric_power beside them.')
+INDEX_SUM_TEXT = (
+    'An E13 index contributor: the slot gets eps = (n0 + the sum of dn of every index coupling into it)^2, n0 the '
+    'shared reference index recorded before the first transfer, all with one every (validation error otherwise); no '
+    'overwriting field_transfer or state-dependent permittivity property on the slot.')
 
 
 # ---- E13 contributor helpers (index ones: coupling/index_terms.py) ----
@@ -105,6 +120,39 @@ def _writes_field_transfer(vctx, coupling_spec):
     return {slot: ''} if isinstance(slot, str) and slot else {}
 
 
+def source_steps_in_time(vctx, physics_spec):
+    """True when the physics' type steps in time with its settings (FDTD); False when unknown."""
+    try:
+        physics_type = vctx.registry.physics_type(physics_spec.type)
+    except KeyError:
+        return False
+    if physics_type.steps_in_time is None:
+        return False
+    settings = vctx.values(physics_type.settings, physics_spec.settings)
+    return bool(settings is not None and physics_type.steps_in_time(settings))
+
+
+def absorbed_power_reader_issues(vctx, coupling_spec):
+    """Error when another enabled reads_absorbed_power coupling takes the absorbed power of the same time-stepped
+    source: each take_absorbed_power() resets its window, so each reader would get only part of it."""
+    try:
+        source_spec = vctx.spec.physics_by_name(coupling_spec.source)
+    except KeyError:
+        return []
+    if not source_steps_in_time(vctx, source_spec):
+        return []
+    others = [other.name for other in vctx.spec.couplings
+              if other.enabled and other.name != coupling_spec.name and other.source == coupling_spec.source
+              and coupling_reads_absorbed_power(vctx.registry, other)]
+    if not others:
+        return []
+    noun, verb = ('couplings', 'take') if len(others) > 1 else ('coupling', 'takes')
+    return [Issue('error', ('coupling', coupling_spec.name),
+                  f"{noun} {', '.join(others)} also {verb} the absorbed power of the "
+                  f"time-stepped '{source_spec.name}': each transfer resets its averaging window, so each reader "
+                  'would get only part of it; keep one reader (or use an em_fdfd type)')]
+
+
 def _pulsed_sources(em_spec, em_type):
     """Names of enabled EM source features whose waveform is not 'cw'."""
     names = []
@@ -169,7 +217,7 @@ def _validate_joule(vctx, coupling_spec, values):
         return []
     heat_values = vctx.values(heat_type.settings, heat_spec.settings) or {}   # bad settings: param checks report
     issues = []
-    heat_mode = heat_values.get('time_mode') if vctx.study_type == 'time_dependent' else 'stationary'
+    heat_mode = heat_values.get('time_mode') if vctx.study_type == TIME_DEPENDENT_STUDY else 'stationary'
     if heat_mode == 'stationary':
         pulsed = _pulsed_sources(em_spec, em_type)
         if pulsed:
@@ -194,9 +242,9 @@ def _validate_joule(vctx, coupling_spec, values):
         issues.append(Issue('warning', path,
                             f'study duration {duration:.4g} s is shorter than every * dt_EM = {every} * '
                             f"{em_dt:.4g} s: the Joule power reaches '{heat_spec.name}' only in the final flush"))
-    if vctx.study_type == 'time_dependent' and every is not None and em_dt:
+    if vctx.study_type == TIME_DEPENDENT_STUDY and every is not None and em_dt:
         issues.extend(_cw_ripple_issues(vctx, path, em_spec, em_type, every, em_dt))
-    return issues
+    return issues + absorbed_power_reader_issues(vctx, coupling_spec)
 
 
 def _validate_field_transfer(vctx, coupling_spec, values):
@@ -230,7 +278,7 @@ def _dispersive_thermo_optic_issues(vctx, slots, path):
     """Warning per selected dispersive material with a non-zero dndT of a written slot (or alpha, with a Lorentz
     pole): the transforms shift only the background permittivity, never the pole susceptibility."""
     parameters = vctx.parameters
-    dndT_names = sorted({_THERMO_OPTIC_DNDT[slot] for slot in slots})
+    dndT_names = sorted({DNDT_ARRAYS[slot] for slot in slots})
     issues = []
     for material, properties, poles in selected_material_data(vctx.spec):
         if not poles:
@@ -273,24 +321,15 @@ def _currents_joule_type():
         'currents_heat_joule', 'Joule heating (electric currents -> heat)', CURRENTS_TYPE_NAME, HEAT_TYPE_NAME,
         summary='Turns the resistive heating of the electric currents into a heat source of the heat physics. It adds '
                 'up with the other heating couplings of that heat physics, such as absorbed light.',
-        description='Resistive (Joule) heating: q_joule in W/m^3 of the last electric_currents solve (J.E per cell: '
-                    'the dissipation of every face split between its two cells by their half-cell resistances, '
-                    'outer Dirichlet faces to their cell; a DC solve is time-averaged by construction) becomes the heat source Q '
-                    '(volumetric_power; heat ignores the edge-extended PML ring). It is an additive contribution: Q '
-                    '= the sum of every em_heat_joule / currents_heat_joule / fluid_heat_convection / '
-                    'magnetic_heat_induction coupling into that heat physics, all with '
-                    'the same every (validation error otherwise); a field_transfer into volumetric_power cannot be '
-                    'combined with them. '
-                    'Its integral over the window equals the sum over the voltage / terminal features of V * current exactly, so the '
-                    'derived integral of currents_q_joule is the electrical power per m of depth. The stationary '
-                    'fixed point is currents -> Q -> T -> sigma_dc(T) -> currents: a temperature-dependent '
-                    'conductivity is a sigma_dc expression of heat_T on the material (no coupling needed; the '
-                    'currents re-solve whenever it is rewritten, right after each heat step). In a time-dependent '
-                    'study leave every null or equal to the heat every, and the currents every at 1 (it re-solves '
-                    'only when something changed), so the q_joule sent before each heat step already uses the '
-                    'sigma_dc(T) of the previous one. Transient heat: each step uses the q_joule of the temperature '
-                    'at its start (explicit in the source), except the first step, which has no Joule source (the '
-                    'first transfer follows it).',
+        description='Resistive heating: q_joule [W/m^3] of the last electric_currents solve (J.E per cell: each '
+                    "face's dissipation split between its two cells by their half-cell resistances, outer Dirichlet "
+                    'faces to their cell) becomes the heat source Q (heat ignores the PML ring). '
+                    + HEAT_SOURCE_SUM_TEXT + ' Its window integral equals the sum of V * current over the voltage / '
+                    'terminal features exactly (planar: per m of depth). Fixed point currents -> Q -> T -> '
+                    'sigma_dc(T): give the material a sigma_dc expression of heat_T (no coupling needed; the currents '
+                    're-solve after each heat step that changes it). Time-dependent study: leave every null or equal '
+                    'to the heat every and the currents every at 1. Transient heat: each step uses the q_joule at its '
+                    'start temperature; the first step has no Joule source.',
         create=_create_currents_joule,
         writes=writes_heat_source,
         mesh_transfer='value')
@@ -304,39 +343,29 @@ def _coupling_types(em_types, absorbing_em_types, has_currents):
         'field_transfer', 'Field transfer', None, None,
         params=(
             Param('source_field', 'str', '', label='Source field',
-                  help="State field of the source physics read at every transfer (full grid, PML ring included); "
-                       "valid names are the source type's state fields, listed by describe (e.g. T of heat). EM "
-                       'q_accum is an accumulated energy density, not a power: use em_heat_joule for that.',
+                  help='State field of the source physics read at every transfer (full grid, PML ring included), '
+                       'e.g. T of heat. EM q_accum is an accumulated energy density, not a power: use em_heat_joule.',
                   tip='Field of the source physics that is read at every transfer, for example the temperature of a '
                       'heat physics.'),
             Param('target_slot', 'str', '', label='Target input',
-                  help="Source slot of the target physics written at every transfer; valid names are the target "
-                       "type's source slots, listed by describe. Every transfer overwrites the slot, so no other "
-                       'coupling may write it, not even an additive one such as em_heat_joule or heat_em_thermo_optic '
-                       '(validation error).',
+                  help='Source slot of the target physics, overwritten at every transfer: no other coupling may '
+                       'write it, not even an additive one (validation error).',
                   tip='Input of the target physics that the result replaces at every transfer, for example the heat '
                       'source of a heat physics.\n\nNo other coupling may write the same input.'),
             Param('expression', 'expression', 'value', label='Transform expression',
-                  help='Expression of value (the source field), x, y (in 3D models also z; cell centres, PML cells get '
-                       'the nearest window centre) and parameters, e.g. 1e-3*value; no other field names and no t. '
-                       'The result is written as float32 into one persistent full-grid buffer (a constant fills the '
-                       'grid).',
+                  help='Of value (the source field), x, y (3D: z; cell centres, PML cells take the nearest window '
+                       'centre) and parameters, e.g. 1e-3*value; no other fields, no t. Written as float32 into one '
+                       'persistent full-grid buffer (a constant fills it).',
                   tip='Expression applied to the source field, which it calls value; it may also use the position x, '
                       'y (and the height z in 3D models) and model parameters.\n\nThe default, value, copies the '
                       'field unchanged.')),
         summary='Copies a field of one physics, optionally transformed by an expression, into an input of another '
                 'physics.',
-        description='Generic transfer: at every transfer the expression of value (source_field of the source '
-                    'physics), x, y (3D: z) and parameters is evaluated into one persistent float32 full-grid buffer '
-                    'and written into target_slot of the target physics. Slots overwrite (heat volumetric_power '
-                    'replaces Q; the EM permittivity slots eps_r_update / eps_xx_update / eps_yy_update replace their '
-                    'whole array, PML included; EM ez_source / hz_source keep the buffer and add it to E_z / H_z '
-                    'every EM step until the next transfer: a raw V/m or A/m increment per step, so its effect '
-                    'scales with 1/dt), so no other coupling may write that slot, not even an additive one '
-                    '(e.g. em_heat_joule, currents_heat_joule, fluid_heat_convection, magnetic_heat_induction, '
-                    'heat_em_thermo_optic, em_solid_optical_force). Slot '
-                    'units: describe, per physics '
-                    'type.',
+        description='Generic transfer: the expression is written into target_slot of the target physics, replacing '
+                    'it (heat volumetric_power replaces Q; the EM permittivity slots replace their whole array, PML '
+                    'included; EM ez_source / hz_source add the buffer to E_z / H_z every EM step until the next '
+                    'transfer: a raw V/m or A/m increment per step, so its effect scales with 1/dt). Slot units: the '
+                    "target physics type's source slots.",
         create=_create_field_transfer, validate=_validate_field_transfer, writes=_writes_field_transfer,
         mesh_transfer='field')
     currents_types = (_currents_joule_type(),) if has_currents else ()
@@ -347,82 +376,54 @@ def _coupling_types(em_types, absorbing_em_types, has_currents):
         summary='Turns the light absorbed by a wave physics into a heat source of the heat physics. With a '
                 "frequency-domain wave physics, use a 'Stationary' study for one wavelength or a 'Frequency domain' "
                 'study for a list of them.',
-        description='Joule heating: the absorbed power density J.E in W/m^3 (sigma_e conduction plus Drude / '
-                    f"Lorentz currents) of an EM physics type with an absorbed_power output "
-                    f"({', '.join(absorbing_em_types)}; not em_modes, which solves eigenmodes without a source), "
-                    'taken through its '
-                    'take_absorbed_power() as the mean over the EM steps since the last transfer (an FDFD physics: '
-                    'the time-averaged power density of its last solve), becomes the heat source Q '
-                    '(volumetric_power) as an additive contribution: Q = the sum of every em_heat_joule / '
-                    'currents_heat_joule / fluid_heat_convection / magnetic_heat_induction coupling into that heat '
-                    'physics (e.g. E_z and H_z '
-                    'physics for unpolarised light, or optical plus resistive heating), all with the same every '
-                    '(validation error otherwise); '
-                    'a field_transfer into volumetric_power cannot be combined with them. With FDFD use a stationary '
-                    'study for one wavelength, or a frequency_domain study for a list (coupled wavelength scan: each '
-                    'wavelength a stationary fixed point of every physics, continued from the previous one in list '
-                    'order; no em_modes or time-domain physics beside it). em_fdtd_hz '
-                    'evaluates the loss on the cell faces that carry E_x / E_y and assigns each face loss to its lossy '
-                    'neighbour cell(s): the sigma_e part by conductivity, the Drude / Lorentz part to the dispersive '
-                    "cell(s); em_fdfd_hz uses each cell's own loss with |E_x|^2 and |E_y|^2 averaged over its two "
-                    'faces. Leave every null or equal to the heat every so each heat solve gets exactly the steps '
-                    'since the previous one (validation warns otherwise); runner.flush() at the end of the run sends '
-                    'the mean over the last partial window merged with the previous full one, so the final Q does '
-                    'not depend on where the run stops within a window (a study shorter than every * dt_EM has no '
-                    'full window and delivers its power only in that flush). A cw window W = every * dt_EM averages '
-                    'the cos^2 power exactly only over a whole number of half optical periods, else the mean is off by '
-                    'up to T_opt / (2 pi W), varying from cell to cell with the phase (validation warns above 1 % and '
-                    'names the nearest whole-half-period every). Transient heat lags one window: its step over '
-                    '[kW, (k+1)W] uses the power of [(k-1)W, kW], so the first interval has no source and the last '
-                    'window (and the flushed final Q) is never stepped (heat gets (K-1)/K of the energy of K windows). '
-                    'Pulsed (non-cw) EM sources feeding a '
-                    'steady heat solve, transient heat or such a short study give a validation warning.',
+        description='The absorbed power density J.E [W/m^3] (sigma_e conduction plus Drude / Lorentz currents) of '
+                    'the EM physics (take_absorbed_power: the mean over the EM steps since the last transfer; FDFD: '
+                    'the time average of its last solve) becomes the heat source Q, e.g. E_z plus H_z physics for '
+                    'unpolarised light. ' + HEAT_SOURCE_SUM_TEXT + ' FDFD: a stationary study for one wavelength, a '
+                    'frequency_domain study for a list (each wavelength a stationary fixed point of every physics, '
+                    'continued from the previous one; no em_modes or time-domain physics beside it). em_fdtd_hz puts '
+                    'each E_x / E_y face loss into its lossy neighbour cells (sigma_e by conductivity, poles to the '
+                    "dispersive cells); em_fdfd_hz uses each cell's loss with |E_x|^2, |E_y|^2 averaged over its two "
+                    'faces. Time-stepped EM: leave every null or equal to the heat every (validation warns otherwise); '
+                    'the final flush sends the last partial window merged with the previous full one (a study shorter '
+                    'than every * dt_EM delivers its power only there). A cw window W = every * dt_EM averages cos^2 '
+                    'exactly only over whole half optical periods, else up to T_opt / (2 pi W) off, varying per cell '
+                    '(validation warns above 1 % naming the nearest whole-half-period every). Transient heat lags one '
+                    'window: its step over [kW, (k+1)W] uses the power of [(k-1)W, kW] (no source in the first, the '
+                    'last window never stepped). Pulsed EM sources feeding steady heat, transient heat or such a short '
+                    'study: validation warning. A second reader of the absorbed power of the same time-stepped EM '
+                    'physics (em_heat_joule, em_semiconductor_generation): validation error (each transfer resets '
+                    'the window).',
         create=_create_em_joule,
         validate=_validate_joule,
         writes=writes_heat_source,
-        mesh_transfer='value')
+        mesh_transfer='value', reads_absorbed_power=True)
     heat_em_thermo_optic = CouplingType(
         'heat_em_thermo_optic', 'Thermo-optic effect (heat -> electromagnetic waves)', HEAT_TYPE_NAME, em_types,
         summary='Updates the refractive index of a wave physics from the temperature of the heat physics. It uses '
                 "each material's thermo-optic and thermal expansion coefficients.",
-        description='Thermo-optic effect: each transfer rewrites the permittivity arrays of the EM physics from the '
-                    'heat temperature T, with dT = T - T0 (T0 of the heat physics) and n0 = sqrt of the built '
-                    'permittivity component (the background eps_inf for dispersive materials), recorded before the '
-                    'first transfer. It is an additive index contribution: it hands dn = n - n0 per component, and '
-                    'eps = (n0 + the sum of dn of every index coupling into that slot)^2 (e.g. two heat physics, or '
-                    'later electro-optic couplings), all with the same every (validation error otherwise); alone it '
-                    'gives the formulas below. E_z types (em_fdtd_ez, em_fdfd_ez): eps_zz = (n0_zz + '
-                    'dndT_zz dT)^2 (1 + alpha_xx dT)(1 + alpha_yy dT) through eps_r_update. H_z types (em_fdtd_hz, '
-                    'em_fdfd_hz): eps_xx = (n0_xx + dndT_xx dT)^2 (1 + alpha_xx dT)(1 + alpha_yy dT) through '
-                    'eps_xx_update, and eps_yy likewise with n0_yy and dndT_yy through eps_yy_update. em_modes (a '
-                    'cross-section, E along x, y and z): all three, eps_zz through eps_r_update, eps_xx and eps_yy '
-                    'through their slots; there the plane is transverse to the propagation, and the exact image of a '
-                    'transverse stretch leaves eps_xx / eps_yy unchanged (isotropic alpha) and scales eps_zz and mu_zz '
-                    'by s_x s_y, so the alpha factor goes on eps_zz only (eps_xx = (n0_xx + dndT_xx dT)^2): mu_zz '
-                    'cannot be held, so the transverse expansion is only partly counted, and the axial path term '
-                    '(n_eff alpha_zz dT on the phase per length) is a post-processing factor. The alpha factor '
-                    'is the in-plane thermal expansion mapped onto the fixed grid (transformation optics: a structure '
-                    'stretched by s_x s_y is a medium with eps_zz s_x s_y), so n grows by about (1 + alpha dT) and the '
-                    'optical path as the real structure does; for H_z the exact image scales mu_zz instead, so only the '
-                    'phase index matches there. Applied per cell it is a first-order local approximation, exact only '
-                    'for an alpha uniform over the mode: cells with alpha 0 (cladding, air) miss their share of the '
-                    'stretch, so the expansion shift is under-counted by the mode energy fraction outside the '
-                    'expanding material. With an enabled solid_em_strain_optic (deformation on) into the same EM '
-                    'physics the alpha factor is dropped (dn = dndT dT): the solid strain then supplies the '
-                    'deformation, constraints and cladding included. Dispersive materials: the Drude / Lorentz susceptibility is never changed, '
-                    'so dndT shifts eps by 2 n0 dndT dT instead of 2 n(omega) dndT dT (too small by about n(omega) / '
-                    'n0; scale dndT by that ratio at the wavelength of interest) and alpha scales only the background '
-                    '(negligible for metals); validation warns for a dndT on them, or an alpha with a Lorentz pole. '
-                    'An isotropic dndT sets dndT_xx, dndT_yy and dndT_zz; off-diagonal dndT / alpha terms are not '
-                    'modelled. Each '
-                    'slot overwrites its whole array including the PML, so it cannot be combined with a field_transfer '
-                    'into that slot or a state-dependent permittivity property (validation error). Time-dependent study '
-                    '(every = the heat every): applied right after each heat step, so the EM steps of one heat '
-                    'interval see the temperature of the absorbed power of the previous one; stationary study: one '
-                    'fixed-point iteration; frequency-domain study: applied once after the heat solve, before the '
-                    'wavelengths (a coupled wavelength scan, e.g. with em_heat_joule from that EM physics: in every '
-                    'fixed-point iteration of each wavelength, as in the stationary study); mode_analysis study: '
-                    'applied once after the heat solve, before the mode solve.',
+        description='Each transfer rewrites the EM permittivity from the heat temperature: dT = T - T0 (T0 of the '
+                    'heat physics), n0 = sqrt of the built permittivity component (dispersive: of eps_inf). '
+                    + INDEX_SUM_TEXT + ' Alone: E_z types eps_zz = (n0_zz + dndT_zz dT)^2 (1 + alpha_xx dT)(1 + '
+                    'alpha_yy dT) (eps_r_update); H_z types eps_xx and eps_yy likewise with n0_xx / dndT_xx and n0_yy '
+                    '/ dndT_yy (eps_xx_update / eps_yy_update); em_modes all three, the alpha factor on eps_zz only '
+                    '(eps_xx = (n0_xx + dndT_xx dT)^2; transverse to the propagation the exact stretch image also '
+                    'scales mu_zz, which cannot be held, so the transverse expansion is only partly counted; the axial '
+                    'path term n_eff alpha_zz dT is post-processing). The alpha factor maps the in-plane expansion '
+                    'onto the fixed grid (a structure stretched by s_x s_y is a medium with eps_zz s_x s_y), so the '
+                    'optical path grows as the real one; H_z: only the phase index matches (the exact image scales '
+                    'mu_zz). Per cell it is first order, exact only for alpha uniform over the mode: cells with alpha 0 (cladding, '
+                    'air) miss their share, under-counting the expansion shift by the mode energy fraction outside the '
+                    'expanding material. An enabled solid_em_strain_optic (deformation on) into the same EM physics '
+                    'drops the alpha factor (the solid strain supplies the deformation). Dispersive materials: the '
+                    'pole susceptibility never changes, so dndT shifts eps by 2 n0 dndT dT instead of 2 n(omega) dndT '
+                    'dT (scale dndT by n(omega) / n0) and alpha scales only the background; validation warns for a '
+                    'dndT on them or an alpha with a Lorentz pole. An isotropic dndT sets dndT_xx, _yy and _zz; no '
+                    'off-diagonal dndT / alpha. time_dependent (every = the heat every): right after each heat step, '
+                    "so one heat interval's EM steps see the temperature of the previous interval's power; stationary: "
+                    'per fixed-point iteration; frequency_domain: once after the heat solve, before the wavelengths '
+                    '(a coupled wavelength scan: per iteration of each wavelength); mode_analysis: once before the '
+                    'mode solve.',
         create=_create_thermo_optic,
         validate=_validate_thermo_optic,
         writes=writes_index_slots,
@@ -459,7 +460,7 @@ def registered_physics(registry):
                  if any(info.name == 'absorbed_power' for info in physics_type.output_fields)}
     optical_types = tuple(sorted(physics_type.name for physics_type in em_physics_types
                                  if physics_type.steps_in_time is None
-                                 and 'time_dependent' in physics_type.supported_studies))
+                                 and TIME_DEPENDENT_STUDY in physics_type.supported_studies))
     return RegisteredPhysics(
         names=frozenset(physics_type.name for physics_type in physics_types), em_physics_types=em_physics_types,
         em_types=tuple(sorted(physics_type.name for physics_type in em_physics_types)),

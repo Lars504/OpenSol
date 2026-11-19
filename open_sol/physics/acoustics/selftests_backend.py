@@ -1,4 +1,4 @@
-"""CPU vs GPU backend cases of elastic_waves (solver_plan S6, core.kernels twins): the analytic acoustics cases run on
+"""CPU vs GPU backend cases of elastic_waves (core.kernels twins): the analytic acoustics cases run on
 solver_defaults.backend 'cpu' (numpy twins of every kernel, numba twins of the velocity / stress updates when
 installed) and 'gpu' through physics/em's `backend_parity_case`, plus the CPU case elastic_waves_kernels_numba (numba
 vs numpy update twins); registered by definition.register."""

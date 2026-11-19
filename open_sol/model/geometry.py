@@ -58,187 +58,141 @@ def _length(name, default, label, help_text, tip, positive=False):
                  min=0.0 if positive else None, min_exclusive=positive)
 
 
-# description sentences shared by several kinds
-_ORIGIN = ('Coordinates are physical, in m, with the origin at the lower-left corner of the physical domain '
-           '(the PML lies outside).')
-_FROM_ORIGIN = 'measured from the lower-left corner of the physical domain'
-_ON_CELL_EDGE = 'A coordinate exactly on a cell edge goes to the upper cell.'
-_CONSUMES_INPUTS = ('Composites (union / intersection / difference / array) consume their inputs, which can no longer '
-                    'be selected on their own and may feed only one composite. Inputs are domain objects, composites '
-                    'included.')
-_CONSUMED_INPUT = 'it can no longer be selected on its own and may feed only one composite'
+# description sentences shared by several kinds (origin, masks and extrusion: describe's geometry notes)
+_CONSUMES_INPUTS = 'Inputs (domain objects, composites included) are consumed.'
 _TIP_FROM_ORIGIN = 'measured from the lower-left corner of the simulated region'   # GUI tips
 _TIP_CENTRE_X = f'x of the centre, {_TIP_FROM_ORIGIN}.'
 _TIP_CENTRE_Y = f'y of the centre, {_TIP_FROM_ORIGIN}.'
 
 _COMPOSITE_INPUTS = Param(name='inputs', kind='names', default=(), label='Input objects', ref_kind='geometry',
-                          help='Domain objects combined by this operation (at least one); each input is consumed: '
-                               f'{_CONSUMED_INPUT}.',
+                          help='Domain objects combined by this operation (at least one); each is consumed.',
                           tip='Objects combined by this operation.\n\n'
                               'Each then belongs to this object only: it can no longer be selected on its own or '
                               'used in another combination.')
 
-_ONLY_3D = 'Only for 3D models (domain size_z set); it must stay null in a 2D model.'
+_ONLY_3D = '3D models only (null in 2D).'
 _TIP_ONLY_3D = 'Used only when the model is 3D.'
 # extrusion of the 2D domain kinds (prisms in 3D): interval along the axis (None = the full height, PML included,
-# axis z only), the axis and the taper
+# axis z only), the axis and the taper; the rules are describe's geometry note '3D extrusion'
 _PRISM_3D_PARAMS = (
     Param(name='z0', kind='float', default=None, label='Extrusion start', unit='m', optional=True,
-          help='Lower end of the extrusion along its axis (z, or x / y with axis x / y) in m; null = from the bottom '
-               'of the domain (full height, PML included; axis z only). Cell centres with min(z0, z1) <= coordinate '
-               '< max(z0, z1) are inside (half-open). ' + _ONLY_3D,
+          help='Lower end of the extrusion along axis; null = the domain bottom (full height, PML included; axis z '
+               'only). ' + _ONLY_3D,
           tip="Where the object starts along its extrusion axis: its lowest height for the usual z axis.\n\n"
               "Leave empty to start at the bottom of the simulated region (z axis only). " + _TIP_ONLY_3D),
     Param(name='z1', kind='float', default=None, label='Extrusion end', unit='m', optional=True,
-          help='Upper end of the extrusion along its axis in m; null = to the top of the domain (axis z only). '
-               + _ONLY_3D,
+          help='Upper end of the extrusion along axis; null = the domain top (axis z only). ' + _ONLY_3D,
           tip="Where the object ends along its extrusion axis: its highest height for the usual z axis.\n\n"
               "Leave empty to reach the top of the simulated region (z axis only). " + _TIP_ONLY_3D),
     Param(name='axis', kind='choice', default='z', label='Extrusion axis', choices=('z', 'x', 'y'),
           choice_labels=(('z', 'z (shape in the x-y plane)'), ('x', 'x (shape in the y-z plane)'),
                          ('y', 'y (shape in the x-z plane)')),
-          help="Axis the 2D shape is extruded along. 'z' (default): the shape lies in the x-y plane. 'x' / 'y': its "
-               "coordinates (x, y) are the model's (y, z) / (x, z), the ellipse angle turns from the first toward "
-               "the second, and z0 / z1 are its ends along x / y, which must then both be set (beyond the domain to "
-               "run into the PML): a circle with axis 'x' is a cylinder along x (holes through a slab, rods, "
-               "wires). Faces parallel to the mesh axes become snap nodes on refined meshes; curved faces are "
-               "staircased. 3D models only; it must stay 'z' in a 2D model.",
+          help="Extrusion axis; 'x' / 'y' read the shape's (x, y) as (y, z) / (x, z) and need z0 and z1. 3D models "
+               "only ('z' in 2D).",
           tip="Direction the shape is extruded along.\n\n"
               "- z: the shape is drawn in the x-y plane (the usual case)\n"
               "- x or y: the shape's x and y are read as y, z (axis x) or x, z (axis y), and Extrusion start / "
               "end give its ends along that axis; both must be set\n\n"
               "A circle along x or y is a cylinder lying on its side. " + _TIP_ONLY_3D),
     Param(name='sidewall_angle', kind='float', default=0.0, label='Sidewall angle', unit='deg',
-          help='Tilt of the side walls from the extrusion axis in degrees, -90 < angle < 90 (0 = straight walls). '
-               'The shape as given sits at min(z0, z1) and is offset inward by (s - min(z0, z1)) tan(angle) up to '
-               'the other end, s the coordinate along the axis: positive angles narrow it toward z1 (etched ridges, '
-               'tapered holes, waveguide tapers along x / y), negative ones widen it (undercuts; V-grooves as a '
-               'widening hole subtracted from the substrate). Rectangles shrink on every side, circles become '
-               'cones, ellipses elliptic frusta (both semi-axes shrink by the same offset), polygons are offset per '
-               'vertex (mitred; simple polygons only). Needs both z0 and z1; an offset that collapses or '
-               'self-intersects the shape is an error. The slanted walls are staircased by the cells (one 2D raster '
-               'per z cell); along x / y each cross-section is a polygon sampled in 256 steps along the axis '
-               '(tapered rectangles exact, curved and polygon walls within a fraction of a step). 3D models '
-               'only; it must stay 0 in a 2D model.',
+          help='Side-wall tilt from the axis, -90 < angle < 90: positive narrows the shape toward z1, negative widens '
+               'it; needs z0 and z1. 3D models only (0 in 2D).',
           tip="Tilt of the side walls away from the extrusion axis.\n\n"
               "0 gives straight walls. A positive angle makes the object narrower toward Extrusion end (an etched "
               "ridge, a taper), a negative one wider. The shape as entered sits at Extrusion start.\n\n"
               "Needs Extrusion start and end set. " + _TIP_ONLY_3D))
-_PRISM_3D = ("In 3D models it is extruded along 'axis' (z by default) between z0 and z1, optionally with tilted side "
-             "walls (sidewall_angle).")
 _PLANE_Z = Param(name='z', kind='float', default=None, label='z', unit='m', optional=True,
-                 help='Height (z) of the point / the plane holding the line, in m; null = mid-height size_z / 2; on '
-                      'a cell edge it goes to the upper cell. ' + _ONLY_3D,
+                 help='Height of the point / the plane holding the line; null = mid-height. ' + _ONLY_3D,
                  tip='Height above the bottom of the simulated region.\n\nLeave empty for mid-height. '
                      + _TIP_ONLY_3D)
 _TIP_CENTRE_Z = 'Height of the centre above the bottom of the simulated region.'
 
 GEOMETRY_KINDS = {kind.name: kind for kind in (
     GeometryKind('rectangle', 'Rectangle', 'domain', (
-        _length('x0', 1.5e-6, 'Corner 1, x',
-                f'x of one corner, {_FROM_ORIGIN}; the corners may be given in any order.',
+        _length('x0', 1.5e-6, 'Corner 1, x', 'x of one corner (corners in any order).',
                 f'x of one corner, {_TIP_FROM_ORIGIN}.\n\nAny two opposite corners work, in any order.'),
-        _length('y0', 1.5e-6, 'Corner 1, y', f'y of the same corner as x0, {_FROM_ORIGIN}.',
+        _length('y0', 1.5e-6, 'Corner 1, y', 'y of the same corner as x0.',
                 "y of the same corner as 'Corner 1, x'."),
-        _length('x1', 2.5e-6, 'Corner 2, x', 'x of the opposite corner; cell centres with min(x0, x1) <= x < '
-                                             'max(x0, x1) are inside (half-open).',
+        _length('x1', 2.5e-6, 'Corner 2, x', 'x of the opposite corner.',
                 'x of the opposite corner.'),
-        _length('y1', 2.5e-6, 'Corner 2, y', 'y of the opposite corner; cell centres with min(y0, y1) <= y < '
-                                             'max(y0, y1) are inside (half-open).',
+        _length('y1', 2.5e-6, 'Corner 2, y', 'y of the opposite corner.',
                 'y of the opposite corner.'), *_PRISM_3D_PARAMS),
         summary='Rectangle aligned with the x and y axes, given by two opposite corners.',
-        description='Axis-aligned rectangle (domain object) between two opposite corners. Rectangle corners may be '
-                    'given in any order. Shape inclusion tests cell centres: rectangles are half-open [x0, x1) x '
-                    '[y0, y1) (corners sorted), so a centre exactly on x0 / y0 is inside and one on x1 / y1 is '
-                    'outside. ' + _PRISM_3D + ' ' + _ORIGIN),
+        description='Axis-aligned rectangle (domain object) between two opposite corners, half-open [x0, x1) x [y0, '
+                    'y1) (corners sorted).'),
     GeometryKind('rounded_rectangle', 'Rounded rectangle', 'domain', (
-        _length('x0', 1.5e-6, 'Corner 1, x',
-                f'x of one corner of the enclosing rectangle, {_FROM_ORIGIN}; the corners may be given in any order.',
+        _length('x0', 1.5e-6, 'Corner 1, x', 'x of one corner of the enclosing rectangle (corners in any order).',
                 f'x of one corner of the enclosing rectangle, {_TIP_FROM_ORIGIN}.\n\nAny two opposite corners work, '
                 'in any order.'),
-        _length('y0', 1.5e-6, 'Corner 1, y', f'y of the same corner as x0, {_FROM_ORIGIN}.',
+        _length('y0', 1.5e-6, 'Corner 1, y', 'y of the same corner as x0.',
                 "y of the same corner as 'Corner 1, x'."),
-        _length('x1', 2.5e-6, 'Corner 2, x', 'x of the opposite corner of the enclosing rectangle.',
+        _length('x1', 2.5e-6, 'Corner 2, x', 'x of the opposite corner.',
                 'x of the opposite corner.'),
-        _length('y1', 2.5e-6, 'Corner 2, y', 'y of the opposite corner of the enclosing rectangle.',
+        _length('y1', 2.5e-6, 'Corner 2, y', 'y of the opposite corner.',
                 'y of the opposite corner.'),
         Param(name='r', kind='float', default=0.1e-6, label='Corner radius', unit='m', min=0.0,
-              help='Radius of the four quarter-circle corners in m, 0 <= r <= half the shorter side (0 = a plain '
-                   'rectangle; half the shorter side = a stadium; half of both sides of a square = a circle).',
+              help='Radius of the four quarter-circle corners, <= half the shorter side (0 = a plain rectangle; half '
+                   'the shorter side = a stadium).',
               tip='Radius of the rounded corners.\n\n0 gives sharp corners; at most half the shorter side, which '
                   'makes the short ends fully round.'),
         *_PRISM_3D_PARAMS),
         summary='Rectangle aligned with the x and y axes with quarter-circle rounded corners.',
-        description='Axis-aligned rectangle (domain object) between two opposite corners with its four corners rounded '
-                    'to quarter circles of radius r (0 <= r <= half the shorter side; the same as a union of two '
-                    'rectangles and four circles). Shape inclusion tests cell centres: half-open like rectangles '
-                    'along the straight sides ([x0, x1) x [y0, y1), corners sorted), closed like circles on the '
-                    'rounded corners. Triangle meshes follow the corner arcs exactly (P2 curved edges); tetrahedron '
-                    'meshes (gmsh) export an untapered z prism as two boxes and four z cylinders, other axes and '
-                    'tapers are tagged per element. ' + _PRISM_3D + ' ' + _ORIGIN),
+        description='Axis-aligned rectangle (domain object) between two opposite corners with its corners rounded to '
+                    'quarter circles of radius r (a union of two rectangles and four circles). Triangle meshes follow '
+                    'the arcs exactly (P2 curved edges); gmsh tetrahedra export an untapered z prism as two boxes and '
+                    'four z cylinders, other axes and tapers are tagged per element.'),
     GeometryKind('circle', 'Circle', 'domain', (
-        _length('cx', 2e-6, 'Centre x', f'x of the centre, {_FROM_ORIGIN}.', _TIP_CENTRE_X),
-        _length('cy', 2e-6, 'Centre y', f'y of the centre, {_FROM_ORIGIN}.', _TIP_CENTRE_Y),
-        _length('r', 0.5e-6, 'Radius', 'Radius (> 0); a cell centre exactly on the circle is inside (closed test).',
+        _length('cx', 2e-6, 'Centre x', 'x of the centre.', _TIP_CENTRE_X),
+        _length('cy', 2e-6, 'Centre y', 'y of the centre.', _TIP_CENTRE_Y),
+        _length('r', 0.5e-6, 'Radius', 'Radius.',
                 'Radius of the circle, greater than 0.', positive=True), *_PRISM_3D_PARAMS),
         summary='Circle given by its centre and radius.',
-        description='Circle (domain object) of radius r around (cx, cy). Shape inclusion tests cell centres: '
-                    'circles are closed, so a centre exactly on the circle is inside. ' + _PRISM_3D + ' ' + _ORIGIN),
+        description='Circle (domain object) of radius r around (cx, cy), closed.'),
     GeometryKind('ellipse', 'Ellipse', 'domain', (
-        _length('cx', 2e-6, 'Centre x', f'x of the centre, {_FROM_ORIGIN}.', _TIP_CENTRE_X),
-        _length('cy', 2e-6, 'Centre y', f'y of the centre, {_FROM_ORIGIN}.', _TIP_CENTRE_Y),
-        _length('a', 0.8e-6, 'First semi-axis', 'Semi-axis along the local x axis, which the rotation turns away '
-                                                'from +x (> 0).',
+        _length('cx', 2e-6, 'Centre x', 'x of the centre.', _TIP_CENTRE_X),
+        _length('cy', 2e-6, 'Centre y', 'y of the centre.', _TIP_CENTRE_Y),
+        _length('a', 0.8e-6, 'First semi-axis', 'Semi-axis along +x before the rotation.',
                 "Half the length of the first axis, which lies along +x when 'Rotation' is 0.", positive=True),
-        _length('b', 0.4e-6, 'Second semi-axis', 'Semi-axis along the local y axis (> 0).',
+        _length('b', 0.4e-6, 'Second semi-axis', 'Semi-axis along +y before the rotation.',
                 'Half the length of the second axis, at right angles to the first.', positive=True),
         Param(name='angle', kind='float', default=0.0, label='Rotation', unit='deg',
-              help='Rotation of semi-axis a about the centre, in degrees counter-clockwise from +x; 0 puts a '
-                   'along x and b along y.',
+              help='Rotation of semi-axis a about the centre, counter-clockwise from +x.',
               tip='Counter-clockwise rotation of the first semi-axis away from the +x direction.'),
         *_PRISM_3D_PARAMS),
         summary='Ellipse given by its centre, two semi-axes and a rotation.',
-        description='Ellipse (domain object) with semi-axes a and b about (cx, cy). The ellipse angle is in '
-                    'degrees, counter-clockwise from +x. Shape inclusion tests cell centres: ellipses are closed, '
-                    'so a centre exactly on the ellipse is inside. ' + _PRISM_3D + ' ' + _ORIGIN),
+        description='Ellipse (domain object) with semi-axes a and b about (cx, cy), closed.'),
     GeometryKind('polygon', 'Polygon', 'domain', (
         Param(name='points', kind='points', default=((1.5e-6, 1.5e-6), (2.5e-6, 1.5e-6), (2e-6, 2.5e-6)),
               label='Vertices', unit='m',
-              help=f'Vertices [(x, y), ...] {_FROM_ORIGIN}; at least 3, not all on one line. The last vertex '
-                   'connects back to the first, and with the even-odd rule overlapping parts of a self-intersecting '
-                   'polygon are holes.',
+              help='Vertices [(x, y), ...]: at least 3, not all on one line; implicitly closed.',
               tip='Corner points as x, y pairs separated by semicolons: at least 3, not all on one line.\n\n'
                   'The last point connects back to the first. Overlapping parts of a self-crossing polygon become '
                   'holes.'), *_PRISM_3D_PARAMS),
         summary='Closed shape through a list of corner points.',
-        description='Polygon (domain object) through its vertices. Polygons are implicitly closed, use the even-odd '
-                    'fill rule and need at least 3 points, not all on one line. Shape inclusion tests cell centres: '
-                    'polygons are half-open like rectangles, so a centre exactly on a left / bottom edge is inside '
-                    'and one on a right / top edge is outside. ' + _PRISM_3D + ' ' + _ORIGIN),
+        description='Polygon (domain object) through its vertices, even-odd fill rule (overlapping parts of a '
+                    'self-intersecting polygon are holes), half-open like rectangles (a centre on a left / bottom '
+                    'edge is inside, on a right / top edge outside).'),
     GeometryKind('point', 'Point', 'point', (
-        _length('x', 2e-6, 'x', f'x of the point, {_FROM_ORIGIN}; on a cell edge it goes to the upper cell.',
+        _length('x', 2e-6, 'x', 'x of the point.',
                 f'x of the point, {_TIP_FROM_ORIGIN}.'),
-        _length('y', 2e-6, 'y', f'y of the point, {_FROM_ORIGIN}; on a cell edge it goes to the upper cell.',
+        _length('y', 2e-6, 'y', 'y of the point.',
                 f'y of the point, {_TIP_FROM_ORIGIN}.'), _PLANE_Z),
         summary='A point, used to place point sources and probes.',
         description='Zero-area point entity for sources, probes and monitors (point source, field probe, '
-                    'temperature probe). ' + _ON_CELL_EDGE + ' ' + _ORIGIN),
+                    'temperature probe).'),
     GeometryKind('line', 'Line segment', 'line', (
-        _length('x0', 1e-6, 'Start x', f'x of the start point, {_FROM_ORIGIN}.',
+        _length('x0', 1e-6, 'Start x', 'x of the start point.',
                 f'x of the start point, {_TIP_FROM_ORIGIN}.'),
-        _length('y0', 2e-6, 'Start y', f'y of the start point, {_FROM_ORIGIN}.',
+        _length('y0', 2e-6, 'Start y', 'y of the start point.',
                 f'y of the start point, {_TIP_FROM_ORIGIN}.'),
-        _length('x1', 3e-6, 'End x', 'x of the end point; x1 = x0 makes a vertical line (EM line features '
-                                     'need a horizontal or vertical line).',
+        _length('x1', 3e-6, 'End x', 'x of the end point; x1 = x0 makes a vertical line.',
                 "x of the end point. Equal to 'Start x' gives a vertical line.\n\n"
                 'Lines used by electromagnetic sources and monitors must be horizontal or vertical.'),
-        _length('y1', 2e-6, 'End y', 'y of the end point; y1 = y0 makes a horizontal line. An end exactly on a '
-                                     'cell edge goes to the upper cell.',
+        _length('y1', 2e-6, 'End y', 'y of the end point; y1 = y0 makes a horizontal line.',
                 "y of the end point. Equal to 'Start y' gives a horizontal line."), _PLANE_Z),
         summary='A straight segment, used to place line sources, beams and monitors.',
         description='Zero-area line segment for sources, probes and monitors (line source, gaussian beam, flux '
-                    'monitor); lines used by EM features must be horizontal or vertical. ' + _ON_CELL_EDGE + ' '
-                    + _ORIGIN),
+                    'monitor); lines used by EM features must be horizontal or vertical.'),
     GeometryKind('union', 'Union', 'domain', (_COMPOSITE_INPUTS,), composite=True,
                  summary='Combines objects: a cell is inside if it is inside any of them.',
                  description='Union of domain objects: a cell centre inside any input is inside. ' + _CONSUMES_INPUTS),
@@ -248,11 +202,11 @@ GEOMETRY_KINDS = {kind.name: kind for kind in (
                              + _CONSUMES_INPUTS),
     GeometryKind('difference', 'Difference', 'domain', (
         Param(name='base', kind='ref', default=None, label='Base object', ref_kind='geometry',
-              help=f'Domain object the others are subtracted from; it is consumed: {_CONSUMED_INPUT}.',
+              help='Domain object the others are subtracted from; consumed.',
               tip='Object the others are cut out of.\n\n'
                   'It then belongs to this object only and can no longer be selected on its own.'),
         Param(name='subtract', kind='names', default=(), label='Objects to subtract', ref_kind='geometry',
-              help=f'Domain objects removed from the base (may be empty); each is consumed: {_CONSUMED_INPUT}.',
+              help='Domain objects removed from the base (may be empty); each is consumed.',
               tip="Objects cut out of 'Base object'; the list can be empty.\n\n"
                   'They then belong to this object only and can no longer be selected on their own.')),
         composite=True,
@@ -261,82 +215,76 @@ GEOMETRY_KINDS = {kind.name: kind for kind in (
                     'subtracted object is inside. ' + _CONSUMES_INPUTS),
     GeometryKind('array', 'Array', 'domain', (
         Param(name='base', kind='ref', default=None, label='Base object', ref_kind='geometry',
-              help='Domain object repeated by the array (a primitive or a composite); it is the first copy, at '
-                   f'its own position, and is consumed: {_CONSUMED_INPUT}.',
+              help='Domain object repeated (a primitive or a composite); the first copy, at its own position; '
+                   'consumed.',
               tip='Object repeated on the grid; it stays where it is as the first copy.\n\n'
                   'It then belongs to this array only and can no longer be selected on its own.'),
         Param(name='nx', kind='int', default=2, label='Copies along x', unit='1', min=1.0,
-              help='Number of copies along x (>= 1), the base included.',
+              help='Number of copies along x, the base included.',
               tip='How many copies along x, counting the base object.'),
         Param(name='ny', kind='int', default=2, label='Copies along y', unit='1', min=1.0,
-              help='Number of copies along y (>= 1), the base included.',
+              help='Number of copies along y, the base included.',
               tip='How many copies along y, counting the base object.'),
         Param(name='pitch_x', kind='float', default=1e-6, label='Pitch x', unit='m', min=0.0, min_exclusive=True,
-              help='Displacement between neighbouring copies along x in m (> 0): copy (i, j) is the base moved by '
-                   '(i pitch_x, j pitch_y). Copies whose bounding boxes overlap get a validation warning (overlapping '
-                   'copies merge into one region).',
+              help='Displacement between neighbouring copies along x: copy (i, j) is the base moved by (i pitch_x, j '
+                   'pitch_y). Copies whose bounding boxes overlap get a validation warning (they merge into one '
+                   'region).',
               tip='Distance from one copy to the next along x.'),
         Param(name='pitch_y', kind='float', default=1e-6, label='Pitch y', unit='m', min=0.0, min_exclusive=True,
-              help='Displacement between neighbouring copies along y in m (> 0).',
+              help='Displacement between neighbouring copies along y.',
               tip='Distance from one copy to the next along y.'),
         Param(name='nz', kind='int', default=1, label='Copies along z', unit='1', min=1.0,
-              help='Number of copies along z (>= 1, the base included); above 1 it needs pitch_z. ' + _ONLY_3D
-              + ' In 2D models it must stay 1.',
+              help='Number of copies along z, the base included; above 1 it needs pitch_z. 3D models only (1 in 2D).',
               tip='How many copies along z, counting the base object. ' + _TIP_ONLY_3D),
         Param(name='pitch_z', kind='float', default=None, label='Pitch z', unit='m', optional=True, min=0.0,
               min_exclusive=True,
-              help='Displacement between neighbouring copies along z in m (> 0); needed when nz > 1. A base with an '
-                   'open z end (z0 / z1 null) reaches the domain top / bottom in every copy, so such copies overlap. '
+              help='Displacement between neighbouring copies along z; needed when nz > 1. A base with an open z end '
+                   '(z0 / z1 null) reaches the domain top / bottom in every copy, so such copies overlap. '
                    + _ONLY_3D,
               tip='Distance from one copy to the next along z; needed when there is more than one copy along z. '
                   + _TIP_ONLY_3D)),
         composite=True,
         summary='Repeats one object on a rectangular grid of copies (holes of a photonic crystal, pillar arrays).',
-        description='Rectangular array (the industry-standard array operation) of nx x ny (x nz in 3D) copies of the '
-                    'base object: copy (i, j, k) is the base moved by (i pitch_x, j pitch_y, k pitch_z), copy (0, 0, '
-                    '0) is the base itself; a cell centre inside any copy is inside (a union of the copies). The array '
-                    'is one domain object: materials, features, selections and mesh refinements naming it act on every '
-                    "copy; meshes follow every copy's outline (triangles: curved edges on circles, ellipses and "
-                    'rounded-rectangle arcs; tetrahedra (gmsh): the solids of each copy). Composite bases are copied '
+        description='Rectangular array of nx x ny (x nz in 3D) copies of the base object, copy (i, j, k) moved by (i '
+                    'pitch_x, j pitch_y, k pitch_z); a union of the copies, acting as one domain object (see the '
+                    'array note). Meshes follow every copy (triangles: curved edges on circles, ellipses and '
+                    'rounded-rectangle arcs; gmsh tetrahedra: the solids of each copy). Composite bases are copied '
                     'whole (a hole with a ring cut out, nested arrays). At most ' + f'{ARRAY_MAX_COPIES}' + ' copies. '
-                    + _CONSUMES_INPUTS + ' ' + _ORIGIN),
+                    + _CONSUMES_INPUTS),
     GeometryKind('box', 'Box', 'domain', (
-        _length('x0', 1.5e-6, 'Corner 1, x', f'x of one corner, {_FROM_ORIGIN}; corners in any order.',
+        _length('x0', 1.5e-6, 'Corner 1, x', 'x of one corner (corners in any order).',
                 f'x of one corner, {_TIP_FROM_ORIGIN}.'),
         _length('y0', 1.5e-6, 'Corner 1, y', 'y of the same corner as x0.', "y of the same corner as 'Corner 1, x'."),
         _length('z0', 1.5e-6, 'Corner 1, z', 'z of the same corner as x0.', "z of the same corner as 'Corner 1, x'."),
         _length('x1', 2.5e-6, 'Corner 2, x', 'x of the opposite corner.', 'x of the opposite corner.'),
         _length('y1', 2.5e-6, 'Corner 2, y', 'y of the opposite corner.', 'y of the opposite corner.'),
-        _length('z1', 2.5e-6, 'Corner 2, z', 'z of the opposite corner; cell centres with min <= coordinate < max '
-                                             'on each axis are inside (half-open).', 'z of the opposite corner.')),
+        _length('z1', 2.5e-6, 'Corner 2, z', 'z of the opposite corner.', 'z of the opposite corner.')),
         dimensions=(3,),
         summary='Box aligned with the x, y and z axes, given by two opposite corners (3D models).',
-        description='Axis-aligned box (3D domain object) between two opposite corners, half-open on every axis '
-                    'like rectangles; the same as a rectangle with z0 / z1. 3D models only. ' + _ORIGIN),
+        description='Axis-aligned box (3D domain object) between two opposite corners, half-open on every axis; the '
+                    'same as a rectangle with z0 / z1. 3D models only.'),
     GeometryKind('cylinder_z', 'Cylinder (z axis)', 'domain', (
-        _length('cx', 2e-6, 'Centre x', f'x of the axis, {_FROM_ORIGIN}.', _TIP_CENTRE_X),
-        _length('cy', 2e-6, 'Centre y', f'y of the axis, {_FROM_ORIGIN}.', _TIP_CENTRE_Y),
-        _length('r', 0.5e-6, 'Radius', 'Radius (> 0); closed test like circles.', 'Radius, greater than 0.',
+        _length('cx', 2e-6, 'Centre x', 'x of the axis.', _TIP_CENTRE_X),
+        _length('cy', 2e-6, 'Centre y', 'y of the axis.', _TIP_CENTRE_Y),
+        _length('r', 0.5e-6, 'Radius', 'Radius (closed test).', 'Radius, greater than 0.',
                 positive=True),
-        _length('z0', 1.5e-6, 'Bottom z', 'One end of the cylinder along z (ends in any order; half-open in z).',
+        _length('z0', 1.5e-6, 'Bottom z', 'One end along z (ends in any order; half-open in z).',
                 'Height of one end.'),
         _length('z1', 2.5e-6, 'Top z', 'The other end along z.', 'Height of the other end.')),
         dimensions=(3,),
         summary='Cylinder standing along z, given by its axis position, radius and end heights (3D models).',
         description='Cylinder with its axis along z (3D domain object): a circle extruded from z0 to z1 (a circle '
-                    "with axis 'x' / 'y' gives a cylinder along x / y, sidewall_angle a cone). 3D models only. "
-                    + _ORIGIN),
+                    "with axis 'x' / 'y' gives a cylinder along x / y, sidewall_angle a cone). 3D models only."),
     GeometryKind('sphere', 'Sphere', 'domain', (
-        _length('cx', 2e-6, 'Centre x', f'x of the centre, {_FROM_ORIGIN}.', _TIP_CENTRE_X),
-        _length('cy', 2e-6, 'Centre y', f'y of the centre, {_FROM_ORIGIN}.', _TIP_CENTRE_Y),
-        _length('cz', 2e-6, 'Centre z', 'z of the centre, measured from the bottom of the physical domain.',
-                _TIP_CENTRE_Z),
-        _length('r', 0.5e-6, 'Radius', 'Radius (> 0); a cell centre exactly on the sphere is inside (closed test).',
+        _length('cx', 2e-6, 'Centre x', 'x of the centre.', _TIP_CENTRE_X),
+        _length('cy', 2e-6, 'Centre y', 'y of the centre.', _TIP_CENTRE_Y),
+        _length('cz', 2e-6, 'Centre z', 'z of the centre.', _TIP_CENTRE_Z),
+        _length('r', 0.5e-6, 'Radius', 'Radius (closed test).',
                 'Radius of the sphere, greater than 0.', positive=True)),
         dimensions=(3,),
         summary='Sphere given by its centre and radius (3D models).',
-        description='Sphere (3D domain object) of radius r around (cx, cy, cz); closed test like circles. The 2D '
-                    'canvas draws its cross-section at the shown layer. 3D models only. ' + _ORIGIN),
+        description='Sphere (3D domain object) of radius r around (cx, cy, cz), closed; the 2D canvas draws its '
+                    'cross-section at the shown layer. 3D models only.'),
 )}
 PRISM_KINDS = ('rectangle', 'rounded_rectangle', 'circle', 'ellipse', 'polygon')   # 2D kinds extruded in 3D
 _QUARTER_TURN_STARTS = (-0.5 * math.pi, 0.0, 0.5 * math.pi, math.pi)   # corner arcs, counter-clockwise from (x1, y0)
@@ -517,7 +465,7 @@ def domain_size_z(spec, parameters):
     return size_z
 
 
-# ---- domain coordinates (symmetry plan 2.16) ----
+# ---- domain coordinates ----
 DOMAIN_COORDINATES = ('cartesian', 'polar', 'spherical')
 # 1D models (DomainSpec.size_y null, symmetry 2.20): logical y span of the one cell across ([m] Cartesian: totals per
 # m^2; [rad] the full circle of a cylinder per m of length, theta 0..pi of a whole sphere)

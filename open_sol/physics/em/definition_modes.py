@@ -2,6 +2,7 @@
 dispersion features) on definition_common, with its templates and self-tests; definition.register calls register."""
 from ...core import time_estimate as te
 from ...core.memory_estimate import COMPLEX128_BYTES, FLOAT64_BYTES, MemoryEstimate
+from ...core.mirror import MIRROR_SIGNS
 from ...model.definition_helpers import eigen_factorization, eigen_role, selected_material_sets
 from ...model.schema import FeatureType, Issue, Param, PhysicsType, SolverRole, feature_path
 from ...solvers.arpack_shift_invert import CUDSS_FACTORIZATIONS, MIXED_FACTORIZATIONS
@@ -29,7 +30,8 @@ from .selftests_em_modes import (STRIP_WAVEGUIDE_MODES_DESCRIPTION, STRIP_WAVEGU
                                  THERMO_OPTIC_PHASE_SHIFTER_DESCRIPTION, THERMO_OPTIC_PHASE_SHIFTER_LABEL,
                                  strip_waveguide_modes_spec, thermo_optic_phase_shifter_spec)
 from .solvers.modes_2d import (MODE_PERMITTIVITY_ARRAYS, MODE_PERMITTIVITY_SLOTS, MODE_POLARIZATION, ModePhysics,
-                               bend_factor_message, bend_overlap_result, mode_dispersion_result, mode_table_result)
+                               bend_factor_message, bend_overlap_result, bend_reference, mode_dispersion_result,
+                               mode_table_result)
 from .solvers.modes_fem import FEMModePhysics
 
 _TYPE_NAME = 'em_modes'
@@ -41,26 +43,23 @@ _CROSS_SECTION_ILLUMINATION_TYPES = ('em_fdfd_ez', 'em_fdfd_hz')
 # ---- settings ----
 _BC_HELP = ' '.join((
     CPML_BC_HELP,
-    'In the mode solve it is the complex coordinate stretch s = kappa + sigma / (alpha + j omega eps0) with the FDTD '
-    'grading of the pml_* settings: a mode whose tail reaches it gains a small artificial loss (Im n_eff, see '
-    'pml_fraction), and modes with more than half of their |H|^2 in PML cells are dropped.',
+    'Mode-solve CPML: stretch s = kappa + sigma / (alpha + j omega eps0), pml_* grading; a mode tail reaching it gains '
+    'a small artificial loss (Im n_eff, see pml_fraction); modes with > half their |H|^2 in PML cells are dropped.',
     PERIODIC_BC_HELP,
-    'Walls and mirrors all sit on one plane, the inner face of the outermost cell (the outermost cell is a ghost: '
-    'each field component centred along that axis takes -1 (pec, antisymmetric) or +1 (pmc, symmetric) times its '
-    'inner neighbour, the components on the plane are free (pec) or 0 (pmc)); that is half a cell off the em_fdtd_ez '
-    'pec and em_fdtd_hz pmc walls, so a guide between two pec walls of a domain n cells wide is n - 2 cells wide. '
-    'Mirrors, on any face, add their ghost cell outside the domain, so their plane is the domain edge: symmetric = E '
-    'mirror-even (a PMC plane), antisymmetric = E mirror-odd (a PEC plane). A '
-    'mirror through a symmetric guide halves the unknowns and keeps one parity: on x_lo, antisymmetric keeps the modes '
-    'whose E_x is even about the plane (quasi-TE, e.g. TE0 of a strip), symmetric those whose E_y is even (quasi-TM).',
+    'Walls and mirrors sit on the inner face of the outermost cell (a ghost: each component centred along that axis '
+    'takes -1 (pec, antisymmetric) or +1 (pmc, symmetric) times its inner neighbour; components on the plane free '
+    '(pec) or 0 (pmc)): half a cell off the em_fdtd_ez pec / em_fdtd_hz pmc walls, so a guide between two pec walls of '
+    'an n-cell domain is n - 2 cells wide. Mirrors add their ghost outside the domain (plane = domain edge): symmetric '
+    '= E even (PMC plane), antisymmetric = E odd (PEC plane). A mirror through a symmetric guide halves the unknowns '
+    'and keeps one parity: on x_lo, antisymmetric keeps E_x even (quasi-TE, e.g. TE0 of a strip), symmetric E_y even '
+    '(quasi-TM).',
 ))
 _WAVELENGTH_HELP = (
-    'Vacuum wavelength lambda0 of the mode solve in a mode_analysis study (omega = 2 pi C0 / lambda0; k0 = omega / '
-    'C0). The materials enter at that omega (sigma_e and every Drude / Lorentz pole as a complex permittivity). A '
-    'frequency_domain study solves its own wavelengths instead (validation info when this is not the default) and '
-    'gives n_eff versus wavelength (mode_dispersion). The mesh needs >= 10 (better 20) cells per lambda0 / |n| in every '
-    'material and, in metals, >= 2 (better 4) per skin depth lambda0 / (2 pi |Im n|); validation checks both. A 220 nm '
-    'silicon core needs ~20 nm cells (or a refinement) for n_eff to ~1e-2. Typical 1.31e-6 or 1.55e-6 m.')
+    'Vacuum wavelength of a mode_analysis solve (k0 = 2 pi / lambda0); materials enter at that omega (sigma_e and '
+    'poles as complex eps). frequency_domain solves its own wavelengths instead (validation info when this is not the '
+    'default; n_eff versus wavelength: mode_dispersion). Mesh: >= 10 (better 20) cells per lambda0 / |n| and, in '
+    'metals, >= 2 (better 4) per skin depth lambda0 / (2 pi |Im n|) (validation checks both); a 220 nm silicon core '
+    'needs ~20 nm cells (or refinement) for n_eff to ~1e-2. Typical 1.31e-6 or 1.55e-6 m.')
 _SETTINGS = boundary_settings_params(_BC_HELP) + (
     Param('wavelength', 'float', DEFAULT_WAVELENGTH, label='Wavelength', unit='m', min=0.0, min_exclusive=True,
           help=_WAVELENGTH_HELP,
@@ -68,203 +67,173 @@ _SETTINGS = boundary_settings_params(_BC_HELP) + (
               "A 'Frequency domain' study ignores it and computes the modes at its own list of wavelengths. The mesh "
               'needs at least 10 cells per wavelength inside every material.'),
     Param('n_modes', 'int', 4, label='Number of modes', min=1, max=100,
-          help='Modes kept per solve: the eigen-solve finds the 2 n_modes + 10 eigenvalues beta^2 nearest the target '
-               '(k0 n_eff_guess)^2 (n_modes + 4 on a lossless cross-section without bend or n_eff_guess: the target '
-               'lies above every beta^2 there, so the nearest are the highest-ranked; with PML again at 2 n_modes + 10 '
-               'when the PML modes leave fewer than n_modes), drops the modes with more than half of their |H|^2 in PML cells, ranks the rest by '
-               'descending Re(beta^2), ties by descending Im(beta^2) (= descending Re n_eff for low-loss guided modes; '
-               'evanescent modes, Re(beta^2) < 0, come last) and keeps up to n_modes (fewer may come back, e.g. near '
-               'cutoff or when most candidates are PML modes). More modes cost more eigensolver work; 2-10 typical.',
+          help='Modes kept per solve: the eigen-solve finds the 2 n_modes + 10 beta^2 nearest the target (k0 '
+               'n_eff_guess)^2 (n_modes + 4 on a lossless cross-section without bend or n_eff_guess, back to 2 n_modes '
+               '+ 10 when PML modes leave too few), drops PML modes (> half their |H|^2 in PML), ranks by descending '
+               'Re(beta^2), ties by descending Im (= descending Re n_eff for low-loss guided modes; evanescent modes '
+               'last) and keeps up to n_modes (fewer near cutoff or when most candidates are PML modes). 2-10 typical.',
           tip='How many modes to compute, from the most strongly guided one down.\n\n'
               'Fewer may be found when the guide supports fewer. 2 to 10 is typical.'),
     Param('n_eff_guess', 'float', None, label='Effective index guess', unit='1', min=0.0, min_exclusive=True,
           optional=True,
-          help='Effective index around which modes are sought: the shift-invert target is sigma = (k0 n_eff_guess)^2, '
-               'so the modes whose n_eff^2 lies nearest n_eff_guess^2 are found. Empty: the largest Re sqrt(eps mu) '
-               'over the non-PEC cells and the three permittivity components at the solve wavelength (before any '
-               'bend map), which finds the most strongly guided modes. Set '
-               'it lower to reach higher-order modes, or near the expected value for a surface plasmon or a mode far '
-               'below the core index.',
+          help='Shift-invert target sigma = (k0 n_eff_guess)^2: the modes with n_eff^2 nearest it. Empty: the largest '
+               'Re sqrt(eps mu) over non-PEC cells and all three components at the solve wavelength (before any bend '
+               'map): the most strongly guided modes. Lower it for higher-order modes; set it near the expected value '
+               'for a surface plasmon or a mode far below the core index.',
           tip='Effective index near which the modes are searched.\n\n'
               'Empty searches below the highest refractive index of the cross-section, which finds the most strongly '
               'guided modes. Set it to reach higher-order modes.'),
     Param('mode_number', 'int', 1, label='Displayed mode', min=1,
-          help='Mode number (1-based rank, descending Re(beta^2), see n_modes; as every mode_number) of the mode shown '
-               'after the study: Results.field and the GUI field view, the state fields e_intensity / sz, and selected = True in mode_table. A frequency_domain study '
-               'shows the mode of that rank at every wavelength (no tracking; mode_dispersion follows a mode by '
-               'overlap). Must not exceed n_modes (validation error); when fewer modes are found the last one is '
-               'shown (run-log warning).',
+          help='Rank (see n_modes) of the mode shown after the study: Results.field and the GUI view, state fields '
+               'e_intensity / sz, selected = True in mode_table. frequency_domain shows that rank at every wavelength '
+               '(no tracking; mode_dispersion follows by overlap). > n_modes is a validation error; when fewer modes '
+               'are found the last one is shown (run-log warning).',
           tip='Which mode the field view shows after the run: 1 is the most strongly guided one.\n\n'
               'Every mode is also stored as its own snapshot.'),
     Param('group_index', 'bool', False, label='Compute group index',
-          help='Also compute the group index n_g = C0 d(Re beta) / d(omega) of every mode by a central difference in '
-               'omega (relative step 1e-3) with the materials re-evaluated at both frequencies (Drude / Lorentz chi '
-               'and sigma_e: material dispersion included; plain eps_r values have none). Tensor meshes: two more '
-               'eigen-solves per wavelength, each mode followed by overlap (about 3x the time); triangles meshes: the '
-               'first-order perturbation of the complex symmetric pencil, two more assemblies and no eigen-solve. Off: '
-               'n_group is NaN in the results.',
+          help='Group index n_g = C0 d(Re beta) / d(omega) of every mode by a central difference in omega (relative '
+               'step 1e-3), materials re-evaluated (pole chi and sigma_e: material dispersion included; plain eps_r has '
+               'none). Tensor meshes: two more eigen-solves per wavelength, modes followed by overlap (~3x the time); '
+               'triangles: first-order perturbation of the pencil, two more assemblies. Off: n_group NaN.',
           tip='Also compute the group index of every mode, which sets the speed of light pulses in the guide.\n\n'
               'Takes about three times as long on a rectangular grid, a little longer on a triangle mesh.'),
     Param('bend_radius', 'float', 0.0, label='Bend radius', unit='m',
-          help='Signed radius R of a waveguide bent in the xz plane (0 = straight). R > 0 puts the centre of curvature '
-               'at x = x_ref - R (the outer side of the bend is +x), R < 0 at x_ref + |R| (outer side -x), x_ref = '
-               'bend_reference_x; the guide runs around the y axis (rings in the chip plane: y vertical), radius r = |R| s with '
-               's = 1 + (x - x_ref) / R at the x of each field point. bend_model sets the form (exact metric or the '
-               'conformal map). n_eff is referred to the radius at x_ref: the angular propagation constant (azimuthal '
-               'order of a ring) is nu = beta R = k0 n_eff R. Bend modes radiate '
-               'toward the outer side, which shows as Im n_eff < 0 / loss_db_per_cm: keep a cpml face and enough '
-               'cladding there (validation warns otherwise). s must stay > 0 over the whole grid, PML '
-               'included, and the x axis must not be periodic (validation errors). Typical 5e-6 to 1e-4 m.',
+          help='Signed radius R of a guide bent in the xz plane (0 = straight), around the y axis (rings in the chip '
+               'plane, y vertical). R > 0: centre of curvature at x_ref - R (outer side +x); R < 0: at x_ref + |R| '
+               '(outer side -x); x_ref = bend_reference_x; radius r = |R| s, s = 1 + (x - x_ref) / R. n_eff refers to '
+               'the radius at x_ref: angular propagation constant (ring azimuthal order) nu = beta R = k0 n_eff R. '
+               'Bend radiation toward the outer side shows as Im n_eff < 0 / loss_db_per_cm: keep a cpml face and '
+               'cladding there (validation warns otherwise) and set pml_kappa_max 1 (the default 15 reflects grazing '
+               'radiation). s > 0 over the whole grid incl. PML and a non-periodic x '
+               'axis are required (validation errors). Typical 5e-6 to 1e-4 m.',
           tip='Radius of a bend of the waveguide, in metres; 0 means straight.\n\n'
               'Positive values bend toward -x, so light leaks toward +x; keep an absorbing layer on that side.'),
     Param('bend_reference_x', 'float', None, label='Bend reference x', unit='m', optional=True,
-          help='x coordinate in m (physical frame) where s = 1 (bend_radius): the radius to which n_eff is referred, '
-               'usually the guide centre. Empty: the domain centre size_x / 2. Unused when bend_radius = 0.',
+          help='x (physical frame) where s = 1: the radius n_eff refers to, usually the guide centre. Empty: size_x / '
+               '2. Unused when bend_radius = 0.',
           tip='Horizontal position where the bend radius is measured, usually the waveguide centre.\n\n'
               'Empty uses the middle of the domain.'),
     Param('bend_model', 'choice', 'exact', label='Bend model', choices=BEND_MODELS,
           choice_labels=(('exact', 'Exact (cylindrical coordinates)'), ('conformal', 'Conformal map (approximate)')),
-          help="Form of the bend (unused when bend_radius = 0). 'exact': the bent guide written exactly as a straight "
-               'one in (x, y, R phi): eps and mu become eps diag(s, s, 1/s), mu diag(s, s, 1/s) (x, y, z components, '
-               'each at its own field point), so the result is the true bend mode to discretisation order whenever '
-               'the centre of curvature lies outside the grid; E_x, E_y, H_x, H_y are the physical E_r, E_y, H_r, H_y '
-               'and E_z, H_z = s x the physical E_phi, H_phi; power and overlaps use the straight formulas. '
-               "'conformal': the approximate map of the bend-loss literature, every permittivity component times "
-               's^2, mu untouched: an error second order in w / R (w the mode width; e.g. -5e-4 relative in n_eff for '
-               'the whispering-gallery mode of a 50 um metal-rimmed ring at 1.55 um). Both need s > 0 over the grid, '
-               'PML included.',
+          help="Unused when bend_radius = 0. 'exact': the bend written as a straight guide in (x, y, R phi): eps "
+               'diag(s, s, 1/s), mu diag(s, s, 1/s), so the true bend mode to discretisation order while the centre of '
+               'curvature lies outside the grid; E_x, E_y, H_x, H_y are the physical E_r, E_y, H_r, H_y, E_z, H_z = s x '
+               "the physical E_phi, H_phi; power and overlaps use the straight formulas. 'conformal': the approximate "
+               'bend-loss map, every eps component times s^2, mu untouched: error second order in w / R (w = mode '
+               'width; e.g. -5e-4 relative in n_eff for a 50 um metal-rimmed ring at 1.55 um).',
           tip='How the bend is computed: exactly, or by the older approximate conformal map.\n\n'
               'Keep the exact model unless comparing with the approximation.'),
     Param('discretization', 'choice', 'quadratic', label='Discretization', choices=tuple(DISCRETIZATION_ORDERS),
           choice_labels=(('quadratic', 'Quadratic'), ('linear', 'Linear')),
-          help='Element order on a triangles mesh (MeshSpec kind triangles; tensor meshes ignore it and use the Yee '
-               'cross-section). quadratic (default, the industry standard): second-order Nedelec edge elements for '
-               'E_x, E_y and P2 Lagrange for E_z (Lee-Sun-Cendes mixed form, free of spurious modes), elements with a '
-               'curved edge mapped isoparametrically, so circles and ellipses are followed to the mesh; linear: '
-               'Whitney edge elements and P1 on straight elements, cheaper, error ~h^2 instead of ~h^4 in beta^2. '
-               'About 7 (quadratic) or 2 (linear) unknowns per element, solved by the shift-invert of the eigen '
-               'solver: host SuperLU, or with its factorization cudss a cuDSS LDL^T on the GPU (the pencil is complex '
-               'symmetric), '
-               f'with {HOST_DIRECT_NAMES} a MUMPS / PARDISO LDL^T on the host, '
-               'the _mixed ones their complex64 form: one float64 refinement step per solve, ARPACK to 1e-6, then '
-               'beta^2 from the float64 Rayleigh quotient of each eigenvector (error ~ the square of the vector '
-               'error). '
-               'Materials are one value per element (an element takes the material at its centroid; the mesh '
-               'follows every drawn outline). On triangles: pec / antisymmetric faces fix tangential E on the window '
-               'edge, pmc / symmetric faces are natural (mirror planes are the window edge, no ghost cell); a cpml '
-               'face gets a ring of mesh pml_layers structured element layers, pml_cells x the maximum element size '
-               'thick, with the stretch of the pml_* settings and a pec outer side (pml_kappa_max 1 suits radiating '
-               'leaky modes, the default 15 evanescent tails); pec_domain removes its elements and holds E = 0 on '
-               'their outline. Not available on triangles (validation errors): periodic faces, bend_radius, '
-               'shg_overlap, bend_overlap, a line_block shifted solver and the thermal_noise / optomechanics '
-               'studies; subpixel smoothing and conformal boundaries do not apply.',
+          help='Element order on a triangles mesh (tensor meshes use the Yee cross-section). quadratic (industry '
+               'standard): second-order Nedelec for E_x, E_y, P2 Lagrange for E_z (Lee-Sun-Cendes mixed form, no '
+               'spurious modes), curved edges isoparametric, so circles and ellipses follow the mesh; linear: Whitney '
+               '/ P1 on straight elements, cheaper, error ~h^2 instead of ~h^4 in beta^2. ~7 (quadratic) or 2 (linear) '
+               'unknowns per element; shift-invert by the eigen solver (host SuperLU; factorization cudss: GPU LDL^T '
+               f'of the complex symmetric pencil; {HOST_DIRECT_NAMES}: host MUMPS / PARDISO LDL^T; _mixed: complex64 '
+               'with one float64 refinement per solve, ARPACK to 1e-6, beta^2 from float64 Rayleigh quotients, error ~ '
+               'the square of the vector error). Materials one value per element (at its centroid). pec / '
+               'antisymmetric faces fix tangential E on the window edge, pmc / symmetric are natural (mirror plane = '
+               'window edge, no ghost); a cpml face gets mesh pml_layers structured element layers, pml_cells x the '
+               'maximum element size thick, pml_* stretch, pec outer side (pml_kappa_max 1 suits leaky modes, the '
+               'default 15 evanescent tails); pec_domain removes its elements (E = 0 on their outline). On triangles '
+               'periodic faces, bend_radius, shg_overlap, bend_overlap, a line_block shifted solver and thermal_noise '
+               '/ optomechanics studies are validation errors; no subpixel smoothing or conformal boundaries.',
           tip='Order of the finite elements when the mesh is made of triangles: quadratic is far more accurate per '
               'element, linear is cheaper.\n\nUnused on a rectangular-cell mesh.'),
 ) + bloch_params(
-    'Bloch wave vector along {axis} in rad/m, used only when bc_{axis}_lo and bc_{axis}_hi are periodic: the modes are '
-    'Bloch waves of the periodic cross-section, F({axis} + L) = F({axis}) exp(-j k{axis} L) per period L (the meshed '
-    'period; fields ~ exp(j (omega t - beta z))), e.g. one supercell of a photonic-crystal fibre or of a waveguide '
-    'array at a transverse phase step k{axis} L per cell; k{axis} and k{axis} + 2 pi / L are the same state, 0 = plain '
-    'periodic. The phase sits on the wrap entries of the operator (same unknowns and cost; the operator is no longer '
-    'symmetric, which the shift-invert solve handles); the displayed centre fields take it across the wrap. Not with '
-    'shg_overlap (its 2 omega modes would need 2 k{axis}) and not in thermal_noise or optomechanics studies (their '
-    'overlaps assume k = 0): validation errors. Typical: pi / L at the edge of the first zone.',
+    'Used only when both faces of this axis are periodic: Bloch modes of the periodic cross-section, F(s + L) = F(s) '
+    'exp(-j k L) per meshed period L along the axis (fields ~ exp(j (omega t - beta z))), e.g. a photonic-crystal '
+    'fibre supercell or a waveguide array at phase step k L; k and k + 2 pi / L are the same state. Phased operator '
+    'wrap entries (same cost, operator no longer symmetric); displayed centre fields carry the phase across the wrap. '
+    'Validation errors with shg_overlap (2 omega modes would need 2 k) and thermal_noise / optomechanics studies '
+    '(overlaps assume k = 0). Typical: pi / L (first zone edge).',
     'Phase step of the mode from one period of the cross-section to the next along {axis}, in radians per metre, '
     'for periodic edges.\n\n0 means no phase step. Use pi divided by the period for the edge of the first zone.')
 
 # ---- material vocabulary (definition_common.em_material_params; em_modes reads eps_xx, eps_yy and eps_zz) ----
-_COMPLEX_EPS = ('The solve uses the complex permittivity at the solve wavelength: this value - j sigma_e / (omega '
-                'eps0) plus the susceptibility chi(omega) of every Drude / Lorentz pole (exp(+j omega t): loss has '
-                'Im < 0, giving Im n_eff < 0).')
+_COMPLEX_EPS = ('Solved with the complex value at the solve wavelength: this - j sigma_e / (omega eps0) + chi(omega) '
+                'of every Drude / Lorentz pole (exp(+j omega t): loss Im < 0, giving Im n_eff < 0).')
 _BACKGROUND = ('For a dispersive material it is the background eps_inf (an explicit permittivity wins over the Drude '
                'eps_inf). A state-dependent value (e.g. of T) is rewritten once after the background solve, before the '
                'mode solve.')
 _FACE_VALUE = ('the width-weighted mean of the two cells sharing that face (solver_defaults.subpixel_smoothing '
                'averages interface faces anisotropically)')
 _MATERIAL_PROPERTIES = em_material_params('modes', {
-    'eps_r': ('Isotropic relative permittivity (>= 1): sets eps_xx, eps_yy and eps_zz unless the material sets those '
-              'components (a component wins over eps_r). n^2 of a lossless dielectric: silica ~2.085, silicon ~12.1 at '
-              '1.55 um; may depend on x, y and physics fields. E_z sees the cell value, E_x on the +x and E_y on the +y '
+    'eps_r': ('Isotropic: eps_xx, eps_yy, eps_zz unless the material sets a component (it wins). n^2 of a lossless '
+              'dielectric: silica ~2.085, silicon ~12.1 at 1.55 um. E_z sees the cell value, E_x / E_y on the +x / +y '
               f'cell faces {_FACE_VALUE}. {_COMPLEX_EPS} {_BACKGROUND}'),
-    'eps_zz': ('z component (along the guide) of the relative permittivity (>= 1), the one E_z sees at the cell '
-               'centres; overrides eps_r for E_z. Uniaxial crystal with its optic axis along the guide: eps_zz = '
-               'n_e^2, eps_r = n_o^2.'),
-    'eps_xx': ('x component of the relative permittivity (>= 1), the one E_x sees on the +x cell faces '
-               f'({_FACE_VALUE}); overrides eps_r for E_x. E.g. x-cut lithium niobate at 1.55 um (optic axis along '
-               'x): eps_xx 4.571 = n_e^2 with eps_r 4.889 = n_o^2 for the other components.'),
-    'eps_yy': ('y component of the relative permittivity (>= 1), the one E_y sees on the +y cell faces '
-               f'({_FACE_VALUE}); overrides eps_r for E_y. For a uniaxial crystal with its optic axis along y set '
-               'eps_yy = n_e^2.'),
-    'sigma_e': ('Ohmic loss in S/m on all three E components, default 0: the permittivity at the solve wavelength gains '
-                '-j sigma_e / (omega eps0), so the guide gets Im n_eff < 0 and loss_db_per_cm > 0. A weak absorber with '
-                'index n and extinction coefficient kappa at angular frequency omega has sigma_e = 2 n kappa omega '
-                'eps0; model metals with a Drude pole, not their DC conductivity.'),
-    'mu_r': ('Real relative permeability (>= 1) of H_x, H_y and H_z, each taking the value of the cell it belongs to '
-             '(H_x on the +y face, H_y on the +x face, H_z at the +x+y corner of that cell); 1 for practically every '
-             'optical material. The solve uses mu_r - j sigma_m / (omega mu0).'),
-    'sigma_m': ('Magnetic loss on H_x, H_y, H_z in Ohm/m, default 0: mu_r gains -j sigma_m / (omega mu0) (artificial '
-                'absorbers only).'),
+    'eps_zz': ('Component along the guide, the one E_z sees at the cell centres; overrides eps_r for E_z. Uniaxial, '
+               'optic axis along the guide: eps_zz = n_e^2, eps_r = n_o^2.'),
+    'eps_xx': ('The one E_x sees on the +x cell faces (face mean as eps_r); overrides eps_r for E_x. E.g. x-cut lithium '
+               'niobate at 1.55 um: eps_xx 4.571 = n_e^2, eps_r 4.889 = n_o^2.'),
+    'eps_yy': ('The one E_y sees on the +y cell faces (face mean as eps_r); overrides eps_r for E_y. Optic axis along '
+               'y: eps_yy = n_e^2.'),
+    'sigma_e': ('All three E components gain -j sigma_e / (omega eps0): Im n_eff < 0, loss_db_per_cm > 0. Weak '
+                'absorber of index n, extinction kappa: sigma_e = 2 n kappa omega eps0; metals: a Drude pole, not '
+                'their DC conductivity.'),
+    'mu_r': ('Real, 1 for optical materials; H_x (+y face), H_y (+x face), H_z (+x+y corner) take the value of their '
+             'cell. Solved as mu_r - j sigma_m / (omega mu0).'),
+    'sigma_m': 'mu_r gains -j sigma_m / (omega mu0) on H_x, H_y, H_z (artificial absorbers only).',
 }, tips={'eps_zz': ('Permittivity for the electric field along z, the direction the light travels.\n\n'
                     "When set it replaces 'Relative permittivity' for that direction.")})
-_GYRATION_HELP = (
-    'Gyration g_{axis} (real, default 0) of a magneto-optic material magnetised along {axis}, across the guide: the '
-    'gyration vector (g_x, g_y, 0) adds eps_ij += j e_ijk g_k (exp(+j omega t)), so eps_yz = -eps_zy = j g_x and eps_zx = '
-    '-eps_xz = j g_y; Hermitian (lossless) for real g, which changes sign with the magnetisation. It does NOT enter the '
-    'mode solve: every mode gets the first-order non-reciprocal phase shift delta_beta = beta_forward - '
-    'beta_backward = -(omega eps0 / P) integral [g_x Im(conj(E_y) E_z) + g_y Im(conj(E_z) E_x)] dA (the perturbation '
-    'formula of Mizumoto / Shintaku; P = 1 W, the solved mode travelling toward +z), scalar output delta_beta_<k> and '
-    'mode_table column delta_beta; error ~ g^2 relative (n_eff itself moves only by ~g^2, not computed). '
-    '{field} couples to the longitudinal E_z, so a transverse magnetisation along {axis} shifts the modes with E '
-    'mostly along {other} (g_x: quasi-TM, E along y; g_y: quasi-TE, E along x), and only where the guide is not '
-    'mirror symmetric across {other} (a magneto-optic cladding on one side, or opposite magnetisations on two sides: '
-    'push-pull). A pi phase difference needs L_pi = pi / |delta_beta|. Ce:YIG at 1550 nm (library ce_yig, n ~ 2.2): '
-    '|g| ~ 0.009 from its Faraday rotation ~ -4500 deg/cm (g = theta_F lambda n / pi); the sign for a given '
-    'magnetisation is the material\'s. Allocated only when a material sets it. Validation errors: a {mirror} mirror '
-    'face (its image reverses the magnetisation), a bend, a triangles mesh, and every other EM type (em_fdfd_hz takes '
-    'gyration_z, magnetisation out of the plane, in its operator).')
+_GYRATION_HELPS = {
+    'gyration_x': (
+        'Gyration g_x of a material magnetised along x (across the guide): eps_ij += j e_ijk g_k (exp(+j omega t)), '
+        'so eps_yz = -eps_zy = j g_x, eps_zx = -eps_xz = j g_y; Hermitian for real g, sign flips with the '
+        'magnetisation. Not in the mode solve: each mode gets the first-order non-reciprocal shift delta_beta = '
+        'beta_forward - beta_backward = -(omega eps0 / P) integral [g_x Im(conj(E_y) E_z) + g_y Im(conj(E_z) E_x)] dA '
+        '(Mizumoto / Shintaku; P = 1 W, mode toward +z): scalar output delta_beta_<k>, mode_table column delta_beta; '
+        'error ~g^2 relative (the ~g^2 n_eff change is not computed). E_y couples to E_z, so g_x shifts quasi-TM '
+        'modes (E along y), and only where the guide is not mirror symmetric across y (magneto-optic cladding on one '
+        'side, or opposite magnetisations: push-pull). L_pi = pi / |delta_beta|. Ce:YIG at 1550 nm (library ce_yig, '
+        'n ~ 2.2): |g| ~ 0.009 (g = theta_F lambda n / pi, theta_F ~ -4500 deg/cm); the sign is the material\'s. '
+        'Never subpixel-smoothed (cell-centre staircase): put magneto-optic interfaces on cell edges. The same guide '
+        'drawn in plane for em_fdfd_hz: (x, y, z) here = (z, y, -x) there, so gyration_x = -gyration_z. '
+        'Allocated only when a material sets it. Validation errors: a y_lo / y_hi mirror face (its image reverses the '
+        'magnetisation), a bend, a triangles mesh, any other EM type (em_fdfd_hz takes gyration_z).'),
+    'gyration_y': (
+        'Gyration g_y of a material magnetised along y: as gyration_x with x and y swapped: E_x couples to E_z, so it '
+        'shifts quasi-TE modes (E along x) where the guide is not mirror symmetric across x; an x_lo / x_hi mirror '
+        'face is a validation error.'),
+}
 _GYRATION_TIP = ('Strength of the magneto-optic effect of a material magnetised along {axis}, such as cerium-doped '
                  'yttrium iron garnet: light then travels with a slightly different effective index forward and '
                  'backward, the effect behind optical isolators. Usually empty.\n\n'
                  'About 0.009 for cerium-doped garnet at 1550 nm; reversing the magnetisation flips its sign.')
 _GYRATION_PROPERTIES = tuple(
     Param(name, 'float', 0.0, label=f'Gyration, {axis} (magneto-optic)', unit='1', field_dependent=True,
-          expands_to=(name,), help=_GYRATION_HELP.format(axis=axis, other=other, field=field, mirror=mirror),
-          tip=_GYRATION_TIP.format(axis=axis))
-    for name, axis, other, field, mirror in (('gyration_x', 'x', 'y', 'E_y', 'y_lo / y_hi'),
-                                             ('gyration_y', 'y', 'x', 'E_x', 'x_lo / x_hi')))
+          expands_to=(name,), help=_GYRATION_HELPS[name], tip=_GYRATION_TIP.format(axis=axis))
+    for name, axis in (('gyration_x', 'x'), ('gyration_y', 'y')))
 
 # ---- features ----
 _MODE_SCALARS = (
-    'n_eff (Re n_eff = Re beta / k0), n_eff_imag (Im n_eff < 0 = loss in the exp(+j omega t), exp(-j beta z) '
-    'convention), loss_db_per_cm = -20 log10(e) Im(beta) / 100 (power loss in dB/cm, > 0 for a lossy or leaky mode), '
-    'n_group (C0 d(Re beta) / d(omega), NaN unless group_index or when the mode could not be followed to the shifted '
-    'frequencies, with a run-log warning), te_fraction = integral |E_x|^2 dA / integral (|E_x|^2 + |E_y|^2) dA (the '
-    'industry-standard TE polarisation fraction: 1 = E along x, e.g. the quasi-TE mode of a strip on a substrate '
-    'parallel to the xz plane, 0 = E along y), effective_area = (integral |E|^2 dA)^2 / integral |E|^4 dA in m^2 (all '
-    'three components at the cell centres; the nonlinear-optics definition; like the 1 W normalisation it covers the '
-    'whole mode, mirror images included), pml_fraction (share of the '
-    "mode's |H|^2 in PML cells: kept modes have < 0.5, and above ~1e-2 the PML shapes the mode: widen the cladding) "
-    'and delta_beta (beta_forward - beta_backward in 1/m, the first-order non-reciprocal phase shift of the '
-    'gyration_x / gyration_y materials; 0 without them)')
+    'n_eff (Re beta / k0), n_eff_imag (< 0 = loss; exp(+j omega t), exp(-j beta z)), loss_db_per_cm = -20 log10(e) '
+    'Im(beta) / 100 (> 0 for lossy or leaky modes), n_group (C0 d(Re beta) / d(omega); NaN unless group_index or when '
+    'the mode was not followed to the shifted frequencies, run-log warning), te_fraction = int |E_x|^2 dA / int '
+    '(|E_x|^2 + |E_y|^2) dA (1 = E along x, e.g. quasi-TE of a strip on a substrate parallel to xz), '
+    'effective_area = (int |E|^2 dA)^2 / int |E|^4 dA [m^2] (all three components at the cell centres, '
+    'nonlinear-optics definition; whole mode incl. mirror images, as the 1 W normalisation), pml_fraction (share of '
+    'the |H|^2 in PML cells: kept modes < 0.5; above ~1e-2 the PML shapes the mode: widen the cladding), delta_beta '
+    '(beta_forward - beta_backward [1/m] of gyration_x / gyration_y materials; 0 without them)')
 _MODE_TABLE_DESCRIPTION = (
-    "Mode table of the last solve (a frequency_domain study: its last wavelength). Result 'table', one row per mode "
-    f'found, by descending Re(beta^2) (see n_modes): mode_number (1-based rank), {_MODE_SCALARS}, and selected (True for the '
-    "mode of the mode_number setting); extras wavelength (m) and selected_mode. For n_eff in a parameter sweep the scalar output "
-    "<physics>_n_eff_<k> is simplest; any other column needs a derived value with source '<physics>.<this feature>', "
-    "the column name as expression, operation at and at = mode_number - 1 (the row index).")
+    "Modes of the last solve (frequency_domain: the last wavelength). Result 'table', one row per mode, ranked as "
+    f'n_modes: mode_number, {_MODE_SCALARS}, selected (the mode_number setting); extras wavelength [m], selected_mode. '
+    "n_eff in a sweep: scalar output <physics>_n_eff_<k>; any other column: derived value source '<physics>.<this "
+    "feature>', expression = column name, operation at, at = mode_number - 1 (row index).")
 _MODE_DISPERSION_DESCRIPTION = (
-    "Scalars of one mode versus vacuum wavelength. Result 'xy' (x = wavelength in m, ascending; one point per solved "
-    'wavelength, so a mode_analysis study gives one; a wavelength solved again keeps its latest solve), series '
-    f'{_MODE_SCALARS}, and overlap (|overlap| of the followed mode with the one followed at the previous solve, 1 at '
-    'the first; a value well below 1 means the mode changed character or crossed another); extras frequency (Hz), '
-    'wavelength (m) and mode_number. The first solve that finds at least mode_number modes picks the mode of that '
-    'rank; every later solve follows the mode of largest overlap with the previous one, so it keeps its identity where '
-    'modes swap order in n_eff (solve order: the frequency_domain wavelengths list, else wavelength_start to '
-    'wavelength_stop). Rows are NaN while the mode is not found.')
+    "Scalars of one mode versus vacuum wavelength. Result 'xy' (x = wavelength [m], ascending; one point per solved "
+    'wavelength, a mode_analysis study gives one; a re-solved wavelength keeps its latest), series = the mode_table '
+    'scalar columns (n_eff, n_eff_imag, loss_db_per_cm, n_group, te_fraction, effective_area, pml_fraction, '
+    'delta_beta) and overlap (|overlap| with the mode followed at the previous solve, 1 at the first; well below 1 = '
+    'the mode changed character or crossed another); extras frequency [Hz], wavelength [m], mode_number. The first '
+    'solve finding mode_number modes picks that rank; later solves follow the largest overlap, keeping identity where '
+    'modes swap order (solve order: the frequency_domain wavelengths list, else wavelength_start to wavelength_stop). '
+    'NaN rows while the mode is not found.')
 _MODE_DISPERSION_PARAMS = (
     Param('mode_number', 'int', 1, label='Mode number', min=1,
-          help='1-based rank (descending Re(beta^2), as mode_table) of the followed mode at the first solve that finds that many '
-               'modes; later solves follow it by overlap.',
+          help='Rank (as mode_table) of the followed mode at the first solve that finds that many modes; later solves '
+               'follow it by overlap.',
           tip='Which mode to follow across the wavelengths: 1 is the most strongly guided one at the first '
               'wavelength.\n\nThe same mode is then followed even where two modes swap order.'),
 )
@@ -272,75 +241,65 @@ _MODE_DISPERSION_PARAMS = (
 
 _SHG_TEXT = (
     "Coupled-mode second-harmonic generation of a 3D waveguide from its cross-section modes. Result 'xy' versus pump "
-    'vacuum wavelength (x, m; one point per solve: mode_analysis one, frequency_domain one per wavelength): after '
-    'every em_modes solve at omega the feature solves the modes at 2 omega itself (same materials, walls, bend and '
-    'eigen solver; a second eigen-solve of the same size, so about twice the time) and pairs mode pump_mode (omega) '
-    'with mode harmonic_mode (2 omega), both by rank as in mode_table (no tracking across wavelengths). Series: '
-    'n_eff_pump, n_eff_harmonic, delta_beta = Re beta(2 omega) - 2 Re beta(omega) [1/m], coherence_length = pi / '
-    '|delta_beta| and poling_period = 2 pi / |delta_beta| [m] (NaN at delta_beta = 0), overlap = |kappa| [V^2/W^1.5], '
-    'kappa = integral conj(e_2w) . (d : e_w e_w) dA over the selected domains (1 W modes, fields at the cell centres '
-    'by face means), efficiency = (omega eps0 / 2)^2 |kappa|^2 in %/(W cm^2) (P_2w = efficiency P_w^2 L^2 when phase '
-    'matched; times sinc^2(delta_beta L / 2) otherwise; a plane-wave mode of area A gives 8 pi^2 d^2 / (eps0 c n_w^2 '
-    'n_2w lambda^2 A)) and efficiency_qpm = (2 / pi)^2 efficiency (first-order quasi phase matching, 50 % duty). '
-    'Convention: exp(j (omega t - beta z)), SHG P(2 omega)_i = eps0 sum_jk d_ijk E_j E_k with d = chi2 / 2 given as '
-    'Voigt d_il in MODEL axes (x, y = cross-section, z = along the guide; l = 1 xx, 2 yy, 3 zz, 4 yz, 5 xz, 6 xy): '
-    'rotate crystal values yourself, e.g. x-cut lithium niobate with its c axis along model x and TE modes (E along '
-    'x): d11 = d33(LN) ~ 2.5e-11 m/V, plus d12 = d13 = d31(LN) ~ -4.6e-12 m/V for the minor field components. The '
-    'mesh must resolve the 2 omega '
-    'modes (>= 10 cells per lambda / (2 n)); no mirror faces (the overlap integrand has no single parity) and Bloch '
-    'k = 0 (validation errors); loss enters only through Re beta. With a bend (bend_radius) kappa is the physical overlap per length of '
-    'arc at bend_reference_x (where delta_beta and L are measured too): bend_model exact integrates s dA with E_phi = '
-    'E_z / s, conformal s^2 dA with the fields taken as physical (exact for E along y, approximate otherwise like the '
-    'map), s = 1 + (x - x_ref) / R. ring_crystal local: d stays in the local frame (x radial, y vertical, z along the '
-    'guide), i.e. it turns with the guide: right for terms unchanged by rotations about y (e.g. d33, d31, d15 of a '
-    'z-cut crystal, c axis along y). ring_crystal fixed (bend only; an x- or y-cut ring): d is given at the '
-    'reference cross-section (azimuth phi = 0) and the crystal stays fixed while the guide turns about y, so the '
-    'local d(phi) = Q(phi) Q Q : d with Q rows (cos phi, 0, sin phi), (0, 1, 0), (-sin phi, 0, cos phi) and phi = z / R '
-    '(signed R as bend_radius, z the arc at x_ref). kappa(phi) = sum over m = -3..3 of kappa_m exp(j m phi) (exact '
-    'from 8 azimuths), and order m is phase matched when delta_beta R + m = 0. Extra series: azimuthal_mismatch = '
-    'delta_beta R [1] (the azimuthal-order mismatch nu_2w - 2 nu_w of a ring), ring_order m* = round(-delta_beta R) '
-    '(NaN when |m*| > 3: no ring harmonic supplies it), ring_mismatch = delta_beta + m* / R [1/m], ring_overlap = '
-    '|kappa_m*| and ring_efficiency = (omega eps0 / 2)^2 |kappa_m*|^2 in %/(W cm^2) (0 when |m*| > 3; P_2w = '
-    'ring_efficiency P_w^2 L^2 sinc^2(ring_mismatch L / 2) over an arc L), and ring_overlap_minus3 .. ring_overlap_plus3 '
-    '= |kappa_m| [V^2/W^1.5]; the plain overlap / efficiency series stay those of the reference cross-section (phi = '
-    '0). E.g. x-cut lithium niobate, TE modes: d11 = d33(LN) gives kappa(phi) ~ cos^3 phi, i.e. orders +-1 (3/8) and '
-    '+-3 (1/8) of kappa(0).')
+    'vacuum wavelength [m] (one point per solve): after every em_modes solve at omega it solves the 2 omega modes '
+    '(same materials, walls, bend and eigen solver: ~2x the time) and pairs rank pump_mode (omega) with rank '
+    'harmonic_mode (2 omega), no tracking. Series: n_eff_pump, n_eff_harmonic, delta_beta = Re beta(2 omega) - 2 Re '
+    'beta(omega) [1/m], coherence_length = pi / |delta_beta| and poling_period = 2 pi / |delta_beta| [m] (NaN at '
+    'delta_beta = 0), overlap = |kappa| [V^2/W^1.5], kappa = int conj(e_2w) . (d : e_w e_w) dA over the selected '
+    'domains (1 W modes, cell-centre fields), efficiency = (omega eps0 / 2)^2 |kappa|^2 [%/(W cm^2)] (P_2w = '
+    'efficiency P_w^2 L^2 phase matched, times sinc^2(delta_beta L / 2) otherwise; a plane-wave mode of area A gives '
+    '8 pi^2 d^2 / (eps0 c n_w^2 n_2w lambda^2 A)), efficiency_qpm = (2 / pi)^2 efficiency (first-order QPM, 50 % '
+    'duty). Convention: exp(j (omega t - beta z)), P(2 omega)_i = eps0 sum_jk d_ijk E_j E_k, d = chi2 / 2 as Voigt '
+    'd_il in MODEL axes (x, y cross-section, z along the guide): rotate crystal values yourself, e.g. x-cut lithium '
+    'niobate, c axis along x, TE modes: d11 = d33(LN) ~ 2.5e-11 m/V, d12 = d13 = d31(LN) ~ -4.6e-12 m/V. The mesh must '
+    'resolve the 2 omega modes (>= 10 cells per lambda / (2 n)); mirror faces and Bloch k != 0 are validation errors '
+    '(the integrand has no single parity); loss enters only through Re beta. Bend: kappa is the physical overlap per '
+    'arc length at bend_reference_x (where delta_beta and L are measured): exact integrates s dA with E_phi = E_z / '
+    's, conformal s^2 dA with the fields taken as physical (exact for E along y). ring_crystal local: d in the local '
+    'frame (x radial, y vertical, z along the guide), turning with the guide: right for terms invariant under '
+    'rotations about y (d33, d31, d15 of a z-cut crystal, c axis along y). ring_crystal fixed (bend only; x- or y-cut '
+    'ring): d given at the reference cross-section (phi = 0), crystal fixed while the guide turns about y: local '
+    'd(phi) = Q(phi) Q Q : d, Q rows (cos phi, 0, sin phi), (0, 1, 0), (-sin phi, 0, cos phi), phi = z / R (signed R, '
+    'z the arc at x_ref); kappa(phi) = sum_m=-3..3 kappa_m exp(j m phi) (exact from 8 azimuths), order m phase '
+    'matched when delta_beta R + m = 0. Extra series: azimuthal_mismatch = delta_beta R [1] (nu_2w - 2 nu_w), '
+    'ring_order m* = round(-delta_beta R) (NaN when |m*| > 3), ring_mismatch = delta_beta + m* / R [1/m], '
+    'ring_overlap = |kappa_m*|, ring_efficiency = (omega eps0 / 2)^2 |kappa_m*|^2 [%/(W cm^2)] (0 when |m*| > 3; '
+    'P_2w = ring_efficiency P_w^2 L^2 sinc^2(ring_mismatch L / 2) over an arc L), ring_overlap_minus3 .. '
+    'ring_overlap_plus3 = |kappa_m| [V^2/W^1.5]; overlap / efficiency stay those at phi = 0. E.g. x-cut LN, TE: '
+    'kappa(phi) ~ cos^3 phi: orders +-1 (3/8) and +-3 (1/8) of kappa(0).')
 
 
 def _shg_params():
     """Mode choice, the 2 omega solve and the 18 model-axis d_il."""
     return (
         Param('pump_mode', 'int', 1, label='Pump mode', min=1,
-              help='1-based rank (as mode_table) of the pump mode of each em_modes solve; must not exceed n_modes.',
+              help='Rank (as mode_table) of the pump mode of each em_modes solve; must not exceed n_modes.',
               tip='Which computed mode carries the pump light: 1 is the most strongly guided one.'),
         Param('harmonic_mode', 'int', 1, label='Second-harmonic mode', min=1,
-              help='1-based rank (descending Re(beta^2)) of the second-harmonic mode among the n_harmonic_modes modes '
-                   'of the 2 omega solve; must not exceed n_harmonic_modes.',
+              help='Rank of the 2 omega mode among the n_harmonic_modes; must not exceed n_harmonic_modes.',
               tip='Which mode at the doubled frequency receives the generated light: 1 is the most strongly guided '
                   'one.'),
         Param('n_harmonic_modes', 'int', 4, label='Modes at the second harmonic', min=1, max=100,
-              help='Modes kept by the 2 omega solve (as n_modes of the physics).',
+              help='Modes kept by the 2 omega solve (as n_modes).',
               tip='How many modes to compute at the doubled frequency.'),
         Param('harmonic_n_eff_guess', 'float', None, label='Second-harmonic index guess', unit='1', min=0.0,
               min_exclusive=True, optional=True,
-              help='Effective index around which the 2 omega modes are sought (as n_eff_guess); empty = the largest '
-                   'index of the cross-section at 2 omega.',
+              help='n_eff_guess of the 2 omega solve; empty = the largest index of the cross-section at 2 omega.',
               tip='Effective index near which the second-harmonic modes are searched; empty searches below the highest '
                   'refractive index.'),
         Param('ring_crystal', 'choice', 'local', label='Crystal around the ring', choices=RING_CRYSTALS,
               choice_labels=(('local', 'Turns with the guide'), ('fixed', 'Fixed in the chip (x- or y-cut ring)')),
-              help="Bent guides only (bend_radius != 0 for 'fixed', validation error otherwise). 'local': the d_il hold "
-                   "in the guide's local frame everywhere. 'fixed': the d_il hold at the reference cross-section and "
-                   'the crystal stays fixed while the guide turns about y, so the coupling varies around the ring and '
-                   'phase matching picks an azimuthal order m = -3..3 (series azimuthal_mismatch, ring_order, '
-                   'ring_mismatch, ring_overlap, ring_efficiency, ring_overlap_minus3 .. _plus3; feature help).',
+              help="'local': d_il in the guide's local frame everywhere. 'fixed' (bent guides only, validation error "
+                   'otherwise): d_il at the reference cross-section, crystal fixed while the guide turns, so phase '
+                   'matching picks an azimuthal order m = -3..3 (ring_* series; see the feature).',
               tip='How the crystal axes behave around a ring.\n\n- Turns with the guide: the crystal looks the same '
                   'from every point of the ring, for example a crystal axis pointing up out of the chip.\n- Fixed in '
                   'the chip: the crystal axis lies in the chip plane, so the guide sees it from a changing angle as it '
                   'goes around; the results then also list the ring phase matching.'),
+        # one help for all 18 (no name in it), so describe prints them as one entry
         *(Param(name, 'float', 0.0, label=name, unit='m/V',
-                help=f'Second-order coefficient {name} in m/V in model axes (Voigt: polarisation component {name[1]} '
-                     f'= x, y, z for 1, 2, 3; field pair l = {name[2]}); d = chi2 / 2, 1 pm/V = 1e-12 m/V.',
+                help='Voigt d_il in model axes: i = polarisation component, l = field pair (1, 2, 3 = x, y, z; 4 yz, '
+                     '5 xz, 6 xy); 1 pm/V = 1e-12 m/V.',
                 tip=f'Nonlinear coefficient {name} in metres per volt along the model axes: 1 pm/V is 1e-12.')
           for name in VOIGT_NAMES),
     )
@@ -359,7 +318,7 @@ def _validate_shg_overlap(vctx, physics_spec, feature_spec, values):
     settings = vctx.values(EM_MODES.settings, raw_settings(physics_spec))
     if settings is not None:
         mirrors = [face for face in ('x_lo', 'x_hi', 'y_lo', 'y_hi')
-                   if settings.get(f'bc_{face}') in ('symmetric', 'antisymmetric')]
+                   if settings.get(f'bc_{face}') in MIRROR_SIGNS]
         if mirrors:
             issues.append(Issue('error', path, f"shg_overlap needs the whole cross-section, but {', '.join(mirrors)} "
                                                'is a mirror (the overlap integrand has no single parity); use pec, '
@@ -390,26 +349,22 @@ def _shg_memory_estimate(values, n_selected_cells, mesh):
 
 _BEND_OVERLAP_TEXT = (
     "Straight-to-bend junction of a bent guide (bend_radius != 0, validation error otherwise). Result 'table' of the "
-    'last solve (a frequency_domain study: its last wavelength): after every em_modes solve the feature solves the '
-    'same cross-section straight (same materials, walls and eigen solver, n_straight_modes modes near '
-    'straight_n_eff_guess; a second eigen-solve of the same size) and pairs each bent mode with the straight mode of '
-    'largest power coupling overlap = |c_bs c_sb| / |c_bb c_ss|, c_ab = 1/2 integral (E_a x H_b*).z dA over the '
-    'junction plane (the transverse fields of the bent mode are the physical E_r, E_y, H_r, H_y in both bend models). '
-    'Columns: mode_number (bent rank), n_eff, n_eff_imag (bent, referred to bend_reference_x), straight_mode (rank of '
-    'the best-matching straight mode), n_eff_straight, overlap (1 = a perfect match), junction_loss_db = -10 '
-    'log10(overlap) (the power lost into other modes and radiation at one straight-bend junction, ~1 / R^2 for large '
-    'R: a ring coupler or an S-bend has two junctions per transition) and overlap_same_rank (with the straight mode of '
-    'the same rank, NaN when fewer were found); extras wavelength (m) and n_straight_found. Both guides share the '
-    'cross-section, so the junction is centred: the outward shift of the bent mode, which a lateral offset of the '
-    'straight guide compensates, is part of the loss.')
+    'last solve (frequency_domain: the last wavelength): after every em_modes solve it solves the same cross-section '
+    'straight (same materials, walls, eigen solver; n_straight_modes near straight_n_eff_guess) and pairs each bent '
+    'mode with the straight mode of largest power coupling overlap = |c_bs c_sb| / |c_bb c_ss|, c_ab = 1/2 int (E_a x '
+    'H_b*).z dA (bent transverse fields = the physical E_r, E_y, H_r, H_y in both bend models). Columns: mode_number '
+    '(bent rank), n_eff, n_eff_imag (bent, referred to bend_reference_x), straight_mode, n_eff_straight, overlap (1 = '
+    'perfect), junction_loss_db = -10 log10(overlap) (one junction, ~1 / R^2 for large R; a ring coupler or S-bend has '
+    'two per transition), overlap_same_rank (straight mode of the same rank, NaN when fewer found); extras wavelength '
+    '[m], n_straight_found. The junction is centred: the outward shift of the bent mode (compensable by a lateral '
+    'offset) counts as loss.')
 _BEND_OVERLAP_PARAMS = (
     Param('n_straight_modes', 'int', 4, label='Straight modes', min=1, max=100,
-          help='Modes kept by the straight solve (as n_modes of the physics).',
+          help='Modes kept by the straight solve (as n_modes).',
           tip='How many modes of the straight guide to compute for the comparison.'),
     Param('straight_n_eff_guess', 'float', None, label='Straight index guess', unit='1', min=0.0,
           min_exclusive=True, optional=True,
-          help='Effective index around which the straight modes are sought (as n_eff_guess); empty = the largest index '
-               'of the cross-section.',
+          help='n_eff_guess of the straight solve; empty = the largest index of the cross-section.',
           tip='Effective index near which the straight-guide modes are searched; empty searches below the highest '
               'refractive index.'),
 )
@@ -469,16 +424,14 @@ _FEATURES = (
                 apply=_apply_bend_overlap, result=object_result(bend_overlap_result),
                 validate=_validate_bend_overlap, memory_estimate=_bend_overlap_memory_estimate),
     FeatureType('pec_domain', 'Perfect electric conductor', 'domain_condition', 'domain',
-                description='Perfect electric conductor: in every cell whose centre lies in the selected domains E_z = '
-                            '0 at the centre and E_x / E_y = 0 on the faces between two such cells (eps^-1 = 0 there), '
-                            'staircased to the mesh. With solver_defaults.conformal_boundaries (Dey-Mittra on the '
-                            'projected Yee cell) the drawn outline is used instead: E_z = 0 at the bisected wall '
-                            'distance along each centre link into the metal, and H_z takes the free lengths of its '
-                            'E_x / E_y edges over the free area of its dual cell (free fractions >= 0.02); links and '
-                            'dual cells crossing a pec / pmc / mirror wall plane stay staircased. On a triangles mesh '
-                            'the elements whose centroid lies in the selected domains leave the unknowns and E_t '
-                            'tangential and E_z are 0 on their outline, which the mesh follows (curved outlines '
-                            'isoparametric with discretization quadratic).',
+                description='E_z = 0 in cells whose centre lies in the domains, E_x / E_y = 0 on faces between two '
+                            'such cells (eps^-1 = 0), staircased. With solver_defaults.conformal_boundaries '
+                            '(Dey-Mittra on the projected Yee cell) the drawn outline instead: E_z = 0 at the bisected '
+                            'wall distance along each centre link into the metal, H_z takes the free lengths of its '
+                            'E_x / E_y edges over the free dual-cell area (free fractions >= 0.02); links and dual '
+                            'cells crossing a pec / pmc / mirror wall plane stay staircased. Triangles: elements whose '
+                            'centroid lies in the domains leave the unknowns, tangential E and E_z = 0 on their '
+                            'outline (curved outlines isoparametric with quadratic).',
                 summary='Turns the selected domains into a perfect metal, following the mesh cells. Use it for '
                         'idealised metal walls or hollow metal waveguides.',
                 apply=apply_pec, memory_estimate=pec_memory_estimate(0), grids=BOTH_GRIDS),
@@ -486,52 +439,36 @@ _FEATURES = (
 
 # ---- type ----
 _DESCRIPTION = (
-    'Full-vector finite-difference eigenmode solver of a waveguide cross-section: the xy plane is the cross-section, '
-    'the guide runs along z (out of plane), x to the right and y up; fields vary as exp(j (omega t - beta z)) (time '
-    'convention exp(+j omega t)) with n_eff = beta / k0, k0 = omega / C0, so a lossy or leaky mode has Im n_eff < 0. '
-    'Yee cross-section (a 3D Yee cell projected, transverse-H formulation after Fallahkhair, Li and Murphy, JLT 2008): '
-    'E_z at the cell centres, E_x and H_y on the +x cell faces, E_y and H_x on the +y faces, H_z at the +x+y corner; '
-    'eps_zz (array eps_r) is the cell value, eps_xx on a +x face and eps_yy on a +y face the width-weighted mean of the '
-    'two cells, mu the cell value (solver_defaults.subpixel_smoothing replaces the background eps at interface '
-    'locations: E_x / E_y faces 1 / (n^2 <1/eps> + (1 - n^2) / <eps>) with n the in-plane interface normal component, '
-    'E_z cells the area mean <eps>); all complex at the solve wavelength (sigma_e, Drude / '
-    'Lorentz chi, sigma_m). The generalised eigenproblem A h = beta^2 B h for h = eta0 (H_x, H_y) is solved on the host '
-    'by shift-invert Arnoldi (scipy eigs on a SuperLU factor: needs scipy; 2 unknowns per cell, PML included, so '
-    'validation warns near and refuses beyond the factor size limit) around (k0 n_eff_guess)^2. Solver roles: eigen '
-    '= arpack_shift_invert (tolerance, subspace_size, factorization: superlu, cudss = a cuDSS LU on the GPU without '
-    f'the host size limit, guarded by the free device memory; {HOST_DIRECT_NAMES} = a MUMPS / PARDISO factor on '
-    'the host under the SuperLU size limit; cudss_mixed and the other _mixed factorizations only on a triangles '
-    'mesh, since this operator is not complex symmetric); shifted: Automatic (sparse_direct) = that SuperLU factor, a '
-    'line_block node factors the shift-invert operators on its backend instead (unknowns ordered by grid rows or '
-    'columns, a periodic axis inside the blocks, two periodic axes an error; mixed or double precision, refined '
-    'against the complex128 operator), batched: the omega and, with group_index, omega (1 +- 1e-3) operators of a '
-    'solve and, in a frequency_domain study, those of the next wavelengths, up to 8 operators per batch, as many as '
-    '60 % of the free memory holds; a rejected solve redoes that eigen-solve on SuperLU (run-log warning); '
-    'shg_overlap / bend_overlap solves stay SuperLU. Modes with more than '
-    'half of their |H|^2 in PML cells are dropped, the rest ranked by descending Re(beta^2) (ties by Im; = descending '
-    'Re n_eff for low-loss guided modes, evanescent ones last), up to n_modes kept. Each '
-    'mode carries 1 W, P = 1/2 Re integral (E x H*).z dA (E_x / H_y and E_y / H_x share their points), phased so its '
-    'dominant transverse E component is real and positive at its peak (the lowest-index cell of mirror-equal peaks). '
-    'Degenerate pairs (the two HE11 polarisations of a round fibre, TE11 / TM11 of a metal pipe) come back as '
-    'arbitrary, not necessarily orthogonal, combinations. Outputs (the displayed mode: the mode_number setting after a study, at '
-    'the cell centres with the face / corner components averaged there): ex, ey, ez, hx, hy, hz = the real parts in '
-    'V/m and A/m, e_abs, e_intensity (|E|^2, the primary field), h_abs and sz = 1/2 Re(E_x H_y* - E_y H_x*) in W/m^2 '
-    '(time-averaged power flow along z; its integral over the window equals the 1 W only to discretisation order and '
-    'misses any PML share); state fields e_intensity and sz of the displayed mode; scalar outputs n_eff_1 .. '
-    'n_eff_<n_modes> (derived values: <physics>_n_eff_<k>). No absorbed power: em_modes is not '
-    'an em_heat_joule source. Features: mode_table, mode_dispersion, shg_overlap (coupled-mode SHG efficiency of a '
-    'mode pair at omega / 2 omega), bend_overlap (straight-to-bend junction loss of a bent guide), pec_domain. '
-    'Periodic faces may carry a Bloch phase (bloch_kx / bloch_ky: Bloch modes of a periodic cross-section). '
-    'Studies: mode_analysis (one solve at '
-    'the wavelength setting after any background heat / current solve, one snapshot per mode) and frequency_domain '
-    '(one solve per wavelength). heat_em_thermo_optic rewrites eps_zz, eps_xx and eps_yy (slots eps_r_update, '
-    'eps_xx_update, eps_yy_update). The xy plane here is a cross-section, not a propagation plane, so em_modes cannot '
-    "share a model with em_fdtd_* or em_fdfd_* (validation error). On a triangles mesh (MeshSpec kind triangles) the "
-    'same physics is a finite-element solve: Nedelec edge elements for E_x, E_y and Lagrange elements for E_z of the '
-    'discretization setting (Lee-Sun-Cendes mixed form for beta^2, complex symmetric with PML / loss), materials one '
-    'value per element, a structured PML ring; the same outputs on a display raster of the window (state fields one '
-    'value per element) and the same table / dispersion results; details and refusals under discretization. The '
-    "instance is usually named 'modes'.")
+    'Full-vector finite-difference eigenmodes of a waveguide cross-section: xy is the cross-section (x right, y up), '
+    'the guide runs along z; fields ~ exp(j (omega t - beta z)), n_eff = beta / k0, so lossy / leaky modes have Im '
+    'n_eff < 0. Projected 3D Yee cell (transverse-H formulation, Fallahkhair, Li and Murphy, JLT 2008): E_z at cell '
+    'centres, E_x, H_y on +x faces, E_y, H_x on +y faces, H_z at the +x+y corner; eps_zz (array eps_r) the cell value, '
+    'eps_xx / eps_yy on faces the width-weighted mean of the two cells, mu the cell value '
+    '(solver_defaults.subpixel_smoothing at interfaces: E_x / E_y faces 1 / (n^2 <1/eps> + (1 - n^2) / <eps>), n the '
+    'in-plane normal component, E_z cells the area mean <eps>); all complex at the solve wavelength. A h = beta^2 B h '
+    'for h = eta0 (H_x, H_y), shift-invert Arnoldi around (k0 n_eff_guess)^2 on the host (scipy; 2 unknowns per cell '
+    "incl. PML; validation warns near and refuses beyond the factor size limit). Role 'eigen' arpack_shift_invert "
+    '(tolerance, subspace_size, factorization: superlu; cudss = GPU LU without size limit, guarded by free device '
+    f'memory; {HOST_DIRECT_NAMES} = host MUMPS / PARDISO under the size limit; _mixed factorizations only on '
+    "triangles: this operator is not complex symmetric). Role 'shifted': Automatic = that SuperLU factor; line_block "
+    'factors the shift-invert operators on its backend (grid rows or columns, a periodic axis inside the blocks, two '
+    'periodic axes an error; mixed or double, refined against complex128), batching the omega and group_index '
+    'omega (1 +- 1e-3) operators and frequency_domain wavelengths, up to 8 per batch within 60 % of free memory; a '
+    'rejected solve is redone on SuperLU (run-log warning); shg_overlap / bend_overlap stay SuperLU. Modes are dropped '
+    '(> half their |H|^2 in PML) and ranked as n_modes. Each carries 1 W, P = 1/2 Re int (E x H*).z dA, phased so its '
+    'dominant transverse E is real positive at its peak (the lowest-index cell of mirror-equal peaks). Degenerate '
+    'pairs (HE11 of a round fibre, TE11 / TM11 of a metal pipe) come back as arbitrary, not necessarily orthogonal, '
+    'combinations. Outputs (the displayed mode = mode_number setting, at cell centres, face / corner components '
+    'averaged): components = real parts, sz = 1/2 Re(E_x H_y* - E_y H_x*) (power flow along z; its window integral '
+    'equals 1 W only to discretisation order and misses any PML share); state fields e_intensity and sz. No absorbed '
+    'power: not an em_heat_joule source. Studies: mode_analysis (one solve at the wavelength setting after any '
+    'background heat / current solve, one snapshot per mode), frequency_domain (one solve per wavelength). '
+    'heat_em_thermo_optic rewrites eps_zz, eps_xx, eps_yy. xy is a cross-section, so em_modes cannot share a model '
+    'with em_fdtd_* / em_fdfd_* (validation error), except em_fdfd_ez / _hz as the k_z = 0 illumination in a '
+    'thermal_noise study. Triangles mesh: finite elements of the discretization setting (Lee-Sun-Cendes mixed form, '
+    'complex symmetric with PML / loss), one material value per element, a structured PML ring, the same outputs on '
+    'a display raster (state fields per element) and the same table / dispersion results; refusals under '
+    "discretization. Instance usually 'modes'.")
 
 
 def _create(ctx, physics_spec, settings_values):
@@ -584,9 +521,8 @@ def _bend_issues(vctx, settings_values, path):
     issues = []
     size = vctx.domain_size
     if mesh_kind(vctx) == 'tensor' and size is not None:   # triangles: refused by _triangle_issues
-        reference_x = settings_values['bend_reference_x']
-        reference_x = 0.5 * size[0] if reference_x is None else reference_x
-        message = bend_factor_message(vctx.mesh.x_edges, radius, reference_x)
+        message = bend_factor_message(vctx.mesh.x_edges, radius,
+                                      bend_reference(settings_values['bend_reference_x'], size[0]))
         if message is not None:
             issues.append(Issue('error', path, message))
     outer_face = 'x_hi' if radius > 0.0 else 'x_lo'
@@ -673,7 +609,7 @@ def _gyration_issues(vctx, settings_values, path):
     set_names = [name for name in GYRATION_ARRAYS[MODE_POLARIZATION] if selected_material_sets(vctx, (name,))]
     for name, axis in (('gyration_x', 'y'), ('gyration_y', 'x')):
         faces = [face for face in (f'{axis}_lo', f'{axis}_hi')
-                 if name in set_names and settings_values[f'bc_{face}'] in ('symmetric', 'antisymmetric')]
+                 if name in set_names and settings_values[f'bc_{face}'] in MIRROR_SIGNS]
         if faces:
             issues.append(Issue('error', path, f"a material sets {name} while {' / '.join(faces)} is a mirror face: "
                                                f'the mirror image of a magnetisation along {name[-1]} is reversed, so '
@@ -694,13 +630,11 @@ def _scalar_outputs(settings_values, physics_spec):
 
 
 _SCALAR_OUTPUTS_HELP = (
-    'n_eff_<k> for k = 1 .. n_modes (unit 1): Re n_eff of mode k of the last solve, ranked as mode_table (a '
-    'frequency_domain study: its last wavelength). A mode that was not found has no value: its derived value is NaN '
-    'plus a run-log warning. Example derived value {"name": "n_eff_te0", "expression": "modes_n_eff_1"} (operation '
-    'mean of a constant is the value itself); in a parameter sweep it gives n_eff per value. delta_beta_<k> (unit '
-    '1/m): beta_forward - beta_backward of mode k, the first-order non-reciprocal phase shift of the gyration_x / '
-    'gyration_y materials (0 without them; NaN for an evanescent mode); a pi phase difference needs L_pi = pi / '
-    '|delta_beta_<k>|.')
+    'n_eff_<k>, k = 1 .. n_modes (unit 1): Re n_eff of mode k of the last solve, ranked as mode_table '
+    '(frequency_domain: the last wavelength); a mode not found gives NaN plus a run-log warning. Example derived '
+    'value {"name": "n_eff_te0", "expression": "modes_n_eff_1"} (operation mean of a constant = the value); per '
+    'sweep value in a parameter sweep. delta_beta_<k> (1/m): beta_forward - beta_backward of mode k from '
+    'gyration_x / gyration_y (0 without them; NaN for an evanescent mode); L_pi = pi / |delta_beta_<k>|.')
 
 _SHARED_VALIDATE = make_validate_physics(MODE_PERMITTIVITY_SLOTS, time_domain=False,
                                          solved_wavelengths=all_solved_wavelengths)
@@ -848,8 +782,8 @@ EM_MODES = PhysicsType(
                   'shifted': SolverRole('general', 'sparse_direct', precisions=('mixed', 'double'))},
     subpixel_smoothing=True,
     conformal_boundaries=True,   # pec_domain cut cells (cross_section_modes pec_cuts; 2D Cartesian)
-    backends=('gpu', 'cpu'),   # host eigen solve, mode fields on the Domain's xp (solver_plan S6)
-    grids=BOTH_GRIDS,         # triangles: solvers/modes_fem (mesh plan 2.6)
+    backends=('gpu', 'cpu'),   # host eigen solve, mode fields on the Domain's xp
+    grids=BOTH_GRIDS,         # triangles: solvers/modes_fem
 )
 
 

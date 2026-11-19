@@ -36,7 +36,7 @@ from ...fem.diffusion import window_face_edges
 from ...fem.dofs import lagrange_dofs
 from ...fem.elements import lagrange_basis, lagrange_values
 from ...fem.harmonic import FACES_2D, RING_ANGLE, HarmonicCondition, ScalarHarmonicSystem
-from ...fem.mesher import MERGE_TOLERANCE
+from ...fem.mesher import MERGE_TOLERANCE, window_inset
 from ...fem.pml import DEFAULT_PML_REFLECTION, pml_ring
 from ...fem.reduced_outputs import field_policy, wants_fields
 from ...fem.renderer import FEMFieldRenderer
@@ -313,7 +313,7 @@ class AcousticHarmonicBase(PhysicsSolver):
         self._active = self._window = None
         self._rho = self._a = self._m = self._impedance_z = None
         self._active_dofs = None
-        self._scattered = self._total = self._background_nodal = None
+        self._scattered = self._total = self._background_nodal = None   # _total: read through _host_total() only
         self._velocity = None
         self._omega = None
         self.last_frequency = None
@@ -697,7 +697,8 @@ class AcousticHarmonicBase(PhysicsSolver):
     # --- build ---------------------------------------------------------------
     def _build_system(self) -> None:
         """Coefficients from rho / sound_speed, the PML, conditions, frequency loads, the assembly and the background
-        terms (module header); timed into assembly_seconds."""
+        terms (module header); timed into assembly_seconds (the time recipe's seconds counter: callers add no timed
+        group of their own around it)."""
         started = time.perf_counter()
         mesh = self.mesh
         materials = self.domain.materials
@@ -1109,16 +1110,20 @@ class PressureAcousticsFEMPhysics(AcousticHarmonicBase):
     def _window_face_entities(self, face) -> np.ndarray:
         return window_face_edges(self.mesh, face)
 
+    def _edge_degree(self) -> int:
+        """Edge rule degree of _entity_load and _entity_quadrature (one rule: surface p_b integrals match the loads)."""
+        return self.order + 2 + int(self._axisymmetric)
+
     def _entity_load(self, entities, value) -> np.ndarray:
-        return assemble_edge_load(self.full, np.asarray(entities, dtype=np.int64), value,
+        return assemble_edge_load(self.full, np.asarray(entities, dtype=np.int64), value, degree=self._edge_degree(),
                                   axisymmetric=self._axisymmetric)
 
     def _entity_quadrature(self, entities) -> tuple:
-        """assemble_edge_load's default rule on self.full, read from its edge-rule cache (fem.assembly._edge_quadrature,
-        so the rule cannot drift; the basis sums to 1): (points (k, q, 2), Gauss weight x |dx/dt| (x r axisymmetric));
-        every edge has an element of the full map, so none is dropped."""
+        """_entity_load's rule on self.full, read from its edge-rule cache (fem.assembly._edge_quadrature; the basis
+        sums to 1): (points (k, q, 2), Gauss weight x |dx/dt| (x r axisymmetric)); every edge has an element of the
+        full map, so none is dropped."""
         _, _, _, weights, lengths, points = _edge_quadrature(self.full, np.asarray(entities, dtype=np.int64),
-                                                             self.order + 2 + int(self._axisymmetric))
+                                                             self._edge_degree())
         line_weights = weights[None, :] * lengths
         if self._axisymmetric:
             line_weights = line_weights * points[..., 0]
@@ -1148,10 +1153,9 @@ class PressureAcousticsFEMPhysics(AcousticHarmonicBase):
 
     def _in_window(self, points) -> np.ndarray:
         points = np.asarray(points, dtype=np.float64).reshape(-1, 2)
-        x0, y0, x1, y1 = self.mesh.window
-        slack = MERGE_TOLERANCE * max(x1 - x0, y1 - y0)
-        return ((points[:, 0] >= x0 - slack) & (points[:, 0] <= x1 + slack)
-                & (points[:, 1] >= y0 - slack) & (points[:, 1] <= y1 + slack))
+        window = self.mesh.window
+        slack = window_inset(window)
+        return ((points >= np.array(window[:2]) - slack) & (points <= np.array(window[2:]) + slack)).all(axis=1)
 
     def _locate(self, point) -> tuple:
         location = locator(self.mesh, self.geometry_order).locate(np.asarray(point, dtype=np.float64).reshape(1, 2))

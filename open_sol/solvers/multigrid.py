@@ -1,4 +1,4 @@
-"""Smoothed-aggregation algebraic multigrid: the 'multigrid' preconditioner of the pcg solver (solver_plan S7.0) on
+"""Smoothed-aggregation algebraic multigrid: the 'multigrid' preconditioner of the pcg solver on
 assembled SPD CSR operators (DiffusionSystem), one symmetric V(1,1)-cycle per application, hierarchy in float32.
 Aggregation on the host (numpy; on the gpu its device twin, same aggregates), Galerkin products on the backend (cupy / cupyx or numpy / scipy); gpu cycles by
 fused RawKernels replayed as CUDA graphs, cpu cycles by scipy's CSR kernel into level vectors."""
@@ -31,7 +31,9 @@ AGGREGATION_SEED = 0             # tie-break order of the independent set: deter
 # CPU estimate (2D 5-point and 3D 7-point smoothed aggregation, operator complexity ~1.5-2): stored CSR entries per
 # fine unknown (tentative T, prolongation P, restriction R, coarse operators) and vectors per fine unknown (weights,
 # residual, coarse solutions, the PCG preconditioned vector)
-# (filtered smoothing: 11.96 measured on a 2.16e6-cell 3D mesh graded 2.5 um - 2 mm, operator complexity 1.81)
+# (filtered smoothing: 11.96 measured on a 2.16e6-cell 3D mesh graded 2.5 um - 2 mm, operator complexity 1.81; a 2D
+# 5-point strip heater holds 8.47 at complexity 1.355, booked ~7 % high: P rows ~2.8 in both, the coarse operators
+# differ); measured by the work counters multigrid_entries_per_unknown / _device_bytes (_record_size)
 HIERARCHY_ENTRIES_PER_UNKNOWN = 12
 SETUP_ENTRIES_PER_UNKNOWN = 8    # transient stacked P blocks and coarse products per fine unknown
 HIERARCHY_VECTORS_PER_UNKNOWN = 4
@@ -77,7 +79,9 @@ def setup_extra_bytes(n_unknowns, value_bytes, entries_per_row) -> int:
     """Transient device bytes of one setup on top of hierarchy_bytes: the stacked P blocks and coarse products, the l1
     row sums and the block planning (4-byte pattern data per entry), plus the largest of the fine level's three steps
     on one row block, which follow each other (_build_level): the strength filter, the smoothing product A_F T on the
-    filtered block it returns, the Galerkin product (a small operator's whole A @ P: n entries_per_row^2 bounds it)."""
+    filtered block it returns, the Galerkin product (a small operator's whole A @ P: n entries_per_row^2 bounds it).
+    Not counted: the gpu column chunks' P_c copies (_column_block, a few % of the peak) and a 3D A @ P result beyond
+    SETUP_ENTRIES_PER_UNKNOWN entries per row."""
     n_unknowns, entries_per_row = int(n_unknowns), int(entries_per_row)
     per_unknown = (SETUP_ENTRIES_PER_UNKNOWN * (HIERARCHY_VALUE_BYTES + 4) + 2 * value_bytes
                    + 4 * entries_per_row + 12)
@@ -277,6 +281,8 @@ def aggregate_strong_links(indptr, indices, data, n_unknowns):
 # gpu setups aggregate on the device (device_aggregate_strong_links): the same aggregates bit for bit (float64 strength
 # per row in CSR order, the same Luby keys and rounds, max-only joins), no host copy of the level's CSR; the numpy rounds
 # were 0.79 of 1.16 s multigrid setup in a 2D sweep to 6.4e5 cells (heat example multigrid_square_plate_poisson)
+# A change of the host rule (strong_links, _distance_two_roots, the joins) changes these kernels in the same edit:
+# self-test multigrid_device_aggregation (heat selftests_multigrid) compares both on synthetic operators and gpu setups
 DEVICE_AGGREGATION = True
 _AGGREGATION_SOURCE = r'''
 #define ROW_THREAD \
@@ -1027,7 +1033,7 @@ class MultigridPreconditioner:
             # O(nnz log blocks); a running sum recopies the whole coarse operator per block (297 s of a 303 s 3D build)
             partial_sums = []   # [(partial sum, number of blocks in it)], counts strictly decreasing
             for start, stop in row_blocks:
-                left = restriction if len(row_blocks) == 1 else prolongation[start:stop].T.tocsr()
+                left = restriction if len(row_blocks) == 1 else self._rows(prolongation, start, stop).T.tocsr()
                 partial_sum = left @ (self._low(self._rows(operator, start, stop)) @ columns)
                 del left
                 n_blocks = 1
@@ -1092,8 +1098,9 @@ class MultigridPreconditioner:
 
     def _filtered_rows(self, operator, start, stop, diagonal):
         """(rows start:stop of A_F, their HIERARCHY_DTYPE l1 weights): the prolongator-smoothing operator keeps the
-        diagonal and the strong links of aggregate_strong_links and lumps every weak entry into the diagonal (row sums
-        kept), so P spreads only along strong links (unfiltered: operator complexity 9.4, a 292 s setup in 3D)."""
+        diagonal and the STRENGTH_THRESHOLD links (not strong_links' floor links) and lumps every weak entry into the
+        diagonal (row sums kept), so P spreads only along strong links (unfiltered: operator complexity 9.4, a 292 s
+        setup in 3D)."""
         # array operations only: cuSPARSE csr2csr_compress (eliminate_zeros) failed here with INSUFFICIENT_RESOURCES;
         # entry-sized temporaries in place where possible (FILTER_BYTES_PER_ENTRY: the block is the whole fine level
         # of most 2D / 3D operators)

@@ -3,13 +3,13 @@ solid's optomechanical_coupling features (em_modes modes or em_fdfd_ez / _hz / _
 modes, the g0 tables, then one labelled snapshot per mechanical mode."""
 import time
 
-from .schema import Issue, Param, StudyType
+from .schema import OPTOMECHANICS_STUDY, Issue, Param, StudyType
 from .solver_hooks import EigenfrequencySolver, ModeSolver, OptomechanicalSolver
 from .study import (LogEvent, _background_fixed_point_params, _background_stage, _count_progress,
                     _log_eigen_solve, _numbered_snapshots, _refuse_stepping_background, _reselect_first_resonance,
                     _scipy_issues, _selected_physics, _solve_static_states)
 
-STUDY_NAME = 'optomechanics'
+STUDY_NAME = OPTOMECHANICS_STUDY
 _OPTICAL_STAGE = 'Optical solve'
 _MECHANICAL_STAGE = 'Mechanical modes'
 _FEATURE = 'optomechanical_coupling'
@@ -140,38 +140,32 @@ def _validate_optomechanics(vctx, values):
 
 _PARAMS = (
     Param('n_mechanical_modes', 'int', 6, label='Number of vibration modes', min=1, max=100,
-          help='Vibration modes of every solid_mechanics physics with an optomechanical_coupling: the n + 4 '
-               'eigenvalues omega^2 nearest (2 pi target_frequency)^2 of its target_frequency setting (0 = the '
-               'lowest), ranked by |omega - omega_target|; one g0 row and one snapshot each. 4-20 typical.',
+          help='Per solid with an optomechanical_coupling: the n + 4 eigenvalues omega^2 nearest (2 pi '
+               'target_frequency)^2 (0 = the lowest), ranked by |omega - omega_target|; one g0 row and one snapshot '
+               'each. 4-20 typical.',
           tip='How many vibration modes are computed, starting closest to the target frequency of the solid.'),
     Param('n_optical_resonances', 'int', 4, label='Number of optical resonances', min=1, max=100,
-          help='em_fdfd_ez / _hz / _bor optical physics only: resonances of its eigen-solve near its wavelength setting '
-               '(the eigenfrequency study rules: PML resonances dropped, nearest the target first; em_fdfd_bor per '
-               'azimuthal order); optical_mode picks one. em_modes solves its n_modes modes.',
+          help='em_fdfd_ez / _hz / _bor optics only: resonances near its wavelength setting (eigenfrequency study '
+               'rules; em_fdfd_bor per azimuthal order); optical_mode picks one. em_modes solves its n_modes modes.',
           tip='In-plane resonator only: how many light resonances are searched near the wavelength.'),
-    *_background_fixed_point_params('the eigen-solves', 'the modes are computed'),
+    *_background_fixed_point_params('the modes are computed'),
 )
 _DESCRIPTION = (
     'Vacuum optomechanical coupling g0 between optical and mechanical eigenmodes of one model: every solid_mechanics '
-    '(or solid_mechanics_3d) physics with an optomechanical_coupling feature is the mechanical physics, the physics '
-    'those features name (em_modes: cross-section modes at its wavelength setting; em_fdfd_ez / _hz: in-plane '
-    'resonances near its wavelength setting, n_optical_resonances of them; em_fdfd_bor on a triangles mesh: '
-    'body-of-revolution resonances of its azimuthal order(s), paired with an axisymmetric solid on triangles or a 3D '
-    'solid on tetrahedra) are the optical physics; every other physics runs as a stationary '
-    'background physics first (as in mode_analysis / eigenfrequency: background fixed point, then the background -> '
-    'solved couplings once; couplings or material properties reading a solved physics, i.e. any solid_mechanics, '
-    'em_modes or em_fdfd_* physics, are a validation error; an FDFD physics no feature names solves as a background '
-    'physics). Order: '
-    'background, optical solves (the first coupling\'s optical mode is shown), the vibration modes of each solid '
-    '(n_mechanical_modes nearest its target_frequency; consistent mass of rho, supports held at 0, prestressed by its '
-    'static state only with the stress_stiffening setting, which the tensor-mesh solid of this study does not offer; a '
-    'solid whose coupling has scattering backward solves its guided 2.5D modes at k_z = 2 Re beta of that optical '
-    'mode, set here after the optical solve), the '
-    'g0 table of every coupling, then one snapshot per mechanical mode number labelled "mechanical mode k: f = <Hz> '
-    'Hz, g0 / 2 pi = <Hz> Hz" (the first coupling\'s g0) with the stored fields (default each primary field: the mode '
-    'shape and the optical intensity; the solid field om_integrand, available in this study only, maps the '
-    'moving-boundary g_om density of the shown mode); mode 1 stays shown. ticks = the number of mechanical snapshots, '
-    'summary n_resonances. The optical physics keeps its selected mode for every snapshot.')
+    '(or solid_mechanics_3d) physics with an optomechanical_coupling feature is mechanical, the physics those features '
+    'name are optical (em_modes: cross-section modes at its wavelength setting; em_fdfd_ez / _hz: n_optical_resonances '
+    'in-plane resonances near its wavelength setting; em_fdfd_bor on triangles: resonances of its azimuthal order(s), '
+    'paired with an axisymmetric solid on triangles or a 3D solid on tetrahedra); every other physics runs as a '
+    'stationary background physics first (an FDFD physics no feature names too), its couplings into the solved '
+    'physics applied once; couplings or material properties reading a solid_mechanics, em_modes or em_fdfd_* physics '
+    "are a validation error. Order: background, optical solves (the first coupling's optical mode is shown), the "
+    'vibration modes of each solid (consistent mass, supports held at 0, prestressed only with stress_stiffening, '
+    'which the tensor-mesh solid does not offer; a coupling with scattering backward makes the solid solve its guided '
+    '2.5D modes at k_z = 2 Re beta of that optical mode), the g0 table of every coupling, then one snapshot per '
+    'mechanical mode labelled "mechanical mode k: f = <Hz> Hz, g0 / 2 pi = <Hz> Hz" (the first coupling\'s g0); '
+    'default stored fields are the primary fields (mode shape, optical intensity); the solid field om_integrand '
+    '(this study only) maps the moving-boundary g_om density of the shown mode; mode 1 stays shown, the optical '
+    'physics keeps its selected mode. ticks = the mechanical snapshots, summary n_resonances.')
 
 
 def _time_counts(values):
@@ -189,6 +183,6 @@ def register(registry):
                 'shifts the light frequency (vacuum optomechanical coupling rate). Heat or current physics are first '
                 'solved to a steady state.',
         description=_DESCRIPTION, params=_PARAMS, background_study='stationary', run=_run_optomechanics,
-        validate=_validate_optomechanics,
+        validate=_validate_optomechanics, supports_solved_physics=True,
         feedback_alternative='the optical and mechanical modes are only tabulated, not fed back',
         time_counts=_time_counts, solver_protocols=(ModeSolver, EigenfrequencySolver)))

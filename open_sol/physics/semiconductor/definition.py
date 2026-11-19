@@ -15,7 +15,8 @@ from ...model.definition_helpers import (AXISYMMETRIC_SPACE_SETTINGS, CUDSS_LINE
                                          material_follows_state, mirror_feature_issues, numpy_calls,
                                          reports_model_checks, resolved_back_end)
 from ...model.expressions import ExpressionError, is_identifier, referenced_names
-from ...model.schema import FeatureType, Issue, Param, PhysicsType, resolve_values
+from ...model.schema import (STATIONARY_STUDY, TIME_DEPENDENT_STUDY, FeatureType, Issue, Param, PhysicsType,
+                              resolve_values)
 from ...solvers.cudss_factor import (CUDSS_SOLVE_PHASE, factor_device_bytes, index_map_bytes, operator_copy_bytes,
                                      refresh_peak_bytes, solve_buffer_bytes, solve_peak_bytes)
 from ...solvers.host_direct import factor_label, host_direct_precision, solver_host_bytes, superlu_bytes_scale
@@ -36,39 +37,31 @@ _BOTH_GRIDS = ('tensor', 'triangles')   # the type and every feature run on tria
 _SETTINGS = (
     geometry_param(
         '2D drift-diffusion per unit z length (contact currents A/m, gate charges C/m)',
-        '(r, z) drift-diffusion; every Poisson conductance, Scharfetter-Gummel face coefficient, face and cell volume '
-        'is weighted by 2 pi r (x-faces at their own r, y-faces and volumes at the cell-centre r; 2 pi r_c dr dz is '
-        'the exact ring volume), so densities and rates (N, P 1/m^3, J A/m^2, generation and recombination 1/(m^3 '
-        's)) keep their units, while contact currents and gate charges (table results, scalar outputs current_ / '
-        'charge_<feature>) are those of the whole ring in A and C (a resistance V / I in Ohm, a capacitance Q / V in '
-        'F)',
+        '(r, z) drift-diffusion, every conductance, face and cell volume weighted by 2 pi r: densities and rates keep '
+        'their units, contact currents and gate charges (table results, scalar outputs) are whole-ring A and C',
         'contact currents and gate charges are per metre of depth.',
         'Contact currents and gate charges are those of the whole ring, in amperes and coulombs.',
-        axis_text='no radial current or D flux, like the insulating outer faces'),
+        axis_text='no radial current or D flux'),
     Param('temperature', 'float', 300.0, label='Temperature', unit='K', min=0.0, min_exclusive=True,
-          help='Lattice temperature setting the thermal voltage V_T = k_B T / q (25.85 mV at 300 K) of the Einstein '
-               'relation D = mu V_T and the Boltzmann statistics. n_intrinsic is NOT rescaled with it: give a '
-               'temperature-dependent n_intrinsic yourself (it may depend on heat_T). Default 300 K, the temperature '
-               'of the library semiconductor data (silicon n_intrinsic 1e16 1/m^3), deliberately not heat T0 (293.15 '
-               'K, where the optical indices apply): with a heat physics in the model set both to the same value '
-               '(one parameter) if they should agree.',
+          help='Lattice temperature: thermal voltage V_T = k_B T / q (25.85 mV at 300 K) of D = mu V_T and the '
+               'Boltzmann statistics. n_intrinsic is NOT rescaled (make it depend on heat_T yourself). 300 K is the '
+               'temperature of the library semiconductor data, not heat T0 (293.15 K): with a heat physics use one '
+               'parameter for both if they should agree.',
           tip='Temperature of the semiconductor; 300 K is room temperature and the temperature of the library '
               'semiconductor data.\n\n'
               'The intrinsic carrier density of the material does not follow it automatically. The heat physics '
               'starts from 293.15 K by default: use one parameter for both when they should agree.'),
     Param('tolerance', 'float', 1e-8, label='Newton tolerance', unit='1', min=0.0, min_exclusive=True,
-          help='Newton stops when the largest potential update is <= tolerance * V_T and the largest carrier update '
-               '|dn| / (n + n_i) (holes alike) is <= tolerance over the free unknowns; quadratic convergence makes '
-               'the final error far smaller. 1e-8 suits float64.',
+          help='Newton stops when the largest potential update <= tolerance * V_T and the largest carrier update '
+               '|dn| / (n + n_i) (holes alike) <= tolerance. 1e-8 suits float64.',
           tip='How accurately each solve is converged, as a relative change; keep 1e-8.'),
     Param('max_iterations', 'int', 50, label='Newton iteration limit', min=1,
-          help='Newton iterations per continuation step (and for the equilibrium start); a step that does not '
-               'converge is halved, down to 1/64 of the first step, then the solve fails (run error).',
+          help='Newton iterations per continuation step (and the equilibrium start); a step that does not converge '
+               'is halved, down to 1/64, then the run fails.',
           tip='Largest number of Newton steps per continuation step; a step that fails is retried smaller.'),
     Param('max_bias_step', 'float', 0.1, label='Largest bias step', unit='V', min=0.0, min_exclusive=True,
-          help='Largest change of any contact or gate voltage per continuation step (the solve ramps every applied '
-               'voltage and the generation from the previous solution, the first time from equilibrium at 0 V); '
-               'about 4 V_T keeps Newton safe for forward-biased junctions.',
+          help='Largest change of any contact or gate voltage per continuation step; about 4 V_T keeps Newton safe '
+               'for forward-biased junctions.',
           tip='The applied voltages are raised in steps no larger than this; smaller steps are slower but safer.'),
 )
 
@@ -86,43 +79,41 @@ _EPS_DC_TIP = ('Relative permittivity for static fields; empty means vacuum, 1.\
 _MATERIAL_PROPERTIES = (
     # eps_dc, eps_dc_xx / _yy: kind, unit, bounds and flags as the electrostatics entries (registry rule)
     _material_property('eps_dc', 'Static relative permittivity', '1', 1.0,
-                       'Isotropic static relative permittivity (>= 1) of the Poisson equation: sets eps_dc_xx and '
-                       'eps_dc_yy (component entries override it); unset = 1. Silicon 11.7, silica 3.9.',
+                       'Sets eps_dc_xx and eps_dc_yy (component entries override it); unset = 1. Silicon 11.7, silica '
+                       '3.9.',
                        tip=_EPS_DC_TIP),
     _material_property('eps_dc_xx', 'Static relative permittivity along x', '1', 1.0,
-                       'Static relative permittivity along x (>= 1); overrides eps_dc for this axis.',
+                       'Overrides eps_dc for this axis.',
                        tip="Static relative permittivity along x; replaces 'Static relative permittivity' there."),
     _material_property('eps_dc_yy', 'Static relative permittivity along y', '1', 1.0,
-                       'Static relative permittivity along y (>= 1); overrides eps_dc for this axis.',
+                       'Overrides eps_dc for this axis.',
                        tip="Static relative permittivity along y; replaces 'Static relative permittivity' there."),
     _material_property('n_intrinsic', 'Intrinsic carrier density', '1/m^3', 0.0,
-                       'Intrinsic carrier density n_i [1/m^3]: cells with n_i > 0 are semiconductor (Poisson + '
-                       'carriers), the rest insulators (Poisson only, no carriers). Silicon 1.0e16 at 300 K (1e10 '
-                       'cm^-3), GaAs 2.1e12, germanium 2.0e19. Homojunctions only: one band structure, no '
-                       'heterojunction band offsets.',
+                       'n_i: cells with n_i > 0 are semiconductor, the rest insulators (Poisson only). Silicon 1.0e16 '
+                       'at 300 K (1e10 cm^-3), GaAs 2.1e12, germanium 2.0e19. One band structure (no heterojunction '
+                       'offsets).',
                        tip='Density of free electrons in the pure material; a value above zero makes the material a '
                            'semiconductor.\n\nSilicon about 1e16 per cubic metre.'),
     _material_property('mobility_n', 'Electron mobility', 'm^2/(V s)', 0.0,
-                       'Electron mobility [m^2/(V s)], constant (no doping or field dependence; give an expression '
-                       'for that). Lightly doped silicon 0.135 (1350 cm^2/Vs), at 1e24 1/m^3 ~0.03.',
+                       'No built-in doping or field dependence (give an expression). Lightly doped silicon 0.135 '
+                       '(1350 cm^2/Vs), at 1e24 1/m^3 ~0.03.',
                        tip='How easily electrons drift in an electric field; silicon about 0.135.'),
     _material_property('mobility_p', 'Hole mobility', 'm^2/(V s)', 0.0,
-                       'Hole mobility [m^2/(V s)], constant. Lightly doped silicon 0.048 (480 cm^2/Vs).',
+                       'As mobility_n. Lightly doped silicon 0.048 (480 cm^2/Vs).',
                        tip='How easily holes drift in an electric field; silicon about 0.048.'),
     _material_property('lifetime', 'Carrier lifetime', 's', 0.0,
-                       'Shockley-Read-Hall lifetime (mid-gap trap) of both carriers: sets lifetime_n and lifetime_p; '
-                       'unset = 1e-6 s. Silicon 1e-9 (heavily doped) .. 1e-3 (float zone).',
+                       'SRH lifetime (mid-gap trap) of both carriers: sets lifetime_n and lifetime_p; unset = 1e-6 s. '
+                       'Silicon 1e-9 (heavily doped) .. 1e-3 (float zone).',
                        tip='Average time before a free electron and hole recombine through defects; 1 microsecond '
                            'when empty.', min_exclusive=True),
     _material_property('lifetime_n', 'Electron lifetime', 's', 0.0,
-                       'SRH electron lifetime tau_n [s]; overrides lifetime.',
+                       'Overrides lifetime for this carrier.',
                        tip="Recombination lifetime of electrons; replaces 'Carrier lifetime'.", min_exclusive=True),
     _material_property('lifetime_p', 'Hole lifetime', 's', 0.0,
-                       'SRH hole lifetime tau_p [s]; overrides lifetime.',
+                       'Overrides lifetime for this carrier.',
                        tip="Recombination lifetime of holes; replaces 'Carrier lifetime'.", min_exclusive=True),
     _material_property('radiative_recombination', 'Radiative recombination coefficient', 'm^3/s', 0.0,
-                       'Band-to-band coefficient B [m^3/s] of R_rad = B (n p - n_i^2); unset = 0. Silicon 1.1e-20, '
-                       'GaAs 7.2e-16.',
+                       'B of R_rad = B (n p - n_i^2); unset = 0. Silicon 1.1e-20, GaAs 7.2e-16.',
                        tip='Strength of direct (light-emitting) recombination; tiny in silicon, large in gallium '
                            'arsenide.'),
 )
@@ -205,15 +196,12 @@ def _scalar_outputs(settings_values, physics_spec):
 
 
 _SCALAR_OUTPUTS_HELP = (
-    'current_<contact> (A/m) per enabled ohmic_contact feature: its total current (electron + hole) per m of depth of '
-    'the last solve, as the contact table result (positive = conventional current leaving the contact into the '
-    'device); charge_<gate> (C/m) per enabled gate feature: its free charge per m of depth, as the gate table result; '
-    "with geometry 'axisymmetric' both are whole-ring values in A and C. Under a mirror plane of the model (a "
-    'symmetry feature of any physics, or an EM bc_<face> symmetric / antisymmetric) they are the unfolded '
-    "structure's: x 2 per mirror plane the contact's or gate's held cells reach (its image joins it). "
-    'Example derived value {"name": "I_anode", "expression": "semiconductor_current_anode"} (operation mean of a '
-    'constant is the value itself); a parameter sweep of a contact voltage then gives the I-V curve (with the sweep '
-    'setting reuse_build the build is kept and each point continues from the previous converged state).')
+    'current_<contact> (A/m) per enabled ohmic_contact: its total current of the last solve, as its table result; '
+    "charge_<gate> (C/m) per enabled gate: its free charge, as its table result; geometry 'axisymmetric': whole-ring "
+    'A and C. Under a mirror plane of the model (a symmetry feature of any physics, an EM bc_<face> symmetric / '
+    "antisymmetric) the unfolded structure's: x 2 per mirror plane the contact's or gate's held cells reach. Example "
+    'derived value {"name": "I_anode", "expression": "semiconductor_current_anode"}; a sweep of a contact voltage '
+    'gives the I-V curve (with reuse_build each point continues from the previous state).')
 
 
 # ---- validation (CPU only) ----
@@ -292,10 +280,11 @@ def _create(ctx, physics_spec, values):
     return physics
 
 
-# Host bytes per window cell of one Newton step: ~49 COO entries (20 per face, 2 faces per cell, 9 per cell), three
-# 8-byte arrays each: the kept CSR slot map (int64, drift_diffusion._PinnedPattern), the block values and their
-# concatenation (float64); rows / cols are never formed (the pattern expands the scalar site graph).
-_COO_ENTRIES_PER_CELL = 49
+# Host bytes per window cell of one Newton step: ~47 COO entries (drift_diffusion._COUPLED_LAYOUT: 20 face blocks x 2
+# faces per cell + 7 site blocks), three 8-byte arrays each: the kept CSR slot map (int64, its _PinnedPattern), the
+# block values and their concatenation (float64); rows / cols are never formed (the pattern expands the scalar site
+# graph).
+_COO_ENTRIES_PER_CELL = 47
 _COO_ARRAYS = 3
 # CSR entries per window cell of that Jacobian once duplicates are summed (the cuDSS device copies): Poisson row 5 V
 # + n + p, each continuity row 5 of its carrier + 5 V + the other carrier (recombination)
@@ -574,68 +563,43 @@ def _mesh_method(spec, physics_spec, settings_values, mesh_kind, parameters):
 
 # ---- texts ----
 _DESCRIPTION = (
-    '2D stationary drift-diffusion per unit z length, or of a body of revolution (setting geometry axisymmetric: x = '
-    'r from the x_lo window edge, whole-ring contact currents and gate charges), on the physical window (finite '
-    'volumes): Poisson -div(eps0 eps_dc '
-    'grad psi) = q (p - n + N_D - N_A) and the steady electron / hole continuity div J_n = q (R - G), div J_p = q (G - '
-    'R) with Scharfetter-Gummel face currents (exact for an exponential carrier profile between cell centres; D = mu '
-    'V_T, Boltzmann statistics), solved fully coupled by Newton (sparse direct solves of the unsymmetric Jacobian '
-    'by the linear solver role, Automatic = sparse_direct) in scaled variables, potential updates log-damped. psi '
-    '(output V) is the electrostatic potential referred to the intrinsic level, with the equilibrium Fermi level at '
-    '0 V: in neutral n-type silicon at 1e22 1/m^3 V = V_T asinh(N_D / 2 n_i) = +0.36 V, at an ohmic contact V = that '
-    'value plus the contact voltage. Cells with n_intrinsic > 0 are semiconductor; the others are insulators (Poisson '
-    'only, eps_dc, no carriers, e.g. an oxide or the air). Outer faces are insulating (zero normal D and current); a '
-    'symmetry feature makes them mirror planes of the model (a half device: fields unfold, contact currents and gate '
-    'charges reaching the plane count twice). '
-    'Doping comes from doping features (they add), contacts and gates from ohmic_contact / gate features (at least '
-    'one ohmic contact); recombination is SRH with a mid-gap trap (lifetime_n / _p) plus radiative (B) plus Auger '
-    '(auger_recombination features: (C_n n + C_p p) (n p - n_i^2)); generation '
-    'is the sum of the generation features and the coupled slot generation (em_semiconductor_generation: G = '
-    'absorbed optical power / photon energy). Each solve continues from the last solution, ramping every applied '
-    'voltage (at most max_bias_step per step) and the generation, the first one from equilibrium (nonlinear Poisson '
-    'at 0 V); a step that fails is halved, and a solve that cannot converge raises. Outputs: V, N, P, E, the '
-    'Scharfetter-Gummel currents J (= Jn + Jp; face currents averaged to the cell centres, outer faces counting 0), '
-    'the quasi-Fermi potentials phi_n = V - V_T ln(N / n_i), phi_p = V + V_T ln(P / n_i), net doping, space charge '
-    'q (P - N + N_D - N_A) and the net recombination R (0 in contacts and insulators), all copied edge-extended into '
-    'an EM PML ring. The contact currents are exact face sums (table results); the electron currents into all '
-    'contacts sum to q times the integral of G - R. Coupling to optics: semiconductor_em_plasma_dispersion (free '
-    'carriers -> EM index, an E13 index contributor) and em_semiconductor_generation (EM absorption -> G); a '
-    'stationary study iterates them with the EM solve. LIMITS: homojunctions (no band offsets, no heterojunctions), '
-    'constant mobilities (an expression may make them field- or state-dependent), no '
-    'Fermi-Dirac statistics or incomplete ionisation, no transient (the time-dependent study re-solves the steady '
-    'state when an input changed). The window needs about 1-3 cells per Debye length near junctions (Debye length '
-    'sqrt(eps V_T / (q N)): 13 nm at 1e23 1/m^3). The instance is usually named semiconductor.'
-    ' On a triangle mesh (MeshSpec kind triangles; planar or axisymmetric) it is the box method on the linear (P1) '
-    'nodes of the window elements: each mesh edge carries the Scharfetter-Gummel current with the coefficient sum of '
-    'its two elements (cot / 2 edge weight of the linear stiffness times eps or mobility: edge-averaged finite '
-    'elements), control volumes are the lumped node shares; curved outlines are faceted at the nodes. Doping, contacts, '
-    'gates and generation select elements: a node takes the volume-weighted mean of its semiconductor elements (a pn '
-    'junction on element edges has mixed doping at its nodes), an ohmic contact holds every node of its semiconductor '
-    'elements, a gate every node of its elements (potential only, an ordinary edge conductance; no current enters); '
-    'generation acts on the free semiconductor elements. V, N, P and the quasi-Fermi potentials are nodal fields '
-    '(linear across an insulator element next to the semiconductor), E is -grad V per element and J the least-squares '
-    "vector of the element's own edge currents; every state slot holds one value per element (centroid means, carriers "
-    "0 in insulators). Mesh edges with a negative coefficient (non-Delaunay, e.g. an obtuse triangle at a material "
-    "interface) are reported once as a run warning. Linear solver host SuperLU or cuDSS (back_end 'cusolver_qr' needs "
-    "a tensor mesh); Automatic is cuDSS on the GPU backend with nvmath-python (a Jacobian cuDSS refuses switches the "
-    "run to host SuperLU for good, with a warning), else host SuperLU. A sparse_direct node with back_end 'cudss' / "
-    "'cudss_mixed' (GPU backend, nvmath-python) "
-    'factorises every Newton Jacobian on the GPU as a real LU, reusing the cuDSS plan (ordering and symbolic phase) '
-    'across Newton iterations and continuation steps while the contacts, gates and insulator cells stay the same; '
-    'cudss_mixed factorises in single precision with float64 refinement and falls back to double when that misses '
-    '1e-12. A sparse_direct node on a MUMPS or PARDISO back end (opt-in, never Automatic) keeps its host real LU the '
-    'same way and reuses its analysis; it keeps the host SuperLU size limits and raises on a refusal (no fallback).')
-_SLOT_DOCS = {GENERATION_SLOT: ('1/(m^3 s)', 'Coupled electron-hole pair generation rate (field generation, written by '
-                                             'em_semiconductor_generation), added to the generation features (field '
-                                             'generation_ext); acts on the free semiconductor cells only.')}
+    'Stationary drift-diffusion per unit z length (or axisymmetric, setting geometry), finite volumes on the '
+    'physical window: Poisson -div(eps0 eps_dc grad psi) = q (p - n + N_D - N_A) and continuity div J_n = q (R - G), '
+    'div J_p = q (G - R) with Scharfetter-Gummel face currents (D = mu V_T, Boltzmann statistics), solved fully '
+    'coupled by Newton with sparse direct solves. psi (output V) is referred to the intrinsic level, equilibrium '
+    'Fermi level at 0 V: neutral n-type silicon at 1e22 1/m^3 has V = V_T asinh(N_D / 2 n_i) = +0.36 V, an ohmic '
+    'contact adds its voltage. Cells with n_intrinsic > 0 are semiconductor, the others insulators (Poisson only, '
+    'e.g. oxide or air). Outer faces are insulating (zero normal D and current); a symmetry feature makes them model '
+    'mirror planes (a half device: fields unfold, contact currents and gate charges reaching the plane count twice). '
+    'At least one ohmic contact. '
+    'Recombination: SRH (mid-gap trap) + radiative + Auger features; generation: generation features + the coupled '
+    'slot. Each solve continues from the last solution, ramping voltages (max_bias_step) and generation, the first '
+    'from equilibrium; a failed step is halved, a solve that cannot converge raises. Outputs: J = Jn + Jp (face '
+    'currents averaged to the centres), phi_n = V - V_T ln(N / n_i), phi_p = V + V_T ln(P / n_i), space_charge q (P - '
+    'N + N_D - N_A), recombination R (0 in contacts and insulators); all edge-extended into an EM PML ring. Contact '
+    'currents are exact face sums; the electron currents into all contacts sum to q times the integral of G - R. '
+    'Optics: semiconductor_em_plasma_dispersion (carriers -> EM index contribution) and em_semiconductor_generation '
+    '(absorption -> G), iterated by a stationary study. LIMITS: homojunctions only, constant mobilities (an '
+    'expression may make them field- or state-dependent), no Fermi-Dirac statistics or incomplete ionisation, no '
+    'transient (time_dependent re-solves the steady state when an input changed). Needs about 1-3 cells per Debye '
+    'length sqrt(eps V_T / (q N)) near junctions (13 nm at 1e23 1/m^3). Triangle meshes: box method on the P1 nodes '
+    '(edge-averaged elements, curved outlines faceted); a node takes the volume-weighted mean of its semiconductor '
+    'elements (a junction on element edges has mixed doping at its nodes); a contact holds every node of its '
+    'semiconductor elements, a gate every node of its elements; V, N, P, phi_n / phi_p are nodal (linear across an '
+    'insulator element next to the semiconductor), E and J per element; non-Delaunay edges (negative coefficient, '
+    'e.g. obtuse triangles at an interface) give one run warning. Linear solver: host SuperLU or cuDSS (cusolver_qr: '
+    'tensor only); Automatic = cuDSS on the GPU backend with nvmath-python (a Jacobian cuDSS refuses switches the run '
+    'to host SuperLU, with a warning), else host SuperLU; cudss_mixed falls back to double when float64 refinement '
+    'misses 1e-12; MUMPS / PARDISO (opt-in) keep the host SuperLU size limits and raise on a refusal.')
+_SLOT_DOCS = {GENERATION_SLOT: ('1/(m^3 s)', 'Pair generation G (field generation) written by '
+                                             'em_semiconductor_generation (absorbed power / photon energy), added to '
+                                             'generation_ext; free semiconductor cells only.')}
 _CONTACT_RESULT = (
-    "Result 'table' of the latest solve with one row [feature, voltage, current, electron_current, hole_current] "
-    "(units '', V, A/m, A/m, A/m; A with geometry axisymmetric) and the same extras: the current per m of depth (the "
-    'whole ring when axisymmetric) flowing out of the contact into the device (positive = conventional current '
-    'leaving the contact), summed over the Scharfetter-Gummel face currents '
-    'between its held cells and their neighbours (float64, from the converged state; on a triangle mesh plus the net '
-    "generation in the held nodes' control volumes, i.e. the current through the contact outline). Under a mirror "
-    "plane of the model the unfolded structure's: x 2 per plane its held cells (nodes) reach.")
+    "Result 'table', one row [feature, voltage, current, electron_current, hole_current] (units '', V, A/m x 3; A "
+    'when axisymmetric) and the same extras: the current out of the contact into the device (positive = '
+    'conventional current leaving the contact), summed over the face currents between its held cells and their '
+    "neighbours (triangle meshes: through the contact outline); under a mirror plane of the model the unfolded "
+    "structure's, x 2 per plane its held cells (nodes) reach.")
 
 
 def _features():
@@ -643,91 +607,74 @@ def _features():
         FeatureType('doping', 'Doping', 'domain_condition', 'domain',
                     params=(Param('donors', 'float', 0.0, label='Donor density', unit='1/m^3', min=0.0,
                                   field_dependent=True, follows_parameters=True,
-                                  help='Ionised donor density N_D [1/m^3] (1e22 = 1e16 cm^-3); may depend on x, y '
-                                       '(e.g. a Gaussian implant profile). A uniform value of parameters follows a '
-                                       'reused sweep build (sweep reuse_build; that value then starts cold from '
-                                       'equilibrium).',
+                                  help='Ionised donors N_D (1e22 = 1e16 cm^-3), e.g. a Gaussian implant profile in x, '
+                                       'y. A uniform value follows reuse_build (then starts cold from equilibrium).',
                                   tip='Density of donor atoms (n-type doping) per cubic metre; 1e22 equals 1e16 '
                                       'per cubic centimetre.'),
                             Param('acceptors', 'float', 0.0, label='Acceptor density', unit='1/m^3', min=0.0,
                                   field_dependent=True, follows_parameters=True,
-                                  help='Ionised acceptor density N_A [1/m^3]; may depend on x, y; a uniform value of '
-                                       'parameters follows a reused sweep build (as donors).',
+                                  help='Ionised acceptors N_A; follows reuse_build as donors.',
                                   tip='Density of acceptor atoms (p-type doping) per cubic metre.')),
                     summary='Adds donor and / or acceptor doping to the selected domains. Several doping features '
                             'add up.',
-                    description='Adds N_D - N_A to the net doping of the selected cells (several features add; fully '
-                                'ionised; ignored in insulating cells). A step between two features at a rectangle '
-                                'edge is an abrupt junction on a cell edge (triangle meshes: on element edges, the '
-                                'nodes there take the mean of both sides).',
+                    description='Adds N_D - N_A to the net doping of the selected cells (features add; fully ionised; '
+                                'ignored in insulators). A step between features is an abrupt junction on cell edges '
+                                '(triangles: the nodes there take the mean of both sides).',
                     apply=_apply_doping, grids=_BOTH_GRIDS),
         FeatureType('ohmic_contact', 'Ohmic contact', 'domain_condition', 'domain',
                     params=(Param('voltage', 'float', 0.0, label='Voltage', unit='V', follows_parameters=True,
-                                  help='Applied voltage of the contact [V] (the Fermi level of its cells sits at '
-                                       '-voltage in energy, so the contact potential is V = voltage + V_T asinh(net '
-                                       'doping / 2 n_i)).',
+                                  help='Applied voltage (Fermi level at -voltage in energy); follows reuse_build.',
                                   tip='Voltage applied to the contact.'),),
                     result_kind='table',
                     summary='Turns the selected semiconductor cells into an ideal ohmic contact at a fixed voltage and '
                             'reports the current through it, per metre of depth (of the whole ring when '
                             'axisymmetric).',
-                    description='Holds every selected semiconductor cell (n_intrinsic > 0; other selected cells stay '
-                                'ordinary insulators) at charge-neutral equilibrium with its own doping, shifted by '
-                                'the voltage: n p = n_i^2, n - p = N_D - N_A, V = voltage + V_T asinh((N_D - N_A) / '
-                                '2 n_i). The held values sit at the cell centres, so the voltage drop starts at the '
-                                'centres of the outermost held cells. A later contact or gate takes shared cells '
-                                '(validation warns on possible overlaps). At least one ohmic contact is required. '
-                                f'{_CONTACT_RESULT}',
+                    description='Holds every selected semiconductor cell (other selected cells stay insulators) at '
+                                'charge-neutral equilibrium with its own doping, shifted by the voltage: n p = n_i^2, '
+                                'n - p = N_D - N_A, V = voltage + V_T asinh((N_D - N_A) / 2 n_i), at the cell centres '
+                                '(the drop starts at the outermost held centres). A later contact or gate takes shared '
+                                f'cells (validation warns). {_CONTACT_RESULT}',
                     apply=_apply_contact, result=_contact_result, grids=_BOTH_GRIDS),
         FeatureType('gate', 'Gate', 'domain_condition', 'domain',
                     params=(Param('voltage', 'float', 0.0, label='Voltage', unit='V', follows_parameters=True,
-                                  help='Applied gate voltage [V]; a reused sweep build (sweep reuse_build) follows '
-                                       'it without rebuilding.', tip='Voltage applied to the gate electrode.'),
+                                  help='Applied gate voltage; follows reuse_build.',
+                                  tip='Voltage applied to the gate electrode.'),
                             Param('work_function_difference', 'float', 0.0, label='Work-function difference',
                                   unit='V',
-                                  help='phi_ms [V]: gate work function minus the intrinsic-level work function of '
-                                       'the semiconductor (electron affinity + E_g / 2 q); the held potential is V = '
-                                       'voltage - phi_ms. 0 = a mid-gap gate; n+ polysilicon on silicon ~ -0.56, p+ '
-                                       '~ +0.56. Referred to the intrinsic level, not the Fermi level: the flat-band '
-                                       'voltage is phi_ms + V_bulk with V_bulk = V_T asinh(net doping / 2 n_i) '
-                                       '(p-type silicon at N_A = 1e23 1/m^3: V_bulk = -0.42 V), and the textbook '
-                                       'work-function '
-                                       'difference (to the Fermi level) is phi_ms + V_bulk.',
+                                  help='phi_ms: gate work function minus the intrinsic-level work function of the '
+                                       'semiconductor (electron affinity + E_g / 2 q). 0 = mid-gap gate; n+ '
+                                       'polysilicon on silicon ~ -0.56, p+ ~ +0.56. Referred to the intrinsic level, '
+                                       'not the Fermi level: the flat-band voltage (= the textbook work-function '
+                                       'difference) is phi_ms + V_bulk, V_bulk = V_T asinh(net doping / 2 n_i) '
+                                       '(p-type silicon at N_A = 1e23 1/m^3: -0.42 V).',
                                   tip='Difference between the gate metal and the semiconductor work functions; '
                                       'zero for a mid-gap gate.')),
                     result_kind='table',
                     summary='Turns the selected insulating domains into a gate electrode at a fixed voltage and reports '
                             'its charge, as in a capacitor or MOS modulator.',
-                    description='Holds the potential of every selected cell at voltage - work_function_difference (an '
-                                'ideal conductor: the value sits on its faces toward the other cells, half-cell '
-                                'conductance 2 eps0 eps_dc / dx of the neighbour). The cells must be insulating '
-                                '(n_intrinsic 0; run error otherwise): put the gate on an oxide. No current flows '
-                                "into a gate. Result 'table' of the latest solve with one row [feature, voltage, "
-                                "charge] (units '', V, C/m; C with geometry axisymmetric) and the extras voltage and "
-                                'charge: the free charge per m of depth (the whole ring when axisymmetric) on the '
-                                'gate, its outward D flux (Gauss); x 2 per mirror plane of the model its cells '
-                                '(nodes) reach (the unfolded structure).',
+                    description='Holds every selected cell at V = voltage - work_function_difference (an ideal '
+                                'conductor: the value sits on its faces). The cells must be insulating (n_intrinsic '
+                                '0; run error otherwise): put the gate on an oxide. No current flows into a gate. '
+                                "Result 'table', one row [feature, voltage, charge] (units '', V, C/m; C when "
+                                'axisymmetric) and the extras voltage and charge: the free charge on the gate, its '
+                                'outward D flux; x 2 per mirror plane of the model its cells (nodes) reach.',
                     apply=_apply_gate, result=_gate_result, grids=_BOTH_GRIDS),
         FeatureType('auger_recombination', 'Auger recombination', 'domain_condition', 'domain',
                     params=(Param('electron_coefficient', 'float', 2.8e-43, label='Electron Auger coefficient',
                                   unit='m^6/s', min=0.0,
-                                  help='C_n [m^6/s] of R_Auger = (C_n n + C_p p) (n p - n_i^2) (eeh process); '
-                                       'silicon 2.8e-43 (2.8e-31 cm^6/s), GaAs ~1e-42. A constant per feature (no '
-                                       'x, y dependence): kept in float64 outside the material grid.',
+                                  help='C_n (eeh process); silicon 2.8e-43 (2.8e-31 cm^6/s), GaAs ~1e-42.',
                                   tip='Strength of three-carrier recombination driven by electrons; matters at high '
                                       'carrier densities (heavy doping, strong injection).'),
                             Param('hole_coefficient', 'float', 9.9e-44, label='Hole Auger coefficient',
                                   unit='m^6/s', min=0.0,
-                                  help='C_p [m^6/s] (ehh process); silicon 9.9e-44 (9.9e-32 cm^6/s).',
+                                  help='C_p (ehh process); silicon 9.9e-44 (9.9e-32 cm^6/s).',
                                   tip='Strength of three-carrier recombination driven by holes.')),
                     summary='Adds Auger (three-carrier) recombination in the selected domains, important in heavily '
                             'doped regions and under strong injection (LEDs, solar cells, forward-biased diodes).',
                     description='Sets the Auger coefficients of the selected semiconductor cells (a later feature '
                                 'takes shared cells; unselected cells have none): R_Auger = (C_n N + C_p P) (N P - '
-                                'n_i^2) adds to the SRH and radiative recombination (output recombination, the '
-                                'continuity rows and the contact currents). The coefficients are float64 constants '
-                                '(about 1e-43 m^6/s: a float32 subnormal, so they are no material property). On a '
-                                'triangle mesh a node takes the semiconductor-volume mean of its elements.',
+                                'n_i^2) adds to the recombination. Constants per feature, no x, y (float32 subnormal, '
+                                'so no material property); triangles: a node takes the semiconductor-volume mean.',
                     apply=_apply_auger, grids=_BOTH_GRIDS),
         FeatureType(_SYMMETRY_FEATURE, 'Symmetry', 'boundary_condition', 'boundary', allow_interior=False,
                     summary='Makes the selected domain edges mirror planes, so only half (or a quarter) of a device '
@@ -753,16 +700,14 @@ def _features():
         FeatureType('generation', 'Generation', 'domain_condition', 'domain',
                     params=(Param('rate', 'float', 1e27, label='Generation rate', unit='1/(m^3 s)', min=0.0,
                                   field_dependent=True,
-                                  help='Electron-hole pair generation rate [1/(m^3 s)]; may depend on x, y (e.g. '
-                                       'G0 * exp(-alpha * (y0 - y)) for light entering from the top). 1 W/m^2 '
-                                       'absorbed at 1.55 um is 7.8e18 pairs / (m^2 s).',
+                                  help='Electron-hole pairs, e.g. G0 * exp(-alpha * (y0 - y)) for light entering from '
+                                       'the top. 1 W/m^2 absorbed at 1.55 um is 7.8e18 pairs / (m^2 s).',
                                   tip='Number of electron-hole pairs created per cubic metre and second, for '
                                       'example by absorbed light.'),),
                     summary='Creates electron-hole pairs at a given rate throughout the selected domains, for example '
                             'to mimic absorbed light.',
-                    description='Adds the rate to generation_ext on the selected cells (several features add); it '
-                                'acts on the free semiconductor cells only. The coupled slot generation (from an EM '
-                                'physics) adds to it.',
+                    description='Adds the rate to generation_ext on the selected cells (features and the coupled slot '
+                                'add); acts on free semiconductor cells only.',
                     apply=_apply_generation, grids=_BOTH_GRIDS),
     )
 
@@ -788,8 +733,8 @@ DRIFT_DIFFUSION = PhysicsType(
     state_fields=_FIELD_INFOS,
     output_fields=_FIELD_INFOS,
     source_slots=_SLOT_DOCS,
-    supported_studies=('stationary', 'time_dependent'),
-    default_study={'type': 'stationary'},
+    supported_studies=(STATIONARY_STUDY, TIME_DEPENDENT_STUDY),
+    default_study={'type': STATIONARY_STUDY},
     uses_dispersion=False,
     create=_create,
     validate=_validate_physics,
@@ -798,7 +743,7 @@ DRIFT_DIFFUSION = PhysicsType(
     scalar_outputs=_scalar_outputs,
     scalar_outputs_help=_SCALAR_OUTPUTS_HELP,
     solver_roles={'linear': CUDSS_LINEAR_ROLE},
-    backends=('gpu', 'cpu'),   # host float64 system; output fields on the Domain's xp; its EM couplings stay gpu
+    backends=('gpu', 'cpu'),   # host float64 system; output fields and EM coupling buffers on the Domain's xp
 )
 
 

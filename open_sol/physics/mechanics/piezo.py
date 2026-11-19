@@ -1,4 +1,4 @@
-"""Piezoelectric plane strain (piezoelectric plan stage 5, setting piezoelectric of solid_mechanics): a nodal Q1 potential
+"""Piezoelectric plane strain (setting piezoelectric of solid_mechanics): a nodal Q1 potential
 phi on the solid's own nodes, the symmetric coupled operator [[K_uu, K_uphi], [K_phiu, -K_phiphi]], electrodes, the
 static host SuperLU solve, the coupled modal pencil and the harmonic solve; host numpy (scipy inside functions).
 PiezoSystem and the electrode map work on dof indices, so the 3D tetrahedra solid (piezo_fem3d, block layout) shares

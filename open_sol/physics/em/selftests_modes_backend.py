@@ -1,4 +1,4 @@
-"""CPU vs GPU backend case of em_modes (solver_plan S6): a heated, partly metal-walled silicon strip (heat +
+"""CPU vs GPU backend case of em_modes: a heated, partly metal-walled silicon strip (heat +
 heat_em_thermo_optic + em_modes) on both backends; no physics imports."""
 import math
 

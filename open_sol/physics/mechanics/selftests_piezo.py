@@ -1,4 +1,4 @@
-"""Model-run self-tests of piezoelectric solid_mechanics (piezoelectric plan stage 5): a bar in uniaxial strain (rollers
+"""Model-run self-tests of piezoelectric solid_mechanics: a bar in uniaxial strain (rollers
 on the y faces) with electrodes on its x faces, static (free / blocked / floating) and modal (short / open circuit) runs
 against the exact Q1 discrete solutions; no physics imports."""
 import math
@@ -6,7 +6,7 @@ import math
 import numpy as np
 
 from ...core.constants import EPS0
-from ...model.schema import SelfTestCase
+from ...model.schema import EIGENFREQUENCY_STUDY, STATIONARY_STUDY, SelfTestCase
 from ...model.selftest_helpers import float32_value, scaled_worst_result
 from ...model.spec import DomainSpec, FeatureSpec, MaterialSpec, MeshSpec, ModelSpec, PhysicsSpec, StudySpec
 from .selftests import _lame
@@ -14,8 +14,8 @@ from .selftests_eigenfrequency import _add_rank_items
 
 _PHYSICS = 'solid'
 _SOLID_TYPE = 'solid_mechanics'   # = selftests.SOLID_TYPE_NAME
-_STATIC_STUDY = 'stationary'
-_MODAL_STUDY = 'eigenfrequency'   # = model.study_eigenfrequency.STUDY_NAME
+_STATIC_STUDY = STATIONARY_STUDY
+_MODAL_STUDY = EIGENFREQUENCY_STUDY
 _TABLE = 'modes'
 
 # ---- bar: 10 x 1 mm, uniform 0.5 mm cells (20 x 2), E 70 GPa, nu 0.25 (c11 = lambda + 2 mu = 84 GPa), rho 2200, only

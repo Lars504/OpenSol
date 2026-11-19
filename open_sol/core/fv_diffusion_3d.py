@@ -25,7 +25,7 @@ FACE_AXIS_3D = {'x_lo': 0, 'x_hi': 0, 'y_lo': 1, 'y_hi': 1, 'z_lo': 2, 'z_hi': 2
 _AXIS_NAMES = 'xyz'
 _LOWER, _UPPER = slice(None, -1), slice(1, None)
 
-# Cut cells (solver_plan S7.6): a located held edge closer than this fraction of the centre spacing counts at it (the
+# Cut cells: a located held edge closer than this fraction of the centre spacing counts at it (the
 # free cell's conductance stays <= 1 / floor x that of a whole link; Jacobi scaling absorbs the large diagonal).
 HELD_WALL_FLOOR = 0.02
 

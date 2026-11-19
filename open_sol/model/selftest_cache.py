@@ -7,6 +7,7 @@ import gc
 import hashlib
 import importlib.metadata
 import importlib.util
+import math
 import os
 import pickle
 import platform
@@ -30,6 +31,7 @@ UNTRACKED_PATHS = ('api.py', '__main__.py', 'model/builder.py', 'model/validate.
                    'model/sweep_reuse.py',
                    'model/describe.py', 'model/meshing.py', 'model/time_estimate.py', 'model/symmetry_check.py',
                    'core/memory_estimate.py', 'core/time_estimate.py', 'materials/__init__.py', 'io/', 'gui/')
+_NONFINITE_FLOATS = {'nan': math.nan, 'inf': math.inf, '-inf': -math.inf}   # read_json text of non-finite floats
 _ROOT = os.path.normcase(str(Path(__file__).resolve().parents[1]))   # the open_sol package folder
 _MAX_REEXPORTS = 8   # import hops followed to the module defining an imported name
 _PACKAGE_PATHS = {}  # co_filename -> package path or None
@@ -388,6 +390,18 @@ def _import_map(module_name):
     return imports
 
 
+def _with_nonfinite_floats(value):
+    """Copy of a JSON value with the strings 'nan' / 'inf' / '-inf' (json_safe text of non-finite floats) back as
+    floats, in nested dicts and lists too."""
+    if isinstance(value, str):
+        return _NONFINITE_FLOATS.get(value, value)
+    if isinstance(value, dict):
+        return {key: _with_nonfinite_floats(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_with_nonfinite_floats(item) for item in value]
+    return value
+
+
 class SelftestCache:
     """selftest_cache.json: per case / example the record of its last reusable run, its environment, an input
     hash (example model file) and the hashes of the package code units it depended on; reusable while all of them are
@@ -423,15 +437,15 @@ class SelftestCache:
         self.wall_times[section][key] = float(seconds)
 
     def reusable_record(self, section, key, input_hash=None):
-        """The stored record (marked reused) when nothing it depends on changed, else None (also for an entry of the
-        older file-level format)."""
+        """The stored record (marked reused, non-finite numbers back as floats, as in a fresh record) when nothing it
+        depends on changed, else None (also for an entry of the older file-level format)."""
         entry = self.entries[section].get(key)
         if (entry is None or entry.get('units') is None or entry['environment'] != self.environment
                 or entry['input_hash'] != input_hash
                 or entry['record'].get('status') not in REUSABLE_STATUSES[section]
                 or any(unit_hash(unit_id) != digest for unit_id, digest in entry['units'].items())):
             return None
-        return dict(entry['record'], reused=True, reused_from=entry['time'])
+        return dict(_with_nonfinite_floats(entry['record']), reused=True, reused_from=entry['time'])
 
     def store(self, section, key, record, units, input_hash=None):
         """Keep a record of a REUSABLE_STATUSES status with its units (None: not traced) for reuse; drop the entry

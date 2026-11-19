@@ -1,4 +1,4 @@
-"""Reference elements of the FEM path (mesh plan 2.4): Lagrange P0 / P1 / P2, Nedelec first kind degree 1 / 2 with
+"""Reference elements of the FEM path: Lagrange P0 / P1 / P2, Nedelec first kind degree 1 / 2 with
 the global edge orientation (lower -> higher node index), and the element geometry (affine, or isoparametric P2 on
 elements with a curved edge; covariant Piola for edge elements). Host numpy; reference triangle (0, 0), (1, 0),
 (0, 1); local node k, local edge k = nodes (k + 1, k + 2) mod 3 (fem.mesh); P2 local node 3 + k = midside of edge k."""

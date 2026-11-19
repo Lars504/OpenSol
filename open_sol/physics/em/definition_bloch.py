@@ -11,21 +11,18 @@ from .selftests_bloch import (BAND_DIAGRAM_DESCRIPTION, BAND_DIAGRAM_LABEL, FDFD
 _REAL_SET_SOURCES = ('point_source', 'plane_wave_tfsf', 'mode_source')
 _K_ZERO_PORTS = ('mode_source', 'mode_monitor')
 
-_BLOCH_HELP = (
-    'Bloch wave vector along {axis} in rad/m, used only when bc_{axis}_lo and bc_{axis}_hi are periodic: the fields '
-    'repeat with the phase exp(-j k{axis} L) per period L (the meshed period; exp(+j omega t), so k{axis} > 0 for a '
-    'wave travelling toward +{axis}); k{axis} and k{axis} + 2 pi / L are the same state. 0 = plain periodic. Any k != '
-    '0 steps a second (imaginary) field set: field memory and time per step double. Line sources and gaussian beams '
-    'carry exp(-j k.r) along the line, so a line along {axis} launches an oblique plane wave at sin(theta) = k{axis} / '
-    '(n k0) from its normal (k0 = 2 pi / vacuum wavelength): at a fixed k{axis} the angle changes with frequency across '
-    'a pulse, and frequencies below c k{axis} / n are evanescent. The calibrated amplitude holds at normal incidence: '
-    'at angle theta an E_z sheet radiates amplitude / cos(theta), an in-plane sheet |E| = amplitude. Point, plane-wave '
-    'box and mode sources drive only the real field set (every period image repeats them with the Bloch phase: good '
-    'for band diagrams, where a point source and a resonance monitor per swept k give the bands). DFT-based monitors '
-    '(flux, field map, far field, mode monitor) accumulate F_re + j F_im, i.e. the response at +k for every positive '
-    'frequency; probes, field plots, expressions and couplings read the real set only. Absorbed power '
-    '(track_absorption, q_accum, em_heat_joule) is refused. Typical: k{axis} = k0 sin(theta) of the incidence angle '
-    'in vacuum, e.g. an expression 2*pi/lambda0*sin(theta) swept over theta.')
+_BLOCH_HELP = (   # axis-free (no {axis}), so describe prints it once for bloch_kx and bloch_ky
+    'Bloch wave vector k along this axis, used only when both its faces are periodic: fields repeat with exp(-j k L) '
+    'per meshed period L (k > 0 travels toward +axis); k and k + 2 pi / L are the same state. Any k != 0 steps a '
+    'second (imaginary) field set: field memory and time per step double. Line sources and gaussian beams carry '
+    'exp(-j k.r), so a line along the axis launches an oblique plane wave at sin(theta) = k / (n k0) from its normal '
+    '(k0 = 2 pi / vacuum wavelength): at fixed k the angle changes across a pulse, frequencies below c k / n are '
+    'evanescent; at angle theta an E_z sheet radiates amplitude / cos(theta), an in-plane sheet |E| = amplitude. '
+    'Point, plane-wave box and mode sources drive only the real set (each period image repeats them with the Bloch '
+    'phase: band diagrams from a point source and a resonance monitor per swept k). DFT monitors (flux, field map, far '
+    'field, mode monitor) give the +k response at every positive frequency; probes, field plots, expressions and '
+    'couplings read the real set. Absorbed power (track_absorption, q_accum, em_heat_joule) is refused. Typical: k = '
+    '2*pi/lambda0*sin(theta) of the vacuum incidence angle.')
 _BLOCH_TIP = ('Phase step of the wave from one period to the next along {axis}, in radians per metre, for periodic '
               'edges.\n\n'
               '0 means no phase step, as for light at normal incidence. For light arriving at an angle theta in '
@@ -33,24 +30,17 @@ _BLOCH_TIP = ('Phase step of the wave from one period to the next along {axis}, 
               'absorbed power result is then not available.')
 
 
-_FDFD_BLOCH_HELP = (
-    'Bloch wave vector along {axis} in rad/m, used only when bc_{axis}_lo and bc_{axis}_hi are periodic: the solution '
-    'is the Bloch wave F(x + L) = F(x) exp(-j k{axis} L) per period L (the meshed period; exp(+j omega t), so k{axis} > '
-    '0 for a wave travelling toward +{axis}); k{axis} and k{axis} + 2 pi / L are the same state. 0 = plain periodic. '
-    'The phase sits on the wrap entries of the operator: same unknowns and solve cost as k = 0. Every source is '
-    'repeated in each period image with that phase. Line sources and gaussian beams carry exp(-j k.r) along the line (r '
-    '= cell centres from the grid lo corner, as em_fdtd_*), so a line spanning the period launches an oblique plane '
-    'wave at sin(theta) = k{axis} / (n k0) from its normal (k0 = 2 pi / vacuum wavelength); the calibrated amplitude '
-    'holds at normal incidence: at angle theta an E_z sheet radiates amplitude / cos(theta), an in-plane sheet |E| = '
-    'amplitude. A plane_wave_tfsf with bloch_ky != 0 becomes the oblique plane wave exp(-j (k_x x + ky y)), k_x from '
-    'the discrete dispersion of the background (amplitude = E_z, or the in-plane |E|; ky at or beyond the background '
-    'wavenumber is refused: evanescent; graded y cells are refused, graded x cells are fine); with bloch_kx it stays '
-    'a +x wave repeated per period image. Mode sources, '
-    'mode monitors and mode-power objectives on a line spanning a whole Bloch period are refused (the port mode would '
-    'need the phase); port lines across the Bloch axis, or shorter than the period, are fine. Every result (absorbed '
-    'power and em_heat_joule, probes, flux, far field, adjoint gradients) is that of the Bloch wave at +k. Band '
-    'diagrams: an eigenfrequency study swept over k gives the band frequencies per k (template fdfd_band_diagram). '
-    'Typical: k{axis} = k0 sin(theta) of the incidence angle in vacuum, e.g. an expression 2*pi/lambda0*sin(theta).')
+_FDFD_BLOCH_HELP = (   # axis-free, as _BLOCH_HELP
+    'Bloch wave vector k along this axis, used only when both its faces are periodic: F(x + L) = F(x) exp(-j k L) per '
+    'meshed period L (k > 0 travels toward +axis); k and k + 2 pi / L are the same state. Phased wrap entries: same '
+    'unknowns as k = 0; every source repeats per period image with that phase. Line sources and gaussian beams carry '
+    'exp(-j k.r) (r = cell centres from the grid lo corner), so a line spanning the period launches an oblique plane '
+    'wave at sin(theta) = k / (n k0) from its normal (k0 = 2 pi / vacuum wavelength); at angle theta an E_z sheet '
+    'radiates amplitude / cos(theta), an in-plane sheet |E| = amplitude. A plane_wave_tfsf turns oblique with '
+    'bloch_ky (see that feature), a +x wave repeated per period image with bloch_kx. Mode sources, mode monitors and '
+    'mode-power objectives on a line spanning a whole Bloch period are refused. Every result (absorbed power, probes, '
+    'flux, far field, adjoint gradients) is that of the Bloch wave at +k. Band diagrams: an eigenfrequency study swept '
+    'over k (template fdfd_band_diagram). Typical: k = 2*pi/lambda0*sin(theta) of the vacuum incidence angle.')
 _FDFD_BLOCH_TIP = ('Phase step of the wave from one period to the next along {axis}, in radians per metre, for '
                    'periodic edges.\n\n'
                    '0 means no phase step, as for light at normal incidence. For light arriving at an angle theta in '

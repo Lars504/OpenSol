@@ -1,4 +1,4 @@
-"""Electrostatics / electric currents on triangle meshes (mesh plan stage T4, FEMPotentialPhysics): the coaxial
+"""Electrostatics / electric currents on triangle meshes (FEMPotentialPhysics): the coaxial
 capacitor (curved held outlines, reaction charges, convergence order), the Joule-heated resistor strip with heat on
 the same triangle mesh or on a tensor mesh (currents_heat_joule across meshes) and the linear electrolyte slit; model
 runs read through feature results (held tables, probes), scalar outputs and derived integrals. Registered by

@@ -1,4 +1,4 @@
-"""Self-test of the double-precision 2D FDTD stepper (explicit_kernels precision 'double', solver_plan S5 / stage D): the
+"""Self-test of the double-precision 2D FDTD stepper (explicit_kernels precision 'double'): the
 phase drift of a lossless pec cavity mode over a 5 ps ring-down against the exact discrete Yee frequency."""
 import math
 

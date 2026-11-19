@@ -79,7 +79,8 @@ class ExampleCatalog:
     def scan(self, folder_name):
         """(ExampleModels below one subfolder: single-physics groups first, then by space (EXAMPLE_SPACES order), group
         and title; [(relative path, reason)] of its files found unreadable in this scan, i.e. new or changed since the
-        previous one)."""
+        previous one). Raw JSON only, never load_model / validate: on a CPU-only machine validation probes cuDSS /
+        gmsh per file and would stall the menu; a model is checked when opened."""
         listed, newly_unreadable = [], []
         for path in self._model_files(self.directory / folder_name):
             try:

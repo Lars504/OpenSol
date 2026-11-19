@@ -1,4 +1,4 @@
-"""Self-tests of mirror-symmetric triangle meshes (new_modules_plan G2; CPU, specs() empty, check({}) meshes directly):
+"""Self-tests of mirror-symmetric triangle meshes (CPU, specs() empty, check({}) meshes directly):
 node / element / ring / curved-edge invariance under the mirror, tags, the MeshSpec path, the material symmetry check
 and the em_fdfd_ez parity selection rule on a mirrored mesh. Written, not run: tolerances are first estimates."""
 import math
@@ -227,7 +227,7 @@ MESH_SYMMETRY_SELFTEST_CASES = (
         name='fem_mirror_triangle_mesh',
         label='Mirror-symmetric triangle mesh: invariance and tags',
         description=(
-            'CPU checks of MeshSpec.mirror_x / mirror_y (new_modules_plan G2, triangle_meshing._mirrored_parts): a '
+            'CPU checks of MeshSpec.mirror_x / mirror_y (triangle_meshing._mirrored_parts): a '
             '2 x 1.2 um window, symmetric about x = 1 um (a disc on the line, a disc pair, a 30 / 150 deg ellipse '
             'pair, a bar, a line, three points), h 0.08 um, a 0.2 um PML ring of 4 layers on every face. mirror_x: '
             'nodes, elements, ring bits, the centre disc region, curved midside nodes (equal counts per side, on '

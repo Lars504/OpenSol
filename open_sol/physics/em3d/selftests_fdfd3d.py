@@ -1,4 +1,4 @@
-"""Self-tests of em_fdfd_3d (igor3d_plan stages 0-3): the 3D Yee operators of operators3d (curl identities, symmetry,
+"""Self-tests of em_fdfd_3d: the 3D Yee operators of operators3d (curl identities, symmetry,
 the discrete PEC box spectrum and its mirror sectors, CPU), the eigenfrequency model runs (dielectric and lossy PEC
 boxes, the Bloch empty lattice, parity sectors, a k_z-swept Bragg stack cell), the FDTD ring-down of the same grid and
 the host factor ordering on an eighth Mie sphere grid; templates pec_box_eigenmodes_3d and
@@ -10,7 +10,7 @@ import math
 import numpy as np
 
 from ...core.constants import C0, EPS0
-from ...model.schema import SelfTestCase
+from ...model.schema import EIGENFREQUENCY_STUDY, SelfTestCase
 from ...model.selftest_helpers import failed_count_result
 from ...model.spec import (DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec,
                            ParameterSpec, PhysicsSpec, SolverDefaultsSpec, SolverSpec, StudySpec, SweepSpec)
@@ -20,7 +20,7 @@ _PHYSICS_NAME = 'em'
 _PHYSICS_TYPE = 'em_fdfd_3d'          # literal (selftests never import the definition)
 _FDTD_TYPE = 'em_fdtd_3d'
 _TABLE = 'resonances'
-_STUDY = 'eigenfrequency'
+_STUDY = EIGENFREQUENCY_STUDY
 _CELL = 50e-9                         # m
 _IDENTITY_TOLERANCE = 1e-12           # curl identities and symmetry, relative to the factor entries
 _SPECTRUM_TOLERANCE = 1e-10           # dense eigenvalues vs the discrete closed form
@@ -663,7 +663,7 @@ PEC_BOX_EIGENMODES_TEMPLATE = (PEC_BOX_EIGENMODES_KEY, PEC_BOX_EIGENMODES_LABEL,
 NANOBEAM_CELL_KEY = 'nanobeam_mirror_cell_bands_3d'
 NANOBEAM_CELL_LABEL = 'Nanobeam mirror cell band diagram (3D, frequency domain)'
 NANOBEAM_CELL_DESCRIPTION = (
-    'em_fdfd_3d: one mirror cell of a silicon nanobeam photonic crystal in D2O (igor_experiment 4.3: period a = 394.3 '
+    'em_fdfd_3d: one mirror cell of a silicon nanobeam photonic crystal in D2O (period a = 394.3 '
     'nm, hole d = 279.3 nm along y through a 595.2 x 220 nm beam, n 3.47 / 1.32), quarter cross-section (x_lo '
     'antisymmetric = PEC plane, y_lo symmetric = PMC plane: the TE-like sector), 300 nm D2O and 8 CPML cells on x_hi / '
     'y_hi, z periodic with bloch_kz = k_fraction 2 pi / a swept over 0.4-0.5 (guided, below the D2O light line); an '

@@ -1,4 +1,4 @@
-"""Analytic self-tests of magnetostatics_3d (stages 1-3 of magnetostatics_3d_plan): an empty box in a uniform field on
+"""Analytic self-tests of magnetostatics_3d: an empty box in a uniform field on
 a graded mesh, layered slabs along every axis and saturating slabs (exact 1D discrete solutions), permeable and
 magnetised spheres (closed
 forms, a coarse / fine pair), a thick solenoid's axis field and Ampere total, the coil energy identity, a cored coil

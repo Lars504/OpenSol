@@ -1,5 +1,5 @@
-"""MagneticFEMSystem: 2D magnetostatics of A (planar A_z [T m], axisymmetric A_phi [T m]) on a triangle mesh (magnetic
-plan section 10, stage 5): Lagrange P1 / P2 on the window elements in B-space (fem.magnetostatics), Dirichlet faces on
+"""MagneticFEMSystem: 2D magnetostatics of A (planar A_z [T m], axisymmetric A_phi [T m]) on a triangle mesh:
+Lagrange P1 / P2 on the window elements in B-space (fem.magnetostatics), Dirichlet faces on
 the window edge, the axis A = 0, held elements, the external field as nodal Dirichlet values; linear per-axis nu with a
 remanence load, or isotropic saturating curves nu(|B|); the minimum of the convex energy W(a) = int w(B) dV - loads . a
 by exact-tangent Newton with an Armijo line search on W (one linear solve without saturating elements), each step
@@ -17,7 +17,7 @@ from ...fem.fixed_pattern import FixedPatternCsr
 from ...fem.magnetostatics import (assemble_curl_tangent, curl_quadrature, curl_tangent_blocks, curl_vector,
                                    element_integrals, local_flux_density, quadrature_flux_density, quadrature_integral,
                                    quadrature_values)
-from ...fem.mesher import MERGE_TOLERANCE
+from ...fem.mesher import window_inset
 from ...fem.sampling import evaluate
 
 FACES = ('x_lo', 'x_hi', 'y_lo', 'y_hi')
@@ -37,7 +37,7 @@ class MagneticFEMSystem:
         from ...solvers.sparse_direct import DiffusionDirectSolver, SparseDirectSolver
         if order not in (1, 2):
             raise ValueError(f'{label()}: element order must be 1 or 2, got {order!r}')
-        if linear_solver is None:   # scripts: the triangle Automatic (mesh plan D11)
+        if linear_solver is None:   # scripts: the triangle Automatic
             linear_solver = SparseDirectSolver(backend=backend)
         if isinstance(linear_solver, SparseDirectSolver):
             linear_solver = DiffusionDirectSolver(linear_solver)
@@ -70,8 +70,7 @@ class MagneticFEMSystem:
             array.flags.writeable = False
         self.values = np.zeros(self.full.n_dofs)
         self.started = False          # values hold a solution (or a seeded one): Newton starts from them
-        x0, y0, x1, y1 = mesh.window
-        self._tolerance = MERGE_TOLERANCE * max(x1 - x0, y1 - y0)
+        self._tolerance = window_inset(mesh.window)   # points this close to the axis lie on it
         # conditions (later ones win shared dofs: faces < external field < held elements < the axis)
         self.face_kinds = dict.fromkeys(FACES, 'dirichlet')   # 'dirichlet' (A = 0) or 'natural' (symmetry)
         self.external_field = None    # (B_x, B_y) [T]
@@ -290,7 +289,7 @@ class MagneticFEMSystem:
                     for block in self.blocks]
         matrix = assemble_curl_tangent(self.blocks, tangents, self.dofs.n_dofs).tocsr()
         reduced = matrix[self._free][:, self._free].tocsr()
-        self._check_anchors(reduced)
+        self.check_anchors(reduced)
         self._factorize(reduced)
         return matrix
 
@@ -325,7 +324,7 @@ class MagneticFEMSystem:
         while iterations < max_iterations:
             reduced = self._reduced_tangent(state[1])
             if iterations == 0 and not anchors_checked:
-                self._check_anchors(reduced)
+                self.check_anchors(reduced)
             self._factorize(reduced)
             step_free = self._solve_factorized(-residual[free], np.zeros(free.size))
             direction = np.zeros_like(potential)
@@ -414,7 +413,7 @@ class MagneticFEMSystem:
                 in zip(self.blocks, flux)]
         return flux, None, [law[0] for law in laws], [law[2] for law in laws]
 
-    def _check_anchors(self, reduced) -> None:
+    def check_anchors(self, reduced) -> None:
         """Planar only (the axisymmetric A / r term anchors every region): a free region of row sums ~0 is singular."""
         if self.axisymmetric:
             return

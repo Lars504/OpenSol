@@ -1,10 +1,10 @@
 """Coupling type solid_mechanics -> membrane: solid_membrane_tension, the relaxed plane-stress film stress times its
-thickness (N_ij = h sigma_ij per element) overwriting the membrane's coupled tension slots (new_modules_plan S9);
+thickness (N_ij = h sigma_ij per element) overwriting the membrane's coupled tension slots;
 discovered and registered by definitions.register."""
 from ..core.backend import array_module_of
 from ..core.constants import DTYPE, FACES
 from ..model.definition_helpers import evaluates_to, is_axisymmetric, selected_material_data
-from ..model.schema import CouplingType, Issue, Param
+from ..model.schema import EIGENFREQUENCY_STUDY, FREQUENCY_RESPONSE_STUDY, CouplingType, Issue, Param
 from .coupling_term import CouplingGroup, CouplingTerm
 from .index_terms import after_source_step, physics_and_type
 
@@ -17,7 +17,7 @@ STRESS_TO_TENSION = (('stress_xx', 'coupled_tension_xx'), ('stress_yy', 'coupled
                      ('stress_xy', 'coupled_tension_xy'))
 _PLANE_STRESS = 'plane_stress'                     # = physics.mechanics.solver_common PLANE_STRESS (not imported)
 _TRIANGLES = 'triangles'
-_STUDY_SOLVED_SOLID_STUDIES = ('eigenfrequency', 'frequency_response')   # where the solid would be solved itself
+_STUDY_SOLVED_SOLID_STUDIES = (EIGENFREQUENCY_STUDY, FREQUENCY_RESPONSE_STUDY)   # where the solid is solved itself
 _MEMBRANE_TENSION_PROPERTIES = ('tension', 'tension_xx', 'tension_yy', 'tension_xy')
 
 
@@ -129,8 +129,8 @@ def _validate_tension(vctx, coupling_spec, values):
 # ---- type ----
 _THICKNESS_PARAM = Param(
     'thickness', 'float', None, label='Film thickness', unit='m', min=0.0, min_exclusive=True, optional=True,
-    help='Film thickness h [m] in N_ij = h sigma_ij. Empty (default): the thickness setting of the solid (validation '
-         'error when that is empty too); a value overrides it (a warning when both are set and differ).',
+    help='h in N_ij = h sigma_ij. Empty: the thickness setting of the solid (validation error when that is empty '
+         'too); a value overrides it (warning when both are set and differ).',
     tip='Thickness of the film that turns its stress into the membrane tension.\n\nEmpty uses the thickness set on '
         'the solid mechanics.')
 
@@ -140,23 +140,17 @@ SOLID_MEMBRANE_TENSION = CouplingType(
     summary='Sets the tension of the membrane from the stress of a thin film computed by the solid mechanics, for '
             'example a prestressed film that relaxes around holes before its vibration modes are found. Both physics '
             'share one triangle mesh; list only the membrane as solved in the study.',
-    description='Membrane tension from a plane-stress solid on the same triangle mesh: each transfer writes N_xx = h '
-                'stress_xx, N_yy = h stress_yy and N_xy = h stress_xy [N/m] per element into the membrane slots '
-                'coupled_tension_xx / _yy / _xy (overwriting: no other coupling may write them), which the membrane '
+    description='Plane-stress solid -> membrane on the same triangle mesh: each transfer writes N_ij = h stress_ij '
+                '[N/m] (xx, yy, xy) per element into coupled_tension_xx / _yy / _xy (overwriting), which the membrane '
                 'adds to its material tension (leave that unset when the solid gives the whole prestress; validation '
-                'info otherwise). stress_ij is the total static stress of the solid (initial_stress + C (strain - '
-                'thermal strain): the relaxed state of a prestressed film with holes) at the element centroid, the '
-                'element mean for P1 / P2 on straight elements, so the cell integral of the tension is exact; void '
-                'elements (no youngs_modulus) give 0, so with areal_density 0 there they are membrane holes (free '
-                'edges); a void element with areal_density > 0 is mass without stiffness. h = the thickness param, '
-                'else the thickness setting of the solid. The solid must be planar plane_stress on the membrane\'s '
-                'triangle mesh (validation errors; no mesh transfer). Run order: in an eigenfrequency or '
-                'frequency_response study set StudySpec.solved_physics to the membrane only: the solid then runs as a '
-                'stationary background physics (validated and estimated as in a stationary study), its static solve '
-                'comes first, the coupling transfers once, then the membrane resonances / responses are solved; '
-                'without solved_physics the study solves the solid itself and the coupling is a validation error. A '
-                'membrane PML ring gets no coupled tension (the solid is void there: warning). Linearised about the '
-                'relaxed state: no stress stiffening of the solid itself and no bending.',
+                'info otherwise). stress_ij = the total static solid stress (initial_stress + C (strain - thermal '
+                'strain)) at the element centroid (the element mean on straight P1 / P2), so the tension integral is '
+                'exact; void elements (no youngs_modulus) give 0: with areal_density 0 they are holes (free edges), '
+                'with areal_density > 0 mass without stiffness. The solid must be planar plane_stress on the '
+                "membrane's mesh (validation errors). eigenfrequency / frequency_response: set "
+                'StudySpec.solved_physics to the membrane only, so the solid runs first as a stationary background '
+                'physics and the coupling transfers once; otherwise the coupling is a validation error. A membrane PML ring gets no tension '
+                '(warning). Linearised about the relaxed state: no stress stiffening of the solid, no bending.',
     create=_create_tension,
     validate=_validate_tension,
     writes=_writes_tension)

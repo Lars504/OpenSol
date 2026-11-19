@@ -342,7 +342,8 @@ def axial_fourth_moment(profile, length):
 
 def wall_ghost_cells(heat, boundary_config):
     """Flat window mask of the outermost cells of every em pec / pmc face: ghosts outside the wall plane, which lies on
-    their inner face (cross_section_modes)."""
+    their inner face (cross_section_modes). Only the weighting is zeroed there: the ghosts stay in the heat solve with
+    that face's heat condition (cutting them would silently insulate, e.g., a substrate sink)."""
     ghost = np.zeros(heat.system.window_shape, dtype=bool)
     if not boundary_config.periodic_x:
         ghost[0, :] |= getattr(boundary_config, 'x_lo') in _WALL_BC_TYPES

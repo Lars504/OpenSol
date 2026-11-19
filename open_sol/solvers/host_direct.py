@@ -31,7 +31,9 @@ helpers here are GUI-thread safe."""
 # parked one of the same library, kind, real, factor dtype and canonical pattern (compared entry by entry; pydiso
 # checks only the nnz): numeric factorisation only, counted as a reused analysis. A miss releases every parked one
 # before it analyses (a changed mesh never holds a stale factor beside the new one), at most KEPT_ANALYSES are parked
-# (oldest released first), and the block's end releases the rest. A failed factorisation never parks.
+# (oldest released first), and the block's end releases the rest. A failed factorisation never parks. Adoption skips
+# the memory guard (the bytes are held already); parked bytes are no estimate item (the adopting build's own factor
+# item is that memory; until then the available RAM shows them as used: kept_analysis_bytes).
 # PARDISO thread rule: a handle whose solve ran on one thread (_PARDISO_SERIAL_SOLVE_LU_ENTRIES) is never refactorised
 # (phase 22 after such a phase 33 gave residuals ~1e20 - 1e125 and access violations on oneMKL; factors that solved on
 # all threads refactor fine): it is neither reused nor parked, and a factor refactorising in place analyses anew once
@@ -236,10 +238,11 @@ def missing_text(name) -> str:
 
 def factor_label(name) -> str:
     """Library label of a back end / factorization name for texts: 'MUMPS' / 'PARDISO' (host direct names), 'cuDSS'
-    (cudss / cudss_mixed), 'cuSOLVER QR' (cusolver_qr), else 'SuperLU' (superlu, scipy_splu, auto, None)."""
+    (sparse_direct.CUDSS_BACK_ENDS), 'cuSOLVER QR' (cusolver_qr), else 'SuperLU' (superlu, scipy_splu, auto, None)."""
+    from .sparse_direct import CUDSS_BACK_ENDS   # sparse_direct imports this module at module level
     if _is_host_name(name):
         return LIBRARY_LABELS[library_of(name)]
-    if name in ('cudss', 'cudss_mixed'):
+    if name in CUDSS_BACK_ENDS:
         return 'cuDSS'
     if name == 'cusolver_qr':
         return 'cuSOLVER QR'
@@ -304,7 +307,7 @@ def solver_host_bytes(n_unknowns, entries, complex_values=True, mixed=False, sym
 _OPENBLAS_POOLS = {}   # 'pools': threadpoolctl controller of the loaded OpenBLAS pools, None without any; 'marker'
 # scipy extension modules that load scipy's own OpenBLAS (lazily, on their first import): a refresh looks the pools up
 # again only when one of them appeared since the last lookup (a ThreadpoolController walks every loaded library: 4.5 ms
-# per factorisation in the drift_diffusion PARDISO profile)
+# per factorisation in the drift_diffusion PARDISO profile); a new lazily loaded scipy BLAS user joins this list
 _SCIPY_BLAS_MODULES = ('scipy.linalg._fblas', 'scipy.linalg._flapack', 'scipy.sparse.linalg._eigen.arpack._arpack',
                        'scipy.sparse.linalg._dsolve._superlu', 'scipy.sparse.linalg._isolve._iterative')
 

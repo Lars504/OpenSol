@@ -1,4 +1,4 @@
-"""CPU vs GPU backend cases of the coupled chains (solver_plan S8 E, the coupling transforms as core.kernels twins): the
+"""CPU vs GPU backend cases of the coupled chains (the coupling transforms as core.kernels twins): the
 existing coupling cases whose partners all run on the cpu, on solver_defaults.backend 'cpu' and 'gpu'; each case's
 own check grades the cpu runs and its measured value must match the gpu runs'. Registered by definitions.register
 (chains) and definitions_pockels.register (Pockels); no physics imports."""

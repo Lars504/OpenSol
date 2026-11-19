@@ -1,4 +1,4 @@
-"""Self-tests of the plate ports (experiment plan F2): a simply supported plate strip between two ports (transmission 1,
+"""Self-tests of the plate ports: a simply supported plate strip between two ports (transmission 1,
 power balance, beta), a clamped plate step against the same step ending in a plate PML (F1), and the film limit D -> 0
 of the port tunnelling model."""
 import math

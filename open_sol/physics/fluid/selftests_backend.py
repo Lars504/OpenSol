@@ -1,4 +1,4 @@
-"""CPU vs GPU backend cases of laminar_flow (solver_plan S6, core.kernels twins of the lattice step incl. Bouzidi
+"""CPU vs GPU backend cases of laminar_flow (core.kernels twins of the lattice step incl. Bouzidi
 links, the lattice <-> SI kernels and the convection transform): the analytic fluid cases on solver_defaults.backend
 'cpu' (numpy / numba twins) and 'gpu' through physics/em/selftests_backend.backend_parity_case, plus the CPU case
 fluid_step_numba (numba vs numpy step twins); registered by definition.register."""

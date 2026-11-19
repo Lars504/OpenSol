@@ -37,7 +37,7 @@ STEP_GRAPHS = True           # gpu: runs of steps without a host read replay fro
 GRAPH_STEPS = 32             # lattice steps of the largest graph; the rest of a run takes graphs of 16, 8, 4, 2 (all
                              # even: the population buffers end where they started) and at most one single launch
 _MAX_STEP_GRAPHS = 16        # graph keys kept (5 sizes per argument set; stale ones belong to replaced wall tables /
-                             # relaxation / force args)
+                             # relaxation / force args); >= 5, else the keys clear before a second use captures
 _AXIS_FACES = {'x': ('x_lo', 'x_hi'), 'y': ('y_lo', 'y_hi')}
 _SHOWN_FIELDS = ('u_x', 'u_y', 'u_abs', 'pressure', 'body_force_x', 'body_force_y')   # FluidFields2D the renderer reads
 _INWARD_NORMAL = {'x_lo': (1.0, 0.0), 'x_hi': (-1.0, 0.0), 'y_lo': (0.0, 1.0), 'y_hi': (0.0, -1.0)}
@@ -171,7 +171,9 @@ class FluidPhysics(PhysicsSolver):
         self._wall_fraction = None
         self.n_wall_links = 0
         self._initial_flow = None      # window (u_x, u_y [m/s], p [Pa]) of set_initial_flow until finalize applies them
-        self._force_present = False    # a body force was ever added / injected (else the lattice force is all 0)
+        # a body force was ever added / injected (else the lattice force is all 0); every writer of body_force_* sets it
+        # and _force_dirty (add_body_force, inject_source)
+        self._force_present = False
         # (key) -> [CUDA graph of GRAPH_STEPS launches or None after its eager run, kept inputs] (_fixed_block; gpu)
         self._step_graphs = {}
         self.n_step_graphs = 0         # graph captures made
@@ -255,7 +257,7 @@ class FluidPhysics(PhysicsSolver):
         """Read the materials (fluid cells, relaxation rates, lattice time step) and the face conditions once; start
         from the initial flow of set_initial_flow (equilibrium populations at dt_lbm)."""
         self._refresh_lattice()
-        if self._initial_flow is not None:
+        if self._initial_flow is not None:   # after _refresh_lattice: it zeroes the cells that were not fluid before
             self._start_from_initial_flow()
 
     def materials_changed(self, names) -> None:

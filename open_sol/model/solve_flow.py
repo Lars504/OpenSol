@@ -7,13 +7,20 @@ model / couplings / study / output steps span every lane. Estimate items are mat
 (meshing.estimate_memory / model.time_estimate prefixes: "[mesh '<m>': ]physics '<p>': ", "feature '<p>.<f>': ",
 "model: ", "subpixel smoothing: ", "conformal boundaries: ", "grid transfer ", "snapshots on mesh '<m>': ") and solver
 time items to their role by the summary.json counter path ('solvers', physics, 'roles', role, ...). An item no rule
-places goes to the 'unplaced' step, never dropped: a new label prefix needs a rule in _memory_step / _time_step."""
+places goes to the 'unplaced' step, never dropped: a new label prefix needs a rule in _memory_step / _time_step.
+
+Measured values (after a run of the same model): the build's memory ledger stages (BuildSummary gpu_breakdown /
+stage_seconds, owners as model.builder tracks them) go to their step by owner (_ledger_step); the run summary's
+time_check items to the time entry of the same label (a multi-run check: the last run's '<run>: <label>' record) and
+its seconds groups to the step of their counter path ('study' = the rest of the study: the first study step)."""
 import math
 import re
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, fields, replace
 
 from ..solvers.roles import BACKENDS, PRECISIONS, SOLVER_ROLES, resolved_precision
-from .schema import resolved_solvers, solver_backend, solver_grid
+from .schema import (EIGENFREQUENCY_STUDY, FREQUENCY_DOMAIN_STUDY, FREQUENCY_RESPONSE_STUDY, OPTOMECHANICS_STUDY,
+                     STATIONARY_STUDY, TIME_DEPENDENT_STUDY, known_physics, resolved_solvers, solver_backend,
+                     solver_grid)
 from .time_estimate import estimation_runs, study_counts
 
 # row kind -> row label (left margin of the chart); study rows are 'study' too, one per study step
@@ -78,11 +85,34 @@ class MemoryEntry:
 @dataclass(frozen=True)
 class TimeEntry:
     """One priced run-time item of a step (core.time_estimate.TimeItem), its label without the step's prefix, its
-    source (TIME_SOURCES key) and its guess seconds."""
+    source (TIME_SOURCES key), its guess seconds and, after a run, its time_check item record (measured)."""
     label: str
     item: object
     source: str
     seconds: float
+    measured: dict | None = None
+
+    @property
+    def measured_count(self):
+        return None if self.measured is None else self.measured.get('measured_count')
+
+    @property
+    def measured_seconds(self):
+        """Measured count (else the predicted one) x the measured seconds per unit of its timer group (the group's
+        measured / estimated ratio applied to the item: items are not timed one by one); None without a measurement."""
+        if self.measured is None or self.measured.get('measured_seconds_per_unit') is None:
+            return None
+        count = self.measured.get('measured_count')
+        count = self.measured.get('predicted_count', 0.0) if count is None else count
+        return float(count) * float(self.measured['measured_seconds_per_unit'])
+
+
+@dataclass(frozen=True)
+class MeasuredStage:
+    """One build memory-ledger stage of a step: owner, pool used-bytes change and wall seconds (None: not recorded)."""
+    owner: str
+    bytes: int | None = None
+    seconds: float | None = None
 
 
 @dataclass(frozen=True)
@@ -102,6 +132,27 @@ class FlowStep:
     memory: tuple = ()
     time: tuple = ()
     not_estimated: tuple = ()
+    measured_stages: tuple = ()          # MeasuredStage of the build ledger
+    measured_study_seconds: float | None = None   # time_check seconds groups booked here (None: none)
+
+    @property
+    def kept_bytes(self) -> int:
+        """Bytes of its 'kept' entries: what the build ledger's pool change of the step measures."""
+        return sum(entry.bytes for entry in self.memory if entry.group == 'kept')
+
+    @property
+    def measured_bytes(self):
+        """Pool used-bytes change of its build stages, None when no stage recorded one."""
+        sizes = [stage.bytes for stage in self.measured_stages if stage.bytes is not None]
+        return sum(sizes) if sizes else None
+
+    @property
+    def measured_seconds(self):
+        """Wall seconds of its build stages plus the study seconds booked here, None when nothing was measured."""
+        seconds = [stage.seconds for stage in self.measured_stages if stage.seconds is not None]
+        if self.measured_study_seconds is not None:
+            seconds.append(self.measured_study_seconds)
+        return sum(seconds) if seconds else None
 
     @property
     def memory_bytes(self) -> int:
@@ -132,8 +183,9 @@ class FlowLink:
 
 @dataclass(frozen=True)
 class SolveFlow:
-    """The chart: steps, row labels (index = FlowStep.row), lane count, loops, coupling links, totals ((name, text))
-    and notes (missing estimates, resolution failures)."""
+    """The chart: steps, row labels (index = FlowStep.row), lane count, loops, coupling links, totals ((name,
+    estimate text, measured text or None)), notes (missing estimates, resolution failures) and whether measured values
+    of a run were given."""
     steps: tuple
     rows: tuple
     lanes: float
@@ -142,6 +194,7 @@ class SolveFlow:
     totals: tuple = ()
     notes: tuple = ()
     backend: str = 'gpu'
+    measured: bool = False
 
     def step(self, key):
         """The step `key`; KeyError when the chart has none."""
@@ -152,11 +205,13 @@ class SolveFlow:
 
 
 def solve_flow(spec, registry, parameters, meshes, memory=None, plain_roles=frozenset(), run_time=None,
-               overheads=None, study_time=None, time_message='') -> SolveFlow:
+               overheads=None, study_time=None, time_message='', build_record=None, study_summary=None) -> SolveFlow:
     """SolveFlow of the spec: meshes {used mesh name: estimate or None}; memory the (fitted) MemoryEstimate or None;
     plain_roles of meshing.fitted_memory_estimate; run_time the priced per_run TimeEstimate (counters kept: solver items
     go to their role) or None; overheads estimate_overheads(per_run=True) ({} / None without a profile); study_time the
-    whole-study TimeEstimate (totals only); time_message why run_time is None."""
+    whole-study TimeEstimate (totals only); time_message why run_time is None. build_record (a BuildSummary or its
+    dict) and study_summary (the run summary dict): measured values of a run of this same model (the caller checks
+    that), None before a run."""
     backend = solver_backend(spec)
     notes = []
     builder = _Builder(spec, registry)
@@ -201,6 +256,9 @@ def solve_flow(spec, registry, parameters, meshes, memory=None, plain_roles=froz
         if estimate is not None:
             builder.place_time(estimate.items, source)
             builder.place_not_estimated(estimate.not_estimated)
+    measured = build_record is not None or study_summary is not None
+    if measured:
+        notes += builder.place_measured(build_record, study_summary, used)
     builder.add_unplaced_step(lanes)
     if builder.bad_times:
         notes.append('Time items with a non-finite estimate (an estimate bug; counted as 0 s here): '
@@ -209,8 +267,9 @@ def solve_flow(spec, registry, parameters, meshes, memory=None, plain_roles=froz
                   for coupling in spec.couplings if coupling.enabled
                   and coupling.source in physics_lanes and coupling.target in physics_lanes)
     loops = _loops(spec, builder)
-    totals = _totals(spec, backend, memory, run_time, overheads, study_time)
-    return SolveFlow(builder.finished_steps(), tuple(builder.rows), lanes, loops, links, totals, tuple(notes), backend)
+    totals = _totals(spec, backend, memory, run_time, overheads, study_time, build_record, study_summary)
+    return SolveFlow(builder.finished_steps(), tuple(builder.rows), lanes, loops, links, totals, tuple(notes), backend,
+                     measured)
 
 
 def op_text(op) -> str:
@@ -256,13 +315,16 @@ class _Builder:
         self.steps[key] = {'key': key, 'kind': kind, 'row': row, 'lane_start': float(lanes[0]),
                            'lane_end': float(lanes[1]), 'title': title, 'subtitle': subtitle, 'facts': tuple(facts),
                            'explanation': _EXPLANATIONS.get(kind, '') if explanation is None else explanation,
-                           'after': tuple(after), 'memory': [], 'time': [], 'not_estimated': []}
+                           'after': tuple(after), 'memory': [], 'time': [], 'not_estimated': [],
+                           'measured_stages': [], 'measured_study_seconds': None}
         self.order.append(key)
 
     def finished_steps(self):
         return tuple(FlowStep(**{**self.steps[key], 'memory': tuple(self.steps[key]['memory']),
                                  'time': tuple(self.steps[key]['time']),
-                                 'not_estimated': tuple(self.steps[key]['not_estimated'])}) for key in self.order)
+                                 'not_estimated': tuple(self.steps[key]['not_estimated']),
+                                 'measured_stages': tuple(self.steps[key]['measured_stages'])})
+                     for key in self.order)
 
     # steps
 
@@ -418,6 +480,90 @@ class _Builder:
                 key, short = 'unplaced', label
             self._target(key)['not_estimated'].append(short)
 
+    def place_measured(self, build_record, study_summary, used) -> list:
+        """Book the build ledger stages and the time_check of a run; returns notes on what could not be matched."""
+        notes = []
+        stages = {}
+        for owner, size in _record_value(build_record, 'gpu_breakdown') or ():
+            stages.setdefault(str(owner), [None, None])[0] = int(size)
+        for owner, seconds in _record_value(build_record, 'stage_seconds') or ():
+            stages.setdefault(str(owner), [None, None])[1] = float(seconds)
+        for owner, (size, seconds) in stages.items():
+            self._target(self._ledger_step(owner, used))['measured_stages'].append(MeasuredStage(owner, size, seconds))
+        record = (study_summary or {}).get('time_check') if isinstance(study_summary, dict) else None
+        if not record:
+            if study_summary is not None:
+                notes.append('The run summary has no time check (no machine profile at run time): no measured '
+                             'study times.')
+            return notes
+        by_label = {}
+        for item in record.get('items') or ():
+            by_label[item['label']] = item   # a multi-run check lists each run: the last run's record wins
+        multi_run = False
+        for step in self.steps.values():
+            for index, entry in enumerate(step['time']):
+                if entry.source != 'run':
+                    continue
+                found = by_label.get(entry.item.label)
+                if found is None:
+                    suffix = ': ' + entry.item.label
+                    found = next((item for label, item in reversed(by_label.items()) if label.endswith(suffix)), None)
+                    multi_run = multi_run or found is not None
+                if found is not None:
+                    step['time'][index] = replace(entry, measured=found)
+        for group in record.get('groups') or ():
+            seconds = group.get('measured_seconds')
+            if seconds is None:
+                continue
+            target = self._target(self._group_step(group.get('group', 'study')))
+            target['measured_study_seconds'] = (target['measured_study_seconds'] or 0.0) + float(seconds)
+        if multi_run:
+            notes.append('The run had several runs (sweep values / sectors / levels): measured counts are the last '
+                         "run's, measured study seconds per step sum every run.")
+        return notes
+
+    def _ledger_step(self, owner, used):
+        """Step key of a build memory-ledger owner (model.builder: per-mesh owners end in ' <mesh>' with several
+        meshes)."""
+        base, mesh = owner, (used[0] if used else None)
+        if len(used) > 1:
+            for name in used:
+                if owner.endswith(' ' + name):
+                    base, mesh = owner[:-len(name) - 1], name
+                    break
+        if base == 'domain' and f'mesh:{mesh}' in self.steps:
+            return f'mesh:{mesh}'
+        if ((base in ('materials', 'subpixel geometry') or base.startswith(("material arrays '", "material update '")))
+                and f'materials:{mesh}' in self.steps):
+            return f'materials:{mesh}'
+        match = re.match(r"^solver '([^'.]+)\.([^']+)'$", owner)
+        if match:
+            key = self.solver_keys.get((match.group(1), match.group(2)))
+            if key is not None:
+                return key
+            if f'physics:{match.group(1)}' in self.steps:
+                return f'physics:{match.group(1)}'
+        match = re.match(r"^(?:physics '([^']+)'(?: finalize)?|feature '([^'/]+)/.*')$", owner)
+        if match and f'physics:{match.group(1) or match.group(2)}' in self.steps:
+            return f'physics:{match.group(1) or match.group(2)}'
+        if owner.startswith("coupling '") or owner in ('runner prepare', 'build temporaries freed', 'other (untracked)'):
+            return 'couplings'
+        if owner.startswith(('validation', 'parameters, geometry', 'element meshes')):
+            return 'model'
+        return 'unplaced'
+
+    def _group_step(self, group):
+        """Step key of a time_check seconds group ('a / b / c' counter path; 'study' = the untimed rest)."""
+        if group == 'study':
+            return 'study:0'
+        path = group.split(' / ')
+        if len(path) >= 2 and path[0] == 'solvers':
+            if len(path) >= 4 and path[2] == 'roles' and (path[1], path[3]) in self.solver_keys:
+                return self.solver_keys[(path[1], path[3])]
+            if f'physics:{path[1]}' in self.steps:
+                return f'physics:{path[1]}'
+        return 'unplaced'
+
     def _target(self, key):
         """The step dict of key; the 'unplaced' step is created on first use (row set by add_unplaced_step)."""
         if key not in self.steps:
@@ -483,6 +629,15 @@ class _Builder:
     def _physics_label(self, physics_spec):
         physics_type = self._physics_type(physics_spec)
         return physics_type.label if physics_type is not None else str(physics_spec.type)
+
+
+def _record_value(record, name):
+    """Attribute or dict entry `name` of a build record (BuildSummary or its dict), None when absent."""
+    if record is None:
+        return None
+    if isinstance(record, dict):
+        return record.get(name)
+    return getattr(record, name, None)
 
 
 def _physics_rest(match, label):
@@ -580,7 +735,7 @@ def _study_steps(spec, study_type, counts, run_time, registry):
     name = study_type.name
     values = counts.counts if counts is not None else {}
     background = [_BACKGROUND] if study_type.background_study and _has_background(spec, registry, name) else []
-    if name == 'time_dependent':
+    if name == TIME_DEPENDENT_STUDY:
         duration = values.get('duration')
         dt = run_time.dt_limit if run_time is not None else math.inf
         ticks = (f'{int(round(duration / dt)):,} ticks of {dt:.4g} s' if duration and math.isfinite(dt) and dt > 0
@@ -592,11 +747,11 @@ def _study_steps(spec, study_type, counts, run_time, registry):
                  else []),
                 ('Flush', 'quasi-static physics solve once more',
                  'runner.flush(): pending quasi-static solves run once at the end, also after a cancel.', [])]
-    if name == 'stationary':
+    if name == STATIONARY_STUDY:
         return [('Stationary solve', 'fixed point over every physics',
                  'solve_stationary: every physics solves in order and the couplings apply; with a coupling cycle the '
                  'loop repeats until the relative change is below the tolerance (fixed_point in the summary).', [])]
-    if name == 'frequency_domain':
+    if name == FREQUENCY_DOMAIN_STUDY:
         points = values.get('harmonic_points')
         return background + [
             ('Pulsed harmonic physics', 'time-stepped physics only, if any',
@@ -609,7 +764,7 @@ def _study_steps(spec, study_type, counts, run_time, registry):
     if name == 'mode_analysis':
         return background + [('Mode solve', '', 'solve_modes() of every mode physics, then one snapshot per mode '
                                                 "number ('mode k: n_eff = ...').", [])]
-    if name == 'eigenfrequency':
+    if name == EIGENFREQUENCY_STUDY:
         pairs = values.get('eigenpairs')
         return background + [
             ('Eigen solve', f'{pairs} resonances' if pairs else '',
@@ -617,7 +772,7 @@ def _study_steps(spec, study_type, counts, run_time, registry):
              'factorises the shifted pencil and runs the Krylov iterations.', []),
             ('Resonance snapshots', '', "select_resonance(k) and one snapshot per resonance ('resonance k: lambda = "
                                         "..., Q = ...'); resonance 1 stays live.", [])]
-    if name == 'frequency_response':
+    if name == FREQUENCY_RESPONSE_STUDY:
         points = values.get('harmonic_points')
         return background + [('Frequency loop', f'{points} frequencies' if points else '',
                               'One driven solve per frequency (reduced / modal sweeps where chosen) and one snapshot '
@@ -628,7 +783,7 @@ def _study_steps(spec, study_type, counts, run_time, registry):
                  'scipy L-BFGS-B over the design-region densities: per evaluation the densities are written to eps, '
                  'every FDFD / EME physics solves and its adjoint gives the sensitivities; one snapshot per accepted '
                  'iteration.', [])]
-    if name == 'optomechanics':
+    if name == OPTOMECHANICS_STUDY:
         return background + [('Mechanical and optical solves', '',
                               'Mechanical eigenmodes and the optical modes / resonances of the physics the coupling '
                               'feature names, then the optomechanical coupling g0 per pair.', [])]
@@ -644,11 +799,7 @@ def _study_steps(spec, study_type, counts, run_time, registry):
 
 def _has_background(spec, registry, study_name):
     """True when a physics runs as background in the study (not listed as solved, or its type does not list it)."""
-    for physics_spec in spec.physics:
-        try:
-            physics_type = registry.physics_type(physics_spec.type)
-        except KeyError:
-            continue
+    for physics_spec, physics_type in known_physics(spec, registry):
         if not spec.study.solves(physics_spec.name) or study_name not in physics_type.supported_studies:
             return True
     return False
@@ -686,36 +837,56 @@ def _loops(spec, builder):
     return tuple(loops)
 
 
-def _totals(spec, backend, memory, run_time, overheads, study_time):
-    """(name, text) rows of the estimate totals."""
+def _totals(spec, backend, memory, run_time, overheads, study_time, build_record=None, study_summary=None):
+    """(name, estimate text, measured text or None) rows of the totals; measured from the build record (BuildSummary
+    or dict) and the run summary (run_memory, external_memory, time_check, study_seconds)."""
     from ..core.gpu_memory import format_bytes   # GUI-thread safe (the only gpu_memory function the GUI calls)
     from ..core.time_estimate import format_seconds
+    summary = study_summary if isinstance(study_summary, dict) else {}
+
+    def measured_bytes(value):
+        return format_bytes(int(value)) if isinstance(value, (int, float)) else None
+
+    def measured_seconds(value):
+        return format_seconds(float(value)) if isinstance(value, (int, float)) else None
+    run_memory = (summary.get('run_memory') or {}).get('measured_bytes')
+    external = (summary.get('external_memory') or {}).get('measured_bytes')
     totals = []
     if memory is not None:
         if backend == 'cpu':
             totals.append(('Processor memory at the peak', format_bytes(memory.gpu_peak + memory.host)
-                           + ' (device arrays live in processor memory on the cpu backend)'))
+                           + ' (device arrays live in processor memory on the cpu backend)', None))
         else:
-            totals.append(('Graphics card memory at the peak', format_bytes(memory.device_peak)))
-            totals.append(('  kept from the build', format_bytes(memory.gpu_steady)))
-            totals.append(('  build high-water mark', format_bytes(memory.gpu_build_peak)))
-            totals.append(('  added by the study', format_bytes(memory.gpu_run)))
-            if memory.external_peak:
-                totals.append(('  direct-solver factors (outside the pool)', format_bytes(memory.external_peak)))
+            totals.append(('Graphics card memory at the peak', format_bytes(memory.device_peak), None))
+            totals.append(('  kept from the build', format_bytes(memory.gpu_steady),
+                           measured_bytes(_record_value(build_record, 'session_gpu_bytes'))))
+            totals.append(('  build high-water mark', format_bytes(memory.gpu_build_peak),
+                           measured_bytes(_record_value(build_record, 'gpu_peak_bytes'))))
+            totals.append(('  kept + added by the study', format_bytes(memory.gpu_steady + memory.gpu_run),
+                           measured_bytes(run_memory)))
+            if memory.external_peak or external:
+                totals.append(('  direct-solver factors (outside the pool)', format_bytes(memory.external_peak),
+                               measured_bytes(external)))
             if memory.host:
-                totals.append(('Processor memory', format_bytes(memory.host)))
+                totals.append(('Processor memory', format_bytes(memory.host), None))
 
     def span(estimate):
         text = format_seconds(estimate.seconds_guess)
         if estimate.has_guess:
             text += f' ({format_seconds(estimate.seconds_low)} - {format_seconds(estimate.seconds_high)})'
         return text + estimate.outdated_text()
+    check = summary.get('time_check') or {}
+    several_runs = spec.study.sweep is not None or spec.study.estimation is not None or spec.study.adaptation is not None
     if run_time is not None:
-        totals.append(('Run time of one study run', span(run_time)))
+        totals.append(('Run time of one study run', span(run_time),
+                       None if several_runs else measured_seconds(check.get('study_seconds', summary.get('study_seconds')))))
     if study_time is not None:   # every sweep value / sector / estimation run (equals one run otherwise)
-        totals.append(('Run time of the whole study', span(study_time)))
-    for source, label in (('build', 'Build overhead'), ('output', 'Output overhead')):
+        totals.append(('Run time of the whole study', span(study_time), measured_seconds(summary.get('study_seconds'))))
+    for source, label in (('build', 'Build overhead (generic guesses)'), ('output', 'Output overhead')):
         estimate = (overheads or {}).get(source)
         if estimate is not None:
-            totals.append((label, span(estimate)))
+            totals.append((label, span(estimate), None))
+    build_seconds = summary.get('build_seconds_total', _record_value(build_record, 'build_seconds'))
+    if build_seconds is not None:
+        totals.append(('Build time (all stages)', '—', measured_seconds(build_seconds)))
     return tuple(totals)

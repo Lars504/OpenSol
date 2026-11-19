@@ -1,4 +1,4 @@
-"""Self-tests of solver_defaults.conformal_boundaries on polar / spherical domains (solver_plan S7.6, symmetry 2.16 item
+"""Self-tests of solver_defaults.conformal_boundaries on polar / spherical domains (symmetry 2.16 item
 3): outline pieces and staircased perimeter weights on the logical (r, phi) cells (CPU), held cut-cell edges and a
 perimeter heat flux of circles off the polar origin (heat), concentric sphere terminals off the spherical origin
 (electric_currents); cpu model runs."""

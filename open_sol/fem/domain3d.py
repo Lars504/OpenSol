@@ -1,4 +1,4 @@
-"""TetrahedronDomain (igor3d_plan T4b): the Domain of a 'tetrahedra' mesh: TetrahedronMesh + per-element MaterialGrid
+"""TetrahedronDomain: the Domain of a 'tetrahedra' mesh: TetrahedronMesh + per-element MaterialGrid
 (shape (n_elements,)) on the run backend, plus the uniform sample lattice over the window that the Session's 3D reads
 (cut planes, volumes, cut positions) sample fields on. Tensor-only accessors (cell_widths, physical_window, ...) do not
 exist here: physics using them are refused by PhysicsType.grids."""

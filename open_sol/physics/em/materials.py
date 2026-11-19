@@ -1,5 +1,7 @@
 """EM MaterialGrid arrays per polarisation (register_em_arrays), the DrudePole / LorentzPole dispersion poles and the
 TFSF box outline warnings."""
+import math
+
 import numpy as np
 from ...core.backend import array_module_of, host_copy, write_host_into
 
@@ -183,3 +185,22 @@ class LorentzPole:
         gamma = float(self.gamma)
         delta_eps = float(self.delta_eps)
         return _python_complex_for_scalar(delta_eps * omega_0 ** 2 / (omega_0 ** 2 - omega ** 2 + 1j * gamma * omega))
+
+
+def _pole_step_term(pole, dt) -> float:
+    """Pole term of the leap-frog bound (z = -1 mode, independent of gamma and sigma_e): Drude (omega_p dt)^2 / 4,
+    Lorentz delta_eps (omega_0 dt)^2 / (4 - (omega_0 dt)^2); ValueError when omega_0 dt >= 2. Shared by the 2D, BOR and
+    3D FDTD engines."""
+    if isinstance(pole, DrudePole):
+        return (float(pole.omega_p) * dt) ** 2 / 4.0
+    resonance_step_squared = (float(pole.omega_0) * dt) ** 2
+    if resonance_step_squared >= 4.0:
+        raise ValueError(f'{_pole_label(pole)}: omega_0 dt = {math.sqrt(resonance_step_squared):.4g} >= 2, so the '
+                         f'Lorentz update is unstable; lower courant_factor or refine the mesh')
+    return float(pole.delta_eps) * resonance_step_squared / (4.0 - resonance_step_squared)
+
+
+def _pole_label(pole) -> str:
+    if isinstance(pole, DrudePole):
+        return f'Drude pole omega_p = {float(pole.omega_p):.4g} rad/s'
+    return f'Lorentz pole delta_eps = {float(pole.delta_eps):.4g}, omega_0 = {float(pole.omega_0):.4g} rad/s'

@@ -379,7 +379,7 @@ class Session:
         self._require_open()
         study_type = self.spec.study.type
         return [(name, info) for name in self.physics for info in self.renderer(name).field_infos.values()
-                if not info.requires_study or info.requires_study == study_type]
+                if info.available_in(study_type)]
 
     # ---- fields ----
     def display_field(self, component, physics=None, max_pixels=DISPLAY_MAX_PIXELS, plane=None) -> FieldData:
@@ -564,11 +564,12 @@ class Session:
             return view.evaluate(expression, selection, operation, point, earlier)
         return self.access.evaluate(compiled, selection, operation, point, earlier)
 
-    def derived_value(self, derived, fetch=None, earlier=None) -> float:
+    def derived_value(self, derived, fetch=None, earlier=None, curves=None) -> float:
         """Value of a DerivedValueSpec: evaluate() over its selection, or its source (a feature result, or a derived
-        curve of the spec built from them) reduced by analytic.result_value; fetch('physics.feature') -> result dict
-        (default feature_result); earlier: {name: value} of the derived values listed before it (expression names).
-        Operation 'expression' (source None): one float64 number of parameters, scalar outputs, t and earlier."""
+        curve built from them) reduced by analytic.result_value; fetch('physics.feature') -> result dict (default
+        feature_result); earlier: {name: value} of the derived values listed before it (expression names); curves:
+        {name: DerivedCurveSpec} of curve sources (default the spec's). Operation 'expression' (source None): one
+        float64 number of parameters, scalar outputs, t and earlier."""
         earlier = earlier or {}
         if derived.source is None and derived.operation == GLOBAL_DERIVED_OPERATION:
             self._require_open()
@@ -579,7 +580,10 @@ class Session:
         if fetch is None:
             fetch = self._feature_result_of_key
         if is_curve_source(derived.source):
-            result = derived_curve_result(self.spec.derived_curve(derived.source), fetch, self.parameters)
+            curve = self.spec.derived_curve(derived.source) if curves is None else curves.get(derived.source)
+            if curve is None:
+                raise KeyError(f'no derived curve named {derived.source!r}')
+            result = derived_curve_result(curve, fetch, self.parameters)
         else:
             result = fetch(derived.source)
         return result_value(result, derived, {**earlier, **self.parameters})

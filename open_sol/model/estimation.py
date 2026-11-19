@@ -114,7 +114,9 @@ def resolve_estimation(spec, parameters) -> tuple:
 
 
 def _resolved_parameters(spec, items, parameters, number, errors) -> tuple:
-    """(names, initial, lower, upper, scale) lists of the estimated parameters; problems go to errors."""
+    """(names, initial, lower, upper, scale) lists of the estimated parameters; problems go to errors. scale =
+    |initial|, else upper - lower, else 1, so the search vector z (1 at the start) never sits at 0, where least_squares'
+    relative diff_step would fall back to an absolute 1e-8."""
     resolved = ([], [], [], [], [])
     if not isinstance(items, list) or not items:
         errors.append('list at least one model parameter to estimate under parameters')

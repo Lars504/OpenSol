@@ -7,10 +7,12 @@ every right-hand side) or the device (cuSOLVER QR 'cusolver_qr', one factorisati
 # modes, eigenfrequency, thermal noise, magnetic AC) factorise through factorize_host / solve_host: the SuperLU options,
 # the host-byte count and the size rule (size_issue with unknowns_per_cell) live here only.
 # cuDSS back ends: offered to a role only when its setting_choices['back_end'] lists them (the SolverType's
-# opt_in_settings), never by 'auto'; factorize / factorize_host return a cudss_factor.CudssFactorization (solve /
-# solve_host, transposed solves of symmetric factors only, not recyclable: re-solves after a value change refactorise
-# with previous=, reusing the cuDSS plan of an unchanged pattern). The factor lives outside the cupy pool and is guarded
-# by cuDSS's own estimate after planning, so the host size rules do not apply to it.
+# opt_in_settings); 'auto' becomes one only through the role's auto_back_ends (schema.auto_back_end_values, gpu with
+# nvmath; a refusal then switches the runtime to SuperLU for good: fall_back, B1b). factorize / factorize_host return
+# a cudss_factor.CudssFactorization (solve / solve_host, transposed solves of symmetric factors only, not recyclable:
+# re-solves after a value change refactorise with previous=, reusing the cuDSS plan of an unchanged pattern). The
+# factor lives outside the cupy pool and is guarded by cuDSS's own estimate after planning, so the host size rules do
+# not apply to it.
 # Host direct back ends (mumps / mumps_mixed / pardiso / pardiso_mixed, solvers.host_direct): opt-in like cuDSS (never
 # 'auto'), on both backends; factorize / factorize_host / DiffusionDirectSolver return a
 # host_direct.HostDirectFactorization (transposed solves, recyclable, inertia; previous= refactorises on the kept
@@ -23,7 +25,7 @@ import time
 
 import numpy as np
 
-from .cudss_factor import csr_rows
+from .cudss_factor import canonical_csr, csr_rows
 from .host_direct import (HOST_DIRECT_BACK_ENDS, HOST_DIRECT_MIXED_BACK_ENDS, factor_label, host_direct_available,
                           host_direct_factorization, host_direct_values_factorization, is_host_direct_factor,
                           missing_text)
@@ -67,7 +69,7 @@ SPLU_LIMIT_UNKNOWNS = 2_000_000       # L + U of order 10 GB of host memory
 SPLU_3D_WARN_UNKNOWNS = 100_000
 SPLU_3D_LIMIT_UNKNOWNS = 400_000
 # Complex 3D curl-curl systems (em_fdfd_3d, E on the live Yee faces, 13 entries per row): no iterative alternative yet,
-# so the limits follow the factor memory only; first values (igor3d_plan decision 11), to lower from measured factors
+# so the limits follow the factor memory only; first values, to lower from measured factors
 SPLU_VECTOR_3D_WARN_UNKNOWNS = 1_000_000
 SPLU_VECTOR_3D_LIMIT_UNKNOWNS = 4_000_000
 _TO_PCG = ("assign a pcg solver node as the physics' linear solver (preconditioner multigrid on graded or strongly "
@@ -252,9 +254,8 @@ def check_solver_size(back_end, nx, ny, periodic_x, periodic_y) -> None:
     workspace = qr_workspace_bytes(nx, ny, periodic_x, periodic_y)
     if workspace <= QR_WARN_BYTES:
         return
-    import cupy as cp
-    from ..core.gpu_memory import memory_status
-    cp.get_default_memory_pool().free_all_blocks()   # e.g. the previous omega's dropped system, an earlier FDTD run
+    from ..core.gpu_memory import memory_status, release_cached_blocks
+    release_cached_blocks()   # e.g. the previous omega's dropped system, an earlier FDTD run
     device_free = memory_status().device_free
     if workspace > _QR_DEVICE_FRACTION * device_free:
         raise ValueError(f"the sparse_direct back end 'cusolver_qr' needs an estimated {_format_bytes(workspace)} of "
@@ -494,9 +495,7 @@ def _refreshed_on_device(previous, operator, back_end, symmetric, symmetrizer, d
     precision = cudss_precision(back_end)
     if not previous.can_refactorize(False, precision, symmetric, False, symmetrizer):
         return False
-    if not operator.has_canonical_format:
-        operator = operator.copy()
-        operator.sum_duplicates()
+    operator = canonical_csr(operator)
     previous.refactorize_device_values(operator.data, *previous.host_pattern_of(operator), check_symmetry=True,
                                        symmetrizer=symmetrizer, defer_check=defer_check)
     return True
@@ -738,7 +737,8 @@ class DevicePencil:
 
     def full_term(self, index):
         """Device (nnz,) values of term `index` on the full pattern (a lower_stored pencil mirrors its lower triangle:
-        a new array per call)."""
+        a new array per call; its take is built once per pencil at ~48 B of int64 transients per entry): the SuperLU
+        fallback and self-tests only, never a per-frequency product."""
         return self.full_values(self.stored_terms[index])
 
     def full_values(self, term):
@@ -1186,9 +1186,7 @@ class SparseDirectSolver:
         if self.back_end not in CUDSS_BACK_ENDS:
             raise ValueError(f"{self.label()}: factorize_device_csr needs a cuDSS back end, got '{self.back_end}'")
         start = time.perf_counter()
-        if not operator.has_canonical_format:
-            operator = operator.copy()
-            operator.sum_duplicates()
+        operator = canonical_csr(operator)
         precision = cudss_precision(self.back_end)
         try:
             if isinstance(previous, CudssFactorization) and previous.valid:
@@ -1442,7 +1440,7 @@ class DiffusionDirectSolver(ExactSolveRecord):
 
     def factorize_device_values(self, values, indptr, indices, defer_check=False) -> None:
         """factorize of a canonical symmetric CSR given as device values (cupy (nnz,)) on the host pattern (indptr,
-        indices) (gpu backend, plan G5): cuDSS refreshes a factor of the same options on the device
+        indices) (gpu backend): cuDSS refreshes a factor of the same options on the device
         (CudssFactorization.refactorize_device_values: no host CSR once planned on that pattern; defer_check: the next
         solve checks it), else plans a new one from the device values; SuperLU factorises a host copy."""
         import cupy as cp

@@ -436,7 +436,7 @@ LINE_BLOCK_PHYSICS_NAME = 'heat_line_block'
 LINE_BLOCK_SOLVER_NAME = 'noise_line_block'
 LINE_BLOCK_BAND = (1e3, 1e10, 8)   # Hz, 1 per decade: the check is pointwise per frequency
 WAVEGUIDE_FEATURE_NAME = 'backscatter'
-LINE_BLOCK_TOLERANCE = SUM_RULE_TOLERANCE      # solver_plan Part II stage 1; refinement reaches ~1e-9 residuals
+LINE_BLOCK_TOLERANCE = SUM_RULE_TOLERANCE      # refinement reaches ~1e-9 residuals
 
 
 def _line_block_runs():

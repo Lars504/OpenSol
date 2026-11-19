@@ -75,7 +75,7 @@ Line ranges in api_templates.md (Read with offset / limit; Grep '^## ' lists the
 
 ## Templates
 
-Worked examples: every template validates without errors (selftest templates_validate), and modifying the closest one is the most reliable way to write a valid model. api.template(key) returns one as a ModelSpec, python -m open_sol template KEY FILE writes its model file.
+Worked examples that validate without errors (selftest templates_validate): modifying the closest one is the most reliable way to write a valid model. api.template(key) returns one as a ModelSpec, python -m open_sol template KEY FILE writes its model file.
 
 ### `dielectric_cylinder` - Dielectric cylinder
 
@@ -3851,12 +3851,12 @@ em_fdfd_3d: a 1.0 x 0.8 x 0.6 um vacuum box with pec walls on all six faces and 
 
 ### `nanobeam_mirror_cell_bands_3d` - Nanobeam mirror cell band diagram (3D, frequency domain)
 
-em_fdfd_3d: one mirror cell of a silicon nanobeam photonic crystal in D2O (igor_experiment 4.3: period a = 394.3 nm, hole d = 279.3 nm along y through a 595.2 x 220 nm beam, n 3.47 / 1.32), quarter cross-section (x_lo antisymmetric = PEC plane, y_lo symmetric = PMC plane: the TE-like sector), 300 nm D2O and 8 CPML cells on x_hi / y_hi, z periodic with bloch_kz = k_fraction 2 pi / a swept over 0.4-0.5 (guided, below the D2O light line); an eigenfrequency study per k lists the 4 bands nearest 1.496 um (resonance_table). At k_fraction 0.5 the dielectric (longer wavelength) and air band edges bound the TE-like gap that should contain 1.496 um; set a and d to a taper cell to follow the band-edge grading. a / 16 cells (24.6 nm) with subpixel smoothing, ~4e4 unknowns per k (one host factor each, minutes); more padding mainly raises the guided-band Q (the evanescent tail reaches the CPML).
+em_fdfd_3d: one mirror cell of a silicon nanobeam photonic crystal in D2O (period a = 394.3 nm, hole d = 279.3 nm along y through a 595.2 x 220 nm beam, n 3.47 / 1.32), quarter cross-section (x_lo antisymmetric = PEC plane, y_lo symmetric = PMC plane: the TE-like sector), 300 nm D2O and 8 CPML cells on x_hi / y_hi, z periodic with bloch_kz = k_fraction 2 pi / a swept over 0.4-0.5 (guided, below the D2O light line); an eigenfrequency study per k lists the 4 bands nearest 1.496 um (resonance_table). At k_fraction 0.5 the dielectric (longer wavelength) and air band edges bound the TE-like gap that should contain 1.496 um; set a and d to a taper cell to follow the band-edge grading. a / 16 cells (24.6 nm) with subpixel smoothing, ~4e4 unknowns per k (one host factor each, minutes); more padding mainly raises the guided-band Q (the evanescent tail reaches the CPML).
 
 ```json
 {
   "title": "Nanobeam mirror cell band diagram (3D, frequency domain)",
-  "description": "em_fdfd_3d: one mirror cell of a silicon nanobeam photonic crystal in D2O (igor_experiment 4.3: period a = 394.3 nm, hole d = 279.3 nm along y through a 595.2 x 220 nm beam, n 3.47 / 1.32), quarter cross-section (x_lo antisymmetric = PEC plane, y_lo symmetric = PMC plane: the TE-like sector), 300 nm D2O and 8 CPML cells on x_hi / y_hi, z periodic with bloch_kz = k_fraction 2 pi / a swept over 0.4-0.5 (guided, below the D2O light line); an eigenfrequency study per k lists the 4 bands nearest 1.496 um (resonance_table). At k_fraction 0.5 the dielectric (longer wavelength) and air band edges bound the TE-like gap that should contain 1.496 um; set a and d to a taper cell to follow the band-edge grading. a / 16 cells (24.6 nm) with subpixel smoothing, ~4e4 unknowns per k (one host factor each, minutes); more padding mainly raises the guided-band Q (the evanescent tail reaches the CPML).",
+  "description": "em_fdfd_3d: one mirror cell of a silicon nanobeam photonic crystal in D2O (period a = 394.3 nm, hole d = 279.3 nm along y through a 595.2 x 220 nm beam, n 3.47 / 1.32), quarter cross-section (x_lo antisymmetric = PEC plane, y_lo symmetric = PMC plane: the TE-like sector), 300 nm D2O and 8 CPML cells on x_hi / y_hi, z periodic with bloch_kz = k_fraction 2 pi / a swept over 0.4-0.5 (guided, below the D2O light line); an eigenfrequency study per k lists the 4 bands nearest 1.496 um (resonance_table). At k_fraction 0.5 the dielectric (longer wavelength) and air band edges bound the TE-like gap that should contain 1.496 um; set a and d to a taper cell to follow the band-edge grading. a / 16 cells (24.6 nm) with subpixel smoothing, ~4e4 unknowns per k (one host factor each, minutes); more padding mainly raises the guided-band Q (the evanescent tail reaches the CPML).",
   "version": 2,
   "parameters": [
     {"name": "a", "expression": "394.3*nm", "description": "period (mirror cell; a taper cell: its a_i)"},

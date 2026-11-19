@@ -12,8 +12,7 @@ from ...core.fv_diffusion import edge_extension_views, host_copies, write_host_c
 from ...core.gpu_memory import format_bytes
 from ...core.mirror import touch_factor
 from ...core.solver_base import PhysicsSolver
-from ...solvers.host_direct import HOST_DIRECT_BACK_ENDS
-from ...solvers.sparse_direct import SparseDirectSolver, size_issue
+from ...solvers.sparse_direct import HOST_FACTOR_BACK_ENDS, SparseDirectSolver, size_issue
 from .drift_diffusion import COMPONENTS, DriftDiffusionSystem, thermal_voltage
 from .renderer import SEMICONDUCTOR_FIELD_INFOS, SemiconductorRenderer
 
@@ -44,9 +43,10 @@ def _is_number(value) -> bool:
 
 def linear_size_issue(back_end, window_cells_x, window_cells_y):
     """sparse_direct.size_issue of the coupled system (3 unknowns per window cell; cusolver_qr sized as a (wx, 3 wy)
-    grid, the interleaved index order; MUMPS / PARDISO take the SuperLU rule, uncalibrated); None, ('warning', text) or
-    ('error', text). CPU only."""
-    if back_end in ('scipy_splu',) + HOST_DIRECT_BACK_ENDS:
+    grid, the interleaved index order, so its band estimate can be up to 3x low; MUMPS / PARDISO take the SuperLU rule
+    (unknowns_per_cell 3: size_issue would otherwise size them as a cusolver_qr grid), uncalibrated); None,
+    ('warning', text) or ('error', text). CPU only."""
+    if back_end in HOST_FACTOR_BACK_ENDS:
         return size_issue(back_end, window_cells_x, window_cells_y, False, False, unknowns_per_cell=COMPONENTS,
                           remedy=_SMALLER_MODEL)
     return size_issue(back_end, window_cells_x, COMPONENTS * window_cells_y, False, False)
@@ -54,18 +54,16 @@ def linear_size_issue(back_end, window_cells_x, window_cells_y):
 
 @dataclass(frozen=True, eq=False)
 class ContactRegion:
-    """Runtime object of an ohmic_contact feature."""
+    """Runtime object of an ohmic_contact feature; its live voltage is contact_voltage(region) (no build copy here: a
+    reused sweep build changes it)."""
     name: str
-    voltage: float
     index: int
 
 
 @dataclass(frozen=True, eq=False)
 class GateRegion:
-    """Runtime object of a gate feature."""
+    """Runtime object of a gate feature; its live voltage is gate_voltage(region)."""
     name: str
-    voltage: float
-    work_function_difference: float
     index: int
 
 
@@ -97,6 +95,7 @@ class DriftDiffusionPhysics(PhysicsSolver):
         self._doping_parts = []   # per add_doping: [flat window mask, donors, acceptors, net] (host; set_doping)
         self.n_solves = 0
         self.fields = None
+        self.system = None
         self._dirty = True
         self._solve_seconds = 0.0
         self.prepare(domain)
@@ -105,6 +104,7 @@ class DriftDiffusionPhysics(PhysicsSolver):
 
     def prepare(self, domain) -> None:
         """Register the material arrays, allocate the full-grid fields and the window system (features come later)."""
+        self._check_first_prepare()
         self.domain = domain
         self.xp = domain.xp   # numpy (cpu backend) or cupy: the output fields; the system is host float64 anyway
         domain.materials.add_properties(self.material_schema)
@@ -208,7 +208,7 @@ class DriftDiffusionPhysics(PhysicsSolver):
     def add_ohmic_contact(self, name, mask, voltage) -> ContactRegion:
         """Hold the semiconductor cells under mask at neutral equilibrium shifted by `voltage` [V]."""
         index = self.system.add_contact(name, self._host_window_mask(mask, 'ohmic contact').ravel(), voltage)
-        region = ContactRegion(name, float(voltage), index)
+        region = ContactRegion(name, index)
         self.contacts.append(region)
         self._dirty = True
         return region
@@ -217,7 +217,7 @@ class DriftDiffusionPhysics(PhysicsSolver):
         """Hold psi = voltage - work_function_difference [V] on the insulating cells under mask."""
         index = self.system.add_gate(name, self._host_window_mask(mask, 'gate').ravel(), voltage,
                                      work_function_difference)
-        region = GateRegion(name, float(voltage), float(work_function_difference), index)
+        region = GateRegion(name, index)
         self.gates.append(region)
         self._dirty = True
         return region
@@ -380,6 +380,13 @@ class DriftDiffusionPhysics(PhysicsSolver):
         self.n_solves += 1
         self._dirty = False
         self._solve_seconds += time.perf_counter() - start
+
+    def _check_first_prepare(self):
+        """RuntimeError on a second prepare: a new system would drop the doping, contacts and gates the features wrote
+        into it (self.contacts / gates would keep stale indices)."""
+        if self.system is not None:
+            raise RuntimeError(f"drift_diffusion '{self.name}': prepare runs once (from __init__); a re-prepare would "
+                               'need every feature applied again')
 
     def _host_window_mask(self, mask, label):
         """numpy bool window view of a full-grid mask; ValueError for another shape."""

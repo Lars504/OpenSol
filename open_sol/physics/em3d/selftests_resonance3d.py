@@ -1,4 +1,4 @@
-"""Self-test of the em_fdtd_3d resonance_monitor (igor 1.2): the ring-down of a vacuum box with pec walls on all six
+"""Self-test of the em_fdtd_3d resonance_monitor: the ring-down of a vacuum box with pec walls on all six
 faces against its exact discrete Yee resonances (lossless: Q = inf)."""
 import math
 

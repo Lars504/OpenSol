@@ -28,7 +28,6 @@ import importlib.util
 import json
 import os
 import platform
-import re
 import shutil
 import subprocess
 import sys
@@ -47,13 +46,7 @@ SERIES = ('first', 'previous', 'current')   # first: the first complete profile 
 BACKENDS = ('gpu', 'cpu')
 DEFAULT_TIMEOUT = 60.0   # seconds per command: the harness's --time-limit (it stops and writes a partial report)
 REPORT_GRACE = 30.0      # seconds after the timeout before the command is killed (a long library call, the report)
-NOTHING_PROFILED = 'nothing profiled'   # the harness's --compare-only line when no run takes the solver
-PLANNED_GROUPS = 'solver groups: '   # the harness's line before the build: the groups the runs' roles take
-PARTIAL_REPORT = 'partial report'       # the harness's PARTIAL_REPORT_MARKER line: stopped at its time limit
 NEVER_FACTORISED = 'never factorised'   # log mark of a run whose compared solver did no factorisation (not counted)
-UNCHANGED = 'unchanged since '   # the harness's UNCHANGED_MARKER line (--if-changed): its kept profile stands
-KEPT_REPORT = 'kept report: '    # the harness's KEPT_REPORT_MARKER line: that profile's report.txt
-SOLUTION_CHECK = 'solution check: '   # the harness's SOLUTION_CHECK_MARKER lines: '<status> <group>: <detail>'
 CHECK_NOT_PASSED = ('failed', 'error')
 MEMORY_FILE = 'run_all_memory.json'   # in OUT: per command line, its kept outcome and the sources it stands for
 # folders under REPOSITORY whose .py / .json bytes make the source fingerprint (out, *_out, __pycache__, hidden skipped)
@@ -66,11 +59,35 @@ BATCH_CHECK_MIN_SECONDS = 120.0   # timeout floor of the one-process check of al
 TIMEOUT_CAP = 1.5        # a timed-out point is drawn at this many times the largest timeout shown
 
 
+def _standalone(stem, path):
+    """Module of one file loaded on its own (cached): selftest_cache's unit hashing and the harness's PROFILED_CODE
+    rule, without importing open_sol (seconds) into run_all."""
+    if stem not in _loaded:
+        spec = importlib.util.spec_from_file_location(f'_run_all_{stem}', path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module   # as an import does (dataclasses look their module up)
+        spec.loader.exec_module(module)
+        _loaded[stem] = module
+    return _loaded[stem]
+
+
+_HARNESS = _standalone('profiler_harness', HERE / 'profiler_harness.py')
+# the harness's stdout texts (taken from it, never retyped)
+NOTHING_PROFILED = _HARNESS.NOTHING_PROFILED       # --compare-only / --solver-type: no run takes the solver
+PLANNED_GROUPS = _HARNESS.PLANNED_GROUPS           # before the build: the groups the runs' roles take
+PARTIAL_REPORT = _HARNESS.PARTIAL_REPORT_MARKER    # stopped at its time limit
+UNCHANGED = _HARNESS.UNCHANGED_MARKER              # --if-changed: its kept profile stands
+KEPT_REPORT = _HARNESS.KEPT_REPORT_MARKER          # that profile's report.txt
+SOLUTION_CHECK = _HARNESS.SOLUTION_CHECK_MARKER    # '<status> <group>: <detail>' lines
+base_run = _HARNESS.base_run                       # run name without its variant suffix: split plot columns
+
+
 def _compared(value, backends):
     """Host library group: --compare back_end=value --compare-only, so only the runs a role of which takes it are
     profiled and counted (and only those in which it factorised: back_ends); backends: its default backend (an
     explicit --backend: any, a gpu model factorising on the host)."""
-    return {'arguments': ('--compare', f'back_end={value}', '--compare-only'), 'token': f'back_end={value}',
+    return {'arguments': ('--compare', f'back_end={value}', '--compare-only'),
+            'token': _HARNESS.variant_token('back_end', value),
             'backends': backends, 'runs_on': BACKENDS, 'back_ends': (value,)}
 
 
@@ -83,7 +100,8 @@ def _whole(value, backends, precision=None, runs_on=BACKENDS):
 
 def _typed(type_name, backends):
     """Opt-in solver type group: harness --solver-type, only the runs a role of which it can fill (all counted)."""
-    return {'arguments': ('--solver-type', type_name), 'token': f'solver_type={type_name}', 'backends': backends,
+    return {'arguments': ('--solver-type', type_name),
+            'token': _HARNESS.variant_token(_HARNESS.SOLVER_TYPE_SETTING, type_name), 'backends': backends,
             'runs_on': BACKENDS, 'back_ends': ()}
 
 
@@ -193,13 +211,6 @@ def command_point(runs_path, command_seconds, started, token, back_ends=()):
             'when': time.strftime('%Y-%m-%d %H:%M:%S')}, not_completed
 
 
-def base_run(name) -> str:
-    """Run name without the harness's ' SETTING=value' --compare suffix (a repeat's '_N' kept): the same task under
-    every solver."""
-    match = re.fullmatch(r'(.*?) \S+?=\S+?(_\d+)?', name)
-    return match.group(1) + (match.group(2) or '') if match else name
-
-
 def run_groups(runs, field, legacy_field) -> list:
     """Sorted solver groups of runs (the harness's runs.json `field`; an older one without it: the LEGACY_GROUPS of
     its `legacy_field` back ends)."""
@@ -285,23 +296,10 @@ def save_memory(memory):
     os.replace(partial, path)
 
 
-def _standalone(stem, path):
-    """Module of one file loaded on its own (cached): selftest_cache's unit hashing and the harness's PROFILED_CODE
-    rule, without importing open_sol (seconds) into run_all."""
-    if stem not in _loaded:
-        spec = importlib.util.spec_from_file_location(f'_run_all_{stem}', path)
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = module   # as an import does (dataclasses look their module up)
-        spec.loader.exec_module(module)
-        _loaded[stem] = module
-    return _loaded[stem]
-
-
 def _solver_edits_stand(changed, files, cache_units):
     """True when every changed repository path is a PROFILED_CODE .py file of open_sol (the harness's solver code,
     no case spec source) and no unit of cache_units (the kept profile's) in those files has another hash now."""
     hasher = _standalone('selftest_cache', REPOSITORY / 'open_sol' / 'model' / 'selftest_cache.py')
-    harness = _standalone('profiler_harness', HERE / 'profiler_harness.py')
     by_file = {}
     for unit_id, digest in cache_units.items():
         package_path, _, name = unit_id.partition('::')
@@ -309,7 +307,7 @@ def _solver_edits_stand(changed, files, cache_units):
     for path in changed:
         full_path = str(REPOSITORY / path)
         package_path = hasher._package_path(full_path) if path.startswith('open_sol/') else None
-        if package_path is None or not harness._profiled_path(package_path):
+        if package_path is None or not _HARNESS._profiled_path(package_path):
             return False   # a case, harness, example or plumbing source: only the harness can judge it
         units = by_file.get(package_path)
         if not units:

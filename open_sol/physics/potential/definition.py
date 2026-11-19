@@ -26,7 +26,7 @@ from ...model.definition_helpers import (AXISYMMETRIC_SPACE_SETTINGS, AZIMUTHAL_
                                          validate_points_inside, validated_linear_precision)
 from ...model.expressions import is_identifier
 from ...model.geometry import expand_entities
-from ...model.schema import FeatureType, Issue, Param, PhysicsType, feature_path
+from ...model.schema import FREE_MESH_KINDS, FeatureType, Issue, Param, PhysicsType, feature_path
 from .electrolyte import (ELECTROLYTE_MODELS, ION_CONCENTRATION_FIELDS, MAX_BOLTZMANN_EXPONENT, MAX_SPECIES_FIELDS,
                           debye_length, ionic_strength, screening_coefficient, stern_capacitance)
 from .renderer import THREE_D_FIELD_INFOS, CurrentsRenderer, ElectrostaticsRenderer
@@ -82,53 +82,45 @@ _KIND_NAMES = {
 
 
 # ---- settings ----
-_RING_WEIGHT_TEXT = ('every conductance, face and cell volume is weighted by 2 pi r (x-faces at their own r, y-faces and '
-                     'volumes at the cell-centre r; 2 pi r_c dr dz is the exact ring volume; object-perimeter {flux} '
-                     'likewise), so densities ({densities}) keep their units, while the {quantity} of a voltage / '
-                     'terminal (table result, scalar output {quantity}_<feature>) is that of the whole ring in {unit}'
-                     '{totals}; {cross}_xy is not available (validation error); azimuthal_order m != 0 weights by pi r '
-                     'instead')
+_RING_WEIGHT_TEXT = ('every conductance, face and cell volume (and object-perimeter {flux}) weighted by 2 pi r (pi r '
+                     'for azimuthal_order m != 0):densities keep their units, the {quantity} of a voltage / terminal '
+                     '(table result, scalar output) is that of the whole ring in {unit}{totals}; {cross}_xy is a '
+                     'validation error')
 _GEOMETRY_PARAMS = {
     'currents': geometry_param(
         '2D currents per unit z length (terminal currents A/m)',
-        '(r, z) currents; ' + _RING_WEIGHT_TEXT.format(
-            flux='current_density', densities='sigma_dc S/m, current_source A/m^3, current_density A/m^2, J A/m^2, '
-                                              'q_joule W/m^3',
-            quantity='current', unit='A', cross='sigma_dc',
-            totals=" (a resistance V / I in Ohm), and the 'integral' of q_joule is the total power in W"),
+        '(r, z) currents, ' + _RING_WEIGHT_TEXT.format(
+            flux='current_density', quantity='current', unit='A', cross='sigma_dc',
+            totals=" (the 'integral' of q_joule: total power in W)"),
         'currents are per metre of depth.',
         'Currents of voltages and terminals are those of the whole ring, in amperes.'),
     'electrostatics': geometry_param(
         '2D electrostatics per unit z length (terminal charges C/m)',
-        '(r, z) electrostatics; ' + _RING_WEIGHT_TEXT.format(
-            flux='surface_charge', densities='charge_density C/m^3, surface_charge C/m^2, D C/m^2',
-            quantity='charge', unit='C', cross='eps_dc', totals=' (a capacitance Q / V in F)'),
+        '(r, z) electrostatics, ' + _RING_WEIGHT_TEXT.format(
+            flux='surface_charge', quantity='charge', unit='C', cross='eps_dc', totals=''),
         'charges are per metre of depth.',
         'Charges of voltages and terminals are those of the whole ring, in coulombs.'),
 }
 _NEWTON_SCALE_TEXT = 'kB T / (e max |z_i|) (the smallest over the nonlinear electrolytes; 25.7 mV for 1:1 at 298.15 K)'
-_NONLINEAR_SETTINGS = (   # damped Newton of nonlinear electrolytes (core.damped_iteration; plans_overview decision 7)
+_NONLINEAR_SETTINGS = (   # damped Newton of nonlinear electrolytes (core.damped_iteration)
     Param('nonlinear_tolerance', 'float', 1e-6, label='Electrolyte iteration tolerance', unit='1', min=0.0,
           min_exclusive=True,
-          help='Stop of the damped Newton loop of nonlinear electrolytes (feature electrolyte, model nonlinear): '
-               f'converged when one Newton step changes V by at most this times {_NEWTON_SCALE_TEXT} anywhere. Each '
-               'step is one CG solve warm-started at the previous V, so keep it above the CG accuracy in V (the '
-               'linear pcg solver tolerance times the condition number, relative to the drive). Ignored without a nonlinear '
-               'electrolyte.',
+          help='Damped Newton of nonlinear electrolytes: converged when a step changes V by at most this times '
+               f'{_NEWTON_SCALE_TEXT}. Keep it above the CG accuracy in V (pcg tolerance times the condition '
+               'number). Ignored without a nonlinear electrolyte.',
           tip='How accurately the potential of a nonlinear electrolyte is converged, as a fraction of the thermal '
               'voltage (about 26 millivolts).\n\nKeep 1e-6. Only used by electrolytes with the nonlinear model.'),
     Param('nonlinear_max_iterations', 'int', 100, label='Electrolyte iteration limit', min=1,
-          help='Newton iteration limit per solve of a nonlinear electrolyte; an unconverged loop keeps its damped V '
-               'and logs a warning (study log). Steps are capped at '
-               f'{NEWTON_MAX_STEP:g} x {_NEWTON_SCALE_TEXT}, so a surface or electrode potential of P such units '
-               f'needs at least P / {NEWTON_MAX_STEP:g} iterations. Ignored without a nonlinear electrolyte.',
+          help='Per solve of a nonlinear electrolyte; an unconverged loop keeps its damped V and logs a warning. '
+               f'Steps are capped at {NEWTON_MAX_STEP:g} kB T / (e max |z_i|), so a surface or electrode potential of '
+               f'P such units needs at least P / {NEWTON_MAX_STEP:g} iterations.',
           tip='Largest number of Newton iterations for a nonlinear electrolyte; each one is a full solve.\n\n'
               'A loop that reaches the limit keeps its unfinished result and logs a warning.'),
     Param('nonlinear_relaxation', 'float', 1.0, label='Electrolyte iteration damping', unit='1', min=1.0 / 64.0,
           max=1.0,
-          help='Fraction of each Newton update applied, [1/64, 1]; it halves automatically (down to 1/64) while the '
-               'update grows and recovers once it shrinks. 1 (full Newton steps) suits the convex Boltzmann charge; '
-               'lower it only when the loop oscillates. Ignored without a nonlinear electrolyte.',
+          help='Fraction of each Newton update applied; halves automatically (to 1/64) while the update grows, '
+               'recovers once it shrinks. 1 suits the convex Boltzmann charge; lower it only when the loop '
+               'oscillates.',
           tip='Fraction of each correction that is applied, between 0 and 1.\n\nKeep 1; lower it only if the '
               'iteration does not settle.'),
 )
@@ -148,33 +140,25 @@ def _material_property(name, label, unit, minimum=None, help_text='', tip=''):
 
 
 _SIGMA_DC_HELP = (
-    'Isotropic static (DC) conductivity: sets sigma_dc_xx, sigma_dc_yy and sigma_dc_zz (component entries override '
-    'it; zz is read only on a tetrahedron mesh in 3D); unset = '
-    '0 = insulator: cells without sigma_dc carry no current and keep their potential (as k = 0 for heat), so every '
-    'conducting region needs a voltage or terminal. NOT the optical sigma_e, the loss proxy at the solve wavelength '
-    '(water: sigma_e 4.22 S/m at 1.55 um but sigma_dc 5.5e-6 S/m). Typical gold 4.1e7, silver 6.3e7, aluminium '
-    '3.8e7, water 5.5e-6; may depend on x, y and state fields, e.g. gold 4.1e7 / (1 + 0.0034 * (heat_T - 293.15)) '
-    '(a stationary study iterates). 2D quantities are per unit z length: currents A/m, conductances S and '
-    'capacitances F per m of depth, resistances Ohm m (geometry axisymmetric and 3D: whole totals, A, S, F, Ohm).')
+    'Sets sigma_dc_xx, _yy and _zz (component entries override it; zz read only on 3D tetrahedra); unset = 0 = '
+    'insulator: no current, the cell keeps its potential, so every conducting region needs a voltage or terminal. NOT '
+    'the optical sigma_e (water: sigma_e 4.22 S/m at 1.55 um, sigma_dc 5.5e-6 S/m). Gold 4.1e7, silver 6.3e7, '
+    'aluminium 3.8e7, water 5.5e-6; e.g. gold 4.1e7 / (1 + 0.0034 * (heat_T - 293.15)) (a stationary study '
+    'iterates).')
 _EPS_DC_HELP = (
-    'Isotropic static relative permittivity (>= 1): sets eps_dc_xx, eps_dc_yy and eps_dc_zz (component entries '
-    'override it; zz is read only on a tetrahedron mesh in 3D); '
-    'unset = 1 (vacuum), so every cell takes part in the solve and one voltage / terminal anchors everything. NOT '
-    'the optical eps_r = n^2: lithium niobate eps_dc 43 (eps_a) / 28 (eps_c, along the optic axis) vs eps_r 4.9 / '
-    '4.6; silicon 11.7 vs 12.08; silica 3.9 vs 2.085; water 80.1 vs 1.73. 2D: charges C/m, capacitances F per m of '
-    'depth (geometry axisymmetric and 3D: whole totals, C, F).')
-_XY_HELP = ('Off-diagonal component of {name} ({cross} of a rotated anisotropic material); keep {name}_xy^2 '
-            '< {name}_xx * {name}_yy (validation error for plain numbers); uniform or graded meshes (on strongly graded '
-            'cells keep it clearly below that bound: the discrete operator is guaranteed positive below it times 4 r / '
-            '(1 + r)^2 per axis, r = width ratio of neighbouring cells). Cross flux flows only inside '
-            '2x2 cell blocks whose xx and yy components are all > 0 (area-weighted mean {name}_xy of the block), never '
-            'through the outer faces. E stays -grad V; {outputs} include the cross part {cross_part} (dV/dy, dV/dx), '
-            'the block values averaged over each cell\'s blocks{consequence}.')
+    'Sets eps_dc_xx, _yy and _zz (component entries override it; zz read only on 3D tetrahedra); unset = 1 (vacuum): '
+    'every cell takes part, one voltage / terminal anchors everything. NOT the optical eps_r = n^2: lithium niobate '
+    'eps_dc 43 (eps_a) / 28 (eps_c) vs eps_r 4.9 / 4.6; silicon 11.7 vs 12.08; silica 3.9 vs 2.085; water 80.1 vs '
+    '1.73.')
+_XY_HELP = ('Off-diagonal {name} ({cross} of a rotated anisotropic material); keep {name}_xy^2 < {name}_xx {name}_yy '
+            '(validation error for plain numbers; on strongly graded cells clearly below: the discrete operator is '
+            'positive below it times 4 r / (1 + r)^2 per axis, r = neighbour width ratio). Cross flux flows only '
+            'inside 2x2 cell blocks whose xx and yy are all > 0, never through outer faces. E stays -grad V; '
+            '{outputs} include {cross_part} (dV/dy, dV/dx){consequence}.')
 _XY_HELP_TEXTS = {
-    'currents': {'name': 'sigma_dc', 'cross': 'cross conduction', 'outputs': 'the current density J',
-                 'cross_part': '-sigma_dc_xy',
-                 'consequence': ', and q_joule includes each block\'s cross power (so its integral equals V * I)'},
-    'electrostatics': {'name': 'eps_dc', 'cross': 'cross polarisation', 'outputs': 'the displacement D',
+    'currents': {'name': 'sigma_dc', 'cross': 'cross conduction', 'outputs': 'J', 'cross_part': '-sigma_dc_xy',
+                 'consequence': '; q_joule includes the cross power (its integral equals V * I)'},
+    'electrostatics': {'name': 'eps_dc', 'cross': 'cross polarisation', 'outputs': 'D',
                        'cross_part': '-eps0 eps_dc_xy', 'consequence': ''},
 }
 _SIGMA_DC_TIP = ('Electrical conductivity for steady currents; empty means an insulator.\n\n'
@@ -189,41 +173,37 @@ _EPS_DC_COMPONENT_TIP = ('Static relative permittivity along {axis} of a materia
                          "and y. Replaces 'Static relative permittivity' for this direction.")
 _CROSS_TERM_TIP_END = '\n\nKeep it smaller than both the x and y values.'
 _POCKELS_HELP = (
-    'Isotropic Pockels (linear electro-optic) coefficient: sets r_xx, r_yy and r_zz (component entries override it), '
-    'read only by the electrostatics_em_pockels coupling: dn_ii = -1/2 n0_ii^3 r_ii E_k with E_k the applied field '
-    'component chosen by its field_component. The diagonal of the Pockels tensor for one applied direction; unset = '
-    '0 (no effect). Typical: x-cut lithium niobate with the field along the optic axis r33 = 31e-12 on the optic-axis '
-    'component and r13 = 10e-12 on the others (library lithium_niobate_x_cut); 0 for centrosymmetric silicon and '
-    'silica. A crystal entry sets the tensor entries pockels_r11 .. _r62 instead.')
+    'Isotropic Pockels coefficient: sets r_xx, r_yy and r_zz (component entries override it), read only by '
+    'electrostatics_em_pockels: dn_ii = -1/2 n0_ii^3 r_ii E_k, E_k the applied component chosen by its '
+    'field_component; unset = 0. x-cut lithium niobate, field along the optic axis: r33 = 31e-12 on the optic-axis '
+    'component, r13 = 10e-12 on the others (library lithium_niobate_x_cut); 0 for silicon and silica. A crystal entry '
+    'sets pockels_r11 .. _r62 instead.')
 _POCKELS_TIP = ('Strength of the electro-optic (Pockels) effect: how much a static electric field changes the '
                 'refractive index. Only the Pockels coupling to a wave physics uses it; empty means no effect.\n\n'
                 'Typical: lithium niobate 31e-12 along its optic axis, 10e-12 across it.')
 _POCKELS_COMPONENT_TIP = ("Electro-optic coefficient for light with its electric field along {axis}, {where}. "
                           "Replaces 'Electro-optic coefficient' for this direction.")
 _POCKELS_TENSOR_HELP = (
-    'In-plane Pockels tensor entry {name} [m/V] of a crystal in model axes: Delta(1/n^2)_I = r_I1 E_x + r_I2 E_y with '
-    'the index-ellipsoid row I = 1 xx, 2 yy, 3 zz (the diagonal permittivity slots) or 6 xy (the eps_xy slot of '
-    'em_fdfd_hz: Delta eps_xy = -n0_xx^2 n0_yy^2 Delta(1/n^2)_xy; other EM types drop it, validation warns for '
-    'crystals), read only by electrostatics_em_pockels, which adds -1/2 n0_ii^3 (r_i1 E_x + r_i2 E_y) from both field '
-    'components whatever its field_component (on top of r_ii E_k: set either these or r / r_ii on a material, not '
-    "both). Usually set by a {{'model': 'crystal'}} entry: the clamped (strain-free) r^S rotated into model axes, so a "
-    'piezoelectric strain computed by elastic_waves adds its own index change through acoustics_em_acousto_optic '
-    'without double counting; YZ lithium niobate (model x = crystal Z, y = -Y): r11 = r33, r12 = 0, r21 = r13, r22 = '
-    '-r22, r31 = r13, r32 = r22, r61 = 0, r62 = r51 (crystal constants). Default 0; any one set allocates all eight '
-    'arrays.')
+    'In-plane Pockels tensor entry r_Ik (pockels_r<I><k>) of a crystal in model axes: Delta(1/n^2)_I = r_I1 E_x + '
+    'r_I2 E_y, row I = 1 xx, 2 yy, 3 zz or 6 xy (eps_xy of em_fdfd_hz: Delta eps_xy = -n0_xx^2 n0_yy^2 '
+    'Delta(1/n^2)_xy; other EM types drop it, validation warns). Read only by electrostatics_em_pockels, which adds '
+    '-1/2 n0_ii^3 (r_i1 E_x + r_i2 E_y) whatever its field_component, on top of r_ii E_k: set these or r / r_ii, not '
+    "both. Usually from a {'model': 'crystal'} entry: the clamped r^S in model axes (a piezoelectric strain from "
+    'elastic_waves adds its index change via acoustics_em_acousto_optic, no double counting); YZ lithium niobate '
+    '(model x = crystal Z, y = -Y): r11 = r33, r12 = 0, r21 = r13, r22 = -r22, r31 = r13, r32 = r22, r61 = 0, r62 = '
+    'r51. Unset = 0; setting one allocates all eight arrays.')
 _POCKELS_TENSOR_ROWS = {'1': 'x', '2': 'y', '3': 'z (out of the plane)', '6': 'x and y together (the cross term)'}
 _MATERIAL_PROPERTIES = {   # isotropic entries before their components (components override)
     'currents': (
         _material_property('sigma_dc', 'Static conductivity', 'S/m', 0.0, _SIGMA_DC_HELP, tip=_SIGMA_DC_TIP),
         _material_property('sigma_dc_xx', 'Static conductivity along x', 'S/m', 0.0,
-                           'DC conductivity along x; overrides sigma_dc for this axis.',
+                           'Overrides sigma_dc for this axis.',
                            tip=_SIGMA_DC_COMPONENT_TIP.format(axis='x')),
         _material_property('sigma_dc_yy', 'Static conductivity along y', 'S/m', 0.0,
-                           'DC conductivity along y; overrides sigma_dc for this axis.',
+                           'Overrides sigma_dc for this axis.',
                            tip=_SIGMA_DC_COMPONENT_TIP.format(axis='y')),
         _material_property('sigma_dc_zz', 'Static conductivity along z', 'S/m', 0.0,
-                           'DC conductivity along z (3D on a tetrahedron mesh only; 2D ignores it); overrides sigma_dc '
-                           'for this axis.',
+                           'Overrides sigma_dc for this axis (3D tetrahedra only; 2D ignores it).',
                            tip="Static conductivity along z, used only in 3D models. Replaces 'Static conductivity' "
                                'for this direction.'),
         _material_property('sigma_dc_xy', 'Static conductivity, cross term', 'S/m',
@@ -234,14 +214,14 @@ _MATERIAL_PROPERTIES = {   # isotropic entries before their components (componen
     'electrostatics': (
         _material_property('eps_dc', 'Static relative permittivity', '1', 1.0, _EPS_DC_HELP, tip=_EPS_DC_TIP),
         _material_property('eps_dc_xx', 'Static relative permittivity along x', '1', 1.0,
-                           'Static relative permittivity along x (>= 1); overrides eps_dc for this axis.',
+                           'Overrides eps_dc for this axis.',
                            tip=_EPS_DC_COMPONENT_TIP.format(axis='x')),
         _material_property('eps_dc_yy', 'Static relative permittivity along y', '1', 1.0,
-                           'Static relative permittivity along y (>= 1); overrides eps_dc for this axis.',
+                           'Overrides eps_dc for this axis.',
                            tip=_EPS_DC_COMPONENT_TIP.format(axis='y')),
         _material_property('eps_dc_zz', 'Static relative permittivity along z', '1', 1.0,
-                           'Static relative permittivity along z (>= 1; electrostatics in 3D on a tetrahedron mesh, '
-                           'solid_mechanics_3d with piezoelectric on; 2D ignores it); overrides eps_dc for this axis.',
+                           'Overrides eps_dc for this axis (3D tetrahedra electrostatics, solid_mechanics_3d with '
+                           'piezoelectric on; 2D ignores it).',
                            tip="Static relative permittivity along z, used only in 3D models. Replaces 'Static "
                                "relative permittivity' for this direction."),
         _material_property('eps_dc_xy', 'Static relative permittivity, cross term', '1',
@@ -249,12 +229,11 @@ _MATERIAL_PROPERTIES = {   # isotropic entries before their components (componen
                            tip='Cross term of a rotated crystal. Usually empty.' + _CROSS_TERM_TIP_END),
         _material_property('r', 'Electro-optic coefficient', 'm/V', help_text=_POCKELS_HELP, tip=_POCKELS_TIP),
         *(_material_property(f'r_{axis}{axis}', f'Electro-optic coefficient along {axis}', 'm/V',
-                             help_text=f'Pockels coefficient of n_{axis}{axis} (the index seen by light with its '
-                                       f'electric field along {axis}); overrides r for this component.',
+                             help_text=f'Overrides r for n_{axis}{axis} (light polarised along {axis}).',
                              tip=_POCKELS_COMPONENT_TIP.format(axis=axis, where=where))
           for axis, where in (('x', 'in the plane'), ('y', 'in the plane'), ('z', 'out of the plane'))),
         *(_material_property(name, f'Electro-optic tensor {name[-3:]}', 'm/V',
-                             help_text=_POCKELS_TENSOR_HELP.format(name=name),
+                             help_text=_POCKELS_TENSOR_HELP,
                              tip=f'How strongly a static field along {"x" if name[-1] == "1" else "y"} changes the '
                                  'refractive index seen by light polarised along '
                                  f'{_POCKELS_TENSOR_ROWS[name[-2]]}, for a crystal. Usually filled in by a crystal '
@@ -266,56 +245,46 @@ _MATERIAL_PROPERTIES = {   # isotropic entries before their components (componen
 
 # ---- feature texts ----
 _HELD_SIGN_TEXT = (
-    'positive = current (charge) per m of depth (geometry axisymmetric: of the whole ring) flowing out of the held '
-    'faces / cells into the domain (the face '
-    'conductance times V_face - V_cell summed along a held outer face; for held cells the sum over them of (A V - b) '
-    'of the un-eliminated system, so an injected source inside the terminal is subtracted); electrostatics: the free '
-    'charge on the terminal (its outward D flux, Gauss). A cell held by two features is attributed to each (the '
-    'later voltage holds it; validation warns when held objects may overlap); '
-    'an outer face whose condition a later feature replaced (the last one wins) counts only for that feature. '
-    'E and J / D read 0 inside held cells (an ideal conductor): the surface current / charge is this result. Under a '
-    'mirror plane of the model (a symmetry feature, an EM mirror face) it is that of the unfolded structure: x 2 per '
-    'plane a held face lies on or meets, or held cells reach (the image joins the region).')
+    'positive = current (electrostatics: free charge, the outward D flux) leaving the held faces / cells into the '
+    'domain (a source injected inside a terminal is subtracted). A cell held by two features counts for each (the '
+    'later voltage holds it; validation warns on possible overlaps); an outer face replaced by a later feature counts '
+    'only for that one. E and J / D read 0 inside held cells (ideal conductor): the surface current / charge is this '
+    'result. Under a mirror plane of the model (a symmetry feature, an EM mirror face): the unfolded structure\'s, x '
+    '2 per plane a held face lies on or meets, or held cells reach (the image joins the region).')
 _HELD_RESULT_TEXT = {
-    'currents': ("Result 'table' of the latest solve with one row [feature, voltage, current] (units '', V, A/m; "
-                 'axisymmetric and 3D A) and the extras voltage (V) and current (A/m; axisymmetric and 3D A): '
-                 f'{_HELD_SIGN_TEXT}'),
-    'electrostatics': ("Result 'table' of the latest solve with one row [feature, voltage, charge] (units '', V, C/m; "
-                       'axisymmetric and 3D C) and the extras voltage (V) and charge (C/m; axisymmetric and 3D C): '
-                       f'{_HELD_SIGN_TEXT}'),
+    'currents': ("Result 'table', one row [feature, voltage, current] (units '', V, A/m; axisymmetric and 3D A) and "
+                 f'the extras voltage and current: {_HELD_SIGN_TEXT}'),
+    'electrostatics': ("Result 'table', one row [feature, voltage, charge] (units '', V, C/m; axisymmetric and 3D C) "
+                       f'and the extras voltage and charge: {_HELD_SIGN_TEXT}'),
 }
 _TERMINAL_BODY_TEXT = {
-    'currents': 'A metal body with its own sigma_dc is equipotential anyway: a terminal is for feeding current in '
-                'and reading it out (its cells need no sigma_dc: they act as an ideal conductor).',
-    'electrostatics': 'Electrostatics has no conductors of its own (every cell is a dielectric), so a terminal is '
-                      'the conductor: its cells are held at the voltage (their eps_dc does not matter, so a gold '
-                      'electrode needs none) and its free charge is read out.',
+    'currents': 'A metal with its own sigma_dc is equipotential anyway: a terminal feeds current in and reads it out '
+                '(its cells need no sigma_dc).',
+    'electrostatics': 'Electrostatics has no conductors of its own: a terminal is the conductor (its cells need no '
+                      'eps_dc) and its free charge is read out.',
 }
 _SOURCE_PARAM_HELP = {
-    'currents': 'Volumetric current injection; in 2D density * area is the line current per m of depth (A/m; '
-                'geometry axisymmetric: density * ring volume, A). May depend on x and y; must be finite on the '
-                'selected cells. A steady solve ignores it in non-conducting cells (sigma_dc 0).',
-    'electrostatics': 'rho in div(eps0 eps_dc grad V) = -rho; positive charge raises V. In 2D density * area is the '
-                      'line charge per m of depth (C/m; geometry axisymmetric: density * ring volume, C). May depend '
-                      'on x and y; must be finite on the selected cells.',
+    'currents': 'Volumetric current injection; 2D: density * area is the current per m of depth (axisymmetric: '
+                'density * ring volume, A). Must be finite on the selected cells; non-conducting cells ignore it.',
+    'electrostatics': 'rho in div(eps0 eps_dc grad V) = -rho; positive raises V. 2D: density * area is the charge '
+                      'per m of depth (axisymmetric: density * ring volume, C). Must be finite on the selected '
+                      'cells.',
 }
 _SOURCE_DESCRIPTION = {
-    'currents': 'Applied volumetric current source: density is added to current_source_ext on the selected cells '
-                '(several sources add; the coupled slot and field current_source are separate). The '
-                'injected current leaves through the voltage / terminal features; non-conducting cells ignore it.',
-    'electrostatics': 'Applied volumetric free charge: density is added to rho_free_ext on the selected cells '
-                      '(several sources add; the coupled slot charge_density, field rho_free, is separate).',
+    'currents': 'Adds density to current_source_ext on the selected cells (sources add; the coupled slot is '
+                'separate); the current leaves through the voltage / terminal features.',
+    'electrostatics': 'Adds density to rho_free_ext on the selected cells (sources add; the coupled slot, field '
+                      'rho_free, is separate).',
 }
 _SLOT_DOCS = {   # coupled source slot: (unit, meaning)
-    'currents': ('A/m^3', 'Coupled volumetric current source (field current_source), added to the current_source '
-                          'features (field current_source_ext); each transfer replaces it.'),
-    'electrostatics': ('C/m^3', 'Coupled free charge density (field rho_free), added to the charge_density features '
-                                '(field rho_free_ext); each transfer replaces it.'),
+    'currents': ('A/m^3', 'Field current_source, added to current_source_ext of the features; each transfer '
+                          'replaces it.'),
+    'electrostatics': ('C/m^3', 'Field rho_free, added to rho_free_ext of the features; each transfer replaces it.'),
 }
-_PROBE_DESCRIPTION = ('Potential (V) of the cell containing the point (time-dependent study: one sample per re-solve '
-                      'plus one at the end of the run, V holding its value in between; electrostatics with a voltage '
-                      'waveform: one per step at its end time; stationary study and the '
-                      'background stage of a frequency-domain study: one per fixed-point iteration, all at t = 0).')
+_PROBE_DESCRIPTION = ('Potential (V) of the cell containing the point. time_dependent: one sample per re-solve plus '
+                      'one at the end (V holds in between; electrostatics with a waveform: one per step at its end '
+                      'time); stationary and the frequency-domain background stage: one per fixed-point iteration, '
+                      'all at t = 0.')
 
 
 _PHYSICS_SUMMARIES = {
@@ -352,69 +321,50 @@ _SOURCE_SUMMARIES = {
 
 _ELECTROLYTE_PARAMS = (
     Param('concentrations', 'float_list', [1e-3, 1e-3], label='Ion concentrations', unit='mol/L', min=0.0,
-          help='Bulk molar concentration c_i of each ion species (1 mM = 1e-3 mol/L), in the order of valences; the '
-               'bulk must be neutral, sum z_i c_i = 0 (validation error). Uniform over the selection; parameter '
-               'expressions allowed (e.g. a concentration sweep).',
+          help='Bulk concentration c_i per species (1 mM = 1e-3), in the order of valences; the bulk must be '
+               'neutral, sum z_i c_i = 0 (validation error). Uniform over the selection.',
           tip='Concentration of each kind of ion far from any charge, in moles per litre, in the same order as the '
               "'Ion valences'.\n\nExample for 1 millimolar table salt: 1e-3, 1e-3."),
     Param('valences', 'float_list', [1.0, -1.0], label='Ion valences', unit='1',
-          help='Charge number z_i of each species, one per concentration, none 0: Na+ / K+ 1, Cl- -1, Ca2+ 2, SO4 2- '
-               '-2 (CaCl2: valences 2, -1 with concentrations c, 2 c).',
+          help='Charge number z_i per concentration, none 0: Na+ / K+ 1, Cl- -1, Ca2+ 2, SO4 2- -2 (CaCl2: 2, -1 with '
+               'concentrations c, 2 c).',
           tip='Charge of each kind of ion in elementary charges: 1 for sodium, -1 for chloride, 2 for calcium.\n\n'
               'Example for calcium chloride: 2, -1, with twice as much chloride as calcium.'),
     Param('temperature', 'float', 298.15, label='Temperature', unit='K', min=0.0, min_exclusive=True,
-          help='Temperature of the Boltzmann factor kB T (the screening coefficient scales as 1 / T). Typical 298.15 K.',
+          help='T of the Boltzmann factor kB T (screening coefficient ~ 1 / T).',
           tip='Temperature of the electrolyte.\n\nTypically 298.15 K.'),
     Param('bulk_potential', 'float', 0.0, label='Bulk potential', unit='V',
-          help='Potential V_bulk of the bulk electrolyte, where every species has its bulk concentration (e.g. that of '
-               'a reference electrode in it): rho_ion = -k (V - V_bulk), so V relaxes to it away from charges and '
-               'electrodes.',
+          help='V_bulk, where every species has its bulk concentration (e.g. a reference electrode); V relaxes to it '
+               'away from charges and electrodes.',
           tip='Potential the electrolyte settles to away from charged surfaces and electrodes, for example that of a '
               'reference electrode.\n\nUsually 0 V.'),
     Param('model', 'choice', 'linear', label='Electrolyte model', choices=ELECTROLYTE_MODELS,
           choice_labels=(('linear', 'Linear (small potentials)'), ('nonlinear', 'Nonlinear (Poisson-Boltzmann)')),
           help='linear (Debye-Hueckel, one solve): rho_ion = -k (V - V_bulk), valid for |V - V_bulk| << kB T / (|z| '
-               'e); nonlinear (Poisson-Boltzmann, damped Newton over the physics settings nonlinear_tolerance / '
-               'nonlinear_max_iterations / nonlinear_relaxation): rho_ion = sum_i z_i e n_i exp(-z_i e (V - V_bulk) '
-               '/ (kB T)), for surface and electrode potentials of several kB T / e.',
+               'e) = 25.7 mV / |z| at 298 K (beyond, it overestimates the screening charge); nonlinear '
+               '(Poisson-Boltzmann, damped Newton, physics settings nonlinear_*): rho_ion = sum_i z_i e n_i exp(-z_i e '
+               '(V - V_bulk) / (kB T)), for potentials of several kB T / e.',
           tip='How the ions respond to the potential.\n\n'
               '- Linear: one solve; accurate only well below 25 millivolts.\n'
               '- Nonlinear: the full Boltzmann response, solved by repeated solves; needed for larger potentials, '
               'such as charged surfaces in dilute salt.'),
 )
 _ELECTROLYTE_DESCRIPTION = (
-    'Mobile ions screening the field (Poisson-Boltzmann): on the selected cells the ionic space charge rho_ion enters '
-    'the solve, -div(eps0 eps_dc grad V) = rho_free + rho_ion. model linear (Debye-Hueckel, default): rho_ion = -k (V '
-    '- bulk_potential), k = sum_i z_i^2 e^2 n_i / (kB T) [F/m^3] with n_i = 1000 N_A c_i, a diagonal term, so V '
-    'decays over the Debye length lambda_D = sqrt(eps0 eps_dc / k) (water, eps_dc 80, 298.15 K: 0.307 nm / sqrt(I '
-    '[mol/L]), 9.7 nm at 1 mM NaCl); valid for |V - V_bulk| << kB T / (|z| e) = 25.7 mV / |z| at 298 K (larger '
-    'potentials overestimate the screening charge). model nonlinear: point-charge Boltzmann ions, rho_ion = sum_i z_i '
-    'e n_i exp(-z_i e (V - V_bulk) / (kB T)), solved by damped Newton: each iteration replaces the diagonal term by '
-    'the tangent of rho_ion at the current V and runs one CG solve warm-started there (the first iteration from V = 0 '
-    'is the linear solution), steps capped at '
-    f'{NEWTON_MAX_STEP:g} kB T / (e max |z_i|), converged when a step changes V by at most nonlinear_tolerance x kB T '
-    '/ (e max |z_i|) (physics settings nonlinear_tolerance / nonlinear_max_iterations / nonlinear_relaxation; '
-    'iterations in the study summary solvers (the physics counters) as nonlinear_iterations; an unconverged loop '
-    'keeps the damped V and '
-    'logs a warning). It has no ion size: counter-ion concentrations above a few mol/L (|V - V_bulk| beyond ~0.2 V / '
-    f'|z| at 1 mM salt) are unphysical, and the Boltzmann exponent is clipped at {MAX_BOLTZMANN_EXPONENT:g}. Both '
-    'models anchor the solve: no voltage or terminal is needed (e.g. a charged surface given by surface_charge). Held '
-    'cells (terminals, voltage perimeters) are ideal conductors without ions; overlapping electrolytes add (one Newton '
-    'loop when any of them is nonlinear). Field rho_ion [C/m^3] (nonlinear: the Boltzmann charge of the solved V); '
-    f'fields {ION_CONCENTRATION_FIELDS[0]} .. {ION_CONCENTRATION_FIELDS[-1]} [mol/L] = the local concentration of '
-    'species k (the k-th entry of concentrations / valences) at the solved V, c_k exp(-z_k e (V - V_bulk) / (kB T)) '
-    '(nonlinear) or its linearisation c_k (1 - z_k e (V - V_bulk) / (kB T)) (linear: the concentrations of its '
-    'rho_ion, negative beyond kB T / (|z_k| e)), so sum_k z_k e 1000 N_A c_ion_k = rho_ion; 0 outside the '
-    'electrolytes and on held cells, overlapping electrolytes add their k-th species; listed up to the longest '
-    f'species list, at most {MAX_SPECIES_FIELDS} (more species: validation warning); output fields only (not usable '
-    'in expressions). '
-    'Scalar outputs ionic_strength_<feature> [mol/L] = 1/2 sum z_i^2 c_i and debye_length_<feature> [m] (the bulk, '
-    'linearised value in both models) at the mean eps_dc of the selected cells at build (the static material value). '
-    'Resolve lambda_D with several cells (cells of lambda_D / 3 or finer at charged surfaces and electrodes): the '
-    'screening layer there is lambda_D thick, and with model nonlinear thinner at high potentials (1:1: lambda_D / '
-    'cosh(e (V - V_bulk) / (2 kB T))), so refine further. Validation reports the ionic strength and lambda_D (info). '
-    'geometry axisymmetric: ring volumes, as for every density. Triangle meshes: model linear only, the terms per '
-    'element (rho_ion and c_ion_k from the element mean V; mean eps_dc area-weighted).')
+    'Mobile ions screening the field: on the selected cells -div(eps0 eps_dc grad V) = rho_free + rho_ion (rho_ion: '
+    'see model). k = sum_i z_i^2 e^2 n_i / (kB T) [F/m^3], n_i = 1000 N_A c_i; V decays over the Debye length '
+    'lambda_D = sqrt(eps0 eps_dc / k) (water, eps_dc 80, 298.15 K: 0.307 nm / sqrt(I [mol/L]), 9.7 nm at 1 mM NaCl). '
+    'nonlinear: damped Newton, one warm-started CG solve per iteration (the first is the linear solution), steps '
+    f'capped at {NEWTON_MAX_STEP:g} kB T / (e max |z_i|) (iterations: summary solvers nonlinear_iterations); point '
+    'ions without size: counter-ion concentrations above a few mol/L (|V - V_bulk| beyond ~0.2 V / |z| at 1 mM) are '
+    f'unphysical, the Boltzmann exponent is clipped at {MAX_BOLTZMANN_EXPONENT:g}. Both models anchor the solve (no '
+    'voltage or terminal needed). Held cells (terminals, voltage perimeters) have no ions; overlapping electrolytes '
+    f'add. Fields rho_ion [C/m^3] and {ION_CONCENTRATION_FIELDS[0]} .. {ION_CONCENTRATION_FIELDS[-1]} [mol/L] = the '
+    'local concentration of species k at the solved V (linear: c_k (1 - z_k e (V - V_bulk) / (kB T)), negative '
+    'beyond kB T / (|z_k| e)), 0 outside electrolytes and on held cells; at most '
+    f'{MAX_SPECIES_FIELDS} species (more: validation warning); output only (not in expressions). Resolve lambda_D: '
+    'cells of lambda_D / 3 or finer at charged surfaces and electrodes, finer for nonlinear at high potentials (1:1 '
+    'layer lambda_D / cosh(e (V - V_bulk) / (2 kB T))). Triangle meshes: model linear only, per element (from the '
+    'element mean V).')
 
 
 def _electrolyte_species(values):
@@ -500,8 +450,9 @@ def _nonlinear_precision_issues(vctx, physics_spec, settings_values, path):
 
 def _electrolyte_memory_estimate(values, n_selected_cells, mesh):
     """Two bool window masks (the IonicMedium's, the union) and the temporaries of the ionic diagonal write (model
-    nonlinear: of a Newton iteration) as a transient item; triangles (linear only): the medium's element mask and the
-    per-element ionic loss / charge temporaries; tetrahedra (refused by FeatureType.grids): nothing."""
+    nonlinear: of a Newton iteration) as a transient item, taken as not overlapping the physics' own refactorisation
+    phase; triangles (linear only): the medium's element mask and the per-element ionic loss / charge temporaries;
+    tetrahedra (refused by FeatureType.grids): nothing."""
     if mesh.kind == 'tetrahedra':
         return MemoryEstimate()
     if mesh.kind == 'triangles':
@@ -520,26 +471,22 @@ def _electrolyte_memory_estimate(values, n_selected_cells, mesh):
 
 def _voltage_param(help_text, tip):
     return Param('voltage', 'float', 1.0, label='Voltage', unit='V', follows_parameters=True,
-                 help=f'{help_text} A reused sweep build (sweep reuse_build) follows a value of parameters only in '
-                      'place (held values re-eliminated on the kept operator).', tip=tip)
+                 help=f'{help_text} Follows reuse_build.', tip=tip)
 
 
-# ---- driven terminals (electrostatics, piezoelectric plan decision 4) ----
+# ---- driven terminals (electrostatics) ----
 _DRIVEN = (('waveform', TERMINAL_WAVEFORMS[1:]),)
 _WAVEFORM_PARAMS = (
     Param('waveform', 'choice', 'none', label='Voltage waveform', choices=TERMINAL_WAVEFORMS,
           choice_labels=(('none', 'Constant'), ('ricker', 'Ricker wavelet'), ('gaussian', 'Gaussian pulse'),
                          ('cw', 'Continuous wave')),
-          help='Time dependence of the held voltage, V(t) = voltage s(t) (the elastic_waves source waveforms): none = '
-               'constant; ricker = Ricker wavelet peaking at frequency, value 1 at t0 = 4 / frequency; gaussian = sin '
-               'carrier at frequency under a gaussian envelope of relative bandwidth (t0 = 4.5 / (pi bandwidth '
-               'frequency)); cw = sin(2 pi f t) ramped in by 1 - exp(-t / (3 T)), T = 1 / f, steady after ~15 '
-               'periods. Solved by superposition: one static solve '
-               'per distinct waveform (its features at their voltage, every other voltage, source and charge 0) plus '
-               'one of the constant part, after every operator change; each step then writes V, E, D = V_dc + sum '
-               's_w(t + dt) V_w at the end time of the step (exact: the solve is linear), and charge_<feature> / the '
-               'table follow the same sum. Time-dependent study only (stationary: s(0) ~ 0, validation warns); not '
-               'with an electrolyte (validation error). In 2D an interdigital transducer is two terminals with the '
+          help='V(t) = voltage s(t) (the elastic_waves source waveforms): none = constant; ricker = Ricker wavelet '
+               'peaking at frequency, value 1 at t0 = 4 / frequency; gaussian = sin carrier under a gaussian envelope '
+               'of relative bandwidth (t0 = 4.5 / (pi bandwidth frequency)); cw = sin(2 pi f t) ramped in by 1 - '
+               'exp(-t / (3 T)), T = 1 / f, steady after ~15 periods. Exact superposition of one static solve per '
+               'distinct waveform plus the constant part (redone after every operator change), written at the end '
+               'time of each step, charges included. time_dependent only (stationary: s(0) ~ 0, validation warns); '
+               'not with an electrolyte (validation error). A 2D interdigital transducer is two terminals with the '
                'same waveform and opposite voltages.',
           tip='How the voltage varies in time; Constant holds it.\n\n- Ricker wavelet: one short pulse.\n- Gaussian '
               'pulse: a few oscillations at the frequency.\n- Continuous wave: a steady sine.'),
@@ -548,28 +495,24 @@ _WAVEFORM_PARAMS = (
           tip='Frequency of the voltage waveform in hertz; 1e8 is 100 MHz.'),
     Param('bandwidth', 'float', 0.5, label='Relative bandwidth', unit='1', min=0.0, min_exclusive=True,
           visible_if=(('waveform', ('gaussian',)),),
-          help='Spectral width / frequency of the gaussian waveform (1/e of the amplitude spectrum at f (1 +- '
-               'bandwidth)).',
+          help='Spectral width / frequency of the gaussian (amplitude spectrum 1/e at f (1 +- bandwidth)).',
           tip='Width of the pulse spectrum relative to the frequency; 0.5 is typical.'),
 )
 
 
-# ---- Stern layer of voltage faces (electrostatics, igor 1.6) ----
+# ---- Stern layer of voltage faces (electrostatics) ----
 _STERN_PARAMS = (
     Param('stern_thickness', 'float', 0.0, label='Stern layer thickness', unit='m', min=0.0,
-          help='Thickness d_S of a compact (Stern / Helmholtz) layer between the electrode and the first cells: '
-               '0 = none (V held on the face). > 0: the face is a Robin condition h = C_S = eps0 stern_permittivity / '
-               'd_S [F/m^2], external = voltage, i.e. the layer in series with the half-cell conductance 2 eps0 '
-               'eps_dc / dx, so V drops by sigma / C_S across it (sigma = D.n into the domain = the electrode charge '
-               'per area; Gouy-Chapman-Stern: voltage = psi_d + sigma / C_S, psi_d the diffuse-layer potential at the '
-               'face). The layer holds no ions and no cells (it is not drawn; the electrolyte begins at the face). '
-               'Outer faces only (validation error with objects selected); charge_<feature> and the table charge are '
-               'the D flux through it. Typical 0.2 to 0.5 nm.',
+          help='Thickness d_S of a compact (Stern / Helmholtz) layer between the electrode and the first cells; 0 = '
+               'none (V on the face). > 0: a Robin face h = C_S = eps0 stern_permittivity / d_S [F/m^2], external = '
+               'voltage, so V drops by sigma / C_S across it (sigma = D.n into the domain = electrode charge per area; '
+               'Gouy-Chapman-Stern: voltage = psi_d + sigma / C_S). The layer is not drawn and holds no ions (the '
+               'electrolyte begins at the face). Outer faces only (validation error with objects); the charge is the '
+               'D flux through it. Typical 0.2 to 0.5 nm.',
           tip='Thickness of the ion-free layer between the electrode and the electrolyte; 0 means none.\n\n'
               'Typical 0.3 nanometres. Only on domain edges.'),
     Param('stern_permittivity', 'float', 10.0, label='Stern layer permittivity', unit='1', min=1.0,
-          help='Relative permittivity eps_S of the Stern layer (oriented water: 6 to 30); used only with '
-               'stern_thickness > 0.',
+          help='eps_S (oriented water: 6 to 30); only with stern_thickness > 0.',
           tip='Relative permittivity of the ion-free layer; water next to an electrode is often given 6 to 30.'),
 )
 
@@ -750,26 +693,19 @@ def _make_scalar_outputs(kind):
 
 
 _SCALAR_OUTPUTS_HELP = {
-    'currents': 'current_<feature> (A/m; geometry axisymmetric: A, the whole ring; 3D: A) per enabled voltage / '
-                'terminal feature: the current per m of depth it feeds into the domain in the last solve, the current of its '
-                'table result (same sign). Example derived '
-                'value {"name": "I_anode", "expression": "currents_current_anode"} (operation mean of a constant is '
-                'the value itself); a parameter sweep of a voltage then gives the I-V curve, voltage / current the '
-                'resistance (Ohm m). A feature whose scalar would be named like an output field (a terminal named '
-                'source: current_source) gets none. Under a mirror plane of the model (a symmetry feature of any '
-                'physics, or an EM bc_<face> symmetric / antisymmetric) the value is '
-                "the unfolded structure's: x 2 per mirror plane the voltage face or terminal touches (its image joins "
-                'it; a face on the opposite side does not touch).',
-    'electrostatics': 'charge_<feature> (C/m; geometry axisymmetric: C, the whole ring; 3D: C) per enabled voltage / '
-                      'terminal feature: its free charge per m of depth (outward D flux) in the last solve, the charge '
-                      'of its table result. Example derived value '
-                      '{"name": "C_top", "expression": "electrostatics_charge_top / V_top"} = the capacitance per m '
-                      'of depth (F/m) with every other electrode at 0 V (operation mean of a constant is the value '
-                      'itself). Per enabled electrolyte feature also ionic_strength_<feature> (mol/L, 1/2 sum z_i^2 '
-                      'c_i) and debye_length_<feature> (m, at the mean static eps_dc of its selected cells), '
-                      'constants of the build. Under a mirror plane of the model (a symmetry feature of any physics, '
-                      'or an EM bc_<face> symmetric / antisymmetric) the charges are the '
-                      "unfolded structure's: x 2 per mirror plane the voltage face or terminal touches.",
+    'currents': 'current_<feature> (A/m; axisymmetric and 3D: A) per enabled voltage / terminal: its table result '
+                'current of the last solve. Example derived value {"name": "I_anode", "expression": '
+                '"currents_current_anode"}; a voltage sweep gives the I-V curve. A name equal to an output field (a '
+                "terminal named source) gets none. Under a mirror plane of the model (a symmetry feature of any "
+                "physics, an EM bc_<face> symmetric / antisymmetric): the unfolded structure's value, x 2 per mirror "
+                'plane the voltage face or terminal touches (a face on the opposite side does not touch).',
+    'electrostatics': 'charge_<feature> (C/m; axisymmetric and 3D: C) per enabled voltage / terminal: its table '
+                      'result charge of the last solve. Example {"name": "C_top", "expression": '
+                      '"electrostatics_charge_top / V_top"} = the capacitance (F/m) with every other electrode at 0 '
+                      'V. Per enabled electrolyte: ionic_strength_<feature> (mol/L, 1/2 sum z_i^2 c_i) and '
+                      'debye_length_<feature> (m; bulk, linearised, at the mean eps_dc of its cells), constants of '
+                      "the build. Under a mirror plane of the model (as currents): the unfolded structure's value, x 2 "
+                      'per mirror plane the voltage face or terminal touches.',
 }
 
 
@@ -877,7 +813,7 @@ def _make_validate_symmetry(kind):
 
 
 def _triangle_issues(vctx, physics_spec, order, path):
-    """Rules on a triangle mesh (FEMPotentialPhysics, mesh plan T4): azimuthal_order 0, no voltage waveforms, linear
+    """Rules on a triangle mesh (FEMPotentialPhysics): azimuthal_order 0, no voltage waveforms, linear
     electrolytes only."""
     issues = []
     if order:
@@ -894,10 +830,9 @@ def _triangle_issues(vctx, physics_spec, order, path):
 
 
 def _three_d_issues(vctx, physics_spec, settings_values, names, path):
-    """Rules of a 3D model (FEMPotentialPhysics3D, piezo_3d_plan stage 6): a tetrahedron mesh, planar geometry and
-    azimuthal_order 0, no voltage waveforms, no xy coefficient materials (Stern layers:
-    _validate_electrostatic_voltage; electrolytes: their FeatureType grids). Mirror planes are fine: held fluxes take
-    FEMPotentialPhysics3D.mirror_factor."""
+    """Rules of a 3D model (FEMPotentialPhysics3D): a tetrahedron mesh, planar geometry and azimuthal_order 0, no
+    voltage waveforms, no xy coefficient materials (Stern layers: _validate_electrostatic_voltage; electrolytes: their
+    FeatureType grids). Mirror planes are fine: held fluxes take FEMPotentialPhysics3D.mirror_factor."""
     issues = []
     if not on_tetrahedra(vctx, physics_spec):
         issues.append(Issue('error', path, f'{names.label} in a 3D model runs on a tetrahedron mesh only (MeshSpec '
@@ -921,7 +856,7 @@ def _three_d_issues(vctx, physics_spec, settings_values, names, path):
 def _make_create(kind):
     def create(ctx, physics_spec, values):
         linear_solver = ctx.solvers(physics_spec.name)['linear']
-        if ctx.domain.grid_kind == 'triangles':   # FEM (mesh plan T4): discretization order
+        if ctx.domain.grid_kind == 'triangles':   # FEM: discretization order
             physics = FEMPotentialPhysics(ctx.domain, kind, order=element_order(values),
                                           axisymmetric=is_axisymmetric(values), linear_solver=linear_solver)
             physics.set_mirror_faces(mirror_faces(ctx.spec))
@@ -955,12 +890,14 @@ def _make_memory_estimate(kind):
     def estimate(settings_values, mesh, context):
         cudss = cudss_back_end(context.solvers)
         refactorizes = _operator_changes(context, spec)
-        if mesh.kind in ('triangles', 'tetrahedra'):   # FEMPotentialPhysics[3D]: the fields per element + FEM system
+        if mesh.kind in FREE_MESH_KINDS:   # FEMPotentialPhysics[3D]: the fields per element + FEM system
             triangles = mesh.kind == 'triangles'
             estimator = fem_diffusion_estimate if triangles else fem_diffusion_estimate_3d
             return estimator(mesh, element_order(settings_values), element_fields=n_fields + (0 if triangles else 2),
                              direct=linear_solver_direct(context), multigrid=linear_solver_multigrid(context),
-                             cudss=cudss, refactorizes=refactorizes, active_fraction=_active_fraction(context, mesh, kind))
+                             cudss=cudss, refactorizes=refactorizes,
+                             active_fraction=_active_fraction(context, mesh, kind),
+                             precision=linear_solver_precision(context), mixed=linear_solver_mixed(context))
         if context.spec.is_3d:
             return MemoryEstimate()
         n_waveforms = _driven_waveform_count(context.physics_spec) if spec.with_ions else 0
@@ -1034,7 +971,7 @@ def _make_time_estimate(kind):
 
     def estimate(settings_values, mesh, context):
         operator_changes = _operator_changes(context, spec)
-        if mesh.kind in ('triangles', 'tetrahedra'):
+        if mesh.kind in FREE_MESH_KINDS:
             unknowns, entries = fem_time_system(mesh, element_order(settings_values))
             return diffusion_time_estimate(context, unknowns, 3 if mesh.kind == 'tetrahedra' else 2,
                                            every_step=False, held=_HELD_POTENTIAL, operator_changes=operator_changes,
@@ -1081,87 +1018,63 @@ _SYMMETRY_DESCRIPTION = {
 
 # ---- type descriptions ----
 _COMMON_DESCRIPTION = (
-    'on the physical window (finite volumes, Jacobi-PCG on V), V and every output copied edge-extended into an EM PML '
-    'ring (so a field-dependent material property sees no step there). '
-    'Unreferenced outer faces are insulated ({insulated}), and a later boundary feature on the same face wins '
-    '(validation warning). {materials} The solve needs an anchor: {anchor} (a pure Neumann problem is singular '
-    'whatever the sources). Units are per unit z length: {units} (geometry axisymmetric: an (r, z) body of '
-    'revolution about x_lo, held totals of the whole ring). Outputs: E_x / E_y and {flux} from the face fluxes averaged to the cell centres ({field_zero}; '
-    '{flux} include the xy cross flux, E stays -grad V){joule} A stationary study iterates it with the couplings and the '
-    'state-dependent material properties ({state_example}); in a time-dependent study it re-solves only when '
-    '{coefficient}, a boundary condition, a held potential or a source changed ({cadence}). The instance is '
-    'usually named {instance}.')
+    'finite volumes on the physical window, outputs edge-extended into an EM PML ring. Unreferenced outer faces are '
+    'insulated ({insulated}); a later boundary feature on a face wins (validation warning). Needs an anchor: '
+    '{anchor} (a pure Neumann problem is singular). 2D units per m of depth: {units} (axisymmetric and 3D: whole '
+    'totals). E_x / E_y and {flux} are face fluxes averaged to the cell centres ({field_zero}; {flux} include the xy '
+    'cross flux, E stays -grad V){joule} A stationary study iterates it with the couplings and state-dependent '
+    'properties ({state_example}); time_dependent re-solves only when {coefficient}, a boundary condition, a held '
+    'potential or a source changed ({cadence}).')
 _PHYSICS_DESCRIPTIONS = {
-    'currents': '2D electric currents per unit z length: quasi-static solve of -div(sigma_dc grad V) = s, s the '
-                'volumetric current source [A/m^3] (current_source features plus the coupled slot current_source), ' +
+    'currents': 'Quasi-static -div(sigma_dc grad V) = s, s the current_source features plus the coupled slot, ' +
                 _COMMON_DESCRIPTION.format(
                     insulated='zero normal current',
-                    materials='Material properties are unset unless a material or its library entry sets them: '
-                              'cells without sigma_dc carry no current and keep their potential.',
-                    anchor='a voltage or a terminal touching every conducting region',
-                    units='terminal currents A/m, conductances S and capacitances F per m of depth, resistances '
-                          'Ohm m',
+                    anchor='a voltage or terminal touching every conducting region',
+                    units='currents A/m, conductances S/m, resistances Ohm m',
                     flux='J_x / J_y', field_zero='E = 0 in non-conducting cells, E and J = 0 in held cells',
-                    joule='; q_joule [W/m^3] = the dissipation of every face split between its two cells by their '
-                          'half-cell resistances (outer Dirichlet faces to their cell; the sigma_dc_xy power of each '
-                          '2x2 block by area), so its integral over the window equals the sum '
-                          'over the voltage / terminal features of V * current, plus V times the current_source and '
-                          'the inward current_density it feeds in (currents_heat_joule hands it to heat).',
+                    joule='; q_joule [W/m^3] = each face dissipation split between its two cells by half-cell '
+                          'resistance, so its window integral equals the sum over voltage / terminal features of V * '
+                          'current plus V times the current_source and inward current_density (currents_heat_joule '
+                          'hands it to heat).',
                     state_example='sigma_dc of heat_T', coefficient='sigma_dc',
-                    cadence='a sigma_dc(T) property is rewritten right after each heat step: leave every at 1 so '
-                            'the currents re-solve on the next tick, before the Joule power goes to heat',
-                    instance='currents'),
-    'electrostatics': '2D electrostatics per unit z length: quasi-static solve of -div(eps0 eps_dc grad V) = '
-                      'rho_free + rho_ion, rho_free the charge_density source [C/m^3], rho_ion the ionic space '
-                      'charge of the electrolyte features (field rho_ion; linearised, or Boltzmann by damped Newton), '
+                    cadence='sigma_dc(T) is rewritten right after each heat step: leave every at 1 so the currents '
+                            're-solve before the Joule power goes to heat'),
+    'electrostatics': 'Quasi-static -div(eps0 eps_dc grad V) = rho_free + rho_ion, rho_free the charge_density '
+                      'features plus the coupled slot, rho_ion the electrolyte features, '
                       + _COMMON_DESCRIPTION.format(
                           insulated='zero normal D',
-                          materials='eps_dc is 1 (vacuum) unless a material or its library entry sets it, so every '
-                                    'cell takes part in the solve.',
-                          anchor='one voltage, terminal or electrolyte anywhere (every cell is a dielectric, so it '
-                                 'reaches all of them)',
-                          units='terminal charges C/m, capacitances F per m of depth (charge / voltage of a terminal '
-                                'with the other one held at 0 V)',
+                          anchor='one voltage, terminal or electrolyte anywhere (every cell is a dielectric)',
+                          units='charges C/m, capacitances F/m (charge / voltage of a terminal with the others at '
+                                '0 V)',
                           flux='D_x / D_y', field_zero='E = D / (eps0 eps_dc) without eps_dc_xy, both 0 in held '
                                                        'cells', joule='.',
                           state_example='eps_dc of heat_T', coefficient='eps_dc',
-                          cadence='a state-dependent eps_dc re-solves at the cadence of the physics it reads; with '
-                                  'a voltage or terminal waveform every step instead writes the superposition of '
-                                  'static basis solves at the end time of the step, no re-solve',
-                          instance='electrostatics'),
+                          cadence='a state-dependent eps_dc re-solves at the cadence of the physics it reads; a '
+                                  'voltage or terminal waveform writes its superposition every step instead'),
 }
 
 
 _TRIANGLE_DESCRIPTION = (
-    ' On a triangle mesh (MeshSpec kind triangles; 2D, planar or axisymmetric) finite elements of the discretization '
-    'order (quadratic default): V is nodal, a voltage on objects holds their outline edges, a terminal every node of '
-    'its elements, current_density / surface_charge on objects is an edge source on the outline (both sides), a probe '
-    'reads the point\'s node; held currents / charges are the reactions of the un-eliminated system (exact Gauss '
-    'balance); E, J / D and q_joule are element means (q_joule integrates to the stiffness energy, so to V * I) and '
-    'every state slot holds one value per element (V at the centroid); electrostatics electrolytes with model linear '
-    'only (a volumetric loss k (V - V_bulk) per element, none in terminal elements; rho_ion and c_ion_k from the '
-    'element mean V, so the integral of rho_ion balances the held charges exactly; the inside of a voltage object '
-    'solves to its voltage and carries ions when selected); no nonlinear electrolytes, waveforms or azimuthal_order.')
+    ' Triangle meshes (planar or axisymmetric): elements of the discretization order, V nodal; a voltage on objects '
+    'holds their outline edges, a terminal every node of its elements, object current_density / surface_charge is an '
+    "outline edge source (both sides), a probe reads the point's node; held currents / charges are reactions (exact "
+    'Gauss balance); E, J / D and q_joule are element means (q_joule integrates to V * I); electrolytes linear only '
+    '(none in terminal elements; a selected voltage object carries ions); no waveforms or azimuthal_order.')
 _TETRAHEDRA_TEXTS = {   # kind -> (coefficient prefix, flux feature, held quantity, unit, outputs, z flux, balance)
     'currents': ('sigma_dc', 'current_density', 'current', 'A', 'J_x / J_y and q_joule', 'J_z',
                  '; the integral of q_joule equals the sum of V * I'),
     'electrostatics': ('eps_dc', 'surface_charge', 'charge', 'C', 'D_x / D_y', 'D_z', ''),
 }
 _TETRAHEDRA_DESCRIPTION = {
-    kind: (' 3D models (size_z set) run on a tetrahedron mesh only (MeshSpec kind tetrahedra, 3D Cartesian; a 3D tensor '
-           'mesh is a validation error): Lagrange elements of the discretization order (affine tetrahedra) on the window '
-           f'elements with the diagonal tensor {prefix}_xx / _yy / _zz ({prefix}_zz: set by the isotropic {prefix}; '
-           f'{prefix}_xy is a validation error), V nodal; outer faces act on the window faces, a voltage on objects '
-           f'holds their interface faces (Dirichlet), a terminal every node of its elements, {flux} on objects is a sheet '
-           'source on the interface faces (both sides), a probe evaluates V at the point; held '
-           f'{quantity}s are the reactions of the un-eliminated system in {unit} (whole totals, exact Gauss '
-           f'balance{balance}); E, {outputs} are element means, plus the 3D-only output fields E_z, {flux_z} and '
-           f'{prefix}_zz (not usable in expressions); fields are sampled on the uniform lattice of the mesh; Automatic '
-           'linear solver: sparse_direct (cuDSS on the gpu backend with nvmath-python, else host SuperLU). Not in 3D: '
-           'electrolytes, voltage waveforms, Stern layers, geometry axisymmetric / azimuthal_order (validation '
-           'errors). '
-           'Mirror planes of the model (symmetry faces, x_lo ... z_hi) count held totals of the unfolded structure as '
-           'in 2D (x 2 per plane a held face lies on or meets, or held interface / element nodes touch).')
+    kind: (' 3D models (size_z set) need a tetrahedra mesh (a 3D tensor mesh is a validation error): elements of the '
+           f'discretization order, diagonal {prefix}_xx / _yy / _zz ({prefix}_zz set by the isotropic {prefix}; '
+           f'{prefix}_xy is a validation error); a voltage on objects holds their interface faces, a terminal every '
+           f'node of its elements, object {flux} is a sheet source on the interface faces (both sides); held '
+           f'{quantity}s are reactions in {unit} (exact Gauss balance{balance}); E, {outputs} are element means, plus '
+           f'3D-only output fields E_z, {flux_z}, {prefix}_zz (not in expressions), sampled on the uniform mesh '
+           'lattice. Mirror planes of the model (symmetry faces, x_lo ... z_hi) count held totals of the unfolded '
+           'structure as in 2D. Not in 3D (validation errors): electrolytes, voltage waveforms, Stern layers, '
+           'axisymmetric / azimuthal_order.')
     for kind, (prefix, flux, quantity, unit, outputs, flux_z, balance) in _TETRAHEDRA_TEXTS.items()}
 
 
@@ -1209,42 +1122,29 @@ def _potential_physics_type(kind):
         flux_feature_type = FeatureType(
             'current_density', 'Current density', 'boundary_condition', 'boundary',
             params=(Param('current_density', 'float', 1e4, label='Inward current density', unit='A/m^2',
-                          help="inward: > 0 injects current into the domain (outer faces) or into the object's "
-                               'boundary cells as value * perimeter length / cell area [A/m^3], < 0 extracts it; '
-                               'does not anchor the solve.',
+                          help='> 0 injects current into the domain or the object, < 0 extracts it.',
                           tip='Current per area flowing into the domain or object; negative values draw current '
                               'out.\n\nIt does not set the voltage level, so a voltage or terminal is still needed.'),),
             summary='Feeds a given current per area in through the selected domain edges or object boundaries. The '
                     'current must leave through a voltage or terminal.',
-            description='Prescribed normal current density, > 0 into the domain or the object. On outer faces a '
-                        'Neumann condition (the normal current through the face); on object perimeters it feeds the '
-                        'boundary cells inside the object with current_density * perimeter length / cell area '
-                        '[A/m^3] (each exposed cell face weighted by its normal component, so slanted and curved '
-                        'perimeters get their true length to ~2 %). Does not anchor the solve: the current must leave '
-                        'through a voltage or terminal. Polar / spherical domains weight each exposed face by its '
-                        'metric area. With solver_defaults.conformal_boundaries (2D: Cartesian, (r, z), polar, '
-                        'spherical) each cut cell feeds current_density * its chord of the drawn outline into the '
-                        'object cell owning it (exact for straight edges).',
+            description='Prescribed normal current density. Outer faces: a Neumann condition; object perimeters: '
+                        'current_density * perimeter length / cell area into the boundary cells inside the object '
+                        '(true perimeter length to ~2 %; conformal_boundaries: per cut-cell chord of the drawn '
+                        'outline). Does not anchor the solve: the current must leave through a voltage or terminal.',
             apply=make_apply_inward_flux('current_density'), grids=_FEM_GRIDS)
     else:
         flux_feature_type = FeatureType(
             'surface_charge', 'Surface charge', 'boundary_condition', 'boundary',
             params=(Param('surface_charge', 'float', 1e-6, label='Surface charge', unit='C/m^2',
-                          help='charge on the selected outer faces (the D flux into the domain equals it: a charged '
-                               'face with nothing beyond) or on the exposed faces of the objects (placed in their '
-                               'boundary cells as a density); > 0 raises V. Does not anchor the solve.',
+                          help='> 0 raises V.',
                           tip='Charge per area on the selected domain edges or object boundaries; positive charge '
                               'raises the potential.\n\n'
                               'It does not set the potential level, so a voltage or terminal is still needed.'),),
             summary='Places a fixed charge per area on the selected domain edges or object boundaries.',
-            description='Prescribed surface charge. On outer faces a Neumann condition D.n = surface_charge into the '
-                        'domain (a charged sheet with nothing beyond the face); on object perimeters the charge is '
-                        'placed in the boundary cells inside the object as surface_charge * perimeter length / '
-                        'cell area [C/m^3] (each exposed cell face weighted by its normal component, so slanted and '
-                        'curved perimeters get their true length to ~2 %; polar / spherical domains: the metric face '
-                        'areas). Does not anchor the solve. With solver_defaults.conformal_boundaries (2D: Cartesian, '
-                        '(r, z), polar, spherical) each cut cell places '
-                        'surface_charge * its chord of the drawn outline in the object cell owning it.',
+            description='Prescribed surface charge. Outer faces: a Neumann condition D.n = surface_charge into the '
+                        'domain (nothing beyond the face); object perimeters: surface_charge * perimeter length / cell '
+                        'area in the boundary cells inside the object (true perimeter length to ~2 %; '
+                        'conformal_boundaries: per cut-cell chord of the drawn outline). Does not anchor the solve.',
             apply=make_apply_inward_flux('surface_charge'), grids=_FEM_GRIDS)
     source_feature_type = FeatureType(
         'current_source' if kind == 'currents' else 'charge_density',
@@ -1258,39 +1158,31 @@ def _potential_physics_type(kind):
     driven_params = _WAVEFORM_PARAMS if spec.with_ions else ()   # electrostatics only
     driven_validate = _validate_driven if spec.with_ions else None
     stern_params = _STERN_PARAMS if spec.with_ions else ()   # electrostatics only
-    stern_text = (' stern_thickness > 0 (electrostatics, outer faces): a compact Stern layer of capacitance eps0 '
-                  'stern_permittivity / stern_thickness per area between the face voltage and the first cells (Robin '
-                  'face).') if spec.with_ions else ''
     features = (
         FeatureType('voltage', 'Voltage', 'boundary_condition', 'boundary',
-                    params=(_voltage_param('Held at the selected outer faces (on the face itself) or in the boundary '
-                                           'cells inside the selected objects.',
+                    params=(_voltage_param('Held on the selected outer faces or in the boundary cells inside the '
+                                           'selected objects.',
                                            'Potential held on the selected domain edges, or in the boundary cells '
                                            'just inside the selected objects.'),) + driven_params + stern_params,
                     validate=_validate_electrostatic_voltage if spec.with_ions else None,
                     result_kind='table',
                     summary=_VOLTAGE_SUMMARIES[kind],
-                    description='Fixed potential (Dirichlet). On outer faces V is imposed at the face (half-cell '
-                                f'conductance 2 {coefficient} / dx); on object perimeters the boundary cells inside '
-                                'the object are held at V, imposed on their faces toward the free cells as on an '
-                                'outer face (the window edge is no perimeter: select the outer face there). '
-                                'Unreferenced outer faces are insulated, and a later boundary feature on the '
-                                f'same face wins (validation warning). Anchors the solve.{stern_text} '
-                                f'{_HELD_RESULT_TEXT[kind]}',
+                    description='Fixed potential (Dirichlet): outer faces at the face (half-cell conductance 2 '
+                                f'{coefficient} / dx); on object perimeters the boundary cells inside the object are '
+                                'held, the value on their faces toward the free cells (the window edge is no '
+                                f'perimeter: select the outer face). Anchors the solve. {_HELD_RESULT_TEXT[kind]}',
                     apply=_apply_voltage, result=held_result, grids=_FEM_GRIDS),
         FeatureType('terminal', 'Terminal', 'domain_condition', 'domain',
-                    params=(_voltage_param('Voltage every selected cell is held at for the whole run (times the '
-                                           'waveform when one is set).',
+                    params=(_voltage_param('Held in every selected cell (times the waveform when one is set).',
                                            'Voltage the selected domains are held at for the whole run.'),)
                     + driven_params,
                     validate=driven_validate,
                     result_kind='table',
                     summary=_TERMINAL_SUMMARIES[kind],
-                    description='Holds every selected cell at the voltage for the whole run (the cells leave the '
-                                f'solve; {quantity} flows in or out freely); the voltage sits on their faces toward '
-                                f'the free cells (half-cell conductance 2 {coefficient} / dx of the free neighbour, '
-                                "whatever the held cells' own coefficient); anchors the solve. "
-                                f'{_TERMINAL_BODY_TEXT[kind]} {_HELD_RESULT_TEXT[kind]}',
+                    description=f'Holds every selected cell at the voltage ({quantity} flows in or out freely), the '
+                                'value on their faces toward the free cells (half-cell conductance 2 '
+                                f"{coefficient} / dx of the free neighbour, whatever the held cells' own); anchors "
+                                f'the solve. {_TERMINAL_BODY_TEXT[kind]} {_HELD_RESULT_TEXT[kind]}',
                     apply=_apply_terminal, result=held_result, grids=_FEM_GRIDS),
         flux_feature_type,
         FeatureType(_SYMMETRY_FEATURE, 'Symmetry', 'boundary_condition', 'boundary', allow_interior=False,
@@ -1332,7 +1224,7 @@ def _potential_physics_type(kind):
         summary=_PHYSICS_SUMMARIES[kind],
         settings=_SETTINGS[kind],
         features=features,
-        # triangles: FEMPotentialPhysics (solver_fem.py, mesh plan T4); tetrahedra: FEMPotentialPhysics3D (3D models)
+        # triangles: FEMPotentialPhysics (solver_fem.py); tetrahedra: FEMPotentialPhysics3D (3D models)
         grids=('tensor', 'triangles', 'tetrahedra'),
         mesh_method=_make_mesh_method(kind),
         material_properties=_MATERIAL_PROPERTIES[kind],
@@ -1345,7 +1237,7 @@ def _potential_physics_type(kind):
         default_study={'type': 'stationary'},
         uses_dispersion=False,
         solver_roles={'linear': CG_DIFFUSION_LINEAR_ROLE},
-        backends=('gpu', 'cpu'),   # numpy twins of the system / field kernels (solver_plan S6 stage 2)
+        backends=('gpu', 'cpu'),   # numpy twins of the system / field kernels
         conformal_boundaries=True,   # cut cells (held edges, insulated walls, perimeter fluxes; 2D)
         conformal_coordinates=('cartesian', 'polar', 'spherical'),   # cut cells on the logical (r, angle) cells too
         create=_make_create(kind),

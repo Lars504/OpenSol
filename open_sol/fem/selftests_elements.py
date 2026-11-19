@@ -1,4 +1,4 @@
-"""Self-tests of the FEM core (mesh plan stage T2, CPU; specs() empty, check({}) assembles directly): Lagrange patch
+"""Self-tests of the FEM core (CPU; specs() empty, check({}) assembles directly): Lagrange patch
 tests, Nedelec / Lagrange pipe cutoffs, tensor <-> triangle transfer totals. Each case
 reports error = number of failed sub-checks (tolerance 0) with the measured values in details."""
 import math
@@ -198,7 +198,7 @@ def _window_total(values, x_edges, y_edges, window, axisymmetric=False):
 def _check_transfers(results_by_name):
     from ..fem.assembly import element_areas, integrate, interpolate
     from ..fem.dofs import lagrange_dofs
-    from ..fem.mesher import MERGE_TOLERANCE
+    from ..fem.mesher import clamp_into_window
     from ..fem.transfer import tensor_to_triangles, triangles_to_tensor, triangles_to_triangles
 
     checks = SubChecks()
@@ -266,8 +266,7 @@ def _check_transfers(results_by_name):
     add('triangles_to_triangles_total', error <= _QUADRATURE_RTOL, error)
     target_p1 = lagrange_dofs(target_mesh, 1)
     moved = triangles_to_triangles('interpolate', p2, target_p1).apply(interpolate(p2, linear))
-    inset = MERGE_TOLERANCE * side   # the transfer evaluates window-side points this far inside (keeps off the ring)
-    clamped = np.clip(target_p1.dof_points(), inset, side - inset)
+    clamped = clamp_into_window(target_p1.dof_points(), target_mesh.window)   # where the transfer evaluates ring dofs
     error = float(np.abs(moved - linear(clamped[:, 0], clamped[:, 1])).max())
     add('triangles_to_triangles_linear_exact', error <= _EVALUATION_RTOL, error)
     moved32 = tensor_to_triangles('conservative', x_edges, y_edges, window, p0).apply(density.astype(np.float32))
@@ -279,7 +278,7 @@ ELEMENT_SELFTEST_CASES = (
     SelfTestCase(
         name='fem_lagrange_patch',
         label='FEM Lagrange elements: patch tests',
-        description='CPU patch tests of the FEM core (mesh plan T2) on the 2 x 2 um disc mesh (h 0.2 um, curved '
+        description='CPU patch tests of the FEM core on the 2 x 2 um disc mesh (h 0.2 um, curved '
                     'interior edges): -div(K grad u) = f with an anisotropic constant K and u exact on the outer '
                     'boundary reproduces linear u with P1, quadratic u with P2 on straight elements and linear u with '
                     'isoparametric P2 (nodal error 1e-11), also with flux (edge load) faces; point evaluation of '

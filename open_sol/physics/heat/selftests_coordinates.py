@@ -1,4 +1,4 @@
-"""Exact checks of the coordinate metric (symmetry plan 2.16, core.metric) and of heat on polar (r, phi) and spherical
+"""Exact checks of the coordinate metric (core.metric) and of heat on polar (r, phi) and spherical
 (r, theta) grids through the DiffusionSystem (scripted HeatPhysics on padding-free polar Domains, incl. the phi
 wrap); one CPU geometry case and three GPU cases, registered by definition.register."""
 import math

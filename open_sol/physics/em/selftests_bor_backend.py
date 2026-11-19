@@ -1,4 +1,4 @@
-"""CPU vs GPU backend case of em_fdfd_bor (solver_plan S8 E): the BOR model runs (cavity eigenfrequency m = 1, the order
+"""CPU vs GPU backend case of em_fdfd_bor: the BOR model runs (cavity eigenfrequency m = 1, the order
 list with and without a line_block node, the off-axis dipole order sum) and a pipe-port run (mode source / monitors,
 also on a line_block node) on solver_defaults.backend 'cpu' against 'gpu'; no physics imports. Without a usable GPU
 the gpu runs are skipped and the cpu runs are checked against their closed forms."""

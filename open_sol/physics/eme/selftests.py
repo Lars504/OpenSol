@@ -1,4 +1,4 @@
-"""Self-tests of em_eme (eme_plan section 5): CPU checks of the mode sets, interfaces, cascade, periodic block and bend
+"""Self-tests of em_eme: CPU checks of the mode sets, interfaces, cascade, periodic block and bend
 map on hand-built slab lines with exact references, model runs (lossy thin-film stack, em_fdfd_ez / _hz comparisons)
 and the 'linear_taper_eme' / 'mmi_1x2_eme' templates."""
 import cmath

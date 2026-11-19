@@ -146,7 +146,7 @@ NLFD_PARTS = parts('nlfd', NLFD, (
 )) + parts('nlfd sheets', 'open_sol.physics.nlfd.sheets', (
     'site_fields', 'sheet_site_polarizations', 'sheet_grid_density', 'sheet_cotangents',
 )) + parts('nlfd adjoint', 'open_sol.physics.nlfd.adjoint', (
-    'cascade_sensitivity', 'depleted_cotangents', 'transposed_channel_solve', 'polarization_cotangents',
+    'cascade_sensitivity', 'depleted_cotangents', 'polarization_cotangents',
 )) + (
     ('open_sol.physics.nlfd.absorption:absorbed_power_density', 'nlfd: absorbed_power_density'),
     ('open_sol.physics.nlfd.renderer:NonlinearRenderer.device_field', 'nlfd renderer: device_field'),

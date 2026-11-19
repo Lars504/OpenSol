@@ -1,4 +1,4 @@
-"""S7.8 mesh study (mesh_study_plan.md): the parts `python -m open_sol mesh-study` runs, records under the --out
+"""S7.8 mesh study: the parts `python -m open_sol mesh-study` runs, records under the --out
 directory. Imports open_sol.api, so only __main__ imports it (inside its handler)."""
 import importlib
 import traceback

@@ -1,4 +1,4 @@
-"""Self-tests of em_eme_3d (eme_plan stage 2): CPU checks of the cross-section mode sets, interfaces and cascade with
+"""Self-tests of em_eme_3d: CPU checks of the cross-section mode sets, interfaces and cascade with
 exact references (identity, reduction to the 2D slab EME with walls, PEC cells or a bend), model runs of the anisotropic
 thin-film stack and of PEC cells on cuDSS, and the 'thermo_optic_phase_shifter_eme_3d' template."""
 import cmath

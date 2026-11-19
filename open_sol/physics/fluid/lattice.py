@@ -10,7 +10,8 @@ from ...core.kernels import raw_twin, twin
 MAGIC_LAMBDA = 3.0 / 16.0   # TRT (tau+ - 1/2)(tau- - 1/2): halfway bounce-back exact for Poiseuille flow
 N_DIRECTIONS = 9
 BLOCK_SIZE = 256
-# Face condition codes shared with the kernel (faces in core.constants.FACES order).
+# Face condition codes shared with the kernel (faces in core.constants.FACES order). The order matters: the corner
+# rule tests kind <= FACE_SLIP (wall or slip).
 FACE_WALL, FACE_SLIP, FACE_VELOCITY, FACE_PRESSURE, FACE_PERIODIC = 0, 1, 2, 3, 4
 FACE_KIND_NAMES = {FACE_WALL: 'wall', FACE_SLIP: 'slip', FACE_VELOCITY: 'velocity', FACE_PRESSURE: 'pressure',
                    FACE_PERIODIC: 'periodic'}
@@ -44,7 +45,8 @@ WEIGHTS = np.array([4 / 9] + [1 / 9] * 4 + [1 / 36] * 4)
 # The weights sum to 1, so the shifted populations g = f - w need no correction.
 # Speed: the bulk direction loop is unrolled (literal tables fold, g[] stays in registers); the face rules and the
 # Bouzidi links run out of line (__noinline__, __constant__ tables) so their dynamic indexing never spills a bulk cell
-# to local memory; periodic wraps compare-and-add, no integer modulo. Same arithmetic as the numpy / numba twins.
+# to local memory; periodic wraps compare-and-add, no integer modulo. Same arithmetic as the numpy / numba twins: a
+# change here changes _step_host (incl. _face_velocity_gradient_host's np.select chain) and _step_numba in one edit.
 # Bytes per cell (the kernel is bandwidth-bound on large windows): relaxation_stride 0 reads omega_plus / _minus[0]
 # (one fluid viscosity: a 1-element array), force_stride 0 force_x / _y[0] (no force, or one force on every fluid
 # cell: a 1-element array; forces are read on fluid cells only); store_mode
@@ -668,7 +670,9 @@ def _step_numba(bouzidi):
         bouzidi_links = bool(bouzidi)
 
         # cache=True: an uncached compile (~9 s) lands in whichever case first steps on the cpu (bouzidi True / False
-        # are separate cache entries: numba keys closures by their pickled cell values, so no dispatcher in a cell)
+        # are separate cache entries: numba keys closures by their pickled cell values, so no dispatcher in a cell; a
+        # 'Cannot cache' NumbaWarning means a cell value stopped pickling). float32 constants and tables only: a float64
+        # literal or an int table entry in the arithmetic promotes it to float64
         @numba.njit(parallel=True, cache=True)
         def kernel(g_in, g_out, velocity_x, velocity_y, density_deviation, fluid, omega_plus, omega_minus, force_x,
                    force_y, face_kind, face_values, wx, wy, wall_row, wall_fraction):

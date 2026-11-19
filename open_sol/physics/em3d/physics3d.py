@@ -18,7 +18,7 @@ from .boundaries3d import AXES, solver_boundary_config_3d
 from .conformal_pec3d import STABILITY_BAND_CELLS, build_conformal_pec_3d
 from .engine3d import COMPONENT_AXES, MAX_MATERIAL_IDS, FDTDEngine3D
 from .harmonic3d import HarmonicAccumulator3D
-from .mode_ports3d import AXIS_PERMITTIVITY, MODE_DIRECTIONS, ModeMonitor3D, ModeSource3D
+from .mode_ports3d import MODE_DIRECTIONS, ModeMonitor3D, ModeSource3D, axis_permittivity
 from .monitors3d import DFTPlane3D, FluxBox3D, PlaneFlux3D, point_probe
 from .near_to_far3d import NearToFar3D
 from .renderer3d import EMRenderer3D
@@ -86,7 +86,7 @@ class StaticEM3DContract(EM3DSlots):
 
 def complex_cell_materials(materials, omega, pole_regions) -> tuple:
     """([eps_x, eps_y, eps_z] host complex128 = background - j sigma_e / (omega eps0) + chi of each pole on its region,
-    the host float64 backgrounds (AXIS_PERMITTIVITY: eps_r where eps_xx / eps_yy are not allocated), host complex128 mu
+    the host float64 backgrounds (axis_permittivity: eps_r where eps_xx / eps_yy are not allocated), host complex128 mu
     - j sigma_m / (omega mu0)) of em_fdfd_3d cells or elements; pole_regions = [(pole, index of its region (window
     slices or Ellipsis), its mask)]."""
     allocated = materials.property_names()
@@ -97,7 +97,7 @@ def complex_cell_materials(materials, omega, pole_regions) -> tuple:
     common = -1j * host('sigma_e') / (omega * EPS0)   # common to the three components
     for pole, index, mask in pole_regions:
         common[index] += complex(pole.susceptibility(omega)) * np.asarray(to_host(mask), dtype=np.float64)
-    backgrounds = [host(name if name in allocated else 'eps_r') for name in AXIS_PERMITTIVITY]
+    backgrounds = [np.asarray(to_host(axis_permittivity(materials, axis)), dtype=np.float64) for axis in range(3)]
     mu = host('mu_r').astype(np.complex128)
     if 'sigma_m' in allocated:
         mu -= 1j * host('sigma_m') / (omega * MU0)

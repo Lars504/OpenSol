@@ -1,13 +1,14 @@
-"""Bloch / Floquet unit cells of the tetrahedra solid (piezo_3d_plan D9): the periodic identification of the periodic
+"""Bloch / Floquet unit cells of the tetrahedra solid: the periodic identification of the periodic
 axes on the full-mesh scalar map, its vector / coupled (block layout) masters, the prolongation x = P x_r over the free
-masters, the rigid motions the periodicity leaves and the dofs on periodic faces. Host numpy (scipy inside functions)."""
+masters, the rigid motions the periodicity leaves and the dofs on periodic faces. Host numpy."""
 # fem.dofs3d.bloch_masters (the em3d convention): each hi-side dof stands for its lo-side partner times e^{-j k L} per
 # crossed period, u(x + L) = u(x) e^{-j k L} with exp(+j omega t); the three u components and phi share the scalar
 # dof's master and phase. The test space is the conjugate one, so K_r = P^H K P and M_r = P^H M P: complex Hermitian,
 # real symmetric when every phase is +-1 (k L a multiple of pi). A master is fixed with any dof it stands for (a support
 # on either side). Rigid motions t + w x x: an axis with a phase != 1 admits none, a phase-1 axis keeps the
 # translations and the rotation about itself (w x e_axis = 0); the same phase-1 rule keeps a constant potential, so a
-# piezoelectric cell needs a ground electrode only then.
+# piezoelectric cell needs a ground electrode only then. The 2D cells (bloch2d) are BlochCell3Ds with z never periodic;
+# P = fem.dofs.bloch_prolongation of vector_masters / coupled_masters.
 from dataclasses import dataclass
 
 import numpy as np
@@ -72,17 +73,3 @@ def bloch_cell_3d(dofs, periodic, wavenumbers) -> BlochCell3D:
     trivial = bool(np.all(phase == 1.0))
     return BlochCell3D(master=master, phase=phase, wavenumbers=wavenumbers, periodic=periodic, trivial=trivial)
 
-
-def bloch_prolongation(master, phase, free) -> tuple:
-    """(columns (n_r,) int64: the free masters, host CSR P (n, n_r)) with x = P x_r: each dof standing for a free
-    master carries its phase (float64 P when the phases are real), the rest 0; a master is free when every dof it
-    stands for is."""
-    import scipy.sparse
-    free = np.asarray(free, dtype=bool)
-    columns = np.setdiff1d(master[free], master[~free])
-    column_of = np.full(master.size, -1, dtype=np.int64)
-    column_of[columns] = np.arange(columns.size)
-    rows = np.flatnonzero(column_of[master] >= 0)
-    prolongation = scipy.sparse.csr_matrix((phase[rows], (rows, column_of[master[rows]])),
-                                           shape=(master.size, columns.size))
-    return columns, prolongation

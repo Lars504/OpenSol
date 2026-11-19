@@ -1,4 +1,4 @@
-"""Cross-section eigenmodes on triangle meshes (mesh plan 2.6: em_modes on a 'triangles' mesh): Lee-Sun-Cendes mixed
+"""Cross-section eigenmodes on triangle meshes (em_modes on a 'triangles' mesh): Lee-Sun-Cendes mixed
 Nedelec (E_t) / Lagrange (E_z) elements of degree 1 or 2 for beta^2, the PML ring as a complex coordinate stretch at
 the quadrature points, shift-invert on the host through the 'eigen' role runtime. xy = cross-section, fields ~ exp(j
 omega t - j beta z), lossy Im n_eff < 0. Host numpy (scipy inside functions)."""
@@ -62,11 +62,10 @@ SAMPLE_POINTS = 6               # points of that rule per element
 _LOCAL_NODES = {1: np.array([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
                 2: np.array([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [0.5, 0.5], [0.0, 0.5], [0.5, 0.0]])}
 # SuperLU L + U of the FEM pencil over the 5-point heuristic of core.memory_estimate.host_lu_bytes (wider stencils):
-# uncalibrated first figure (mesh plan 2.10); the summary 'solvers' factor_host_bytes calibrates it
+# uncalibrated first figure; the summary 'solvers' factor_host_bytes calibrates it
 FEM_LU_FILL_FACTOR = 4.0
 FEM_ENTRIES_PER_ROW = {1: 12, 2: 30}   # nonzeros per row of the assembled blocks (estimate)
 _NATURAL_WALLS = frozenset({BCType.PMC, BCType.SYMMETRIC})
-_PERIODIC_TYPES = frozenset({BCType.PERIODIC, BCType.BLOCH})
 PERIODIC_TEXT = ('periodic faces need matching nodes on opposite window sides, which triangle meshes do not have '
                  'yet; use a tensor mesh, or pec / pmc / mirror / cpml faces')
 _SIZE_REMEDY = ('coarsen the triangle mesh (larger maximum element size), use discretization linear, or cut the '
@@ -250,9 +249,9 @@ def fem_mode_layout(mesh, order, boundary_config, pec=None) -> FEMModeLayout:
     bool per-element PEC mask (None = none); ValueError for periodic faces or when every element is PEC."""
     if order not in (1, 2):
         raise ValueError(f'fem_mode_layout: order must be 1 or 2, got {order!r}')
-    faces = {face: getattr(boundary_config, face) for face in FACE_BITS}
-    if any(kind in _PERIODIC_TYPES for kind in faces.values()):
+    if boundary_config.periodic_x or boundary_config.periodic_y:
         raise ValueError(f'em_modes on triangles: {PERIODIC_TEXT}')
+    faces = {face: getattr(boundary_config, face) for face in FACE_BITS}
     ring = pml_ring(mesh, boundary_config)
     pec = np.zeros(mesh.n_elements, dtype=bool) if pec is None else np.asarray(pec, dtype=bool)
     if pec.shape != (mesh.n_elements,):
@@ -499,6 +498,14 @@ def prepare_fem_modes(layout, materials, omega, n_eff_guess=None) -> FEMModeProb
                           assembly_seconds=time.perf_counter() - started, row_scale=row_scale)
 
 
+def _eigenvector(layout, mode):
+    """Raw eigenvector [e_t; e_z] of a FEMMode on the free unknowns: the physical E_z part divided by -j beta (undoes
+    _build_mode's scaling; ARPACK v0, the group-index pencil)."""
+    raw = np.array(mode.coefficients, dtype=np.complex128)
+    raw[layout.nedelec.n_dofs:] /= -1j * complex(mode.beta)
+    return raw[layout.free]
+
+
 def _start_vector(start_vector, layout):
     """ARPACK v0 on the free unknowns: None, a flat array of their count, or the summed raw [e_t; e_z] of a FEMMode /
     sequence of them (None when that sum vanishes)."""
@@ -507,14 +514,11 @@ def _start_vector(start_vector, layout):
     modes = [start_vector] if isinstance(start_vector, FEMMode) else start_vector
     if isinstance(modes, (list, tuple)) and all(isinstance(mode, FEMMode) for mode in modes):
         total = np.zeros(layout.n_unknowns, dtype=np.complex128)
-        n_tangential = layout.nedelec.n_dofs
         for mode in modes:
             if mode.coefficients.shape != (layout.n_stacked,):
                 raise ValueError(f'start_vector mode has {mode.coefficients.size} coefficients, the layout '
                                  f'{layout.n_stacked}')
-            raw = np.array(mode.coefficients, dtype=np.complex128)
-            raw[n_tangential:] /= -1j * mode.beta
-            total += raw[layout.free]
+            total += _eigenvector(layout, mode)
         return total if np.any(total != 0) else None
     vector = np.asarray(start_vector, dtype=np.complex128).ravel()
     if vector.size != layout.n_unknowns:
@@ -617,13 +621,10 @@ def fem_group_indices(layout, materials_at, omega, modes, relative_step) -> tupl
     a_minus, b_minus = pencil(omega * (1.0 - step))
     d_a, d_b = (a_plus - a_minus) / (2.0 * step * omega), (b_plus - b_minus) / (2.0 * step * omega)
     b_mean = 0.5 * (b_plus + b_minus)
-    n_tangential = layout.nedelec.n_dofs
     with_group, warnings = [], []
     for number, mode in enumerate(modes, start=1):
         beta = complex(mode.beta)
-        raw = np.array(mode.coefficients, dtype=np.complex128)
-        raw[n_tangential:] /= -1j * beta   # the eigenvector's own E_z scaling (_build_mode)
-        vector = raw[layout.free]
+        vector = _eigenvector(layout, mode)
         denominator = complex(vector @ (b_mean @ vector))
         if denominator == 0 or beta == 0:
             warnings.append(f'mode {number} (n_eff = {mode.n_eff:.6g}): x^T B x vanishes, n_group NaN')
@@ -666,7 +667,7 @@ def element_means(layout, mode, mu) -> tuple:
 
 
 def mode_error_indicator(layout, mode, materials) -> np.ndarray:
-    """eta^2 per mesh element (float64 (n_elements,)) of a mode (mesh plan A3): Kelly jumps of tangential H (H . t and
+    """eta^2 per mesh element (float64 (n_elements,)) of a mode: Kelly jumps of tangential H (H . t and
     H_z) and normal D across interior window edges between non-PEC elements, 1/2 h_E int_E (mu0 |mu| |[H_tan]|^2 +
     |[D_n]|^2 / (eps0 |eps|)) ds to each side (that side's energy weights); outer, PEC and PML edges carry none."""
     mesh = layout.mesh

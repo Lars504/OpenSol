@@ -1,8 +1,7 @@
 """SolidRenderer3D: window-shaped (wx, wy, wz) displacement, strain and stress fields of a SolidMechanics3DPhysics."""
 from ...core.renderer import FieldInfo, PhysicsRenderer
+from ...model.schema import FREQUENCY_RESPONSE_STUDY
 from .fields3d import ELECTRIC_OUTPUT_ARRAYS_3D, ENERGY_OUTPUT_ARRAYS_3D, HARMONIC_IMAG_FIELDS_3D
-
-_FREQUENCY_RESPONSE_STUDY = 'frequency_response'   # = model.study_frequency_response.STUDY_NAME (requires_study)
 
 
 def _signed(name, label, unit, parity, requires_study=''):
@@ -23,9 +22,9 @@ class SolidRenderer3D(PhysicsRenderer):
         'u_y': _signed('u_y', 'Displacement y', 'm', 'polar_y'),
         'u_z': _signed('u_z', 'Displacement z', 'm', 'polar_z'),
         # frequency_response on tetrahedra: Im of the complex displacement (u_x .. u_z hold the real parts)
-        'u_x_im': _signed('u_x_im', 'Displacement x, imaginary part', 'm', 'polar_x', _FREQUENCY_RESPONSE_STUDY),
-        'u_y_im': _signed('u_y_im', 'Displacement y, imaginary part', 'm', 'polar_y', _FREQUENCY_RESPONSE_STUDY),
-        'u_z_im': _signed('u_z_im', 'Displacement z, imaginary part', 'm', 'polar_z', _FREQUENCY_RESPONSE_STUDY),
+        'u_x_im': _signed('u_x_im', 'Displacement x, imaginary part', 'm', 'polar_x', FREQUENCY_RESPONSE_STUDY),
+        'u_y_im': _signed('u_y_im', 'Displacement y, imaginary part', 'm', 'polar_y', FREQUENCY_RESPONSE_STUDY),
+        'u_z_im': _signed('u_z_im', 'Displacement z, imaginary part', 'm', 'polar_z', FREQUENCY_RESPONSE_STUDY),
         'von_mises': FieldInfo('von_mises', 'von Mises stress', unit='Pa', cmap='inferno'),
         'stress_xx': _signed('stress_xx', 'Stress xx', 'Pa', 'even'),
         'stress_yy': _signed('stress_yy', 'Stress yy', 'Pa', 'even'),

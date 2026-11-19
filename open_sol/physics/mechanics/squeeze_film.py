@@ -1,4 +1,4 @@
-"""Runtime of the solid_mechanics_3d feature squeeze_film_damping (new_modules_plan S6w, tetrahedra): SqueezeFilmDamping
+"""Runtime of the solid_mechanics_3d feature squeeze_film_damping (tetrahedra): SqueezeFilmDamping
 finds the flat footprint faces on the gap side, builds a fem.surface_mesh footprint with its fem.squeeze_film.SqueezeFilm
 (vents from the rim) and evaluates the gas damping rows per resonance; vent choices and the face filter."""
 # The physics-neutral film (equation, slip, SqueezeFilm, mode_gas_damping, gas_damping_totals, the table columns) lives
@@ -15,7 +15,7 @@ import numpy as np
 
 from ...core.constants import FACES_3D
 from ...fem.mesh import side_members
-from ...fem.mesh3d import PLANE_TOLERANCE
+from ...fem.mesh3d import plane_slack
 from ...fem.squeeze_film import SqueezeFilm, film_table, mode_gas_damping
 from ...fem.surface_mesh import normal_displacement, surface_triangle_mesh
 
@@ -47,8 +47,7 @@ def film_faces(tet_mesh, faces, solid, side) -> np.ndarray:
         keep[np.flatnonzero(keep)[~outward]] = False
     if not keep.any():
         return faces[keep]
-    bounds = np.array(tet_mesh.bounds)
-    slack = PLANE_TOLERANCE * float((bounds[3:] - bounds[:3]).max())
+    slack = plane_slack(tet_mesh.bounds)
     outermost = planes[keep].max() if direction > 0.0 else planes[keep].min()
     return faces[keep & (np.abs(planes - outermost) <= slack)]
 
@@ -126,7 +125,7 @@ class SqueezeFilmDamping:
         if self.vents == 'none':
             return rim[:0]
         window = np.asarray(tet_mesh.window, dtype=np.float64)
-        slack = PLANE_TOLERANCE * float((window[3:] - window[:3]).max())
+        slack = plane_slack(window)
         ends = tet_mesh.points[surface.nodes[mesh.edges[rim].astype(np.int64)]]   # (k, 2, 3)
 
         def on_plane(axis, plane):

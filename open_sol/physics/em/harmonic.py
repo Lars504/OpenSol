@@ -1,4 +1,4 @@
-"""Materials and losses at one angular frequency for the harmonic EM solvers (FDFD now, harmonic FDTD later): complex
+"""Materials and losses at one angular frequency for the harmonic EM solvers (FDFD, harmonic FDTD): complex
 eps / mu per cell, the H_z face-current right-hand side, absorbed power density and the assembled HarmonicSystem."""
 # Right-hand-side signs (exp(+j omega t)). Every FDTD source ADDS +c J s(t) to its field, so an FDTD current J_F / M_F
 # is minus the textbook impressed current (J_std = -J_F, M_std = -M_F) and the harmonic solvers keep the FDTD meaning:

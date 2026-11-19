@@ -6,7 +6,7 @@ import math
 import numpy as np
 
 from ...core.constants import C0
-from ...model.schema import SelfTestCase
+from ...model.schema import EIGENFREQUENCY_STUDY, SelfTestCase
 from ...model.selftest_helpers import float_list, skip_without_cudss
 from ...model.spec import DomainSpec, FeatureSpec, GeometrySpec, MeshSpec, ModelSpec, PhysicsSpec, StudySpec
 from .selftests_bor import _match
@@ -15,7 +15,7 @@ from .selftests_modes_fem import _report, _sizing
 _TYPE = 'em_fdfd_conical'
 _PHYSICS = 'em'
 _TABLE = 'resonances'
-_EIGEN_STUDY = 'eigenfrequency'   # = model.study_eigenfrequency.STUDY_NAME
+_EIGEN_STUDY = EIGENFREQUENCY_STUDY
 _CUDSS_FACTORIZATIONS = ('cudss', 'cudss_mixed')
 _CUDSS_TOLERANCE = 1e-9           # relative omega of a cuDSS solve to the SuperLU one
 # the lossy triangles box: double cudss without the Rayleigh polish reached 5.0e-9 on the 5th nearest resonance once

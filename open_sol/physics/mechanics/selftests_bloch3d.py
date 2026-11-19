@@ -1,4 +1,4 @@
-"""Bloch / Floquet unit cells of solid_mechanics_3d on tetrahedra (piezo_3d_plan stage 5): the reduced pencil
+"""Bloch / Floquet unit cells of solid_mechanics_3d on tetrahedra: the reduced pencil
 identities on a two-material slab cell (CPU, no model), bulk bands of all-periodic cells against the Christoffel
 equation (isotropic, rotated LN, a k = 0 cell with its rigid modes dropped), the piezoelectrically stiffened LN bands,
 gmsh periodic surfaces (skipped without gmsh), the 'solid_bloch_band_diagram_3d' template and the mode_shapes result of
@@ -70,7 +70,7 @@ def _cell_system(periods, shift_cubes, holds, wavenumber, rigid_allowed=False):
 
 
 def _cell_prolongation(system):
-    from .bloch3d import bloch_prolongation
+    from ...fem.dofs import bloch_prolongation
     return bloch_prolongation(*system.bloch.vector_masters(), system.free)[1]
 
 
