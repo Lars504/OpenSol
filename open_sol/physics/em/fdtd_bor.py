@@ -71,7 +71,7 @@ from ...core.constants import DTYPE, C0, EPS0, MU0
 from ...core.sources import sampled_waveform_spectrum
 from .body_of_revolution import BOR_SOURCE_COMPONENTS, BORAssembly, _regular_axis, axis_class, mirrored_yee
 from .boundaries import cpml_axis_profiles
-from .materials import DrudePole, LorentzPole
+from .materials import DrudePole, LorentzPole, _pole_step_term
 
 _EIGEN_TOLERANCE = 1e-6          # eigsh tolerance of the largest operator eigenvalue (its Ritz value lies below it)
 _STABILITY_MARGIN = 1e-5         # omega_max x (1 + this) covers that tolerance
@@ -1047,7 +1047,6 @@ class BORTimeStepper:
                 raise ValueError(f'em_fdtd_bor: a relative {name} below 1 ({float(np.min(values[active])):.4g}) at '
                                  'a field point breaks the time step (computed for eps = mu_r = 1)')
         if self._poles and self.e_active.any():
-            from . import _pole_step_term   # the 2D engines' z = -1 pole term (package init done by then)
             pole_terms = np.zeros(self.sizes[0])
             for points in self._poles:
                 pole_terms[points.indices] += points.weights * _pole_step_term(points.pole, dt)

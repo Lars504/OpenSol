@@ -1313,8 +1313,9 @@ def _em_physics_types(vctx):
 
 def _material_issues(vctx, em_types):
     """Model-wide checks over the permittivity arrays of every present EM type: dispersion dicts build valid poles;
-    warnings for a Drude material whose permittivity is set and for a user permittivity property no array uses; the
-    nk_fit report (definition_material_fit)."""
+    warnings for a Drude material whose permittivity is set and for a user permittivity property no array uses; an
+    error for a non-zero gyration_* a present EM type does not declare (model validate skips gyration names like
+    permittivity names); the nk_fit report (definition_material_fit)."""
     em_params = [physics_type.material_properties for physics_type in em_types]
     # permittivity properties some present EM type knows (a registered component of an absent type is dropped)
     em_permittivity_names = tuple(name for name in PERMITTIVITY_PROPERTY_NAMES
@@ -1355,11 +1356,12 @@ def _material_issues(vctx, em_types):
             ignoring = [physics_type.name for physics_type, params in zip(em_types, em_params)
                         if not any(param.name == name for param in params)]
             if ignoring and evaluates_to(properties.get(name), vctx.parameters, lambda value: value != 0.0):
+                # the readers are the registered types declaring the Param (a new reader needs no edit here)
+                readers = [physics_type.name for physics_type in vctx.registry.physics_types()
+                           if any(param.name == name for param in physics_type.material_properties)]
                 issues.append(Issue('error', path, f"{name} (a magneto-optic, non-reciprocal medium) is not supported "
-                                                   f"by {', '.join(ignoring)}: only em_fdfd_hz reads gyration_z "
-                                                   '(magnetisation out of the plane, in its operator) and em_modes '
-                                                   'gyration_x / gyration_y (transverse magnetisation, the first-order '
-                                                   'non-reciprocal phase shift); remove it or use one of those types'))
+                                                   f"by {', '.join(ignoring)}: only {', '.join(readers) or 'no type'} "
+                                                   'reads it; remove it or use one of those types'))
         for name, value in user_properties.items():
             if name in PERMITTIVITY_PROPERTY_NAMES and value is not None and name not in em_permittivity_names:
                 issues.append(Issue('warning', path, f"{name} is not used by the present EM physics "

@@ -4,63 +4,28 @@ Sub file of the root `structure_conventions.md` (read that first). EM gotchas; t
 slots are in `open_sol/coupling/sub_structure_conventions.md`. Current state, no changelog.
 
 ## Registered EM types (catalogue; details in the sections below)
-- `em_fdtd_ez`, `em_fdtd_hz`, `em_fdfd_ez`, `em_fdfd_hz` (default instance 'em'; two EM physics need distinct names
-  and equal bc_* / pml_* settings; FDFD registered after FDTD so the FDTD material Params stay first per name; only
-  em_fdfd_hz has eps_xy and its 'sum' slot eps_xy_update, and the gyrotropic gyration_z, section FDFD).
-- Magneto-optic gyration vector (`schema.GYRATION_PROPERTY_NAMES`, `materials.GYRATION_ARRAYS`; eps_ij += j e_ijk g_k,
-  exp(+j omega t)): em_fdfd_hz reads gyration_z in its operator, em_modes gyration_x / _y in a first-order shift only;
-  every other EM type is refused by `definition_common._material_issues` (an error, not the generic unread warning:
-  model validate skips gyration names like permittivity names). A new type supporting one declares the Param.
-- `em_modes` (xy is the waveguide cross-section, so no in-plane EM type shares its model, except em_fdfd_ez / _hz in
-  a thermal_noise study (same cross-section at k_z = 0 as illumination); default instance 'modes'; registered after the four in-plane types).
-- `em_fdfd_bor` ((r, z) half plane, one azimuthal order m or an order list (eigen orders; driven: the 3D sum of
-  off-axis point sources); family 'em', default 'em', registered after em_modes, refuses every other EM type in the
-  model; 'modes' vocabulary read as eps_rr = eps_xx, eps_phiphi = eps_r, eps_zz = eps_yy) and its twin `em_fdtd_bor`
-  (same operator, vocabulary and refusal; registered after it; real materials only; azimuthal_orders list = driven
-  order sum, one stepper per order and source family).
-- `em_fdfd_conical` (symmetry 2.9: z-invariant structure at out-of-plane k_z, all six components on the em_modes
-  layout and walls; family 'em', default 'em', registered last; 'modes' vocabulary; stationary, frequency_domain,
-  eigenfrequency (resonances at k_z = guided modes of beta = k_z); point / line currents of any direction, probes,
-  W/m flux lines).
+Registration order: `definition.register` (FDTD before FDFD: the FDTD material Params stay first per name); each
+type's vocabulary and refusals are in its help texts and validation.
+- `em_fdtd_ez` / `_hz`, `em_fdfd_ez` / `_hz` (in-plane; only em_fdfd_hz has eps_xy with its 'sum' slot eps_xy_update,
+  and gyration_z: section FDFD).
+- `em_modes` (xy = waveguide cross-section; no other EM type in its model, except em_fdfd_ez / _hz in a thermal_noise
+  study), `em_fdfd_bor` / `em_fdtd_bor` ((r, z) half plane; no other EM type), `em_fdfd_conical` (z-invariant
+  structure at out-of-plane k_z): the 'modes' material vocabulary.
+- Gyration (`schema.GYRATION_PROPERTY_NAMES`): a type reads a component only by declaring its material Param;
+  validation refuses a non-zero one in a model holding an EM type that does not (`definition_common._material_issues`).
 - Root rule "allocate where needed": poles comply in E_z, H_z and FDFD (masks cropped to their box); not yet: H_z
-  `eps_x` / `eps_y`, per-cell `da` / `db`, TFSF outline masks, FDFD CSR matrices. `fdtd_hz_2d_kernels.py`
-  re-exports the shared launch / Lorentz / H-coefficient / `drude_e_correction` / `q_accum_je_half` kernels, never
-  copies them.
+  `eps_x` / `eps_y`, per-cell `da` / `db`, TFSF outline masks, FDFD CSR matrices.
 
 ## Imports (inside physics/em; the cross-package rules are in the root file)
-- Host only / never cupy: `placement`, `slab_modes` (scipy lazily, numpy fallbacks), `cross_section_modes`
-  (`size_issue_for` / `line_block_bytes` GUI-thread safe), `eigenfrequency`, `body_of_revolution`, `fem_modes`.
-  yee_grid, operators and dispersion take the array module as `xp`.
-- Inside functions only: scipy in `sheet_conductivity`, `cross_section_modes` (and solvers.line_block),
-  `body_of_revolution`, `fdtd_bor` (also the package's `_pole_step_term` in refresh_coefficients); memory_estimates
-  imports `bor_line_block` / `fem_modes` in a function; selftests_optimization imports `design_density` in its check.
-- Never the reverse: definition_conical -> solvers/fdfd_conical_fem, definition_modes -> solvers/modes_fem,
-  definition_bor -> solvers/fdfd_bor_fem, solvers/fdfd_bor -> `bor_ports`, fdfd_2d -> `adjoint` (duck-types the
-  physics); nothing `fdfd_ports` imports imports it back. `conical` uses the public `cross_section_layout` /
-  `assemble_cross_section` / `fill_images` / `to_centres` of `cross_section_modes` (one writer of the wall and point
-  rules). `solvers/__init__` leaves fdfd_2d and modes_2d out (they import most siblings); `physics/em/__init__`
-  imports them last.
-- Run-time recipes: definition_fdfd / definition_fdtd have their own (fdtd_time_step_estimate 2D only; on the cpu only
-  memory items named in `_numba_stepped` are priced as numba twins: a renamed fields / coefficients item falls back to
-  the numpy price); definition_common holds the host-solved types' helpers (physics_counter, role_counter,
-  scaled_ops, kept_line_block_factors, resonance_eigenpairs, eigen_backend_kwargs, fem_resonance_time_estimate (the
-  BOR / conical triangles estimate); validation: mesh_kind, BOTH_GRIDS,
-  EIGENFREQUENCY_STUDY / OPTOMECHANICS_STUDY, raw_settings, eigen_only_feature_issues, validate_driven_point,
-  resonance_table_study_issues,
-  scipy_issues, host_matrix_back_end_issues, missing_source_issues, fem_size_issues, other_em_physics_labels,
-  auto_mesh_issues, resolved_solved_wavelengths (definition_bor: azimuthal_order_list_issues, axis_wall_settings,
-  cylindrical_material_params and the help texts GEOMETRY_HELP / COMPONENT_HELPS of both (r, z) types); apply callbacks:
-  apply_field_probe / _flux_monitor / _far_field, apply_resonance_table and apply_component_point_source of BOR,
-  conical and fdtd_bor: never a local copy); definition_fdtd_bor shares
-  memory_estimates `_fdtd_bor_members`; memory_estimates `host_factorization` is the factorization rule of the
-  host-matrix types (FDFD on triangles, conical, BOR) and `_fem_resonance_memory_estimate` the BOR / conical triangles
-  estimate. em_modes, em_fdfd_bor and em_fdfd_conical solve on host SuperLU on either
-  backend: recipes pass `backend='cpu'` to solver_work (cuDSS 'linear' items ignore it); line_block 'shifted' factors
-  stay on the run backend.
-- Self-test helpers: shared helpers live in selftests, selftests_hz, selftests_mode_ports (`slab_waveguide_spec`),
-  selftests_fdfd (`cpu_specs`), selftests_cross_section, selftests_bor, selftests_fdtd_bor, selftests_modes_fem.
-  selftests_operators / _modes / _cross_section / _resonance / _effective_index / _conducting_sheet / _polar /
-  _material_fit import physics modules inside their checks.
+- `physics/em/__init__` imports solvers.fdfd_2d / modes_2d last (they import most siblings; `solvers/__init__` leaves
+  them out). Host-only modules say so in their header.
+- Definitions share `definition_common` (validation blocks, run-time estimates of the host-solved types, apply
+  callbacks; (r, z) helpers in definition_bor) and `memory_estimates` (`host_factorization`,
+  `_fem_resonance_memory_estimate`, `_fdtd_bor_members`): reuse, never a local copy. em_modes, em_fdfd_bor and
+  em_fdfd_conical solve on the host on either backend: their recipes pass `backend='cpu'` to solver_work (line_block
+  'shifted' factors stay on the run backend).
+- Self-test helpers live mostly in `selftests` (also selftests_fdfd `cpu_specs`, selftests_mode_ports
+  `slab_waveguide_spec`, selftests_bor, selftests_eigenfrequency): grep the sibling imports before writing one.
 
 ## FDTD and shared EM
 - 'ez': Fields2D_Ez, FDTDEngine2D_Ez, EMRenderer, eps_r. 'hz': Fields2D_Hz, FDTDEngine2D_Hz, EMRendererHz, eps_xx /

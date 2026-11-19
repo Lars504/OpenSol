@@ -33,8 +33,8 @@ from .definition_effective_index import effective_index_feature
 from .definition_nonlinear import gain_medium_feature, nonlinear_medium_feature
 from .definition_phase_change import phase_change_medium_feature
 from .materials import EM_MATERIAL_SCHEMAS
-from .memory_estimates import (dft_monitor_memory_estimate, far_field_memory_estimate, fdtd_memory_estimate,
-                               line_spectra_memory_estimate, pec_memory_estimate)
+from .memory_estimates import (FDTD_NUMBA_STREAMED_ITEMS, dft_monitor_memory_estimate, far_field_memory_estimate,
+                               fdtd_memory_estimate, line_spectra_memory_estimate, pec_memory_estimate)
 from .renderer import EMRenderer, EMRendererHz
 
 _Q_ACCUM_INFO = FieldInfo('q_accum', 'Absorbed energy density', unit='J/m^3', cmap='magma')
@@ -526,9 +526,8 @@ def fdtd_time_step_estimate(polarization, settings_values, mesh, context):
 
 
 def _numba_stepped(item_label):
-    """Memory items (fdtd_memory_estimate labels) the numba Yee twins stream: fields and update coefficients (the
-    Bloch imaginary set counted with them: its bulk is the fields)."""
-    return item_label.startswith(('fields ', 'update coefficients', 'Bloch imaginary field set'))
+    """Whether a memory item is one the numba Yee twins stream (memory_estimates FDTD_NUMBA_STREAMED_ITEMS)."""
+    return item_label.partition(' (')[0] in FDTD_NUMBA_STREAMED_ITEMS
 
 
 EM_FDTD_EZ = _fdtd_physics_type('ez')

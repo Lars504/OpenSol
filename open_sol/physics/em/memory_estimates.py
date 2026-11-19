@@ -38,6 +38,10 @@ ASSEMBLY_PHASE = 'assembly'                 # operator assembly temporaries (the
 SOLVE_PHASE = 'solve'                       # one solve's material temporaries, an own (not kept) factor's copies
 EIGEN_PHASE = 'eigen solve'                 # solve_resonances / a mode solve: own factor copies, Krylov basis, filter
 REFACTOR_PHASE = 'cuDSS refactorisation'    # refactorize on the planned pattern (a later frequency / order / iteration)
+# fdtd_memory_estimate item names (the label before ' (') the cpu numba Yee twins stream (definition_fdtd prices only
+# these as numba): fields, update coefficients and the Bloch imaginary set (its bulk is fields)
+FDTD_FIELDS_ITEM, FDTD_COEFFICIENTS_ITEM, FDTD_BLOCH_ITEM = 'fields', 'update coefficients', 'Bloch imaginary field set'
+FDTD_NUMBA_STREAMED_ITEMS = (FDTD_FIELDS_ITEM, FDTD_COEFFICIENTS_ITEM, FDTD_BLOCH_ITEM)
 ADJOINT_PHASE = 'adjoint solve'             # one eps_sensitivity: transposed-solve temporaries and the gradients
 # _ResonanceFilter.measures: device column blocks alive at once (columns, conjugate, A v, B v and one product
 # temporary; + D v with a row scale)
@@ -335,8 +339,9 @@ def fdtd_memory_estimate(polarization):
         q_accum = bool(settings_values.get('track_absorption')) or _q_accum_referenced(
             context.spec, context.physics_spec.name, context.registry)
         n_coefficients = 4 if polarization == 'ez' else 8   # da, db + ca, cb (ez) / ca, cb, eps per face set (hz)
-        items = [(f'fields (3 x {real_name})', 3 * real_bytes * n_cells),
-                 (f'update coefficients ({n_coefficients} x {real_name})', n_coefficients * real_bytes * n_cells),
+        items = [(f'{FDTD_FIELDS_ITEM} (3 x {real_name})', 3 * real_bytes * n_cells),
+                 (f'{FDTD_COEFFICIENTS_ITEM} ({n_coefficients} x {real_name})',
+                  n_coefficients * real_bytes * n_cells),
                  ('CPML psi slabs', _cpml_psi_bytes(mesh, settings_values, real_bytes))]
         # C5 nonlinear_medium (its own arrays: the feature estimator): hz adds its cells to the pole cell mask and its
         # power to the pole power totals
@@ -363,7 +368,7 @@ def fdtd_memory_estimate(polarization):
                                        * box_cells for box_cells, n_drude, n_lorentz in regions)
             if polarization == 'ez' and any_drude:
                 imaginary_pole_bytes += real_bytes * n_cells   # imaginary jz_total
-            items.append(('Bloch imaginary field set', 3 * real_bytes * n_cells
+            items.append((FDTD_BLOCH_ITEM, 3 * real_bytes * n_cells
                           + _cpml_psi_bytes(mesh, settings_values, real_bytes) + imaginary_pole_bytes))
         trace_items, run_items, host_items = _point_trace_items(context, mesh)
         transient_items = []
