@@ -250,3 +250,24 @@ Sub file of the root `structure_conventions.md` (read that first). Visualizer an
   the rest), clamped to 1; below STILL a particle dies (holes, solids and insulators are zero vectors, not NaN: they
   would collect crawling dots). Seeds fill the shown window per image (count by area, so zoom and mirrors keep the
   screen density). Hidden on a raised map (relief); `uploadFrame` resets `flowState.frame` so the textures follow.
+  Deformed shapes (`viewer_data(motion=ViewerMotion)`; api `_viewer_motion`, 2D models of the `_MOTION_FIELDS`
+  physics types: solid_mechanics u_x / u_y, membrane w_re, plus the `_im` parts when every frame holds them and they
+  are not negligible): each layer's `displacement` = one array per channel on the layer's own samples (components
+  'u' / 'v' along its axes, 'n' along its normal; real channels, then imaginary), packed per frame as int16 over
+  [-dmax, dmax] interleaved per sample. A displacement on other samples than the shown field (a P0 raster field
+  over a P1 displacement triangulation: `_samples_like` compares node counts / raster shapes) gives no motion (a
+  subtitle note), never an interpolation. Every array a layer carries must follow the layer through `_strided`,
+  `_plane_padded` (displacement pads: the in-plane component normal to the plane 0, the normal one by
+  `mirror_signs`) and `_hide_void`: a new per-sample array goes through all three. Solids hide their void
+  (`_hide_void`: youngs_modulus <= 0; NaN values + zero displacement and a crop to the solid cells on grids except on
+  mirror faces, whose pads would otherwise bridge the gap; dropped triangles and unused nodes on triangulations), so
+  the page fits the body; skipped when a void grid cell moves (a c_ij-only material has E = 0). Page (`// ----
+  solid2d ----` blocks): the vertex shader adds sum aDisp[c] uDispW[c] uDispDir[c] before the mirror transform (so
+  in-plane images reflect the deformed shape; the normal channel's image sign is `normalSign`); the box and other
+  buffers without aDisp read the generic attribute value set to 0 in setupGL. Magnification: the largest displacement
+  (all frames for 'time', the shown frame otherwise) shows as Deform x DEFORM_FULL of the rest body size; bounds stay
+  the rest shape's (room would change the Stretch), the face-on fit leaves `motionInplaneReach` around the map, and
+  Stretch starts off for in-plane motion (a stretched axis would magnify that displacement too). Oscillating states
+  animate Re[d exp(j theta)] and, for a real mode of a signed field, the colours by uAmp = cos theta; static states'
+  Animate ramps only the shape. Body outlines: boundary edges of frame 0's valued triangles (mirror-plane seams last,
+  skipped while the images show), deformed after the layers and the rest shape before them without depth writes.

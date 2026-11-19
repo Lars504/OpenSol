@@ -7,9 +7,11 @@ plays them), or labelled states (wavelengths, modes, DFT frequencies: a slider; 
 animates their phase, Re[A exp(j wt)]). `layer_from_field`
 reads a FieldData duck-typed (viz never imports api or model); api.Results.export_html collects the frames. An
 optional `ViewerGeometry` adds the model objects: their outlines on every layer and, in 3D, their edges and surfaces;
-`ViewerMirror`s let the page draw the mirror images of a half / quarter model (a Mirror button). `figure_settings`
-checks the Plot settings a page opens with (font sizes, colour and axis limits, colour bar and label places). 2D maps
-whose layers carry `ViewerVectors` (with a `ViewerFlow` naming them) get moving flow particles (a Flow button).
+`ViewerMirror`s let the page draw the mirror images of a half / quarter model (a Mirror button); a `ViewerMotion`
+with per-layer displacements lets it draw the deformed shape (solids in plane, membranes out of plane) and animate it
+(modes oscillate). `figure_settings` checks the Plot settings a page opens with (font sizes, colour and axis limits,
+colour bar and label places). 2D maps whose layers carry `ViewerVectors` (with a `ViewerFlow` naming them) get moving
+flow particles (a Flow button).
 """
 
 import json
@@ -25,7 +27,8 @@ TEMPLATE_FILE = 'field_viewer.html'
 DATA_MARKER = '/*__FIELD_DATA__*/null'
 FORMAT = 'open_sol.field_viewer'
 FORMAT_VERSION = 4                    # 2: length_scale, figure (Plot settings); 3: inward directions in line rows;
-#                                       4: phasor partners (frame 'quadrature', data 'phasor'), flow vectors ('flow')
+#                                       4: phasor partners (frame 'quadrature', data 'phasor'), flow vectors ('flow'),
+#                                          motion (displacement channels per frame)
 FRAME_KINDS = ('time', 'labelled')    # time: snapshots the page can play; labelled: wavelengths, modes, frequencies
 MAX_BYTES = 24_000_000                # quantised values of every frame and layer (the page is ~4/3 of this, base64)
 MAX_FRAMES = 200
@@ -67,6 +70,7 @@ FIGURE_RANGES = {'font_size': (6.0, 40.0), 'title_size': (8.0, 72.0),           
                  'colorbar_length': (0.1, 1.0)}                                  # fraction of the view side
 FIGURE_LIMITS = ('color', 'x', 'y', 'z')   # <name>_min / <name>_max: colour limits (field unit), axis limits (m)
 FIGURE_LENGTHS = ('scale_bar_length',)     # positive lengths (m)
+MOTION_COMPONENTS = ('u', 'v', 'n')        # displacement along a layer's first / second axis and along its normal
 
 
 @dataclass(eq=False)
@@ -85,6 +89,7 @@ class ViewerLayer:
     vectors: 'ViewerVectors | None' = None   # in-plane vector field of a 2D map (flow particles), its own grid
     quadrature: np.ndarray | None = None   # phasor partner, shaped as values: the page animates
     #                                        values cos(wt) + quadrature sin(wt) (`layer_from_field(quadrature=)`)
+    displacement: tuple | None = None    # ViewerMotion.channels arrays shaped like values (m): real, then imaginary
 
 
 @dataclass(eq=False)
@@ -133,6 +138,26 @@ class ViewerQuantity:
     unit: str = ''
     signed: bool = False                 # True: diverging colour maps, limits symmetric about 0
     phase: bool = False                  # an angle in rad on (-pi, pi]: an odd mirror image shifts it by pi
+
+
+@dataclass(eq=False)
+class ViewerMotion:
+    """Displacement the page deforms every layer by (each layer's `displacement`: one array per channel, the
+    components in order, then their imaginary parts when complex). components: an ordered subset of
+    MOTION_COMPONENTS ('u', 'v' in plane: solids; 'n' along the layer normal: membranes); oscillate: modes and
+    harmonic states (the page animates Re[d exp(j theta)], and signed colours with cos theta when real), else a
+    static state (its Animate button ramps the load 0 -> 1); mirror_signs {face: +1 | -1}: sign of the normal
+    displacement in that face's image (in-plane parts follow the reflection itself; missing faces +1); physical:
+    False for eigenmodes (an arbitrary amplitude: the page names no magnification)."""
+    components: tuple
+    complex: bool = False
+    oscillate: bool = False
+    mirror_signs: dict = field(default_factory=dict)
+    physical: bool = True
+
+    @property
+    def channels(self) -> int:
+        return len(self.components) * (2 if self.complex else 1)
 
 
 @dataclass(eq=False)
@@ -235,12 +260,12 @@ def _check_layers(frames):
                     and (layer.vectors is None) == (reference.vectors is None)
                     and (layer.quadrature is None) == (reference.quadrature is None)
                     and layer.plane == reference.plane and tuple(layer.axes) == tuple(reference.axes)
-                    and np.shape(layer.values) == np.shape(reference.values))
+                    and np.shape(layer.values) == np.shape(reference.values)
+                    and (layer.displacement is None) == (reference.displacement is None))
             if not same:
-                raise ValueError(f'frame {index}: a layer differs from frame 0 (kind, phasor partner, plane, axes or '
-                                 f'sample count '
-                                 f'{np.shape(layer.values)} vs {np.shape(reference.values)}): one page shows one set '
-                                 'of surfaces')
+                raise ValueError(f'frame {index}: a layer differs from frame 0 (kind, phasor partner, plane, axes, '
+                                 f'displacement or sample count {np.shape(layer.values)} vs '
+                                 f'{np.shape(reference.values)}): one page shows one set of surfaces')
 
 
 def _stride(layers, n_frames, max_bytes):
@@ -263,6 +288,11 @@ def _stride(layers, n_frames, max_bytes):
     return MAX_STRIDE
 
 
+def _codes(layer):
+    """int16 codes per sample of a layer: its value plus one per displacement channel."""
+    return 1 + (0 if layer.displacement is None else len(layer.displacement))
+
+
 def _layer_samples(layer, stride):
     if layer.triangulation is not None:
         return int(np.size(layer.values))
@@ -271,8 +301,8 @@ def _layer_samples(layer, stride):
 
 
 def _layer_codes(layer, stride):
-    """int16 codes a layer packs per frame: its samples, twice with a phasor partner."""
-    return _layer_samples(layer, stride) * (1 if layer.quadrature is None else 2)
+    """int16 codes a layer packs per frame: per sample its value, the phasor partner and each displacement channel."""
+    return _layer_samples(layer, stride) * (_codes(layer) + (0 if layer.quadrature is None else 1))
 
 
 def _block_mean(values, stride, axes):
@@ -303,11 +333,14 @@ def _strided(layer, stride):
     = block mean centres); triangulations unchanged."""
     if layer.triangulation is not None or stride == 1:
         return layer
+    displacement = (None if layer.displacement is None
+                    else tuple(_block_mean(channel, stride, (0, 1)) for channel in layer.displacement))
     return ViewerLayer(values=_block_mean(layer.values, stride, (0, 1)),
                        u_centres=_block_mean(layer.u_centres, stride, (0,)),
                        v_centres=_block_mean(layer.v_centres, stride, (0,)), axes=layer.axes, plane=layer.plane,
                        extent=layer.extent, vectors=layer.vectors,
-                       quadrature=None if layer.quadrature is None else _block_mean(layer.quadrature, stride, (0, 1)))
+                       quadrature=None if layer.quadrature is None else _block_mean(layer.quadrature, stride, (0, 1)),
+                       displacement=displacement)
 
 
 def _log_floor(low, high):
@@ -690,32 +723,42 @@ def _plane_pads(layer, mirrors, tolerance):
         end = centres[0] if side == 'lo' else centres[-1]
         edge = extent[2 * index + (side == 'hi')]
         if abs(edge - mirror.position) <= tolerance < abs(end - mirror.position):
-            pads.append((index, side, float(mirror.position), int(mirror.value_sign)))
+            pads.append((index, side, float(mirror.position), int(mirror.value_sign), mirror.face))
     return pads
 
 
-def _plane_padded(layer, pads, phase):
+def _padded_row(values, index, side, even):
+    """values with the row next to its side of axis index repeated (even) or zeroed (odd; NaN kept) on that side."""
+    nearest = np.take(values, [0 if side == 'lo' else -1], axis=index)
+    row = nearest if even else np.where(np.isfinite(nearest), 0.0, np.nan)
+    return np.concatenate((row, values) if side == 'lo' else (values, row), axis=index)
+
+
+def _plane_padded(layer, pads, phase, motion=None):
     """Grid layer with a sample row on each padded mirror plane (even image: the nearest row, odd: 0, a phase keeps
-    the nearest), so the map and its mirror image meet without a one-cell gap."""
+    the nearest), so the map and its mirror image meet without a one-cell gap; displacement rows likewise (the
+    in-plane component normal to the plane 0, the tangential one repeated, the normal one by the motion's sign)."""
     values = np.asarray(layer.values, dtype=np.float64)
     quadrature = None if layer.quadrature is None else np.asarray(layer.quadrature, dtype=np.float64)
     centres = [np.asarray(layer.u_centres, dtype=np.float64), np.asarray(layer.v_centres, dtype=np.float64)]
-
-    def padded(array, index, side, sign):
-        nearest = np.take(array, [0 if side == 'lo' else -1], axis=index)
-        row = nearest if sign > 0 or phase else np.where(np.isfinite(nearest), 0.0, np.nan)
-        return np.concatenate((row, array) if side == 'lo' else (array, row), axis=index)
-
-    for index, side, position, sign in pads:
-        values = padded(values, index, side, sign)
+    channels = None if layer.displacement is None else [np.asarray(c, dtype=np.float64) for c in layer.displacement]
+    names = () if motion is None else motion.components * (2 if motion.complex else 1)
+    for index, side, position, sign, face in pads:
+        values = _padded_row(values, index, side, sign > 0 or phase)
         if quadrature is not None:   # the partner has the same parity
-            quadrature = padded(quadrature, index, side, sign)
+            quadrature = _padded_row(quadrature, index, side, sign > 0 or phase)
         centres[index] = np.concatenate(([position], centres[index]) if side == 'lo' else (centres[index], [position]))
+        if channels is not None:
+            for k, name in enumerate(names):
+                even = (motion.mirror_signs.get(face, 1) > 0 if name == 'n'
+                        else MOTION_COMPONENTS.index(name) != index)
+                channels[k] = _padded_row(channels[k], index, side, even)
     return ViewerLayer(values=values, u_centres=centres[0], v_centres=centres[1], axes=layer.axes, plane=layer.plane,
-                       extent=layer.extent, vectors=layer.vectors, quadrature=quadrature)
+                       extent=layer.extent, vectors=layer.vectors, quadrature=quadrature,
+                       displacement=None if channels is None else tuple(channels))
 
 
-def _mirror_padded_frames(frames, mirrors, phase):
+def _mirror_padded_frames(frames, mirrors, phase, motion=None):
     """frames with their grid layers padded onto the mirror planes (pads decided on frame 0, the same surfaces in
     every frame)."""
     if not mirrors:
@@ -724,7 +767,8 @@ def _mirror_padded_frames(frames, mirrors, phase):
     pads = [_plane_pads(layer, mirrors, tolerance) for layer in frames[0].layers]
     if not any(pads):
         return frames
-    return [ViewerFrame([_plane_padded(layer, pad, phase) if pad else layer for layer, pad in zip(frame.layers, pads)],
+    return [ViewerFrame([_plane_padded(layer, pad, phase, motion) if pad else layer
+                         for layer, pad in zip(frame.layers, pads)],
                         frame.label, frame.time) for frame in frames]
 
 
@@ -851,6 +895,56 @@ def _flow_data(frames, flow, scale):
     return page, packed
 
 
+# ---- motion (deformed shapes) ----
+def _check_motion(frames, motion):
+    """ValueError unless every layer of every frame holds motion.channels displacement arrays shaped like its values
+    (no motion: no layer holds any) and the motion's components and mirror signs are valid."""
+    if motion is None:
+        if any(layer.displacement is not None for frame in frames for layer in frame.layers):
+            raise ValueError('layers carry displacements but no ViewerMotion says what they are')
+        return
+    components = tuple(motion.components)
+    if not components or len(set(components)) != len(components) or any(
+            name not in MOTION_COMPONENTS for name in components) or list(components) != sorted(
+            components, key=MOTION_COMPONENTS.index):
+        raise ValueError(f'motion components {components!r}: an ordered subset of {MOTION_COMPONENTS}')
+    for face, sign in motion.mirror_signs.items():
+        if face not in _OUTER_FACES or int(sign) not in (1, -1):
+            raise ValueError(f'motion mirror sign {face!r}: {sign!r}: faces {_OUTER_FACES}, signs +1 / -1')
+    for index, frame in enumerate(frames):
+        for layer in frame.layers:
+            channels = layer.displacement
+            if channels is None or len(channels) != motion.channels:
+                raise ValueError(f'frame {index}: a layer holds {0 if channels is None else len(channels)} '
+                                 f'displacement channels, the motion {components} (complex {motion.complex}) needs '
+                                 f'{motion.channels}')
+            for channel in channels:
+                if np.shape(channel) != np.shape(layer.values):
+                    raise ValueError(f'frame {index}: displacement shape {np.shape(channel)} differs from the values '
+                                     f'{np.shape(layer.values)}')
+
+
+def _displacement_codes(layers, scale):
+    """(largest |displacement| over the layers' channels in length units, per layer base64 int16 codes of the
+    channels interleaved per sample over [-max, max]; NaN -> 0)."""
+    largest = 0.0
+    for layer in layers:
+        for channel in layer.displacement:
+            channel = np.asarray(channel, dtype=np.float64)
+            finite = channel[np.isfinite(channel)]
+            if finite.size:
+                largest = max(largest, float(np.abs(finite).max()))
+    largest /= scale
+    codes = []
+    for layer in layers:
+        stacked = np.stack([np.asarray(channel, dtype=np.float64).reshape(-1) / scale
+                            for channel in layer.displacement], axis=1)
+        stacked = np.where(np.isfinite(stacked), stacked, 0.0)
+        scaled = stacked / largest if largest > 0 else np.zeros_like(stacked)
+        codes.append(_b64(np.round(np.clip(scaled, -1.0, 1.0) * 32767).astype('<i2')))
+    return largest, codes
+
+
 def figure_settings(figure) -> dict:
     """The checked Plot settings {key: value} of a page (FIGURE_CHOICES / _RANGES / _LIMITS / _LENGTHS keys; None
     values = automatic, dropped); ValueError for an unknown key, a value outside its choices / range or min >= max."""
@@ -888,7 +982,8 @@ def figure_settings(figure) -> dict:
 
 
 def viewer_data(frames, quantity, title='', subtitle='', frame_kind='labelled', view=None, plan=None,
-                max_bytes=MAX_BYTES, max_frames=MAX_FRAMES, geometry=None, mirrors=None, figure=None, flow=None):
+                max_bytes=MAX_BYTES, max_frames=MAX_FRAMES, geometry=None, mirrors=None, figure=None, flow=None,
+                motion=None):
     """The JSON-able dict the page reads. frames [ViewerFrame] (one surface set throughout), quantity ViewerQuantity,
     frame_kind 'time' | 'labelled', view (azimuth, elevation) degrees or None, geometry ViewerGeometry or None,
     mirrors [ViewerMirror] the planes the page can unfold across (a Mirror button; grid layers ending on one get a
@@ -898,13 +993,14 @@ def viewer_data(frames, quantity, title='', subtitle='', frame_kind='labelled', 
     browser remembers. flow: ViewerFlow naming the ViewerVectors every layer carries (2D maps only; flow particles,
     their mirror images follow ViewerMirror.flow_sign), None without vectors. Layers with a phasor partner (`ViewerLayer.quadrature`, all or none; a signed quantity,
     labelled frames): the page animates values cos(wt) + quadrature sin(wt), each frame quantised over -+ its largest
-    modulus."""
+    modulus. motion: ViewerMotion of the layers' displacements (deformed shape, animation), None = none."""
     if not frames:
         raise ValueError('nothing to show: no field frames')
     if frame_kind not in FRAME_KINDS:
         raise ValueError(f'frame_kind {frame_kind!r} is not one of {FRAME_KINDS}')
     figure = figure_settings(figure)
     _check_layers(frames)
+    _check_motion(frames, motion)
     if plan is None:
         plan = plan_frames(frames[0].layers, len(frames), max_bytes, max_frames)
         frames = [ViewerFrame([_strided(layer, plan.stride) for layer in frames[index].layers], frames[index].label,
@@ -912,7 +1008,7 @@ def viewer_data(frames, quantity, title='', subtitle='', frame_kind='labelled', 
     elif len(frames) != len(plan.indices):
         raise ValueError(f'{len(frames)} frames for a plan of {len(plan.indices)}')
     mirrors = list(mirrors or [])
-    frames = _mirror_padded_frames(frames, mirrors, bool(quantity.phase))
+    frames = _mirror_padded_frames(frames, mirrors, bool(quantity.phase), motion)
     first = frames[0].layers
     span = max(_layer_span(layer) for layer in first)
     if geometry is not None and geometry.box is not None:
@@ -935,6 +1031,8 @@ def viewer_data(frames, quantity, title='', subtitle='', frame_kind='labelled', 
             packed[-1]['quadrature'] = [_b64(_quantised(layer.quadrature, low, high)) for layer in frame.layers]
         if quantity.signed and not quantity.phase:
             packed[-1]['robust'] = _robust_magnitude(frame.layers, phasor)
+        if motion is not None:
+            packed[-1]['dmax'], packed[-1]['disp'] = _displacement_codes(frame.layers, scale)
     if not ranges:
         raise ValueError('the field has no finite value in any frame')
     low, high = min(lo for lo, _ in ranges), max(hi for _, hi in ranges)
@@ -954,6 +1052,11 @@ def viewer_data(frames, quantity, title='', subtitle='', frame_kind='labelled', 
         'mirrors': _mirror_data(mirrors, scale),
         'flow': flow_page,
         'phasor': phasor,
+        'motion': None if motion is None else {
+            'components': list(motion.components), 'complex': bool(motion.complex),
+            'oscillate': bool(motion.oscillate), 'physical': bool(motion.physical),
+            'max': max(frame['dmax'] for frame in packed),
+            'mirror_signs': {face: int(sign) for face, sign in motion.mirror_signs.items()}},
     }
 
 
