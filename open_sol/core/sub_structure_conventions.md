@@ -208,8 +208,9 @@ coordinate rules stay in the root file.
 
 ## Mirror planes (`mirror`, numpy only; symmetry 2.5)
 - `mirror_faces(spec, physics=None)` = {face: sign}: EM bc_<face> 'symmetric' +1 / 'antisymmetric' -1 and the outer
-  faces of the enabled `MIRROR_FEATURES` (membrane symmetry +1 / antisymmetry -1, the `symmetry` feature of every
-  other non-EM type +1 = its natural even face, magnetostatics_3d symmetry -1; `feature_mirror_faces`;
+  faces of the enabled `MIRROR_FEATURES` (membrane and pressure_acoustics symmetry +1 / antisymmetry -1, the
+  `symmetry` feature of every other non-EM type +1 = its natural even face, magnetostatics_3d symmetry -1;
+  `feature_mirror_faces`;
   `physics_mirror_faces` = both of one physics, also used by `parity_tag`). With a physics name, faces it does not set
   itself get +1 (non-EM fields unfold even: their face on the plane must be insulated,
   `definition_helpers.mirror_face_issues` warns otherwise), except the `FACE_FEATURE_SIGNS` types, signed by their own
@@ -234,8 +235,11 @@ coordinate rules stay in the root file.
   `FieldInfo.staggered` = axes of hi-face samples (plane value 0 when odd, else the nearest sample: exact only for odd
   staggered components). Non-EM parities (s = +1, plane on the window edge): potential, laminar_flow, solid_mechanics
   (2D / 3D: shear ij = axial of the third axis), drift_diffusion, elastic_waves (v polar staggered, sxy axial_z on
-  corners, normal stresses even; its 'rigid' face pins the window face where another physics pads, so the slip wall is
-  on the EM plane; any other face there warns); magnetic types A / J polar_z, B / H axial_x / _y with their own face
+  corners, normal / hoop stresses, pressure, strains 'scalar' (always s = +1: no odd face); a 'rigid' or 'symmetric'
+  face pins the window face where another physics pads, so the slip wall is on the plane; bc 'symmetric' also makes
+  the face a model mirror plane itself (own_mirror_faces), even only: `EVEN_ONLY_BC_TYPES`, sector_specs refuses it;
+  any other face on a model mirror plane warns), pressure_acoustics (p 'scalar', v polar; symmetry = sound hard +1,
+  antisymmetry = sound soft -1, so it takes parity sectors); magnetic types A / J polar_z, B / H axial_x / _y with their own face
   sign. `FieldInfo.plane_signs` ('x_lo:1 ...', `plane_signs_text`) replaces the face signs for one field
   (`field_plane_signs`, read by unfold_field): the nlfd channels (nlfd sub file).
 - `unfold_field(field_data, faces)` (host, GUI-thread safe): x / y faces only (a z cut shows no z image); marks its

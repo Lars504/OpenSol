@@ -133,7 +133,7 @@ def mirror_face_issues(vctx, physics_spec, boundary_feature_types, path, consequ
         if on_plane:
             issues.append(Issue(severity, feature_path(physics_spec, feature),
                                 f"{', '.join(on_plane)} lies on a mirror plane of the model, where the mirrored (unfolded) "
-                                f'model needs this physics insulated (no boundary feature): {consequence}'))
+                                f"model needs this physics' default (natural, zero-flux) face there (no boundary feature): {consequence}"))
     return issues
 
 

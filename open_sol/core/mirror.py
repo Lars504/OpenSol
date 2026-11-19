@@ -41,9 +41,12 @@ FACE_FEATURE_SIGNS = {**{type_name: ({'symmetry': 1, 'magnetic_insulation': -1},
 MIRROR_FEATURES = {'membrane': {'symmetry': 1, 'antisymmetry': -1},
                    **{type_name: {'symmetry': 1} for type_name in (
                        'heat', 'electric_currents', 'electrostatics', 'drift_diffusion', 'magnetostatics',
-                       'magnetic_fields_ac', 'solid_mechanics', 'solid_mechanics_3d', 'pressure_acoustics',
-                       'laminar_flow')},
+                       'magnetic_fields_ac', 'solid_mechanics', 'solid_mechanics_3d', 'laminar_flow')},
+                   'pressure_acoustics': {'symmetry': 1, 'antisymmetry': -1},   # sound hard / sound soft
                    'magnetostatics_3d': {'symmetry': -1}}
+# Types whose bc_<face> has a 'symmetric' choice but no 'antisymmetric' one (elastic_waves: the slip wall, an even
+# mirror; the staggered layout has no odd face): own_mirror_faces reads the face, sector_specs refuses it
+EVEN_ONLY_BC_TYPES = frozenset({'elastic_waves'})
 # Types whose fields of geometry 'axisymmetric' (2D, azimuthal_order 0) unfold across the x_lo rotation axis for
 # display (unfold_faces), {type: plane sign}: the image of the (r, z) half plane at phi = pi is a rotation by pi about
 # the axis, which a mirror reproduces only when no field has an in-plane AND an azimuthal vector part. +1: scalars of
@@ -334,6 +337,10 @@ def sector_specs(spec, faces=None) -> dict:
             settings = physics_spec.settings if isinstance(physics_spec.settings, dict) else {}
             for face, value in face_values.items():
                 if settings.get(f'bc_{face}') in MIRROR_SIGNS:
+                    if physics_spec.type in EVEN_ONLY_BC_TYPES:
+                        raise ValueError(f"parity sectors: '{physics_spec.name}' ({physics_spec.type}) sets bc_{face} "
+                                         f"{settings[f'bc_{face}']}, which has no antisymmetric counterpart; set it "
+                                         'rigid (a slip wall, no mirror plane of its own) or switch parity_sectors off')
                     settings[f'bc_{face}'] = value
             if physics_spec.type in MIRROR_FEATURES:
                 _swap_mirror_features(sector, physics_spec, face_values)

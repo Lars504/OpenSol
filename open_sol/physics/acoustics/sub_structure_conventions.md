@@ -43,8 +43,17 @@ Sub file of the root `structure_conventions.md` (read that first). Elastic / aco
   NO domain_requirements (never conflicts with an EM boundary config): alone, its layers lie inside the physical window
   (validation info; points in them warn). 'rigid' on a face another physics padded pins the window face (`_pins`; the
   padding behind steps but stays decoupled); 'periodic' on a padded face is a validation error.
-- Mirror planes: a 'rigid' face on an EM mirror face is the even mirror (renderer declares parities, Results unfold);
-  another face type on a model mirror face warns (`_mirror_plane_issues`).
+- Mirror planes: core.mirror gives elastic_waves s = +1 on every plane (no odd face exists). A 'rigid' face on a model
+  mirror face (EM bc, another physics' mirror feature) is the even mirror; bc 'symmetric' is the same slip wall that
+  also makes the face a model mirror plane itself (`own_mirror_faces` reads the value; `_solver_faces` hands the solver
+  'rigid', so `_pins` / couplings never see 'symmetric'). Its choices hold no 'antisymmetric' (the odd mirror v_t = 0,
+  s_nn = 0 would need samples on the lo face, which the layout lacks), so `mirror_feature_issues` does not treat it as
+  an EM partner, and parity sectors cannot swap it (core.mirror must refuse it; until then a sector copy fails on the
+  invalid choice). `_symmetric_face_issues`: errors on axisymmetric x_hi (x_lo: the axis rule) and for an EM partner
+  not mirroring the face. Another face type on a model mirror face warns (`_mirror_plane_issues`). Renderer parities:
+  v polar staggered, sxy axial_z staggered 'xy', normal / hoop stresses, pressure, strains 'scalar' (= even at s = +1;
+  'scalar', not 'even', so parity sectors of other physics' planes can combine them). The (r, z) axis unfold (+1) is
+  exact on these: v_r / s_rz are 0 on the axis face / corners (the missing lo samples), the image the rotation by pi.
 - Coefficients (one RawKernel, no temporaries, safe on per-step material updates): isotropic moduli from rho and the
   speeds when sound_speed > 0, else from youngs_modulus > 0 / poisson_ratio (library solids carry only E / nu), else 0;
   c11 / c12 / c22 / c66 numbers override per entry (default NaN = unset, tested `x != x`). Faces take width-weighted
@@ -168,7 +177,7 @@ Sub file of the root `structure_conventions.md` (read that first). Elastic / aco
 - `ELASTIC_CASES` holds every case; `SELFTEST_CASES` (registered) leaves out `_COVERED_BY_EXAMPLES`
   (acoustic_normal_reflection, acoustic_thermoelastic_slab, acoustic_plate_resonances,
   elastic_axisymmetric_hoop_stress: examples/acoustics check them); the parity cases of selftests_backend look cases
-  up in ELASTIC_CASES.
+  up in ELASTIC_CASES. elastic_wave_speeds run p_wave_mirror (symmetric y faces) is the only check of bc 'symmetric'.
 - Example `examples/acoustics/axisymmetric_heated_core_hoop_stress`: on the uniform (r, z) grid the static Lame
   solution is discrete-exact with r^2 -> r_c^2 - dx^2 / 4 in the cell stresses.
 - coupling/selftests_acoustics.py: acousto_optic_uniform_strain (only check of p61 / p62), acousto_optic_shear_strain
@@ -229,8 +238,25 @@ Sub file of the root `structure_conventions.md` (read that first). Elastic / aco
   pressure_acoustics_host_direct: the PML duct at three frequencies on mumps_mixed / pardiso vs a scipy_splu node, cpu
   only, skipped without python-mumps / pydiso; three because the PARDISO thread rule re-analyses this small factor once
   at its first refactor, so only the third frequency shows a reused analysis); pressure_acoustics_rigid_disk uses t / a = 0.001 (the square-rim thickness correction ~(t / a) ln(a / t) is +3 % at the template's 0.01).
+  pressure_acoustics_duct_mirror: the half-width duct on symmetry / antisymmetry (odd transverse mode above cut-off),
+  its x_lo surface_pressure checks the unfolded area / means exactly (the only check of `_mirror_factors`).
+- Mirror planes (`symmetry` = sound hard, apply 'hard' so it resets an earlier face condition; `antisymmetry` = sound
+  soft, p odd; core.mirror.MIRROR_FEATURES at +1 / -1): `_create` passes `mirror_faces(spec, name)` (every model plane,
+  this physics' signs) to `set_mirror_faces` before the features apply. The solver then drops object entities lying on
+  a plane from boundaries and surface monitors (a cut / abutting object's window-edge outline is inside the unfolded
+  object: `TriangleMesh` edge tags count window-boundary edges as outline) and `_mirror_factors` makes surface results
+  those of the unfolded surface: per reached plane x 2 measure (area, weight_integral; the weight taken as mirrored)
+  and x (1 + s) on the p integrand (an odd plane cancels); entities on the plane (the plane face selected) count once.
+  The integrand factor rides on the loads and the p_b quadrature rows (`integrand_factors` for the load fallback).
+  Point sources are not rescaled: on an even plane the unfolded model holds 2^n Q (validation info), on an odd one p =
+  0 kills it (warning) - the parity-sector convention (a source plus its images). A background must be even / odd about
+  each plane: plane waves along even planes only, standing waves with the rigid plane on a normal even plane, never on
+  an odd plane (errors); expressions unchecked (info); parity_sectors with a background: error. PML on any mirror face:
+  error. Probe and surface results carry sector_rule 'linear'. Field parities: p_re / p_im / p_s_* 'scalar', v_* polar
+  per axis (element values, not staggered), |p| / spl / |v| unsigned.
 - Open: losses, eigenfrequency study, structural couplings, m > 0, Bloch / periodic faces, interior zero-thickness
-  rigid sheets (need doubled dofs).
+  rigid sheets (need doubled dofs); line entities lying on a mirror plane are dropped like outlines (a sheet source on
+  the plane is not modelled).
 
 ## Open
 - Axisymmetric: torsional (v_phi) waves, stretched-r CPML for the hoop terms, transversely isotropic hoop stiffness.
