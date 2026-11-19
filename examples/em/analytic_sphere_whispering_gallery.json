@@ -1,0 +1,179 @@
+{
+  "title": "Analytic: whispering-gallery modes and free spectral range of a silica microsphere (1D spherical multipoles)",
+  "description": "A silica microsphere (n = 1.45, radius 50 um) in vacuum: its fundamental (radial order 1) magnetic-family whispering-gallery modes at l = 300 and 301, from one eigenfrequency run of em_fdfd_sphere (multipole_orders 300, 301, multipole_family hr = TE-like: E tangential) on the radial line from the centre to 52 um (5 nm cells, ~10,400 unknowns per order: seconds on the cpu, where a 3D model of this sphere would be out of reach). The outer end is the exact outgoing condition; the radiation Q of these modes is far beyond double precision, so the table shows Q = inf.\nAnalytic (Lam, Leung and Young 1992, asymptotic in nu = l + 1/2; m = n): m k a = nu + 2^(-1/3) alpha_1 nu^(1/3) - m / sqrt(m^2 - 1) + (3 / 10) 2^(-2/3) alpha_1^2 nu^(-1/3) + O(nu^(-2/3)), alpha_1 = 2.338107 (first Airy zero; the coefficients 1.8557571 and 1.0331503 are those of the Bessel zero j_(nu,1)); the next term is ~2e-4 of the wavelength at nu ~ 300, the radial discretisation ~5e-5.\nDerived values tab: lambda_300, lambda_301 (rows 0 and 1 of em.resonances) vs the asymptotic formula, and the free spectral range FSR = lambda_300 - lambda_301 (~4.75 nm) vs its difference (the neglected term varies slowly with l, so the FSR is tighter than each wavelength).\nField tab: the mode lies within a few um of the surface (|E_t| peak), with an evanescent tail outside.",
+  "version": 2,
+  "parameters": [
+    {
+      "name": "a_s",
+      "expression": "50*um",
+      "description": "sphere radius"
+    },
+    {
+      "name": "n_s",
+      "expression": 1.45,
+      "description": "silica refractive index"
+    },
+    {
+      "name": "m_s",
+      "expression": "n_s",
+      "description": "relative index (vacuum outside)"
+    },
+    {
+      "name": "pad",
+      "expression": "2*um",
+      "description": "vacuum between the sphere and the outer end"
+    },
+    {
+      "name": "dx_cell",
+      "expression": "5*nm",
+      "description": "uniform radial cell size"
+    },
+    {
+      "name": "nu_300",
+      "expression": 300.5,
+      "description": "nu = l + 1/2 of l = 300"
+    },
+    {
+      "name": "nu_301",
+      "expression": 301.5,
+      "description": "nu = l + 1/2 of l = 301"
+    },
+    {
+      "name": "mx_300",
+      "expression": "(nu_300 + 1.8557571*nu_300**(1/3) - m_s/sqrt(m_s**2 - 1) + 1.0331503*nu_300**(-1/3))",
+      "description": "asymptotic m k a of l = 300, radial order 1, P = 1 (hr)"
+    },
+    {
+      "name": "mx_301",
+      "expression": "(nu_301 + 1.8557571*nu_301**(1/3) - m_s/sqrt(m_s**2 - 1) + 1.0331503*nu_301**(-1/3))",
+      "description": "asymptotic m k a of l = 301"
+    },
+    {
+      "name": "lambda_300_ref",
+      "expression": "2*pi*a_s*m_s/mx_300",
+      "description": "asymptotic wavelength of l = 300 (~1.4614 um) = target"
+    },
+    {
+      "name": "lambda_301_ref",
+      "expression": "2*pi*a_s*m_s/mx_301",
+      "description": "asymptotic wavelength of l = 301"
+    },
+    {
+      "name": "fsr_ref",
+      "expression": "lambda_300_ref - lambda_301_ref",
+      "description": "asymptotic free spectral range (~4.75 nm)"
+    }
+  ],
+  "domain": {
+    "size_x": "a_s + pad",
+    "size_y": null,
+    "coordinates": "spherical",
+    "radius_min": 0.0,
+    "angle_min": 0.0
+  },
+  "geometry": [
+    {
+      "name": "sphere",
+      "kind": "circle",
+      "params": {
+        "cx": 0.0,
+        "cy": 0.0,
+        "r": "a_s"
+      }
+    }
+  ],
+  "selections": [],
+  "materials": [
+    {
+      "name": "silica",
+      "library": null,
+      "properties": {
+        "eps_r": "n_s**2"
+      },
+      "dispersion": null,
+      "selection": [
+        "sphere"
+      ]
+    }
+  ],
+  "physics": [
+    {
+      "name": "em",
+      "type": "em_fdfd_sphere",
+      "settings": {
+        "wavelength": "lambda_300_ref",
+        "multipole_orders": [
+          300.0,
+          301.0
+        ],
+        "multipole_family": "hr"
+      },
+      "features": [
+        {
+          "name": "resonances",
+          "type": "resonance_table",
+          "selection": [],
+          "params": {},
+          "enabled": true
+        }
+      ],
+      "every": 1,
+      "solvers": {}
+    }
+  ],
+  "couplings": [],
+  "mesh": {
+    "mode": "uniform",
+    "dx": "dx_cell",
+    "max_ratio": 1.15,
+    "wavelength_min": null,
+    "points_per_wavelength": 20.0,
+    "refinements": []
+  },
+  "solver_defaults": {
+    "backend": "cpu",
+    "precision": "auto",
+    "subpixel_smoothing": false,
+    "conformal_boundaries": false,
+    "memory_check": "error"
+  },
+  "study": {
+    "type": "eigenfrequency",
+    "settings": {
+      "n_resonances": 1
+    },
+    "stored_fields": [],
+    "sweep": null
+  },
+  "derived_values": [
+    {
+      "name": "lambda_300",
+      "expression": "wavelength",
+      "selection": [],
+      "operation": "at",
+      "source": "em.resonances",
+      "at": 0,
+      "reference": "lambda_300_ref",
+      "tolerance": 0.001
+    },
+    {
+      "name": "lambda_301",
+      "expression": "wavelength",
+      "selection": [],
+      "operation": "at",
+      "source": "em.resonances",
+      "at": 1,
+      "reference": "lambda_301_ref",
+      "tolerance": 0.001
+    },
+    {
+      "name": "FSR",
+      "expression": "lambda_300 - lambda_301",
+      "selection": [],
+      "operation": "expression",
+      "reference": "fsr_ref",
+      "tolerance": 0.01
+    }
+  ],
+  "analytic_curves": []
+}

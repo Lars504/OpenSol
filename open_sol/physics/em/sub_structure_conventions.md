@@ -1231,7 +1231,8 @@ slots are in `open_sol/coupling/sub_structure_conventions.md`. Current state, no
 - The 'linear' role is DIRECT_LINEAR_ROLE (host SuperLU unless a cuDSS / MUMPS / PARDISO node is chosen; cusolver_qr
   refused): the tridiagonal operator is factorised per term and wavelength, nothing kept (1D: cheap). Not yet:
   anisotropic (radial / tangential) eps, a banded complex solver, coherent plane wave + dipole, off-axis sources,
-  GUI (1D models), a template / example.
+  GUI (1D models), a template. Examples: examples/em/analytic_sphere_*.json (Mie vs the 3D tfsf / FDFD / FEM
+  sphere examples, PEC cavity, whispering-gallery FSR, dipole normalisation).
 - Self-tests (selftests_sphere; CPU unless noted, not yet run, tolerances first estimates): em_sphere_mie,
   em_sphere_pec_cavity, em_sphere_dipoles (vacuum power and the discrete Poynting identity), em_sphere_open_resonances
   (vs Newton-polished exact Mie poles), em_sphere_mie_model (cpu + gpu variant), em_sphere_cavity_model.
