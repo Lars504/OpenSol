@@ -65,12 +65,9 @@ _INT64_BYTES = 8
 
 # ---- settings ----
 _GEOMETRY_PARAM = geometry_param(
-    'the drawing is a cross-section of a fluid uniform along z; point sources are line sources (flow rate per metre of '
-    'depth, m^2/s), surface results are per metre of depth',
-    'the fluid is the body of revolution of the drawing and every field is independent of the angle (azimuthal order '
-    '0); a point source on the axis is a point source, off the axis a ring of that total flow rate; surface means are '
-    'area-weighted and weighted integrals cover the whole ring; no PML on x_lo. 2D models only (a 3D model is solved '
-    'in full: validation errors on axisymmetric there)',
+    'a fluid uniform along z; point sources are line sources, surface results per metre of depth',
+    'azimuthal order 0; surface means are area-weighted, weighted integrals cover the whole ring; no PML on x_lo. 2D '
+    'models only (validation errors on axisymmetric in 3D)',
     'point sources are line sources along the depth.',
     'A point source on the axis is a point source, elsewhere a ring around the axis.',
     axis_text='a boundary condition there does nothing; validation warns')
@@ -80,36 +77,31 @@ def _pml_params():
     """pml_<face> per outer face, pml_cells, pml_reflection and pml_frequency."""
     faces = tuple(Param(
         f'pml_{face}', 'bool', False, label=f'Absorbing layer beyond the {FACE_LABELS[face].lower()}',
-        help=(f'Perfectly matched layer beyond {face}: the mesh grows a layer of pml_cells x the mesh dx (h_max) there '
-              '(triangles: the absorbing ring of pml_layers structured element layers; tetrahedra: the shell), its '
-              'material continued from the window edge, with the fixed complex stretch s = 1 - j beta (d / w)^2 '
-              '(fem.pml; d the depth, w the thickness), beta set by pml_reflection for the fastest sound speed in the '
-              'layer at pml_frequency (default the lowest study frequency); its outer side is held at p = 0. Waves '
-              'leave the window through it; higher frequencies and slower waves are absorbed more. No boundary '
-              f'feature may select {face} (it is the inner side of the layer); z faces in 3D models only; geometry '
-              'axisymmetric: not on x_lo (the axis). Another physics on the same mesh must not request layers on '
-              'other faces (the run fails).'),
+        help=('Perfectly matched layer beyond this face: the mesh grows pml_cells x the mesh dx (h_max) there '
+              '(triangles: pml_layers structured element layers; tetrahedra: a shell), material continued from the '
+              'window edge, fixed complex stretch s = 1 - j beta (d / w)^2 (d the depth, w the thickness), beta from '
+              'pml_reflection for the fastest sound speed in the layer at pml_frequency; outer side held at p = 0. '
+              'Higher frequencies and slower waves are absorbed more. No boundary feature may select the face (the '
+              "layer's inner side); z faces in 3D only; not on x_lo with geometry axisymmetric. Another physics on "
+              'the same mesh must not request layers on other faces (the run fails).'),
         tip=(f'Lets sound leave through the {FACE_LABELS[face].lower()} as if the fluid continued forever.\n\nAdds an '
              'absorbing layer outside the drawn region; no boundary condition can be placed on this edge then.'))
         for face in FACES_3D)
     cells = Param('pml_cells', 'int', DEFAULT_PML_CELLS, label='Absorbing layer thickness', unit='1', min=1, max=100,
-                  help='Thickness of every PML in element sizes (x the mesh dx, h_max); about half a wavelength or '
-                       'more at the lowest frequency, 6-12 typical. Triangles: MeshSpec pml_layers sets the structured '
-                       'element layers across it.',
+                  help='In element sizes (x the mesh dx, h_max); about half a wavelength or more at the lowest '
+                       'frequency, 6-12 typical. Triangles: MeshSpec pml_layers sets the element layers across it.',
                   tip='Thickness of the absorbing layers, in element sizes.\n\nAbout half a wavelength or more at the '
                       'lowest frequency; 8 is typical.')
     reflection = Param('pml_reflection', 'float', DEFAULT_PML_REFLECTION, label='Absorbing layer reflection', unit='1',
                        min=0.0, min_exclusive=True, max=0.5,
-                       help='Theoretical round-trip reflection R of a normally incident wave in the PML at '
-                            'pml_frequency for the fastest sound speed c of the layer: beta = 3 ln(1 / R) c / (2 omega '
-                            'w). A very small R makes the profile steep, which the elements reflect instead: 1e-3 to '
-                            '1e-8 typical.',
+                       help='Theoretical round-trip normal-incidence reflection R at pml_frequency for the fastest '
+                            'sound speed c of the layer: beta = 3 ln(1 / R) c / (2 omega w). A very small R makes the '
+                            'profile steep, which the elements reflect instead: 1e-3 to 1e-8 typical.',
                        tip='How strongly the absorbing layer damps a wave crossing it and back.\n\n1e-6 is typical.')
     frequency = Param('pml_frequency', 'float', None, label='Absorbing layer frequency', unit='Hz', min=0.0,
                       min_exclusive=True, optional=True,
-                      help='Frequency [Hz] at which the PML strength is set (pml_reflection holds there; the stretch '
-                           'does not change with frequency, so K and M are assembled once); empty = the lowest '
-                           'frequency of the frequency_response study (absorption only grows above it).',
+                      help='Where pml_reflection holds (the stretch is frequency-independent: K and M are assembled '
+                           'once); empty = the lowest study frequency (absorption only grows above it).',
                       tip='Frequency at which the absorbing layers are tuned.\n\nLeave empty to use the lowest '
                           'frequency of the study.')
     return faces + (cells, reflection, frequency)
@@ -123,7 +115,7 @@ _PHASE_TIP = 'Phase shift of this drive in degrees.'
 
 def _phase_param(what):
     return Param('phase', 'float', 0.0, label='Phase', unit='deg',
-                 help=f'Phase of the complex amplitude of {what} in degrees (phasors exp(+j omega t)).', tip=_PHASE_TIP)
+                 help=f'Phase of {what} (phasors exp(+j omega t)).', tip=_PHASE_TIP)
 
 
 _BACKGROUND_WAVE_VISIBLE = (('wave', ('plane_wave', 'standing_wave')),)
@@ -131,72 +123,68 @@ _BACKGROUND_PARAMS = (
     Param('wave', 'choice', 'plane_wave', label='Background wave', choices=BACKGROUND_KINDS,
           choice_labels=(('plane_wave', 'Plane wave'), ('standing_wave', 'Plane wave on a rigid plane'),
                          ('expression', 'Expression')),
-          help='plane_wave: p_b = p0 exp(-j k d . x) travelling along the unit direction d, k = 2 pi f / '
-               'background_sound_speed; standing_wave: the plane wave reflected by a rigid plane normal to an axis '
-               'direction, p_b = 2 p0 cos(k (u - plane_position)), u the coordinate along that axis (normal incidence '
-               'onto a floor: direction -y, plane_position 0 gives 2 p0 cos(k y)); expression: p_b = pressure_re + j '
-               'pressure_im as expressions of x, y (z in 3D) and parameters, the same at every frequency (sweep a '
+          help='plane_wave: p_b = p0 exp(-j k d . x) along the unit direction d, k = 2 pi f / background_sound_speed; '
+               'standing_wave: that wave reflected by a rigid plane normal to an axis direction, p_b = 2 p0 cos(k (u '
+               '- plane_position)), u the coordinate along that axis (a floor: direction -y, plane_position 0 gives 2 '
+               'p0 cos(k y)); expression: p_b = pressure_re + j pressure_im, the same at every frequency (sweep a '
                'parameter for a frequency-dependent one; its gradient on outer faces by central differences).',
           tip='The sound wave arriving at the structure.\n\n- Plane wave: a wave travelling in one direction.\n- Plane '
               'wave on a rigid plane: the wave plus its reflection from a hard floor or wall.\n- Expression: any '
               'pressure field you enter.'),
     Param('amplitude', 'float', 1.0, label='Amplitude', unit='Pa', visible_if=_BACKGROUND_WAVE_VISIBLE,
-          help='Peak pressure p0 of the incident plane wave (a standing wave peaks at 2 p0).',
+          help='Peak pressure p0 of the incident wave (a standing wave peaks at 2 p0).',
           tip='Peak pressure of the arriving wave.'),
     Param('phase', 'float', 0.0, label='Phase', unit='deg', visible_if=_BACKGROUND_WAVE_VISIBLE,
-          help='Phase of p0 in degrees: of the plane wave at the origin, of the standing wave everywhere.',
+          help='Phase of p0: of the plane wave at the origin, of the standing wave everywhere.',
           tip='Phase of the arriving wave in degrees.'),
     Param('direction', 'choice', '-y', label='Direction of travel', choices=_DIRECTIONS,
           choice_labels=(('+x', 'Along +x'), ('-x', 'Along -x'), ('+y', 'Along +y'), ('-y', 'Along -y'),
                          ('+z', 'Along +z (3D)'), ('-z', 'Along -z (3D)'), ('custom', 'Custom direction')),
           visible_if=_BACKGROUND_WAVE_VISIBLE,
-          help='Propagation direction d of the incident wave: an axis, or custom = (direction_x, direction_y, '
-               'direction_z) normalised (plane_wave only). +z / -z need a 3D model; geometry axisymmetric: +y or -y '
-               '(along the axis) only.',
+          help='Propagation direction d: an axis, or custom = (direction_x, direction_y, direction_z) normalised '
+               '(plane_wave only). +z / -z need a 3D model; geometry axisymmetric: +y or -y only.',
           tip='Direction in which the arriving wave travels.\n\nIn a rotationally symmetric model it must travel '
               'along the axis.'),
     *(Param(f'direction_{axis}', 'float', -1.0 if axis == 'y' else 0.0, label=f'Direction {axis}', unit='1',
             visible_if=(('direction', ('custom',)),),
-            help=f'{axis} component of a custom propagation direction (normalised; the z component is ignored in 2D '
-                 'and must be 0 there).',
+            help='Component of the custom direction (normalised; direction_z must be 0 in 2D).',
             tip=f'{axis} part of the travel direction; the three parts are scaled to length 1.')
       for axis in 'xyz'),
     Param('plane_position', 'float', 0.0, label='Rigid plane position', unit='m',
           visible_if=(('wave', ('standing_wave',)),),
-          help='Coordinate of the rigid plane along the axis of direction (y = plane_position for +y / -y).',
+          help='Coordinate of the rigid plane along the direction axis (y = plane_position for +y / -y).',
           tip='Position of the hard floor or wall that reflects the wave, along the travel direction.'),
     Param('pressure_re', 'float', 0.0, label='Pressure, real part', unit='Pa', field_dependent=True,
           visible_if=(('wave', ('expression',)),),
-          help='Real part of p_b [Pa]: an expression of x, y (z in 3D) and parameters; it should solve the Helmholtz '
-               'equation of the background medium (else the mismatch radiates).',
+          help='Real part of p_b (also z in 3D); it should solve the Helmholtz equation of the background medium, '
+               'else the mismatch radiates.',
           tip='Real part of the background pressure, as a formula of the coordinates.'),
     Param('pressure_im', 'float', 0.0, label='Pressure, imaginary part', unit='Pa', field_dependent=True,
           visible_if=(('wave', ('expression',)),),
-          help='Imaginary part of p_b [Pa] (phasors exp(+j omega t)), as pressure_re.',
+          help='Imaginary part of p_b (phasors exp(+j omega t)), as pressure_re.',
           tip='Imaginary part of the background pressure, as a formula of the coordinates.'),
     Param('background_density', 'float', 1.2, label='Background density', unit='kg/m^3', min=0.0, min_exclusive=True,
-          help='Density rho_b of the medium p_b travels in; elements whose 1 / rho and 1 / (rho c^2) differ from the '
-               'background ones by more than 1e-6 (relative) are scatterers (the contrast source).',
+          help='Density rho_b of the medium p_b travels in; elements whose 1 / rho or 1 / (rho c^2) differ from the '
+               'background by more than 1e-6 (relative) are scatterers (the contrast source).',
           tip='Density of the fluid the arriving wave travels in; 1.2 for air.'),
     Param('background_sound_speed', 'float', 343.0, label='Background sound speed', unit='m/s', min=0.0,
           min_exclusive=True,
-          help='Sound speed c_b of the background medium: the wavenumber k = 2 pi f / c_b of p_b and, with '
-               'background_density, the medium the contrast is taken against. Air 343, water 1480.',
+          help='c_b: sets k = 2 pi f / c_b of p_b and, with background_density, the medium the contrast is taken '
+               'against. Air 343, water 1480.',
           tip='Speed of sound in the fluid the arriving wave travels in; 343 for air, 1480 for water.'),
 )
 _PRESSURE_PARAMS = (
     Param('pressure', 'float', 1.0, label='Pressure amplitude', unit='Pa', field_dependent=True,
-          help='Total pressure amplitude held on the boundary (with a background: p_s = this - p_b there); may depend '
-               'on x, y (z in 3D).',
+          help='Total pressure held (with a background: p_s = this - p_b); also z in 3D.',
           tip='Pressure held on the selected boundaries.'),
     _phase_param('the held pressure'),
 )
 _IMPEDANCE_PARAMS = (
     Param('impedance', 'float', None, label='Acoustic impedance', unit='Pa s/m', min=0.0, min_exclusive=True,
           optional=True,
-          help='Specific acoustic impedance Z = p / v_n (v_n the normal velocity out of the fluid), a real number; '
-               'empty = rho c of the adjacent fluid element, the plane-wave absorber (no reflection at normal '
-               'incidence, a reflection growing with the angle). Air 413, water 1.48e6.',
+          help='Specific impedance Z = p / v_n (v_n out of the fluid), real; empty = rho c of the adjacent fluid '
+               'element, the first-order absorber (no reflection at normal incidence, growing with the angle). Air '
+               '413, water 1.48e6.',
           tip='Pressure over the normal velocity at the boundary.\n\nLeave empty for the impedance of the fluid itself, '
               'which absorbs a wave arriving straight on.'),
 )
@@ -205,28 +193,27 @@ _MOTION_PARAMS = (
     Param('quantity', 'choice', 'velocity', label='Given quantity', choices=tuple(_MOTION_POWERS),
           choice_labels=(('velocity', 'Normal velocity'), ('acceleration', 'Normal acceleration'),
                          ('displacement', 'Normal displacement')),
-          help='Which normal motion of the wall is given (positive into the fluid): velocity v, acceleration a = j '
-               'omega v or displacement d = v / (j omega); the flux n_out . grad p / rho = j omega v_in.',
+          help='Normal motion given, positive into the fluid: velocity v, acceleration a = j omega v or displacement '
+               'd = v / (j omega).',
           tip='Whether the speed, acceleration or displacement of the moving wall is given.'),
     Param('velocity', 'float', 1e-3, label='Normal velocity amplitude', unit='m/s', field_dependent=True,
           visible_if=_MOTION_VISIBLE['velocity'],
-          help='Normal velocity amplitude into the fluid [m/s]; may depend on x, y (z in 3D).',
+          help='Into the fluid; also z in 3D.',
           tip='Peak speed of the wall into the fluid.'),
     Param('acceleration', 'float', 1.0, label='Normal acceleration amplitude', unit='m/s^2', field_dependent=True,
           visible_if=_MOTION_VISIBLE['acceleration'],
-          help='Normal acceleration amplitude into the fluid [m/s^2]; may depend on x, y (z in 3D).',
+          help='Into the fluid; also z in 3D.',
           tip='Peak acceleration of the wall into the fluid.'),
     Param('displacement', 'float', 1e-9, label='Normal displacement amplitude', unit='m', field_dependent=True,
           visible_if=_MOTION_VISIBLE['displacement'],
-          help='Normal displacement amplitude into the fluid [m]; may depend on x, y (z in 3D).',
+          help='Into the fluid; also z in 3D.',
           tip='Peak displacement of the wall into the fluid.'),
     _phase_param('the wall motion'),
 )
 _POINT_SOURCE_PARAMS = (
     Param('flow_rate', 'float', 1e-6, label='Volume flow rate', unit='m^3/s', space_units=(('planar', 'm^2/s'),),
-          help='Peak volume flow rate Q of a monopole: the load j omega Q at the point; 3D free field p = j omega rho '
-               'Q exp(-j k r) / (4 pi r). Planar 2D: per metre of depth (a line source, m^2/s); axisymmetric: a point '
-               'on the axis, else a ring of total rate Q.',
+          help='Peak Q; 3D free field p = j omega rho Q exp(-j k r) / (4 pi r). Planar: per metre of depth (a line '
+               'source); axisymmetric: a point on the axis, else a ring of total rate Q.',
           tip='Volume of fluid pushed out per second at the point, like a tiny pulsating sphere.'),
     _phase_param('the flow rate'),
 )
@@ -234,14 +221,13 @@ _SIDE_LABELS = (('all', 'Every selected boundary'), ('+x', 'Facing +x'), ('-x', 
                 ('-y', 'Facing -y'), ('+z', 'Facing +z (3D)'), ('-z', 'Facing -z (3D)'))
 _SURFACE_PARAMS = (
     Param('side', 'choice', 'all', label='Side', choices=SIDES, choice_labels=_SIDE_LABELS,
-          help="Part of the selection: 'all', or the boundary pieces whose outward normal (out of the selected object; "
-               'an outer face: out of the domain) has a positive component along +x ... -z, e.g. +y = the top face of '
-               'a rectangle (2D: +y = up; axisymmetric: +y = +z). +z / -z need a 3D model.',
+          help="'all', or the selected pieces whose outward normal (out of the selected object; an outer face: out of "
+               'the domain) has a positive component along the given axis, e.g. +y = the top face of a rectangle '
+               '(axisymmetric: +y = +z). +z / -z need a 3D model.',
           tip='Which faces of the selected objects are used, by the direction they face.\n\nFor example the top face '
               'of a disk faces up.'),
     Param('weight', 'float', 1.0, label='Weight', unit='1', field_dependent=True,
-          help='Weight psi of the weighted integral int p psi dA (e.g. a mode shape expression of x, y, z); its unit '
-               'multiplies the result (Pa m^2; planar 2D Pa m per metre of depth).',
+          help='psi in int p psi dA (e.g. a mode shape expression); its unit multiplies p_weighted_*.',
           tip='Weighting function of the second result, e.g. the shape of a vibration mode.'),
 )
 
@@ -794,79 +780,73 @@ _FEATURES = (
                 params=_BACKGROUND_PARAMS, validate=_validate_background, apply=_apply_background, grids=_GRIDS,
                 summary='An incoming sound wave, such as a plane wave or a wave reflected by a floor. The solution is '
                         'then the field scattered by the structure, and the total pressure is the two together.',
-                description='Scattered-field formulation: the unknown is p_s, the total pressure p = p_s + p_b in the '
-                            'window (p_s in a PML, which absorbs p_s only). p_b is assumed to solve the background '
-                            'medium (background_density, background_sound_speed) exactly, so the source is only where '
-                            'the model differs from it: elements whose material differs (the contrast), rigid_obstacle '
-                            'elements (their sound-hard outline: n . grad p_s = -n . grad p_b), the outer faces (every '
-                            'non-PML face is a total-field condition: 0 for a symmetry plane of p_b, e.g. the floor of '
-                            'a standing wave) and the total-field impedance / held values (p_s = given - p_b). One per '
-                            'physics (the last one wins). Probes and surface results add p_b exactly at their points; '
-                            'the p_* fields hold the nodal p_s + p_b, the p_s_* fields the scattered part.'),
+                description='Scattered-field formulation: the unknown is p_s, total p = p_s + p_b in the window (a PML '
+                            'absorbs p_s only). p_b is assumed to solve the background medium exactly, so the source '
+                            'is only where the model differs: elements of other material (the contrast), '
+                            'rigid_obstacle outlines (n . grad p_s = -n . grad p_b), outer faces (every non-PML face '
+                            'is a total-field condition: 0 for a symmetry plane of p_b, e.g. the floor of a standing '
+                            'wave) and total-field impedance / held values (p_s = given - p_b). One per physics (the '
+                            'last wins). Probes and surface results add p_b exactly; p_* fields hold the nodal p_s + '
+                            'p_b, p_s_* the scattered part.'),
     FeatureType('rigid_obstacle', 'Rigid obstacle', 'domain_condition', 'domain', apply=_apply_obstacle, grids=_GRIDS,
                 summary='Makes the selected domains immovable and impenetrable for sound; sound reflects from their '
                         'surface.',
-                description='The selected elements are left out of the solve (no pressure inside, fields 0 there); '
-                            'their outline is sound hard (n . grad p = 0), with a background the total field is. '
-                            'Select solids and thin plates here (structural back-action neglected).'),
+                description='The selected elements are left out of the solve (fields 0 there); their outline is sound '
+                            'hard (n . grad p = 0 for the total field). For solids and thin plates (no structural '
+                            'back-action).'),
     FeatureType('sound_hard', 'Sound hard wall', 'boundary_condition', 'boundary', allow_interior=False,
                 apply=_make_boundary_apply('hard'), grids=_GRIDS,
                 summary='A rigid wall: no air moves through it. Every outer edge is a sound-hard wall unless something '
                         'else is set there.',
-                description='n . grad p = 0 on outer faces (the default of every face without a PML or other '
-                            'condition; also a mirror-symmetry plane), for the total field with a background. A later '
-                            'feature on the same face wins, so this resets an earlier one.'),
+                description='n . grad p = 0 (total field): the default of every outer face without a PML or other '
+                            'condition, also a mirror plane. A later feature on the same face wins, so this resets an '
+                            'earlier one.'),
     FeatureType('sound_soft', 'Sound soft boundary', 'boundary_condition', 'boundary',
                 apply=_make_boundary_apply('soft'), grids=_GRIDS,
                 summary='A pressure-release surface where the sound pressure is zero, like the surface of water seen '
                         'from below.',
-                description='p = 0 (total field; with a background p_s = -p_b) on outer faces and object outlines. '
-                            'Held values: the later feature wins shared nodes.'),
+                description='p = 0 (total field; with a background p_s = -p_b). The later held value wins shared '
+                            'nodes.'),
     FeatureType('prescribed_pressure', 'Pressure', 'boundary_condition', 'boundary', params=_PRESSURE_PARAMS,
                 apply=_make_boundary_apply('pressure'), grids=_GRIDS,
                 summary='Holds the sound pressure on the selected boundaries at a given amplitude and phase.',
-                description='p = pressure exp(j phase) (total field) on outer faces and object outlines (the window '
-                            'edge of an outer face; along a PML side the wall stays sound hard). Held values: the '
-                            'later feature wins shared nodes.'),
+                description='p = pressure exp(j phase) (total field); along a PML side the wall stays sound hard. The '
+                            'later held value wins shared nodes.'),
     FeatureType('impedance', 'Impedance', 'boundary_condition', 'boundary', params=_IMPEDANCE_PARAMS,
                 apply=_make_boundary_apply('impedance'), grids=_GRIDS,
                 summary='A boundary that absorbs part of the sound, given by its acoustic impedance; empty absorbs a '
                         'wave arriving straight on completely.',
-                description='Robin condition n_out . grad p / rho = -j omega p / Z (Z the specific impedance; empty: '
-                            'rho c of the adjacent fluid, the first-order absorbing boundary) on outer faces and '
-                            'object outlines; with a background the total field obeys it.'),
+                description='Robin condition n_out . grad p / rho = -j omega p / Z on the total field.'),
     FeatureType('vibrating_boundary', 'Vibrating wall', 'boundary_condition', 'boundary', params=_MOTION_PARAMS,
                 apply=_make_boundary_apply('motion'), grids=_GRIDS,
                 summary='A wall moving back and forth with a given velocity, acceleration or displacement, like a '
                         'loudspeaker membrane or a piston.',
-                description='Inward normal motion: n_out . grad p / rho = j omega v_in (velocity), = a_in '
-                            '(acceleration), = -omega^2 d_in (displacement), on outer faces and object outlines (a '
-                            'load; the wall is sound hard otherwise).'),
+                description='Inward normal motion as a load: n_out . grad p / rho = j omega v_in (velocity), = a_in '
+                            '(acceleration), = -omega^2 d_in (displacement); the wall is sound hard otherwise.'),
     FeatureType('point_source', 'Point source', 'source', 'point', params=_POINT_SOURCE_PARAMS,
                 object_kinds=('point',), max_entities=1, apply=_apply_point_source, validate=validate_points_inside,
                 grids=_GRIDS,
                 summary='A small pulsating source at a point, sending sound equally in all directions.',
-                description='Monopole of volume flow rate Q exp(j phase): the load j omega Q phi_i(x0) (axisymmetric: '
-                            'divided by 2 pi, the per-radian solve). Must lie in a fluid element.'),
+                description='Monopole Q exp(j phase): the load j omega Q phi_i(x0) (axisymmetric: divided by 2 pi, '
+                            'the per-radian solve). Must lie in a fluid element.'),
     FeatureType('frequency_probe', 'Pressure probe', 'probe', 'point', object_kinds=('point',), max_entities=1,
                 result_kind='xy', apply=_apply_probe, result=_probe_result, validate=validate_points_inside,
                 grids=_GRIDS,
                 summary='Records the complex sound pressure at a point at every frequency of the study.',
-                description="Complex pressure at the point per solved frequency (core.harmonic_probe 'xy' result vs "
-                            'frequency [Hz]): series p_re, p_im, p_abs, p_phase (total, p_b exact at the point) and '
-                            'p_s_re ... (scattered; = p without a background), in Pa; 0 in a rigid obstacle.'),
+                description="Complex pressure at the point vs frequency [Hz]: series p_re, p_im, p_abs, p_phase "
+                            '(total, p_b exact) and p_s_re ... (scattered; = p without a background) [Pa]; 0 in a '
+                            'rigid obstacle.'),
     FeatureType('surface_pressure', 'Surface pressure', 'monitor', 'boundary', params=_SURFACE_PARAMS,
                 result_kind='xy', apply=_apply_surface, result=_surface_result, validate=_validate_surface,
                 grids=_GRIDS,
                 summary='The mean sound pressure over selected surfaces, such as the top or bottom face of an object, '
                         'and a weighted integral of it, at every frequency.',
-                description="'xy' result vs frequency [Hz]: series p_mean_re / _im / _abs / _phase = int p dA / int dA "
-                            '[Pa] and p_weighted_* = int p weight dA (Pa m^2; planar 2D Pa m per metre of depth; '
-                            'axisymmetric whole rings) over the selected outer faces (their window side) and object '
-                            'outlines / interfaces on side (outward normal out of the object); extras area [m^2, '
-                            'planar m], weight_integral (int weight dA), side. p is continuous, so a side picks faces, '
-                            'not a field side; p_b enters exactly (quadrature). E.g. r = |<p_top> - <p_bottom>| / p_max '
-                            'by a derived curve of two features (side +y, -y).'),
+                description='Series vs frequency [Hz]: p_mean_re / _im / _abs / _phase = int p dA / int dA [Pa] and '
+                            'p_weighted_* = int p weight dA (Pa m^2; planar Pa m per metre of depth; axisymmetric '
+                            'whole rings) over the selected outer faces (window side) and object outlines / '
+                            'interfaces on side; extras area [m^2, planar m], weight_integral, side. p is continuous, '
+                            'so side picks faces, not a field side; p_b enters exactly. E.g. |<p_top> - <p_bottom>| / '
+                            'p_max by a derived curve of two features (side +y, -y).'),
 )
 
 PRESSURE_ACOUSTICS = PhysicsType(
@@ -879,27 +859,16 @@ PRESSURE_ACOUSTICS = PhysicsType(
     space_settings=AXISYMMETRIC_SPACE_SETTINGS,
     summary='Sound in air or water at given frequencies: the steady sound pressure around obstacles, with absorbing '
             'boundaries, incoming waves and pressure probes. Planar, rotationally symmetric or 3D.',
-    description='Frequency-domain pressure acoustics (the industry-standard formulation) for the frequency_'
-                'response study: -div(grad p / rho) - omega^2 p / (rho c^2) = j omega q (exp(+j omega t), peak '
-                'amplitudes), p the complex pressure, rho / c the material density and sound_speed (every fluid '
-                'element needs both > 0; elastic_waves shares the Params; no losses but impedance and PML), on a '
-                'triangle mesh (planar, or axisymmetric (r, z) with geometry, azimuthal order 0) or a tetrahedron '
-                'mesh (3D), complex Lagrange P2 (default) or P1 elements (fem.harmonic / harmonic3d). K and M are '
-                'assembled once; each frequency is one complex symmetric factorisation by the linear role '
-                "(sparse_direct: back_end 'cudss' / 'cudss_mixed' on the gpu backend: cuDSS LDL^T reusing its plan, the "
-                "pencil kept on the device; 'auto' = cudss_mixed there when nvmath-python is installed, else host "
-                'SuperLU; opt-in MUMPS / PARDISO host LDL^T reusing its analysis per frequency). Outer faces default '
-                'to sound hard '
-                '(also mirror planes); features: sound_hard, sound_soft, prescribed_pressure, impedance, '
-                'vibrating_boundary (outer faces act on their window edge, object outlines in 2D / interfaces in 3D), '
-                'rigid_obstacle (excluded voids), point_source, background_pressure_field (scattered-field '
-                'formulation), frequency_probe and surface_pressure (complex records per frequency, harmonic probe '
-                'series <c>_re / _im / _abs / _phase). PML: settings pml_<face> grow absorbing layers (fixed complex '
-                'stretch, fem.pml) of pml_cells element sizes beyond those faces, tuned at pml_frequency (default the '
-                'lowest study frequency). Fields: p_abs / p_re / p_im / spl (total), p_s_* (scattered), v_* particle '
-                'velocity j grad p / (omega rho) per element (v_z in 3D), rho, sound_speed; state p_abs / p_re / p_im '
-                'per element. Snapshots per frequency labelled "f = <Hz> Hz". The instance is usually named '
-                'pressure_acoustics.',
+    description='Frequency-domain pressure acoustics: -div(grad p / rho) - omega^2 p / (rho c^2) = j omega q (exp(+j '
+                'omega t), peak amplitudes), p the complex pressure, rho / c the material rho and sound_speed (every '
+                'fluid element needs both > 0; no losses but impedance and PML). Complex Lagrange P2 / P1 on '
+                'triangles (planar or axisymmetric) or tetrahedra (3D). K and M are assembled once; each frequency is '
+                "one complex symmetric factorisation by the linear role (back_end 'auto': cudss_mixed on the gpu "
+                'backend when nvmath-python is installed, else host SuperLU; MUMPS / PARDISO opt-in). Outer faces '
+                'default to sound hard (also mirror planes); boundary features act on the window edge of outer faces '
+                'and on object outlines (2D) / interfaces (3D). Probe and surface series per frequency are complex: '
+                '<c>_re / _im / _abs / _phase. v_* = j grad p / (omega rho) per element. Snapshots per frequency are '
+                'labelled "f = <Hz> Hz".',
     settings=_SETTINGS,
     features=_FEATURES,
     material_properties=_MATERIAL_PROPERTIES,

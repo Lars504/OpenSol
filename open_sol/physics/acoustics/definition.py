@@ -46,116 +46,102 @@ def _target_type(spec, physics_name):
         return None
 
 # ---- settings ----
-_BC_HELP = ('absorbing: a CPML layer in the outermost pml_cells cells of the grid, backed by a rigid wall; those cells '
-            'lie inside the domain unless another physics (an EM CPML) pads the grid there, so keep sources, probes '
-            'and objects of interest out of them (validation warns). rigid: a slip wall on the domain edge (normal '
-            'velocity and shear stress 0: the rigid wall of a fluid, a frictionless wall of a solid, and also a mirror '
-            'symmetry plane), also where another physics pads the grid (the padding cells behind it stay idle). '
-            'periodic: wraps to the opposite face (set both faces of the axis; an error where another physics pads '
-            'the grid, since the period would include the padding). A traction-free (vacuum) surface is a material '
-            'boundary instead: cells without density and stiffness are vacuum. geometry axisymmetric: bc_x_lo must '
-            'be rigid, which is the axis condition (v_r = 0, s_rz = 0); a rigid x_hi is a slip wall on the cylinder '
-            'r = r_max, an absorbing one a radial CPML.')
+_BC_HELP = ('absorbing: CPML in the outermost pml_cells cells, backed by a rigid wall; these lie inside the domain unless '
+            'another physics (an EM CPML) pads the grid there: keep sources, probes and objects out (validation '
+            'warns). rigid: slip wall (normal velocity and shear stress 0; also a mirror symmetry plane), also where '
+            'another physics pads the grid (the padding stays idle). periodic: wraps to the opposite face (set both; '
+            'an error where another physics pads the grid). A traction-free surface is a material boundary: cells '
+            'without density and stiffness are vacuum. geometry axisymmetric: x_lo must be rigid (the axis: v_r = 0, '
+            's_rz = 0); a rigid x_hi is a slip wall on r = r_max, an absorbing one a radial CPML.')
 _BC_TIP = ('What happens at this edge of the domain.\n\n'
            '- Absorbing: waves leave without reflection through a damping layer inside the outer cells.\n'
            '- Rigid wall: the edge does not move; fluids slide along it.\n'
            '- Periodic: the domain repeats; set the opposite edge to periodic too.')
 _GEOMETRY_PARAM = geometry_param(
-    'plane strain per unit z length (point forces N/m, volume rates m^2/s)',
-    '(r, z) waves without torsion (v_phi = 0). The hoop stress s_tt is stepped too, with c_tt = c11 and c_rt = c_zt = '
-    'c12 (exact for isotropic solids and fluids, an approximation for c_ij crystals: validation warns); the velocity '
-    'updates use the ring-volume forms (1/r) d(r s_rr)/dr - s_tt / r and (1/r) d(r s_rz)/dr, an x-face density is '
-    'the ring-volume mean of its two cells; the stiffness must be positive definite in 3D (isotropic: shear_speed < '
-    '0.866 sound_speed). Point forces and volume rates are per unit length of the ring the point stands for (the '
-    'ring total is 2 pi r_c times it; a point in the axis cell is a ring of radius dx / 2), traction sheets per area '
-    '(a vertical line is a cylinder, a horizontal one a disc or annulus), pressure = -(s_rr + s_zz + s_tt) / 3, the '
-    'hoop stress is the output field stt and a probe component, and '
-    'the stable step is a few % shorter (see courant). An absorbing x_hi stretches the radial derivatives only (the '
-    'hoop terms are not stretched)',
+    'plane strain per unit z length',
+    '(r, z) waves without torsion (v_phi = 0); the hoop stress s_tt (field and probe component stt) is stepped with '
+    'c_tt = c11, c_rt = c_zt = c12 (exact for isotropic solids and fluids, approximate for c_ij crystals: validation '
+    'warns); an x-face density is the ring-volume mean of its two cells. The stiffness must be positive definite in '
+    '3D (isotropic: shear_speed < 0.866 sound_speed). Point sources are per unit ring length (the axis cell is a ring '
+    'of radius dx / 2), traction sheets per area (a vertical line is a cylinder, a horizontal one a disc or annulus); '
+    'pressure = -(s_rr + s_zz + s_tt) / 3; the stable step is a few % shorter (see courant); an absorbing x_hi '
+    'stretches only the radial derivatives',
     'forces and volume rates are per metre of depth.',
     'Forces and volume rates are per metre along the ring a point stands for. Here the Left edge setting must be '
     'Rigid wall, which is the axis condition.',
-    axis_text='bc_x_lo must be rigid there, and no other physics may pad the grid at x_lo; validation errors '
-              'otherwise')
+    axis_text='bc_x_lo rigid and no other physics padding the grid at x_lo, else validation errors')
 _SETTINGS = (_GEOMETRY_PARAM,) + tuple(
     Param(f'bc_{face}', 'choice', 'absorbing', label=FACE_LABELS[face], choices=BOUNDARY_TYPES,
           choice_labels=(('absorbing', 'Absorbing'), ('rigid', 'Rigid wall'), ('periodic', 'Periodic')),
           help=_BC_HELP, tip=_BC_TIP)
     for face in FACES) + (
     Param('pml_cells', 'int', 20, label='Absorbing layer thickness', unit='cells', min=2,
-          help='Cells of each absorbing layer (CPML, polynomial grading of order 2, kappa 1); typically 10-30, about '
-               'one wavelength or more at the lowest frequency of interest.',
+          help='CPML cells per absorbing layer (polynomial grading of order 2, kappa 1); typically 10-30, about one '
+               'wavelength at the lowest frequency of interest.',
           tip='Thickness of the damping layer at absorbing edges, in cells.\n\n'
               'About 20 cells, or one wavelength, is typical. The layer lies inside the domain.'),
     Param('pml_reflection', 'float', 1e-4, label='Absorbing layer reflection', unit='1', min=0.0, min_exclusive=True,
           max=0.5,
-          help='Target normal-incidence reflection R of the CPML: peak damping d0 = 3 c ln(1 / R) / (2 L), c the '
-               'largest longitudinal speed of the grid, L the layer thickness. 1e-3..1e-6 typical; thin layers '
-               'with very small R reflect from their own grading.',
+          help='Target normal-incidence reflection R: peak damping d0 = 3 c ln(1 / R) / (2 L), c the largest '
+               'longitudinal speed, L the layer thickness. 1e-3..1e-6 typical; thin layers with very small R reflect '
+               'from their own grading.',
           tip='How little an absorbing layer should reflect; 1e-4 is typical.'),
     Param('courant', 'float', 0.9, label='Time step factor', unit='1', min=0.0, min_exclusive=True, max=1.0,
-          help='dt = courant / (c_bound sqrt(1 / dx_min^2 + 1 / dy_min^2)), c_bound^2 = the largest stability '
-               'stiffness S of a cell times the largest 1 / rho of its faces (a face density is the mean of its two '
-               'cells, so a solid next to vacuum has rho / 2 there), derived from the materials at the build. S = the '
-               'largest eigenvalue of [[c11 wx + c66 wy, |c12 + c66| sqrt(wx wy)], [same, c66 wx + c22 wy]], wx = '
-               '(1 / dx_min^2) / (1 / dx_min^2 + 1 / dy_min^2), wy = 1 - wx, and at least max(c11, c22): c11 for '
-               'isotropic solids and fluids, more for anisotropic crystals (silicon along [100]: 194 GPa on square '
-               'cells, not c11 = 166 GPa), so courant 1 is the exact limit of a uniform material. Monoclinic c16 / '
-               'c26 enter by absolute value (diagonals + 2 |c16| s, + 2 |c26| s, off-diagonal + |c16| wx + |c26| wy, s '
-               '= sqrt(wx wy)): a bound, so dt is shorter than the exact limit (~2 % for YZ lithium niobate, ~8 % '
-               'with c16 / c26 of 10 % of c11). With the two-way '
-               'piezoelectric coupling (electrostatics_acoustics_piezo, back_action bound_charge) S is that of the '
-               'stiffened c^D = c^E + e^T (eps0 eps_dc)^-1 e, its c16 / c26 added to the material ones before the '
-               'absolute value (a bound: the grid-scale stiffening is smaller). geometry '
-               'axisymmetric: 1 / dx_min^2 is multiplied by F >= 1, the largest ratio of the Gershgorin bounds of '
-               'the radial (r, z) and planar operators (~1.047 on uniform cells, from the cells next to the axis); a '
-               'bound, not the exact limit, so keep courant <= 0.95 there. Runtime material '
-               'rewrites (state-dependent speeds) are not stability-checked: keep their speeds below the build '
-               'values.',
+          help='dt = courant / (c_bound sqrt(1 / dx_min^2 + 1 / dy_min^2)) from the build materials, c_bound^2 = the '
+               'largest stability stiffness S of a cell times the largest 1 / rho of its faces (face density = mean '
+               'of its two cells: a solid next to vacuum has rho / 2). S = the largest eigenvalue of [[c11 wx + c66 '
+               'wy, |c12 + c66| sqrt(wx wy)], [same, c66 wx + c22 wy]], wx = (1 / dx_min^2) / (1 / dx_min^2 + 1 / '
+               'dy_min^2), wy = 1 - wx, at least max(c11, c22): c11 for isotropic solids and fluids, more for '
+               'crystals (silicon [100]: 194 GPa on square cells vs c11 = 166 GPa); courant 1 is the exact limit of '
+               'a uniform material. c16 / c26 enter by absolute value (diagonals + 2 |c16| s, + 2 |c26| s, '
+               'off-diagonal + |c16| wx + |c26| wy, s = sqrt(wx wy)), a bound: dt ~2 % short of exact for YZ lithium '
+               'niobate, ~8 % with c16 / c26 of 10 % of c11. Two-way piezo (back_action bound_charge): S of the '
+               'stiffened c^D = c^E + e^T (eps0 eps_dc)^-1 e (a bound). geometry axisymmetric: 1 / dx_min^2 times '
+               'F >= 1 (~1.047 on uniform cells), a bound: keep courant <= 0.95. Runtime material rewrites '
+               '(state-dependent speeds) are not stability-checked: keep their speeds below the build values.',
           tip='Time step as a fraction of the largest stable step; 0.9 is typical.'),
     Param('heating_envelope', 'choice', 'instantaneous', label='Coupled heating envelope',
           choices=('instantaneous', 'gaussian'),
           choice_labels=(('instantaneous', 'As delivered'), ('gaussian', 'Gaussian pulse')),
           help=f"Time dependence of the coupled '{HEATING_SLOT}' slot: instantaneous = the delivered array is the "
-               'heating rate itself (held until the next transfer); gaussian = the array (e.g. a cw absorbed power '
-               'map) times exp(-((t - heating_pulse_delay) / heating_pulse_width)^2), a laser pulse of energy density '
-               'array x sqrt(pi) width.',
+               'heating rate (held until the next transfer); gaussian = the array (e.g. a cw absorbed power map) x '
+               'exp(-((t - heating_pulse_delay) / heating_pulse_width)^2), a pulse of energy density array x sqrt(pi) '
+               'width.',
           tip='How a heating rate passed from another physics varies in time.\n\n'
               '- As delivered: used as it arrives.\n'
               '- Gaussian pulse: multiplied by a short pulse, e.g. to turn a steady absorbed light power into a laser '
               'pulse.'),
     Param('heating_pulse_width', 'float', 1e-8, label='Heating pulse width', unit='s', min=0.0, min_exclusive=True,
           visible_if=(('heating_envelope', ('gaussian',)),),
-          help='1/e half-width w of the gaussian heating envelope; the pressure rise resolves only if c w spans a '
-               'few cells.',
+          help='1/e half-width w; the pressure rise resolves only if c w spans a few cells.',
           tip='Half-width of the heating pulse. Sound travels about 1.5 um per ns in water: make the pulse span a '
               'few cells.'),
     Param('heating_pulse_delay', 'float', None, label='Heating pulse delay', unit='s', min=0.0, optional=True,
           visible_if=(('heating_envelope', ('gaussian',)),),
-          help='Centre time of the gaussian heating envelope; empty = 3 x heating_pulse_width.',
+          help='Envelope centre time; empty = 3 x heating_pulse_width.',
           tip='Time of the pulse maximum; empty means three pulse widths.'),
 )
 
 # ---- material vocabulary ----
-_STIFFNESS_TEXT = ('In-plane plane-strain stiffness component {name} [Pa] (Voigt, x = 1, y = 2, xy = 6); overrides '
-                   'the value derived from sound_speed / shear_speed and rho (or from youngs_modulus / poisson_ratio). '
-                   'Isotropic: c11 = c22 = lambda + 2 mu, '
-                   'c12 = lambda, c66 = mu (Lame constants); silicon along [100] / [010]: c11 = c22 = 165.7e9, c12 = '
-                   '63.9e9, c66 = 79.6e9. The effective set, with c16 / c26, must be positive definite (c11 > 0, c22 '
-                   '> 0, c66 > 0, c12^2 < c11 c22 and det [[c11, c12, c16], [c12, c22, c26], [c16, c26, c66]] > 0; a '
-                   'fluid: c66 = c16 = c26 = 0, c12 = c11 = c22), else validation errors.')
+_STIFFNESS_TEXT = ('In-plane plane-strain stiffnesses c11, c12, c22, c66 (Voigt x = 1, y = 2, xy = 6); set, they override '
+                   'the values from sound_speed / shear_speed and rho (or youngs_modulus / poisson_ratio). Isotropic: '
+                   'c11 = c22 = lambda + 2 mu, c12 = lambda, c66 = mu; silicon along [100] / [010]: c11 = c22 = '
+                   '165.7e9, c12 = 63.9e9, c66 = 79.6e9. The effective set with c16 / c26 must be positive definite '
+                   '(c11, c22, c66 > 0, c12^2 < c11 c22, det [[c11, c12, c16], [c12, c22, c26], [c16, c26, c66]] > 0; '
+                   'a fluid: c66 = c16 = c26 = 0, c12 = c11 = c22), else validation errors.')
+_STIFFNESS_SEE = 'Plane-strain stiffness; overrides the value from the speeds or E / nu. See c11.'
 _MONOCLINIC_TEXT = (
-    'In-plane monoclinic stiffness {name} [Pa] (Voigt: T_xx = c11 S_xx + c12 S_yy + c16 g, T_yy = c12 S_xx + c22 S_yy + '
-    'c26 g, T_xy = c16 S_xx + c26 S_yy + c66 g, g = 2 S_xy the engineering shear); default 0 (no value from the speeds '
-    'or E / nu). Non-zero when the model axes are not crystal symmetry axes in the plane, e.g. YZ lithium niobate c26 = '
-    "c14 (a {{'model': 'crystal'}} entry sets both when either is non-zero). Staggered grid: a cell takes c16 / c26 x "
-    'the mean shear rate of its 4 corners, a corner the mean of c16 S_xx + c26 S_yy over its 4 cells (an '
-    'energy-conserving pair; corners without shear stiffness, at fluids, vacuum and slip walls, carry none). The set '
-    '[[c11, c12, c16], [c12, c22, c26], [c16, c26, c66]] must be positive definite (a fluid: c16 = c26 = 0), else '
-    'validation errors; dt takes |c16|, |c26| as bounds (see courant). Either one set allocates both arrays, the strain '
-    'accumulator and three rate buffers (8 float32 grids); elastic_strain_xx / _yy then show the accumulated total '
-    'strain. Planar geometry and single-precision stepper only. Absorbing layers (CPML) can be unstable in some '
-    'strongly anisotropic media (Becache, Fauqueux and Joly 2003): check long runs for growth near the layers.')
+    'In-plane monoclinic stiffnesses c16 / c26 (Voigt: T_xx = c11 S_xx + c12 S_yy + c16 g, T_yy = c12 S_xx + c22 S_yy '
+    '+ c26 g, T_xy = c16 S_xx + c26 S_yy + c66 g, g = 2 S_xy); default 0 (none from the speeds or E / nu). Non-zero '
+    "when the model axes are not crystal symmetry axes in the plane, e.g. YZ lithium niobate c26 = c14 (a {'model': "
+    "'crystal'} entry sets both). Energy-conserving corner / centre 4-point means; corners without shear stiffness "
+    '(fluids, vacuum, slip walls) carry none. The set must stay positive definite (see c11); dt takes |c16|, |c26| as '
+    'bounds (see courant). Either one allocates 8 float32 grids (both arrays, strain accumulator, rate buffers); '
+    'elastic_strain_xx / _yy then show the accumulated total strain. Planar geometry and single-precision stepper only. '
+    'CPML can be unstable in some strongly anisotropic media (Becache, Fauqueux and Joly 2003): check long runs for '
+    'growth near the layers.')
+_MONOCLINIC_TEXTS = {MONOCLINIC_ARRAYS[0]: _MONOCLINIC_TEXT,
+                     **{name: f'Monoclinic stiffness; see {MONOCLINIC_ARRAYS[0]}.' for name in MONOCLINIC_ARRAYS[1:]}}
 
 
 _PHOTOELASTIC_FALLBACKS = {'photoelastic_p16': '0', 'photoelastic_p21': 'photoelastic_p12',
@@ -167,14 +153,35 @@ _PHOTOELASTIC_FALLBACKS = {'photoelastic_p16': '0', 'photoelastic_p21': 'photoel
 _PHOTOELASTIC_ROWS = {'1': 'x', '2': 'y', '3': 'z (out of the plane)', '6': 'x and y together (the cross term)'}
 _PHOTOELASTIC_COLUMNS = {'1': 'stretching along x', '2': 'stretching along y', '6': 'in-plane shear'}
 _PHOTOELASTIC_TENSOR_TEXT = (
-    'In-plane photoelastic tensor entry {name} [1] in model axes, read only by acoustics_em_acousto_optic: Delta(1/n^2)'
-    '_I = p_I1 S_xx + p_I2 S_yy + p_I6 g with the index-ellipsoid row I = 1 xx, 2 yy, 3 zz (the diagonal permittivity '
-    'slots) or 6 xy (the eps_xy slot of em_fdfd_hz: Delta eps_xy = -n0_xx^2 n0_yy^2 Delta(1/n^2)_xy) and g = 2 S_xy the '
-    'engineering shear at the cell centre (the 4-corner mean); photoelastic_p11 / _p12 are p_11 / p_12 of row 1. Unset '
-    '= {fallback} (the isotropic value). Usually set by a {{\'model\': \'crystal\'}} entry (rotated crystal p, written '
-    'only when the cut is not isotropic in these rows); YZ lithium niobate (model x = crystal Z, y = -Y): p11 = p33, '
-    'p12 = p31, p16 = 0, p21 = p13, p22 = p11, p26 = p14, p31 = p13, p32 = p12, p36 = -p14, p61 = 0, p62 = p41, p66 = '
-    'p44 (crystal constants). Any one set allocates all ten arrays (default unset).')
+    'In-plane photoelastic tensor photoelastic_p16 .. _p66 in model axes, read only by acoustics_em_acousto_optic: '
+    'Delta(1/n^2)_I = p_I1 S_xx + p_I2 S_yy + p_I6 g, index-ellipsoid row I = 1 xx, 2 yy, 3 zz (the diagonal '
+    'permittivity slots) or 6 xy (the eps_xy slot of em_fdfd_hz: Delta eps_xy = -n0_xx^2 n0_yy^2 Delta(1/n^2)_xy), g = '
+    '2 S_xy at the cell centre (4-corner mean); photoelastic_p11 / _p12 are row 1. Unset = the isotropic value (here '
+    "{fallback}). Usually set by a {{'model': 'crystal'}} entry (only when the cut is not isotropic in these rows); "
+    'YZ lithium niobate (model x = crystal Z, y = -Y): p11 = p33, p12 = p31, p16 = 0, p21 = p13, p22 = p11, p26 = '
+    'p14, p31 = p13, p32 = p12, p36 = -p14, p61 = 0, p62 = p41, p66 = p44. Any one set allocates all ten arrays.')
+
+
+def _photoelastic_text(name):
+    """Full text on the first tensor entry, a pointer plus its isotropic fallback on the others."""
+    first = PHOTOELASTIC_TENSOR_ARRAYS[0]
+    if name == first:
+        return _PHOTOELASTIC_TENSOR_TEXT.format(fallback=_PHOTOELASTIC_FALLBACKS[name])
+    return f'Photoelastic tensor entry (see {first}); unset = {_PHOTOELASTIC_FALLBACKS[name]}.'
+
+
+_PIEZO_TEXT = (
+    'Piezoelectric stress constants e_kJ (piezo_e11 .. _e26) of the in-plane block in model axes (reduced Voigt: D_k '
+    '= e_kJ S_J + eps0 eps_dc E, T_J = c_JK S_K - e_kJ E_k, k = 1 x / 2 y, J = 1 xx, 2 yy, 6 xy, S_6 = 2 S_xy); '
+    'default 0. Read through electrostatics_acoustics_piezo: the stress -e^T E of the electric_field_x / _y slots '
+    'and, two-way (default), the bound charge -div(e S) of the accumulated strain back into the electrostatics plus '
+    "the stiffened dt. Usually set by a {'model': 'crystal'} entry of the material's dispersion list (also sets c_ij, "
+    'rho and the clamped eps_dc_xx / _yy / _xy); YZ lithium niobate (euler_deg 0, 90, 90; model x = crystal Z, y = '
+    '-Y): piezo_e11 = e33 = 1.3, piezo_e12 = e31 = 0.2, piezo_e22 = -e22 = -2.5, piezo_e26 = e15 = 3.7. Any one set '
+    'allocates all six arrays and the strain accumulator (9 float32 grids; elastic_strain_xx / _yy then show the '
+    'accumulated total strain). Planar geometry only.')
+_PIEZO_TEXTS = {PIEZO_ARRAYS[0]: _PIEZO_TEXT,
+                **{name: f'Piezoelectric stress constant; see {PIEZO_ARRAYS[0]}.' for name in PIEZO_ARRAYS[1:]}}
 
 
 def _material_property(name, label, unit, minimum=None, help_text='', tip=''):
@@ -183,33 +190,32 @@ def _material_property(name, label, unit, minimum=None, help_text='', tip=''):
 
 _MATERIAL_PROPERTIES = (
     _material_property('rho', 'Density', 'kg/m^3', 0.0,
-                       'Mass density, shared by every physics that reads it (heat: heat capacity rho*cp; laminar_flow, '
-                       'elastic_waves and pressure_acoustics: inertia). Unset = 0: elastic_waves treats a cell without density and stiffness '
-                       'as vacuum (a traction-free surface around it; a face between two such cells does not move). '
-                       'Typical: water 998, silica 2200, silicon 2329, aluminium 2700, gold 19300.',
+                       'Mass density (inertia; also read by pressure_acoustics). Unset = 0: elastic_waves treats a '
+                       'cell without density and stiffness as vacuum (a traction-free surface; a face between two '
+                       'such cells does not move). Typical: water 998, silica 2200, silicon 2329, aluminium 2700, '
+                       'gold 19300.',
                        tip='Mass density.\n\nTypical: water 998, silica 2200, silicon 2329, gold 19300.'),
     _material_property('sound_speed', 'Sound speed (longitudinal)', 'm/s', 0.0,
-                       'Longitudinal (compressional, P) wave speed: c11 = c22 = rho sound_speed^2 unless the c_ij '
-                       'entries are set. A fluid sets only this one. Set (> 0), the speeds replace any youngs_modulus / '
-                       'poisson_ratio of the cell (library solids carry those; their speeds follow from rho). Typical: '
-                       'air 343, water 1480, silica 5960, aluminium 6420, silicon ~8430 (isotropic average). '
-                       'pressure_acoustics: the speed of sound c of the fluid.',
+                       'Longitudinal (P) wave speed: c11 = c22 = rho sound_speed^2 unless c_ij are set; a fluid sets '
+                       'only this. Set (> 0), the speeds replace the youngs_modulus / poisson_ratio of the cell '
+                       '(library solids carry those). pressure_acoustics: the fluid sound speed c. Typical: air 343, '
+                       'water 1480, silica 5960, aluminium 6420, silicon ~8430 (isotropic average).',
                        tip='Speed of compression waves.\n\nTypical: air 343, water 1480, silica 5960, aluminium 6420.'),
     _material_property('shear_speed', 'Shear speed', 'm/s', 0.0,
-                       'Transverse (shear, S) wave speed: c66 = rho shear_speed^2 and c12 = rho (sound_speed^2 - 2 '
-                       'shear_speed^2) unless the c_ij entries are set; unset = 0 = a fluid (no shear stress). Must '
-                       'be below sound_speed. Typical: silica 3760, aluminium 3040, silicon ~5840.',
+                       'Transverse (S) wave speed: c66 = rho shear_speed^2, c12 = rho (sound_speed^2 - 2 '
+                       'shear_speed^2) unless c_ij are set; unset = 0 = a fluid. Must be below sound_speed. Typical: '
+                       'silica 3760, aluminium 3040, silicon ~5840.',
                        tip='Speed of shear waves; leave empty for liquids and gases.\n\nTypical: silica 3760, '
                            'aluminium 3040.'),
-    _material_property('c11', 'Stiffness c11', 'Pa', 0.0, _STIFFNESS_TEXT.format(name='c11'),
+    _material_property('c11', 'Stiffness c11', 'Pa', 0.0, _STIFFNESS_TEXT,
                        tip='Stiffness along x for a crystal; replaces the value from the sound speed.'),
-    _material_property('c12', 'Stiffness c12', 'Pa', None, _STIFFNESS_TEXT.format(name='c12'),
+    _material_property('c12', 'Stiffness c12', 'Pa', None, _STIFFNESS_SEE,
                        tip='Coupling stiffness between x and y for a crystal; replaces the value from the speeds.'),
-    _material_property('c22', 'Stiffness c22', 'Pa', 0.0, _STIFFNESS_TEXT.format(name='c22'),
+    _material_property('c22', 'Stiffness c22', 'Pa', 0.0, _STIFFNESS_SEE,
                        tip='Stiffness along y for a crystal; replaces the value from the sound speed.'),
-    _material_property('c66', 'Stiffness c66', 'Pa', 0.0, _STIFFNESS_TEXT.format(name='c66'),
+    _material_property('c66', 'Stiffness c66', 'Pa', 0.0, _STIFFNESS_SEE,
                        tip='Shear stiffness for a crystal; replaces the value from the shear speed.'),
-    *(_material_property(name, f'Stiffness {name}', 'Pa', None, _MONOCLINIC_TEXT.format(name=name),
+    *(_material_property(name, f'Stiffness {name}', 'Pa', None, _MONOCLINIC_TEXTS[name],
                          tip=f"Coupling between stretching along {'x' if name == 'c16' else 'y'} and shear, for a "
                              'crystal cut at an angle to its axes. Usually filled in by a crystal entry; empty means '
                              'none.')
@@ -218,11 +224,11 @@ _MATERIAL_PROPERTIES = (
     POISSON_RATIO_PARAM,
     _material_property('acoustic_damping', 'Acoustic damping rate', '1/s', 0.0,
                        'Mass-proportional damping g of the particle velocity (rho dv/dt = div s - rho g v, '
-                       'semi-implicit): a wave of angular frequency omega >> g decays as exp(-g t / 2). Default 0.',
+                       'semi-implicit): a wave with omega >> g decays as exp(-g t / 2). Default 0.',
                        tip='Damping of the motion per second; empty means lossless.'),
     _material_property('gruneisen', 'Grueneisen parameter', '1', None,
-                       'Thermoelastic (photoacoustic) Grueneisen parameter G = beta c^2 / cp (beta the volumetric '
-                       'expansion): a heating rate q [W/m^3] adds -G q to d(sxx)/dt and d(syy)/dt, so an instantly '
+                       'Thermoelastic G = beta c^2 / cp (beta the volumetric expansion): a heating rate q [W/m^3] '
+                       'adds -G q to d(sxx)/dt and d(syy)/dt, so an instantly '
                        'absorbed energy density H raises the pressure by G H. Read by heat_pulse_source and the '
                        f"'{HEATING_SLOT}' slot; default 0. Typical: water 0.11 at 20 C, soft tissue ~0.2.",
                        tip='How strongly heating turns into pressure (photoacoustics).\n\nTypical: water 0.11, soft '
@@ -230,24 +236,13 @@ _MATERIAL_PROPERTIES = (
     PHOTOELASTIC_P11_PARAM,
     PHOTOELASTIC_P12_PARAM,
     *(_material_property(name, f'Photoelastic coefficient {name[-3:]}', '1', None,
-                         _PHOTOELASTIC_TENSOR_TEXT.format(name=name, fallback=_PHOTOELASTIC_FALLBACKS[name]),
+                         _photoelastic_text(name),
                          tip=f'How strongly {_PHOTOELASTIC_COLUMNS[name[-1]]} changes the refractive index seen by '
                              f'light polarised along {_PHOTOELASTIC_ROWS[name[-2]]}, for a crystal. Usually filled '
                              'in by a crystal entry; empty means the value of an isotropic material.')
       for name in PHOTOELASTIC_TENSOR_ARRAYS),
     *(_material_property(
-        name, f'Piezoelectric e{name[-2:]}', 'C/m^2', None,
-        f'Piezoelectric stress constant e_{name[-2]}{name[-1]} [C/m^2] of the in-plane block in model axes (reduced '
-        'Voigt: D_k = e_kJ S_J + eps0 eps_dc E, T_J = c_JK S_K - e_kJ E_k with k = 1 x / 2 y and J = 1 xx, 2 yy, 6 '
-        'xy, engineering shear S_6 = 2 S_xy); default 0. Read through electrostatics_acoustics_piezo: the stress '
-        '-e^T E of the electrostatics field (electric_field_x / _y slots) and, two-way (default), the bound charge '
-        '-div(e S) of the accumulated strain back into the electrostatics plus the stiffened time step. Usually set '
-        "by a {'model': 'crystal'} entry of the material's dispersion list (rotated crystal "
-        'data; it also sets the c_ij, rho and the clamped eps_dc_xx / _yy / _xy); YZ lithium niobate (euler_deg 0, '
-        '90, 90; model x = crystal Z, y = -Y) gives piezo_e11 = e33 = 1.3, piezo_e12 = e31 = 0.2, piezo_e22 = -e22 = '
-        '-2.5, piezo_e26 = e15 = 3.7 (crystal constants). Any one set allocates all six arrays and the strain '
-        'accumulator (9 float32 grids; elastic_strain_xx / _yy then show the accumulated total strain). '
-        'Planar geometry only.',
+        name, f'Piezoelectric e{name[-2:]}', 'C/m^2', None, _PIEZO_TEXTS[name],
         tip=f'Piezoelectric constant e{name[-2:]}: how strongly an electric field along '
             f"{'x' if name[-2] == '1' else 'y'} stresses the material. Usually filled in by a crystal entry.")
       for name in PIEZO_ARRAYS),
@@ -257,66 +252,60 @@ _MATERIAL_PROPERTIES = (
 _WAVEFORM_PARAMS = (
     Param('waveform', 'choice', 'ricker', label='Waveform', choices=('ricker', 'gaussian', 'cw'),
           choice_labels=(('ricker', 'Ricker wavelet'), ('gaussian', 'Gaussian pulse'), ('cw', 'Continuous wave')),
-          help='ricker: Ricker wavelet with its spectrum peaking at frequency, value 1 at t0 = 4 / frequency '
-               '(broadband, up to ~2.5 f: 3 % of the spectral peak there, 1 % at 2.76 f); gaussian: sin carrier at '
-               'frequency under a gaussian envelope of relative bandwidth (t0 = 4.5 / (pi bandwidth frequency)); cw: '
-               'sin(2 pi f t) ramped in by 1 - exp(-t / (3 T)), T = 1 / f, steady after ~15 periods.',
+          help='ricker: Ricker wavelet, spectrum peaking at frequency, value 1 at t0 = 4 / frequency (broadband: 3 % '
+               'of the spectral peak at 2.5 f, 1 % at 2.76 f); gaussian: sin carrier under a gaussian envelope of '
+               'relative bandwidth, t0 = 4.5 / (pi bandwidth frequency); cw: sin(2 pi f t) ramped in by 1 - exp(-t / '
+               '(3 T)), T = 1 / f, steady after ~15 periods.',
           tip='Time shape of the source.\n\n- Ricker wavelet: one short, broadband pulse.\n- Gaussian pulse: a few '
               'oscillations at the frequency.\n- Continuous wave: a steady tone.'),
     Param('frequency', 'float', 1e6, label='Frequency', unit='Hz', min=0.0, min_exclusive=True,
-          help='Centre (gaussian, cw) or peak (ricker) frequency; the mesh needs >= 10 (better 20) cells per shortest '
-               'wavelength, the slowest speed (shear in solids) over the highest significant frequency (gaussian f '
-               '(1 + bandwidth), ricker 2.5 f; validation warns).',
+          help='Centre (gaussian, cw) or peak (ricker) frequency. Mesh: >= 10 (better 20) cells per shortest '
+               'wavelength = slowest speed (shear in solids) / highest significant frequency (gaussian f (1 + '
+               'bandwidth), ricker 2.5 f); validation warns.',
           tip='Frequency of the source in hertz; 1e6 is 1 MHz.'),
     Param('bandwidth', 'float', 0.5, label='Relative bandwidth', unit='1', min=0.0, min_exclusive=True,
           visible_if=(('waveform', ('gaussian',)),),
-          help='Spectral width / frequency of the gaussian pulse (1/e of the amplitude spectrum at f (1 +- '
-               'bandwidth)).',
+          help='Spectral width / frequency: the amplitude spectrum is 1/e at f (1 +- bandwidth).',
           tip='Width of the pulse spectrum relative to the frequency; 0.5 is typical.'),
 )
 _FORCE_PARAMS = _WAVEFORM_PARAMS + (
     Param('force', 'float', 1.0, label='Line force', unit='N/m',
-          help='Peak force per unit z length (a 2D point is a line along z; geometry axisymmetric: per unit length '
-               'of the ring through the point, total 2 pi r_c force), in the cell containing the point and split over '
-               'its two faces per axis; results scale linearly with it.',
+          help='Peak force per unit z length (geometry axisymmetric: per unit length of the ring through the point, '
+               'total 2 pi r_c force).',
           tip='Force per metre of depth applied at the point.'),
     Param('angle', 'float', 0.0, label='Force direction', unit='deg',
-          help='Direction of the force, counter-clockwise from +x (0 = +x, 90 = +y).',
+          help='Counter-clockwise from +x (90 = +y).',
           tip='Direction of the force in degrees from the x axis, counter-clockwise.'),
 )
 _VOLUME_PARAMS = _WAVEFORM_PARAMS + (
     Param('volume_rate', 'float', 1e-3, label='Volume injection rate', unit='m^2/s',
-          help='Peak volume injected per second and per unit z length (a monopole line source): an isotropic '
-               'in-plane strain rate in the cell, d(sxx)/dt -= (c11 + c12) / 2 q, d(syy)/dt -= (c12 + c22) / 2 q, q = '
-               'rate / cell area. In a fluid the cw pressure is |p| = rho omega Q / 4 |H0^(2)(k r)|, independent of '
-               'the mesh. geometry axisymmetric: per unit length of the ring through the point (total 2 pi r_c '
-               'rate), an isotropic 3D strain rate q / 3 per axis (a fluid again gets p += K q dt).',
+          help='Peak volume per second and unit z length: d(sxx)/dt -= (c11 + c12) / 2 q, d(syy)/dt -= (c12 + c22) / '
+               '2 q, q = rate / cell area. geometry axisymmetric: per unit length of the ring through the point '
+               '(total 2 pi r_c rate), a 3D strain rate q / 3 per axis (a fluid again gets p += K q dt).',
           tip='Volume pushed out per second and per metre of depth, like a small pulsating cylinder.'),
 )
 _TRACTION_PARAMS = _WAVEFORM_PARAMS + (
     Param('traction', 'float', 1e3, label='Traction', unit='Pa',
-          help='Peak force per unit area of the sheet; a sheet spanning the domain sends a plane wave of stress '
-               'amplitude traction / 2 and velocity traction / (2 rho c) to each side (fluid: pressure traction / 2 '
-               'for a normal traction).',
+          help='Peak force per area; a domain-spanning sheet sends a plane wave of stress traction / 2 and velocity '
+               'traction / (2 rho c) to each side (fluid: pressure traction / 2 for a normal traction).',
           tip='Force per area of the line; each side receives half of it as a plane wave.'),
     Param('direction', 'choice', 'x', label='Force direction', choices=('x', 'y'),
           choice_labels=(('x', 'Along x'), ('y', 'Along y')),
-          help='Component of the traction: normal to the line launches longitudinal (P) waves, along the line shear '
-               '(S) waves (a vertical line: x = P, y = S).',
+          help='Normal to the line launches P waves, along it S waves (vertical line: x = P, y = S).',
           tip='Direction of the force; across the line it sends compression waves, along the line shear waves.'),
 )
 _HEAT_PULSE_PARAMS = (
     Param('power_density', 'float', 1e12, label='Peak heating power density', unit='W/m^3', field_dependent=True,
-          help='Peak absorbed power q0 per unit volume; q = q0 exp(-((t - delay) / pulse_width)^2), absorbed energy '
-               'density H = q0 sqrt(pi) pulse_width, and with a short pulse (c pulse_width << the heated size) the '
-               'pressure rises by gruneisen H. May depend on x and y (e.g. Beer-Lambert exp(-mu_a (y1 - y))).',
+          help='Peak q0: q = q0 exp(-((t - delay) / pulse_width)^2), absorbed energy density H = q0 sqrt(pi) '
+               'pulse_width; a short pulse (c pulse_width << heated size) raises the pressure by gruneisen H. E.g. '
+               'Beer-Lambert exp(-mu_a (y1 - y)).',
           tip='Heat deposited per volume and second at the pulse maximum.'),
     Param('pulse_width', 'float', 1e-8, label='Pulse width', unit='s', min=0.0, min_exclusive=True,
-          help='1/e half-width of the gaussian heating envelope; keep c pulse_width >= ~5 cells (validation warns '
-               'below 2), else the pressure front is under-resolved and rings.',
+          help='1/e half-width; keep c pulse_width >= ~5 cells (validation warns below 2), else the front is '
+               'under-resolved and rings.',
           tip='Half-width of the heating pulse.'),
     Param('delay', 'float', None, label='Pulse delay', unit='s', min=0.0, optional=True,
-          help='Time of the envelope maximum; empty = 3 x pulse_width.',
+          help='Envelope maximum; empty = 3 x pulse_width.',
           tip='Time of the pulse maximum; empty means three pulse widths.'),
 )
 _PROBE_UNITS = {component: ('m/s' if component in VELOCITY_COMPONENTS else 'Pa') for component in PROBE_COMPONENTS}
@@ -325,10 +314,9 @@ _PROBE_PARAMS = (
           choice_labels=(('pressure', 'Pressure'), ('vx', 'Velocity x'), ('vy', 'Velocity y'),
                          ('sxx', 'Normal stress xx'), ('syy', 'Normal stress yy'), ('sxy', 'Shear stress xy'),
                          ('stt', 'Hoop stress (axisymmetric)')),
-          help='pressure = -(sxx + syy) / 2 (geometry axisymmetric: -(s_rr + s_zz + s_tt) / 3) and the stresses '
-               '[Pa] at the cell centre (sxy on its +x +y corner) after each step; stt = the hoop stress s_tt at the '
-               'cell centre (geometry axisymmetric only, else a validation error); vx / vy [m/s] on the +x / +y face '
-               'of the cell, stamped half a step earlier (their own time).',
+          help='pressure = -(sxx + syy) / 2 (axisymmetric: -(s_rr + s_zz + s_tt) / 3) and the stresses [Pa] at the '
+               'cell centre (sxy on its +x +y corner) at t; stt (hoop stress) axisymmetric only, else a validation '
+               'error; vx / vy [m/s] on the +x / +y face at t - dt / 2.',
           tip='Quantity recorded at the point after every time step. The hoop stress exists only in axisymmetric '
               'models.'),
 )
@@ -470,9 +458,8 @@ def _source_waveforms(vctx, physics_spec):
 
 
 _RESONANCE_PROBE = ResonanceProbe(
-    component=replace(_PROBE_PARAMS[0], help=_PROBE_PARAMS[0].help + ' Pressure misses the shear (S) modes of a '
-                                                                      'solid; a stress or velocity component sees '
-                                                                      'both kinds.'),
+    component=replace(_PROBE_PARAMS[0], help=_PROBE_PARAMS[0].help + ' Pressure misses the S modes of a solid; '
+                                                                      'stresses and velocities see both.'),
     add_probe=_apply_probe, time_step=_solver_time_step, waveforms=_solver_waveforms, unit=_component_unit,
     source_waveforms=_source_waveforms, band='frequency',
     pulse_end_text=('the end of the latest pulsed source (ricker / gaussian waveform: 2 t0; heat_pulse_source and a '
@@ -480,8 +467,7 @@ _RESONANCE_PROBE = ResonanceProbe(
 _RESONANCE_SUMMARY = ('Finds the resonances of a structure that rings after a short pulse, such as a plate or a '
                       'cavity: their frequencies, quality factors and strengths, from the quantity recorded at one or '
                       'more points. Put the points where the modes are strong.')
-_RESONANCE_NOTE = ('Velocities carry their own time stamps (t - dt / 2), so no sample delay applies. dt is the '
-                   'acoustic step of the run.')
+_RESONANCE_NOTE = 'Velocities carry their own time stamps (t - dt / 2): no sample delay. dt = the acoustic step.'
 
 
 # ---- validation (CPU only) ----
@@ -1059,70 +1045,61 @@ _FEATURES = (
                 max_entities=1, apply=_apply_force_source, validate=validate_points_inside,
                 summary='A force at a point pushing the material back and forth; in a solid it sends both '
                         'compression and shear waves.',
-                description='Line force along z (a 2D point) in the cell containing the point: force * waveform(t) '
-                            'in the direction angle, half on each of the two x faces (x component) and y faces (y '
-                            'component) of the cell, as force density over each face dual cell, at the start of '
-                            'each step (the time of the stresses it acts on). A point in the outermost cell of a '
-                            'non-periodic face loses the half on its outer face.'),
+                description='force * waveform(t) along angle in the cell containing the point, half on each of its '
+                            'two x faces (x component) and y faces (y component) as force density over each face '
+                            'dual cell, at the start of each step. A point in the outermost cell of a non-periodic '
+                            'face loses the half on its outer face.'),
     FeatureType('volume_source', 'Point volume source', 'source', 'point', params=_VOLUME_PARAMS,
                 object_kinds=('point',), max_entities=1, apply=_apply_volume_source, validate=validate_points_inside,
                 summary='A tiny pulsating cylinder at a point, sending sound waves equally in all directions.',
-                description='Monopole (pulsating line source along z) in the cell containing the point: the injected '
-                            'volume per second volume_rate * waveform(t) acts as an isotropic in-plane strain rate on '
-                            'the cell (sampled half a step after the velocity forces, at the time of the velocities '
-                            'it acts with). In a fluid it radiates |p| = rho omega Q / 4 |H0^(2)(k r)|; in a solid it '
-                            'sends mainly compression waves.'),
+                description='Monopole line source in the cell containing the point: volume_rate * waveform(t) acts '
+                            'as an isotropic strain rate on the cell (sampled half a step after the velocity forces). '
+                            'In a fluid it radiates |p| = rho omega Q / 4 |H0^(2)(k r)|, mesh-independent; in a solid '
+                            'mainly compression waves.'),
     FeatureType('traction_line_source', 'Line source (traction sheet)', 'source', 'line', params=_TRACTION_PARAMS,
                 object_kinds=('line',), max_entities=1, apply=_apply_traction_line, validate=_validate_line,
                 summary='A force spread along a straight line. Across the whole domain it sends plane waves to both '
                         'sides: compression waves for a force across the line, shear waves for one along it.',
-                description='Sheet of traction (force per area) traction * waveform(t) at the centres of the cells '
-                            'under an axis-aligned line, covering [cell(lo), cell(hi) + 1) and continuing through any '
-                            'padding where an end touches the domain edge: the normal component split over the two '
-                            'faces around each line cell, the tangential one on the faces along the line. A sheet '
-                            'across the whole domain (periodic or absorbing ends) launches plane waves of stress '
-                            'amplitude traction / 2 to each side; a shorter one diffracts.'),
+                description='traction * waveform(t) at the centres of the cells [cell(lo), cell(hi) + 1) under an '
+                            'axis-aligned line, continuing through any padding where an end touches the domain edge: '
+                            'the normal component split over the two faces around each line cell, the tangential one '
+                            'on the faces along the line. A sheet across the whole domain (periodic or absorbing '
+                            'ends) launches plane waves to each side; a shorter one diffracts.'),
     FeatureType('heat_pulse_source', 'Heating pulse (photoacoustic)', 'source', 'domain', params=_HEAT_PULSE_PARAMS,
                 apply=_apply_heat_pulse, validate=_validate_heat_pulse, memory_estimate=_heat_pulse_memory,
                 summary='A short heating pulse in the selected domains, such as a laser pulse absorbed in a '
                         "material. The heated material expands and sends out sound (photoacoustics); its "
                         "'Grueneisen parameter' sets how strongly.",
-                description='Thermoelastic source: q = power_density exp(-((t - delay) / pulse_width)^2) [W/m^3] on '
-                            'the selected cells adds -gruneisen q to d(sxx)/dt and d(syy)/dt (sampled at the half '
-                            'step), so a short pulse raises the pressure by gruneisen H, H = power_density sqrt(pi) '
-                            'pulse_width the absorbed energy density; cells without gruneisen ignore it. For heating '
-                            f"computed by another time-stepped physics use the '{HEATING_SLOT}' slot (field_transfer, "
-                            'optionally with the gaussian heating_envelope setting).'),
+                description='Thermoelastic source: the heating rate q (see power_density) adds -gruneisen q to '
+                            'd(sxx)/dt and d(syy)/dt of the selected cells (at the half step); cells without '
+                            'gruneisen ignore it. Heating from another time-stepped physics goes into the '
+                            f"'{HEATING_SLOT}' slot instead (field_transfer, optionally with heating_envelope "
+                            'gaussian).'),
     FeatureType('rigid_domain', 'Rigid domain', 'domain_condition', 'domain', apply=_apply_rigid,
                 summary='Makes the selected domains immovable, like an ideal rigid obstacle.',
-                description='Every face of each selected cell keeps zero velocity (staircased to the mesh): an '
-                            'immovable obstacle; a fluid slides along it, a solid sticks to it.'),
+                description='Zero velocity on every face of the selected cells (staircased): a fluid slides along '
+                            'it, a solid sticks to it.'),
     FeatureType('initial_velocity', 'Initial velocity', 'domain_condition', 'domain',
                 params=(Param('v_x', 'float', 0.0, label='Initial velocity x', unit='m/s', field_dependent=True,
-                              help='Particle velocity along x at t = 0 on the +x face of every selected cell, an '
-                                   'expression of x, y evaluated at that face centre (the staggered vx position: '
-                                   'exact for a discrete mode). Geometry axisymmetric: v_r.',
+                              help='Evaluated at the +x face centre of each selected cell (the staggered vx '
+                                   'position: exact for a discrete mode). Axisymmetric: v_r.',
                               tip='Velocity along x of the material at the start.'),
                         Param('v_y', 'float', 0.0, label='Initial velocity y', unit='m/s', field_dependent=True,
-                              help='Particle velocity along y at t = 0 on the +y face of every selected cell, '
-                                   'evaluated at that face centre. Geometry axisymmetric: v_z.',
+                              help='Evaluated at the +y face centre of each selected cell. Axisymmetric: v_z.',
                               tip='Velocity along y of the material at the start.')),
                 precisions=('single',), apply=_apply_initial_velocity,
                 summary='Starts the selected domains moving with a given velocity, for example a vibration mode '
                         'released at time zero.',
-                description='Initial particle velocity: v_x / v_y [m/s] are written into the staggered velocity '
-                            'fields before the first step (the state the leap-frog starts from: v^(-1/2), with the '
-                            'stresses at 0), on the +x / +y faces of the selected cells (several features: a later one '
-                            'wins its faces). Faces the scheme pins (rigid walls, rigid_domain, the axis) drop it at '
-                            'the first step. Single-precision stepper only (validation error for half_storage, whose '
-                            'storage scale comes from the sources).'),
+                description='v_x / v_y are written into the staggered velocity fields on the +x / +y faces of the '
+                            'selected cells before the first step (the leap-frog start v^(-1/2), stresses 0); a later '
+                            'feature wins shared faces. Faces the scheme pins (rigid walls, rigid_domain, the axis) '
+                            'drop it at the first step.'),
     FeatureType('field_probe', 'Field probe', 'probe', 'point', params=_PROBE_PARAMS, object_kinds=('point',),
                 max_entities=1, result_kind='timeseries', apply=_apply_probe, result=_probe_result,
                 validate=validate_points_inside,
                 summary='Records the pressure, a stress or a velocity at a point after every time step.',
-                description='Time series of one quantity in the cell containing the point (a coordinate exactly on a '
-                            'cell edge goes to the upper cell), sampled after every step; pressure and stresses in Pa '
-                            'at t, velocities in m/s at t - dt / 2 (their own time).'),
+                description='Time series in the cell containing the point (a coordinate on a cell edge goes to the '
+                            'upper cell), sampled after every step.'),
     resonance_monitor_feature(_RESONANCE_PROBE, _RESONANCE_SUMMARY, description_note=_RESONANCE_NOTE),
 )
 _FEATURES_BY_NAME = {feature.name: feature for feature in _FEATURES}
@@ -1142,48 +1119,30 @@ ELASTIC_WAVES = PhysicsType(
     space_settings={AXISYMMETRIC: {**AXISYMMETRIC_SPACE_SETTINGS[AXISYMMETRIC], 'bc_x_lo': 'rigid'}},
     summary='Sound in fluids and elastic waves in solids, simulated step by step in time. Gives pressure, stresses '
             'and particle velocities; supports photoacoustic heating pulses.',
-    description='2D velocity-stress finite-difference time-domain solver (Virieux staggered grid, plane strain, '
-                'in-plane motion; or axisymmetric (r, z) with the hoop stress, setting geometry): vx / vy [m/s] on '
-                'the +x / +y cell faces at half steps, sxx / syy [Pa] at the cell '
-                'centres and sxy on the +x +y cell corners, tension positive, pressure = -(sxx + syy) / 2 (the '
-                'pressure of a fluid). Fluids (shear_speed unset) and isotropic (sound_speed / shear_speed, or the '
-                'youngs_modulus / poisson_ratio of solid_mechanics and the library solids), in-plane orthotropic '
-                '(c11, c12, c22, c66) or monoclinic solids (+ c16, c26: a rotated crystal, the energy-conserving '
-                'corner / centre averages of the shear coupling) share one grid; a face takes the width-weighted mean '
-                'density of its two cells, '
-                'a corner the harmonic mean of the four shear moduli (0 at fluid-solid and vacuum corners), so '
-                'interfaces need no special treatment and vacuum cells (no density, no stiffness) give traction-free '
-                'surfaces; the effective stiffness must be positive definite. dt = courant x the stability limit of '
-                'the staggered grid (anisotropic c_ij included, see courant) derived from the materials at the build '
-                '(the physics '
-                'sets dt_sync when alone; with another time-stepping physics the shorter step wins). Boundaries per '
-                'face: absorbing (CPML in the outermost pml_cells cells of the grid, inside the domain unless an EM '
-                'physics pads it), rigid (slip wall) or periodic. Sources: point force, point volume source, '
-                'traction sheet on a line, thermoelastic heating pulse, and the coupled heating_power slot; probes '
-                'record pressure, stresses or velocities, and the resonance finder fits their ring-down (frequency '
-                'band). Use a uniform or nonuniform mesh (auto mode meshes by the '
-                'optical index). The state fields (pressure, stresses, velocities) can drive a state-dependent '
-                'material property or a field_transfer of another time-stepped physics. elastic_strain_xx / _yy = '
-                'the in-plane stiffness inverted on the centre stresses (fluids: half the volumetric strain each; '
-                'thermoelastic stress counts as minus the thermal strain). Optics: acoustics_em_acousto_optic '
-                '(photoelastic index of an em_fdfd_* physics that re-solves on the frozen strain every k acoustic '
-                'steps; isotropic photoelastic_p11 / _p12, or the in-plane tensor photoelastic_p16 .. _p66 of a crystal '
-                'with the centre shear strain, which also drives the eps_xy of em_fdfd_hz) and em_acoustics_photoacoustic (absorbed light power of an em_fdfd_* physics into the '
-                'heating_power slot). Piezoelectric: piezo_e* material arrays (usually from a crystal entry) and '
-                'electrostatics_acoustics_piezo (the stress -e^T E of the electrostatics field; two-way by default: '
-                'the bound charge -div(e S) of the accumulated strain re-solves the electrostatics after every step, '
-                'so the waves are piezoelectrically stiffened and dt uses c^D); with piezo or c16 / c26 arrays '
-                'elastic_strain_xx / _yy are the accumulated total strain (also what acoustics_em_acousto_optic sees; '
-                'thermoelastic '
-                'heating then shows as expansion, not as minus the thermal strain). geometry axisymmetric adds the '
-                'output field and probe component stt (hoop stress). Stepper solver (role stepper, explicit_kernels): '
-                'precision single, or half_storage = the fields stored as fp16 (10 B per cell less, ~1e-3 relative '
-                'noise floor) in units scaled from the peak stress of the sources and heating pulses (stress) and the '
-                'largest impedance (velocity), read back in Pa and m/s; half_storage refuses the resonance finder, '
-                'piezoelectric and monoclinic (c16 / c26) materials and every coupling into this physics '
-                '(heating_power, electric fields). Runs on the gpu and cpu backends (cpu: numpy twins of every kernel, '
-                'numba for the velocity / stress updates when installed, single precision only, several times '
-                'slower: small 2D models and tests).',
+    description='2D velocity-stress FDTD (Virieux staggered grid; plane strain, or axisymmetric (r, z) by setting '
+                'geometry): vx / vy [m/s] on the +x / +y cell faces at half steps, sxx / syy [Pa] at the cell '
+                'centres, sxy on the +x +y corners; tension positive, pressure = -(sxx + syy) / 2. Fluids '
+                '(shear_speed unset), isotropic solids (sound_speed / shear_speed, or youngs_modulus / poisson_ratio '
+                'as in solid_mechanics and the library solids), orthotropic (c11, c12, c22, c66) and monoclinic (+ '
+                'c16, c26) solids share one grid: a face takes the width-weighted mean density of its two cells, a '
+                'corner the harmonic mean of its four shear moduli (0 at fluid-solid and vacuum corners), so '
+                'interfaces need no special treatment and vacuum cells (no density, no stiffness) are traction-free '
+                'surfaces. dt = courant x the stability limit of the build materials; alone the physics sets '
+                'dt_sync, with another time-stepping physics the shorter step wins. Tensor mesh, uniform or '
+                'nonuniform (auto mode meshes by the optical index). elastic_strain_xx / _yy = the stiffness inverted '
+                'on the centre stresses (fluids: half the volumetric strain each; thermoelastic stress counts as '
+                'minus the thermal strain); with piezo_e* or c16 / c26 arrays the accumulated total strain instead '
+                '(thermoelastic heating then shows as expansion). Couplings: acoustics_em_acousto_optic (photoelastic '
+                'index of an em_fdfd_* physics, re-solved on the frozen strain every k acoustic steps; the tensor '
+                'entries also drive the eps_xy of em_fdfd_hz), em_acoustics_photoacoustic (absorbed light power into '
+                'heating_power), electrostatics_acoustics_piezo (stress -e^T E; two-way by default: the bound charge '
+                'of the accumulated strain re-solves the electrostatics every step, so the waves are stiffened and dt '
+                'uses c^D); the state fields can drive a state-dependent material property or a field_transfer. '
+                'Stepper precision single, or half_storage (fields stored as fp16 in units scaled from the peak '
+                'source stress and the largest impedance: 10 B per cell less, ~1e-3 relative noise floor), which '
+                'refuses the resonance finder, piezoelectric and monoclinic materials and every coupling into this '
+                'physics. cpu backend: numpy twins (numba for the velocity / stress updates when installed), single '
+                'precision only, several times slower: small models and tests.',
     settings=_SETTINGS,
     features=_FEATURES,
     material_properties=_MATERIAL_PROPERTIES,
@@ -1191,17 +1150,14 @@ ELASTIC_WAVES = PhysicsType(
     optional_material_schema=dict(OPTIONAL_ACOUSTIC_SCHEMA),
     state_fields=tuple(_RENDER_INFOS[name] for name in ('pressure', 'sxx', 'syy', 'sxy', 'vx', 'vy')),
     output_fields=tuple(_RENDER_INFOS.values()),
-    source_slots={HEATING_SLOT: ('W/m^3', 'Coupled heating rate q (em_acoustics_photoacoustic contributions, summed, '
-                                          'or one field_transfer from another physics), kept by reference; adds '
-                                          '-gruneisen q x the heating_envelope to d(sxx)/dt and d(syy)/dt every '
-                                          'step.'),
-                  **{slot: ('V/m', f'Coupled electric field {slot[-1]} component at the cell centres '
-                                   '(electrostatics_acoustics_piezo): each transfer adds -e^T (E - E_last) of this '
-                                   'component to the stresses at once (sxx, syy at the centres; sxy at the corners from '
-                                   'the 4-cell mean, not where the corner has no shear stiffness), so T = c S - e^T E '
-                                   'with E of the transfer time; the field of the first transfer counts as already '
-                                   'present (no stress: the initial state is the equilibrium of that field). Ignored '
-                                   'without piezo_e* arrays.')
+    source_slots={HEATING_SLOT: ('W/m^3', 'Heating rate q (em_acoustics_photoacoustic contributions summed, or one '
+                                          'field_transfer), kept by reference; adds -gruneisen q x the '
+                                          'heating_envelope to d(sxx)/dt and d(syy)/dt every step.'),
+                  **{slot: ('V/m', f'Electric field {slot[-1]} at the cell centres (electrostatics_acoustics_piezo): '
+                                   'each transfer adds -e^T (E - E_last) to the stresses (sxy at the corners from the '
+                                   '4-cell mean, none where a corner has no shear stiffness), so T = c S - e^T E; the '
+                                   'first transfer counts as already present (no stress: the initial state is its '
+                                   'equilibrium). Ignored without piezo_e* arrays.')
                      for slot in ELECTRIC_FIELD_SLOTS}},
     supported_studies=('time_dependent',),
     default_study={'type': 'time_dependent', 'settings': {'duration': 20e-6}},

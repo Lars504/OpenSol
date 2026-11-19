@@ -65,28 +65,25 @@ MEMBRANE_LINEAR_ROLE = SolverRole('general', 'sparse_direct', studies=(FREQUENCY
 _DISCRETIZATION_PARAM = Param(
     DISCRETIZATION_SETTING, 'choice', 'quadratic', label='Discretization', choices=tuple(DISCRETIZATIONS),
     choice_labels=(('quadratic', 'Quadratic elements'), ('linear', 'Linear elements')),
-    help='Lagrange order of w: quadratic (P2, default) or linear (P1), on the triangles of a 2D model (P2 elements with '
-         'an edge on a circle / ellipse follow the drawn curve, isoparametric) and on the cells of a 1D model (line '
-         'elements on the cell edges). Resonance errors fall as (k h)^4 for P2 and (k h)^2 for P1 (k = 2 pi f / c, c = '
-         'sqrt(T / rho_s)).',
+    help='Lagrange order of w on the triangles of a 2D model (P2 isoparametric on circle / ellipse edges) and on the '
+         'cells of a 1D model. Resonance errors fall as (k h)^4 for P2, (k h)^2 for P1 (k = 2 pi f / c, c = sqrt(T / '
+         'rho_s)).',
     tip='How the displacement varies inside each element: quadratic is far more accurate per element, linear is '
         'cheaper.')
 _TARGET_FREQUENCY_PARAM = Param(
     'target_frequency', 'float', 0.0, label='Eigenfrequency target', unit='Hz', min=0.0,
-    help='Eigenfrequency study only: the resonances nearest this frequency are searched (shift-invert about (2 pi '
-         'target_frequency)^2, moved 1e-4 above it so a target on a resonance still factors); 0 = the lowest ones, '
-         'which needs a clamped boundary (a free membrane moves without strain at 0 Hz). With a PML it also sets the '
-         'PML strength unless pml_frequency is given, so it must then be > 0. Ignored by frequency_response.',
+    help='Eigenfrequency study only: the resonances nearest it (shift-invert about (2 pi target_frequency)^2, moved '
+         '1e-4 above so a target on a resonance still factors); 0 = the lowest, which needs a clamp (a free membrane '
+         'has a 0 Hz mode). With a PML and no pml_frequency it sets the PML strength, so it must then be > 0.',
     tip="Used only by an 'Eigenfrequency' study: the resonances closest to this frequency are found.\n\n"
         '0 finds the lowest ones.')
 _AXIAL_WAVENUMBER_PARAM = Param(
     'axial_wavenumber', 'float', 0.0, label='Axial wavenumber', unit='rad/m',
-    help='1D models only: w ~ W(x) exp(-j k_y y), the line being the cross-section of a membrane guide along y; adds '
-         'T_yy (1 + j eta) k_y^2 to the operator, so a strip of width W clamped at both ends has the branches omega_n = '
-         'c sqrt((n pi / W)^2 + k_y^2), c = sqrt(T / rho_s) (sweep a parameter for the dispersion; below the cut-off '
-         'n pi c / W a guided wave of frequency f has imaginary k_y). With a bending_stiffness D the plate strip operator D '
-         '(1 + j eta) (W\'\'\'\' - 2 k_y^2 W\'\' + k_y^4 W) is added. 0 (default) = a line uniform along y '
-         '(a string or a strip). A 2D model refuses a nonzero value (its y is drawn; use periodic_y with bloch_ky there).',
+    help='1D models only: w ~ W(x) exp(-j k_y y), the line the cross-section of a guide along y; adds T_yy (1 + j eta) '
+         'k_y^2, so a strip of width W clamped at both ends has omega_n = c sqrt((n pi / W)^2 + k_y^2), c = sqrt(T / '
+         'rho_s) (sweep a parameter for the dispersion; below the cut-off n pi c / W, k_y is imaginary). With a '
+         'bending_stiffness D it adds D (1 + j eta) (W\'\'\'\' - 2 k_y^2 W\'\' + k_y^4 W). 0 = uniform along y (a '
+         'string or strip). A 2D model refuses a nonzero value (use periodic_y with bloch_ky).',
     tip='Only in a 1D model: the wave number along the strip, for the dispersion of a membrane waveguide.\n\n'
         '0 means a strip that does not vary along its length.')
 
@@ -95,41 +92,36 @@ def _pml_params():
     """pml_<face> per outer face, pml_cells, pml_reflection and pml_frequency (triangle meshes)."""
     faces = tuple(Param(
         f'pml_{face}', 'bool', False, label=f'PML on {face}',
-        help=(f'Triangle meshes only: a perfectly matched layer beyond {face}. The mesh grows a ring of pml_cells x '
-              'the mesh dx there (the MeshSpec pml_layers element layers across), its material continued from the '
-              'window edge, with the fem.pml stretch s = 1 - j beta (d / w)^2 (d the depth, w the thickness); beta is '
-              'set by pml_reflection for the fastest wave of the ring at the reference frequency omega_r '
-              '(pml_frequency, else: eigenfrequency target_frequency, frequency_response the first frequency '
-              'solved): c = sqrt(T / rho_s), with bending_stiffness D the propagating plate wave c^2 = (T + sqrt(T^2 + '
-              '4 D rho_s omega_r^2)) / (2 rho_s) (its evanescent partner needs no extra strength); its outer side is '
-              'clamped (w = 0, with bending also dw/dn = 0). With bending the ring must resolve the boundary layer '
-              'sqrt(D / T) like the window and needs one element layer per cell (MeshSpec pml_layers >= pml_cells; '
-              'coarser layers reflect strongly, validation warns). Waves leaving through '
-              f'{face} are absorbed: resonances get frequency_imag > 0 and a radiation Q, resonances with more than '
-              'half of their energy in the layer are dropped as PML modes. Waves far below the reference frequency are '
-              f'absorbed less. Keep clamps, line forces and probes off {face}; every physics sharing the mesh must ring '
-              'the same faces.'),
+        help=('Triangle meshes only: a perfectly matched layer beyond this face, a ring of pml_cells x the mesh dx '
+              '(MeshSpec pml_layers element layers across), material continued from the window edge, stretch s = 1 - '
+              'j beta (d / w)^2 (d the depth, w the thickness); beta from pml_reflection for the fastest wave of the '
+              'ring at the reference frequency omega_r (see pml_frequency): c = sqrt(T / rho_s), with '
+              'bending_stiffness D the propagating plate wave c^2 = (T + sqrt(T^2 + 4 D rho_s omega_r^2)) / (2 '
+              'rho_s). Outer side clamped (w = 0; with bending also dw/dn = 0). With bending the ring must resolve '
+              'sqrt(D / T) like the window and needs one element layer per cell (MeshSpec pml_layers >= pml_cells, '
+              'else strong reflection; validation warns). Absorbed waves give resonances frequency_imag > 0 and a '
+              'radiation Q; resonances with more than half their energy in the layer are dropped as PML modes. Waves '
+              'far below omega_r are absorbed less. Keep clamps, line forces and probes off the face; every physics '
+              'sharing the mesh must ring the same faces.'),
         tip=(f'Absorbs waves leaving through {face}, as if the membrane continued forever there.\n\n'
              'Gives each resonance a radiation quality factor. Only on a triangle mesh.'))
         for face in FACES)
     cells = Param('pml_cells', 'int', DEFAULT_PML_CELLS, label='PML thickness (elements)', unit='1', min=1, max=100,
-                  help='Thickness of the PML ring in multiples of the mesh dx (h_max) on every pml_<face> face; the '
-                       'stretch profile wants the ring a fair part of the longest wavelength c / f there (6-12 typical).',
+                  help='Ring thickness in mesh dx (h_max) on every pml_<face> face; a fair part of the longest '
+                       'wavelength c / f there (6-12 typical).',
                   tip='How thick the absorbing layer is, in element sizes.\n\n8 is typical.')
     reflection = Param('pml_reflection', 'float', DEFAULT_PML_REFLECTION, label='PML reflection', unit='1', min=0.0,
                        min_exclusive=True, max=1.0,
-                       help='Theoretical round-trip reflection of the PML for a normally incident wave of the fastest '
-                            'speed c of the ring (pml_<face>) at the reference frequency (beta = 3 ln(1 / R) c / (2 '
-                            'omega_r w)); oblique '
-                            'and slower waves are absorbed more in depth, less at grazing incidence. A very small value '
-                            'makes the profile steep, which the discretisation reflects instead: 1e-4 to 1e-8 typical.',
+                       help='Theoretical round-trip reflection R at normal incidence for the fastest speed c of the '
+                            'ring at omega_r: beta = 3 ln(1 / R) c / (2 omega_r w); oblique and slower waves are '
+                            'absorbed more in depth, less at grazing incidence. A very small R makes the profile '
+                            'steep, which the discretisation reflects instead: 1e-4 to 1e-8 typical.',
                        tip='How strongly the absorbing layer damps a wave crossing it and back.\n\n1e-6 is typical.')
     frequency = Param('pml_frequency', 'float', None, label='PML reference frequency', unit='Hz', min=0.0,
                       min_exclusive=True, optional=True,
-                      help='Frequency [Hz] at which the PML strength is set (fixed for the whole study, so a resonance '
-                           'pencil stays linear in omega^2). Empty: the eigenfrequency target_frequency, or in a '
-                           'frequency_response study the first frequency solved (put the lowest first for the strongest '
-                           'absorption over the sweep).',
+                      help='omega_r / (2 pi), fixed for the study (the resonance pencil stays linear in omega^2). '
+                           'Empty: target_frequency (eigenfrequency) or the first frequency solved (frequency_response: '
+                           'put the lowest first for the strongest absorption over the sweep).',
                       tip='Frequency the absorbing layer is tuned for; empty uses the eigenfrequency target or the '
                           'first frequency of the sweep.')
     return faces + (cells, reflection, frequency)
@@ -142,23 +134,22 @@ def _periodic_params():
     """periodic_x / _y and bloch_kx / _ky (Bloch cells on periodic triangle meshes, eigenfrequency)."""
     periodic = tuple(Param(
         f'periodic_{axis}', 'bool', False, label=f'Periodic {axis}',
-        help=(f'Triangle mesh, eigenfrequency study only: {axis}_lo and {axis}_hi are one Bloch-periodic pair, w on '
-              f'{axis}_hi equals w on {axis}_lo times exp(-j bloch_k{axis} L) (L = the window size along {axis}, exp(+j '
-              'omega t)); the mesh is built with matching nodes on the two sides (no PML ring on them). The modes come '
-              'from the reduced pencil P^H K P, P^H M P (complex Hermitian; real when every k L is a multiple of pi) '
-              'and are complex: w_re / w_im / w_abs show them. With bending the slope jump across the seam is '
-              'penalised like any interior edge. Clamps, supports, line forces and ports must stay off the periodic '
-              'faces; with every bloch_k 0 a cell without any clamp moves at 0 Hz: set target_frequency > 0.'),
+        help=('Triangle mesh, eigenfrequency study only: the lo / hi faces of this axis are one Bloch pair, w(hi) = '
+              'w(lo) exp(-j bloch_k L) (L the window size along the axis); the mesher matches their nodes (no PML '
+              'ring there). The modes of the reduced pencil P^H K P, P^H M P (complex Hermitian; real when every k L '
+              'is a multiple of pi) are complex (w_re / w_im / w_abs). With bending the seam slope jump is penalised '
+              'like any interior edge. Clamps, supports, line forces and ports stay off periodic faces; with every '
+              'bloch_k 0 a cell without a clamp has a 0 Hz mode: set target_frequency > 0.'),
         tip=(f'Makes the {axis} faces periodic: the model is one cell of an infinite periodic membrane (a phononic '
              'crystal, a perforated film, a strip of an infinite guide).\n\nOnly for an eigenfrequency study on a '
              'triangle mesh.')) for axis in _AXES)
     bloch = tuple(Param(
         f'bloch_k{axis}', 'float', 0.0, label=f'Bloch wave vector {axis}', unit='rad/m',
         visible_if=((f'periodic_{axis}', (True,)),),
-        help=(f'Bloch wave vector along {axis} [rad/m], used only when periodic_{axis} is on: the phase step exp(-j '
-              f'k{axis} L) per period L; k{axis} and k{axis} + 2 pi / L are the same state; 0 = plain periodic. Swept '
-              'through a parameter, one eigenfrequency study per k gives the band diagram (a strip clamped on two '
-              'faces and periodic along the third: the guide dispersion f_n(k)). Typical: pi / L at the zone edge.'),
+        help=(f'Used only with periodic_{axis}: phase step exp(-j k L) per period L; k and k + 2 pi / L are the same '
+              'state; 0 = plain periodic. Swept by a parameter, one eigenfrequency study per k gives the band diagram '
+              '(a strip clamped on two faces and periodic along the third: the guide dispersion f_n(k)). Typical: pi / '
+              'L at the zone edge.'),
         tip=('Phase step of the vibration from one period to the next along this axis, in radians per metre.\n\n0 '
              'means no phase step. Swept, it gives the bands of a periodic membrane.')) for axis in _AXES)
     return periodic + bloch
@@ -212,60 +203,55 @@ def _material_property(name, label, unit, minimum, help_text, tip):
 
 
 _TENSION_HELP = (
-    'In-plane tension of the film [N/m] = film stress x thickness (sigma h; e.g. 1 GPa x 50 nm silicon nitride = 50 '
-    'N/m), isotropic: writes tension_xx and tension_yy. The wave speed is c = sqrt(T / areal_density). An element with '
-    'no tension and no areal_density is a hole (not solved, its outline a free edge); the coupled tension slots add to '
-    'it. Negative (compressive) values make the membrane unstable (no restoring force): resonances with Re omega <= 0 '
-    'are dropped.')
+    'Isotropic film tension = film stress x thickness (e.g. 1 GPa x 50 nm silicon nitride = 50 N/m); the coupled '
+    'tension slots add to it. Wave speed c = sqrt(T / areal_density). An element with no tension and no areal_density '
+    'is a hole (not solved, its outline a free edge). Compressive (negative) values give no restoring force: '
+    'resonances with Re omega <= 0 are dropped.')
 _MATERIAL_PROPERTIES = (
     _material_property('tension', 'Tension', 'N/m', None, _TENSION_HELP,
                        'Pulling force per width of the film: film stress times thickness.\n\n'
                        'Typical: 50 N/m for 50 nm of silicon nitride at 1 GPa.'),
     _material_property('tension_xx', 'Tension xx', 'N/m', None,
-                       'Tension component N_xx [N/m]; overrides tension along x (an anisotropic or coupled prestress).',
+                       'N_xx; overrides tension along x (an anisotropic or coupled prestress).',
                        "Tension along x; replaces 'Tension' there."),
     _material_property('tension_yy', 'Tension yy', 'N/m', None,
-                       'Tension component N_yy [N/m]; overrides tension along y. 1D models: the tension along the '
-                       'guide, read only by the axial_wavenumber term.',
+                       'N_yy; overrides tension along y. 1D models: the tension along the guide, read only by the '
+                       'axial_wavenumber term.',
                        "Tension along y; replaces 'Tension' there."),
     _material_property('tension_xy', 'Tension xy', 'N/m', None,
-                       'In-plane shear tension N_xy [N/m] (unset = 0; the array is allocated only when a material sets '
-                       'it); the tensor [[N_xx, N_xy], [N_xy, N_yy]] should be positive definite. Ignored in 1D models.',
+                       'Shear N_xy (unset = 0, array allocated only when set); [[N_xx, N_xy], [N_xy, N_yy]] should be '
+                       'positive definite. Ignored in 1D models.',
                        'Shear part of the tension; empty means none.'),
     _material_property('areal_density', 'Areal density', 'kg/m^2', 0.0,
-                       'Mass per area rho_s = rho h [kg/m^2] (e.g. 3100 kg/m^3 x 50 nm silicon nitride = 1.55e-4). '
-                       'Unset = 0: with no tension either the element is a hole.',
+                       'rho_s = rho h (e.g. 3100 kg/m^3 x 50 nm silicon nitride = 1.55e-4). Unset = 0: with no '
+                       'tension either the element is a hole.',
                        'Mass per area of the film: density times thickness.\n\n'
                        'Typical: 1.55e-4 kg/m^2 for 50 nm of silicon nitride.'),
     _material_property('loss_factor', 'Loss factor', '1', 0.0,
-                       'Isotropic structural loss factor eta: the tension becomes T (1 + j eta) (exp(+j omega t)), so a '
-                       'resonance has Q = 1 / eta (exactly Re s / (2 Im s), s = sqrt(1 + j eta)). Unset = 0 (the array '
-                       'is allocated only when a material sets it). Typical 1e-6 to 1e-3.',
+                       'Structural loss eta: T becomes T (1 + j eta), so Q = 1 / eta (exactly Re s / (2 Im s), s = '
+                       'sqrt(1 + j eta)). Unset = 0 (array allocated only when set). Typical 1e-6 to 1e-3.',
                        'Internal damping of the film; the quality factor of a resonance is about 1 over it.\n\n'
                        'Empty means no loss.'),
     _material_property('bending_stiffness', 'Bending stiffness', 'N m', 0.0,
-                       'Plate bending stiffness D = E h^3 / (12 (1 - nu^2)) [N m] (e.g. 250 GPa, 80 nm, nu 0.23: 1.13e-11 '
-                       'N m), adding D (1 + j eta) del^4 w to the membrane equation (a tensioned Kirchhoff plate). Setting '
-                       'it in any material (0 included) switches the whole physics to plate elements: Hermite cubic line '
-                       'elements in 1D (w and w\'), on triangles the C0 interior penalty form on quadratic elements '
-                       '(discretization quadratic; a PML stretches the plate form too; a port on a face with D > 0 '
-                       'takes the numeric plate strip modes; mode_projection is refused). Then clamped also '
-                       'holds the slope dw/dn = 0, '
-                       'simply_supported (and antisymmetry) holds w only, symmetry the slope only. The clamped boundary layer sqrt(D / T) (0.38 um for the example at '
-                       '80 N/m) must be resolved by the mesh near clamps.',
+                       'D = E h^3 / (12 (1 - nu^2)) (e.g. 250 GPa, 80 nm, nu 0.23: 1.13e-11 N m), adding D (1 + j '
+                       'eta) del^4 w (a tensioned Kirchhoff plate). Set in any material (0 included), it switches the '
+                       'whole physics to plate elements: Hermite cubic lines in 1D, on triangles the C0 interior '
+                       'penalty form (discretization quadratic; a PML stretches it too; ports take numeric plate strip '
+                       'modes; mode_projection is refused). Then clamped also holds dw/dn = 0, simply_supported and '
+                       'antisymmetry hold w only, symmetry the slope only. The clamped boundary layer sqrt(D / T) (0.38 '
+                       'um for the example at 80 N/m) must be resolved near clamps.',
                        'Bending stiffness of the film: Young modulus times thickness cubed over 12 (1 - Poisson ratio '
                        'squared).\n\nEmpty means a membrane without bending.'),
     _material_property('plate_poisson_ratio', 'Plate Poisson ratio', '1', None,
-                       'Poisson ratio nu of the plate bending moments M = D [(1 - nu) H(w) + nu tr H(w) I] (triangle '
-                       'meshes; unset = 0). It changes free and simply supported plate edges only (the moment there), '
-                       'not clamped ones or the interior equation; D already holds its 1 / (1 - nu^2). 1D models ignore '
-                       'it (exact for clamped and simply supported ends). Must lie in (-1, 0.5].',
+                       'nu of the bending moments M = D [(1 - nu) H(w) + nu tr H(w) I] (triangles; unset = 0): it '
+                       'changes only free and simply supported plate edges; D already holds its 1 / (1 - nu^2). 1D '
+                       'models ignore it (exact for clamped and simply supported ends). Must lie in (-1, 0.5].',
                        'Poisson ratio used in the bending moments of a plate; only matters at free edges.'),
 )
 
 _SLOT_DOCS = {
     'coupled_tension_xx': ('N/m', 'Coupled tension N_xx per element (1D: per cell), e.g. the relaxed prestress h '
-                                  'sigma_xx of a solid; added to the material tension_xx; each transfer replaces it.'),
+                                  'sigma_xx of a solid; added to tension_xx, replaced by each transfer.'),
     'coupled_tension_yy': ('N/m', 'Coupled tension N_yy, as coupled_tension_xx.'),
     'coupled_tension_xy': ('N/m', 'Coupled shear tension N_xy, as coupled_tension_xx (ignored in 1D models).'),
 }
@@ -1428,82 +1414,69 @@ def _squeeze_film_memory(values, n_selected_cells, mesh):
 # ---- type ----
 _PRESSURE_PARAMS = (
     Param('pressure', 'float', 1.0, label='Pressure amplitude', unit='Pa', field_dependent=True,
-          help='Transverse pressure amplitude p [Pa] (positive along +w) at the phase below; may depend on x and y. The '
-               'PML ring takes none.',
+          help='Positive along +w; the PML ring takes none.',
           tip='Amplitude of the pressure pushing the membrane out of its plane.'),
     Param('phase', 'float', 0.0, label='Phase', unit='deg',
-          help='Phase of the drive phasor in degrees (exp(+j omega t)).',
+          help='Drive phase (exp(+j omega t)).',
           tip='Phase shift of this drive in degrees.'),
 )
 _LINE_FORCE_PARAMS = (
     Param('force', 'float', 1.0, label='Force per length', unit='N/m',
-          help='Transverse force per length [N/m] along the selected outer faces / object outlines (positive along '
-               '+w), at the phase below; in a 1D model at the selected end, per unit length along y. Several on one '
-               'face add; on a clamped face it does nothing.',
+          help='Positive along +w. Several on one face add; on a clamped face it does nothing.',
           tip='Out-of-plane force per length of edge.'),
     _PRESSURE_PARAMS[1],
 )
 _POINT_FORCE_PARAMS = (
     Param('force', 'float', 1e-6, label='Force', unit='N',
-          help='Transverse point force [N] (positive along +w) at the phase below; in a 1D model the point is a line '
-               'across the strip and the force is per unit length along y (N/m).',
+          help='Positive along +w; 1D models: per unit length along y (N/m).',
           tip='Out-of-plane force at the point.'),
     _PRESSURE_PARAMS[1],
 )
 _PORT_PARAMS = (
     Param('mode_count', 'int', 10, label='Modes', unit='1', min=1, max=200,
-          help='Number n of strip modes phi_n (sin(n pi s / W); with a symmetry wall sin / cos((n - 1/2) pi s / W), see '
-               'the feature description) the port absorbs exactly (Dirichlet-to-Neumann per mode, '
-               'propagating and evanescent); higher modes see a free edge, so keep the port where their near field has '
-               'decayed (exp(-n pi d / W)) or raise the count. W = the span of membrane elements along the face. A '
-               'plate port (bending_stiffness > 0 at the face) absorbs every numeric strip mode of its cross-section '
-               '(two per free strip dof); there mode_count is the number of modes reported and allowed as incident '
-               'modes, numbered by cut-off (Re beta^2 descending: propagating modes first, then by decay; a plate '
-               'guide has a second, bending-dominated evanescent family that comes late), and it must cover the '
-               'propagating modes for the power balance.',
+          help='Strip modes phi_n the port absorbs exactly (propagating and evanescent; see the description); higher '
+               'modes see a free edge, so keep the port where their near field has decayed (exp(-n pi d / W)) or '
+               'raise the count. A plate port absorbs every numeric strip mode (two per free strip dof); there '
+               'mode_count is the number reported and allowed as incident modes (by cut-off: propagating first, then '
+               'by decay; the bending-dominated evanescent family comes late) and must cover the propagating modes '
+               'for the power balance.',
           tip='How many guide modes the port absorbs without reflection; 10 is plenty unless a scatterer is close.\n\n'
               'On a plate the port absorbs every mode anyway; the count sets how many are reported.'),
     Param('incident_mode', 'int', 0, label='Incident mode', unit='1', min=0, max=400,
-          help='Mode number m sent into the domain through this port (0 = none: the port only absorbs). Its amplitude '
-               'below is the incident w profile amplitude at the port face. On a guide with a wall on a symmetry / '
-               'antisymmetry face, m is numbered on the unfolded (full-width) guide: a symmetry wall admits the odd m '
-               '(half mode (m + 1) / 2), an antisymmetry wall the even m (half mode m / 2); a mode of the other '
-               'parity is a build error unless the study runs parity_sectors (each mode then in the run of its '
-               'parity). A plate port numbers its modes on the drawn guide (by cut-off, see mode_count), also on a '
-               'half guide, and has no parity_sectors combination.',
+          help='Mode m sent in (0 = none: the port only absorbs). On a guide with a symmetry / antisymmetry wall, m '
+               'counts on the unfolded (full-width) guide: a symmetry wall admits odd m (half mode (m + 1) / 2), an '
+               'antisymmetry wall even m (half mode m / 2); the other parity is a build error unless the study runs '
+               'parity_sectors. A plate port numbers its modes on the drawn guide (by cut-off), also on a half guide.',
           tip='Which guide mode enters the model here; 0 means the port only absorbs.\n\nIn a half model the number '
               'counts the modes of the full-width guide.'),
     Param('amplitude', 'float', 1e-9, label='Incident amplitude', unit='m',
-          help='Amplitude A [m] of the incident mode A phi_m(s) at the port face, at the phase below.',
+          help='A of the incident w profile A phi_m(s) at the port face.',
           tip='Size of the incoming wave at the port.'),
     _PRESSURE_PARAMS[1],
     Param('incident_modes', 'float_list', None, label='Incident modes', unit='1', min=1.0, optional=True,
-          help='Several incident modes at once (whole numbers, numbered as incident_mode); a non-empty list replaces '
-               'incident_mode. Their amplitudes / phases: incident_amplitudes / incident_phases (one entry per mode; '
-               'empty: amplitude / phase for each). Modes of both parities about a mirror wall (e.g. 1 and 2 on a half '
-               'guide) need the study setting parity_sectors.',
+          help='Several incident modes (whole numbers, numbered as incident_mode); non-empty, it replaces '
+               'incident_mode. Both parities about a mirror wall (e.g. 1 and 2 on a half guide) need parity_sectors.',
           tip='Several guide modes entering together, for example 1 and 2; leave empty to use the single incident '
               'mode above.'),
     Param('incident_amplitudes', 'float_list', None, label='Incident amplitudes', unit='m', optional=True,
-          help='Amplitude [m] per entry of incident_modes (empty: amplitude for each).',
+          help='Per entry of incident_modes (empty: amplitude for each).',
           tip='Size of each incoming mode, in the order of the incident modes.'),
     Param('incident_phases', 'float_list', None, label='Incident phases', unit='deg', optional=True,
-          help='Phase [deg] per entry of incident_modes (empty: phase for each).',
+          help='Per entry of incident_modes (empty: phase for each).',
           tip='Phase of each incoming mode, in the order of the incident modes.'),
     Param('sector_drive', 'bool', False, label='Parity-sector drive',
           help='Set by the study setting parity_sectors on its sector copies (leave it off): an incident mode of a '
-               'guide ending on a mirror face is then driven at 2 A in the sector of its parity and not at all in '
-               'the other, so the mean of the sectors is the drawn amplitude A.',
+               'guide ending on a mirror face is driven at 2 A in the sector of its parity, not at all in the other '
+               '(sector mean A).',
           tip='Set automatically for the runs of the parity sectors study option; leave it off.'),
     Param('tension_tolerance', 'float', PORT_UNIFORM_RTOL, label='Tension tolerance', unit='1', min=0.0,
           min_exclusive=True, max=1.0,
-          help='Largest relative variation of the tension along the port cut (spread of T_nn and of T_ss over the '
-               'elements at the face, |tension_xy| / T_nn) that is accepted; above it the build of the first solve '
-               f'fails. Default {PORT_UNIFORM_RTOL:g} (a uniform guide). Raise it (e.g. 1e-2) for a guide whose tension '
-               'comes from a solid (solid_membrane_tension coupling): the port then uses the mean tension of its cut, '
-               f'a spread above {PORT_UNIFORM_RTOL:g} gives a RuntimeWarning and the result extras tension_spread / '
-               'medium_warning, and the port reflects at about the level of the spread. Areal density and loss factor '
-               f'must stay uniform to {PORT_UNIFORM_RTOL:g}.',
+          help='Largest accepted relative tension variation along the port cut (spread of T_nn and T_ss over the face '
+               'elements, |tension_xy| / T_nn); above it the first solve fails to build. Raise it (e.g. 1e-2) for a '
+               'tension from a solid (solid_membrane_tension): the port uses the mean tension of its cut, a spread '
+               f'above {PORT_UNIFORM_RTOL:g} gives a RuntimeWarning and the extras tension_spread / medium_warning, and '
+               'the port reflects at about the level of the spread. Areal density and loss factor must stay uniform '
+               f'to {PORT_UNIFORM_RTOL:g}.',
           tip='How much the tension may vary along the port before it is refused.\n\nKeep the default for a uniform '
               'film; raise it for a tension taken from a solid, at the cost of small reflections.'),
 )
@@ -1513,60 +1486,56 @@ _PROJECTION_PARAMS = (
           help='Axis the guide runs along; the projection integrates across the other axis.',
           tip='Direction in which the guide runs.'),
     Param('cross_start', 'float', None, label='Guide wall start', unit='m', optional=True,
-          help='Coordinate [m] of the first guide wall across the guide (empty: the window edge; on a symmetry face the '
-               'wall is free).',
+          help='First guide wall across the guide (empty: the window edge).',
           tip='Position of the first wall of the guide; empty uses the domain edge.'),
     Param('cross_end', 'float', None, label='Guide wall end', unit='m', optional=True,
-          help='Coordinate [m] of the second guide wall (empty: the window edge; on a symmetry face the wall is free); '
-               'W = cross_end - cross_start.',
+          help='Second guide wall (empty: the window edge); W = cross_end - cross_start.',
           tip='Position of the second wall of the guide; empty uses the domain edge.'),
     Param('start', 'float', None, label='First position', unit='m', optional=True,
-          help='First sampled position [m] along the guide (empty: the window edge).',
+          help='First sampled position along the guide (empty: the window edge).',
           tip='Where the sampled stretch of the guide starts; empty uses the domain edge.'),
     Param('end', 'float', None, label='Last position', unit='m', optional=True,
-          help='Last sampled position [m] along the guide (empty: the window edge).',
+          help='Last sampled position (empty: the window edge).',
           tip='Where the sampled stretch of the guide ends; empty uses the domain edge.'),
     Param('points', 'int', 101, label='Positions', unit='1', min=2, max=100000,
-          help='Number of equally spaced positions from start to end.',
+          help='Equally spaced positions from start to end.',
           tip='How many positions along the guide are sampled.'),
     Param('mode_count', 'int', 3, label='Modes', unit='1', min=1, max=200,
-          help='Number of profiles phi_n, n = 1 .. mode_count, projected on (sin(n pi (s - cross_start) / W); a wall on a '
-               'symmetry face: sin / cos((n - 1/2) pi (s - cross_start) / W), see the feature description).',
+          help='Profiles phi_n, n = 1 .. mode_count (a wall on a symmetry face: sin / cos((n - 1/2) pi (s - '
+               'cross_start) / W)).',
           tip='How many guide modes are extracted.'),
     Param('result_axis', 'choice', 'position', label='Result versus', choices=('position', 'frequency'),
           choice_labels=(('position', 'Position along the guide'), ('frequency', 'Frequency (window-averaged power)')),
-          help="'position' (default): a_n(p) of the shown solution versus position. 'frequency' (frequency_response "
-               'only): per recorded frequency the mean of |a_n|^2 over the positions in average_start .. average_end '
-               '(series mode_<n>_power [m^2], mode_<n>_rms [m], total_power [m^2]; see the feature description).',
+          help="'position': a_n(p) of the shown solution vs position. 'frequency' (frequency_response only): the "
+               'guide-averaged mode powers vs frequency (see the description).',
           tip='Show the mode amplitudes along the guide, or the guide-averaged mode power versus frequency.'),
     Param('average_start', 'float', None, label='Averaging start', unit='m', optional=True,
           visible_if=(('result_axis', ('frequency',)),),
-          help="result_axis 'frequency': first position [m] of the averaging window along the guide (empty: start); "
-               'the mean runs over the sampled positions inside the window.',
+          help='First position of the averaging window (empty: start).',
           tip='Where the averaging along the guide starts; empty uses the first sampled position.'),
     Param('average_end', 'float', None, label='Averaging end', unit='m', optional=True,
           visible_if=(('result_axis', ('frequency',)),),
-          help="result_axis 'frequency': last position [m] of the averaging window (empty: end). A build error when "
-               'no sampled position lies in the window.',
+          help='Last position of the averaging window (empty: end); a build error when no sampled position lies '
+               'inside.',
           tip='Where the averaging along the guide ends; empty uses the last sampled position.'),
 )
 _GAS_COLUMNS_TEXT = (
-    'per mode for the mode shape of the eigenfrequency study (peak |w| = 1 m): gas_damping c = -Re F [kg/s] and '
-    'gas_stiffness k = omega Im F [N/m] of the modal gas force F = int p conj(w) dA per unit modal velocity (both scale '
-    'with the square of the shape normalisation), gamma_gas = c / m_eff [1/s] (the energy decay rate, the linewidth in '
-    'rad/s) and q_gas = omega m_eff / c, with m_eff = int rho_s |w|^2 dA of the same shape (independent of it)')
+    'gas_damping c = -Re F [kg/s] and gas_stiffness k = omega Im F [N/m] of the modal gas force F = int p conj(w) dA '
+    'per unit modal velocity (both scale with the square of the shape normalisation), gamma_gas = c / m_eff [1/s] '
+    '(energy decay rate = linewidth in rad/s) and q_gas = omega m_eff / c, m_eff = int rho_s |w|^2 dA (gamma_gas and '
+    'q_gas independent of the normalisation)')
 _SQUEEZE_FILM_PARAMS = (
     *SQUEEZE_FILM_GAS_PARAMS,   # gap, viscosity, ambient_pressure, slip, mean_free_path (model.definition_helpers)
     Param('vents', 'choice', 'open_edges', label='Vented edges', choices=MEMBRANE_VENT_CHOICES,
           choice_labels=(('open_edges', 'Free edges and holes vented'), ('all', 'Every edge vented'),
                          ('none', 'Closed (no vent)')),
-          help='Which footprint boundary edges vent to the ambient (p = 0; the others are sealed, no gas flux). '
-               'open_edges: free edges, hole outlines, footprint edges inside the membrane and antisymmetry faces '
-               '(odd pressure) vent; window edges of clamped / simply_supported / symmetry faces, symmetry outlines '
-               'and held edges with membrane on both sides (clamped_line / simply_supported_line, clamped / supported '
-               'object outlines inside the film) are sealed (a clamped outline with a hole outside vents as a hole '
-               'outline). all: every footprint edge vents; none: a closed film (needs ambient_pressure > 0: a trapped '
-               'gas spring). Holes vent without the flow resistance of a perforation.',
+          help='Footprint edges venting to the ambient (p = 0; the others sealed, no flux). open_edges: free edges, '
+               'hole outlines, footprint edges inside the membrane and antisymmetry faces (odd pressure) vent; window '
+               'edges of clamped / simply_supported / symmetry faces, symmetry outlines and held edges with membrane '
+               'on both sides (clamped_line / simply_supported_line, held object outlines inside the film) are sealed '
+               '(a clamped outline with a hole outside vents as a hole outline). all: every footprint edge; none: a '
+               'closed film (needs ambient_pressure > 0: a trapped gas spring). Holes vent without perforation flow '
+               'resistance.',
           tip='Where the gas can escape from the gap: by default at free edges and through holes; clamped edges and '
               'symmetry planes are sealed.'),
 )
@@ -1575,119 +1544,110 @@ _FEATURES = (
     FeatureType('clamped', 'Clamped', 'boundary_condition', 'boundary',
                 summary='Holds the membrane edge still: the selected domain edges or outlines do not move (nor tilt, '
                         'for a plate).',
-                description='w = 0 on the selected outer faces (the window edge) and object outlines (triangle meshes; '
-                            'a 1D model: its ends x_lo / x_hi); with a bending_stiffness also the slope dw/dn = 0 '
-                            '(1D: w\' = 0; triangles: weakly, Nitsche, on each side of an outline). Edges without a '
-                            'clamp are free (zero transverse force and moment). A clamp beats a line force on the same '
-                            'face; not on a periodic face. Line objects (a zero-thickness iris or wall): clamped_line.',
+                description='w = 0 on the selected outer faces (window edge) and object outlines (triangles; 1D: the '
+                            'ends x_lo / x_hi); with a bending_stiffness also dw/dn = 0 (1D: w\' = 0; triangles: '
+                            'weakly, Nitsche, on each side of an outline). Unheld edges are free (zero transverse force '
+                            'and moment). A clamp beats a line force on the same face; not on a periodic face. Line '
+                            'objects: clamped_line.',
                 apply=_apply_clamped, validate=_validate_boundary_feature, grids=_GRIDS),
     FeatureType('clamped_line', 'Clamped line', 'boundary_condition', 'line', object_kinds=('line',),
                 summary='Holds the membrane still along drawn lines inside it, such as a thin clamped wall or iris '
                         '(nor tilt, for a plate).',
-                description='w = 0 on the mesh edges of the selected line objects (triangle meshes: the mesher puts '
-                            'element edges on every line; any direction, the part inside the window); with a '
-                            'bending_stiffness also dw/dn = 0 weakly (Nitsche) on each side of the line. The two sides '
-                            'stay one membrane otherwise: a line across a strip splits it into two clamped strips. '
-                            'Validation warns for a line end on a periodic side (unless the line spans the period: '
-                            'its image must be held too) and for a line reaching beyond the window.',
+                description='w = 0 on the mesh edges of the selected line objects (any direction, the part inside the '
+                            'window; the mesher puts element edges on them); with a bending_stiffness also dw/dn = 0 '
+                            'weakly on each side. The sides stay one membrane otherwise: a line across a strip splits '
+                            'it into two clamped strips. Validation warns for a line end on a periodic side (unless '
+                            'the line spans the period: its image must be held too) and for a line reaching beyond '
+                            'the window.',
                 apply=_apply_clamped, validate=_validate_line_hold, grids=('triangles',)),
     FeatureType('simply_supported_line', 'Simply supported line', 'boundary_condition', 'line',
                 object_kinds=('line',),
                 summary='Holds the membrane in place along drawn lines inside it but lets a plate rotate about them.',
-                description='w = 0 on the mesh edges of the selected line objects (triangle meshes, as clamped_line), '
-                            'the slope free: with a bending_stiffness the slope stays continuous across the line (the '
-                            'interior penalty acts there as on any interior edge: a line support of a continuous '
+                description='w = 0 on the selected line objects (as clamped_line), the slope free: with a '
+                            'bending_stiffness it stays continuous across the line (a line support of a continuous '
                             'plate). Without bending_stiffness the same as clamped_line.',
                 apply=_apply_simply_supported, validate=_validate_line_hold, grids=('triangles',)),
     FeatureType('simply_supported', 'Simply supported', 'boundary_condition', 'boundary',
                 summary='Holds the edge in place but lets it tilt: the selected edges do not move, a plate may rotate '
                         'about them.',
-                description='w = 0 on the selected outer faces and object outlines (1D: the ends), the slope free (zero '
-                            'bending moment: M_nn = 0 with plate_poisson_ratio). Without bending_stiffness the same as '
-                            'clamped. Not on a periodic face. Line objects: simply_supported_line.',
+                description='w = 0 on the selected outer faces and object outlines (1D: the ends), the slope free '
+                            '(M_nn = 0 with plate_poisson_ratio). Without bending_stiffness the same as clamped. Not on '
+                            'a periodic face. Line objects: simply_supported_line.',
                 apply=_apply_simply_supported, validate=_validate_boundary_feature, grids=_GRIDS),
     FeatureType('symmetry', 'Symmetry', 'boundary_condition', 'boundary',
                 summary='Makes the selected edges a mirror plane for vibrations that are the same on both sides of '
                         'it, so only half (or a quarter) of a symmetric membrane needs to be drawn.',
-                description='Even mirror plane: w(mirrored) = w. A film: the free edge (T dw/dn = 0, nothing is held; '
-                            'needs tension_xy = 0 there, as a mirrored shear tension changes sign). With a '
-                            'bending_stiffness: the slope dw/dn = 0 (1D: w\' = 0; triangles: weakly, Nitsche, as a '
-                            'clamp) with w free and zero transverse shear. On outer faces (1D: x_lo / x_hi) and straight '
-                            'object outlines; not on a PML or periodic face. A face also held by clamped / '
-                            'simply_supported / antisymmetry is held (warning). With the antisymmetry feature on the '
-                            'same plane in a second run it gives every mode of the full structure: the even modes here, '
-                            'the odd ones there. A port or mode_projection guide ending on a symmetry face takes that '
-                            'wall as free (half-guide profiles, see port). Its outer faces are model mirror planes '
-                            '(core.mirror): fields unfold w even across them, integrals touching them count twice '
-                            '(the unfolded structure), and the study setting parity_sectors swaps symmetry / '
-                            'antisymmetry on them per sector run.',
+                description='Even mirror plane, w(mirrored) = w. Film: a free edge (T dw/dn = 0; needs tension_xy = 0 '
+                            'there, a mirrored shear tension changes sign). With a bending_stiffness: dw/dn = 0 (1D: '
+                            'w\' = 0; triangles: weakly, Nitsche) with w free and zero transverse shear. On outer faces '
+                            '(1D: x_lo / x_hi) and straight object outlines; not on a PML or periodic face. A face also '
+                            'held by clamped / simply_supported / antisymmetry is held (warning). This run gives the '
+                            'even modes, a second with antisymmetry the odd ones. A port or mode_projection guide '
+                            'ending here takes the wall as free (half-guide profiles). Its outer faces are model mirror '
+                            'planes: fields unfold w even across them, integrals touching them count twice, and the '
+                            'study setting parity_sectors swaps symmetry / antisymmetry on them per sector run.',
                 apply=_apply_symmetry, validate=_validate_boundary_feature, grids=_GRIDS),
     FeatureType('antisymmetry', 'Antisymmetry', 'boundary_condition', 'boundary',
                 summary='Makes the selected edges a mirror plane for vibrations that change sign across it, so only '
                         'half (or a quarter) of a symmetric membrane needs to be drawn.',
-                description='Odd mirror plane: w(mirrored) = -w. w = 0 on the selected faces, the slope free (with a '
-                            'bending_stiffness: zero bending moment M_nn = 0), the same hold as simply_supported. On '
+                description='Odd mirror plane, w(mirrored) = -w: the hold of simply_supported (w = 0, slope free). On '
                             'outer faces (1D: x_lo / x_hi) and straight object outlines; not on a PML or periodic face. '
-                            'Its outer faces are model mirror planes (core.mirror): fields unfold w odd across them, '
-                            'integrals touching them count twice, parity_sectors swaps the feature per sector run. A '
+                            'Its outer faces are model mirror planes: fields unfold w odd across them, integrals '
+                            'touching them count twice, parity_sectors swaps the feature per sector run. A '
                             'squeeze_film_damping film vents on its faces (odd pressure).',
                 apply=_apply_antisymmetry, validate=_validate_boundary_feature, grids=_GRIDS),
     FeatureType('pressure_load', 'Pressure load', 'source', 'domain', params=_PRESSURE_PARAMS,
                 summary='Drives the membrane with a pressure on the selected domains (frequency response).',
-                description='Complex pressure p e^(j phase) [Pa] on the selected elements (cells in 1D), int p v dA; '
-                            'read by the frequency_response study only.',
+                description='p e^(j phase) on the selected elements (1D: cells), int p v dA; frequency_response '
+                            'only.',
                 apply=_apply_pressure, grids=_GRIDS),
     FeatureType('line_force', 'Line force', 'source', 'boundary', params=_LINE_FORCE_PARAMS,
                 summary='Drives the membrane with a force along the selected edges (frequency response).',
-                description='Complex transverse force per length F e^(j phase) [N/m] on the selected outer faces (the '
-                            'window edge) and object outlines (both sides of an interior outline share it); a 1D model: '
-                            'at its ends. Read by the frequency_response study only; not on a PML face.',
+                description='F e^(j phase) along the selected outer faces (window edge) and object outlines (both '
+                            'sides of an interior outline share it); 1D: at its ends, per unit length along y. '
+                            'frequency_response only; not on a PML face.',
                 apply=_apply_line_force, validate=_validate_boundary_feature, grids=_GRIDS),
     FeatureType('point_force', 'Point force', 'source', 'point', params=_POINT_FORCE_PARAMS, object_kinds=('point',),
                 summary='Drives the membrane with a force at the selected points (frequency response).',
-                description='Complex transverse point force F e^(j phase) [N] at each selected point (exact delta load '
-                            'of the element holding it); 1D models: a line across the strip, N/m. Read by the '
-                            'frequency_response study only.',
+                description='F e^(j phase) at each selected point (exact delta load of the element holding it); 1D: a '
+                            'line across the strip. frequency_response only.',
                 apply=_apply_point_force, validate=validate_points_inside, grids=_GRIDS),
     FeatureType('field_probe', 'Displacement probe', 'probe', 'point', object_kinds=('point',), max_entities=1,
                 result_kind='xy',
                 summary='Records the complex out-of-plane displacement at a point for every frequency of a frequency '
                         'response.',
-                description="Complex w at the point (triangles: its mesh node; 1D: x on the line) per solved frequency "
-                            "(core.harmonic_probe). Result 'xy' versus frequency [Hz]: series w_re, w_im, w_abs [m] and "
-                            'w_phase [rad] (a repeated frequency replaces its sample); a two_wave_fit derived value pairs '
-                            'w_re with w_im, a lorentz_fit of w_abs*w_abs gives the quality factor. Frequency response '
-                            'only.',
+                description='Complex w at the point (triangles: its mesh node; 1D: x on the line) vs frequency [Hz]: '
+                            'series w_re, w_im, w_abs [m], w_phase [rad] (a repeated frequency replaces its sample); '
+                            'a two_wave_fit pairs w_re with w_im, a lorentz_fit of w_abs*w_abs gives Q. '
+                            'frequency_response only.',
                 apply=_apply_probe, result=_probe_result, validate=_validate_probe, grids=_GRIDS),
     FeatureType('resonance_table', 'Resonance table', 'monitor', None, result_kind='table',
                 summary="Lists the resonances found by an 'Eigenfrequency' study: frequency, damping and quality "
                         'factor.',
-                description="Resonances of the last eigenfrequency solve, nearest target_frequency first. Result 'table' "
-                            'with columns resonance_number, frequency [Hz], frequency_imag [Hz, > 0 decays], q_factor '
-                            '(inf when lossless), pml_fraction (energy share in the PML); extras target_frequency, '
-                            "selected_resonance. For a frequency versus a parameter add a derived value with source "
-                            "'<physics>.<this feature>', expression frequency, operation at and at = 0. With "
-                            f"{_SQUEEZE_FILM} features (triangle meshes) the table appends {', '.join(GAS_TABLE_COLUMNS)}: "
-                            'the totals of every enabled film (c, k and gamma add over the films; see that feature).',
+                description='Resonances of the last eigenfrequency solve, nearest target_frequency first: columns '
+                            'resonance_number, frequency [Hz], frequency_imag [Hz, > 0 decays], q_factor (inf when '
+                            'lossless), pml_fraction (energy share in the PML); extras target_frequency, '
+                            'selected_resonance. Frequency vs a parameter: a derived value with source '
+                            "'<physics>.<this feature>', expression frequency, operation at, at = 0. With "
+                            f"{_SQUEEZE_FILM} features it appends {', '.join(GAS_TABLE_COLUMNS)}: the totals over the "
+                            'enabled films.',
                 apply=_apply_resonance_table, result=_resonance_table_result, validate=_validate_resonance_table,
                 grids=_GRIDS),
     FeatureType(_SQUEEZE_FILM, 'Squeeze-film damping', 'monitor', 'domain', params=_SQUEEZE_FILM_PARAMS,
                 result_kind='table',
                 summary='Estimates how much a thin gas layer between the membrane and a fixed wall under or over it '
                         'damps each vibration mode, as in MEMS resonators.',
-                description=('Gas damping of a thin film (gap H) between the selected membrane domains (the footprint) '
-                             'and a fixed parallel wall, evaluated per resonance after the eigenfrequency solve '
-                             '(triangle meshes; it does not change the modes; c and k are quadratic in w, so the side '
-                             'of the wall does not matter). On the footprint elements (holes excluded) the linearised '
-                             'compressible Reynolds equation div(H^3 / (12 mu_eff) grad p) - j omega (H / p_a) p = j '
-                             'omega w is solved per mode on the membrane\'s own elements and order (fem.squeeze_film), '
-                             'w the mode shape (peak 1 m), p = 0 on vented footprint edges (vents), no flux on sealed '
-                             f"ones. Result 'table', one row per mode: resonance_number, frequency [Hz], effective_mass "
-                             f'[kg], {_GAS_COLUMNS_TEXT}; extras area [m^2], gap [m], film_elements, vent_edges. The '
-                             'Resonance table appends the totals over every enabled film. Complex modes (PML, loss) use '
-                             'Re omega and m_eff = Re(w^H M w). Refused: Bloch cells, a footprint reaching a PML ring '
-                             '(build error), 1D models. Only the eigenfrequency study evaluates it (a frequency_response '
-                             'is not damped by it).'),
+                description=('Gas damping of a thin film (gap H) between the selected domains (the footprint) and a '
+                             'fixed parallel wall, per resonance after the eigenfrequency solve (the modes are '
+                             'unchanged, a frequency_response is not damped by it; c and k are quadratic in w, so the '
+                             'side of the wall does not matter). Per mode the linearised compressible Reynolds '
+                             'equation div(H^3 / (12 mu_eff) grad p) - j omega (H / p_a) p = j omega w is solved on the '
+                             "footprint elements (holes excluded) with the membrane's own elements and order, w the "
+                             'mode shape (peak 1 m), p = 0 on vented edges, no flux on sealed ones. Columns per mode: '
+                             f'resonance_number, frequency [Hz], effective_mass [kg], {_GAS_COLUMNS_TEXT}; extras area '
+                             '[m^2], gap [m], film_elements, vent_edges. Complex modes (PML, loss) use Re omega and '
+                             'm_eff = Re(w^H M w). Refused: Bloch cells, a footprint reaching a PML ring (build '
+                             'error), 1D models.'),
                 apply=_apply_squeeze_film, result=_squeeze_film_result, validate=_validate_squeeze_film,
                 memory_estimate=_squeeze_film_memory, grids=('triangles',)),
     FeatureType('port', 'Port', 'boundary_condition', 'boundary', params=_PORT_PARAMS, max_entities=1,
@@ -1695,76 +1655,63 @@ _FEATURES = (
                 summary='Ends a straight clamped guide at an outer face as if it continued forever, and can send a '
                         'guide mode in; reports the power leaving in each mode (frequency response).',
                 description="Exact semi-infinite termination of a straight clamped strip guide on one outer face "
-                            "(triangle meshes, frequency_response only; a plate face: last paragraph): the analytic "
-                            'profiles sin(n pi s / W) (s from the first wall, W = the span of membrane elements on the '
-                            'face, clamped at both ends) with beta_n^2 = (rho_s omega^2 - T_ss (n pi / W)^2) / T_nn, Im '
-                            'beta <= 0, give the Dirichlet-to-Neumann term sum_n j beta_n T_nn (2 / W) (int phi_n w)(int '
-                            'phi_n v) per mode (no numeric mode solve); incident_mode m > 0 adds the load of A phi_m '
-                            'entering. A guide wall on a window face with the symmetry feature (and no hold there) is a '
-                            'free mirror wall: phi_n = sin(k_n s) (free at s = W) or cos(k_n s) (free at s = 0), k_n = '
-                            '(n - 1/2) pi / W in beta_n, i.e. the even modes 2n - 1 of the unfolded guide of width 2 W '
-                            '(same amplitudes; powers and power_fraction of the half; the incident mode 1 of the full '
-                            'guide is mode 1 here); symmetry on both walls is refused. The guide must be uniform at the face (density and loss to 1e-6; the tension '
-                            'and tension_xy to tension_tolerance, the mean tension of the port elements being used) '
-                            'and not ringed by a PML. Result \'xy\' versus frequency [Hz]: per mode the outgoing '
-                            'amplitude b_n = a_n - A delta_nm at the face (series mode_<n>_re / _im / _abs [m], '
-                            '_phase [rad]), power_<n> = W omega Re(T_nn beta_n) |b_n|^2 / 4 [W] and power_fraction_<n> '
-                            '= power_<n> / incident_power (the incident power of every port; NaN without one), and '
-                            'incident_power [W]. Lossless: the outgoing powers of all ports sum to the incident power '
-                            '(transmission T and reflection R). Extras: tension_spread (the relative tension spread '
-                            'measured at the face), tension_tolerance, medium_warning (text when the spread exceeds '
-                            '1e-6 but is accepted; else empty), free_walls ([at s = 0, at s = W]; None before a solve). '
-                            'A guide wall on a symmetry / antisymmetry face (a mirror wall): incident modes are '
-                            'numbered on the unfolded guide (see incident_mode; incident_modes for several), powers '
-                            'are those of the unfolded guide (x 2 per mirror wall; fractions unchanged), and the '
-                            'extras mirror_walls (+1 symmetry, -1 antisymmetry, None per wall), sector_modes / '
-                            'sector_signs (the unfolded number and sign of each half mode: a symmetry wall 2k - 1, an '
-                            'antisymmetry wall 2k, signed (-1)^(k-1) / (-1)^k when the wall is at s = 0) and '
-                            'sector_drive_scale give the parity_sectors combination (Results.sector_result(..., '
-                            'combined=True): unfolded modes, recomputed powers and fractions); series '
-                            'port_incident_power = this port\'s own incident power [W]. Plate port (bending_stiffness > '
-                            '0 at the port elements, D and plate_poisson_ratio uniform there to 1e-6): the guide '
-                            'modes are computed per frequency from a Hermite cubic strip on the port\'s edge nodes '
-                            '(D (1 + j eta), T_nn, T_ss, rho_s, nu; walls from the holds: a clamped face / outline holds '
-                            'w and dw/ds, simply_supported / antisymmetry w, symmetry dw/ds, an unheld face or hole '
-                            'outline is a free plate edge), the quadratic eigenproblem in beta^2 solved densely (2 per '
-                            'free strip dof), Im beta <= 0, numbered by cut-off (Re beta^2 descending), profiles scaled '
-                            'to peak |w| 1 with the first lobe positive. The port absorbs all of them: the exact '
-                            'Dirichlet-to-Neumann map of the strip (effective shear V_n against w, moment M_nn against '
-                            'dw/dn; complex symmetric by reciprocity) on every quadratic dof of the port elements. '
-                            'b_n = the outgoing amplitudes from the (w, dw/dn) traces, power_<n> = the modal energy flux '
-                            '(omega / 2) Im(V_n conj(w) + M_n conj(dw/dn)) (lossless: exact balance), series as above. '
-                            'Extras plate_walls (the wall kinds; None for a film port), sector_modes / sector_signs '
-                            'None (no parity_sectors combination: a plate port on a guide ending on a mirror face is '
-                            'refused under parity_sectors); mirror walls still double the powers.',
+                            '(frequency_response only; not ringed by a PML). Film: the analytic profiles phi_n = sin(n '
+                            'pi s / W) (s from the first wall, W the span of membrane elements on the face) with '
+                            'beta_n^2 = (rho_s omega^2 - T_ss (n pi / W)^2) / T_nn, Im beta <= 0, give the '
+                            'Dirichlet-to-Neumann term sum_n j beta_n T_nn (2 / W) (int phi_n w)(int phi_n v); '
+                            'incident_mode m > 0 adds the load of A phi_m entering. The guide must be uniform at the '
+                            'face (density and loss to 1e-6, tension and tension_xy to tension_tolerance; the mean '
+                            'tension of the port elements is used). A guide wall on a window face with the symmetry '
+                            'feature (and no hold) is free: phi_n = sin(k_n s) (free at s = W) or cos(k_n s) (free at '
+                            's = 0), k_n = (n - 1/2) pi / W, the modes 2n - 1 of the unfolded guide of width 2 W; '
+                            'symmetry on both walls is refused. With a mirror (symmetry / antisymmetry) wall, incident '
+                            'modes are numbered on the unfolded guide and powers are those of the unfolded guide (x 2 '
+                            "per mirror wall; fractions unchanged). Result 'xy' vs frequency [Hz]: per mode the "
+                            'outgoing b_n = a_n - A delta_nm at the face (mode_<n>_re / _im / _abs [m], _phase [rad]), '
+                            'power_<n> = W omega Re(T_nn beta_n) |b_n|^2 / 4 [W], power_fraction_<n> = power_<n> / '
+                            'incident_power (the incident power of every port; NaN without one), incident_power [W] '
+                            "and port_incident_power (this port's own) [W]; lossless, the outgoing powers of all ports "
+                            'sum to the incident power. Extras: tension_spread, tension_tolerance, medium_warning '
+                            "('' unless a spread above 1e-6 was accepted), free_walls ([at s = 0, at s = W]; None "
+                            'before a solve), mirror_walls (+1 symmetry, -1 antisymmetry, None per wall), sector_modes '
+                            '/ sector_signs (unfolded number and sign of each half mode: symmetry wall 2k - 1, '
+                            'antisymmetry wall 2k, signed (-1)^(k-1) / (-1)^k with the wall at s = 0) and '
+                            'sector_drive_scale, for the parity_sectors combination (Results.sector_result(..., '
+                            'combined=True): unfolded modes, recomputed powers and fractions). Plate port '
+                            '(bending_stiffness > 0 at the port elements, D and plate_poisson_ratio uniform to 1e-6): '
+                            "the guide modes per frequency from a Hermite cubic strip on the port's edge nodes (walls "
+                            'from the holds: clamped face / outline w and dw/ds, simply_supported / antisymmetry w, '
+                            'symmetry dw/ds, an unheld face or hole outline free), the quadratic eigenproblem in '
+                            'beta^2 solved densely, Im beta <= 0, numbered by cut-off (Re beta^2 descending), peak |w| '
+                            '1 with the first lobe positive; all are absorbed by the exact strip Dirichlet-to-Neumann '
+                            'map (V_n against w, M_nn against dw/dn) on every quadratic dof of the port elements; '
+                            'power_<n> = (omega / 2) Im(V_n conj(w) + M_n conj(dw/dn)) (lossless: exact balance). Extras '
+                            'plate_walls (None for a film port); sector_modes / sector_signs None (a plate port on a '
+                            'guide ending on a mirror face is refused under parity_sectors); mirror walls still double '
+                            'the powers.',
                 apply=_apply_port, result=_port_feature_result, validate=_validate_port, grids=('triangles',)),
     FeatureType('mode_projection', 'Mode projection', 'monitor', None, params=_PROJECTION_PARAMS, result_kind='xy',
                 summary='Splits the vibration of a straight guide into its guide modes along the guide, for the '
                         'shown solution and, in a frequency response, for every frequency.',
                 description='a_n(p) = (2 / W) int w(p, s) sin(n pi (s - cross_start) / W) ds at points positions p '
-                            'from start to end along guide_axis, s across from cross_start to cross_end (W = their '
-                            'distance; a wall on a window face with the symmetry feature is free: the port\'s half-guide '
-                            'profiles, extra free_walls; composite Gauss; the sample points are located once at build, a point outside '
-                            'the mesh is a build error). Result \'xy\' versus position [m] of the shown solution '
-                            '(resonance or the last frequency): series mode_<n>_re / _im / _abs [m], _phase [rad]; a '
-                            'two_wave_fit or two_exp_fit derived value of mode_1_re gives beta or kappa of a mode. A '
-                            'frequency_response run also records a_n(p) at every solved frequency (independent of the '
-                            'study snapshots setting; host 16 B x points x mode_count per frequency): extras '
-                            'frequencies [Hz] (ascending, a repeated frequency replaces its row) and frequency_series '
-                            '{mode_<n>_re / _im / _abs / _phase: (n_frequencies, points) array, row i at frequencies[i], '
-                            'column j at x[j]} (results.npz result/<physics>.<feature>/frequency_series/<name>). '
-                            "result_axis 'frequency' instead gives result 'xy' versus those frequencies [Hz]: "
-                            'mode_<n>_power = the mean of |a_n|^2 over the sampled positions in average_start .. '
-                            'average_end [m^2] (a guide-averaged mode power, insensitive to standing-wave ripple), '
-                            'mode_<n>_rms = its square root [m] and total_power = the sum over the modes [m^2]; extras '
-                            'average_window [m] (first and last averaged position) and average_points; an error before '
-                            'a frequency_response run. An output / input ratio is a derived curve dividing the '
-                            'mode_<n>_power series of two such projections (that view also stores extras '
-                            'averaged_series {mode_<n>_re / _im: (n_frequencies, averaged points)}). Extras '
-                            'mirror_walls / sector_modes / sector_signs as the port (parity_sectors combines the '
-                            'projection on the unfolded guide). Triangle meshes; refused with bending_stiffness (the '
-                            'film profiles are not the plate guide modes, which are numeric per frequency: use ports '
-                            'or field probes).',
+                            'from start to end along guide_axis, s across from cross_start to cross_end (W their '
+                            "distance; a wall on a symmetry face is free: the port's half-guide profiles, extra "
+                            'free_walls); composite Gauss, sample points located once at build (a point outside the '
+                            "mesh is a build error). Result 'xy' vs position [m] of the shown solution (resonance or "
+                            'last frequency): mode_<n>_re / _im / _abs [m], _phase [rad]; a two_wave_fit or two_exp_fit '
+                            'of mode_1_re gives beta or kappa. A frequency_response run also records a_n(p) at every '
+                            'frequency (whatever the snapshots setting; host 16 B x points x mode_count per '
+                            'frequency): extras frequencies [Hz] (ascending, a repeated frequency replaces its row) '
+                            'and frequency_series {mode_<n>_re / _im / _abs / _phase: (n_frequencies, points) array} '
+                            "(results.npz result/<physics>.<feature>/frequency_series/<name>). result_axis 'frequency': "
+                            "result 'xy' vs those frequencies: mode_<n>_power = the mean of |a_n|^2 over the sampled "
+                            'positions in average_start .. average_end [m^2] (insensitive to standing-wave ripple), '
+                            'mode_<n>_rms its root [m], total_power the sum [m^2]; extras average_window [m], '
+                            'average_points, averaged_series {mode_<n>_re / _im: (n_frequencies, averaged points)}; an '
+                            'error before a frequency_response run. Output / input ratio: a derived curve dividing the '
+                            'mode_<n>_power of two projections. Extras mirror_walls / sector_modes / sector_signs as '
+                            'the port. Refused with bending_stiffness (plate guide modes are numeric: use ports or '
+                            'field probes).',
                 apply=_apply_mode_projection, result=_mode_projection_result, validate=_validate_mode_projection,
                 grids=('triangles',)),
 )
@@ -1773,40 +1720,21 @@ _FIELD_INFOS = tuple(MEMBRANE_FIELD_INFOS.values())
 _STATE_FIELD_INFOS = tuple(MEMBRANE_FIELD_INFOS[name] for name in STATE_FIELD_NAMES)
 
 _DESCRIPTION = (
-    'Tensioned film (the industry-standard membrane), optionally with plate bending (a tensioned Kirchhoff plate), '
-    'time-harmonic (exp(+j omega t)): D (1 + j eta) del^4 w - div(T (1 + j eta) grad w) - rho_s omega^2 w = p, w the '
-    'out-of-plane displacement [m], T the tension tensor [[tension_xx, tension_xy], [tension_xy, tension_yy]] [N/m] '
-    '(film stress x thickness; material + the coupled_tension_* slots), D = bending_stiffness [N m] (unset: no '
-    'bending), rho_s = areal_density [kg/m^2], eta = loss_factor, p = pressure [Pa]. Waves travel at c = sqrt(T / '
-    'rho_s). 2D models on a triangle mesh (complex Lagrange P2 / P1, isoparametric on curved outlines; fem.harmonic; '
-    'with D the C0 interior penalty plate form on P2: slope jumps between elements penalised, clamps hold dw/dn = 0 '
-    'weakly); 1D models on line elements over the cells (Hermite cubic with D; a string / plate strip or the '
-    'cross-section of a guide along y with the axial_wavenumber setting k_y: + T_yy (1 + j eta) k_y^2, with D also 2 D '
-    "k_y^2 w'' and D k_y^4 terms). An element with no tension, areal_density or bending_stiffness is a hole (not "
-    'solved; its outline is a free edge). Bloch cells: periodic_x / _y with bloch_kx / _ky on a periodic triangle mesh '
-    '(eigenfrequency). Ports: exact semi-infinite clamped strip guides on outer faces with analytic modes (plates: '
-    'numeric strip modes), incident modes and power fractions (frequency_response); mode_projection gives guide mode '
-    'amplitudes along a film guide. Studies: eigenfrequency '
-    '(resonances nearest target_frequency by shift-invert on the host, eigen '
-    'solver role arpack_shift_invert; complex omega with Im > 0 for a decaying resonance, Q = Re omega / (2 Im omega) '
-    'from the loss factor and the PML; one snapshot per resonance labelled "resonance k: f = <Hz> Hz[, Q = ...]", each '
-    'resonance scaled to 1 m real at its peak dof; resonance_table feature) and frequency_response (the driven '
-    'response to the pressure_load / line_force / point_force phasors at each frequency in Hz, one complex sparse '
-    "factorisation per frequency on the 'linear' sparse_direct solver (back_end 'cudss' / 'cudss_mixed' on the gpu "
-    'backend factorises on the device, triangle meshes only, its plan kept over the sweep since the pattern is fixed; '
-    "Automatic / 'auto': cudss_mixed there when nvmath-python is installed, else host SuperLU, up to ~1e6 unknowns "
-    'practical, 2e6 refused; an opt-in MUMPS or PARDISO host factor on triangle meshes keeps those limits); one '
-    'snapshot per frequency (study '
-    'setting snapshots); field_probe, port and mode_projection record per frequency). Edges are free unless clamped '
-    '(w = 0); clamped_line / simply_supported_line hold drawn line objects inside the membrane (zero-thickness walls, '
-    'irises); symmetry / antisymmetry make faces even / odd mirror planes of a half or quarter model; '
-    'squeeze_film_damping adds the gas damping of a thin gap under the film per resonance (eigenfrequency). '
-    'PML (triangles): pml_<face> settings grow a ring of pml_cells x dx beyond those faces with a fixed complex '
-    'stretch (fem.pml, set at pml_frequency or the eigenfrequency target / the first response frequency), outer side '
-    'clamped; resonances with most of their energy in the ring are dropped. Fields w_re, w_im, w_abs, w_phase (nodal '
-    'on triangles, cell centres in 1D), tension_xx / tension_yy / tension_xy (material + coupled), areal_density; '
-    'state() holds '
-    'w_re / w_im / w_abs per element (1D: per cell). The instance is usually named membrane.')
+    'Tensioned film, optionally with plate bending (a tensioned Kirchhoff plate), time-harmonic (exp(+j omega t)): D '
+    '(1 + j eta) del^4 w - div(T (1 + j eta) grad w) - rho_s omega^2 w = p, w the out-of-plane displacement [m], T the '
+    'tension tensor [[tension_xx, tension_xy], [tension_xy, tension_yy]] (material + coupled_tension_* slots), D = '
+    'bending_stiffness, rho_s = areal_density, eta = loss_factor, p the pressure load. Waves travel at c = sqrt(T / '
+    'rho_s). 2D models on triangles (complex Lagrange P2 / P1; with D the C0 interior penalty plate form on P2, clamps '
+    'holding dw/dn = 0 weakly); 1D models on line elements over the cells (Hermite cubic with D): a string / plate '
+    'strip, or the cross-section of a guide along y with axial_wavenumber. An element with no tension, areal_density or '
+    'bending_stiffness is a hole (its outline a free edge); edges are free unless held. eigenfrequency: resonances by '
+    'shift-invert on the host; complex omega, Im > 0 decays, Q = Re omega / (2 Im omega) from the loss factor and the '
+    'PML; one snapshot per resonance labelled "resonance k: f = <Hz> Hz[, Q = ...]", scaled to 1 m real at its peak '
+    'dof. frequency_response: one complex sparse factorisation per frequency by the linear role (cuDSS on the gpu '
+    "backend, triangles only, its plan kept over the sweep; back_end 'auto': cudss_mixed there with nvmath-python, "
+    'else host SuperLU; ~1e6 unknowns practical, 2e6 refused, also for the opt-in MUMPS / PARDISO); one snapshot per '
+    'frequency (study setting snapshots). Fields nodal on triangles, at cell centres in 1D; state() holds w_re / w_im '
+    '/ w_abs per element (1D: per cell).')
 
 MEMBRANE = PhysicsType(
     name=MEMBRANE_TYPE_NAME,
