@@ -114,7 +114,7 @@ Root rules: structure_conventions.md "Solver roles".
   estimates run low: level-1 aggregates hold ~3 rows, most level-1 P rows unsmoothed). Rejected: threshold 0 below the
   finest level, |a_ij| strength, smoother weight, V(2,2), float64 hierarchy, a larger coarsest level.
 
-## line_block (`LineBlockSolver`, Part II; SolverType 'line_block', roles 'shifted' and opt-in 'linear')
+## line_block (`LineBlockSolver`; SolverType 'line_block', roles 'shifted' and opt-in 'linear')
 - One runtime serves several consumers: each passes `owner=` to set_operator / factorize_operators and re-binds only
   when `solver.owner` is another; any set_operator / factorize_operators / release invalidates the kept LineBlockFactors
   (`valid` False), so a holder tests `valid` before solving.

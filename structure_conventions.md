@@ -264,11 +264,6 @@ first bring the background physics (those without the study's hook) to a station
   range-checked per sweep value only in the setter (material values are, by their Param). `state_dependent` on a
   material property promises a full re-read of its array on `materials_changed` (model sub file "Reused sweep
   builds").
-- After any change to the registry, a help text, a template or library data regenerate `api_reference.md` and
-  `api_templates.md` (`python -m open_sol describe --update-reference` from the package's parent) or selftest
-  `api_reference_current` fails. The same command rewrites `structure_index.md`: needed after adding, moving or
-  removing a module or changing the first sentence of a module docstring (selftest `structure_index_current`). Every
-  new module starts with a docstring whose first sentence says what it holds.
 - Selftest structure:
   - Cases span each module as light as possible: every physics type, feature, solver role and mesh kind it supports.
   - Each case runs once, on its natural backend; each example once, on its own (`solver_defaults.backend`: an
@@ -343,87 +338,75 @@ first bring the background physics (those without the study's hook) to a station
 
 ### GPU memory and session lifetime
 - GPU functions only on the GPU-owning thread (the worker, or the `api.run` caller); `gpu_memory.format_bytes` is the
-  only one the GUI thread calls. cupy's pool runs under a budget (core sub file "GPU memory"): overruns raise
-  OutOfMemoryError. `free_all_blocks` only between jobs / builds / sweep values and before sizing to the free device
-  memory (a cuDSS plan check, `gpu_memory.pool_room_bytes`), never in step loops.
-- A cuDSS factor (and the cusolver_qr workspace) lives outside the cupy pool, so the budget never sees it: code holding
-  one (a ModalPencil, a harmonic system's factor) releases it (`release()`) before dropping or replacing it. Likewise
-  a MUMPS / PARDISO factor (`host_direct.HostDirectFactorization`) holds host memory outside numpy: release it or pass
-  it as `previous=` (refactorised on the same pattern) before the next one; its own guard (the library's estimate
-  after analysis vs HOST_FRACTION of the available RAM) raises. Their threads are the library defaults
-  (OMP_NUM_THREADS / MKL_NUM_THREADS; no open_sol setting; a small PARDISO solve runs serial): oversubscription with numba / BLAS threads is the user's
-  to set, except PARDISO beside an OpenBLAS numpy / scipy (MKL solves alternating with threaded BLAS calls run 4 - 25 x
-  slower): a HostDirectFactorization holds the OpenBLAS pools at one thread during its own calls, and code looping
-  around a PARDISO factor with BLAS work of its own (a Krylov / ARPACK loop) wraps the loop in
-  `host_direct.quiet_openblas(name)` (solvers sub file "host_direct").
+  only one the GUI thread calls. cupy's pool runs under a budget: overruns raise OutOfMemoryError. Pool releases go
+  through `gpu_memory`, never a bare `free_all_blocks`, and never in step loops: `release_all` between jobs / builds /
+  sweep values, `release_cached_blocks` (or `pool_room_bytes(release_cached=True)`) mid-run before sizing to the free
+  device memory (core sub file "GPU memory").
+- Memory outside the cupy pool (a cuDSS factor, the cusolver_qr workspace) or outside numpy (a MUMPS / PARDISO
+  `host_direct.HostDirectFactorization`) is invisible to the budget and the ledgers: code holding a factor (a
+  ModalPencil, a harmonic system's factor) calls its `release()` before dropping or replacing it, or passes it as
+  `previous=` to the next factorisation of the same pattern. Host direct threads, the PARDISO / OpenBLAS clash and
+  its memory guard: host_direct.py header (rules across files: solvers sub file "host_direct").
 - A traceback keeps a failed build's frames and locals alive: inside `except` record only text, call
   `release_session` after the block; an exception kept or re-raised later goes through
   `gpu_memory.drop_exception_frames` first.
-- Session close / release, OOM handling and the build ledger: model sub file ("Build memory", "Session lifetime").
+- Session close / release, OOM handling and the build ledger: model sub file ("Build memory", "Session lifetime",
+  "GPU OOM").
 
 ### Performance
-- No per-step host syncs or allocations in hot loops: preallocate, update in place, fused kernels.
+- No per-step host syncs or allocations in hot loops: preallocate, update in place, fused kernels. The accepted syncs
+  are listed in the core sub file "Accepted host syncs" (a new one goes there).
 - Host numpy over elements x points: never a broadcast `np.matmul` of 2x2 / 3x3 matrices per point or
   `np.linalg.det / inv` on 3x3 stacks (numpy loops per batch, no BLAS: write components out, e.g.
   `fem.mesh3d.span_adjugate`, or one GEMM over shared rows), never `np.add.at` (bincount: `fem.assembly.scatter_local`,
   `fem.fixed_pattern.scatter_add` (complex-safe) / `scatter_rows` (trailing axes)); a bincount costs its whole index
   window, not its entries: element chunks whose indices span the target (P2 numbering: nodes first, edge dofs last)
-  scatter directly instead (`FixedPatternCsr.add_elements`, numba); mesh-constant integrals are cached
-  per dof map, derived fields computed on read (fem sub file "Dofs and assembly").
-- `gpu_memory.release_all` / cuFFT plan cache: core sub file "GPU memory" (an unconditional clear is a hidden full
-  `gc.collect()`).
-  `MaterialGrid.assign` uses `cp.copyto(where=)`; `FieldProbe` transfers once in `get_data()`. The accepted syncs are
-  listed in the core sub file "Accepted host syncs" (a new one goes there).
+  scatter directly instead (`FixedPatternCsr.add_elements`, numba); mesh-constant integrals are cached per dof map,
+  derived fields computed on read (fem sub file "Dofs and assembly").
 - RawKernel scalars are numpy scalars of the declared C type (`DTYPE(...)`, `np.int32(...)` cached like
   `self._nx_i32`, `np.float64(...)`; `real_t` = the field dtype of a RealRawKernel); Python floats / ints silently
-  corrupt them. Bool arrays: cupy bool, `const
-  bool*`. A kernel a cpu-capable physics launches is a `core.kernels` twin (numpy twin of the same call, written in
-  the same edit; core sub file "Kernel twins"). A numba twin built with `cache=True` never holds another numba
-  dispatcher in a closure cell: numba's cache key pickles the cells and a dispatcher pickles with a per-process uuid,
-  so the cache misses (a full compile, plus a new `.nbc` in `__pycache__`) in every process. Publish the helper as a
-  module global instead (`fluid.lattice._numba_step_helpers`). Symptom: `<name>-<line>.py311.N.nbc` with N rising run
-  after run.
+  corrupt them. Bool arrays: cupy bool, `const bool*`. A kernel a cpu-capable physics launches is a `core.kernels`
+  twin, its numpy (and numba) twin written in the same edit (core sub file "Kernel twins").
 - Non-uniform spacing and CPML kappa are folded into the 1D `inv_dx/inv_dy` arrays: never branch kernels on
   uniformity.
 - A `cp.ReductionKernel` reducing a whole array to one scalar runs on one thread block (RTX 3050: ~13 GB/s float32 /
   25 GB/s float64, vs ~200 GB/s for `cupy.cublas.dot(out=)` or a multi-block RawKernel; 1e6 float64: 636 vs 84 us):
   a full reduction in a hot loop uses a multi-block one (`solvers.pcg.device_vector_dot`), or reduces the shortest
-  axis first (`core.kernels.axis_first_reduce`, for fused ReductionKernels of >= 2D arrays). cupy refuses cuSPARSE calls during stream capture
-  (NotImplementedError), so a CUDA graph cannot contain cupyx SpMV: use the CSR RawKernels of `solvers.pcg`
-  (`CSR_ROW_SOURCE`, `DeviceCsrProduct` with `apply(vector, out)`; the multigrid V-cycle is captured that way, and so
-  are the CG check blocks
-  of a pcg factorized with capture_blocks: solvers sub file "pcg"). Below ~1e6 unknowns a cupyx
-  SpMV costs more host time (~60 us: descriptors, workspace, output allocation) than device time.
+  axis first (`core.kernels.axis_first_reduce`, for fused ReductionKernels of >= 2D arrays).
+- cupy refuses cuSPARSE calls during stream capture (NotImplementedError), so a CUDA graph cannot contain cupyx SpMV:
+  use the CSR RawKernels of `solvers.pcg` (`CSR_ROW_SOURCE`, `DeviceCsrProduct.apply(vector, out)`; solvers sub file
+  "pcg"). Below ~1e6 unknowns a cupyx SpMV costs more host time (~60 us: descriptors, workspace, output allocation)
+  than device time.
 - Launch-bound steppers replay their fixed-argument launches as CUDA graphs (gpu only; one eager run per key, then
-  capture, a failed capture warns and stays eager): em_fdtd_3d `engine3d._fixed_block` (probes inside the E graph),
-  em_fdtd_ez / _hz
-  `fdtd_2d_base._fixed_block` (probes inside the E graph: `core.monitors.FieldProbeRows`), laminar_flow
-  `solver._run_steps`, elastic_waves `solver._run_fixed` (multi-step blocks behind the runner hand-off
-  `advance_ticks`: coupling sub file), the pcg CG blocks (capture_blocks: solid_mechanics
-  2D / 3D, DiffusionSystem Jacobi and multigrid: a V-cycle launches its kernels into the CG block's capture, never a
-  graph of its own inside it). A graph holds array pointers and scalar values of capture time: every array a
-  block reads is rewritten in place, or its id is in the graph key and the entry keeps it alive; every scalar is fixed
-  for the engine's life or in the key. Inside a block: no host sync, no allocation (also not cupy's copy of an input
-  that overlaps the output, e.g. `a[:, 0] = a[:, 1]`), no kernel with per-step scalars (sources, poles, walls,
-  monitors stay outside, unless a device counter replaces the scalar: probe rows, pulse tables), no timed profiler
-  part. A new kernel argument of a captured launch follows these rules.
-- A per-frequency (or per-iteration) cuDSS refactorisation of a fixed-pattern pencil goes through
-  `sparse_direct.DevicePencil` / `factorize_pencil` (or `refactorize_device_values`), never a host A(omega) into
-  `factorize_host`: the host canonicalising, asymmetry check and lower-triangle take cost more than the cuDSS
-  factorisation itself (E7: ~250 of ~370 ms per frequency; solvers sub file "sparse_direct"). Ask
-  `SparseDirectSolver.pencil` (not device_pencil): on MUMPS / PARDISO it returns a HostPencil for the same
-  factorize_pencil call (no per-frequency canonical copy / asymmetry check there either). Since H1,
-  factorize_host with previous= on the planned pattern refreshes on the device (values uploaded only), but it still
-  pays the host assembly / canonical check that a DevicePencil saves.
+  capture; a failed capture warns and stays eager): grep `_fixed_block`, `_run_fixed` (multi-step blocks behind the
+  runner hand-off `advance_ticks`: coupling sub file) and pcg `capture_blocks` (a multigrid V-cycle launches its
+  kernels into the CG block's capture, never a graph of its own inside it). A graph holds array pointers and scalar
+  values of capture time: every array a block reads is rewritten in place, or its id is in the graph key and the
+  entry keeps it alive; every scalar is fixed for the engine's life or in the key. Inside a block: no host sync, no
+  allocation (also not cupy's copy of an input that overlaps the output, e.g. `a[:, 0] = a[:, 1]`), no kernel with
+  per-step scalars (sources, poles, walls, monitors stay outside, unless a device counter replaces the scalar: probe
+  rows `core.monitors.FieldProbeRows`, pulse tables), no timed profiler part. A new kernel argument of a captured
+  launch follows these rules.
+- A per-frequency (or per-iteration) refactorisation of a fixed-pattern pencil goes through
+  `SparseDirectSolver.pencil` + `factorize_pencil` (a cuDSS DevicePencil; a HostPencil on MUMPS / PARDISO), never a
+  host A(omega) into `factorize_host`: the host canonicalising, asymmetry check and lower-triangle take cost more than
+  the cuDSS factorisation itself (measured ~250 of ~370 ms per frequency), and factorize_host with `previous=` still
+  pays them although it refreshes the values on the device (solvers sub file "sparse_direct").
 - Point location dominates reads on element meshes (renderers, checks, derived values): locate through
   `TetrahedronDomain.locate` / `TriangleDomain.located` (remembers point sets, a kept read-only points array by
   identity, and on triangles the sampling operator per dof map; read-only results), never a fresh locator or points
-  array per component or plane. A selftest whose time split shows a large 'other' is paying for its check's reads (model sub file).
+  array per component or plane. A selftest whose time split shows a large 'other' is paying for its check's reads
+  (model sub file "CLI time split").
 - Allocate where needed (mandatory for new engines): pole arrays on their bounding box, optional accumulators once
   enabled, build temporaries only in BuildContext caches (`release_caches()`); status of the EM engines: physics/em
   sub file "Registered EM types".
 
 ### Generated output and git
+- After any change to the registry, a help text, a template or library data regenerate `api_reference.md` and
+  `api_templates.md` (`python -m open_sol describe --update-reference` from the package's parent) or selftest
+  `api_reference_current` fails. The same command rewrites `structure_index.md` (in a checkout): needed after adding,
+  moving or removing a module or changing the first sentence of a module docstring (selftest
+  `structure_index_current`). Every new module starts with a docstring whose first sentence says what it holds.
 - Every folder a tool writes results into (its default `--out` too) is named `out/` or ends in `_out/`: the tracked
   `.gitignore` ignores both, so a new tool needs no new rule. Example outputs (`examples/**/*_out/`) are not
   committed either.
@@ -432,90 +415,72 @@ first bring the background physics (those without the study's hook) to a station
 
 ## 3. Sub files (`sub_structure_conventions.md`)
 
-- `open_sol/`: api.run, Results lifetime (api.py, `__main__`), describe entries of new api / CLI arguments.
-- `open_sol/mesh_study/`: import rule, parts, records and labels, variants, example inputs.
-- `open_sol/fem/`: layout and imports, triangle mesh data (edge order / signs, curved edges, tags, PML layer ring),
-  the built-in mesher (PSLG, refinement, smoothing, size field), gmsh, elements / geometry order, dofs and assembly
-  (coefficient forms), TriangleDomain, point location, transfers, tetrahedra (ascending-node orientation, Nedelec 2
-  face dofs, gmsh -3, entity majority, TetrahedronDomain, swept prism layers, sliver count, gmsh size fields and mesh
-  caches), fixed-pattern Newton tangents (host / device; block patterns kept per mesh), complex scalar harmonic systems / PML stretches / neutral
-  resonance solve / several-shift search, squeeze film, reduced sweeps, line elements, prestress assemblers, self-tests.
-- `open_sol/core/`: backends (`core.backend`, cpu / gpu), GPU memory (budget, memory_report), accepted host syncs,
-  half storage, graded meshes (`core.mesh`, PML grading), grid transfers (`core.grid_transfer`), mirror planes
-  (`core.mirror`), cut geometry (`core.cut_cells`, conformal honouring types), the coordinate metric (`core.metric`),
-  3D contracts (Domain3D, BuildContext 3D), the resonance finder (`core.resonance`), run-time estimate ops, the
-  damped-iteration API (`core.damped_iteration`), DiffusionSystem (`fv_diffusion`: assembly cache, c_xy term, PCG /
-  direct, held cells, cut-cell held edges, axisymmetric and 3D operators; shared by heat and potential).
-- `open_sol/solvers/`: layout and imports, the model path (spec, backends, resolved_solvers, validate, feature
-  precisions, build stage, summary 'solvers'), pcg (stop reference, mixed, users), multigrid, line_block (layout,
-  shift family, chunks, rejected shifts), sparse_direct (cuDSS plan reuse, host / device value refreshes), banded (grid
-  kinds, 1D Automatic), arpack_shift_invert (several shifts, inertia counts), block_eigen (opt-in rule, callback
-  contract, memory layout, mixed phases), host_direct (MUMPS / PARDISO library notes), explicit_kernels.
-- `open_sol/coupling/`: runner cadence, prepare / flush, coupling protocol, coupling type catalogue, q_accum readers,
-  couplings across meshes (views, transfer classes), E13 contributor API / SlotSum, EM loss
-  protocol, thermo-optic, Pockels, semiconductor / acoustics / piezo / fluid / magnetic / phase-change coupling
-  modules, field_transfer, coupling self-tests.
-- `open_sol/physics/em/`: EM type catalogue, imports inside physics/em, FDTD engines, sources, PML, walls, mirrors,
-  Bloch, TFSF / NF2FF, monitors, slab modes, mode ports, nonlinear / gain / phase-change media, harmonic FDTD, FDFD
-  (Bloch, ports, eigenfrequency, adjoint, design regions, conducting sheets), cross-section modes, em_modes,
-  body-of-revolution FDFD, subpixel smoothing, EM definitions and self-tests, effective index.
-- `open_sol/physics/eme/`: sections, bilinear mode sets (2D slab / 3D cross-section, PML modes last), interface formula,
-  discrete variant (exact ez and hz), cascade / partial cascades, periodic block, bends, absorbed power, mode tracking,
-  EMEBase / EMEPhysics / EMEPhysics3D, cascade adjoint, EME self-tests.
-- `open_sol/physics/nlfd/`: harmonic channels, ranks and the mixing table, C / C* collocation, channel features,
-  NonlinearHarmonicPhysics, nonlinear sheets (site sampling / adjoint deposit).
-- `open_sol/physics/em3d/`: 3D Yee layout, material index, PEC / walls, Bloch, mirrors, CPML slabs, poles, losses,
-  stepper precision, subpixel smoothing, flux planes, harmonic FDTD, source protocol (inject_magnetic hook), TFSF
-  plane wave, A5 mode ports, 3D near-to-far, em_fdfd_3d, the tetrahedral FEMPhysics3D (PML shell, walls, equilibration)
-  and em_fdfd_3d on 'tetrahedra' meshes.
-- `open_sol/physics/heat/`: HeatPhysics, thermal noise (thermorefractive / particle), heat definition and self-tests
+- `open_sol/`: api.run (GPU thread, private copy, failures), Results lifetime, parameters of drawn results, one
+  `_figure_jobs`, describe entries of new api / CLI arguments.
+- `open_sol/mesh_study/`: parts, records and labels, variants.
+- `open_sol/fem/`: layout and imports, mesh data, built-in mesher, gmsh, elements and geometry, dofs and assembly
+  (FixedPatternCsr, block patterns, device tangents, Bloch), domain / sampling / transfers, scalar diffusion (2D and
+  tetrahedra), factor entry count, error indicators, tetrahedra, vector elasticity on tetrahedra, complex scalar
+  harmonic systems, squeeze film, reduced sweeps, line elements, prestress, self-tests.
+- `open_sol/core/`: backends, GPU memory, accepted host syncs, kernel twins (numba traps), half storage, graded meshes,
+  grid transfers, mirror planes, cut geometry, coordinate metric, 3D contracts, harmonic probe record, resonance
+  finder, run-time estimate, damped iteration, DiffusionSystem (`fv_diffusion`; heat, potential, magnetic).
+- `open_sol/solvers/`: layout and imports, the model path (spec -> resolution -> build -> summary), pcg, multigrid,
+  line_block, sparse_direct (entry points, cuDSS opt-in and 'auto', defer_check, ordering reuse), banded,
+  arpack_shift_invert, block_eigen, tried and dropped, host_direct, explicit_kernels.
+- `open_sol/coupling/`: runner and couplings (cadence, hand-off, flush, protocol, change check, slots, EM loss
+  protocol, extension modules), registered coupling types, couplings across meshes, additive source slots
+  (`slot_sum`).
+- `open_sol/physics/em/`: type catalogue, imports, FDTD and shared EM (engines, sources, boundaries, Bloch, TFSF,
+  monitors, slab modes, mode ports), nonlinear / gain and phase-change media, harmonic FDTD, FDFD (ports,
+  eigenfrequency, adjoint, design regions, conducting sheets), cross-section modes, conical k_z, em_modes, body of
+  revolution (FDFD, FDTD), the triangle paths and decisions, subpixel smoothing, definitions and self-tests, effective
+  index.
+- `open_sol/physics/eme/`: layout, sections / mode cache / normalisation, interfaces and cascade, model layer, meshes
+  and cuDSS (decision), cascade adjoint, self-tests.
+- `open_sol/physics/nlfd/`: coupling to em_fdfd, channels (Bloch k, mirror parity), adding a nonlinear term,
+  self-tests, cuDSS / host direct verdict, triangles (decision).
+- `open_sol/physics/em3d/`: engine (step graphs, materials, Bloch, mirrors, poles, backends, half_storage),
+  cylindrical sectors, subpixel smoothing, conformal PEC, em_fdfd_3d (tensor and tetrahedra), em_fdtd_3d on
+  tetrahedra (decision), sources / monitors / definition.
+- `open_sol/physics/heat/`: solvers (shared names, values of t, direct back ends, outer grading), thermal noise,
+  self-tests (+ the DiffusionSystem notes of core).
+- `open_sol/physics/potential/`: solvers (kinds, `_dc` vocabulary, probes), element meshes, self-tests and open items
   (+ the DiffusionSystem notes of core).
-- `open_sol/physics/potential/`: PotentialPhysics, axisymmetric / polar, electrolyte (Poisson-Boltzmann), driven
-  terminals, self-tests, triangle and tetrahedron meshes (+ the DiffusionSystem notes of core).
-- `open_sol/physics/mechanics/`: 2D / 3D split (SolidMechanicsBase), type catalogue, SolidMechanicsPhysics /
-  ElasticSystem (Q1 layout, supports, rigid-mode check, loads), anisotropic c_ij stiffness, eigenfrequency study (2D,
-  3D), piezoelectric plane strain (coupled host operator, electrodes, short / open modes), frequency response (losses,
-  admittance, BVD fit, reduced / modal sweeps), 2D Bloch cells (both mesh kinds), optomechanical g0, ElasticSystem3D
-  (matrix-free bricks, reduced blocks, Gram rank check, geometric multigrid and its guard, 2D rules that do not
-  apply), tetrahedra (modal pencils and
-  target / band searches, PML, Bloch, squeeze film), geometric nonlinearity (warm start, tangent updates, GPU tangents),
-  thermal strain coupling, optics hooks, self-tests.
-- `open_sol/physics/membrane/`: layout, materials / holes / coupled tension and the plate switch, lazy system and PML
-  reference, eigen and driven solves (reduced sweeps, target / band searches), Hermite slope scaling, plate (interior
-  penalty, plate PML, plate ports), Bloch cells, ports / mode projections, parity sectors, squeeze film, faces, fields,
+- `open_sol/physics/mechanics/`: layout, backends, SolidMechanicsPhysics / ElasticSystem, anisotropic stiffness,
+  eigenfrequency (2D, 3D), piezoelectric plane strain, frequency response, guided modes, 2D Bloch cells,
+  optomechanical g0, squeeze film, ElasticSystem3D, triangle and tetrahedron meshes, prestress / damped modes /
+  complex records, geometric nonlinearity (held factor, device tangents), thermoelastic damping, reused sweep builds,
+  couplings and optics hooks, memory estimates, self-tests.
+- `open_sol/physics/membrane/`: layout, model (plate switch, system lifetime), self-tests.
+- `open_sol/physics/acoustics/`: elastic_waves (step graphs, kernel / numpy mirrors, adjoint pairs), couplings, not
+  built / open (incl. pressure_acoustics).
+- `open_sol/physics/fluid/`: FluidPhysics (Bouzidi walls, steady march, float32 bias), convection, self-tests,
+  triangles / cuDSS (decision).
+- `open_sol/physics/magnetic/`: layout and registration, shared rules (snapshots, saturation loops, memory),
+  MagneticPhysics (2D tensor), magnetostatics_3d (tensor, tetrahedra), triangle meshes, magnetic_fields_ac,
   self-tests.
-- `open_sol/physics/acoustics/`: AcousticPhysics (staggering, slip walls, CPML, coefficients, monoclinic c16 / c26,
-  time step, axisymmetric, stepper precision), piezoelectric, optics couplings, self-tests, pressure_acoustics
-  (frequency domain).
-- `open_sol/physics/fluid/`: FluidPhysics (lattice units, faces, half_storage, Bouzidi walls, steady march),
-  convection coupling, fluid self-tests.
-- `open_sol/physics/magnetic/`: psi formulation on the planar operator, axis rule, coefficient swap, external-field
-  ring, remanence face sources, saturation / B-H tables, triangle meshes (A_phi in B-space, one quadrature for W / R /
-  K_t, Newton with the energy line search), the AC host solve and circuit rows, couplings, magnetic self-tests,
-  magnetostatics_3d (scalar potential, swapped face kinds, corner anchor, ring, 3D face drives, coil T and the
-  energy / linkage identity, the isotropic H-based saturation loop).
-- `open_sol/physics/semiconductor/`: DriftDiffusionSystem (scaling, SG faces, pinned rows, Newton / continuation),
-  contacts / gates, recombination, self-tests.
-- `open_sol/materials/`: library data conventions, crystal entries.
-- `open_sol/model/`: expressions, analytic comparison / derived curves, schema (table properties), spec (3D, prisms,
-  composites), polar / spherical domains (DomainMap), meshing (builtin tetrahedra, swept prism layers, mesh refinement
-  levels), memory estimate (parts, budgets), builder (conformal, subpixel, build memory / ledger, build masks / field
-  access), materials, session (3D field access, requires_study fields, lifetime, OOM), validation, symmetry check,
-  worker, progress stages, studies (catalogue, solution feedback, parity sectors, reused sweep builds, parameter
-  estimation), resonance_monitor row, run-time estimate rules (build estimate of element meshes), selftest cache /
-  subsets / reports / backends, templates, describe, solve flow (estimate label prefixes it reads).
-- `open_sol/io/`: model / results files, curve exports, result kinds.
-- `open_sol/gui/`: GUI (thread rule, result plot views, progress, documents and node paths, canvas, 3D views, forms,
-  solve flow window).
-- `open_sol/viz/`: Visualizer, common, result_plots, curve_figure, scene_figure, mode_player and field_viewer (the
-  self-contained HTML pages of Results.export_html: animated mode shapes; field maps / 3D cut planes / ray-marched
-  3D volumes / DFT intensities, with the Plot settings of an exported picture; per field kind: contours and 3D
-  terrain, flow particles, phasor animation, deformed 2D solids, how the page's feature blocks share layers and
-  start-up).
+- `open_sol/physics/semiconductor/`: numerics (faces, chord steps, Newton stall, contact currents), self-tests.
+- `open_sol/materials/`: descriptions, library optical data, merged per-physics data, crystal entries.
+- `open_sol/model/`: model layer (expressions, names, analytic / derived curves and values, curve errors, selftest
+  examples / cache / subsets / backends / timing, schema, 3D prisms, polar / spherical / cylindrical domains, 1D
+  models, arrays, per-physics meshes / build / Session, triangle / tetrahedron / swept prism meshing, memory estimate,
+  build memory, session lifetime, GPU OOM, conformal, subpixel, materials, BuildContext masks, Session reads,
+  validation, worker, progress stages, run_study, reused sweep builds, studies, snapshot solutions, solution feedback,
+  parity sectors, mesh refinement levels, parameter estimation, run-time estimate rules, solve flow); registry /
+  templates / describe; import contracts.
+- `open_sol/io/`: atomic writes, writer / reader pairs, non-finite floats.
+- `open_sol/gui/`: thread rule, bridge state, View in browser, post-processing edits, result plot views and plot
+  settings, canvas (display grid, views, sweep sliders, layout, Export plot, interaction, fields), Examples menu,
+  windows, documents and node paths, physics menu, memory budget, meshes and mesh refinement / estimation forms,
+  element meshes, solver fits, snapshots, GUI texts, colours, polar domains, 3D views, mesh form, solve flow window.
+- `open_sol/viz/`: matplotlib figures (visualization, result_plots, curve_figure, scene_figure), HTML pages
+  (mode_player, field_viewer: self-contained, plot settings, layers, clocks, start-up, overlay, key bindings).
 - `experiments/`: paper experiments (`<paper><year>/`, run_all), link to `build_experiments_guide.md` (layout, time
   estimates, cuDSS, model gotchas).
-- `tools_profilers/time_profilers/`: solver_profiler (parent / child layout, imports, solver enumeration rule and its
-  pinned ignored settings, matrix-free problems, result line), case_profilers (script layout, wrap before the registry,
-  unresolved parts, reuse of unchanged profiles, selftest solution check), example_profilers (choice rule,
-  what it imports from case_profilers, engine parts); usage in its README.md.
-- `tools_profilers/memory_profilers/`: vram_profile (usage, what it measures, the private names it patches).
+- `tools_profilers/time_profilers/`: layout and imports (nothing here is checked by open_sol), solver_profiler
+  (registry choices, result / partial markers, timers, pinned ignored settings, matrix-free problems), case_profilers
+  (script layout, wrap before the registry, unresolved parts, timed syncs, markers, profile points, reuse, solution
+  check), example_profilers (choice rule, built on case_profilers, engine parts, backend).
+- `tools_profilers/memory_profilers/`: vram_profile (private names it patches, pool used vs reserved, memGetInfo
+  caveats).

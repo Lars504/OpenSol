@@ -271,7 +271,7 @@ def _face_scalar(eps_a, eps_b, sig_a, sig_b, weight_a, weight_b, dt, eps0, smoot
 def _publish_numba_face_scalar(numba):
     """Builds once the module global _numba_face_scalar (numba _face_scalar) the E numba twins call."""
     # a global, not a closure cell: numba's cache key pickles the closure cells and a dispatcher pickles with a
-    # per-process uuid, so a kernel closing over one recompiled in every process (structure_conventions)
+    # per-process uuid, so a kernel closing over one recompiled in every process (core sub file "Kernel twins")
     if '_numba_face_scalar' not in globals():
         globals()['_numba_face_scalar'] = numba.njit(cache=True)(_face_scalar)
 

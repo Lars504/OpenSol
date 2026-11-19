@@ -85,7 +85,11 @@ A new accepted sync joins this list.
   signed int (`j if c else i`, `0 if c else i + 1`) unifies to float64 and fails as an index (the twin then falls back
   to numpy), so every numba twin rebinds it at the loop top: `for prange_i in numba.prange(n): i = np.int64(prange_i)`.
   Variant flags are closure constants of the factory; a Python wrapper may unpack / reshape the args (absent arrays ->
-  same-type dummies). Each numba twin gets a CPU case `<...>_numba` (`selftest_helpers.numba_twin_result`).
+  same-type dummies). `cache=True` keys a closure by its pickled cell values: never another numba dispatcher in a cell
+  (it pickles with a per-process uuid, so every process recompiles; symptom: `<name>-<line>.py311.N.nbc` in
+  `__pycache__` with N rising run after run): publish the helper as a module global
+  (`fluid.lattice._numba_step_helpers`). Each numba twin gets a CPU case `<...>_numba`
+  (`selftest_helpers.numba_twin_result`).
 - Precision variants (2D FDTD 'double', mechanics kernels3d / multigrid3d): `real_raw_twin` compiles a RealRawKernel
   per dtype of args[dtype_argument] (intrinsics such as __fmul_rn need an `#if REAL_IS_DOUBLE` branch);
   ElementwiseKernels take the field dtype as a type placeholder (T / F) and cast float32 material inputs explicitly.
