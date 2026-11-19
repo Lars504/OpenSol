@@ -1,6 +1,7 @@
-"""Spherically symmetric FDFD on a 1D spherical Domain (x = r - radius_min, one cell 0..pi across): SpherePhysics
-solves the radial equation of every listed multipole term (spherical_multipoles) on the host and keeps float32
-sphere-RMS radial profiles (run backend) for the renderer; its sources, probes and result functions."""
+"""Spherically symmetric FDFD on a spherical Domain (x = r - radius_min; y = theta over the whole 0..pi, one cell
+across on a 1D line): SpherePhysics solves the radial equation of every listed multipole term (spherical_multipoles)
+on the host and keeps float32 sphere-RMS radial profiles (run backend, the same along theta) for the renderer; its
+sources, probes and result functions."""
 import math
 from dataclasses import dataclass
 
@@ -30,6 +31,8 @@ SPHERE_MATERIAL_SCHEMA_KEY = 'ez'     # EM_MATERIAL_SCHEMAS key: eps_r (isotropi
 SPHERE_PERMITTIVITY_ARRAYS = ('eps_r',)
 SPHERE_PERMITTIVITY_SLOTS = {'eps_r_update': 'eps_r'}
 SYSTEM_MATERIALS = frozenset({'eps_r', 'sigma_e', 'mu_r', 'sigma_m'})
+THETA_SPAN_TOLERANCE = 1e-5    # relative: the float32 angle widths of a 0..pi window sum to pi within this
+THETA_UNIFORM_TOLERANCE = 1e-6   # relative spread of a material along theta that still counts as spherically symmetric
 # float32 (nx, 1) run-backend fields SphereRenderer reads
 SPHERE_STATE_NAMES = SPHERE_FIELD_COMPONENTS + ('e_intensity', 'h_abs', 'q_abs')
 
@@ -173,15 +176,19 @@ class SpherePhysics(PhysicsSolver):
 
     def __init__(self, domain, wavelength=1.55e-6, multipole_orders=(1,), families=SPHERE_FAMILIES,
                  inner_face='centre', outer_face='radiation', linear_solver=None, eigen_solver=None):
-        if getattr(domain, 'dimensions', 2) != 2 or domain.grid.ny != 1:
-            raise ValueError('SpherePhysics needs a 1D spherical domain (DomainSpec size_y null, coordinates '
-                             "'spherical'): one cell across")
+        if getattr(domain, 'dimensions', 2) != 2:
+            raise ValueError("SpherePhysics needs a 2D spherical (r, theta) domain or a 1D spherical line (coordinates "
+                             "'spherical')")
         coordinates = domain.coordinates
-        if not (coordinates.polar and coordinates.line):
-            raise ValueError("SpherePhysics needs a 1D domain with coordinates 'spherical' (a polar line grid)")
+        if not coordinates.polar:
+            raise ValueError("SpherePhysics needs coordinates 'spherical' (a polar grid solved as (r, theta))")
         window = domain.physical_window()
-        if window[0] != slice(0, domain.grid.nx):
-            raise ValueError('SpherePhysics: the radial window must be the whole grid (no padding)')
+        if window != (slice(0, domain.grid.nx), slice(0, domain.grid.ny)):
+            raise ValueError('SpherePhysics: the window must be the whole grid (no padding)')
+        angle_span = float(np.sum(domain.cell_widths()[1]))
+        if abs(coordinates.angle_min) > 1e-9 or abs(angle_span - math.pi) > THETA_SPAN_TOLERANCE * math.pi:
+            raise ValueError(f'SpherePhysics needs the whole polar angle range theta = 0 .. pi (every radial cell a '
+                             f'whole shell), got angle_min {coordinates.angle_min:.6g}, span {angle_span:.6g} rad')
         self.domain = domain
         self.xp = domain.xp
         self.polarization = SPHERE_POLARIZATION
@@ -317,14 +324,23 @@ class SpherePhysics(PhysicsSolver):
     # --- materials, sources and monitors ---
 
     def host_materials(self, omega) -> SphereMaterials:
-        """SphereMaterials at omega [rad/s]: eps (sigma_e and poles included), mu (sigma_m) per radial cell, PEC."""
+        """SphereMaterials at omega [rad/s]: eps (sigma_e and poles included), mu (sigma_m) per radial cell, PEC; on an
+        (r, theta) window the theta mean of each radial row, ValueError when a row varies along theta (the structure
+        must be spherically symmetric: shells drawn as circles about the origin)."""
         materials = self.domain.materials
-        eps = to_host(cell_permittivity(materials, 'eps_r', self.dispersive_regions, omega, xp=self.xp)).ravel()
-        mu = to_host(cell_permeability(materials, omega, xp=self.xp)).ravel()
-        pec = (np.zeros(self.grid.n_cells, dtype=bool) if self.pec_cells is None
-               else np.asarray(to_host(self.pec_cells), dtype=bool).ravel())
-        return SphereMaterials(eps=np.asarray(eps, dtype=np.complex128), mu=np.asarray(mu, dtype=np.complex128),
-                               pec=pec)
+        eps = _radial_profile(to_host(cell_permittivity(materials, 'eps_r', self.dispersive_regions, omega,
+                                                        xp=self.xp)), 'the permittivity (eps_r, sigma_e, poles)')
+        mu = _radial_profile(to_host(cell_permeability(materials, omega, xp=self.xp)),
+                             'the permeability (mu_r, sigma_m)')
+        if self.pec_cells is None:
+            pec = np.zeros(self.grid.n_cells, dtype=bool)
+        else:
+            cells = np.asarray(to_host(self.pec_cells), dtype=bool)
+            if np.any(cells != cells[:, :1]):
+                raise ValueError('em_fdfd_sphere: a pec_domain covers part of a shell (it varies along theta); select '
+                                 'whole shells (circles about the origin)')
+            pec = cells[:, 0].copy()
+        return SphereMaterials(eps=eps, mu=mu, pec=pec)
 
     def radius_of(self, x) -> float:
         """Radius [m] of a logical window position x = r - radius_min."""
@@ -457,8 +473,8 @@ class SpherePhysics(PhysicsSolver):
         rms = {name: np.sqrt(values) for name, values in squares.items()}
         host = dict(rms, e_intensity=squares['er'] + squares['et'], h_abs=np.sqrt(squares['hr'] + squares['ht']),
                     q_abs=absorbed)
-        for name, values in self.fields.items():
-            write_float32(values, np.asarray(host[name]).reshape(values.shape))
+        for name, values in self.fields.items():   # the radial profile along every theta of the window
+            write_float32(values, np.broadcast_to(np.asarray(host[name])[:, None], values.shape))
         self.centre_rms = rms
         self.single_phasors = single
 
@@ -531,6 +547,20 @@ class SpherePhysics(PhysicsSolver):
         self.selected_resonance = state['selected_resonance']
         if 'materials' in state:
             restore_material_solution(self, state['materials'])
+
+
+def _radial_profile(values, what) -> np.ndarray:
+    """complex128 (nr,) theta mean of an (nr, ntheta) host array; ValueError when a row spreads by more than
+    THETA_UNIFORM_TOLERANCE of the largest |value|."""
+    values = np.asarray(values, dtype=np.complex128)
+    deviation = np.abs(values - values[:, :1])
+    limit = THETA_UNIFORM_TOLERANCE * max(float(np.max(np.abs(values))), 1.0)
+    if float(np.max(deviation)) > limit:
+        rows = np.flatnonzero(np.any(deviation > limit, axis=1))
+        raise ValueError(f'em_fdfd_sphere: {what} varies along theta in radial cells {rows[:5].tolist()} (first of '
+                         f'{rows.size}); the structure must be spherically symmetric: draw shells as circles about the '
+                         'origin and keep material expressions independent of the angle')
+    return values.mean(axis=1)
 
 
 def _orders(orders) -> tuple:

@@ -22,7 +22,8 @@ slots are in `open_sol/coupling/sub_structure_conventions.md`. Current state, no
   layout and walls; family 'em', default 'em', registered after em_fdtd_bor; 'modes' vocabulary; stationary,
   frequency_domain, eigenfrequency (resonances at k_z = guided modes of beta = k_z); point / line currents of any
   direction, probes, W/m flux lines).
-- `em_fdfd_sphere` (1D spherical models only: `dimensions` (1,), every radial cell a whole shell; multipole terms
+- `em_fdfd_sphere` (spherical domains only: the (r, theta) half disc over 0..pi or a 1D radial line, `dimensions`
+  (1, 2), every radial cell a whole shell; multipole terms
   (order l, family er / hr) on the radial line, exact outgoing boundary; family 'em', default 'em', registered last;
   'ez' vocabulary without eps_zz (isotropic eps, mu); frequency_domain (default), stationary, eigenfrequency;
   plane_wave (Mie), dipole_source, field_probe, pec_domain, resonance_table). Section "Spherical multipoles".
@@ -1207,9 +1208,15 @@ slots are in `open_sol/coupling/sub_structure_conventions.md`. Current state, no
   means, the Riccati-Hankel outgoing term, plane-wave / dipole sources, the resonance refinement). Families are named
   by the radial field that exists (er = electric multipoles, Mie a_l; hr = magnetic, b_l), never TE / TM. Mie
   coefficients are the complex conjugates of Bohren & Huffman's (exp(+j omega t)); cross sections and |a| agree.
-- Domain: a 1D spherical Domain (polar line one 0..pi cell, no padding; validate: `dimensions` (1,), the geometry
-  setting fixed to 'axisymmetric' so `_check_coordinate_grid` refuses slabs and cylinders; `coordinate_grids` holds
-  'cartesian' only because the schema requires it). `SpherePhysics` raises on any other Domain. bc_x_lo 'centre'
+- Domain: a spherical Domain over the whole theta = 0..pi, no padding: the 2D (r, theta) window (the half-disc
+  drawing; examples use it) or the 1D line (one 0..pi cell). Validate: `dimensions` (1, 2), `_domain_issues`
+  (spherical, angle_min 0, size_y pi; a warning above 360 theta cells), the geometry setting fixed to 'axisymmetric'
+  so `_check_coordinate_grid` refuses slabs, cylinders and polar (r, phi); `coordinate_grids` holds 'cartesian' only
+  because the schema requires it. `SpherePhysics` raises on any other Domain. Only the radial line is solved: the
+  materials of each radial row are checked constant along theta (`_radial_profile`, a run error otherwise) and the
+  display fields are the radial profiles broadcast over theta, so theta cells only draw the picture (examples: a mesh
+  axis 'y' of segments, nonuniform mode, uniform r); the estimates count mesh.nx radial cells, the display fields
+  every window cell. bc_x_lo 'centre'
   exactly when radius_min = 0 (validate and create). No domain_requirements (no BoundaryConfig, no PML): the outer
   'radiation' end is the exact Dirichlet-to-Neumann term of each term, the last cell's medium continued to infinity
   (it must not be PEC; plane waves need it lossless: `_lossless_exterior` raises otherwise).
@@ -1230,12 +1237,14 @@ slots are in `open_sol/coupling/sub_structure_conventions.md`. Current state, no
   column pml_fraction is 0 (no PML) and multipole_order / family follow it.
 - The 'linear' role is DIRECT_LINEAR_ROLE (host SuperLU unless a cuDSS / MUMPS / PARDISO node is chosen; cusolver_qr
   refused): the tridiagonal operator is factorised per term and wavelength, nothing kept (1D: cheap). Not yet:
-  anisotropic (radial / tangential) eps, a banded complex solver, coherent plane wave + dipole, off-axis sources,
-  GUI (1D models), a template. Examples: examples/em/analytic_sphere_*.json (Mie vs the 3D tfsf / FDFD / FEM
+  anisotropic (radial / tangential) eps, a banded complex solver, coherent plane wave + dipole, off-axis sources, the
+  true angular pattern of a plane-wave / dipole field on the half disc (the display is the sphere-RMS profile), a
+  template. Examples: examples/em/analytic_sphere_*.json (Mie vs the 3D tfsf / FDFD / FEM
   sphere examples, PEC cavity, whispering-gallery FSR, dipole normalisation).
 - Self-tests (selftests_sphere; CPU unless noted, not yet run, tolerances first estimates): em_sphere_mie,
   em_sphere_pec_cavity, em_sphere_dipoles (vacuum power and the discrete Poynting identity), em_sphere_open_resonances
-  (vs Newton-polished exact Mie poles), em_sphere_mie_model (cpu + gpu variant), em_sphere_cavity_model.
+  (vs Newton-polished exact Mie poles), em_sphere_mie_model ((r, theta) half disc, cpu + gpu variant),
+  em_sphere_cavity_model (1D line).
 
 ## Subpixel smoothing (igor 1.5; subpixel_smoothing.py, geometry in model/subpixel_geometry.py)
 - Switch: `solver_defaults.subpixel_smoothing` (model-wide), honoured by the types with

@@ -1,6 +1,6 @@
 {
-  "title": "Analytic: Mie resonance and Q of a silicon sphere in D2O (1D spherical multipoles, eigenfrequency)",
-  "description": "The sphere of em/fdfd_mie_sphere_resonance_3d and em/fem_mie_sphere_resonance_3d (silicon n = 3.47, r = 200 nm, in D2O n = 1.32) solved by em_fdfd_sphere on a 1D spherical domain: the radial line from the centre to 250 nm (1 nm cells, 200 inside the sphere, its surface on a cell edge), D2O in the last 50 nm and, through the outer end 'radiation', continued to infinity (the exact outgoing wave: no PML, no PML modes, nothing to choose). The eigenfrequency study searches the magnetic-dipole term alone (multipole_order 1, multipole_family hr: radial H, Mie b_1, the TE_1 mode of the 3D examples) near its wavelength setting: shift-invert about the target, then the resonance refined with the exact radiation condition at its own complex frequency, so Q carries no PML or target error. Runs in well under a second on the cpu backend (the 3D models: ~65k unknowns and a GPU).\nAnalytic (Mie, as in the 3D examples): the TE_1 pole x = n_d2o k0 r = 1.11614 - 0.09098 i (exp(-i omega t)), lambda_mie = 2 pi n_d2o r / Re x = 1.4862 um, Q_mie = Re x / (2 |Im x|) = 6.134.\nDerived values tab: lambda_1 and Q_1 (row 0 of em.resonances) vs the Mie values (the same names as in the 3D examples; the 1D solve is second order in the radial cell, ~1e-4 here, against 1-2 % / 15 % tolerances there).\nField tab: the resonance's sphere-RMS |E_t| (the tangential E circling the dipole axis) and |H_r|, |H_t| radial profiles, scaled to a peak |E| of 1 V/m. Set multipole_family to both and multipole_orders to 1, 2, 3 for the electric dipole and the quadrupoles as well (more rows, labelled by l and family).",
+  "title": "Analytic: Mie resonance and Q of a silicon sphere in D2O (spherical multipoles, eigenfrequency)",
+  "description": "The sphere of em/fdfd_mie_sphere_resonance_3d and em/fem_mie_sphere_resonance_3d (silicon n = 3.47, r = 200 nm, in D2O n = 1.32) solved by em_fdfd_sphere on a spherical (r, theta) domain over theta = 0 .. pi (the meridional half disc): from the centre to 250 nm in 1 nm radial cells (200 inside the sphere, its surface on a cell edge), 90 theta cells that only draw the picture, D2O in the last 50 nm and, through the outer end 'radiation', continued to infinity (the exact outgoing wave: no PML, no PML modes, nothing to choose). The eigenfrequency study searches the magnetic-dipole term alone (multipole_order 1, multipole_family hr: radial H, Mie b_1, the TE_1 mode of the 3D examples) near its wavelength setting: shift-invert about the target, then the resonance refined with the exact radiation condition at its own complex frequency, so Q carries no PML or target error. Runs in well under a second on the cpu backend (the 3D models: ~65k unknowns and a GPU).\nAnalytic (Mie, as in the 3D examples): the TE_1 pole x = n_d2o k0 r = 1.11614 - 0.09098 i (exp(-i omega t)), lambda_mie = 2 pi n_d2o r / Re x = 1.4862 um, Q_mie = Re x / (2 |Im x|) = 6.134.\nDerived values tab: lambda_1 and Q_1 (row 0 of em.resonances) vs the Mie values (the same names as in the 3D examples; the radial solve is second order in the radial cell, ~1e-4 here, against 1-2 % / 15 % tolerances there).\nField tab: the resonance's sphere-RMS |E_t| (the tangential E circling the dipole axis) and |H_r|, |H_t| radial profiles over the half disc, scaled to a peak |E| of 1 V/m. Set multipole_family to both and multipole_orders to 1, 2, 3 for the electric dipole and the quadrupoles as well (more rows, labelled by l and family).",
   "version": 2,
   "parameters": [
     {
@@ -51,7 +51,7 @@
   ],
   "domain": {
     "size_x": "r_s + pad",
-    "size_y": null,
+    "size_y": "pi",
     "coordinates": "spherical",
     "radius_min": 0.0,
     "angle_min": 0.0
@@ -116,12 +116,28 @@
   ],
   "couplings": [],
   "mesh": {
-    "mode": "uniform",
+    "mode": "nonuniform",
     "dx": "dx_cell",
     "max_ratio": 1.15,
     "wavelength_min": null,
     "points_per_wavelength": 20.0,
-    "refinements": []
+    "refinements": [],
+    "axes": [
+      {
+        "axis": "y",
+        "max_ratio": null,
+        "bands": [],
+        "edges": [],
+        "segments": [
+          {
+            "cells": 90,
+            "end": null,
+            "profile": "uniform",
+            "ratio": 1.0
+          }
+        ]
+      }
+    ]
   },
   "solver_defaults": {
     "backend": "cpu",

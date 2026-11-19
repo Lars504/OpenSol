@@ -1,5 +1,6 @@
 """Model definition of 'em_fdfd_sphere' (spherically symmetric FDFD: the radial equation of each multipole term on a
-1D spherical domain, exact outgoing-wave boundary; spherical_multipoles, solvers/fdfd_sphere) with its self-tests;
+spherical (r, theta) or 1D spherical domain, exact outgoing-wave boundary; spherical_multipoles, solvers/fdfd_sphere)
+with its self-tests;
 definition.register calls register."""
 import math
 from dataclasses import replace
@@ -9,7 +10,8 @@ import numpy as np
 from ...core import time_estimate as te
 from ...core.memory_estimate import (COMPLEX128_BYTES, COMPLEX128_CSR_ENTRY_BYTES, FLOAT32_BYTES, MemoryEstimate,
                                      host_counted_lu_bytes)
-from ...model.definition_helpers import AXISYMMETRIC, DIRECT_LINEAR_ROLE, GEOMETRY_SETTING, eigen_role
+from ...model.definition_helpers import (AXISYMMETRIC, AXISYMMETRIC_SPACE_SETTINGS, DIRECT_LINEAR_ROLE,
+                                         GEOMETRY_SETTING, eigen_role)
 from ...model.schema import FeatureType, Issue, Param, PhysicsType, resolve_values
 from ...solvers.arpack_shift_invert import APPLICATIONS_PER_BASIS_GUESS, arnoldi_basis_size
 from .definition_common import (EIGENFREQUENCY_STUDY, EM_FAMILY, FREQUENCY_DOMAIN_STUDY, DEFAULT_WAVELENGTH,
@@ -41,7 +43,10 @@ _FIELDS_NOTE = (
     'the square root of the mean over the sphere of radius r of the component squared, summed over every solved term '
     'and source class (different terms are orthogonal on the sphere, so this is the exact sphere mean of the total '
     'field); e_intensity = |E_r|^2 + |E_t|^2 and absorbed_power are sphere means, so their integral over the whole '
-    'shells (the 1D spherical metric volumes 4 pi r^2 dr) is the 3D integral (field energy, absorbed power in W).')
+    'shells (the spherical metric volumes, 4 pi r^2 dr per radial cell) is the 3D integral (field energy, absorbed '
+    'power in W). On an (r, theta) window the profiles are drawn along every theta (the fields of a spherically '
+    'symmetric structure averaged over the sphere do not depend on the angle), so the angle cells only serve the '
+    "picture: a few tens are plenty (mesh mode nonuniform with a mesh axis 'y' of segments, e.g. 90 cells).")
 
 # ---- settings ----
 _FAMILY_HELP = (
@@ -60,11 +65,13 @@ _ORDER_HELP = (
     'up to a few a / d).')
 _SETTINGS = (
     Param(GEOMETRY_SETTING, 'choice', AXISYMMETRIC, label='Geometry', choices=(AXISYMMETRIC,),
-          choice_labels=((AXISYMMETRIC, 'Spherically symmetric (r)'),),
-          help='Always axisymmetric: on a 1D spherical domain (DomainSpec size_y null, coordinates spherical) every '
-               'radial cell is a whole spherical shell. The setting exists so that coupled physics with a geometry '
-               'setting (heat, electric_currents, electrostatics) recognise a consistent spherical partner.',
-          tip='Every cell of the line is a whole spherical shell around the centre.'),
+          choice_labels=((AXISYMMETRIC, 'Spherically symmetric (r, theta)'),),
+          help='Always axisymmetric: on a spherical domain (coordinates spherical: the (r, theta) half disc over the '
+               'whole 0 .. pi, or a 1D radial line) the drawing rotates about its vertical axis and every radial cell '
+               'is a whole spherical shell. The setting exists so that the spherical-domain rule and coupled physics '
+               'with a geometry setting (heat, electric_currents, electrostatics) see a consistent spherical partner.',
+          tip='The drawing is half of a cut through the sphere; every ring of cells at one radius is a whole '
+              'spherical shell.'),
     Param('bc_x_lo', 'choice', 'centre', label='Inner end', choices=('centre', 'pec', 'pmc'),
           choice_labels=(('centre', 'Sphere centre (r = 0)'), ('pec', 'Perfect metal wall'),
                          ('pmc', 'Perfect magnetic wall')),
@@ -239,13 +246,16 @@ _FEATURES = (
 
 # ---- type ----
 _DESCRIPTION = (
-    'Spherically symmetric finite-difference frequency-domain solver: on a 1D spherical domain (DomainSpec size_y '
-    'null, coordinates spherical, radius_min 0 for a full sphere or > 0 for a shell region) the structure eps(r), '
+    'Spherically symmetric finite-difference frequency-domain solver: on a spherical domain (DomainSpec coordinates '
+    'spherical, radius_min 0 for a full sphere or > 0 for a shell region): a 2D (r, theta) window over the whole '
+    'theta = 0 .. pi (size_y pi, angle_min 0; the drawing is the meridional half disc) or a 1D radial line (size_y '
+    'null), the structure eps(r), '
     'mu(r) is a stack of concentric shells, and Maxwell\'s equations separate into multipole terms (vector spherical '
     'harmonics of order l and family er / hr), each a 1D radial equation for y = r H_t (er) or r E_t (hr) solved on '
     'the radial cell edges (second order, complex symmetric tridiagonal operator, host SuperLU or the opt-in cuDSS / '
     f"MUMPS / PARDISO back ends of the 'linear' role). {_FIELDS_NOTE} The outer end 'radiation' is the exact "
-    'outgoing spherical wave of each term (no PML). True 3D results of layered spheres at 1D cost: Mie scattering '
+    'outgoing spherical wave of each term (no PML). True 3D results of layered spheres at the cost of one radial line: '
+    'Mie scattering '
     '(plane_wave: extinction, scattering and absorption cross sections of coated / graded / plasmonic spheres), '
     'emitters near or inside spheres (dipole_source: emitted power and Purcell factor), resonances (eigenfrequency: '
     'complex omega and Q of whispering-gallery modes, Mie and cavity resonances per order and family; '
@@ -253,10 +263,11 @@ _DESCRIPTION = (
     'refined with the exact radiation condition at its own complex frequency by Rayleigh-functional iteration, so Q '
     'carries no PML or target error; materials stay at the target, as in the other EM eigen-solves). Studies: '
     'stationary (one driven solve at the wavelength setting; with heat through heat_em_thermo_optic / '
-    'em_heat_joule: the heat physics should be a 1D spherical one too, it gets the sphere-mean absorbed power), '
+    'em_heat_joule: the heat physics should share the spherical domain, it gets the sphere-mean absorbed power), '
     'frequency_domain (one driven solve per wavelength), eigenfrequency. Features: plane_wave, dipole_source, '
     'field_probe, pec_domain, resonance_table. Materials: isotropic eps_r, sigma_e, mu_r, sigma_m and dispersion '
-    'poles (no anisotropy). Cannot share a model with other EM types (they do not run in 1D). heat_em_thermo_optic '
+    'poles (no anisotropy), constant on every shell (a material varying along theta is a run error: draw circles '
+    'about the origin). Cannot share a model with other EM types. heat_em_thermo_optic '
     "writes eps_r (slot eps_r_update). The instance is usually named 'em'.")
 
 
@@ -328,6 +339,33 @@ def _source_issues(settings_values, physics_spec, path):
     return issues
 
 
+_MAX_DISPLAY_ANGLE_CELLS = 360   # theta cells above this only cost memory (the fields do not depend on theta)
+
+
+def _domain_issues(vctx, path):
+    """Errors for a domain that is not spherical over the whole theta = 0 .. pi (a 1D model: only 'spherical'
+    coordinates, reported by the geometry rule); a warning for many theta cells."""
+    window_map = vctx.domain_map
+    if window_map is None:
+        return []
+    if not window_map.mapped:
+        return [Issue('error', path, "em_fdfd_sphere needs a spherical domain (coordinates 'spherical'; a 2D (r, "
+                                     'theta) window over theta = 0 .. pi or a 1D radial line), this one is Cartesian')]
+    if window_map.line or window_map.kind != 'spherical':
+        return []   # 1D lines span the whole angle; polar (r, phi) is refused by the geometry rule
+    if abs(window_map.angle_min) > 1e-9 or abs(window_map.size_y - math.pi) > 1e-9 * math.pi:
+        return [Issue('error', path, f'em_fdfd_sphere needs the whole polar angle range: angle_min 0 and size_y pi '
+                                     f'(got {window_map.angle_min:.6g} and {window_map.size_y:.6g} rad), so every '
+                                     'radial cell is a whole spherical shell')]
+    mesh = vctx.mesh
+    if mesh is not None and int(mesh.ny) > _MAX_DISPLAY_ANGLE_CELLS:
+        return [Issue('warning', path, f'{int(mesh.ny)} theta cells: the spherically symmetric fields do not depend '
+                                       f'on theta, so they only draw the picture ({int(mesh.nx)} radial cells are '
+                                       'solved); '
+                                       "use mesh mode nonuniform with a mesh axis 'y' of segments, e.g. 90 cells")]
+    return []
+
+
 def _face_issues(vctx, settings_values, path):
     """bc_x_lo 'centre' exactly when radius_min = 0."""
     window_map = vctx.domain_map
@@ -388,14 +426,15 @@ def _validate_physics(vctx, physics_spec, settings_values):
     issues.extend(unused_wavelength_issues(vctx, settings_values, path))
     issues.extend(scipy_issues(_TYPE_NAME, 'host sparse direct and eigen solvers', path))
     issues.extend(host_matrix_back_end_issues(vctx.solvers(physics_spec) or {}, _TYPE_NAME, path))
+    issues.extend(_domain_issues(vctx, path))
     issues.extend(_face_issues(vctx, settings_values, path))
     issues.extend(_order_issues(settings_values, physics_spec, vctx, path))
     issues.extend(_source_issues(settings_values, physics_spec, path))
     issues.extend(missing_source_issues(vctx, physics_spec, path, ('plane_wave', 'dipole_source'), _DRIVEN_STUDIES))
     others = other_em_physics_labels(vctx, _TYPE_NAME)
     if others:
-        issues.append(Issue('error', path, f"em_fdfd_sphere solves a 1D spherical model, while {', '.join(others)} "
-                                           'solve other drawings; they cannot share one model'))
+        issues.append(Issue('error', path, f"em_fdfd_sphere solves a spherically symmetric model, while "
+                                           f"{', '.join(others)} solve other drawings; they cannot share one model"))
     issues.extend(_resolution_issues(vctx, physics_spec, settings_values, path))
     return issues
 
@@ -425,7 +464,8 @@ def _memory_estimate(settings_values, mesh, context):
     """Display fields on the run backend (7 float32 radial profiles); host: one term's materials, tridiagonal
     operators and SuperLU factor, vectors and centre fields; eigenfrequency: the Arnoldi basis of one term's search and
     the kept resonance node vectors (every term)."""
-    n_cells = int(mesh.n_cells)
+    window_cells = int(mesh.n_cells)
+    n_cells = int(mesh.nx)    # radial cells (the theta cells only carry the display copies)
     nodes = n_cells + 1
     n_terms = len(_orders(settings_values)) * len(_families(settings_values))
     host_items = [
@@ -442,7 +482,8 @@ def _memory_estimate(settings_values, mesh, context):
                         (basis + wanted) * COMPLEX128_BYTES * nodes),
                        (f'resonance node vectors ({n_terms} terms x {n_resonances})',
                         n_terms * n_resonances * COMPLEX128_BYTES * nodes)]
-    return MemoryEstimate.from_items((('radial display fields (7 x float32)', 7 * FLOAT32_BYTES * n_cells),),
+    return MemoryEstimate.from_items((('display fields (7 x float32 per window cell)',
+                                       7 * FLOAT32_BYTES * window_cells),),
                                      host_items=host_items)
 
 
@@ -450,7 +491,7 @@ def _time_estimate(settings_values, mesh, context):
     """Host work per radial node and term: driven = per solve and term one assembly, a factorisation and a solve per
     source class; eigenfrequency = per term one assembly, a shift-invert Arnoldi run (one tridiagonal solve and the
     orthogonalisation per application) and the refinement factorisations of every candidate."""
-    nodes = float(int(mesh.n_cells) + 1)
+    nodes = float(int(mesh.nx) + 1)   # radial nodes
     n_terms = float(len(_orders(settings_values)) * len(_families(settings_values)))
     assembly = (te.HostStream(_ASSEMBLY_BYTES_PER_NODE * nodes), te.PythonCalls(_TERM_CALLS))
     factor_solve = (te.HostStream(_FACTOR_BYTES_PER_NODE * nodes), te.PythonCalls(10))
@@ -482,7 +523,7 @@ EM_FDFD_SPHERE = PhysicsType(
     default_instance_name='em',
     description=_DESCRIPTION,
     summary='Light and layered spheres from a single radial line: Mie scattering, emitters near spheres and '
-            'sphere resonances with their quality factors, as full 3D results at 1D cost.',
+            'sphere resonances with their quality factors, as full 3D results at the cost of one radial line.',
     settings=_SETTINGS,
     features=_FEATURES,
     material_properties=_MATERIAL_PROPERTIES,
@@ -500,7 +541,9 @@ EM_FDFD_SPHERE = PhysicsType(
     validate=_validate_physics,
     memory_estimate=_memory_estimate,
     time_estimate=_time_estimate,
-    dimensions=(1,),            # a 1D spherical model only (DomainSpec size_y null, coordinates spherical)
+    dimensions=(1, 2),          # spherical domains only: the (r, theta) half disc over 0..pi, or a 1D radial line
+    spaces_2d=(AXISYMMETRIC,),
+    space_settings=AXISYMMETRIC_SPACE_SETTINGS,
     coordinate_grids=('cartesian', 'polar'),   # 'cartesian' is required by the schema; validate refuses a slab
     backends=('gpu', 'cpu'),    # host solves either way; the shown fields live on the run backend
 )

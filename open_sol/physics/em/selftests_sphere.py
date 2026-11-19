@@ -10,8 +10,8 @@ import numpy as np
 from ...core.constants import C0, ETA0
 from ...model.schema import SelfTestCase, SelfTestVariant
 from ...model.selftest_helpers import cpu_defaults, float_list, scaled_worst_result
-from ...model.spec import (DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec, PhysicsSpec,
-                           StudySpec)
+from ...model.spec import (DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshAxisSpec, MeshSegmentSpec,
+                           MeshSpec, ModelSpec, PhysicsSpec, StudySpec)
 
 _TYPE = 'em_fdfd_sphere'
 _PHYSICS = 'em'
@@ -57,6 +57,7 @@ _OPEN_TOLERANCES = {'k': 5e-4, 'q': 2e-2}
 
 # ---- model runs
 _MODEL_CELL = 2.5e-9
+_MODEL_ANGLE_CELLS = 16              # theta cells of the (r, theta) Mie run (display only)
 _MODEL_WAVELENGTHS = (0.9e-6, 1.0e-6, 1.1e-6)
 _MODEL_TOLERANCE = 5e-3              # relative cross sections at 2.5 nm cells
 _MODEL_CAVITY_ORDER = 2
@@ -279,23 +280,30 @@ def _line_domain(outer):
     return DomainSpec(size_x=outer, size_y=None, coordinates='spherical', radius_min=0.0)
 
 
+def _half_disc_domain(outer):
+    """The (r, theta) window over the whole theta = 0 .. pi (the drawing: the meridional half disc)."""
+    return DomainSpec(size_x=outer, size_y=math.pi, coordinates='spherical', radius_min=0.0, angle_min=0.0)
+
+
 def _mie_model_specs():
-    """frequency_domain plane-wave run of the Mie sphere (cpu backend)."""
+    """frequency_domain plane-wave run of the Mie sphere on the (r, theta) half disc (cpu backend; radial cells at
+    _MODEL_CELL, _MODEL_ANGLE_CELLS theta cells)."""
     return {'mie': ModelSpec(
         title='Self-test: em_fdfd_sphere Mie sphere',
-        domain=_line_domain(_MIE_OUTER),
+        domain=_half_disc_domain(_MIE_OUTER),
         geometry=[GeometrySpec('core', 'circle', {'cx': 0.0, 'cy': 0.0, 'r': _MIE_RADIUS})],
         materials=[MaterialSpec('glass', properties={'eps_r': _MIE_EPS}, selection=['core'])],
         physics=[PhysicsSpec(_PHYSICS, _TYPE, settings={'multipole_orders': [float(order) for order in _MIE_ORDERS]},
                              features=[FeatureSpec('wave', 'plane_wave', [], {'amplitude': 1.0})])],
-        mesh=MeshSpec(mode='uniform', dx=_MODEL_CELL),
+        mesh=MeshSpec(mode='nonuniform', dx=_MODEL_CELL,
+                      axes=[MeshAxisSpec('y', segments=[MeshSegmentSpec(_MODEL_ANGLE_CELLS)])]),
         solver_defaults=cpu_defaults(),
         study=StudySpec(type='frequency_domain', settings={'wavelengths': list(_MODEL_WAVELENGTHS)}))}
 
 
 def _check_mie_model(results_by_name):
-    """sigma_ext / sigma_sca of the plane_wave result per wavelength vs the Mie series; the summed e_intensity field
-    is finite and non-zero."""
+    """sigma_ext / sigma_sca of the plane_wave result per wavelength vs the Mie series; the summed e_intensity image
+    is finite and non-zero inside the half disc (NaN outside it)."""
     results = results_by_name['mie']
     result = results.result(_PHYSICS, 'wave')
     m = math.sqrt(_MIE_EPS)
@@ -305,7 +313,8 @@ def _check_mie_model(results_by_name):
         errors[f'ext_{index}'] = abs(float(result['series']['sigma_ext'][index]) / exact_extinction - 1.0)
         errors[f'sca_{index}'] = abs(float(result['series']['sigma_sca'][index]) / exact_scattering - 1.0)
     intensity = np.asarray(results.field('e_intensity').values, dtype=np.float64)
-    errors['field'] = 0.0 if np.all(np.isfinite(intensity)) and float(np.nanmax(intensity)) > 0.0 else math.inf
+    inside = intensity[np.isfinite(intensity)]
+    errors['field'] = 0.0 if inside.size and float(inside.max()) > 0.0 else math.inf
     tolerances = {name: _MODEL_TOLERANCE for name in errors}
     return scaled_worst_result(errors, tolerances, wavelengths=float_list(result['x']),
                                sigma_ext=float_list(result['series']['sigma_ext']))
@@ -409,8 +418,9 @@ SPHERE_SELFTEST_CASES = (
         name='em_sphere_mie_model',
         label='EM sphere: Mie cross sections (model run)',
         description=(
-            'Model run of em_fdfd_sphere on a 1D spherical domain (cpu backend; gpu variant): the Mie sphere of '
-            f'em_sphere_mie drawn as a circle, {_MODEL_CELL * 1e9:g} nm cells, a plane_wave in a frequency_domain '
+            'Model run of em_fdfd_sphere on a spherical (r, theta) domain over theta = 0 .. pi (cpu backend; gpu '
+            f'variant): the Mie sphere of em_sphere_mie drawn as a circle, {_MODEL_CELL * 1e9:g} nm radial cells, '
+            f'{_MODEL_ANGLE_CELLS} theta cells (mesh axis y segments), a plane_wave in a frequency_domain '
             f"study at {', '.join(f'{value * 1e6:g}' for value in _MODEL_WAVELENGTHS)} um, orders "
             f'1..{_MIE_ORDERS[-1]}, both families. sigma_ext / sigma_sca of the feature result vs the Mie series '
             f'within {_MODEL_TOLERANCE:g} relative; the e_intensity field finite and non-zero.'),
@@ -422,7 +432,8 @@ SPHERE_SELFTEST_CASES = (
         name='em_sphere_cavity_model',
         label='EM sphere: PEC sphere cavity (model run)',
         description=(
-            'Model run of em_fdfd_sphere in an eigenfrequency study (cpu backend): the vacuum PEC sphere of '
+            'Model run of em_fdfd_sphere on a 1D spherical line in an eigenfrequency study (cpu backend): the vacuum '
+            'PEC sphere of '
             f'em_sphere_pec_cavity at order {_MODEL_CAVITY_ORDER}, both families, {_MODEL_CAVITY_RESONANCES} '
             f'resonances per family, {_MODEL_CAVITY_CELL * 1e9:g} nm cells. Every resonance_table row matches an exact '
             f'root of its family within {_MODEL_CAVITY_TOLERANCE:g} relative k, both families appear, '

@@ -1,6 +1,6 @@
 {
-  "title": "Analytic: plane-wave scattering by a small dielectric sphere (1D spherical multipoles, Mie)",
-  "description": "The sphere of em/tfsf_sphere_mie_3d (eps = 4, r = 60 nm, vacuum) solved by em_fdfd_sphere: a 1D spherical domain (coordinates spherical, size_y null; every radial cell is a whole shell) from the centre to 100 nm, 1 nm cells (60 inside the sphere, its surface on a cell edge), the outer end 'radiation' = the exact outgoing spherical wave of each multipole term (no PML, so the vacuum shell can be thin). A plane_wave (E along x, along +z, 1 V/m) in a frequency_domain study over 0.8-1.3 um, multipole orders 1..4, both families (er: electric multipoles a_l, hr: magnetic b_l); runs in well under a second on the cpu backend.\nAnalytic (Mie, dipole terms, as in the 3D example; m = 2, x = 2 pi r / lambda): Q_sca = sigma_sca / (pi r^2) = (6 / x^2) (|a1|^2 + |b1|^2) with |a1|^2 = 1 / (1 + (M_a / N_a)^2) from the closed-form psi1 / chi1; Q_sca(1 um) = 0.01422 (Rayleigh 0.01347). The 1D model also carries l = 2..4 (a2 ~1e-4 of Q).\nDerived values tab: Q_sca_1000 = sigma_sca / (pi r^2) at 1 um vs the Mie value (the same name as in the 3D example: compare the two runs; the 3D FDTD reaches a few %, the 1D solve ~1e-4); A_over_S = sigma_abs / sigma_sca (lossless sphere: 0 to round-off, the discrete flux balance is exact); Q_ext_1000 = sigma_ext / (pi r^2) (= Q_sca here).\nSpectra / Curves tab: em.wave series sigma_sca vs the dashed dipole Mie spectrum (~1 / lambda^4). Field tab: the sphere-mean |E|^2 and |E_r|, |E_t| radial profiles summed over the solved terms (last wavelength).",
+  "title": "Analytic: plane-wave scattering by a small dielectric sphere (spherical multipoles, Mie)",
+  "description": "The sphere of em/tfsf_sphere_mie_3d (eps = 4, r = 60 nm, vacuum) solved by em_fdfd_sphere on a spherical domain (coordinates spherical, size_y pi, angle_min 0: the drawing is the meridional half disc, every ring of cells at one radius a whole shell) from the centre to 100 nm, 1 nm radial cells (60 inside the sphere, its surface on a cell edge) and 90 theta cells (mesh axis y: the spherically symmetric solution does not depend on theta, so they only draw the picture; one radial line is solved), the outer end 'radiation' = the exact outgoing spherical wave of each multipole term (no PML, so the vacuum shell can be thin). A plane_wave (E along x, along +z, 1 V/m) in a frequency_domain study over 0.8-1.3 um, multipole orders 1..4, both families (er: electric multipoles a_l, hr: magnetic b_l); runs in well under a second on the cpu backend.\nAnalytic (Mie, dipole terms, as in the 3D example; m = 2, x = 2 pi r / lambda): Q_sca = sigma_sca / (pi r^2) = (6 / x^2) (|a1|^2 + |b1|^2) with |a1|^2 = 1 / (1 + (M_a / N_a)^2) from the closed-form psi1 / chi1; Q_sca(1 um) = 0.01422 (Rayleigh 0.01347). The model also carries l = 2..4 (a2 ~1e-4 of Q).\nDerived values tab: Q_sca_1000 = sigma_sca / (pi r^2) at 1 um vs the Mie value (the same name as in the 3D example: compare the two runs; the 3D FDTD reaches a few %, this radial solve ~1e-4); A_over_S = sigma_abs / sigma_sca (lossless sphere: 0 to round-off, the discrete flux balance is exact); Q_ext_1000 = sigma_ext / (pi r^2) (= Q_sca here).\nSpectra / Curves tab: em.wave series sigma_sca vs the dashed dipole Mie spectrum (~1 / lambda^4). Field tab: the sphere-mean |E|^2 and the sphere-RMS |E_r|, |E_t| summed over the solved terms (last wavelength), drawn over the half disc (the same at every theta).",
   "version": 2,
   "parameters": [
     {
@@ -116,7 +116,7 @@
   ],
   "domain": {
     "size_x": "r_out",
-    "size_y": null,
+    "size_y": "pi",
     "coordinates": "spherical",
     "radius_min": 0.0,
     "angle_min": 0.0
@@ -176,12 +176,28 @@
   ],
   "couplings": [],
   "mesh": {
-    "mode": "uniform",
+    "mode": "nonuniform",
     "dx": "dx_cell",
     "max_ratio": 1.15,
     "wavelength_min": null,
     "points_per_wavelength": 20.0,
-    "refinements": []
+    "refinements": [],
+    "axes": [
+      {
+        "axis": "y",
+        "max_ratio": null,
+        "bands": [],
+        "edges": [],
+        "segments": [
+          {
+            "cells": 90,
+            "end": null,
+            "profile": "uniform",
+            "ratio": 1.0
+          }
+        ]
+      }
+    ]
   },
   "solver_defaults": {
     "backend": "cpu",

@@ -216,8 +216,8 @@ curves -> selftest_report_analytic.json); the CLI wraps them (`selftest --exampl
 
 ### 1D models (symmetry 2.20; model sub file "1D models")
 - `DomainSpec.size_y` None = 1D (`ModelSpec.dimensions` 1; types need 1 in `PhysicsType.dimensions`: heat,
-  electric_currents, electrostatics, membrane (its own line elements, fem.line_fem), em_fdfd_sphere (spherical only:
-  multipole terms on the radial line, physics/em sub file "Spherical multipoles")): internally a padding-free 2D
+  electric_currents, electrostatics, membrane (its own line elements, fem.line_fem), em_fdfd_sphere (spherical only,
+  also on the 2D (r, theta) half disc: multipole terms on the radial line, physics/em sub file "Spherical multipoles")): internally a padding-free 2D
   `Domain` one cell across on
   `Coordinates(line=True)`, so every 2D path runs unchanged. Code that must know branches on `spec.dimensions` /
   `DomainMap.line` / `Coordinates.line`, never on ny == 1. Outer faces x_lo / x_hi only (`spec.outer_faces`).
