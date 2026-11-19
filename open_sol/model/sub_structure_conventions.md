@@ -93,203 +93,74 @@ templates, describe. Current state, no changelog.
   field-dependent params are checked only for finite values.
 - Param kind 'table' as a material property writes no array: the type's `create` reads `ctx.material_regions` (2D
   `region.mask` until `release_caches`) and resolves the rows with `resolve_values` (magnetostatics `bh_curve`).
-- Spec v2 (3D): `from_dict` accepts versions 1 and 2 and sets 2; `ModelSpec.is_3d` = size_z set. 2D domain kinds carry
-  optional `z0 / z1` (points / lines `z`; `geometry.Z_PARAM_NAMES`): validate rejects them in 2D, as well as 3D-only
-  kinds (`GeometryKind.dimensions`), z faces and types whose `dimensions` miss the model's; resolve sorts z0 / z1. In
-  3D, `material_preview(z=)` / coverage checks judge the xy footprint unless a layer height is given; vertical cuts
-  (GUI side views): `vertical_section` / `section_mask` / `material_preview(cut=(axis, position))` (u = x for a 'y'
-  cut, y for an 'x' cut; one evaluation per `cross_section_runs` run); `MeshEstimate.nz / dz_cells / z_edges` and
-  `n_cells` include z.
-- 3D prisms: rectangle / rounded_rectangle / circle / ellipse / polygon carry `axis` ('z' | 'x' | 'y'; x / y: the
-  shape's (x, y) are the model's (y, z) / (x, z), `geometry.plane_axes`; z0 / z1 = ends along the axis, both
-  required) and `sidewall_angle` (both ends, inward from min(z0, z1) along the axis; polygons mitred, simple only;
-  collapse / self-crossing rejected at resolve). An x / y taper's cross-section is sampled into polygons
-  (`_swept_polygons`, `_TAPER_LEVELS`; key = the height), as are taper side views. Neutral values ('z', 0) count as
-  unset (`z_param_set`). Every per-z consumer goes through `geometry._section(shape, z)` -> (key, plain parts) and the
-  footprint through `_footprint` (`is_plain` = neither), so a new 3D kind or option extends `_section` (and
-  `surface_faces`, the 3D preview surface), never a consumer. `scene_3d.build_scene` colours an object by the last
-  material of `material_paint_order` naming it ('all': legend only); a composite draws its primitive inputs
-  (`plane_outlines`, the web page's outlines on a 2D map / 3D cut, shares those leaves and owners: z cuts through
-  `outline(z=)`, x / y cuts through `vertical_section`, lifted to 3D coordinates; api's default live cut planes
-  are the window cells at the field physics' mirror planes, else `object_cut_targets` (through the material objects,
-  leaving out per axis those spanning the domain), else the window middle). A taper
-  makes every z cell its own run; `domain_object_rasterizer(reuse=)` keeps each object's last (key, mask). Mesh snap
-  faces come only from `geometry.axis_parallel_faces` (meshing `_add_refinement` / `_add_z_refinement`); curved and
-  tilted walls stay staircased. Selftest `model_3d_core` calls builder internals (`BuildContext`,
-  `_apply_static_materials`) on a bare Domain3D and needs a 2D-only type (magnetostatics): keep it in step.
-- Polar / spherical domains (`DomainSpec.coordinates`, 2D only): cells are logical (r - radius_min, angle - angle_min;
-  core sub file "Coordinate metric"), geometry stays in the drawing plane about the polar origin. `geometry.DomainMap`
+- 3D prisms (spec v2; root file "3D models"; optional z params of the 2D kinds: `geometry.Z_PARAM_NAMES`, axis /
+  taper in the kind help): every per-z consumer goes through `geometry._section(shape, z)` -> (key, plain parts) and
+  the footprint through `_footprint` (`is_plain` = neither), so a new 3D kind or option extends `_section` (and
+  `surface_faces`, the 3D preview surface), never a consumer; vertical cuts (GUI side views) likewise through
+  `vertical_section` / `section_mask` / `material_preview(cut=)`. A taper makes every z cell its own run
+  (`cross_section_runs`). Mesh snap faces come only from `axis_parallel_faces`: curved and tilted walls stay
+  staircased.
+- Polar / spherical domains (`DomainSpec.coordinates`; core sub file "Coordinate metric"): `geometry.DomainMap`
   (`domain_map(spec, parameters)`; also on ValidationContext, MeshEstimate (None on Cartesian), BuildContext, Session)
-  is the one map (`to_physical` / `to_logical` / `contains` / `extent` = the sector's box: material_preview is index 0
-  outside the sector, so preview shares / statistics go by `contains`, as `definition_helpers.conducting_fraction`).
-  Rules: a type runs there only when its
-  `coordinate_grids` list 'polar', and has geometry 'axisymmetric' exactly on a spherical domain (validate
-  `_check_coordinate_grid`; GUI Add physics via `schema.COORDINATE_SPACES`). Meshing (`_mapped_plan`): no PML, uniform
-  dr = size_x / ceil(size_x / dx), angle cells ceil(size_y r_max / dx); nonuniform only through MeshAxisSpec x (in r -
-  radius_min) and y (in rad); object refinements and auto refused; `mapped_widths` are float32-rounded like the
-  Domain's cells (edges[-1] off size by ~1e-8 relative: compare to the float32 widths, not size). Masks test the
-  mapped centres over the whole window (`geometry.rasterize_mapped`: builder masks / `coordinate_grids` (also field
-  expression x, y), Session selections, validate coverage); `_selection_bounds` (memory estimates) takes the logical
-  cells of `DomainMap.logical_bounds` of each object's box (an upper bound); `BuildContext.point` returns the logical
-  position (pos_to_cell / validate_physical_pos unchanged; lines / rects are not mapped: no polar type reads them).
-  Session `evaluate` weights by the metric volumes (no `_ring_weights`); `field()` / `display_field()` return a
-  containing-cell image over the sector's box (`_mapped_field_data`, NaN outside; saved FieldRecords carry that image
-  with uniform pixel edges); `field(native=True)` (live only) gives the (r, angle) cells (axes ('r', 'phi' | 'theta'),
-  y in rad, `FieldData.mapped_centres` = drawing-plane centres); the symmetry check is skipped. `definition_helpers.mapped_domain_issues` (heat,
-  potential) refuses object-perimeter flux features and *_xy materials, warns for features on faces without area and
-  replaces the x_lo-axis / cross-term part of `axisymmetric_issues`. `DomainSpec.angle_wrap` (polar only, core.metric
-  ANGLE_WRAPS) reaches the Domain via `DomainMap.angle_wrap` -> `coordinates()`; validate `_check_angle_wrap` (warning
-  when 2 pi / size_y is not whole, error for antiperiodic unless even); `mapped_domain_issues` errors for features on
-  `DomainMap.wrapped_faces()`; `definition_helpers.antiperiodic_wrap` counts as an anchor in heat / potential
-  `_has_anchor`. The canvas drops the two wrapped rays (`_EvaluatedModel.face_segments`).
-- Cylindrical (r, phi, z) sectors ('polar' + size_z, heat only; spherical + size_z raises in `domain_map`): the
-  DomainMap is the (r, phi) plane, z unmapped; a padding-free polar Domain3D (`MeshEstimate.domain_map` set,
-  `_mapped_z_axis`). Every 3D xy mask goes through the mapped rasters (`rasterize_mapped(..., z=)`,
-  `rasterize_mapped_box`: full (nx, ny) rasters per cross_section_key, no xy cropping before the raster), never
-  `rasterize_box` / `box_window` on the logical host centres; x, y values of 3D builds come from
-  `BuildContext.plane_coordinates` (a new 3D x, y consumer uses it too); region windows are the whole grid. Session
-  cuts at constant z only (x / y planes raise; validate refuses x / y stored_cuts and 3D segment line curves);
-  `evaluate` runs the whole-volume path (`by_planes` False) over `window_metric_3d`; `volume()` centres are (r, phi,
-  z). Not yet: GUI (canvas / scene_3d / side views draw the logical box), meridional cuts at fixed phi. The CPU case
-  of physics/heat/selftests_cylindrical_3d.py imports model.meshing / validate / geometry inside its check.
-- 1D models (`DomainSpec.size_y` None; root file "1D models"): `geometry.domain_size` returns
-  `LINE_SPANS[coordinates]` as size_y; `domain_map` -> `_line_domain_map` (refuses size_z, angle_wrap, angle_min != 0,
-  a slab radius_min): a `DomainMap(line=True)` on every kind, so the polar path carries it: meshing `_mapped_plan` (one
-  y cell, no mesh axis 'y', x graded by MeshAxisSpec x); masks on the mapped centres (radius_min + logical x, 0):
-  objects select cells whose centres lie on the drawing's x axis (circles about the origin = shells / layers,
-  rectangles across y = 0); `to_logical` gives the cell's y centre, `contains` needs |y| <= tolerance, `extent()` is
-  the strip |y| <= size_x / 2 (previews: one pixel row at y = 0), `logical_bounds` the x range, `zero_area_faces` the
-  centre x_lo of a cylinder / sphere with radius_min 0. Session `field()` / `display_field()` return
-  `_line_field_data` ((wx, 1) cells, x_centers = slab x or r, y_centers [0]; native changes nothing); evaluate weighs
-  by metric volumes (per m^2 / per m / whole sphere). validate: `check_physics` compares `spec.dimensions`,
-  `_check_coordinate_grid` asks planar on a slab, interface selections and conformal boundaries refuse / ignore 1D,
-  heat refuses out_of_plane_convection and the noise features. Not yet: GUI (forms, canvas, Add physics:
-  `schema.type_spaces` ignores 1, GUI solver_misfit calls pass no grid), 1D EM (slab_modes), point-source units in 1D
-  (heat P is per the 1D total: W/m^2, W/m or W; its help says W/m).
-- Spec: pass the registry to renames (typed 'ref' / 'names' params, field names). Geometry objects and selections
-  share one namespace minus `RESERVED_ENTITY_NAMES` (FACES + 'all'). Material `dispersion` None inherits the library
-  poles, [] none. Composite geometry consumes its inputs (the industry-standard default): an object feeds one composite
-  only and is no longer selectable on its own; a second use needs a duplicate.
-- Arrays (kind 'array': base, nx / ny / nz, pitch_x / _y / _z; nz / pitch_z in `Z_PARAM_NAMES`): `resolve_geometry`
-  adds every copy as a resolved shape ('<array>[i,j]', '[i,j,k]' when nz > 1; a composite base is copied whole, its
-  inputs '<input>@<copy>'; `geometry.is_array_copy`) right after the array, values = base + i pitch (exact float
-  sums, so written-out copies mesh identically), and sets the array's values['inputs'] = the copies (base first, i
-  fastest, then j, k). So code iterating the resolved dict (model_pslg, size fields, model_solids, canvas outlines)
-  sees every copy, code walking composites treats an array as a union (`geometry.UNION_KINDS`; `composite_inputs` of a
-  resolved array = its copies, of spec params = [base]), and code listing spec objects from the resolved dict must
-  skip copies (canvas picking / consumed, scene_3d tops, `_section_preview`). rasterize / contains_points_3d of >=
-  `_BUCKETED_COPIES` copies bucket points by the pitch arithmetic (`_array_points`); bounding_box / z_extent read the
-  first and last copy; cross_section_key the z column of copies. validate warns on overlapping neighbour boxes
-  (`array_overlap`). A prism end exactly on a cell centre is decided in float32 by `_section` (the build) and float64
-  by contains_points_3d: tests comparing them keep ends off centres. Estimate rasters
-  (`triangle_size_field`, `tetrahedron_element_density`, swept `_with_edge_sizes`) group distance sources by size
-  (`meshing.SizedUnions`: one distance transform per size of the OR of region masks / outlines, each rasterised on its
-  own window), so curved copies share one transform. Not yet: `smallest_side` takes the array's whole box (auto
-  sizes); the fem mesher's PSLG crossing search over 1e4 curves is untimed.
-- `material_preview` rasterises float64 centres on the CPU; build masks use float32 clamped centres: cells on an exact
-  boundary can differ. The empty-object warning (objects selected by materials, features, derived values) and the
-  material-override warning (a material not on the preview re-judged on its bounding box) rasterise the MeshEstimate
-  float64 window centres (above 1e6 cells the first is skipped, the second falls back to the preview with a
-  'probably' wording). Grid masks go through `geometry.rasterize_window` (1D non-decreasing host centres -> (window
-  slices, cropped mask); primitives tested only on their bounding-box cells widened by a float32 margin; union inputs
-  and difference subtracts whose box misses the centres, and array copies outside the pitch range of the centres
-  (`_array_inputs_near`), are never recursed into: a new composite kind keeps that pruning exact), never `rasterize`
-  on full meshgrids; `rasterize` stays for point probes.
-- Per-physics meshes (root file "Meshes per physics"): `ModelSpec.mesh` is NOT a field: a property = meshes[0] plus
-  the constructor keyword `ModelSpec(mesh=m)` (an __init__ wrapper, not an InitVar: `dataclasses.replace` would pass
-  the old meshes[0] back in). Lookups are ModelSpec methods (`mesh_of`, `physics_on(name)`, `used_meshes()`), not
-  meshing (definitions may not import meshing). A legacy JSON 'mesh' object loads as meshes = [it] (`from_dict`, the
-  one rule; both keys raise). Every meshing entry takes a mesh name, None = `default_mesh_name` (first used mesh):
-  `estimate_mesh(..., mesh=)`, `estimate_meshes` ({used name: estimate}), `make_domain(..., mesh=)`; requirements,
-  auto sizes, uniform-feature fallback and padding come from the physics on that mesh only. Their `parameters` are
-  the evaluated {name: float} (`evaluate_parameters(spec.parameters)`), never the spec's: self-tests pass `{}` only for
-  parameter-free specs. `estimate_memory(mesh_estimate=)` takes {name: estimate} or one estimate, one part per used
-  mesh (labels "mesh '<name>': ..." only when several) plus `mesh_transfers` of cross-mesh couplings. Auto mode per
-  mesh: with an EM physics (family 'em') or wavelength_min the wavelength rule, else physics-controlled
-  (`physics_objects` / `smallest_side`; laminar_flow uniform) (`_auto_rule_sizes`); a set dx is the smallest cell
-  size: `_auto_sizes` scales every rule size by one factor so the finest applied one equals it (points_per_wavelength
-  then unused), dx None = the rule alone (MeshSpec.dx is optional only in auto: `mesh_values` and validate refuse
-  None elsewhere; an auto MeshSpec / JSON that should follow the rule sets dx None / null explicitly, the dataclass
-  default 20e-9 counts as set); `MeshEstimate.auto_rule` says which, `auto_dx` /
-  `auto_refinements` what it chose, scaled (the GUI's fill-in); `RefinementSpec.automatic` refinements are skipped by
-  `_explicit_refinements` in auto mode only. Validation: `ValidationContext.meshes` / `mesh_errors`; physics / feature / coupling (source
-  physics) callbacks run inside `vctx.on_mesh(name)`; mesh issues at ('mesh', name), memory at the ('mesh', name) of the largest part. One-mesh
-  rules (`_check_one_mesh_rules`, coupling / feature-ref checks): family 'em', `CouplingType.mesh_transfer` None,
-  `_ONE_MESH_STUDIES`, Param ref_kind 'physics'.
-- Per-mesh build: `builder._build_on_gpu` makes one Domain (`domain.mesh_name` set) and BuildContext per used mesh;
-  they share the model-wide state (`_SharedBuild`: log, warnings, sim, solver_records, time_updates,
-  conformal_locators, grid transfers; contexts by mesh name held weakly: the first mesh's context (the Session's)
-  keeps the others in `other_meshes`, so nothing cycles). A new build step touching a physics' cells takes
-  `ctx.for_physics(name)`, never the first context. Per mesh: the MaterialGrid of `meshing.mesh_material_types` (its
-  physics' types plus partner types of cross-mesh couplings with `partner_materials`; `_mesh_memory` counts the same
-  set), static materials, state-dependent updates (`notify` = that mesh's physics; a state of a physics on another
-  mesh enters through `ctx.transfer`), the subpixel geometry; the GeometryLocator is one. Ledger owners of per-mesh
-  stages get ' <mesh>' only with several meshes. Cross-mesh couplings: `create` runs with the context of the
-  transform mesh (`mesh_transfer.transform_side`: 'field' target, 'value' source); every term must be a CouplingTerm
-  from source to target (else build error) and gets `set_mesh_transfers` with the cached transfer (`transfer_kind`;
-  conservative r weights from the target solver's `axisymmetric`).
-- Per-mesh Session: `Session.domain` = the first mesh's, `domains` {mesh name: domain}, `domain_of(physics)` /
-  `mesh_of` / `window_shape(physics)`. Field reads (`field`, `display_field`, `segment_profile`, `volume`,
-  `cut_centers(axis, physics)`) and every `FeatureType.result` callback run on a mesh view (`_physics_view`: a cached
-  shallow copy whose `domain` / `context` / display caches are that mesh's; `_require_open` follows the parent).
-  `evaluate` picks `_evaluation_view` (first physics in model order whose output fields the expression names; none:
-  the first mesh); fields of other meshes enter interpolated (`_from_mesh`: 'interpolate' GridTransfer cached per mesh
-  pair in the parent, freed by close; non-window state values pass through); selections / metric / point cells are the
-  evaluation mesh's. FieldData.mesh names the field's mesh (snapshots too); `_SnapshotRecorder` decides native vs
-  display per field on its own mesh. Warm starts compare every mesh (`_mesh_key`). Triangle meshes: a renderer
-  provides `fem_field(component)` -> (Lagrange DofMap, coefficients) (no device_field / state reads there); `field` /
-  `display_field` give a raster over the window (NaN outside the field's elements) plus `FieldData.triangulation`;
-  derived values reduce degree-4 quadrature samples of window elements (selections by centroid: `triangle_meshing.
-  element_masks`; tensor fields bilinear at the samples; the stationary `_FixedPointMonitor` reads fem.renderer's
-  `device_field` = the coefficient vector). Not yet on triangles: interface selections, max / min over mirror images.
-- Triangle meshes (MeshSpec kind 'triangles'): `PhysicsType.grids` / `FeatureType.grids` (MESH_KINDS) gate them in
-  validation; `schema.solver_grid(spec, physics)` returns 'triangles' / 'tetrahedra' (solvers.roles GRID_KINDS).
-  `meshing.triangle_sizing` is the one size rule (h_max = dx or the auto rule, refinements as object sizes, h_min null
-  = h_max / 100, max_ratio null = 1.3 (`MESH_KIND_DEFAULTS`), PML ring = cpml_npml x h_max on cpml faces only,
-  `MeshSpec.size_points` in every mode ("Mesh refinement levels"); every size is floored at h_min, so a finer local
-  size needs an explicit h_min). `triangle_size_field` + `_triangle_estimate` = the raster element-count estimate
-  (`TriangleMeshEstimate`, n_cells = elements; memory, run time and MAX_MESH_CELLS depend on it; material_elements =
-  the raster's window elements per spec material in the builder's paint order, as for tetrahedra). Points,
-  axis-parallel lines and objects thinner than a raster pixel use the exact pixel mean across their band
-  (`_thin_sources`), because the band within one pixel of a refined film holds most of its elements and a centre
-  sample misses it. h is a size-field value: the mesher keeps every edge <= h, so built elements average ~h / 1.5:
-  recalibrate TRIANGLE_FILL / TRIANGLE_EDGE_FILL against selftest mesh_triangle_estimate when the mesher's refinement
-  rule changes. `make_domain` returns a `fem.domain.TriangleDomain`. Element meshes (triangles and tetrahedra) go through
-  `meshing.element_mesh`: with `remember_element_meshes` on, the last mesh per mesh name is reused while
-  `element_mesh_key(sizing, window size, resolved geometry)` matches (the build logs the reuse; its 'domain' stage then
-  holds no meshing). A new input that changes the mesh but none of those three must enter the key, else a stale mesh
-  is reused. On: the GUI's BackendWorker; `run_study` (`element_meshes_kept()`, state restored after, forgetting the
-  meshes) around a sweep and parity sectors; `run_estimation` around its evaluations. Off elsewhere (single api / CLI
-  runs, between selftest cases: a mesh made by another case would hide the mesher from the selftest cache's tracer).
-  `run_study` likewise wraps every study in `cudss_factor.cudss_orderings_kept()`, the worker sets
-  `remember_cudss_orderings` for its lifetime (solvers sub file "Ordering reuse"), and in
-  `host_direct.host_analyses_kept()` (MUMPS / PARDISO factors of released sessions parked for the study only, never
-  for the worker's lifetime: solvers sub file "Kept analyses"). `time_estimate.mesh_build_items`
-  follows the same key (`kept_element_mesh_keys()`). `mesh_transfer.make_transfer` with a triangle mesh on either side
-  returns a `TriangleTransfer` (per source space: per-element / full-mesh P1 / P2 by array length, or `apply(...,
-  dofs=)`; triangle targets per element; 2D Cartesian tensor partner only); `meshing._TRIANGLE_TRANSFER_ENTRIES` (6
-  per target cell / element) matches; conservative transfers hold more (size ratio squared) plus a host float64 copy.
-- Meshing: no boundary_config -> no PML. Equal configs from several physics merge into the first provider's;
-  different ones raise naming both (`boundary_config_difference_text`; validate reports it at the later physics).
-  Merged courant_factor = smallest declared. `MeshEstimate.uniform` tests window widths,
-  `ValidationContext.mesh_uniform` the full grid (both incl. z in 3D). Graded 3D: `_plan` sets `_MeshPlan.size_z` and
-  `MeshConfig(size_z=)`; `_add_z_refinement` adds each refinement's z band; the cell-count guard bounds z like x / y
-  (`_graded_axis_cell_bound`); estimate and make_domain both take z from `_z_cells`.
-- Tensor options (nonuniform / auto; core sub file for MeshConfig): `RefinementSpec.dx_x / dx_y / dx_z`
-  (`_Refinement.along / refines`: an axis refines only when its size beats the base, margin default 3 x the axis size;
-  a refinement refining no axis is dropped); `MeshSpec.axes` (MeshAxisSpec per axis, checked only by `_axis_plans`, so
-  validate reports its errors as 'mesh estimate failed'): max_ratio, MeshBandSpec bands (ends are snap nodes; without
-  one the axis is a single segment whose whole-axis rescale moves a band by up to half an outer cell; bounds
-  `_snapped_axis_cell_bound`), custom `edges` or MeshSegmentSpec `segments` (replace the axis;
-  `MeshEstimate.custom_axes`, validate warns above max_ratio); `outer_dx` / `outer_ratio`. Any refinement, band or
-  custom axis keeps the grid graded (no uniform fallback). `MeshEstimate.line_blocks` / `line_block_hint` (2D: cost
-  n_blocks b^3 per block axis) go into check.json mesh and the GUI estimate (only when a line_block solver fits a role).
-- nonuniform / auto fall back to `Domain.uniform` when no refinement is finer than base*(1-1e-9) or an enabled feature
-  `requires_uniform_mesh` (`note` says why). Auto index = max over permittivity arrays of |sqrt(eps(omega) mu_r)| at
-  wavelength_min (`background_permittivity` (owner, else Drude eps_inf) through `dispersion.complex_permittivity`), so
-  metals mesh by skin depth (gold ~11 at 1.55 um); only wavelength_min is evaluated; a non-constant eps / sigma_e /
-  mu_r / pole raises. The cell-count guard (400e6, 50,000 per axis) runs before meshing. `MESH_ESTIMATE_ERRORS` are
-  model errors; anything else is a bug.
+  is the one map between the drawing plane and the logical cells. Masks test the mapped centres over the whole window
+  (`rasterize_mapped` in the mapped build_masks / field_access classes; validate: `_mapped_window_centres`), never
+  `rasterize_window` on logical centres. `material_preview` is index 0 outside the sector, so preview shares /
+  statistics go by `DomainMap.contains` (as `definition_helpers.conducting_fraction`). `BuildContext.point` maps;
+  `line` / `rect` raise there. `_mapped_plan` widths are float32-rounded like the Domain's cells (edges[-1] off size
+  by ~1e-8 relative): compare to the float32 widths, not size.
+- Cylindrical (r, phi, z) sectors ('polar' + size_z, heat only): the DomainMap is the (r, phi) plane, z unmapped, on a
+  padding-free polar Domain3D. 3D xy masks are full (nx, ny) mapped rasters per cross_section_key
+  (`build_masks.SectorMasks`), never `rasterize_box` / `box_window` on the logical host centres; x, y values of 3D
+  builds come from `BuildContext.plane_coordinates` (a new 3D x, y consumer uses it too). Session cuts at constant z
+  only (validate refuses x / y stored_cuts and 3D segment line curves). Not yet: GUI (canvas / scene_3d / side views
+  draw the logical box), meridional cuts at fixed phi.
+- 1D models (root file "1D models"): `DomainMap(line=True)` on every kind (`_line_domain_map`), so the polar path
+  carries them. Objects select the cells whose centres lie on the drawing's x axis: circles about the origin = shells /
+  layers, rectangles across y = 0. Not yet: GUI (forms, canvas, Add physics: `schema.type_spaces` ignores 1, GUI
+  solver_misfit calls pass no grid), 1D EM (slab_modes), point-source units in 1D (heat P is per the 1D total: W/m^2,
+  W/m or W; its help says W/m).
+- Arrays (kind 'array'; `geometry._array_copies`; root file "Arrays, coordinates"): copy values = base + i pitch
+  (exact float sums, so written-out copies mesh identically); the resolved array's values['inputs'] = the copies. So
+  code walking composites treats an array as a union (`geometry.UNION_KINDS`; `composite_inputs` of a resolved array =
+  its copies, of spec params = [base]), and code listing spec objects from the resolved dict skips copies (canvas
+  picking / consumed, scene_3d tops, `_section_preview`). Estimate rasters group distance sources by size
+  (`meshing.SizedUnions`), so curved copies share one transform. Not yet: `smallest_side` takes the array's whole box
+  (auto sizes); the fem mesher's PSLG crossing search over 1e4 curves is untimed.
+- Rasterisation precision: `material_preview` and the validate coverage warnings use float64 centres on the CPU,
+  build masks float32 clamped centres, so cells on an exact boundary can differ (likewise a prism end exactly on a
+  cell centre: float32 in `_section`, float64 in `contains_points_3d`; tests comparing them keep ends off centres).
+  Grid masks go through `geometry.rasterize_window` (bounding-box pruning: a new composite kind keeps it exact), never
+  `rasterize` on full meshgrids; `rasterize` stays for point probes.
+- Per-physics meshes (root file "Meshes per physics"): meshing entries take a mesh name (None = `default_mesh_name`,
+  the first used mesh) and the evaluated {name: float} `parameters` (`evaluate_parameters(spec.parameters)`), never
+  the spec's: self-tests pass `{}` only for parameter-free specs. Requirements, auto sizes, uniform-feature fallback
+  and padding come from the physics on that mesh only. Auto mode: a set dx is the smallest cell size (MESH_PARAMS
+  help); the dataclass default 20e-9 counts as set, so an auto MeshSpec / JSON meant to follow the rule alone sets dx
+  None / null explicitly.
+- Per-mesh build (`builder._build_on_gpu`, `_SharedBuild`): the first mesh's context holds the others
+  (`other_meshes`; the shared dict is weak), so a closed Session frees them without gc: a new holder of contexts keeps
+  that direction. A mesh's material arrays are `meshing.mesh_material_types` (the build and `_mesh_memory` alike).
+- Per-mesh Session (`Session` docstring; per kind: `field_access*.py`): a mesh view (`_mesh_view`) is a cached
+  shallow copy sharing everything but domain / context / access; a new Session read of a physics' fields enters
+  through `_physics_view(physics)` (expressions: `_evaluation_view`), so it acts on that physics' mesh. Caches that
+  span meshes live on the parent (`_window_transfers`, freed by close). Warm starts compare every mesh
+  (`study._mesh_key`).
+- Triangle meshes (MeshSpec kind 'triangles'): `meshing.triangle_sizing` is the one size rule of estimate and mesher;
+  every size is floored at h_min (default h_max / 100), so a finer refinement needs an explicit h_min. The raster
+  estimate (`_triangle_estimate`) sets memory, run time and MAX_MESH_CELLS: recalibrate TRIANGLE_FILL /
+  TRIANGLE_EDGE_FILL against selftest mesh_triangle_estimate when the mesher's refinement rule changes. Element meshes
+  (triangles and tetrahedra) go through `meshing.element_mesh`, reused per mesh name while `element_mesh_key` matches.
+  Reuse is on in the GUI's BackendWorker, in `run_study` around sweeps and parity sectors and in `run_estimation`; off
+  elsewhere (single api / CLI runs, between selftest cases: a mesh made by another case would hide the mesher from the
+  selftest cache's tracer).
+- Meshing (tensor): equal boundary configs of the physics on a mesh merge, different ones raise (`_requirements`).
+  `MeshEstimate.uniform` judges the window widths, `ValidationContext.mesh_uniform` the full grid. nonuniform / auto
+  fall back to `Domain.uniform` (`note` says why) when no refinement, band or custom axis is finer than the base size,
+  and to the finest size when an enabled feature `requires_uniform_mesh`. Tensor options (core sub file for
+  MeshConfig): `MeshSpec.axes` are checked only by `_axis_plans`, so validate reports their errors as 'mesh estimate
+  failed'; an axis without band ends or custom edges is one segment whose whole-axis rescale moves a band by up to half
+  an outer cell. Auto wavelength rule: the index is taken at wavelength_min only (`_material_index`), so metals mesh by
+  skin depth (gold ~11 at 1.55 um).
 - Triangle meshes (triangulate): `triangle_meshing.triangulate(spec, parameters, registry, mesh)` = sizes,
   `mesher_size_field` (fem SizeField form of `meshing.triangle_size_field`: keep the two size rules equal),
   `model_pslg` (every 2D primitive outline incl. composite inputs, lines, points), the fem mesher (gmsh when `mesher`

@@ -451,14 +451,22 @@ class BuildContext:
         return float(x), float(y)
 
     def line(self, name):
-        """(x0, y0, x1, y1) of a line object (end points as given)."""
-        values = self._shape(name, 'line').values
+        """(x0, y0, x1, y1) of a line object (end points as given); ValueError on a mapped window (_unmapped_shape)."""
+        values = self._unmapped_shape(name, 'line').values
         return float(values['x0']), float(values['y0']), float(values['x1']), float(values['y1'])
 
     def rect(self, name):
-        """(x0, y0, x1, y1) of a rectangle object (sorted corners)."""
-        values = self._shape(name, 'rectangle').values
+        """(x0, y0, x1, y1) of a rectangle object (sorted corners); ValueError on a mapped window (_unmapped_shape)."""
+        values = self._unmapped_shape(name, 'rectangle').values
         return float(values['x0']), float(values['y0']), float(values['x1']), float(values['y1'])
+
+    def _unmapped_shape(self, name, kind):
+        """_shape for the drawn-coordinate readers (line / rect): their values are drawing-plane positions, which
+        only a Cartesian window takes as Domain coordinates."""
+        if self.domain_map.mapped:
+            raise ValueError(f"object '{name}': {kind} coordinates are not mapped onto a {self.domain_map.grid_text} "
+                             'window; this feature needs a Cartesian domain')
+        return self._shape(name, kind)
 
     def release_caches(self):
         """Drop the domain coordinate grids, the cached object / perimeter masks and the material-region masks

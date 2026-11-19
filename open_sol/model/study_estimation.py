@@ -10,7 +10,7 @@ import numpy as np
 from .analytic import split_key
 from .estimation import curve_model, fit_statistics, resolve_estimation, weighted_residuals
 from .expressions import evaluate_parameters
-from .meshing import remember_element_meshes, remembers_element_meshes
+from .meshing import element_meshes_kept
 from .study import (Cancelled, LogEvent, Progress, StudyFailed, StudyStarted, _clamped_fraction, _fail_sweep_setup,
                     _parity_sectors_requested, _record_failure, _run_built, build_session, release_session,
                     summed_runs)
@@ -46,14 +46,8 @@ def run_estimation(spec, registry, build, emit, control, service, on_session):
     except Exception as exc:   # text only; reported through the build path with the node paths
         _fail_sweep_setup(spec, registry, build, emit, on_session, _record_failure(exc), what='parameter estimation')
         return None
-    remembered = remembers_element_meshes()
-    if not remembered:   # a geometry-free parameter then rebuilds without remeshing
-        remember_element_meshes()
-    try:
+    with element_meshes_kept():   # a geometry-free parameter then rebuilds without remeshing
         return _Estimation(spec, resolved, sectors, registry, build, emit, control, service, on_session).run()
-    finally:
-        if not remembered:
-            remember_element_meshes(False)
 
 
 class _Estimation:
