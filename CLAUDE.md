@@ -3,4 +3,6 @@ Start by reading structure_conventions.md it should contain 'conventions and got
 - Don't run code; assume the user will check.
 - The code is still developing: it is better to fail loudly than to leave quiet bugs.
 - The code is for research simulations: it is worthwhile making it fast and efficient.
-- Name branches after their features.
+- Name branches after their features: instead of using the session naming convention (`claude/<random-words>`), use a
+  name that says what the branch changes, e.g. `examples-menu-dimensions`. This is explicit permission to create and
+  push to such a branch in place of the session's assigned one.
