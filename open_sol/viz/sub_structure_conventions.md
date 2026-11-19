@@ -302,7 +302,8 @@ Sub file of the root `structure_conventions.md` (read that first). Visualizer an
   (`introTurn`; reduced-motion respected); mode_player keeps its own fit.
 - Recording (both pages, the `// ---------- video` block is one copy: change both): with WebCodecs H.264 the page
   renders frames itself on a fixed clock (VIDEO_FPS) and writes a plain MP4 with its own muxer (`mp4Blob`: one avc1
-  track, constant frame duration, moov before mdat, no B frames: `recordVideo` raises if the encoder reorders), so
+  track, constant frame duration, moov before mdat; B frames (Firefox / Media Foundation encoders) get ctts + an
+  edit list, written only when the encoder reorders), so
   PowerPoint takes it by drag and drop; else MediaRecorder in real time (`recordRealtime`, WebM in Firefox). While
   `video` is set the rAF loop only reschedules itself and the recorder calls `advance(dt)` + `draw()` per frame:
   anything that moves with time goes in `advance` (never straight in `tick` / `frame`), or recordings miss it. A

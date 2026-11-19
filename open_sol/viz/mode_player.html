@@ -1075,13 +1075,20 @@ async function recordVideo(config, seconds, step, grab, button) {
   if (!samples.length) return null;
   if (!description) throw new Error('the H.264 encoder gave no decoder configuration (avcC)');
   if (!samples[0].key) throw new Error('the H.264 encoder did not start on a key frame');
-  for (let k = 1; k < samples.length; k++)
-    if (samples[k].t <= samples[k - 1].t) throw new Error('the H.264 encoder reordered frames (B frames): this muxer writes none');
+  // presentation index of each sample (encoders with B frames emit them in decode order): every frame exactly once
+  const seen = new Uint8Array(samples.length);
+  for (const s of samples) {
+    s.p = Math.round(s.t / us);
+    if (!(s.p >= 0 && s.p < samples.length) || seen[s.p]++)
+      throw new Error('the H.264 encoder returned frame times that are not one per frame (' + s.t + ' us)');
+  }
   return mp4Blob(samples, description, config.width, config.height);
 }
 function mp4Blob(samples, avcC, w, h) {
   // ftyp, moov (one video track: every sample in one chunk, constant duration), mdat; moov first, so players and
-  // PowerPoint read the index before the data ("fast start")
+  // PowerPoint read the index before the data ("fast start"). samples in decode order, p = presentation index: with
+  // B frames ctts holds the non-negative display offsets (p - k + shift frames) and an edit list starts the movie
+  // `shift` frames into the media, as ffmpeg writes it; without reordering neither box is written
   const T = 90000, delta = T / VIDEO_FPS, n = samples.length, duration = n * delta;
   if (!Number.isInteger(delta)) throw new Error('VIDEO_FPS must divide the MP4 timescale ' + T);
   const u32 = (a) => { const b = new Uint8Array(4 * a.length), v = new DataView(b.buffer); a.forEach((x, i) => v.setUint32(4 * i, x)); return b; };
@@ -1096,6 +1103,13 @@ function mp4Blob(samples, avcC, w, h) {
   const full = (type, flags, ...parts) => box(type, u32([flags]), ...parts);   // version 0
   const matrix = u32([0x10000, 0, 0, 0, 0x10000, 0, 0, 0, 0x40000000]);
   const keys = []; samples.forEach((s, i) => { if (s.key) keys.push(i + 1); });
+  const shift = samples.reduce((m, s, k) => Math.max(m, k - s.p), 0);   // frames the decode clock runs ahead
+  const reordered = samples.some((s, k) => s.p !== k), ctts = [];        // run-length (count, offset) pairs
+  if (reordered) for (const [k, s] of samples.entries()) {
+    const off = (s.p - k + shift) * delta;
+    if (k && ctts[ctts.length - 1] === off) ctts[ctts.length - 2]++; else ctts.push(1, off);
+  }
+  const optional = (on, make) => (on ? make() : new Uint8Array(0));
   const bytes = samples.reduce((s, x) => s + x.data.length, 0);
   if (8 + bytes > 0xffffffff) throw new Error('the recording is over 4 GB: shorten it');
   const ftyp = box('ftyp', str('isom'), u32([0x200]), str('isomiso2avc1mp41'));
@@ -1103,6 +1117,7 @@ function mp4Blob(samples, avcC, w, h) {
     full('mvhd', 0, u32([0, 0, T, duration, 0x10000]), u16([0x100, 0]), u32([0, 0]), matrix, u32([0, 0, 0, 0, 0, 0, 2])),
     box('trak',
       full('tkhd', 3, u32([0, 0, 1, 0, duration, 0, 0]), u16([0, 0, 0, 0]), matrix, u32([w * 0x10000, h * 0x10000])),
+      optional(reordered, () => box('edts', full('elst', 0, u32([1, duration, shift * delta, 0x10000])))),
       box('mdia',
         full('mdhd', 0, u32([0, 0, T, duration]), u16([0x55c4, 0])),   // language 'und'
         full('hdlr', 0, u32([0]), str('vide'), u32([0, 0, 0]), str('VideoHandler\0')),
@@ -1113,6 +1128,7 @@ function mp4Blob(samples, avcC, w, h) {
             full('stsd', 0, u32([1]), box('avc1', new Uint8Array(6), u16([1, 0, 0]), u32([0, 0, 0]), u16([w, h]),
               u32([0x480000, 0x480000, 0]), u16([1]), new Uint8Array(32), u16([0x18, 0xffff]), box('avcC', avcC))),
             full('stts', 0, u32([1, n, delta])),
+            optional(reordered, () => full('ctts', 0, u32([ctts.length / 2].concat(ctts)))),
             full('stss', 0, u32([keys.length].concat(keys))),
             full('stsc', 0, u32([1, 1, n, 1])),
             full('stsz', 0, u32([0, n].concat(samples.map((s) => s.data.length)))),
