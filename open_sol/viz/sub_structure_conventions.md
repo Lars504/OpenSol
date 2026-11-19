@@ -147,8 +147,8 @@ Sub file of the root `structure_conventions.md` (read that first). Visualizer an
   bold on the colour bar's default ticks, `c0` a bold level below lo so k stays small in float32; none where the
   field is flat or the levels crowd): they follow relief and mirror images for free, so a new field program keeps
   `vVal`. 3D terrain (planar views; `setTerrain` tweens camera and relief together, `scalarsTick` from `tick`; a
-  single stationary state opens flat and rises after 0.7 s unless this browser turned it off or `DATA.view` is
-  set; `resetCamera` of a raised map returns to `terrainPose`): walls are quads under the layers' boundary edges
+  single stationary state opens flat and rises after 0.7 s unless this browser turned it off, `DATA.view` is
+  set or flow particles are on (one of the two opens: the flow); `resetCamera` of a raised map returns to `terrainPose`): walls are quads under the layers' boundary edges
   (grid perimeter / triangulation edges used once) with `aDown` = 1 at the bottom (`uBase` below the lowest shown
   value), edges on a mirror plane left out while the images show. On a raised planar map the outlines (and 2D point /
   line objects: `decalKind`) are not drawn as lines (they would cut through the relief): `prepareDecal` draws them
@@ -179,8 +179,9 @@ Sub file of the root `structure_conventions.md` (read that first). Visualizer an
   DOM corner grip (`placeGrip` from draw, outside PNG / recordings). Other views keep the camera zoom / pan.
   Scale bar (Plot settings `scale_bar`, default 'on'; on = the axes start off on a planar view, the Axes button brings
   them back; a non-planar 3D view ignores it and keeps its axes: `scaleBarOffered`):
-  drawn only on a planar view seen face-on (one scale on screen); its px per length come from projecting a step along
-  the camera's right axis divided by the stretch, so it is right on a stretched axis; length a 1-2-5 value near a
+  drawn on every planar view, face-on or tilted (relief / terrain, membrane motion's oblique start, turned by hand);
+  its px per length come from projecting a step along the camera's right axis at the map centre divided by the
+  stretch, so it is right on a stretched axis and, tilted, the screen-horizontal scale at the centre's depth; length a 1-2-5 value near a
   fifth of the view (follows the zoom) or `scale_bar_length` (m, remembered per file with the limits); home: the lower
   right corner inside the plot frame.
   Plot settings (field_viewer only; mode_player has none): one object `fig` on the page = the keys of
@@ -249,7 +250,12 @@ Sub file of the root `structure_conventions.md` (read that first). Visualizer an
   brighten every joint). Speeds normalise by `speed_reference` (a percentile, not the max: a 1/r peak would freeze
   the rest), clamped to 1; below STILL a particle dies (holes, solids and insulators are zero vectors, not NaN: they
   would collect crawling dots). Seeds fill the shown window per image (count by area, so zoom and mirrors keep the
-  screen density). Hidden on a raised map (relief); `uploadFrame` resets `flowState.frame` so the textures follow.
+  screen density). Hidden on a raised map (relief; turning Flow on lowers it, not stored as terrain off); `uploadFrame` resets `flowState.frame` so the textures follow.
+  Style 'arrows' (`flowState.style`, remembered with the flow settings; page-side only, same textures): instanced
+  arrows (`ARROW_VS`, shape built in the vertex shader) on a lattice anchored at the layer grid's origin, square on
+  screen (spacing from Density over the stretched view area), direction = the projected data direction (follows the
+  particles on a stretched axis), length = the clamped speed ratio x 0.9 spacing x Arrow length; halo pass (arrows
+  grown by ARROW_HALO px) under the core pass.
   Deformed shapes (`viewer_data(motion=ViewerMotion)`; api `_viewer_motion`, 2D models of the `_MOTION_FIELDS`
   physics types: solid_mechanics u_x / u_y, membrane w_re, plus the `_im` parts when every frame holds them and they
   are not negligible): each layer's `displacement` = one array per channel on the layer's own samples (components
@@ -308,5 +314,5 @@ Sub file of the root `structure_conventions.md` (read that first). Visualizer an
     updateReadout) that read another block's state, so state those shared functions read is declared with the page
     constants near the top (the waves `PHASOR` / `SMOOTH_OK` / `wave`), never inside a later block (a `const` read
     before its line throws and the page stays blank).
-  - key bindings: V = Flow (2D flow pages) and View cycling (3D volume pages; never on the same page), C contours,
+  - key bindings: V = Flow, Shift+V particles / arrows (2D flow pages) and View cycling (3D volume pages; never on the same page), C contours,
     R terrain, D deform animation, G objects, M mirror.

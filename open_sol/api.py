@@ -1724,7 +1724,7 @@ class Results:
         '_im' field whose partner is stored beside it, or rendered from kept snapshot solutions (GUI runs), is
         animated over one period, Re / Im[A exp(j wt)]), else the current (live) or saved state; a 2D Cartesian page
         of a steady-flow physics (_FLOW_TYPES) carries the in-plane vector of its field (_viewer_flow, from the same
-        snapshot / state) for moving flow particles; a field of a 2D solid_mechanics / membrane physics is drawn on
+        snapshot / state) for moving flow particles or arrows; a field of a 2D solid_mechanics / membrane physics is drawn on
         the deformed body (its displacement u_x / u_y or w_re, plus the imaginary parts when held, per frame; a Deform
         magnification; the solid's void cells, youngs_modulus <= 0, hidden and cropped away; modes and frequency
         responses oscillate, static states ramp their load with Animate); a 3D field is shown on its cut planes in
