@@ -42,12 +42,12 @@ _POSITION_PARAMS = {'rectangle': ('x0', 'y0', 'x1', 'y1'), 'circle': ('cx', 'cy'
                     'line': ('x0', 'y0', 'x1', 'y1')}
 DRAGGABLE_KINDS = frozenset(_POSITION_PARAMS)   # geometry kinds the canvas can move (settings panel drag hint)
 
-_MATERIAL_COLORS = ('#8dd3c7', '#ffffb3', '#bebada', '#fb8072', '#80b1d3', '#fdb462', '#b3de69', '#fccde5',
-                    '#bc80bd', '#ccebc5', '#ffed6f', '#d9d9d9')
-_CATEGORY_COLORS = {'source': '#d62728', 'probe': '#2ca02c', 'monitor': '#ff7f0e',
-                    'boundary_condition': '#1f77b4', 'domain_condition': '#9467bd'}
+MATERIAL_COLORS = ('#8dd3c7', '#ffffb3', '#bebada', '#fb8072', '#80b1d3', '#fdb462', '#b3de69', '#fccde5',
+                   '#bc80bd', '#ccebc5', '#ffed6f', '#d9d9d9')
+CATEGORY_COLORS = {'source': '#d62728', 'probe': '#2ca02c', 'monitor': '#ff7f0e',
+                   'boundary_condition': '#1f77b4', 'domain_condition': '#9467bd'}
 _CATEGORY_SYMBOLS = {'source': 'star', 'probe': 'o'}
-_HIGHLIGHT_COLOR = '#ffa000'
+HIGHLIGHT_COLOR = '#ffa000'
 _HOVER_COLOR = '#00a8d8'                # hovered settings selection entry / model tree node (dashed)
 _ROI_COLOR = '#e6550d'
 _DRAW_COLOR = '#0050c8'
@@ -290,7 +290,7 @@ def _absent_from_layer(name, shapes, layer, size_z, outlines):
 
 
 def _material_color(index):
-    return _MATERIAL_COLORS[index % len(_MATERIAL_COLORS)]
+    return MATERIAL_COLORS[index % len(MATERIAL_COLORS)]
 
 
 def _rgba(color, alpha=255):
@@ -1895,7 +1895,7 @@ class ModelCanvas(QtWidgets.QWidget):
         spec = self._document.spec
         for physics, physics_type in known_physics(spec, self._registry):
             for feature, feature_type, entities in _enabled_features(spec, physics, physics_type):
-                color =_CATEGORY_COLORS.get(feature_type.category, '#555555')
+                color = CATEGORY_COLORS.get(feature_type.category, '#555555')
                 feature_type = self._channel_glyph_type(physics, feature, feature_type)
                 for entity in entities:
                     shape = model.shapes.get(entity)
@@ -2071,8 +2071,8 @@ class ModelCanvas(QtWidgets.QWidget):
         if interface is not None and model.view == 'xy' and model.size_z is None:
             self._draw_interface_highlight(model, interface)
             return
-        self._draw_entities(model, entities, fill_domains, pg.mkPen(_HIGHLIGHT_COLOR, width=4), self._highlight_items,
-                            self._highlight_image, _HIGHLIGHT_COLOR)
+        self._draw_entities(model, entities, fill_domains, pg.mkPen(HIGHLIGHT_COLOR, width=4), self._highlight_items,
+                            self._highlight_image, HIGHLIGHT_COLOR)
 
     def _draw_hover(self, model):
         """Hover highlight of a settings / tree entry (`set_hover_entities`): dashed, its own items and fill image."""
@@ -2124,7 +2124,7 @@ class ModelCanvas(QtWidgets.QWidget):
                                               brush=pg.mkBrush(None), pen=pg.mkPen(fill_color, width=3)), 15, items)
         self._show_highlight_mask(model, mask, image, fill_color)
 
-    def _show_highlight_mask(self, model, mask, image=None, color=_HIGHLIGHT_COLOR):
+    def _show_highlight_mask(self, model, mask, image=None, color=HIGHLIGHT_COLOR):
         """Translucent fill of a bool mask on the material-preview grid into `image` (None: the selection highlight
         image; mask None / empty: nothing)."""
         image = self._highlight_image if image is None else image
@@ -2177,7 +2177,7 @@ class ModelCanvas(QtWidgets.QWidget):
         if segments:
             ends = np.concatenate(segments) / model.scale
             self._add_overlay(pg.PlotCurveItem(x=ends[:, :, 0].ravel(), y=ends[:, :, 1].ravel(), connect='pairs',
-                                               pen=pg.mkPen(_HIGHLIGHT_COLOR, width=4)), 15, self._highlight_items)
+                                               pen=pg.mkPen(HIGHLIGHT_COLOR, width=4)), 15, self._highlight_items)
         if band is not None and model.domain_map is not None:   # the sector's pixels only
             pixel_u, pixel_v = preview_pixel_centers(model.preview[2], model.preview[0].shape)
             band &= model.domain_map.contains(pixel_u[:, None], pixel_v[None, :])

@@ -26,7 +26,6 @@ from ..physics.em.results import _DFT_QUANTITY
 from ..viz.result_plots import table_cell_text
 from ..viz.common import length_unit, line_profile, normalised_db, probe_spectrum, safe_ratio, time_unit
 from .estimation_results import EstimationTab, estimation_curve_options, estimation_plots, estimation_report
-from .document import results_inputs
 from .forms import (derived_operation_text, display_label, fill_table, read_only_table, rich_tooltip, selectable,
                     table_number, wrapped_label)
 from .helpers import (USER_ERRORS, ask_save_path, evaluation_mesh, field_mesh_name, format_duration,
@@ -377,7 +376,8 @@ def _built_cells_text(summary):
 class ResultsPanel(QtWidgets.QWidget):
     """Results dock: field display / snapshots / export and 1D result tabs; data arrives through the WorkerBridge."""
     availability_changed = QtCore.Signal(bool)   # has_results changed (the tree's 'Results' node follows it)
-    # 3D preview cut planes: True = the shown session field or its cut changed (refetch), False = colours only
+    # 3D preview cut planes: True = the shown session field or its cut changed (refetch), False = colours only; every
+    # code path changing the shown session field emits it
     field_view_changed = QtCore.Signal(bool)
 
     def __init__(self, document, bridge, canvas, parent=None):
@@ -388,7 +388,6 @@ class ResultsPanel(QtWidgets.QWidget):
         self._summary = None             # BuildSummary of the current session
         self._study_summary = None       # StudyFinished.summary of the last study
         self._session_parameters = None  # parameters of the worker session (fetched after Built), None until known
-        self._built_inputs = (None, None)   # (bridge.results_spec, its _results_inputs) for the out-of-date check
         self._run_active = False        # a study of the current model runs (curve views show _RUN_NOTE)
         self._results = {}               # (physics, feature) -> fetched 1D result dict
         self._live_series = {}           # (physics, feature) -> live timeseries dict
@@ -1729,9 +1728,7 @@ class ResultsPanel(QtWidgets.QWidget):
         shows_results = (self._summary is not None or bool(self._results) or bool(self._live_series)
                          or self._canvas.current_field is not None)
         built_spec = self._bridge.results_spec
-        if built_spec is not None and self._built_inputs[0] is not built_spec:   # serialised once per build
-            self._built_inputs = (built_spec, results_inputs(built_spec.to_dict()))
-        stale = built_spec is None or self._built_inputs[1] != results_inputs(self._document.spec_dict())
+        stale = not self._document.results_current(built_spec)
         cause = (self._session_lost_reason if built_spec is None and self._session_lost_reason
                  else 'the model changed after the last build / run')
         self._stale_label.setText(f'Results out of date: {cause}.')
@@ -1966,7 +1963,7 @@ class ResultsPanel(QtWidgets.QWidget):
     def _unstored_cut_refused(self, every_snapshot=False):
         """True (message shown) when the chosen vertical cut has no stored cut on its axis nor a kept solution: the
         snapshot is not shown and the cut-plane combos go back to the shown field's cut (canvas and combos stay in
-        step)."""
+        step); never a fallback to the z cut, which would switch the canvas view and refit it."""
         plane = self._selected_plane()
         if plane is None or self._snapshot_plane(every_snapshot) is not None:
             return False

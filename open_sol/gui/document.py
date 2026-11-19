@@ -350,6 +350,7 @@ class ModelDocument(QtCore.QObject, SpecEstimates):
         self.host_memory_budget = None       # last available host RAM [bytes] the worker reported (likewise)
         self._element_counts = {}            # mesh name -> {element_mesh_key: built_mesh_counts} (set_element_counts)
         self.estimate_inputs_version = 0     # bumped by new element counts / budgets (SweepValueEstimates' caches)
+        self._built_inputs = (None, None)    # (a built spec, its results_inputs): results_current, by identity
         self.set_spec(spec if spec is not None else ModelSpec())
 
     # ---- whole-model state ----
@@ -388,6 +389,16 @@ class ModelDocument(QtCore.QObject, SpecEstimates):
     def spec_dict(self) -> dict:
         """spec.to_dict() of the current revision, serialised once per edit: read only, never modify it."""
         return self._spec_dict
+
+    def results_current(self, built_spec) -> bool:
+        """True when built_spec (the bridge's results_spec) has this model's results_inputs, so its results are of the
+        current model (a post-processing edit or an undo back to it keeps them current); False for None. The one
+        out-of-date rule of the Results panel and the solve flow's measured values."""
+        if built_spec is None:
+            return False
+        if self._built_inputs[0] is not built_spec:   # serialised once per build
+            self._built_inputs = (built_spec, results_inputs(built_spec.to_dict()))
+        return self._built_inputs[1] == self._cached(('results_inputs',), lambda: results_inputs(self._spec_dict))
 
     def undo(self):
         """Restore the model before the last edit (keeps the current node if it still exists, else its parent)."""

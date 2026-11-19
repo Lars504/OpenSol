@@ -31,6 +31,7 @@ from ..model.schema import (ADAPTATION_METHODS, GLOBAL_DERIVED_OPERATION, SOURCE
                             instance_space, output_field_names, param_in_space,
                             memory_check_level, scalar_output_names, solver_backend, solver_grid, solver_misfit,
                             with_default_precision, with_node_precision)
+from ..model.definition_helpers import DISCRETIZATION_SETTING
 from ..model.meshing import PHYSICS_BASE_DIVISOR, PHYSICS_OBJECT_DIVISOR, line_block_hint, mesh_values
 from ..model.spec import AdaptationSpec, MeshAxisSpec, MeshBandSpec, MeshSegmentSpec, RefinementSpec, SweepSpec
 from ..physics.em.definition import DISPERSION_POLE_PARAMS
@@ -54,7 +55,7 @@ from .solve_flow_view import show_solve_flow
 
 _MAX_EVERY = 1_000_000_000
 _REFINED_MESH_MODES = ('nonuniform', 'auto')   # mesh modes that apply the explicit refinements (model/meshing)
-_TRIANGLE_ONLY_SETTINGS = frozenset({'discretization'})   # physics settings shown only on a triangle mesh (FEM order)
+_ELEMENT_MESH_SETTINGS = frozenset({DISCRETIZATION_SETTING})   # physics settings shown only on an element mesh
 # forms built from spec lists: rebuilt on every external edit
 _LIST_BACKED_NODES = (('model',), ('parameters',), ('couplings',), MESHES_NODE, ('solvers',), ESTIMATION_NODE)
 _LEVEL_COLORS = {'error': ERROR_COLOR, 'warning': '#ef6c00', 'info': '#1565c0'}
@@ -1897,12 +1898,12 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
         """Settings Params of the physics form: element-mesh-only settings (FEM 'discretization') only on a triangle /
         tetrahedron mesh, elsewhere only while stored (to clear them)."""
         try:
-            on_triangles = self._document.spec.mesh_of(physics).kind in FREE_MESH_KINDS
+            on_elements = self._document.spec.mesh_of(physics).kind in FREE_MESH_KINDS
         except KeyError:   # unknown mesh name: the validation names it; show everything
-            on_triangles = True
+            on_elements = True
         stored = physics.settings if isinstance(physics.settings, dict) else {}
         return tuple(param for param in physics_type.settings
-                     if on_triangles or param.name not in _TRIANGLE_ONLY_SETTINGS or param.name in stored)
+                     if on_elements or param.name not in _ELEMENT_MESH_SETTINGS or param.name in stored)
 
     def _physics_mesh_row(self, physics_name):
         """Mesh combo of a physics (the model's meshes, then 'New mesh for this physics') beside a swatch in the

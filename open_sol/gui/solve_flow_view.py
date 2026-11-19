@@ -10,7 +10,6 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from ..core.gpu_memory import format_bytes
 from ..core.time_estimate import format_seconds
 from ..model.solve_flow import MEMORY_GROUPS, TIME_SOURCES, op_text, solve_flow
-from .document import results_inputs
 from .forms import hint_label, rich_tooltip
 from .helpers import ask_save_path, mesh_color
 
@@ -85,7 +84,6 @@ class SolveFlowDialog(QtWidgets.QDialog):
         super().__init__(parent)
         self.document = document
         self.bridge = bridge
-        self._results_key = (None, None)   # (results_spec, its results_inputs) cached by identity
         self.flow = None
         self._boxes = {}
         self._measured_note = ''
@@ -205,9 +203,7 @@ class SolveFlowDialog(QtWidgets.QDialog):
         spec = bridge.results_spec
         if spec is None or (bridge.last_build_summary is None and bridge.last_study_summary is None):
             return None, None, 'Measured values: Build or Compute this model to compare them with the estimates.'
-        if self._results_key[0] is not spec:
-            self._results_key = (spec, results_inputs(spec.to_dict()))
-        if self._results_key[1] != results_inputs(self.document.spec_dict()):
+        if not self.document.results_current(spec):
             return None, None, 'Measured values hidden: the model changed after the last build / run.'
         note = ('Measured values: from the last build of this model (Compute to measure the study too).'
                 if bridge.last_study_summary is None else 'Measured values: from the last run of this model.')
