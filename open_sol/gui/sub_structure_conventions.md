@@ -393,3 +393,11 @@ Sub file of the root `structure_conventions.md`. GUI gotchas.
   element size' reads back '= maximum size / 100' like a typed value (`ParamForm.set_empty_value`; the maximum from the
   estimate, else dx outside auto, so it shows when the estimate fails). Estimate adds
   `meshing.line_block_hint` only when a line_block solver fits a role (`_line_block_fits`).
+- Solve flow window (`solve_flow_view.py`, Solvers form button 'Show solve flow…' -> `show_solve_flow`: one
+  non-modal `SolveFlowDialog` per document, a child of the main window, found again by `findChildren`): draws
+  `model.solve_flow.solve_flow` of the document's cached estimates only (`used_mesh_estimates`, fitted
+  `memory_estimate` + `plain_roles()`, `run_time_estimate()` = estimate_time per_run (counters kept: solver items go to
+  their role box), `time_overheads()`, `time_estimate()` for the whole-study total): GUI thread, nothing run, no
+  `bridge.call`. Redraw debounced 400 ms after `changed` / `issues_invalidated`, only while visible (showEvent redraws a
+  dirty chart), keeping the selected step by key; the first draw fits the view. Box fills are light with dark text in
+  every theme; mesh / materials borders take `helpers.mesh_color`. A new step kind needs a `_KIND_COLORS` entry.

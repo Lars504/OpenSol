@@ -619,9 +619,10 @@ curves -> selftest_report_analytic.json); the CLI wraps them (`selftest --exampl
   access), materials, session (3D field access, requires_study fields, lifetime, OOM), validation, symmetry check,
   worker, progress stages, studies (catalogue, solution feedback, parity sectors, reused sweep builds, parameter
   estimation), resonance_monitor row, run-time estimate rules (build estimate of element meshes), selftest cache /
-  subsets / reports / backends, templates, describe.
+  subsets / reports / backends, templates, describe, solve flow (estimate label prefixes it reads).
 - `open_sol/io/`: model / results files, curve exports, result kinds.
-- `open_sol/gui/`: GUI (thread rule, result plot views, progress, documents and node paths, canvas, 3D views, forms).
+- `open_sol/gui/`: GUI (thread rule, result plot views, progress, documents and node paths, canvas, 3D views, forms,
+  solve flow window).
 - `open_sol/viz/`: Visualizer, common, result_plots, curve_figure, scene_figure, mode_player and field_viewer (the
   self-contained HTML pages of Results.export_html: animated mode shapes; field maps / 3D cut planes / DFT
   intensities, with the Plot settings of an exported picture).

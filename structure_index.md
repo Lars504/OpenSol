@@ -8,27 +8,27 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - open_sol/core/: lines 40-76
 - open_sol/coupling/: lines 78-104
 - open_sol/fem/: lines 106-171
-- open_sol/gui/: lines 173-193
-- open_sol/io/: lines 195-199
-- open_sol/materials/: lines 201-218
-- open_sol/mesh_study/: lines 220-230
-- open_sol/model/: lines 232-301
-- open_sol/physics/: lines 303-305
-- open_sol/physics/acoustics/: lines 307-325
-- open_sol/physics/em/: lines 327-440
-- open_sol/physics/em/solvers/: lines 442-464
-- open_sol/physics/em3d/: lines 466-502
-- open_sol/physics/eme/: lines 504-521
-- open_sol/physics/fluid/: lines 523-534
-- open_sol/physics/heat/: lines 536-561
-- open_sol/physics/magnetic/: lines 563-593
-- open_sol/physics/mechanics/: lines 595-680
-- open_sol/physics/membrane/: lines 682-700
-- open_sol/physics/nlfd/: lines 702-721
-- open_sol/physics/potential/: lines 723-740
-- open_sol/physics/semiconductor/: lines 742-755
-- open_sol/solvers/: lines 757-772
-- open_sol/viz/: lines 774-783
+- open_sol/gui/: lines 173-194
+- open_sol/io/: lines 196-200
+- open_sol/materials/: lines 202-219
+- open_sol/mesh_study/: lines 221-231
+- open_sol/model/: lines 233-303
+- open_sol/physics/: lines 305-307
+- open_sol/physics/acoustics/: lines 309-327
+- open_sol/physics/em/: lines 329-442
+- open_sol/physics/em/solvers/: lines 444-466
+- open_sol/physics/em3d/: lines 468-504
+- open_sol/physics/eme/: lines 506-523
+- open_sol/physics/fluid/: lines 525-536
+- open_sol/physics/heat/: lines 538-563
+- open_sol/physics/magnetic/: lines 565-595
+- open_sol/physics/mechanics/: lines 597-682
+- open_sol/physics/membrane/: lines 684-702
+- open_sol/physics/nlfd/: lines 704-723
+- open_sol/physics/potential/: lines 725-742
+- open_sol/physics/semiconductor/: lines 744-757
+- open_sol/solvers/: lines 759-774
+- open_sol/viz/: lines 776-785
 
 ## open_sol/
 
@@ -190,6 +190,7 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - `preview_3d.py`: 3D preview dock (view_3d C): perspective mplot3d picture of the document's 3D model (model.scene_3d drawn by viz.scene_figure), redrawn 300 ms after an edit and only while visible; drag to turn, Reset view, Export image; optionally the ...
 - `results.py`: ResultsPanel: field selection, snapshots and export plus result tabs (probes, spectra, far field, DFT, curves & tables, derived values, derived curves, sweep, line profile; hidden without content)
 - `settings_panel.py`: SettingsPanel: the editor form of the document's current model-tree node (GUI thread, CPU only)
+- `solve_flow_view.py`: Solve flow window (Solvers > Show solve flow): the model.solve_flow chart of the document drawn as boxes and arrows, and for the clicked step its solver choice, memory items and run-time items with the ops they are priced from.
 - `worker_bridge.py`: Qt adapter of model.worker.BackendWorker: a 30 ms timer drains its events and latest-value slots (progress, live output, GPU memory) and re-emits them as GUI-thread signals; build/run jobs are tracked by their final events.
 
 ## open_sol/io/
@@ -276,6 +277,7 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - `selftests_symmetry_check.py`: Self-test of the symmetry check (symmetry 2.7): validate warns exactly for geometry drawn asymmetrically beyond a mirror plane or the (r, z) axis (2D lo / hi faces, axisymmetric heat, a 3D z mirror)
 - `selftests_time.py`: CPU self-tests of the run-time estimate (time_estimation_plan): the quick cpu machine profile (curves, interpolation, round trip; never saved) and the recipes on a synthetic profile (pricing, count spans, study steps, sweeps, the post-run ...
 - `session.py`: A built model on the GPU (worker thread only): field sampling, feature results and derived-value evaluation, each on the mesh of the physics concerned (S7.2); close() releases its GPU data.
+- `solve_flow.py`: Solve flow of a model (GUI Solvers > Show solve flow): its build and study steps in run order, the solver every physics role resolves to and the memory / run-time estimate items each step books
 - `solver_hooks.py`: Solver hooks the studies call, as runtime-checkable Protocols; StudyType.solver_protocols names those a solver of a physics listing the study satisfies (one of them), checked by the builder right after create (check_study_hooks).
 - `spec.py`: Declarative, JSON-serialisable model specification: parameters, geometry, selections, materials, physics, study
 - `structure_index.py`: Generated module index (structure_index.md beside structure_conventions.md): per package folder one line per module, the first sentence of its docstring
