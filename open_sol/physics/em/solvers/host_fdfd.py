@@ -4,7 +4,7 @@ stationary / frequency_domain hooks, labels, counters, poles / PEC masks and the
 after a material change, cuDSS factors kept for their plan)."""
 import math
 
-from ....core.backend import host_copy, write_host_into
+from ....core.backend import check_backend_array, host_copy, write_host_into
 from ....core.constants import C0, DTYPE
 from ....core.gpu_memory import format_bytes
 from ....core.wavelengths import wavelength_label
@@ -16,7 +16,8 @@ from ....solvers.sparse_direct import (CUDSS_BACK_ENDS, SYMMETRIC_OPTION_BACK_EN
 from ..fdfd_monitors import CentrePhasorProbe
 from ..harmonic import write_float32
 from ..materials import DrudePole, LorentzPole, material_solution_state, restore_material_solution
-from .fdtd_2d_base import _check_cell_array, add_pec_cells, record_dispersive_region
+from ..placement import window_cell
+from .fdtd_2d_base import add_pec_cells, record_dispersive_region
 
 SUPERLU_TEXT = 'host SuperLU'
 # MaterialGrid arrays the assembly reads (a change re-reads the materials)
@@ -358,8 +359,7 @@ class HostFDFDBase:
         """Complex centre phasor of one component (field_components) in the cell containing (x, y) per driven solve."""
         if field_component not in self.field_components:
             raise ValueError(f'field probe component must be one of {self.field_components}, got {field_component!r}')
-        self.domain.validate_physical_pos(x, y, 'Field probe')
-        ix, iy = self.domain.pos_to_cell(x, y)
+        ix, iy = window_cell(self.domain, x, y, 'Field probe')
         return self._add_monitor(CentrePhasorProbe(ix, iy, field_component, self.component_units[field_component]))
 
     def add_dispersive(self, pole, mask):
@@ -368,12 +368,12 @@ class HostFDFDBase:
         if not isinstance(pole, (DrudePole, LorentzPole)):
             raise TypeError(f'add_dispersive needs a DrudePole or LorentzPole, got {type(pole).__name__}')
         if mask is not None:
-            _check_cell_array(mask, self.fields['e_intensity'].shape, self.xp.bool_, 'Pole mask', xp=self.xp)
+            check_backend_array(mask, self.fields['e_intensity'].shape, self.xp.bool_, 'Pole mask', xp=self.xp)
         record_dispersive_region(self.dispersive_regions, pole, mask)
         self._mark_assembly_dirty()
 
     def add_pec_region(self, mask):
         """Perfect electric conductor on a run-backend bool (nx, ny) cell mask (rings / z-invariant in 3D)."""
-        _check_cell_array(mask, self.fields['e_intensity'].shape, self.xp.bool_, 'PEC mask', xp=self.xp)
+        check_backend_array(mask, self.fields['e_intensity'].shape, self.xp.bool_, 'PEC mask', xp=self.xp)
         self.pec_cells = add_pec_cells(self.pec_cells, mask)
         self._mark_assembly_dirty()

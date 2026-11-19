@@ -1,4 +1,4 @@
-"""Elastic PML shell of solid_mechanics_3d on tetrahedra (piezo_3d_plan stage 6, D13): the stretched operator identities
+"""Elastic PML shell of solid_mechanics_3d on tetrahedra: the stretched operator identities
 (CPU, no model) and the radiation Q of a leaky Fabry-Perot bar against its closed form. definition3d registers them."""
 import math
 

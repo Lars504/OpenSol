@@ -1,4 +1,4 @@
-"""Plate ports of the membrane (plan F2): numeric strip modes of a straight tensioned Kirchhoff plate guide from the 1D
+"""Plate ports of the membrane: numeric strip modes of a straight tensioned Kirchhoff plate guide from the 1D
 Hermite strip (fem.line_fem), the exact Dirichlet-to-Neumann map of that semi-discrete strip (reciprocity-symmetric),
 the incident load and the modal port powers. Host numpy, scipy inside functions."""
 # exp(+j omega t); d = outward distance beyond the port face (the FE normal n), s = the coordinate along it, the guide
@@ -23,7 +23,9 @@ the incident load and the modal port powers. Host numpy, scipy inside functions.
 # amplitudes b = Phi^-1 (t - A t_m^-), power P_k = (omega / 2) Im(r_k . conj t_k) |b_k|^2 [W] (the exterior flux; only
 # real-beta modes carry power, and their cross terms vanish), so the discrete power balance is exact (lossless).
 # Scaled unknowns: Hermite slope dofs x ell (the mean strip width; basis / ell, since the line_fem slope basis is O(h))
-# and the dn w traces x ell, lambda in units 1 / ell^2.
+# and the dn w traces x ell, lambda in units 1 / ell^2 (unscaled, the slope blocks sat ~h^4 below w's and eig returned
+# huge spurious roots as mode 1). The DtN keeps all 2 n modes (truncating breaks the exact power balance: R is complex
+# per mode); mode_count only limits the reported / incident modes.
 from dataclasses import dataclass
 
 import numpy as np

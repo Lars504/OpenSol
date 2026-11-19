@@ -271,7 +271,7 @@ def _face_scalar(eps_a, eps_b, sig_a, sig_b, weight_a, weight_b, dt, eps0, smoot
 def _publish_numba_face_scalar(numba):
     """Builds once the module global _numba_face_scalar (numba _face_scalar) the E numba twins call."""
     # a global, not a closure cell: numba's cache key pickles the closure cells and a dispatcher pickles with a
-    # per-process uuid, so a kernel closing over one recompiled in every process (structure_conventions)
+    # per-process uuid, so a kernel closing over one recompiled in every process (core sub file "Kernel twins")
     if '_numba_face_scalar' not in globals():
         globals()['_numba_face_scalar'] = numba.njit(cache=True)(_face_scalar)
 
@@ -861,7 +861,7 @@ def _ohmic_loss_numba(numba):
     return kernel
 
 
-# Conformal PEC (solver_plan S7.6, conformal_pec3d): one thread per corrected H face, right after the Yee H kernel of
+# Conformal PEC (conformal_pec3d): one thread per corrected H face, right after the Yee H kernel of
 # each field set; face n = H component c of the flat cell face_cell[n] gains db x the curl of its weights - 1 (E_b at
 # the hi / lo a corner, E_a at the hi / lo b corner, (a, b) the next two axes cyclically), so with the Yee term its
 # curl is (1 / A_eff) sum +-l E over the free edge lengths (Dey-Mittra). Faces never touch the grid edge (no wraps).
@@ -1005,7 +1005,9 @@ pole_work_half = twin('em3d.pole_work_half', cp.ElementwiseKernel(
 
 def launch(dims):
     """(grid, block) of a kernel over (d0, d1, d2) = (x, y, z) extents (threads along z fastest): _BLOCK on a bulk grid;
-    a thin extent (CPML z slab, TFSF plane) gets a block that fits it, so warps do not idle on its tail."""
+    a thin extent (CPML z slab, TFSF plane) gets a block that fits it, so warps do not idle on its tail. A kernel
+    launched through it indexes only by blockIdx * blockDim + threadIdx with a bounds check, never assumes _BLOCK
+    (no shared-memory tiles sized by it)."""
     extent_x, extent_y, extent_z = (max(1, int(value)) for value in dims)
     threads_z = min(_BLOCK[0], extent_z)
     threads_y = min(extent_y, max(_BLOCK[1], _BLOCK_THREADS // (2 * threads_z)))

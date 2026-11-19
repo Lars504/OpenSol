@@ -1,4 +1,4 @@
-"""CPU vs GPU backend cases (solver_plan S6 stage 2). magnetostatics: the remanent slab, the coil pair and the
+"""CPU vs GPU backend cases. magnetostatics: the remanent slab, the coil pair and the
 tabulated B-H sheet (Anderson loop) on the cpu backend with the Automatic linear solver (host SuperLU) against their
 exact discrete solutions, the sheet also on the gpu (exact pcg node) against its closed form and the cpu run (registered by
 definition_magnetostatics.register). magnetic_fields_ac: the skin slab and the solid strip on both backends (registered

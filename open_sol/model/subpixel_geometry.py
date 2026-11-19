@@ -1,4 +1,4 @@
-"""Subpixel smoothing geometry (igor 1.5), computed once at build: supersampled rasters of the material regions, one x
+"""Subpixel smoothing geometry, computed once at build: supersampled rasters of the material regions, one x
 strip at a time, give every E_z cell / E_x (hi-y) face / E_y (hi-x) face whose averaging volume two materials share
 its fill fraction, normal and two representative cells (core.interface_geometry); 3D (em_fdtd_3d): that in-plane
 geometry per run of equal cross-sections plus sampled horizontal interfaces; plus the CPU memory estimates. Backend
@@ -320,6 +320,7 @@ def _chunk(context, kind, batch):
     candidate_material = batch['near_material'].reshape(cell_i.size, 16)[:, xp.asarray(_NEAR_SLOTS[kind])]
     cell_a, found_a = _nearest(xp, candidate_i, candidate_j, distance, candidate_material == material_a[:, None], ny)
     cell_b, found_b = _nearest(xp, candidate_i, candidate_j, distance, candidate_material == material_b[:, None], ny)
+    # a sliver covering no candidate centre has no representative cell: that location stays unsmoothed
     keep = found_a & found_b & (count_b > 0.0)
 
     location = cell_i * ny + block_j
@@ -676,7 +677,8 @@ def subpixel_memory_estimate(spec, registry, shapes, mesh) -> MemoryEstimate:
     ), build_extra=build_extra).labelled('subpixel smoothing')
 
 
-_FACE_INDEX_BYTES_PER_CELL = 2        # em_fdtd_3d uint16 face override index (physics/em3d/subpixel_smoothing3d)
+_FACE_INDEX_BYTES_PER_CELL = 2        # em_fdtd_3d uint16 face override index (physics/em3d/subpixel_smoothing3d;
+                                      # em_fdfd_3d, which has none, is counted alike: a small overestimate)
 _FACE_BYTES_PER_LOCATION = 30         # its per-location kind positions (int64), values (3 x float32), ids, cells
 _REFRESH_BYTES_PER_LOCATION = 48      # re-quantisation temporaries of a refresh (material_index3d on 1D arrays)
 

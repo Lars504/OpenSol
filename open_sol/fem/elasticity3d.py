@@ -1,9 +1,9 @@
-"""Linear elasticity on tetrahedron meshes (the fem/elasticity.py analogue, igor3d_plan section 7): vector Lagrange P1 /
+"""Linear elasticity on tetrahedron meshes (the fem/elasticity.py analogue): vector Lagrange P1 /
 P2 with interleaved dofs (3 d + component) on a full-mesh scalar DofMap3D, Voigt rows (xx, yy, zz, yz, xz, xy;
 engineering shear), stiffness of a per-element 6 x 6 Voigt matrix (isotropic or anisotropic c_ij), the piezoelectric
 coupling block to a scalar potential on the same map, consistent mass, stress / body / face-traction loads, element
 strains / scalar gradients and their nodal average over an element subset, the strain source int phi beta . eps
-(thermoelastic damping). Prestress pieces (new_modules_plan K1): the
+(thermoelastic damping). Prestress pieces: the
 geometric stiffness K_sigma (PML stretch capable), initial-stress force, stress sampling of a fem.elasticity StressField
 and the total-Lagrangian Green-Lagrange internal force / tangent (the K6 Newton of physics/mechanics/solver_fem3d; its
 iterations on TangentAssembler3D: fixed pattern, cached rule gradients; device=True runs them on cupy). Affine
@@ -435,7 +435,7 @@ def nodal_average_3d(dofs, local_values, elements=None) -> np.ndarray:
     return element_dof_mean(dofs.n_dofs, dofs.element_dofs[_element_list(dofs.mesh, elements)], local_values)
 
 
-# ---- prestress (new_modules_plan K1): geometric stiffness, initial-stress force, stress sampling ----
+# ---- prestress: geometric stiffness, initial-stress force, stress sampling ----
 def voigt_tensor_3d(voigt) -> np.ndarray:
     """(..., 3, 3) symmetric tensor of Voigt stress rows (..., 6) (xx, yy, zz, yz, xz, xy); numpy or cupy."""
     xp = _array_module(voigt)
@@ -703,7 +703,7 @@ class TangentAssembler3D:
     """Total-Lagrangian internal force and tangent of one solid assembly on a fixed CSR pattern
     (fixed_pattern.kept_pattern: per mesh, element set, chunks and free mask): rule gradients / weights cached per chunk
     (while within cache_bytes), per call only values; the full and free-free reduced CSRs share the cached index arrays
-    (pattern constant by construction). device=True (plan G5): the same formulas on cupy (gradients, weights, C, dofs
+    (pattern constant by construction). device=True: the same formulas on cupy (gradients, weights, C, dofs
     and S0 on the GPU, blocks summed by fixed_pattern.DevicePatternCsr) in chunks sized from the pool budget
     (device_tangent_chunk_elements), the force returned on the host, tangent data kept on the device. element_kernel
     (default): per-element force / tangent by fem.tangent_kernel3d (CUDA block per element, numba / numpy twins);

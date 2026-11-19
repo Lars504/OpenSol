@@ -2,6 +2,7 @@
 its moduli, q_abs, the materials and the adjoint eps_sensitivity; device_plane cuts one x / y / z plane without
 materialising 3D derived fields."""
 import math
+from dataclasses import replace
 
 from ...core.constants import C0, DTYPE
 from ...core.renderer import FieldInfo, PhysicsRenderer
@@ -17,7 +18,7 @@ _SENSITIVITY_FIELD = 'eps_sensitivity'
 
 def _field_infos():
     """e_abs (primary), e_intensity, Re / Im of E_x, E_y, E_z (cell centres), absorbed_power, the permittivity arrays."""
-    infos = {'e_abs': FieldInfo('e_abs', '|E|', unit='V/m', cmap='inferno', primary=True),
+    infos = {'e_abs': replace(_MODULUS_FIELD_INFOS['e_abs'], primary=True),   # no h_abs: only E is reconstructed
              'e_intensity': _MODULUS_FIELD_INFOS['e_intensity']}
     for component in EME_3D_COMPONENTS:
         for part, text in (('re', 'Re'), ('im', 'Im')):

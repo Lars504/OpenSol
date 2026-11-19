@@ -24,108 +24,95 @@ from ..em.definition_common import (CPML_BC_HELP, DEFAULT_WAVELENGTH, EM_FAMILY,
 from ..em.materials import EM_MATERIAL_SCHEMAS
 from ..em.memory_estimates import host_factor_items
 from ..em3d.boundaries3d import BoundaryConfig3D
-from .definition import (OBJECTIVE_FEATURE, PORTS_FEATURE, SCALAR_OUTPUTS_HELP, SECTION_TABLE_DESCRIPTION,
+from .definition import (COMPLEX_EPS_HELP, OBJECTIVE_FEATURE, PORTS_FEATURE, SCALAR_OUTPUTS_HELP,
+                         SECTION_TABLE_DESCRIPTION, SIGMA_M_HELP, STATIONARY_STUDY, TRUNCATED_BASIS_HELP,
                          adjoint_time_estimate, apply_ports, apply_section_table, bend_feature,
-                         follow_wavelength_setting, length_sweep_feature,
-                         length_sweep_host_items, lossy_materials, other_em_issues, periodic_feature, physics_counter,
-                         port_params,
-                         scalar_outputs, shared_time_estimate, validate_ports)
+                         follow_wavelength_setting, length_sweep_feature, length_sweep_host_items, lossy_materials,
+                         other_em_issues, periodic_feature, physics_counter, port_params, scalar_outputs,
+                         shared_time_estimate, validate_ports)
 from .renderer3d import EME_3D_FIELD_INFOS
 from .solver import MODE_CACHE_BYTES, EME_PERMITTIVITY_ARRAYS, EME_PERMITTIVITY_SLOTS, ports_result, section_table_result
 from .solver3d import FIELD_BLOCK_SLICES, EMEPhysics3D
 
 TYPE_NAME_3D = 'em_eme_3d'
-_STATIONARY_STUDY = 'stationary'
 _PORT_FACE_TYPE = 'pec'          # z faces of the BoundaryConfig3D: ports, never read, no padding
 
 # ---- settings ----
 _BC_HELP = ' '.join((
-    'Transverse faces of every cross-section (the xy plane of each z layer), as in em_modes. The two z faces are the '
-    'ports: the first and last z cell layers of the domain continue to infinity (no z padding).',
+    'Transverse faces of every cross-section (the xy plane of each z layer), as in em_modes. The z faces are the '
+    'ports: the end z cell layers continue to infinity (no z padding).',
     CPML_BC_HELP,
-    'In the mode solves it is the complex coordinate stretch of the pml_* settings and the modes localised in it are '
-    'kept (unlike em_modes): they stand for the radiation, so a radiating structure converges in n_modes more slowly.',
+    'The mode solves keep the PML modes as radiation (unlike em_modes), so radiating structures converge more slowly '
+    'in n_modes.',
     PERIODIC_BC_HELP,
-    'pec, pmc and the mirrors (symmetric / antisymmetric) make the outermost cell a ghost outside the wall plane, as '
-    'em_modes does.',
+    'pec, pmc and mirrors make the outermost cell a ghost outside the wall plane, as em_modes does.',
 ))
 _SETTINGS = (
     Param('wavelength', 'float', DEFAULT_WAVELENGTH, label='Wavelength', unit='m', min=0.0, min_exclusive=True,
           follows_parameters=True,
-          help='Vacuum wavelength lambda0 of a stationary solve (omega = 2 pi C0 / lambda0); a frequency_domain study '
-               'solves its own wavelengths instead (one cold solve each). Materials enter at omega (sigma_e and '
-               'Drude / Lorentz poles complex). A reused sweep build (sweep reuse_build) follows a value of parameters '
-               'only without rebuilding (not on an auto mesh sized by it). Typical 1.31e-6 or 1.55e-6 m.',
+          help='Vacuum wavelength of a stationary solve; a frequency_domain study solves its own wavelengths '
+               'instead. Materials enter at omega (sigma_e and poles complex). A sweep with reuse_build follows it '
+               'without rebuilding (not on an auto mesh sized by it). Typical 1.31e-6 or 1.55e-6 m.',
           tip='Vacuum wavelength of the light in metres: 1.55e-6 for 1550 nm. A frequency domain study uses its own '
               'list instead.'),
     Param('n_modes', 'int', 20, label='Modes per section', min=1,
-          help='Cross-section modes of each section (shift-invert near (k0 n_eff_guess)^2, ranked by descending '
-               'Re(beta^2) with the PML modes kept and listed after the others). A truncated basis leaves a projection '
-               "error that the section table reports as the interfaces' reciprocity defect (a run-log warning above "
-               '1e-3); raise n_modes until the port results converge. Each section costs one sparse factorisation of '
-               '2 nx ny unknowns plus an eigen-solve for n_modes + 6 eigenvalues when n_eff_guess is unset, the '
-               'section has no bend and eps / mu are real (the shift then lies above every beta^2), else 2 n_modes + '
-               '10; with cpml faces a narrow solve whose n-th mode lies near the edge of the converged range is '
-               'redone at 2 n_modes + 10. 10-40 typical.',
+          help='Cross-section modes per section (shift-invert near (k0 n_eff_guess)^2, descending Re(beta^2), PML '
+               'modes kept and listed last). ' + TRUNCATED_BASIS_HELP + ' Per section: one sparse factorisation of '
+               '2 nx ny unknowns and an eigen-solve for n_modes + 6 eigenvalues (n_eff_guess unset, no bend, real '
+               'eps / mu), else 2 n_modes + 10 (with cpml faces also when the n-th mode lies near the edge of the '
+               'converged range). 10-40 typical.',
           tip='How many modes describe the light in each slice of the device. More modes are more accurate and '
               'slower.'),
     Param('n_eff_guess', 'float', None, label='Effective index guess', unit='1', min=0.0, min_exclusive=True,
           optional=True,
-          help='Effective index around which the modes of every section are sought (shift-invert target (k0 '
-               'n_eff_guess)^2). Empty: the largest Re sqrt(eps mu) of each cross-section, which finds its most '
-               'strongly guided modes first.',
+          help='Shift-invert target (k0 n_eff_guess)^2 of every section. Empty: the largest Re sqrt(eps mu) of each '
+               'cross-section (most strongly guided modes first).',
           tip='Effective index near which the modes are searched. Empty starts at the highest refractive index of '
               'each slice.'),
     Param('section_tolerance', 'float', 0.0, label='Section tolerance', unit='1', min=0.0,
           help="z layers whose material rows (eps_xx, eps_yy, eps_r, sigma_e, mu_r, sigma_m, pole regions) differ from "
-               "the first layer of the current section by at most this fraction of each array's largest |value| over "
-               'the window join that section (solved once, on its first layer); 0 = identical layers only. A value > '
-               '0 merges smoothly varying (e.g. heated) regions at the cost of a staircase in the material: with a '
-               'heat coupling every heated layer differs, so set e.g. 1e-5.',
+               "the section's first layer by at most this fraction of each array's max |value| over the window join "
+               'it (solved on that layer); 0 = identical layers only. > 0 merges smoothly varying regions into a '
+               'material staircase: with a heat coupling every heated layer differs, so set e.g. 1e-5.',
           tip='How different two neighbouring slices may be and still count as one section. Use a small value such '
               'as 0.00001 when the material varies smoothly, e.g. after heating.'),
 ) + boundary_settings_params(_BC_HELP)
 
 # ---- material vocabulary (em_modes rows: E_x, E_y, E_z see eps_xx, eps_yy, eps_r) ----
-_COMPLEX_EPS = ('The mode solves use the complex permittivity at omega: this value - j sigma_e / (omega eps0) plus '
-                'every Drude / Lorentz pole chi(omega).')
 _MATERIAL_PROPERTIES = em_material_params('modes', {
-    'eps_r': ('Isotropic relative permittivity (>= 1): sets eps_zz (the E_z array eps_r) and eps_xx, eps_yy unless '
-              f'the material sets those components; may depend on x, y, z and physics fields. {_COMPLEX_EPS} For a '
-              'dispersive material it is the background eps_inf.'),
-    'eps_zz': 'z component of the relative permittivity (>= 1), the one E_z (along the propagation axis) sees.',
-    'sigma_e': f'Ohmic loss in S/m on every E component, default 0. {_COMPLEX_EPS}',
-    'mu_r': 'Real relative permeability (>= 1); mu_r - j sigma_m / (omega mu0) in the solve.',
-    'sigma_m': 'Magnetic loss in Ohm/m, default 0: mu_r gains -j sigma_m / (omega mu0) (artificial absorbers only).',
+    'eps_r': ('Isotropic: sets eps_zz (the E_z array eps_r) and eps_xx, eps_yy unless the material sets those; may '
+              f'also use z. {COMPLEX_EPS_HELP} Dispersive material: the background eps_inf.'),
+    'eps_zz': 'The only component E_z (along propagation) sees; overrides eps_r for E_z.',
+    'sigma_e': f'Ohmic loss on every E component. {COMPLEX_EPS_HELP}',
+    'mu_r': 'Real relative permeability.',
+    'sigma_m': SIGMA_M_HELP,
 }, tips={'eps_zz': ('Permittivity for the electric field along z, the direction of propagation. When set it replaces '
                     "'Relative permittivity' for that direction.")})
 
 # ---- features ----
 _PORT_PARAMS_3D = tuple(
-    replace(param, unit='W', help='Power of the incident mode [W]; scales only the reconstructed fields (the S-matrix '
-                                  'and power fractions do not depend on it).',
+    replace(param, unit='W', help='Incident mode power; scales only the reconstructed fields, not the S-matrix or '
+                                  'power fractions.',
             tip='Power of the incoming light in watts; it only scales the field plots.')
     if param.name == 'input_power'
     else replace(param, choice_labels=(('lo', 'Low end (z_lo)'), ('hi', 'High end (z_hi)')),
-                 help='Port face of the incident mode: lo = z_lo (travelling toward +z), hi = z_hi.')
+                 help='Port face of the incident mode: lo = z_lo (incident toward +z), hi = z_hi.')
     if param.name == 'input_face' else param
     for param in port_params())
 _PORTS_DESCRIPTION_3D = (
-    "Ports of the 3D EME device (the z_lo / z_hi window planes) and its excitation. Result 'table' (one row per "
-    'reported port mode of each face, the input face first = reflection, then the output face = transmission): '
-    'output_face, mode_number, n_eff, n_eff_imag (of that port mode, Im < 0 lossy), s_abs2 = |S|^2 of the '
-    'bilinear-normalised amplitudes, phase_deg = arg S (reference planes = the window z faces; each mode is phased '
-    'with its dominant transverse E real > 0 at its peak), power_fraction = |S|^2 p_out / p_in (p = the power one '
-    'unit of amplitude carries). Port mode k = the k-th mode of the first / last section with the PML modes listed '
-    "last. Extras: wavelength, input_face, input_mode, input_power, transmission and reflection (summed over every "
-    "mode of the face), s_matrix_real / s_matrix_imag over the reported modes (lo first) and s_matrix_modes. Without "
-    'this feature the excitation is mode 1 at 1 W from z_lo. At most one per physics.')
+    "Ports (the z_lo / z_hi window planes) and excitation. Result 'table', one row per reported port mode of each "
+    'face (input face first = reflection, then output face = transmission): output_face, mode_number, n_eff, '
+    'n_eff_imag (Im < 0 lossy), s_abs2 = |S|^2 of the bilinear-normalised amplitudes, phase_deg = arg S (reference '
+    'planes = the window z faces; each mode phased with its dominant transverse E real > 0 at its peak), '
+    'power_fraction = |S|^2 p_out / p_in (p = power per unit amplitude). Port mode k = the k-th mode of the first / '
+    'last section (input_mode ranking). Extras: wavelength, input_face, input_mode, input_power, transmission and '
+    'reflection (summed over every mode of the face), s_matrix_real / s_matrix_imag over the reported modes (lo '
+    'first), s_matrix_modes. Without this feature: mode 1 at 1 W from z_lo. At most one per physics.')
 BEND_DESCRIPTION_3D = (
     'Circular bend in the xz plane: the sections whose centre lies in [start, stop] along z are a bend of radius R '
-    'about x = reference, drawn straightened (the range length = the arc length at the reference, the angle = length '
-    "/ |R|). Each bent section is solved with the cross_section_modes bend map (model 'exact': the transformation-"
-    'optics image of the curved guide, eps and mu scaled by the radial factor), so its n_eff = beta / k0 at the '
-    'reference radius and the straight - bent interfaces are mode-matched like any other (bend radiation goes into '
+    "about x = reference, drawn straightened. Each bent section uses the cross_section_modes bend map (model 'exact': "
+    'transformation-optics image of the curved guide, eps and mu scaled by the radial factor), so n_eff = beta / k0 '
+    'at the reference radius; straight - bent interfaces are mode-matched like any other (bend radiation goes into '
     'the PML modes of cpml x faces: raise n_modes). The field plot shows the straightened bend. Ranges must not '
     'overlap.')
 
@@ -157,18 +144,15 @@ def _pec_memory(values, n_selected_cells, mesh):
 
 
 _OBJECTIVE_DESCRIPTION_3D = (
-    'Objective term of the EME cascade adjoint: weight times a port power fraction of the excitation. Every solve '
-    'records the quantity; the output field eps_sensitivity is dJ/d eps per unit volume [1/m^3] of J = the sum of '
-    'weight * quantity for an isotropic change (the sum of the eps_xx, eps_yy and eps_r terms; scripts read each '
-    'component from EMEPhysics3D.eps_sensitivity().cell_gradients), from the forward and one adjoint cascade field '
-    '(Lorentz reciprocity of the Yee cross-section: no extra mode solve; every window z layer, computed when the field '
-    'is read). Exact for a complete basis of every cross-section; the em_eme_3d bases are truncated (n_modes), so it '
-    'is the same formula on the truncated fields, converging with n_modes. The drawn cell of an eme_periodic block '
-    'stands for all its n_periods periods (its gradient sums every period). The port modes (first and last z cell '
-    'layer) are held fixed; sigma_e, poles and mu_r are not differentiated. em_eme_3d has no design_region and no '
-    'optimization study yet: the field shows where a small material change raises or lowers J. Result \'xy\' versus '
-    'vacuum wavelength: series value and weighted (unit 1); extras frequency, wavelength, quantity, mode_number, '
-    'weight.')
+    'Objective term of the EME cascade adjoint: weight times a port power fraction of the excitation, recorded every '
+    'solve. Output field eps_sensitivity = dJ/d eps per unit volume [1/m^3] of J for an isotropic change (sum of the '
+    'eps_xx, eps_yy and eps_r terms; per component: EMEPhysics3D.eps_sensitivity().cell_gradients), from the forward '
+    'and one adjoint cascade field (no extra mode solve; every window z layer, computed when the field is read). '
+    'Converging with n_modes (exact only for complete bases). An eme_periodic drawn cell stands for all n_periods '
+    'periods (its gradient sums every period). Port modes (first and last z cell layer) are held fixed; sigma_e, '
+    'poles and mu_r are not differentiated. No design_region / optimization study in 3D: the field shows where a '
+    "small material change raises or lowers J. Result 'xy' versus vacuum wavelength: series value and weighted (unit "
+    '1); extras frequency, wavelength, quantity, mode_number, weight.')
 
 
 _FEATURES_3D = (
@@ -190,10 +174,9 @@ _FEATURES_3D = (
                  'Position across the waveguide along x, usually its centre, at which the bend has exactly the given '
                  'radius.', BEND_DESCRIPTION_3D),
     FeatureType('pec_domain', 'Perfect electric conductor', 'domain_condition', 'domain',
-                description='Perfect electric conductor cells of every section cross-section (the em_modes rule: E_z '
-                            '= 0 at the centres of the selected cells, E_x / E_y = 0 on faces between two of them, '
-                            'the normal E on a conductor surface stays free), staircased to the mesh; in the absorbed '
-                            "power they count as lossless. Select objects: 'all' is refused.",
+                description='Perfect electric conductor cells of every cross-section (em_modes rule: E_z = 0 at the '
+                            'selected cell centres, E_x / E_y = 0 on faces between two of them, the normal E on the '
+                            "surface free), staircased; lossless in absorbed_power. Select objects: 'all' is refused.",
                 summary='Makes the selected objects perfect metal, following the mesh cells.',
                 apply=_apply_pec, validate=_validate_pec, memory_estimate=_pec_memory),
     replace(OBJECTIVE_FEATURE, description=_OBJECTIVE_DESCRIPTION_3D,
@@ -418,31 +401,23 @@ def _time_estimate(settings_values, mesh, context):
 
 # ---- type ----
 _DESCRIPTION = (
-    'Bidirectional eigenmode expansion (EME) of a 3D device along z, for waveguide devices long along z (tapers, '
-    'phase shifters, couplers) where em_fdtd_3d would be large. Every z cell layer is a slice; consecutive equal '
-    'layers (section_tolerance) form a section, so z variations are staircases at the z mesh (refine or grade it). '
-    'Each section is solved once for n_modes full-vector cross-section modes (the em_modes discretisation of the xy '
-    'plane with the transverse bc_* faces; complex PML stretch with the PML modes kept as radiation; repeated layers '
-    'reuse their modes). Modes are normalised to the unconjugated product <e, h> = sum (E x H).z dA = 1 (stretched '
-    'dual areas; degenerate modes recombined orthogonal); interfaces are mode-matched by these overlaps and the '
-    'S-matrices cascaded by Redheffer star products (stable with evanescent modes), converging in n_modes (section '
-    'table reciprocity_defect). The z faces are semi-infinite ports at the window planes (no z padding). Outputs of '
-    'the excitation (eme_ports): the reconstructed E phasor at the cell centres (sum over modes of a_n e^{-j beta_n s} '
-    '+ b_n e^{-j beta_n (L - s)} per section; E_z of the backward waves with the opposite sign): ex / ey / ez _re / '
-    '_im, e_abs (primary), e_intensity, absorbed_power (1/2 omega eps0 (-Im eps) times the 3-point Gauss z mean of '
-    '|E|^2 per cell, on lossy sections), and the permittivity arrays, shown as cut planes (an x or y cut shows the '
-    'propagation). Scalar outputs transmission_<k>, transmission, reflection. pec_domain cells; eme_bend (bend map of '
-    'cross_section_modes), eme_periodic (a drawn period repeated n times, its Bloch modes), adjoint_objective (port '
-    'power fractions; output field eps_sensitivity = dJ/d eps from the cascade adjoint, no extra mode solve; no '
-    'optimization study in 3D yet). em_heat_joule reads '
-    'absorbed_power; heat_em_thermo_optic writes eps_r, eps_xx, eps_yy. Host memory dominates (one cross-section '
-    'factorisation at a time, the cached mode sets, the partial cascades); GPU: 28 B per cell of fields and q_abs '
-    "plus the material arrays (an eigen solver node with factorization 'cudss' factorises each cross-section on the "
-    'GPU instead, a general LU: the operator is not complex symmetric; '
-    f"{' or '.join(repr(name) for name in HOST_DIRECT_DOUBLE_BACK_ENDS)} a MUMPS / PARDISO LU on the host under the "
-    'SuperLU size limit). Studies: stationary and frequency_domain (each wavelength starts every section\'s '
-    'shift-invert from the summed physical modes of its previous solve, when cached). Cannot share the model with '
-    "another EM type. The instance is usually named 'eme'.")
+    'Bidirectional eigenmode expansion (EME) of a 3D device cut into sections along z, for waveguide devices long '
+    'along z (tapers, phase shifters, couplers) where em_fdtd_3d would be large; z variations are staircases at the '
+    'z mesh (refine or grade it). Each section is solved once for n_modes full-vector cross-section modes (em_modes '
+    'discretisation of the xy plane, transverse bc_* faces, PML modes kept as radiation; repeated layers reuse their '
+    'modes), normalised to the unconjugated <e, h> = sum (E x H).z dA = 1 (degenerate modes recombined orthogonal); '
+    'interfaces are mode-matched by these overlaps and S-matrices cascaded by Redheffer star products (stable with '
+    'evanescent modes), converging in n_modes. Outputs of the excitation (eme_ports), from the reconstructed E phasor '
+    'at cell centres (sum of a_n e^{-j beta_n s} + b_n e^{-j beta_n (L - s)} per section; E_z of backward waves with '
+    'the opposite sign): ex / ey / ez _re / _im, e_abs (primary), e_intensity, absorbed_power (1/2 omega eps0 (-Im '
+    'eps) times the 3-point Gauss z mean of |E|^2, on lossy sections) and the permittivity arrays, shown as cut '
+    'planes (an x or y cut shows the propagation). em_heat_joule reads absorbed_power; heat_em_thermo_optic writes '
+    'eps_r, eps_xx, eps_yy. Memory: host dominates (one cross-section factorisation at a time, cached mode sets, '
+    "partial cascades); GPU 28 B per cell of fields and q_abs plus the material arrays. Eigen factorization 'cudss' "
+    'factorises each cross-section on the GPU (general LU: the operator is not complex symmetric), '
+    f"{' or '.join(repr(name) for name in HOST_DIRECT_DOUBLE_BACK_ENDS)} a MUMPS / PARDISO host LU under the SuperLU "
+    "size limit. Studies: stationary and frequency_domain (each wavelength starts every section's shift-invert from "
+    'its previous modes, when cached); no design_region / optimization. Cannot share the model with another EM type.')
 
 EM_EME_3D = PhysicsType(
     name=TYPE_NAME_3D,
@@ -460,8 +435,8 @@ EM_EME_3D = PhysicsType(
     state_fields=tuple(EME_3D_FIELD_INFOS[name] for name in EME_PERMITTIVITY_ARRAYS),
     output_fields=tuple(EME_3D_FIELD_INFOS.values()),
     source_slots=source_slot_docs(EME_PERMITTIVITY_SLOTS),
-    supported_studies=(_STATIONARY_STUDY, FREQUENCY_DOMAIN_STUDY),
-    default_study={'type': _STATIONARY_STUDY},
+    supported_studies=(STATIONARY_STUDY, FREQUENCY_DOMAIN_STUDY),
+    default_study={'type': STATIONARY_STUDY},
     uses_dispersion=True,
     create=_create,
     domain_requirements=_domain_requirements,
@@ -473,5 +448,5 @@ EM_EME_3D = PhysicsType(
     scalar_outputs_help=SCALAR_OUTPUTS_HELP,
     dimensions=(3,),
     solver_roles={'eigen': eigen_role()},
-    backends=('gpu', 'cpu'),   # host cross-section solves / cascade, fields on the Domain's xp (solver_plan S6)
+    backends=('gpu', 'cpu'),   # host cross-section solves / cascade, fields on the Domain's xp
 )

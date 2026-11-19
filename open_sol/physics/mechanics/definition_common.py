@@ -5,28 +5,25 @@ thermoelastic_damping features."""
 from dataclasses import replace
 
 from ...core.memory_estimate import MemoryEstimate, host_real_lu_bytes
-from ...model.definition_helpers import (conducting_fraction, eigen_search, evaluates_to, optional_material_param,
-                                         reports_model_checks)
-from ...model.expressions import TIME_NAMES, ExpressionError, evaluate_scalar, referenced_names
+from ...model.definition_helpers import (conducting_fraction, eigen_search, evaluates_to, material_follows_state,
+                                         optional_material_param, reports_model_checks)
+from ...model.expressions import ExpressionError, evaluate_scalar
 from ...model.geometry import expand_entities
-from ...model.schema import (FREE_MESH_KINDS, FeatureType, Issue, Param, feature_path, resolve_values,
-                             state_field_names)
+from ...model.schema import (EIGENFREQUENCY_STUDY, FREE_MESH_KINDS, FREQUENCY_RESPONSE_STUDY, OPTOMECHANICS_STUDY,
+                             STATIONARY_STUDY, FeatureType, Issue, Param, feature_path, resolve_values)
 from ...solvers.pcg import resolve_max_iterations
 from .material_params import (PHOTOELASTIC_P11_PARAM, PHOTOELASTIC_P12_PARAM, POISSON_RATIO_PARAM,
                               YOUNGS_MODULUS_PARAM)
 from .materials import (MECHANICAL_PROPERTY_ARRAYS, PERMITTIVITY_TENSOR_ARRAYS_3D, PIEZO_TENSOR_ARRAYS_3D,
                         PRESTRESS_ARRAYS_3D, STIFFNESS_ARRAYS, STIFFNESS_TENSOR_ARRAYS_3D)
-from .modal import MODAL_TABLE_COLUMNS, ModalTable, modal_table_result
+from .modal import DAMPED_TABLE_COLUMNS, MODAL_TABLE_COLUMNS, ModalTable, modal_table_result
 from .tangent_update import SLOW_RESIDUAL_RATIO, TANGENT_UPDATES
 
 LOCKING_POISSON_RATIO = 0.45   # bilinear / trilinear elements grow too stiff (volumetric locking) above about this
 SUPPORT_FEATURES = frozenset({'fixed', 'roller', 'displacement', 'fixed_domain', 'prescribed_displacement_domain'})
 LOAD_FEATURES = frozenset({'boundary_load', 'body_force', 'temperature_change'})
-EIGENFREQUENCY_STUDY = 'eigenfrequency'   # = model.study_eigenfrequency.STUDY_NAME
-OPTOMECHANICS_STUDY = 'optomechanics'     # = model.study_optomechanics.STUDY_NAME
-FREQUENCY_RESPONSE_STUDY_NAME = 'frequency_response'   # = model.study_frequency_response.STUDY_NAME
-BACKGROUND_STUDY = 'stationary'           # the background study of the modal / response studies
-PRESTRESS_STUDIES = (EIGENFREQUENCY_STUDY, FREQUENCY_RESPONSE_STUDY_NAME, OPTOMECHANICS_STUDY)   # read stress_stiffening
+BACKGROUND_STUDY = STATIONARY_STUDY       # the background study of the modal / response studies
+PRESTRESS_STUDIES = (EIGENFREQUENCY_STUDY, FREQUENCY_RESPONSE_STUDY, OPTOMECHANICS_STUDY)   # read stress_stiffening
 MODAL_STUDIES = (EIGENFREQUENCY_STUDY, OPTOMECHANICS_STUDY)   # studies running solve_eigenfrequencies
 
 
@@ -76,18 +73,16 @@ MATERIAL_PROPERTIES = (   # isotropic entries before their components (component
                                  'type).',
                        tip='Growth in length per kelvin.'),
     _material_property('alpha_xx', 'Thermal expansion along x', '1/K',
-                       help_text='Expansion coefficient along x (see alpha).',
+                       help_text='Overrides alpha for this axis.',
                        tip=_ALPHA_COMPONENT_TIP.format(axis='x')),
     _material_property('alpha_yy', 'Thermal expansion along y', '1/K',
-                       help_text='Expansion coefficient along y (see alpha).',
+                       help_text='Overrides alpha for this axis.',
                        tip=_ALPHA_COMPONENT_TIP.format(axis='y')),
     _material_property('alpha_zz', 'Thermal expansion along z', '1/K',
-                       help_text='Expansion coefficient along z, read only by solid_mechanics and solid_mechanics_3d; '
-                                 'overrides alpha for this axis. 2D plane strain holds eps_zz = 0, so alpha_zz dT '
-                                 'becomes out-of-plane stress and, through the Poisson effect, in-plane strain (plane '
-                                 'stress: a free expansion along z; generalized plane strain: part of the uniform '
-                                 'eps_zz balance; axisymmetric 2D: the hoop expansion); in 3D it is an ordinary '
-                                 'expansion along z.',
+                       help_text='Overrides alpha for this axis (solid types only). 2D plane strain turns alpha_zz dT '
+                                 'into out-of-plane stress (and, by Poisson, in-plane strain); plane stress: a free z '
+                                 'expansion; generalized plane strain: part of the eps_zz balance; axisymmetric: the '
+                                 'hoop expansion. 3D: an ordinary z expansion.',
                        tip=_ALPHA_COMPONENT_TIP.format(axis='z')),
     PHOTOELASTIC_P11_PARAM,
     PHOTOELASTIC_P12_PARAM,
@@ -95,77 +90,82 @@ MATERIAL_PROPERTIES = (   # isotropic entries before their components (component
 # Both solid types (read by their eigenfrequency study only); the same name, unit and bounds as heat's / elastic_waves'.
 DENSITY_PARAM = _material_property(
     'rho', 'Density', 'kg/m^3', 0.0,
-    help_text='Mass density; solid_mechanics and solid_mechanics_3d read it only in an eigenfrequency (or '
-              'optomechanics) study (consistent mass of the solid cells; every solid cell, youngs_modulus or c11 > 0, '
-              'needs rho > 0 there). Shared with heat / elastic_waves. Typical: silica 2200, silicon 2329, gold 19300.',
+    help_text='Mass density (consistent mass), read by the solid types only in the eigenfrequency, optomechanics and '
+              'frequency_response studies, where every solid cell (youngs_modulus or c11 > 0) needs rho > 0. Typical: '
+              'silica 2200, silicon 2329, gold 19300.',
     tip="Mass density. Solid mechanics uses it only in an 'Eigenfrequency' study.\n\nTypical: silica 2200, silicon "
         '2329, gold 19300.')
 # 2D solid_mechanics only: read by the optomechanical_coupling overlap alone (the strain-optic couplings are diagonal).
 PHOTOELASTIC_P44_PARAM = _material_property(
     'photoelastic_p44', 'Photoelastic coefficient p44', '1',
-    help_text='Shear strain-optic coefficient p44 (Voigt: Delta(1/n^2)_xy = p44 x the engineering shear 2 strain_xy; '
-              'cubic crystal axes along x, y, z), read only by the optomechanical_coupling g0 overlap '
-              '(solid_em_strain_optic and acoustics_em_acousto_optic have no shear term). Unset = the isotropic '
-              '(photoelastic_p11 - photoelastic_p12) / 2 per cell. Typical: silicon -0.051 (silica isotropic, -0.075).',
+    help_text='Shear strain-optic coefficient: Delta(1/n^2)_xy = p44 x 2 strain_xy (Voigt; cubic axes along x, y, '
+              'z). Read only by optomechanical_coupling (the strain-optic couplings have no shear term). Unset = the '
+              'isotropic (p11 - p12) / 2 per cell. Typical: silicon -0.051, silica -0.075.',
     tip='How strongly shearing the material changes its refractive index; only the optomechanical coupling uses '
         'it.\n\nEmpty takes the isotropic value from the other two coefficients. Typical: silicon -0.051.')
 # 2D solid_mechanics with piezoelectric on (kind, unit, bounds and flags as elastic_waves' piezo_e* and electrostatics'
 # eps_dc*: the registry rule; the arrays are shared).
+_VOIGT_PAIRS = {'1': 'xx', '2': 'yy', '3': 'zz', '4': 'yz', '5': 'xz', '6': 'xy'}
+
+
+def _piezo_help(name) -> str:
+    """Help of piezo_e<kJ>: the law and the read rules once (e11, both types share it), the index meaning elsewhere."""
+    if name == 'piezo_e11':
+        return ('Piezoelectric stress constant e_11 in model axes: T_J = c_JK S_K - e_kJ E_k, D_k = e_kJ S_J + eps0 '
+                'eps_dc_kl E_l (row k = 1 x, 2 y, 3 z; Voigt column J = 1 xx, 2 yy, 3 zz, 4 yz, 5 xz, 6 xy, '
+                'engineering shear S_6 = 2 strain_xy). Unset = 0. Read only with setting piezoelectric on, in solid '
+                'cells (youngs_modulus or c11 > 0): solid_mechanics the in-plane block (k = 1, 2; J = 1, 2, 6; '
+                "elastic_waves' arrays) and e13 / e23, solid_mechanics_3d (tetrahedra) all 18 (any entry allocates "
+                "all). A {'model': 'crystal'} entry sets them (3D: 'plane': 'full').")
+    row, column = name[-2], name[-1]
+    text = (f"Piezoelectric stress constant e_{row}{column}: row {'xyz'[int(row) - 1]}, Voigt column "
+            f'{_VOIGT_PAIRS[column]}; rules: piezo_e11.')
+    if column == '3' and row in '12':
+        text += f" 2D plane strain (S_zz = 0): it enters only stress_zz -= e_{row}3 E_{'xy'[int(row) - 1]}."
+    return text
+
+
+_EPS_DC_CROSS_HELP = ('Off-diagonal static permittivity of a rotated material; the eps_dc tensor must stay positive '
+                      'definite (2D: eps_dc_xy^2 < eps_dc_xx eps_dc_yy), else a build error. Unset = 0.')
 PIEZO_MATERIAL_PROPERTIES = (
     *(_material_property(
         name, f'Piezoelectric e{name[-2:]}', 'C/m^2',
-        help_text=f'Piezoelectric stress constant e_{name[-2]}{name[-1]} [C/m^2] of the in-plane block in model axes '
-                  '(reduced Voigt: T_J = c_JK S_K - e_kJ E_k, D_k = e_kJ S_J + eps0 eps_dc E_k with k = 1 x / 2 y and J '
-                  '= 1 xx, 2 yy, 6 xy, engineering shear S_6 = 2 strain_xy); default 0; the same arrays as '
-                  'elastic_waves. solid_mechanics reads them only with its setting piezoelectric on, and only in solid '
-                  "cells (youngs_modulus or c11 > 0). A {'model': 'crystal'} entry sets them together with the c_ij, "
-                  'which solid_mechanics reads (2D).',
+        help_text=_piezo_help(name),
         tip=f'Piezoelectric constant e{name[-2:]}: how strongly an electric field along '
             f"{'x' if name[-2] == '1' else 'y'} stresses the material. Used only when Piezoelectric is on.")
       for name in ('piezo_e11', 'piezo_e12', 'piezo_e16', 'piezo_e21', 'piezo_e22', 'piezo_e26')),
     *(_material_property(
         name, f'Piezoelectric e{name[-2:]}', 'C/m^2',
-        help_text=f'Out-of-plane piezoelectric constant e_{name[-2]}3 [C/m^2] (D_{name[-2]} versus the strain S_zz, '
-                  'model axes); default 0. Plane strain holds S_zz = 0, so it enters only the out-of-plane stress: '
-                  f'stress_zz -= e_{name[-2]}3 E_{"x" if name[-2] == "1" else "y"} (2D solid_mechanics with '
-                  "piezoelectric on). A {'model': 'crystal'} entry sets it.",
+        help_text=_piezo_help(name),
         tip=f"How strongly an electric field along {'x' if name[-2] == '1' else 'y'} stresses the material along the "
             'depth of the drawing. Used only when Piezoelectric is on; usually filled in by a crystal entry.')
       for name in ('piezo_e13', 'piezo_e23')),
     _material_property('eps_dc', 'Static relative permittivity', '1', 1.0,
-                       help_text='Isotropic static relative permittivity (>= 1): sets eps_dc_xx and eps_dc_yy (component '
-                                 'entries override it); unset = 1 (vacuum). The same arrays as electrostatics / '
-                                 'drift_diffusion; solid_mechanics reads them only with piezoelectric on, as the '
-                                 'clamped (constant-strain) permittivity eps^S of every window cell, void ones '
-                                 'included. NOT the optical eps_r: lithium niobate eps^S 44 / 29 (along the optic '
+                       help_text='Isotropic static relative permittivity: sets eps_dc_xx and eps_dc_yy (components '
+                                 'override); unset = 1. Same arrays as electrostatics / drift_diffusion; read only with '
+                                 'piezoelectric on, as the clamped permittivity eps^S of every window cell (void '
+                                 'included). Not the optical eps_r: lithium niobate eps^S 44 / 29 (along the optic '
                                  'axis), silica 3.9.',
                        tip='Relative permittivity for static fields; empty means vacuum, 1. Used by solid mechanics '
                            'only when Piezoelectric is on.'),
     _material_property('eps_dc_xx', 'Static relative permittivity along x', '1', 1.0,
-                       help_text='Static relative permittivity along x (>= 1); overrides eps_dc for this axis.',
+                       help_text='Overrides eps_dc for this axis.',
                        tip="Static relative permittivity along x. Replaces 'Static relative permittivity' for this "
                            'direction.'),
     _material_property('eps_dc_yy', 'Static relative permittivity along y', '1', 1.0,
-                       help_text='Static relative permittivity along y (>= 1); overrides eps_dc for this axis.',
+                       help_text='Overrides eps_dc for this axis.',
                        tip="Static relative permittivity along y. Replaces 'Static relative permittivity' for this "
                            'direction.'),
     _material_property('eps_dc_xy', 'Static relative permittivity, cross term', '1',
-                       help_text='Off-diagonal static permittivity of a rotated anisotropic material; keep eps_dc_xy^2 < '
-                                 'eps_dc_xx * eps_dc_yy (else the solid_mechanics build fails). Default 0.',
+                       help_text=_EPS_DC_CROSS_HELP,
                        tip='Cross term of a rotated material: the field also polarises it sideways. Usually empty.'),
 )
 # solid_mechanics_3d on tetrahedra with piezoelectric on: the full e_iJ and the six permittivities (the 2D Param objects
 # for the shared names; its own eps_dc expands to xx, yy and zz).
-_PIEZO_TEXT_3D = (
-    'Piezoelectric stress constant e_{index} [C/m^2] in model axes (T_J = c_JK S_K - e_kJ E_k, D_k = e_kJ S_J + eps0 '
-    'eps_dc_kl E_l with k = 1 x, 2 y, 3 z and J = 1 xx, 2 yy, 3 zz, 4 yz, 5 xz, 6 xy, engineering shear S_4 = 2 '
-    'strain_yz); default 0. Read only by solid_mechanics_3d on a tetrahedron mesh with its setting piezoelectric on, in '
-    'solid elements (youngs_modulus or c11 > 0); any piezo_e* entry allocates all 18 e_iJ there (the 2D names keep '
-    "their meaning). A {{'model': 'crystal', 'plane': 'full'}} entry sets all 18.")
 _PIEZO_2D_PARAMS = {param.name: param for param in PIEZO_MATERIAL_PROPERTIES}
 _PIEZO_3D_ONLY = {
     name: _material_property(name, f'Piezoelectric e{name[-2:]}', 'C/m^2',
-                             help_text=_PIEZO_TEXT_3D.format(index=name[-2:]),
+                             help_text=_piezo_help(name),
                              tip=f"Piezoelectric constant e{name[-2:]}: how strongly an electric field along "
                                  f"{'xyz'[int(name[-2]) - 1]} stresses the material. Used only when Piezoelectric is on; "
                                  'usually filled in by a crystal entry.')
@@ -173,20 +173,17 @@ _PIEZO_3D_ONLY = {
 _PERMITTIVITY_3D_ONLY = {
     'eps_dc': optional_material_param(
         'eps_dc', 'Static relative permittivity', '1', ('eps_dc_xx', 'eps_dc_yy', 'eps_dc_zz'), 1.0,
-        help_text='Isotropic static relative permittivity (>= 1): in solid_mechanics_3d it sets eps_dc_xx, eps_dc_yy '
-                  'and eps_dc_zz (component entries override it); unset = 1 (vacuum). Read only with piezoelectric on '
-                  '(tetrahedra), as the clamped permittivity eps^S of every window element, void ones included.',
+        help_text='Isotropic static relative permittivity: sets eps_dc_xx, eps_dc_yy and eps_dc_zz (components '
+                  'override); unset = 1. Read only with piezoelectric on (tetrahedra), as the clamped permittivity eps^S '
+                  'of every window element (void included).',
         tip='Relative permittivity for static fields; empty means vacuum, 1. Used by solid mechanics only when '
             'Piezoelectric is on.'),
     'eps_dc_zz': _material_property('eps_dc_zz', 'Static relative permittivity along z', '1', 1.0,
-                                    help_text='Static relative permittivity along z (>= 1; solid_mechanics_3d with '
-                                              'piezoelectric on); overrides eps_dc for this axis.',
+                                    help_text='Overrides eps_dc for this axis.',
                                     tip="Static relative permittivity along z. Replaces 'Static relative permittivity' "
                                         'for this direction.'),
     **{name: _material_property(name, f'Static relative permittivity, cross term {name[-2:]}', '1',
-                                help_text=f'Off-diagonal static permittivity {name[-2:]} of a rotated anisotropic '
-                                          'material (solid_mechanics_3d with piezoelectric on); the 3 x 3 eps_dc must '
-                                          'be positive definite (else the build fails). Default 0.',
+                                help_text=_EPS_DC_CROSS_HELP,
                                 tip='Cross term of a rotated material: the field also polarises it sideways. Usually '
                                     'empty.')
        for name in ('eps_dc_yz', 'eps_dc_xz')},
@@ -203,43 +200,36 @@ _TENSOR_ROLES = {'c11': 'xx-xx', 'c12': 'xx-yy', 'c13': 'xx-zz', 'c22': 'yy-yy',
                  'c16': 'xx-xy', 'c26': 'yy-xy', 'c36': 'zz-xy', 'c66': 'xy-xy'}
 _TENSOR_FALLBACKS = {'c11': 'lambda + 2 mu', 'c22': 'lambda + 2 mu', 'c33': 'lambda + 2 mu', 'c12': 'lambda',
                      'c13': 'lambda', 'c23': 'lambda', 'c66': 'mu', 'c16': '0', 'c26': '0', 'c36': '0'}
-_TENSOR_TEXT = (
-    'Anisotropic stiffness entry {name} [Pa] ({role}) of the Voigt matrix in model axes (1 xx, 2 yy, 3 zz, 6 xy; '
-    'engineering shear g = 2 strain_xy): T_I = c_IJ S_J - beta_I dT with beta_I = c_IJ alpha_J. solid_mechanics (2D) '
-    'reads all ten (industry-standard plane strain: the full law with S_zz = S_xz = S_yz = 0, stress_zz = T_3); plane '
-    'stress condenses T_3 = 0, generalized plane strain takes a uniform S_3, axisymmetric reads 3 as the hoop '
-    'direction (orthotropic only: c16 = c26 = c36 = 0, else the build fails). Unset (NaN) = the isotropic value '
-    '{fallback} of youngs_modulus / poisson_ratio per component (Lame constants), so a cell with only c_ij entries '
-    'needs c11, c12, c22, c66 (plane stress / axisymmetric / generalized: also c13, c23, c33); any entry set allocates '
-    'the eight arrays besides c16 / c26, which (as in elastic_waves) only c16 or c26 allocates. '
-    'The set the formulation reads must be positive definite (build error). A cell is solid when its c11 > 0. Usually '
-    "set by a {{'model': 'crystal'}} entry (rotated crystal data, with piezo_e* and eps_dc*). Not for guided (2.5D) "
-    'modes (axial_wavenumber: isotropic only). solid_mechanics_3d on a tetrahedron mesh reads it too, as one of its 21 '
-    'entries (see c44).')
+_TENSOR_TEXT = 'Stiffness entry {name} ({role}) of the Voigt matrix in model axes; unset = {fallback}. Rules: c11.'
+# c11 (shared by both types) carries the law and the read rules once
+_TENSOR_TEXT_C11 = (
+    'Anisotropic stiffness entry c11 (xx-xx) of the Voigt matrix in model axes (1 xx, 2 yy, 3 zz, 4 yz, 5 xz, 6 xy; '
+    'engineering shear S_6 = 2 strain_xy): T_I = c_IJ S_J - beta_I dT, beta_I = c_IJ alpha_J. Unset (NaN) = the '
+    'isotropic value of youngs_modulus / poisson_ratio (c11, c22, c33: lambda + 2 mu; c12, c13, c23: lambda; c44, c55, '
+    'c66: mu; others 0). A cell is solid when c11 > 0; the entries its formulation reads must be positive definite '
+    "(build error). Usually set by a {'model': 'crystal'} entry (3D: 'plane': 'full'), with piezo_e* and eps_dc*. "
+    'solid_mechanics reads the ten 2D entries: plane strain the full law with S_zz = S_xz = S_yz = 0 (stress_zz = '
+    'T_3), plane stress condenses T_3 = 0, generalized plane strain takes a uniform S_3, axisymmetric reads 3 as hoop '
+    '(orthotropic only: c16 = c26 = c36 = 0, else a build error); a c_ij-only cell needs c11, c12, c22, c66 (plane '
+    'stress / axisymmetric / generalized: also c13, c23, c33); any entry allocates the eight besides c16 / c26, which '
+    'only c16 or c26 allocates (as in elastic_waves); guided modes (axial_wavenumber) refuse c_ij. solid_mechanics_3d '
+    'reads all 21 on tetrahedra only (a tensor mesh refuses them); any entry allocates all 21; a c_ij-only cell needs '
+    'the nine orthotropic ones.')
 # solid_mechanics_3d on tetrahedra only: the entries with a yz (4) or xz (5) index
 _TENSOR_ROLES_3D = {'c14': 'xx-yz', 'c15': 'xx-xz', 'c24': 'yy-yz', 'c25': 'yy-xz', 'c34': 'zz-yz', 'c35': 'zz-xz',
                     'c44': 'yz-yz', 'c45': 'yz-xz', 'c46': 'yz-xy', 'c55': 'xz-xz', 'c56': 'xz-xy'}
-_TENSOR_TEXT_3D = (
-    'Anisotropic stiffness entry {name} [Pa] ({role}) of the Voigt matrix in model axes (1 xx, 2 yy, 3 zz, 4 yz, 5 xz, '
-    '6 xy; engineering shear, S_4 = 2 strain_yz): T_I = c_IJ S_J - beta_I dT with beta_I = c_IJ alpha_J. Read only by '
-    'solid_mechanics_3d on a tetrahedron mesh (a rectangular-cell mesh refuses c_ij entries), which takes all 21 '
-    'entries c11 .. c66 (the 2D names keep their meaning); any entry set allocates all 21. Unset = {fallback} (c11, '
-    'c22, c33: lambda + 2 mu, c12, c13, c23: lambda, c44, c55, c66: mu of youngs_modulus / poisson_ratio; every other '
-    'entry 0), so a cell with only c_ij entries needs the nine of the orthotropic pattern. The 6 x 6 matrix must be '
-    "positive definite (build error); a cell is solid when its c11 > 0. Usually set by a {{'model': 'crystal'}} entry "
-    "with 'plane': 'full'.")
 _STIFFNESS_TIP = ("Stiffness {name} of a crystal (an anisotropic material); empty takes the value from the Young's "
                   'modulus and Poisson ratio. Usually filled in by a crystal entry.')
 STIFFNESS_TENSOR_PROPERTIES = tuple(
     _material_property(name, f'Stiffness {name}', 'Pa', 0.0 if name in ('c11', 'c22', 'c33', 'c66') else None,
-                       help_text=_TENSOR_TEXT.format(name=name, role=_TENSOR_ROLES[name],
-                                                     fallback=_TENSOR_FALLBACKS[name]),
+                       help_text=_TENSOR_TEXT_C11 if name == 'c11' else _TENSOR_TEXT.format(
+                           name=name, role=_TENSOR_ROLES[name], fallback=_TENSOR_FALLBACKS[name]),
                        tip=_STIFFNESS_TIP.format(name=name))
     for name in ('c11', 'c12', 'c13', 'c22', 'c23', 'c33', 'c16', 'c26', 'c36', 'c66'))
 _STIFFNESS_3D_ONLY = {
     name: _material_property(name, f'Stiffness {name}', 'Pa', 0.0 if name in ('c44', 'c55') else None,
-                             help_text=_TENSOR_TEXT_3D.format(name=name, role=_TENSOR_ROLES_3D[name],
-                                                              fallback='mu' if name in ('c44', 'c55') else '0'),
+                             help_text=_TENSOR_TEXT.format(name=name, role=_TENSOR_ROLES_3D[name],
+                                                           fallback='mu' if name in ('c44', 'c55') else '0'),
                              tip=_STIFFNESS_TIP.format(name=name))
     for name in _TENSOR_ROLES_3D}
 # solid_mechanics_3d: the same Param objects for the ten shared names, Voigt order c11, c12, .. c66
@@ -248,25 +238,21 @@ STIFFNESS_TENSOR_PROPERTIES_3D = tuple(
     for name in STIFFNESS_TENSOR_ARRAYS_3D)
 LOSS_PROPERTIES = (
     _material_property('mechanical_loss_factor', 'Mechanical loss factor', '1', 0.0,
-                       help_text='Isotropic structural loss factor eta (industry-standard isotropic loss factor '
-                                 'eta_s), read by the frequency_response study of solid_mechanics (2D) and '
-                                 'solid_mechanics_3d (tetrahedron meshes) and by their eigenfrequency study on '
-                                 'triangle / tetrahedron meshes (damped complex modes, Q = Re omega / (2 Im omega) in '
-                                 'the resonance table; not with piezoelectric): every stiffness of the cell becomes c '
-                                 '(1 + j eta) (exp(+j omega t)), so a resonance has Q ~ 1 / eta; the geometric '
-                                 'stiffness of stress_stiffening stays lossless (dissipation dilution: Q above 1 / '
-                                 'eta). Default 0 (lossless); typical 1e-4 (quartz, LN) to 1e-2 (metals, polymers '
-                                 'higher).',
+                       help_text='Isotropic structural loss factor eta: every stiffness of the cell becomes c (1 + j '
+                                 'eta) (exp(+j omega t)), so Q ~ 1 / eta. Read by the frequency_response study (3D: '
+                                 'tetrahedra) and by the eigenfrequency study on triangle / tetrahedron meshes (damped '
+                                 'complex modes, Q in the resonance table; not with piezoelectric). The '
+                                 'stress_stiffening geometric stiffness stays lossless (dissipation dilution: Q above '
+                                 '1 / eta). Unset = 0; typical 1e-4 (quartz, LN) to 1e-2 (metals; polymers higher).',
                        tip='Damping of the vibration as a fraction of the stiffness; the quality factor of a resonance '
                            'is about 1 divided by it. Used by the frequency response study and, on triangle or '
                            'tetrahedron meshes, by the eigenfrequency study.'),
     _material_property('dielectric_loss_tangent', 'Dielectric loss tangent', '1', 0.0,
-                       help_text='Dielectric loss tangent tan delta (industry-standard dielectric loss factor '
-                                 'eta_epsilon), read only by the frequency_response study of a piezoelectric '
-                                 'solid_mechanics (2D) or solid_mechanics_3d (tetrahedron meshes, every window '
-                                 'element): the static permittivity becomes eps0 eps_dc (1 - j tan delta) (exp(+j '
-                                 'omega t)), a conductance omega C tan delta in parallel with the electrode '
-                                 'capacitance. Default 0; typical 1e-4 to 1e-3 for lithium niobate, ~1e-2 for PZT.',
+                       help_text='Dielectric loss tangent tan delta: the static permittivity becomes eps0 eps_dc (1 - j '
+                                 'tan delta) (exp(+j omega t)), a conductance omega C tan delta parallel to the '
+                                 'electrode capacitance. Read only by the frequency_response study with piezoelectric '
+                                 'on (3D: tetrahedra, every window element). Unset = 0; typical 1e-4 to 1e-3 lithium '
+                                 'niobate, ~1e-2 PZT.',
                        tip='Electric loss of the material as the loss tangent. Used only by the frequency response '
                            'study with Piezoelectric on.'),
 )
@@ -274,53 +260,53 @@ LOSS_PROPERTIES = (
 
 # Thermoelastic damping (feature thermoelastic_damping): heat's conductivity and specific heat (the same names, units
 # and bounds as the heat type's Params: one property per name in a model with heat; arrays OPTIONAL_TED_SCHEMA).
-_TED_READ = ('read by solid_mechanics / solid_mechanics_3d only through the thermoelastic_damping feature (shared with '
-             'heat, see there)')
+_TED_READ = 'the solid types read it only in the thermoelastic_damping feature'
 TED_MATERIAL_PROPERTIES = (
     _material_property('k', 'Thermal conductivity', 'W/(m K)', 0.0,
-                       help_text=f'Isotropic thermal conductivity (sets k_xx, k_yy, k_zz); {_TED_READ}: the heat '
-                                 'diffusion of the thermoelastic temperature of a vibration mode. Typical: silicon 130 '
-                                 '(library; pure bulk 148), silica 1.38, silicon nitride 10 (library; films 2-15).',
+                       help_text=f'Isotropic thermal conductivity (sets k_xx, k_yy, k_zz); {_TED_READ}. Typical: '
+                                 'silicon 130 (library; pure bulk 148), silica 1.38, silicon nitride 10 (library; films '
+                                 '2-15).',
                        tip='How well the material conducts heat. Solid mechanics uses it only for thermoelastic '
                            'damping.\n\nTypical: silicon 130, silica 1.38.'),
     _material_property('k_xx', 'Thermal conductivity along x', 'W/(m K)', 0.0,
-                       help_text=f'Conductivity along x; overrides k for this axis ({_TED_READ}).',
+                       help_text='Overrides k for this axis.',
                        tip="Thermal conductivity along x. Replaces 'Thermal conductivity' for this direction."),
     _material_property('k_yy', 'Thermal conductivity along y', 'W/(m K)', 0.0,
-                       help_text=f'Conductivity along y; overrides k for this axis ({_TED_READ}).',
+                       help_text='Overrides k for this axis.',
                        tip="Thermal conductivity along y. Replaces 'Thermal conductivity' for this direction."),
     _material_property('k_zz', 'Thermal conductivity along z', 'W/(m K)', 0.0,
-                       help_text=f'Conductivity along z, read in 3D only; overrides k for this axis ({_TED_READ}).',
+                       help_text='Overrides k for this axis (3D only).',
                        tip="Thermal conductivity along z (3D models only). Replaces 'Thermal conductivity' for this "
                            'direction.'),
     _material_property('cp', 'Specific heat capacity', 'J/(kg K)', 0.0,
-                       help_text=f'Specific heat capacity; with rho the heat capacity rho cp, {_TED_READ} (every solid '
-                                 'cell then needs rho > 0 and cp > 0). Typical: silicon 700, silica 746, silicon '
-                                 'nitride 700.',
+                       help_text=f'Specific heat capacity (heat capacity rho cp); {_TED_READ}, which needs rho > 0 and '
+                                 'cp > 0 in every solid cell. Typical: silicon 700, silica 746, silicon nitride 700.',
                        tip='Heat stored per kilogram and kelvin. Solid mechanics uses it only for thermoelastic '
                            'damping.\n\nTypical: silicon 700, silica 746.'),
 )
 
 
-_INITIAL_STRESS_TEXT = (
-    'Initial (residual) stress sigma0_{pair} [Pa] of the cell, e.g. the deposition stress of a film (tension > 0): '
-    'the total stress is sigma0 + C eps - beta dT, so a stationary solve relaxes it (a released structure contracts '
-    'until the total stress balances the supports); default 0. Triangle and tetrahedron meshes only (a rectangular-cell '
-    'mesh refuses it). {where} With the stress_stiffening setting the eigenfrequency / frequency_response / '
-    'optomechanics studies add the geometric stiffness K_sigma of the static state (a tensioned string or membrane '
-    'rises in frequency). Constant per element (an x / y / z expression is evaluated at the centroids).')
+# initial_stress_xx (first in both types) carries the rules once
+_INITIAL_STRESS_XX_TEXT = (
+    'Initial (residual) stress sigma0_xx, e.g. the deposition stress of a film (tension > 0); unset = 0. The total '
+    'stress is sigma0 + C eps - beta dT, so a static solve relaxes it (a released structure contracts until it '
+    'balances the supports); with stress_stiffening it prestresses the modal / frequency_response pencils (a tensioned '
+    'string rises in frequency). Triangle and tetrahedron meshes only (a tensor mesh refuses it). Constant per element '
+    '(expressions evaluated at the centroids). 3D: a Voigt row (xx, yy, zz, yz, xz, xy); 2D: in-plane xx '
+    '(axisymmetric: rr).')
 _INITIAL_STRESS_WHERE = {
-    'xx': 'In 3D a Voigt row (xx, yy, zz, yz, xz, xy); in 2D the in-plane row xx (axisymmetric: rr).',
-    'yy': 'In 3D a Voigt row; in 2D the in-plane row yy (axisymmetric: zz, along the axis).',
-    'xy': 'In 3D a Voigt row; in 2D the in-plane shear xy (axisymmetric: rz).',
-    'zz': ('In 3D a Voigt row; in 2D plane strain the out-of-plane stress (stress_zz only, no in-plane effect), '
-           'axisymmetric the hoop stress; plane stress (sigma_zz = 0) and generalized plane strain refuse it.'),
-    'yz': 'solid_mechanics_3d only (a Voigt row).',
-    'xz': 'solid_mechanics_3d only (a Voigt row).',
+    'yy': '2D: in-plane yy (axisymmetric: zz, along the axis).',
+    'xy': '2D: in-plane shear (axisymmetric: rz).',
+    'zz': ('2D plane strain: out-of-plane (stress_zz only, no in-plane effect); axisymmetric: hoop; plane stress and '
+           'generalized plane strain refuse it.'),
+    'yz': 'solid_mechanics_3d only.',
+    'xz': 'solid_mechanics_3d only.',
 }
 INITIAL_STRESS_PROPERTIES_3D = tuple(
     _material_property(name, f'Initial stress {name[-2:]}', 'Pa',
-                       help_text=_INITIAL_STRESS_TEXT.format(pair=name[-2:], where=_INITIAL_STRESS_WHERE[name[-2:]]),
+                       help_text=(_INITIAL_STRESS_XX_TEXT if name[-2:] == 'xx' else
+                                  f'Initial stress sigma0_{name[-2:]}; {_INITIAL_STRESS_WHERE[name[-2:]]} Rules: '
+                                  'initial_stress_xx.'),
                        tip=f'Built-in stress {name[-2:]} of the material before any load, for example a tensile film '
                            'stress (positive). Triangle and tetrahedron meshes only.')
     for name in PRESTRESS_ARRAYS_3D)
@@ -329,84 +315,74 @@ INITIAL_STRESS_PROPERTIES = tuple(next(param for param in INITIAL_STRESS_PROPERT
                                                'initial_stress_zz'))
 STRESS_STIFFENING_PARAM = Param(
     'stress_stiffening', 'bool', False, label='Stress stiffening',
-    help='Triangle and tetrahedron meshes: the prestressed (linear perturbation) form of the eigenfrequency, '
-         'frequency_response and optomechanics studies. On: the study first solves the static state (eigenfrequency: '
-         'every load, prescribed displacement, initial_stress, thermal strain and coupled input, as a stationary solve; '
-         'frequency_response: the initial_stress and thermal strain alone, held supports at 0, since the loads are its '
-         'harmonic drive) and '
-         'adds the geometric stiffness K_sigma = int grad N . sigma grad N dV of that total stress to K in every pencil '
-         '(stress stiffening of strings, membranes, buckling-softening under compression); K_sigma carries no loss. A '
-         'free body, a Bloch cell or an elastic PML cannot be solved statically: K_sigma then comes from the '
-         'initial_stress alone (unrelaxed). Off (default): the modes and responses of the unstressed solid, loads and '
-         'initial_stress play no part in the pencil. Not available with piezoelectric or on a rectangular-cell mesh.',
+    help='Triangle and tetrahedron meshes; eigenfrequency, frequency_response and optomechanics studies: first solves '
+         'the static state (eigenfrequency: every load, prescribed displacement, initial_stress, thermal strain and '
+         'coupled input; frequency_response: initial_stress and thermal strain alone, holds at 0, since the loads are '
+         'its drive) and adds the lossless geometric stiffness K_sigma = int grad N . sigma grad N dV of its total '
+         'stress to K in every pencil (strings and membranes stiffen, compression softens toward buckling). A free '
+         'body, Bloch cell or elastic PML has no static solve: K_sigma of the initial_stress alone (unrelaxed). Off: '
+         'loads and initial_stress play no part in the pencil. Not with piezoelectric or on a tensor mesh.',
     tip='On: vibration frequencies include the stiffening by the static stress (from loads, built-in stress or '
         'heating), like a tensioned string. Used by the eigenfrequency and frequency response studies.')
 
 
 _NONLINEAR_VISIBLE = (('geometric_nonlinearity', (True,)),)
-GEOMETRIC_NONLINEARITY_PARAMS = (   # new_modules_plan K6 (solid_mechanics_3d on tetrahedra, solid_mechanics on triangles)
+GEOMETRIC_NONLINEARITY_PARAMS = (   # solid_mechanics_3d on tetrahedra, solid_mechanics on triangles
     Param('geometric_nonlinearity', 'bool', False, label='Geometric nonlinearity',
-          help='Triangle and tetrahedron meshes: large deflections and rotations in every static solve (stationary and '
-               'time_dependent studies, the static state of the eigenfrequency / frequency_response studies). '
-               'Total-Lagrangian form on the reference geometry: Green-Lagrange strain E = (H + H^T + H^T H) / 2 (H the '
-               'displacement gradient), second Piola-Kirchhoff stress S = C E + sigma0 - beta dT (Saint Venant-Kirchhoff '
-               'material: valid for small strains with large rotations), solved by Newton iterations with the tangent K_T '
-               '= int (B + B_NL)^T C (B + B_NL) dV + K_sigma(S), refactorised every iteration, damped (the step halves '
-               'while the change grows) and over load_steps equal load increments. Boundary loads and body forces are '
-               'dead loads (fixed direction and reference area: nominal tractions); load steps scale them, prescribed '
-               'displacements and coupled body forces, while the initial stress and the thermal strain enter at full '
-               'strength in every step. Outputs: strain_* are Green-Lagrange strains, stress_* the second Piola-Kirchhoff '
-               'stress (equal to the Cauchy stress to first order in the strain); support reactions are the nominal '
-               'forces of the internal force int (B + B_NL)^T S dV - f at the held dofs (not K u - f). The '
-               'eigenfrequency study linearises about the nonlinear static state (its pencil stiffness is K_T, stress '
-               'stiffening included, whether or not the stress_stiffening setting is on); frequency_response about the '
-               'nonlinear state of the initial stress alone (holds at 0). A Bloch cell, an elastic PML or a free body '
-               'has no static solve: their pencils take K + K_sigma of the initial stress. Not available with '
-               'piezoelectric or on a rectangular-cell mesh, and on a triangle mesh not with azimuthal_order >= 1, an '
-               'elastic PML or generalized plane strain. Cost: one tangent assembly and factorisation per Newton '
-               'iteration while the residual falls slowly (typically 3 to 6 iterations per load step; tangent_update '
-               'when_slow, the default, keeps the factor while the residual falls fast).',
+          help='Triangle and tetrahedron meshes: large deflections and rotations in every static solve (stationary, '
+               'time_dependent, the static state of eigenfrequency / frequency_response). Total-Lagrangian Saint '
+               'Venant-Kirchhoff (small strains, large rotations): Green-Lagrange strain E = (H + H^T + H^T H) / 2 (H '
+               'the displacement gradient), second Piola-Kirchhoff stress S = C E + sigma0 - beta dT; damped Newton on '
+               'K_T = int (B + B_NL)^T C (B + B_NL) dV + K_sigma(S) over load_steps equal increments (typically 3-6 '
+               'iterations each). Boundary loads and body forces are dead loads (fixed direction, reference area); the '
+               'steps scale them, prescribed displacements and coupled body forces; initial stress and thermal strain '
+               'enter in full every step. Outputs: strain_* Green-Lagrange, stress_* second Piola-Kirchhoff (= Cauchy '
+               'to first order); support reactions = int (B + B_NL)^T S dV - f at the held dofs (not K u - f). '
+               'Eigenfrequency linearises about the nonlinear state (K_T, stress stiffening included whatever '
+               'stress_stiffening says); frequency_response about the state of the initial stress alone (holds at 0). '
+               'A Bloch cell, elastic PML or free body has no static solve: K + K_sigma of the initial stress. Not '
+               'with piezoelectric or on a tensor mesh; on triangles not with azimuthal_order >= 1, an elastic PML or '
+               'generalized plane strain.',
           tip='On: large deflections and rotations are followed exactly, for example the stiffening of a string or a '
               'membrane under a large transverse load, or a released film that bends.\n\nThe static solve is repeated '
               'a few times (Newton iterations) and costs several times a linear solve. Triangle and tetrahedron meshes only.'),
     Param('load_steps', 'int', 1, label='Load steps', min=1, visible_if=_NONLINEAR_VISIBLE,
-          help='Geometric nonlinearity: the applied loads and prescribed displacements are ramped in this many equal '
-               'steps, each converged by Newton iterations from the previous one (raise it when a large load does not '
-               'converge; the initial stress and thermal strain are not ramped). Default 1.',
+          help='Geometric nonlinearity: loads and prescribed displacements ramp in this many equal steps, each '
+               'Newton-converged from the previous (raise it when a large load does not converge; initial stress and '
+               'thermal strain are not ramped).',
           tip='Number of steps the loads are applied in; more steps help a strongly nonlinear solve converge.'),
     Param('nonlinear_tolerance', 'float', 1e-8, label='Nonlinear tolerance', unit='1', min=0.0, min_exclusive=True,
           visible_if=_NONLINEAR_VISIBLE,
-          help='Geometric nonlinearity: a load step has converged when the largest Newton correction is at most this '
-               'fraction of the largest displacement (quadratic convergence: the error after the last step is about its '
-               'square). Default 1e-8.',
+          help='Geometric nonlinearity: a load step converges when the largest Newton correction is at most this '
+               'fraction of the largest displacement (quadratic convergence: the remaining error ~ its square).',
           tip='Accuracy of the nonlinear static solve: smaller is more accurate and takes an iteration more.'),
     Param('nonlinear_max_iterations', 'int', 25, label='Nonlinear iteration limit', min=1,
           visible_if=_NONLINEAR_VISIBLE,
-          help='Geometric nonlinearity: Newton iterations per load step before it stops unconverged (a warning; the '
-               'damped state is kept and the next step continues from it). Default 25.',
+          help='Geometric nonlinearity: Newton iterations per load step; then a warning, and the next step continues '
+               'from the damped state.',
           tip='Most Newton iterations per load step.'),
     Param('tangent_update', 'choice', 'when_slow', label='Tangent update', choices=TANGENT_UPDATES,
           choice_labels=(('every_iteration', 'Every iteration (full Newton)'),
                          ('when_slow', 'Only when convergence slows (modified Newton)')),
           visible_if=_NONLINEAR_VISIBLE,
-          help='Geometric nonlinearity: when the tangent K_T is reassembled and refactorised. every_iteration: full '
-               'Newton, one factorisation per iteration, quadratic convergence. when_slow (default): modified '
-               'Newton, the factorised tangent is kept (only the internal force is assembled, one back substitution) '
-               f'while each iteration cuts the largest free residual below {SLOW_RESIDUAL_RATIO:g} x the previous one, '
-               'and refactorised at the current state otherwise; the first iteration of a load step keeps the factor of '
-               'the previous step when that step ended fast. Saves factorisations when they dominate an iteration (large '
-               '3D meshes), at the price of linear convergence near the end (a few more, cheaper iterations; the '
-               'remaining error is at most about a third of the nonlinear_tolerance correction). Work counters '
-               'tangent_factorizations / tangent_reuses.',
+          help='Geometric nonlinearity: when K_T is refactorised. every_iteration: full Newton (quadratic convergence). '
+               'when_slow: modified Newton, the factor is kept (one back substitution) while each iteration cuts the '
+               f'largest free residual below {SLOW_RESIDUAL_RATIO:g} x the previous, else refactorised, and carried '
+               'into the next load step when that ended fast; saves factorisations on large 3D meshes at the price of '
+               'linear convergence near the end (remaining error at most ~1/3 of the nonlinear_tolerance correction). '
+               'Counters tangent_factorizations / tangent_reuses.',
           tip='How often the Newton stiffness matrix is rebuilt and factorised. Rebuilding only when convergence slows '
               'saves time on large models; every iteration is the most robust choice.'),
 )
 
 
+DISPLACEMENT_COMPONENT_HELP = 'Prescribed displacement component; empty leaves it free.'
+
+
 def displacement_param(name, axis):
     """Optional prescribed displacement component Param of the displacement feature."""
     return Param(name, 'float', None, label=f'Displacement {axis}', unit='m', optional=True,
-                 help=f'Prescribed u_{axis} on the selected faces; empty (null) leaves u_{axis} free.',
+                 help=DISPLACEMENT_COMPONENT_HELP,
                  tip=f'Displacement along {axis} the faces are moved to; empty leaves this direction free.')
 
 
@@ -434,6 +410,14 @@ def apply_temperature_change(ctx, solver, feature_spec, values, selection):
     mask = ctx.domain_mask(selection.entities)
     solver.add_temperature_change(mask, ctx.eval_field(values['delta_T'], mask=mask))
     return None
+
+
+ELECTRODE_CONNECTION_HELP = (
+    'voltage: phi = voltage on every node (0 = ground); the eigenfrequency study holds 0 (short circuit: resonances). '
+    'floating: one shared unknown potential carrying the charge setting (0 = isolated); eigenfrequency: charge 0 (open '
+    'circuit: antiresonances). At least one voltage electrode is required (the reference of phi).')
+ELECTRODE_VOLTAGE_HELP = ('Potential of a voltage electrode in a static solve; ignored by floating electrodes and the '
+                          'eigenfrequency study (0 there).')
 
 
 def electrode_result(session, solver, electrode, feature_spec, options, charge_unit):
@@ -478,7 +462,7 @@ def free_body_allowed(study_type, settings_values) -> bool:
     """A free body may be solved (triangles, tetrahedra): the eigenfrequency / optomechanics study at target_frequency >
     0 (its 0 Hz modes dropped) or the frequency_response study (K - omega^2 M is regular at f > 0)."""
     return bool((study_type in MODAL_STUDIES and settings_values.get('target_frequency'))
-                or study_type == FREQUENCY_RESPONSE_STUDY_NAME)
+                or study_type == FREQUENCY_RESPONSE_STUDY)
 
 
 def nonlinear_state_infos(vctx, path, static_refused) -> list:
@@ -487,7 +471,7 @@ def nonlinear_state_infos(vctx, path, static_refused) -> list:
     if static_refused:
         return [Issue('info', path, f'geometric_nonlinearity: {static_refused} has no static solve, so the pencil takes '
                                     'K + K_sigma of the initial stress (the tangent at u = 0)')]
-    if vctx.study_type == FREQUENCY_RESPONSE_STUDY_NAME:
+    if vctx.study_type == FREQUENCY_RESPONSE_STUDY:
         return [Issue('info', path, 'geometric_nonlinearity: the frequency response stays linear (small vibrations) '
                                     'about the nonlinear static state of the initial stress and thermal strain alone; '
                                     'the loads are its harmonic drive')]
@@ -743,14 +727,14 @@ def resonance_table_feature(order_text):
     """The resonance_table FeatureType; order_text says which modes come first (the type's search)."""
     return FeatureType(
         'resonance_table', 'Resonance table', 'monitor', None, result_kind='table',
-        description=(f'Vibration modes of the last eigenfrequency study solve, {order_text}. Result \'table\', one row '
-                     f"per mode: {', '.join(MODAL_TABLE_COLUMNS)} (1-based rank, Hz, rad/s); extras target_frequency "
-                     '(Hz) and selected_resonance. Undamped: every frequency is real (Q infinite), except with a '
-                     'resistive_load electrode (solid_mechanics_3d), which appends frequency_imag (Hz, > 0 decays), '
-                     'q_factor and energy_decay_rate (1/s, = 2 Im omega, the external coupling rate kappa_e). For a '
-                     'frequency '
-                     "versus a parameter add a derived value with source '<physics>.<this feature>', expression "
-                     'frequency, operation at and at = 0 (the first mode).'),
+        description=(f'Vibration modes of the last eigenfrequency solve, {order_text} (search targets / band: in '
+                     f"frequency order). Result 'table', one row per mode: {', '.join(MODAL_TABLE_COLUMNS)} (1-based "
+                     'rank, Hz, rad/s); damped modes (elastic PML, loss factor, resistive_load electrode) append '
+                     f"{', '.join(DAMPED_TABLE_COLUMNS)} (Hz, > 0 decays; Re omega / (2 Im omega); 1/s, 2 Im omega = "
+                     'kappa_e of a resistive load). Extras target_frequency (Hz; NaN for several targets or a band), '
+                     'targets, band, expected_count, selected_resonance, axial_wavenumber (rad/m; None = plane strain). '
+                     "Frequency versus a parameter: a derived value with source '<physics>.<this feature>', expression "
+                     'frequency, operation at, at = 0 (the first mode).'),
         summary="Lists the vibration frequencies found by an 'Eigenfrequency' study.",
         apply=_apply_resonance_table, result=_resonance_table_result, validate=_validate_resonance_table)
 
@@ -760,8 +744,8 @@ def resonance_table_feature(order_text):
 TED_FEATURE = 'thermoelastic_damping'
 _TED_TEMPERATURE_PARAM = Param(
     'T0', 'float', 293.15, label='Reference temperature', unit='K', min=0.0, min_exclusive=True,
-    help='Absolute temperature T0 [K] of the solid about which it vibrates (the heat type\'s T0 default): the '
-         'thermoelastic relaxation strength Delta = E alpha^2 T0 / (rho cp) and so 1 / Q_TED scale with it.',
+    help="Absolute temperature of the vibrating solid (the heat type's T0 default); 1 / Q_TED scales with it (Delta = E "
+         'alpha^2 T0 / (rho cp)).',
     tip='Temperature of the resonator, in kelvin. Thermoelastic damping grows in proportion to it.\n\nRoom '
         'temperature: 293.15 K.')
 
@@ -840,39 +824,26 @@ def thermoelastic_damping_feature(grids, where_text):
         summary='Estimates the quality factor each vibration mode loses to heat flow between compressed and stretched '
                 'regions (thermoelastic damping), the main intrinsic loss of silicon and silicon nitride resonators.',
         description=(
-            'Thermoelastic damping (TED) of every vibration mode of the last eigenfrequency (or optomechanics) solve, '
-            f'{where_text}; perturbative and one-way (it does not change the modes). Per mode (omega = Re omega, '
-            'exp(+j omega t), strain eps in Voigt rows, engineering shear) the heat source of the strain rate q = -j '
-            'omega T0 (beta : eps) drives the harmonic heat equation j omega rho cp theta - div(k grad theta) = q on '
-            'the solid cells, adiabatic (no heat flux) on every boundary of the solid, theta on the solid\'s own '
-            'nodes (tensor mesh: bilinear on the cell corners; element meshes: the solid\'s P1 / P2 map); beta = C : '
-            'alpha is the thermal stress per kelvin (isotropic (3 lambda + 2 mu) alpha; plane stress the reduced '
-            'beta_I - c_I3 beta_3 / c_33 with sigma_zz = 0; plane strain without the zz row; axisymmetric with the hoop row '
-            'u_r / r). The thermal stress -beta theta adds the complex modal stiffness d = -int beta : eps* theta dV '
-            'to u^H K u = omega^2 u^H M u (twice the peak stored energy), so 1 / Q_TED = Im d / (u^H K u) = -Im(int '
-            'beta : eps* theta dV) / (omega^2 u^H M u) (> 0, energy lost per cycle / (2 pi x stored energy)) and the '
-            'relative frequency shift ted_frequency_shift = Re d / (2 u^H K u) (> 0: towards the adiabatic stiffness; '
-            'the modes themselves stay isothermal). Reproduces Zener Q^-1 = Delta omega tau / (1 + (omega tau)^2), '
-            'Delta = E alpha^2 T0 / (rho cp), tau = h^2 / (pi^2 k / (rho cp)), for the flexure of a thin beam of '
-            'thickness h (more precisely the exact Lifshitz-Roukes form, within 2 % of Zener). Material data: k '
-            '(k_xx, k_yy, k_zz; k_xy is not read), rho and cp as for heat (library silicon, silica and silicon_nitride '
-            'have them), alpha '
-            '(alpha_xx / _yy / _zz), the stiffness; '
-            'every solid cell needs rho > 0 and cp > 0. Result \'table\', one row per mode: '
-            f"{', '.join(TABLE_COLUMNS)} (Hz; Q inf without loss): q_other combines the other losses of the mode, the "
-            'Q of a damped pencil (elastic PML / anchor radiation and, on element meshes, mechanical_loss_factor), on '
-            'a tensor mesh (undamped pencil) the loss factor perturbatively, 1 / Q = u^H (eta K) u / u^H K u, on '
-            'tetrahedra also the squeeze-film gas Q (q_gas totals); 1 / q_total = 1 / q_ted + 1 / q_other. Extras T0 '
-            'and '
-            'selected_resonance. Damped (complex) modes use Re omega and Re(u^H M u). One complex host SuperLU '
-            'factorisation of the thermal operator per mode, on the first read of the result. Not modelled: '
-            'piezoelectric solids, guided (2.5D) modes, azimuthal_order m >= 1, Bloch cells; the PML ring / shell '
-            "elements take no part. For Q_TED versus a parameter add a derived value with source '<physics>.<this "
-            "feature>', expression q_ted, operation at and at = 0 (the first mode)."),
+            'Thermoelastic damping (TED) of every mode of the last eigenfrequency (or optomechanics) solve, '
+            f'{where_text}; perturbative and one-way (the modes stay isothermal). Per mode (omega = Re omega, exp(+j '
+            'omega t)) the strain-rate heat source q = -j omega T0 (beta : eps), beta = C : alpha the thermal stress per '
+            'kelvin, drives j omega rho cp theta - div(k grad theta) = q on the solid, adiabatic on its whole boundary '
+            '(theta on its own nodes: bilinear on a tensor mesh, P1 / P2 on element meshes); d = -int beta : eps* theta '
+            'dV gives 1 / Q_TED = Im d / (u^H K u) (> 0) and ted_frequency_shift = Re d / (2 u^H K u) (> 0: toward the '
+            'adiabatic stiffness). Thin-beam flexure reproduces Zener (Delta = E alpha^2 T0 / (rho cp), tau = h^2 rho '
+            'cp / (pi^2 k)) and Lifshitz-Roukes within 2 %. Materials: k (k_xx, k_yy, k_zz), rho, cp (library silicon, '
+            'silica, silicon_nitride have them), alpha, the stiffness; every solid cell needs rho > 0 and cp > 0. '
+            f"Result 'table', one row per mode: {', '.join(TABLE_COLUMNS)} (Hz; Q inf without loss): q_other = the "
+            "other losses (a damped pencil's Q: elastic PML and, on element meshes, mechanical_loss_factor; tensor "
+            'mesh: the loss factor perturbatively, 1 / Q = u^H (eta K) u / u^H K u; tetrahedra: also q_gas), 1 / '
+            'q_total = 1 / q_ted + 1 / q_other. Extras T0, selected_resonance. Complex modes use Re omega and Re(u^H M '
+            'u). One complex host SuperLU per mode at the first read. Not modelled: piezoelectric, guided modes, '
+            'azimuthal_order >= 1, Bloch cells; PML elements take no part. Q_TED versus a parameter: derived value '
+            "source '<physics>.<this feature>', expression q_ted, operation at, at = 0."),
         apply=_apply_thermoelastic_damping, result=_thermoelastic_damping_result,
         validate=_validate_thermoelastic_damping, memory_estimate=_thermoelastic_damping_memory, grids=grids)
 
-# ---- frequency_probe feature and complex reactions (new_modules_plan K4; triangle / tetrahedron meshes) ----
+# ---- frequency_probe feature and complex reactions (triangle / tetrahedron meshes) ----
 def _frequency_probe_result(session, solver, record, feature_spec, options):
     from ...core.harmonic_probe import harmonic_probe_result   # lazy: core.harmonic_probe imports core.backend (cupy)
     return harmonic_probe_result(record)
@@ -882,9 +853,9 @@ def _validate_frequency_probe(vctx, physics_spec, feature_spec, values):
     """The point inside the domain; a warning outside the frequency_response study (no frequency is recorded)."""
     from ...model.definition_helpers import validate_points_inside
     issues = list(validate_points_inside(vctx, physics_spec, feature_spec, values))
-    if vctx.study_type != FREQUENCY_RESPONSE_STUDY_NAME:
+    if vctx.study_type != FREQUENCY_RESPONSE_STUDY:
         issues.append(Issue('warning', feature_path(physics_spec, feature_spec),
-                            f'frequency_probe is filled only by a {FREQUENCY_RESPONSE_STUDY_NAME} study (this model '
+                            f'frequency_probe is filled only by a {FREQUENCY_RESPONSE_STUDY} study (this model '
                             f'runs {vctx.study_type}): its result will be missing'))
     return issues
 
@@ -896,12 +867,10 @@ def frequency_probe_feature(apply, components, grids):
         'frequency_probe', 'Frequency probe', 'probe', 'point', object_kinds=('point',), max_entities=1,
         result_kind='xy',
         summary='Records the vibration amplitude and phase at a point for every frequency of a frequency response.',
-        description=('frequency_response study only (triangle and tetrahedron meshes): the complex displacement '
-                     '(exp(+j omega t), phase 0 = the drive) at the point per solved frequency, the nodal field '
-                     'evaluated there (triangles: the mesher puts a node on the point; 0 off the solid). Result \'xy\' '
-                     f'versus frequency [Hz] (core.harmonic_probe series): {series} (m; phase in rad, in (-pi, pi]); a '
-                     'derived value two_wave_fit pairs a _re series with its _im sibling. The record restarts with each '
-                     'frequency_response run.'),
+        description=('frequency_response study only: the complex displacement (exp(+j omega t), phase 0 = the drive) '
+                     'at the point per solved frequency (triangles: a node is put there; 0 off the solid). Result '
+                     f"'xy' versus frequency [Hz]: {series} (m; phase rad in (-pi, pi]); derived value two_wave_fit "
+                     'pairs a _re series with its _im. Restarts with each frequency_response run.'),
         apply=apply, result=_frequency_probe_result, validate=_validate_frequency_probe, grids=grids)
 
 
@@ -931,21 +900,9 @@ def support_result(solver, region, axes, unit):
 
 
 def stiffness_follows_state(context):
-    """True when a spec material's youngs_modulus or poisson_ratio references a physics state field or time t (the
-    operator is re-assembled during the run)."""
-    state_names = frozenset(state_field_names(context.spec, context.registry)) | TIME_NAMES
-    for material in context.spec.materials:
-        properties = material.properties if isinstance(material.properties, dict) else {}
-        for name in STIFFNESS_ARRAYS:
-            value = properties.get(name)
-            if not isinstance(value, str):
-                continue
-            try:
-                if not referenced_names(value).isdisjoint(state_names):
-                    return True
-            except ExpressionError:   # reported by validate
-                continue
-    return False
+    """True when a spec material's stiffness (youngs_modulus, poisson_ratio, c_ij) references a physics state field or
+    time t (the operator is re-assembled during the run)."""
+    return material_follows_state(context, STIFFNESS_ARRAYS)
 
 
 # ---- reused sweep builds (SweepSpec.reuse_build; model.sweep_reuse) ----

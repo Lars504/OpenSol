@@ -1,7 +1,7 @@
 """Self-test of the fixed-pattern tangent assemblers (fem.elasticity3d.TangentAssembler3D, fem.elasticity.TangentAssembler;
 CPU, check({})): internal force, full and free-free tangent against the one-off COO assembly and its slicing, patterns
 constant across displacements and equal to the structural pattern of the element blocks. error = failed sub-checks.
-GPU twin (plan G5): the device assembler and the device-value cuDSS refactorisation against the host path."""
+GPU twin: the device assembler and the device-value cuDSS refactorisation against the host path."""
 import numpy as np
 
 from ..model.schema import SelfTestCase
@@ -133,7 +133,7 @@ def _check_tangent_assembler(_):
     return checks.result(**details)
 
 
-# ---- fem3d_tangent_assembler_gpu (plan G5): the device TangentAssembler3D against the host one on the same box, and
+# ---- fem3d_tangent_assembler_gpu: the device TangentAssembler3D against the host one on the same box, and
 # CudssFactorization.refactorize_device_values against a host-refreshed cuDSS factor and SuperLU
 _DEVICE_RTOL = 1e-12   # same formulas, atomic (unordered) summation on the device (first estimate)
 _SOLVE_RTOL = 1e-9     # solves of two factors of values equal to round-off: ~ cond x eps (first estimate)
@@ -432,7 +432,7 @@ TANGENT_ASSEMBLER_SELFTEST_CASES = (
         max_wall_time=120.0),
     SelfTestCase(
         name='fem3d_tangent_assembler_gpu',
-        label='FEM: device tangent assembler and device-value cuDSS refactorisation (plan G5, GPU)',
+        label='FEM: device tangent assembler and device-value cuDSS refactorisation (GPU)',
         description='The fem3d_tangent_assembler box (P1 / P2, two materials, void elements, random S0): the device '
                     'TangentAssembler3D (gradients cached and recomputed) against the host one at two random '
                     'displacements (the second reusing the device S0), without S0, and tangent(): force (with the '

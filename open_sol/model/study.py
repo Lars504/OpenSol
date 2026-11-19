@@ -26,7 +26,8 @@ from .builder import build as build_model, external_memory_record, run_memory_re
 from .meshing import element_meshes_kept
 from .definition_helpers import wavelength_range_issues
 from .expressions import evaluate_parameters, evaluate_scalar
-from .schema import RESULT_KINDS, Issue, Param, StudyType, get_registry, known_physics, resolve_values
+from .schema import (FREQUENCY_DOMAIN_STUDY, RESULT_KINDS, TIME_DEPENDENT_STUDY, Issue, Param, StudyType, get_registry,
+                     known_physics, resolve_values)
 from ..core import host_memory
 from .session import (LIVE_SOLUTION, SelectedSolution, Snapshot, StoredSolution, earlier_derived_names,
                       live_snapshot_index, snapshot_solution_names, solution_bytes)
@@ -456,7 +457,8 @@ def _run_sweep_values(spec, registry, build, emit, control, service, on_session)
         reuse_build = spec.study.sweep.reuse_build is True   # build once, re-set the following loads per value
         live_parameters = frozenset()
         if reuse_build:
-            from .sweep_reuse import live_parameter_names, non_rerun_physics, reuse_issues   # reused sweeps only
+            from .sweep_reuse import (live_parameter_names, non_rerun_physics, reuse_issues,   # reused sweeps only
+                                      unfollowed_values)
             refusals = reuse_issues(spec, registry)
             if refusals:   # validation of the full spec names every one at its node (_fail_sweep_setup)
                 raise ValueError(f'reuse_build is refused: {refusals[0][1]}'
@@ -510,10 +512,16 @@ def _run_sweep_values(spec, registry, build, emit, control, service, on_session)
             table['builds'] += 1
             if failure is None and reuse_build:
                 cannot_rerun = non_rerun_physics(session)
+                unfollowed = [] if cannot_rerun else unfollowed_values(session, registry, live_parameters)
                 if cannot_rerun:   # their solvers cannot rerun a kept build: one build per value, as without reuse
                     reuse_build, live_parameters = False, frozenset()
                     emit(LogEvent('info', f"sweep reuse_build: physics {', '.join(cannot_rerun)} cannot rerun a kept "
                                           'build (no reset_records); every sweep value is built'))
+                elif unfollowed:   # a flagged value whose apply set no follower would keep its build value
+                    reuse_build, live_parameters = False, frozenset()
+                    emit(LogEvent('warning', f"sweep reuse_build: {'; '.join(unfollowed)} follows parameters but this "
+                                             'build re-sets nothing for it (its apply calls no follow_parameters here: '
+                                             'a definition gap); every sweep value is built'))
                 else:
                     reused_session = session
                     emit(LogEvent('info', f'sweep reuse_build: this build takes every value of {parameter} (the '
@@ -715,6 +723,7 @@ def _run_built(session, spec, registry, emit, control, service):
         additions = {'status': 'cancelled'}
     session.domain.backend.synchronize()   # kernels still queued belong to the study time (cpu: nothing)
     study_seconds = time.perf_counter() - study_start
+    session.context.check_dynamic_ranges()   # range exits after the last periodic check raise too
     # the pool keeps its freed blocks during a run: reserved - baseline = kept + run high-water mark (VER-5); the cpu
     # backend has no pool and traces the build only (MemoryLedger), so it records no run memory; free blocks stranded
     # before the build are left out (a lower bound when the run reused them), at least the used-bytes growth
@@ -1276,11 +1285,11 @@ class _BackgroundStage:
 
 def _background_stage(session, background, solved, values, emit, control, service, refused, intro, stage_names,
                       feedback=()):
-    """Shared start of the studies with a stationary background (frequency_domain, mode_analysis, eigenfrequency,
-    thermal_noise): refuse couplings reading the solved physics (refused = (kind, reason); `feedback` couplings
-    excepted, which then apply in the background solve with the solved physics as inputs), runner.prepare, recorder,
-    live feed, the intro log line, stages ([_BACKGROUND_STAGE] with a background + stage_names), the background fixed
-    point, then (completed) the background couplings once."""
+    """Shared start of every study with a stationary background (StudyType.background_study): refuse couplings
+    reading the solved physics (refused = (kind, reason); `feedback` couplings excepted, which then apply in the
+    background solve with the solved physics as inputs), runner.prepare, recorder, live feed, the intro log line,
+    stages ([_BACKGROUND_STAGE] with a background + stage_names), the background fixed point, then (completed) the
+    background couplings once."""
     runner = session.runner
     _refuse_solution_readers(runner.couplings, solved, *refused, allowed=feedback)
     runner.prepare()
@@ -1388,7 +1397,7 @@ def _feedback_rounds(session, background, solved, feedback, values, solve, emit,
 
 def _solve_wavelengths(session, harmonic, wavelengths, recorder, live, emit, control, service, pulsed=()):
     """_solve_wavelength_list between plan_harmonic_frequencies(omegas) and (): physics with that hook (FDFD
-    line-block wavelength batches, solver_plan Part II stage 3) learn the solve order first."""
+    line-block wavelength batches) learn the solve order first."""
     planners = [session.runner.physics[name] for name in harmonic
                 if isinstance(session.runner.physics[name], HarmonicFrequencyPlanner)]
     for solver in planners:
@@ -1631,8 +1640,7 @@ def _validate_frequency_domain(vctx, values):
 
 _LIVE_UPDATE_PARAM = Param(
     'live_update_hz', 'float', 5.0, label='Live update rate', unit='Hz', min=0.0,
-    help='Maximum rate of the live field frames the GUI shows while computing; 0 disables them. Frames never '
-         'change the results (the headless api.run sets 0).',
+    help='Maximum rate of the GUI live field frames; 0 disables them. Never changes results (headless api.run sets 0).',
     tip='How often per second the field view refreshes while the study runs; 0 turns it off.\n\n'
         'Does not change the results.')
 _RELAXATION_PARAM = Param(
@@ -1641,71 +1649,56 @@ _RELAXATION_PARAM = Param(
         'Below 1 calms a loop that oscillates, above 1 speeds up a slow one. Keep 1 unless convergence is poor.',
     help='Relaxation w of the loop-back couplings (those writing a physics solved earlier in the iteration, e.g. '
          'heat_em_thermo_optic in an FDFD + heat loop): each injects previous + w (new - previous); 1 = plain '
-         'Picard. For a loop gain g (about the ratio of successive relative changes, negative when the fields '
-         'alternate) w ~ 1/(1 - g): w > 1 speeds a slow monotone loop (plain Picard needs ~ln(tolerance)/ln(g) '
-         'iterations), w < 1 damps an oscillating one (e.g. a thermo-optic shift past a resonance). Nothing cures a '
-         'physical runaway (monotone g > 1). The relative change compared with the tolerance is divided by w. With '
-         'anderson_depth > 0 it is the Anderson mixing parameter instead (the change is then divided by w only '
-         'when w < 1).')
+         'Picard. For loop gain g (ratio of successive relative changes, negative when alternating) w ~ 1/(1 - g): '
+         'w > 1 speeds a slow monotone loop, w < 1 damps an oscillating one (a thermo-optic shift past a '
+         'resonance); nothing cures a physical runaway (monotone g > 1). The change compared with the tolerance is '
+         'divided by w. With anderson_depth > 0: the Anderson mixing parameter (change divided by w only when w < '
+         '1).')
 _WARM_START_PARAM = Param(
     'warm_start', 'bool', False, label='Sweep warm start',
     tip='In a parameter sweep, start each value from the previous solution to save time.\n\n'
         'A geometrically nonlinear solid starts its Newton solve from the displacement predicted from the previous '
         'two values, which cuts its iterations.\n\n'
         'Off makes every value independent and exactly reproducible.',
-    help='Parameter sweeps only: start each sweep value from the previous value\'s solution when the mesh is '
-         'unchanged (heat T and Q, potential V and its source, magnetic potentials; the couplings reading only these '
-         'are applied first), which cuts coupling iterations and CG iterations. drift_diffusion ramps its contact / '
-         'gate voltages and generation from the previous value\'s converged state instead of from equilibrium (an I-V '
-         'sweep then takes about one continuation step per value). A geometrically nonlinear solid '
-         '(solid_mechanics on triangles, solid_mechanics_3d on tetrahedra) starts its Newton solve from the '
-         'displacement of the previous value, linearly extrapolated in the swept parameter from the last two values '
-         '(at most one previous step ahead), and ramps its load_steps from that state\'s loads and held values; a '
-         'start that does not converge falls back to the cold ramp from u = 0. Results then differ from a cold start '
-         'within the tolerance; off, every value starts cold (T0, V = 0, u = 0) and is reproducible on its own.')
+    help="Parameter sweeps only: start each value from the previous value's solution when the mesh is unchanged "
+         '(heat T and Q, potential V and its source, magnetic potentials; couplings reading only these applied '
+         'first). drift_diffusion ramps contact / gate voltages and generation from the previous converged state (an '
+         'I-V sweep: about one continuation step per value). A geometrically nonlinear solid (solid_mechanics on '
+         'triangles, solid_mechanics_3d on tetrahedra) starts Newton from the previous displacement, extrapolated '
+         'linearly in the swept parameter (at most one step ahead), ramping load_steps from that state; a failed '
+         'start falls back to the cold ramp. Results differ from a cold start within the tolerance; off, every value '
+         'starts cold (T0, V = 0, u = 0) and is reproducible alone.')
 _PARITY_SECTORS_PARAM = Param(
     'parity_sectors', 'bool', False, label='Parity sectors',
     tip='Splits a mirror-symmetric model into its even and odd parts, solves each on the reduced domain and combines '
         'them.\n\n'
         'Use it for a source off the symmetry plane, or to sort modes and resonances into even and odd ones. Needs '
         'a symmetric or antisymmetric boundary; each part is one more run.',
-    help="Symmetry 2.6: run the study once per symmetric / antisymmetric combination of the model's mirror faces "
-         '(2^k sector runs for k faces with a bc_<face> symmetric / antisymmetric or a membrane symmetry / '
-         'antisymmetry face feature, swapped per sector; each solves the drawn sources plus their images on the drawn '
-         'half (quarter, ...) at that parity) and merge them. stationary / frequency_domain / time_dependent / '
-         'frequency_response: the response of the drawn sources alone (no images) on the unfolded domain: per stored '
-         "snapshot one combined snapshot (its label, 'combined' for a stationary one) holding the mean of the "
-         'unfolded sector fields of every linear signed stored field (Re / Im phasors, raw components such as the '
-         "FDTD E_z; |E|, intensities, losses and phases are left out), then the unfolded sector snapshots labelled "
-         "'<label> [<sector>]'; derived values are combined by their form: integrals / means quadratic in the "
-         'fields (power, flux, absorbed power, intensity, w_re^2 + w_im^2 over regions and surfaces symmetric about '
-         'every mirror plane) as quadratic totals, mean / 2^k; integrals, means and point values linear in signed '
-         'fields (Re / Im phasors, raw components) as the sector mean; feature-sourced values from the combined '
-         'feature results below; values of earlier derived values and parameters only, such as ratios, are '
-         're-evaluated from the combined ones; anything else (max / min, mode volumes, phases, scalar outputs) is NaN '
-         'with a warning; far_field results combined per angle (the mean of the '
-         'complex amplitudes) and flux_spectrum results whose line / plane / box reaches every mirror plane '
-         '(quadratic totals), membrane field_probe phasors (the sector mean) and port / mode_projection guide modes '
-         '(renumbered to the unfolded guide: a free mirror wall gives modes 2k - 1, a held one 2k; amplitudes the '
-         'signed sector mean, port powers and fractions recomputed from them) are stored with the run: '
-         'Results.sector_result(physics, feature, combined=True). A membrane port incident mode on a guide ending on '
-         'a mirror face is driven at twice its amplitude in the sector of its parity only. The combination '
-         'assumes a linear model: couplings out of the wave physics (Joule heat, thermo-optic shifts) see each '
-         "sector's own field, so their combined values are not the drawn source's (validation warns). "
-         'mode_analysis / eigenfrequency: the modes or resonances of every sector, sector by sector, labelled with '
-         "their parity ('mode k [x_lo symmetric]: ...'); derived values NaN. Every run: per-sector derived values and "
-         'result digests in summary parity_sectors (labels, derived, results, combined_results, snapshot_sectors), '
-         'the feature results '
-         'per sector by Results.sector_result; the live state (Results.field, feature results) is the last sector, '
-         "the one with the model's own mirror signs. With a parameter sweep every sweep value runs its sectors (cold "
-         'starts): sweep derived = the combined values per value, sweep results = the last sector\'s, sweep '
-         'sector_derived the per-sector values, parity_sectors the last value\'s. Needs a mirror face.')
+    help="Run the study once per symmetric / antisymmetric combination of the model's k mirror faces (bc_<face> "
+         'symmetric / antisymmetric or a membrane symmetry / antisymmetry feature; 2^k runs, each solving the drawn '
+         'sources plus their images) and merge them; needs a mirror face. stationary / frequency_domain / '
+         'time_dependent / frequency_response give the response of the drawn sources alone on the unfolded domain: '
+         "per snapshot one combined snapshot (stationary: 'combined') with the mean of the unfolded sector fields of "
+         'every linear signed stored field (|E|, intensities, losses, phases left out), then the sector snapshots '
+         "'<label> [<sector>]'. Derived values: quadratic integrals / means (power, flux, absorbed power, intensity "
+         'over regions symmetric about every mirror plane) as quadratic totals, mean / 2^k; linear ones the sector '
+         'mean; feature-sourced ones from the combined feature results; anything else (max / min, mode volumes, '
+         'phases, scalar outputs) NaN with a warning. Combined feature results (Results.sector_result(physics, '
+         'feature, combined=True)): far_field (mean complex amplitude), flux_spectrum reaching every mirror plane '
+         '(quadratic totals), membrane field_probe phasors, port / mode_projection guide modes (renumbered to the '
+         'unfolded guide: a free mirror wall gives modes 2k - 1, a held one 2k). A membrane port mode on a guide '
+         "ending on a mirror face is driven at twice its amplitude in its parity's sector only. Assumes a linear model "
+         "(couplings see each sector's own field; validation warns). mode_analysis / eigenfrequency: every sector's "
+         "modes or resonances labelled with their parity ('mode k [x_lo symmetric]: ...'); derived values NaN. "
+         'Summary parity_sectors: labels, derived, results, combined_results, snapshot_sectors; the live state is the '
+         'last sector. Sweeps: each value runs its sectors (cold starts); sweep derived = the combined values, sweep '
+         "results the last sector's, sweep sector_derived per sector.")
 
 
 def _parity_sector_issues(vctx, values):
     """parity_sectors: an error without a mirror face, a warning with enabled couplings (the combination assumes a
     linear model), else an info naming the sector runs (per sweep value with a sweep)."""
-    if not values.get('parity_sectors'):
+    if not values['parity_sectors']:
         return []
     faces = sorted(mirror_faces(vctx.spec))
     if not faces:
@@ -1713,6 +1706,10 @@ def _parity_sector_issues(vctx, values):
                                            'symmetric or antisymmetric, or give a membrane a symmetry / antisymmetry '
                                            'face (the drawn half is then solved at every parity), or switch '
                                            'parity_sectors off')]
+    try:
+        labels = list(sector_specs(vctx.spec))
+    except ValueError as exc:   # a mirror feature without the other sign (heat symmetry)
+        return [Issue('error', ('study',), str(exc))]
     issues = []
     couplings = [coupling.name for coupling in vctx.spec.couplings if coupling.enabled]
     if couplings:
@@ -1722,7 +1719,7 @@ def _parity_sector_issues(vctx, values):
                                                    "thermo-optic shift) are not the drawn source's"))
     per_value = ' per sweep value' if vctx.spec.study.sweep is not None else ''
     issues.append(Issue('info', ('study',), f"parity_sectors: {2 ** len(faces)} sector runs{per_value} over the "
-                                            f"mirror faces {', '.join(faces)} ({'; '.join(sector_specs(vctx.spec))})"))
+                                            f"mirror faces {', '.join(faces)} ({'; '.join(labels)})"))
     return issues
 
 
@@ -1735,14 +1732,12 @@ def _with_parity_sectors(validate=None):
 
 _FEEDBACK_ROUNDS_PARAM = Param(
     'feedback_rounds', 'int', 20, label='Feedback rounds', min=1,
-    help='Studies with solution feedback only, used when an enabled coupling reads a physics the study solves itself '
-         'and writes a background physics (e.g. em_heat_joule from em_fdfd_nonlinear into heat: two-photon '
-         'absorption heating): rounds of background solve (the feedback couplings applied before each of its sweeps) '
-         'and study solve at most, until every primary field of these physics changes between rounds by at most the '
-         'tolerance (the same relative measure as the background fixed point); a warning when not reached or when '
-         'the change stops decreasing for 3 rounds (from round 4), the last round is kept. Without a coupling back '
-         'into the study physics one background solve follows the study solve. No relaxation acts between rounds. '
-         'Typically 5-20.',
+    help='Used when an enabled coupling reads a physics the study solves and writes a background physics (e.g. '
+         'em_heat_joule from em_fdfd_nonlinear into heat): rounds of background solve (feedback couplings applied '
+         'first) and study solve, until every primary field of these physics changes by at most the tolerance '
+         'between rounds; a warning when not reached or when the change stops decreasing for 3 rounds (from round '
+         '4); the last round is kept; no relaxation. Without a coupling back into the study physics one background '
+         'solve follows the study solve. Typically 5-20.',
     tip='Largest number of rounds in which a coupled background physics (for example heat warmed by the light) and '
         'the main solve are repeated until they agree.\n\nUsed only when the main solution feeds a background physics.')
 
@@ -1782,19 +1777,6 @@ def _study_solved_types(vctx, study_name):
             yield physics, physics_type
 
 
-def _frequency_list(values, ascending=False) -> list:
-    """Study frequencies [Hz] in solve order: the explicit list (sorted with ascending), else n_frequencies from
-    frequency_start to frequency_stop, linear or (log_spacing) geometric; 1 = the arithmetic / geometric mean."""
-    if values['frequencies']:
-        frequencies = [float(frequency) for frequency in values['frequencies']]
-        return sorted(frequencies) if ascending else frequencies
-    start, stop, count = values['frequency_start'], values['frequency_stop'], values['n_frequencies']
-    if count == 1:
-        return [math.sqrt(start * stop) if values['log_spacing'] else 0.5 * (start + stop)]
-    spaced = np.geomspace(start, stop, count) if values['log_spacing'] else np.linspace(start, stop, count)
-    return [float(frequency) for frequency in spaced]
-
-
 def _frequency_range_issues(values) -> list:
     """[error] for a frequency range that does not increase (more than one frequency, no explicit list)."""
     if values['frequencies'] or values['frequency_stop'] > values['frequency_start'] or values['n_frequencies'] <= 1:
@@ -1808,33 +1790,29 @@ def _fixed_point_params(scope, max_iterations_tip, tolerance_tip):
     prefixes the max_iterations, tolerance and anderson_depth helps."""
     return (
         Param('max_iterations', 'int', 50, label='Maximum coupling iterations', min=1, tip=max_iterations_tip,
-              help=f'{scope}Gauss-Seidel iterations over the physics in a coupling loop (each solved in model order, '
-                   'each coupling applied once its sources are solved); physics only fed by the loop (sinks: they feed no '
-                   'coupling back) are solved once afterwards, and a model without a loop is a single pass. Typically 10-50; a warning is logged when the tolerance is not reached. The loop '
-                   'stops early with a warning when the change does not decrease for 3 iterations in a row (from '
-                   'iteration 4) and fails the run when the fields turn non-finite.'),
+              help=f'{scope}Gauss-Seidel iterations over the physics of a coupling loop (model order, each coupling '
+                   'applied once its sources are solved); sinks (feeding no coupling back) are solved once '
+                   'afterwards; no loop = a single pass. Typically 10-50. Warns when the tolerance is not reached; '
+                   'stops early with a warning when the change has not decreased for 3 iterations (from iteration '
+                   '4); non-finite fields fail the run.'),
         Param('tolerance', 'float', 1e-4, label='Relative tolerance', unit='1', min=0.0, min_exclusive=True,
               tip=tolerance_tip,
-              help=f'{scope}Converged when every primary field of the loop physics changes between iterations by at '
-                   'most this fraction of its range max|f| (the heat temperature T is compared as its rise T - T0). '
-                   'The remaining error is about change * g / (1 - g) for a loop gain g (ratio of successive '
-                   'changes): at g = 0.9 a change of 1e-4 means an error of ~1e-3. Anderson steps (anderson_depth) '
-                   'approach the remaining error itself, so there it is about the change. Typically 1e-4.'),
+              help=f'{scope}Converged when every primary field of the loop physics changes by at most this fraction '
+                   'of its range max|f| (heat T as its rise T - T0). The remaining error is about change * g / (1 - '
+                   'g) for loop gain g (at g = 0.9, 1e-4 means ~1e-3); with anderson_depth about the change. '
+                   'Typically 1e-4.'),
         _RELAXATION_PARAM,
         Param('anderson_depth', 'int', 0, label='Coupling acceleration depth', min=0,
               tip='Number of earlier rounds combined to speed up a slowly converging loop; 0 switches it off.\n\n'
                   'Use it when the coupled physics creep toward their steady state over many rounds. It can also '
                   'settle on an unstable or unphysical state (a runaway, the unstable branch of a bistable loop) '
                   'that the plain rounds would expose, so keep 0 there.',
-              help=f'{scope}Anderson acceleration of the loop-back couplings (Walker-Ni, depth m = this value, mixing '
-                   'parameter = relaxation): each loop-back injects its new value during the sweep (later physics of '
-                   'the sweep see it), then before the next sweep every loop-back value is replaced by the '
-                   'least-squares combination of the last m iterates and their changes (each value scaled by its '
-                   'largest magnitude; host float64 copies, ~3 m + 3 per value); 0 = plain relaxation. A monotone '
-                   'loop of gain g needs ~ln(tolerance)/ln(g) Picard iterations (~120 at g = 0.9 and 1e-6), far '
-                   'fewer accelerated. Like any secant method it can converge to a fixed point Picard cannot reach: '
-                   'an unstable branch (bistable thermo-optic loops) or, past a runaway (monotone g > 1), an '
-                   'unphysical one, so it is opt-in. Typically 3-5.'),
+              help=f'{scope}Anderson acceleration of the loop-back couplings (Walker-Ni, depth m, mixing parameter = '
+                   'relaxation): before each sweep every loop-back value becomes the least-squares combination of '
+                   'the last m iterates and changes (host float64, ~3 m + 3 copies per value); 0 = plain relaxation. '
+                   'A monotone loop of gain g needs ~ln(tolerance)/ln(g) Picard iterations (~120 at g = 0.9, 1e-6), '
+                   'far fewer accelerated. It can converge to fixed points Picard cannot reach (an unstable bistable '
+                   'branch, an unphysical one past a runaway), so it is opt-in. Typically 3-5.'),
         _WARM_START_PARAM,
         _LIVE_UPDATE_PARAM,
     )
@@ -1845,35 +1823,29 @@ _TIME_DEPENDENT_PARAMS = (
           tip='Simulated time span.\n\n'
               'Light pulses need about 100 to 1000 femtoseconds (1e-13 to 1e-12 s); transient heat needs milliseconds '
               'to seconds.',
-          help='Simulated time span in s; the run stops at the tick nearest the duration (less than half a time '
-               'step advances nothing). EM runs typically take 100-1000 fs: the pulse (2*t0 = '
-               '9/(pi*bandwidth*f0); ricker 8/f0) plus the transit time and the ring-down (validation warns when '
-               'the duration ends before the longest pulse, plus the domain diagonal * n_max / C0 with a flux, DFT, '
-               'mode or far-field monitor); transient heat takes ms to s.'),
+          help='The run stops at the tick nearest the duration. EM: typically 100-1000 fs, the pulse (2*t0 = '
+               '9/(pi*bandwidth*f0); ricker 8/f0) plus transit and ring-down (validation warns when it ends before '
+               'the longest pulse, plus the domain diagonal * n_max / C0 with a flux, DFT, mode or far-field '
+               'monitor); transient heat: ms to s.'),
     Param('output_interval', 'float', 0.0, label='Output interval', unit='s', min=0.0,
           tip="Simulated time between stored field snapshots; 0 spreads 'Number of snapshots' over the duration.",
-          help='Time in s between snapshots of the stored fields (study stored_fields, default every output '
-               'field), from t = 0; 0 = n_snapshots evenly spaced instead. Intermediate snapshots stop once they '
-               'exceed 1 GB; the final state is always stored. Snapshots hold the native window cells (graded '
-               'included) up to 250,000 cells, else nearest-cell values on square pixels of max(finest cell, '
-               'sqrt(window area / 250,000)) (native_shape set): fine features can then be skipped.'),
+          help='Between snapshots of the stored fields, from t = 0; 0 = n_snapshots evenly spaced. Intermediate '
+               'snapshots stop past 1 GB; the final state is always stored.'),
     Param('n_snapshots', 'int', 20, label='Number of snapshots', min=1,
           tip="Stored field snapshots, evenly spaced from the start to the end; 1 stores only the final state.\n\n"
               "Used when 'Output interval' is 0.",
-          help='With output_interval 0: snapshots at t = 0, duration / (n_snapshots - 1), ..., the final state '
-               '(n_snapshots in all; 1 = the final state only). Ignored when output_interval > 0. Headless '
-               'self-test runs store only the final state unless the model sets output_interval or n_snapshots '
-               '(selftest examples: unless an analytic curve reads a snapshot).'),
+          help='With output_interval 0: snapshots at t = 0, duration / (n_snapshots - 1), ..., the final state (1 = '
+               'final only). Headless self-test runs store only the final state unless the model sets '
+               'output_interval or n_snapshots (selftest examples: unless an analytic curve reads a snapshot).'),
     _LIVE_UPDATE_PARAM,
     _PARITY_SECTORS_PARAM,
 )
-def _background_fixed_point_params(before, gui_before, note=''):
-    """_fixed_point_params of a study's background fixed point over the background physics only, run before `before`
-    (help) / `gui_before` (tips), e.g. 'the mode solve' / 'the modes are computed'; note extends the unused-without
-    remark."""
+def _background_fixed_point_params(gui_before):
+    """_fixed_point_params of a study's background fixed point over the background physics only, run before
+    `gui_before` (tips), e.g. 'the modes are computed'; the helps are the same in every study (describe shares
+    them)."""
     return _fixed_point_params(
-        f'Background fixed point, before {before} over the background physics only (unused without background '
-        f'physics{note}): ',
+        'Background fixed point before the study solve, background physics only (unused without them): ',
         max_iterations_tip=f'Largest number of rounds for the steady heat or current solve before {gui_before}, when '
                            'those physics are coupled.\n\n10 to 50 is typical.',
         tolerance_tip=f'Convergence of the steady heat or current solve before {gui_before}: it stops when no field '
@@ -1890,50 +1862,42 @@ _FREQUENCY_DOMAIN_PARAMS = (
     Param('wavelength_start', 'float', 1.5e-6, label='Start wavelength', unit='m', min=0.0, min_exclusive=True,
           tip='First vacuum wavelength of the range, in metres (1.5e-6 for 1500 nm).\n\n'
               "The study wavelengths replace the 'Wavelength' set in the wave physics.",
-          help='First vacuum wavelength in m of the range solved when wavelengths is null or empty: n_wavelengths '
-               'wavelengths spaced linearly in wavelength from wavelength_start to wavelength_stop, solved in that '
-               'order. The study wavelengths override the wavelength setting of every FDFD physics. Typically 0.4e-6 '
-               'to 2e-6.'),
+          help='Range used when wavelengths is null or empty: n_wavelengths wavelengths from wavelength_start to '
+               'wavelength_stop, in that order; they override the wavelength setting of every FDFD physics. '
+               'Typically 0.4e-6 to 2e-6.'),
     Param('wavelength_stop', 'float', 1.6e-6, label='Stop wavelength', unit='m', min=0.0, min_exclusive=True,
           tip="Last vacuum wavelength of the range, in metres (1.6e-6 for 1600 nm). Must be larger than 'Start "
               "wavelength'.",
-          help='Last vacuum wavelength in m of the range; must be greater than wavelength_start (equal is allowed '
-               'with n_wavelengths = 1). Ignored when wavelengths lists any wavelength.'),
+          help='Must exceed wavelength_start (equal allowed with n_wavelengths = 1).'),
     Param('n_wavelengths', 'int', 11, label='Number of wavelengths', min=1,
           tip='Wavelengths evenly spaced from start to stop; 1 solves only the middle one.\n\n'
               'Each wavelength costs one full solve.',
-          help='Wavelengths of the range, spaced linearly in wavelength (not in frequency); 1 solves only the centre '
-               '(wavelength_start + wavelength_stop) / 2. Each wavelength costs one assembly, factorisation and '
-               'solve per FDFD physics (harmonic FDTD: one DFT update per sample and 8 / 24 B per window cell of GPU memory). '
-               'Ignored when wavelengths lists any wavelength.'),
+          help='Spaced linearly in wavelength (not frequency); 1 solves the centre. Each costs one assembly, '
+               'factorisation and solve per FDFD physics (harmonic FDTD: one DFT update per sample and 8 / 24 B of '
+               'GPU memory per window cell).'),
     Param('wavelengths', 'float_list', None, label='Wavelength list', unit='m', min=0.0, min_exclusive=True,
           optional=True,
           tip='Vacuum wavelengths in metres, solved in this order.\n\n'
               "When filled, it replaces 'Start wavelength', 'Stop wavelength' and 'Number of wavelengths'.",
-          help='Explicit vacuum wavelengths in m (each > 0), solved in list order; a non-empty list overrides '
-               'wavelength_start, wavelength_stop and n_wavelengths. null or [] = use the range.'),
+          help='Vacuum wavelengths solved in list order; a non-empty list overrides the range.'),
     Param('auto_shutoff', 'float', 1e-4, label='Pulse shutoff level', unit='1', min=0.0, min_exclusive=True,
           max=1.0,
           tip='Time-domain light only: the pulse run stops once the field energy has fallen to this fraction '
               'of its peak after the source pulse ended.\n\n'
               'Smaller is more accurate and takes longer; 1e-4 is typical, 1e-6 for precise comparisons.',
-          help='em_fdtd_* physics only (harmonic FDTD): the pulse ends once t is past the source pulse (2 t0) and the '
-               'EM energy 0.5 sum(eps0 eps E^2 + mu0 mu H^2) dA over the physical window (checked about 10 times per '
-               'wall second) is at most auto_shutoff times its running peak, or at max_duration. The truncated '
-               'ring-down errs the harmonic fields by roughly sqrt(auto_shutoff) times the ring-down share of the '
-               'response (more for slowly decaying resonances); 1e-4 typical, 1e-6 for percent-level comparisons.'),
+          help='em_fdtd_* only (harmonic FDTD): the pulse ends once t > 2 t0 and the EM energy over the window '
+               '(checked ~10 times per wall second) is at most auto_shutoff times its running peak, or at '
+               'max_duration. The truncated ring-down errs the harmonic fields by roughly sqrt(auto_shutoff) times '
+               'the ring-down share (more for slowly decaying resonances); 1e-6 for percent-level comparisons.'),
     Param('max_duration', 'float', 2e-12, label='Maximum pulse duration', unit='s', min=0.0, min_exclusive=True,
           tip='Time-domain light only: the longest simulated time of the pulse run; a warning is logged when it, '
               "not 'Pulse shutoff level', ends the run.",
-          help='em_fdtd_* physics only (harmonic FDTD): upper bound in s of the simulated pulse time; when it ends the '
-               'run before the energy fell below auto_shutoff a warning is logged (high-Q resonances: raise it). '
-               'Typical 1e-12 to 1e-11 s.'),
-    *_background_fixed_point_params(
-        'the wavelength loop', 'the wavelengths',
-        note='; a coupled wavelength scan: the fixed point of every physics at each wavelength'),
+          help='em_fdtd_* only: upper bound of the pulse time; ending before auto_shutoff logs a warning (high-Q '
+               'resonances: raise it). Typical 1e-12 to 1e-11 s.'),
+    *_background_fixed_point_params('the wavelengths'),
     _PARITY_SECTORS_PARAM,
 )
-_MODE_ANALYSIS_PARAMS = (*_background_fixed_point_params('the mode solve', 'the modes are computed'),
+_MODE_ANALYSIS_PARAMS = (*_background_fixed_point_params('the modes are computed'),
                          _PARITY_SECTORS_PARAM)
 
 
@@ -1956,9 +1920,9 @@ def _frequency_domain_counts(values):
 
 def _selftest_cases():
     """The model-layer and fem SelfTestCases (imported on the first registry.selftests(), not by get_registry)."""
-    from ..fem.selftests import FEM_SELFTEST_CASES   # mesh plan T1+: the fem package's cases
+    from ..fem.selftests import FEM_SELFTEST_CASES   # the fem package's cases
     from .selftests_3d_core import CORE_3D_SELFTEST_CASES
-    from .selftests_adaptation import ADAPTATION_SELFTEST_CASES   # mesh plan A1 (S7.7 refinement levels)
+    from .selftests_adaptation import ADAPTATION_SELFTEST_CASES   # S7.7 refinement levels
     from .selftests_analytic import ANALYTIC_SELFTEST_CASES
     from .selftests_conformal import CONFORMAL_SELFTEST_CASES
     from .selftests_conformal_cuts import CONFORMAL_CUT_SELFTEST_CASES
@@ -1969,7 +1933,7 @@ def _selftest_cases():
     from .selftests_interface import INTERFACE_SELFTEST_CASES
     from .selftests_line import LINE_SELFTEST_CASES
     from .selftests_mesh import MESH_SELFTEST_CASES
-    from .selftests_per_mesh import PER_MESH_SELFTEST_CASES   # mesh plan P3 (Session / results per mesh)
+    from .selftests_per_mesh import PER_MESH_SELFTEST_CASES   # Session / results per mesh
     from .selftests_snapshot_solutions import SNAPSHOT_SOLUTION_SELFTEST_CASES   # GUI snapshot solutions
     from .selftests_subpixel import SUBPIXEL_SELFTEST_CASES
     from .selftests_sweep import SWEEP_SELFTEST_CASES
@@ -1990,14 +1954,13 @@ def register(registry):
     (study_thermal_noise), 'nonlinear_frequency_domain' (study_nonlinear), 'optomechanics' (study_optomechanics) and
     'frequency_response' (study_frequency_response), then the model-layer selftest loader."""
     registry.register_study(StudyType(
-        'time_dependent', 'Time dependent',
+        TIME_DEPENDENT_STUDY, 'Time dependent',
         summary='Steps every physics forward in time and stores field snapshots along the way. Needs at least one '
                 'physics that changes in time, such as time-domain light or transient heat.',
         description='Advances every physics in ticks of dt_sync, the smallest dt_limit of the physics (EM: its '
                     'Courant step); a physics with every = n steps on every n-th tick over n * dt_sync. Couplings '
-                    'are applied after every tick at their own every and flushed at the end of the run, also when '
-                    'it is cancelled. Needs at least one physics that steps in time; snapshots at the output '
-                    'interval (or n_snapshots evenly spaced) plus the final state.',
+                    'apply after every tick at their own every and are flushed at the end of the run, also on '
+                    'cancel.',
         params=_TIME_DEPENDENT_PARAMS, requires_time_stepping=True, run=_run_time_dependent,
         validate=_with_parity_sectors(), time_counts=_time_dependent_counts,
         final_state_settings={'output_interval': 0.0, 'n_snapshots': 1}))
@@ -2005,69 +1968,48 @@ def register(registry):
         'stationary', 'Stationary',
         summary='Solves the steady state of every physics, repeating coupled physics until they agree. Time-domain '
                 'wave physics cannot use it.',
-        description='Steady solve of every physics at t = 0; with couplings, solving and applying every coupling '
-                    'is repeated until the primary fields reach a fixed point (tolerance) or max_iterations. '
-                    'Stores the final state only. Heat is always solved as a steady state (time_mode transient is '
-                    'ignored). EM FDFD (em_fdfd_ez, em_fdfd_hz, em_fdfd_bor, em_fdfd_conical, em_fdfd_sphere), em_eme and '
-                    'em_eme_3d '
-                    'are solved at their '
-                    'wavelength setting; with heat (em_heat_joule, heat_em_thermo_optic) every iteration re-solves '
-                    'them with the permittivity of the latest temperature and hands their absorbed power to heat. EM FDTD (em_fdtd_ez, em_fdtd_hz, '
-                    'em_fdtd_3d, em_fdtd_bor) does not support it: use time_dependent; neither does em_modes: use '
-                    'mode_analysis.',
+        description='Steady solve of every physics at t = 0; coupled physics repeat until the primary fields reach '
+                    'a fixed point (tolerance) or max_iterations. FDFD and em_eme types solve at their wavelength '
+                    'setting; with heat every iteration re-solves them at the latest temperature and hands their '
+                    'absorbed power to heat. EM FDTD: use time_dependent; em_modes: mode_analysis.',
         params=_STATIONARY_PARAMS, run=_run_stationary, validate=_with_parity_sectors(), supports_adaptation=True,
         time_counts=_fixed_point_counts))
     registry.register_study(StudyType(
-        'frequency_domain', 'Frequency domain',
+        FREQUENCY_DOMAIN_STUDY, 'Frequency domain',
         summary='Solves the frequency-domain wave physics at a list of wavelengths. Any heat or current physics is '
                 'first solved to a steady state, which every wavelength then shares; when the absorbed light heats '
                 'the model back, each wavelength is solved together with the heat instead, continuing from the '
                 'previous wavelength.',
-        description='Time-harmonic solves at a list of vacuum wavelengths (exp(+j omega t), omega = 2 pi c / '
-                    'wavelength). Harmonic physics (types listing frequency_domain among their supported studies: '
-                    'em_fdfd_ez, em_fdfd_hz, em_fdfd_bor, em_fdfd_conical (at a fixed k_z), em_fdfd_sphere, em_modes, '
-                    'em_eme, '
-                    'em_eme_3d) are solved once per wavelength '
-                    'in list order; the study '
-                    'wavelengths override the wavelength setting of an FDFD or em_modes physics (em_modes: n_modes '
-                    'modes per wavelength, the mode of its mode_number setting in the snapshot, mode_dispersion '
-                    'results versus '
-                    'wavelength). Time-domain types (em_fdtd_ez, em_fdtd_hz, em_fdtd_3d, em_fdtd_bor: harmonic FDTD) '
-                    'instead run one pulse '
-                    'after the background solve, accumulating a running DFT of the whole physical window at every '
-                    'study wavelength until the field energy fell below auto_shutoff of its peak (or max_duration), '
-                    'divided by the spectrum of their shared source waveform (every source of one such physics: the '
-                    'same gaussian or ricker waveform, wavelength and bandwidth): the phasor response to a unit '
-                    'source at phase 0, as the FDFD gives it (output fields: <component>_re / _im / _abs / _phase, '
-                    'e_abs_harmonic, e_intensity_harmonic and absorbed_power_harmonic (time average); ez / hz: the '
-                    'out-of-plane component, stored by default ez_abs / hz_abs; em_fdtd_3d: ex, ey, ez at the cell '
-                    'centres, stored by default e_abs_harmonic; em_fdtd_bor: its own set, see its description); '
-                    'their monitors keep their own unnormalised pulse spectra. '
-                    'Memory: 8 (ez) / 24 (hz, 3D) bytes per window cell and wavelength. '
-                    'Every other physics must support the '
-                    'stationary study and runs as a background physics, solved first (heat is always steady here): '
-                    'the background physics and the couplings among them iterate to a stationary fixed point '
-                    '(max_iterations, tolerance), then every coupling from background to harmonic physics '
-                    '(heat_em_thermo_optic, field_transfer, material properties depending on background fields such '
-                    'as T) is applied once, so every wavelength sees the same background state. Coupled wavelength '
-                    'scan: when an enabled coupling or material property reads a harmonic physics (em_heat_joule or '
-                    'field_transfer from an FDFD physics, a property depending on its fields; every physics must then '
-                    'support the stationary study, so no em_modes or time-domain type), each wavelength is instead a '
-                    'stationary fixed point of every physics (max_iterations, tolerance, relaxation as the stationary '
-                    'study), warm-started from the previous wavelength in list order: an ascending list scans blue '
-                    'to red (the thermal triangle of a red-shifting ring), a descending one red to blue (hysteresis); '
-                    'one log line per wavelength with its iteration count, a warning when one does not converge (the '
-                    'scan continues), summary fixed_point over all wavelengths (converged = all, iterations and '
-                    'relative_change the largest) and wavelength_fixed_points [{wavelength, converged, iterations, '
-                    'relative_change, tolerance}]; a cancel inside a wavelength leaves its monitors holding the last '
-                    'iterate. Needs at least one harmonic physics. Stores one snapshot per wavelength '
-                    'of the stored fields (default every output field, so <field>_re and <field>_im rebuild '
-                    '|field|^2 per wavelength; native window cells up to 250,000 cells, else '
-                    'nearest-cell resampled), labelled "lambda = <nm> nm"; the last '
-                    'wavelength stays the live state (Results.field), and feature results (probes, flux spectra) '
-                    'hold every solved wavelength (sorted by wavelength; snapshot labels keep the solve order).',
+        description='Time-harmonic solves (exp(+j omega t), omega = 2 pi c / wavelength) of every harmonic physics '
+                    'once per wavelength, in list order; the study wavelengths override the wavelength setting '
+                    '(em_modes: n_modes modes per wavelength, its mode_number mode in the snapshot, mode_dispersion '
+                    'results versus wavelength; em_fdfd_conical at a fixed k_z). Time-domain types (em_fdtd_*: '
+                    'harmonic FDTD) instead run one pulse after the background solve with a running DFT of the whole '
+                    'window at every wavelength until the field energy falls below auto_shutoff of its peak (or '
+                    'max_duration), divided by the spectrum of their shared source waveform (every source of one such '
+                    'physics: the same gaussian or ricker waveform, wavelength and bandwidth): the phasor response to '
+                    'a unit source at phase 0, as FDFD gives it (fields <component>_re / _im / _abs / _phase, '
+                    'e_abs_harmonic, e_intensity_harmonic, absorbed_power_harmonic; ez / hz: the out-of-plane '
+                    'component, stored by default ez_abs / hz_abs; em_fdtd_3d: ex, ey, ez at the cell centres, stored '
+                    'by default e_abs_harmonic; em_fdtd_bor: see its type); their monitors keep their own '
+                    'unnormalised pulse spectra. Memory: 8 (ez) / 24 (hz, 3D) B per window cell and wavelength. '
+                    'Background physics iterate to a stationary fixed point (max_iterations, tolerance), then every '
+                    'coupling into the harmonic physics (and material properties of background fields such as T) '
+                    'applies once, so every wavelength sees the same background. Coupled wavelength scan (an enabled '
+                    'coupling or material property reads a harmonic physics, e.g. em_heat_joule from FDFD; every '
+                    'physics must then support stationary: no em_modes or time-domain type): each wavelength is a '
+                    'stationary fixed point of every physics (max_iterations, tolerance, relaxation), warm-started '
+                    'from the previous one in list order: ascending scans blue to red (the thermal triangle of a '
+                    'red-shifting ring), descending red to blue (hysteresis); a wavelength that does not converge '
+                    'warns and the scan continues; summary fixed_point over all wavelengths (converged = all, '
+                    'iterations and relative_change the largest) and wavelength_fixed_points [{wavelength, converged, '
+                    'iterations, relative_change, tolerance}]; a cancel inside a wavelength leaves its monitors at the '
+                    'last iterate. Default stored fields include <field>_re / _im (|field|^2 per wavelength). The last '
+                    'wavelength stays the live state; feature results hold every wavelength (sorted by wavelength; '
+                    'snapshot labels keep the solve order).',
         params=_FREQUENCY_DOMAIN_PARAMS, background_study='stationary', run=_run_frequency_domain,
         validate=_with_parity_sectors(_validate_frequency_domain), coupled_points=True, supports_adaptation=True,
+        supports_solved_physics=True,
         feedback_alternative='use a stationary study for one wavelength, a parameter sweep over the wavelength for '
                              'several', time_counts=_frequency_domain_counts,
         solver_protocols=(HarmonicSolver, PulsedHarmonicSolver)))
@@ -2075,24 +2017,18 @@ def register(registry):
         'mode_analysis', 'Mode analysis',
         summary='Computes the guided modes of a waveguide cross-section at one wavelength. Any heat or current physics '
                 'is first solved to a steady state, so the modes see, for example, a heated waveguide.',
-        description='Cross-section eigenmode solve: every physics listing mode_analysis among its supported studies '
-                    '(em_modes) computes its n_modes modes at its wavelength setting (the xy plane is the waveguide '
-                    'cross-section, propagation along z). Every other physics must support the stationary study and '
-                    'runs as a background physics, solved first (heat is always steady here): the background physics '
-                    'and the couplings among them iterate to a stationary fixed point (max_iterations, tolerance), '
-                    'then every coupling from background to mode physics (heat_em_thermo_optic, field_transfer, '
-                    'material properties depending on background fields such as T) is applied once before the mode '
-                    'solve. Couplings or material properties that read a mode physics are a validation error (mode '
-                    'solutions are not fed back). Stores one snapshot per mode number k of the stored fields (default '
-                    'every output field), labelled "mode k: n_eff = <value>" (a complex value '
-                    'when lossy; with several em_modes physics their names and values joined; mirror faces add the '
-                    'parity, "mode k [x_lo symmetric]: ..."), in the em_modes rank '
-                    'order (descending Re(beta^2)); afterwards each em_modes physics shows the mode of its mode_number setting (Results.field). ticks = the '
-                    'number of mode snapshots. For n_eff versus a parameter use a parameter sweep with a derived value '
-                    'of the mode_table result; for n_eff versus wavelength a frequency_domain study.',
+        description='Every mode physics (em_modes) computes n_modes modes at its wavelength setting (xy = the '
+                    'cross-section, propagation along z). Background physics iterate to a stationary fixed point '
+                    '(max_iterations, tolerance), then every coupling into the mode physics (and material properties '
+                    'of background fields such as T) applies once; couplings or material properties reading a mode '
+                    'physics: validation error. Snapshots per mode number k in the em_modes rank order (descending '
+                    'Re(beta^2)); n_eff complex when lossy; several em_modes physics: names and values joined; mirror '
+                    'faces add the parity ("mode k [x_lo symmetric]: ..."). Afterwards each em_modes physics shows its '
+                    'mode_number mode; ticks = the mode snapshots. n_eff versus a parameter: a sweep with a derived '
+                    'value of mode_table; versus wavelength: frequency_domain.',
         params=_MODE_ANALYSIS_PARAMS, background_study='stationary', run=_run_mode_analysis,
-        validate=_with_parity_sectors(), supports_adaptation=True, time_counts=_fixed_point_counts,
-        solver_protocols=(ModeSolver,)))
+        validate=_with_parity_sectors(), supports_adaptation=True, supports_solved_physics=True,
+        time_counts=_fixed_point_counts, solver_protocols=(ModeSolver,)))
     from . import (study_eigenfrequency, study_frequency_response, study_nonlinear, study_optimization,
                    study_optomechanics, study_thermal_noise)   # they import this module's helpers
     for module in (study_eigenfrequency, study_optimization, study_thermal_noise, study_nonlinear, study_optomechanics,
@@ -2120,7 +2056,7 @@ class _SnapshotRecorder:
         targets = [_coupling_targets(coupling) for coupling in session.runner.couplings]
         self.changing_materials = (frozenset(session.runner.physics) if any(not names for names in targets)
                                    else frozenset().union(*targets))
-        self._keep_solutions = bool(getattr(session, 'keep_solutions', False))
+        self._keep_solutions = session.keep_solutions
         available = host_memory.available_bytes() if self._keep_solutions else None
         self._solution_budget = (_SOLUTION_FALLBACK_BYTES if available is None
                                  else int(_SOLUTION_HOST_FRACTION * available))
@@ -2692,7 +2628,7 @@ def _stored_field_keys(session):
     requested = list(session.spec.study.stored_fields)
     if requested:
         return requested
-    frequency_domain = session.spec.study.type == 'frequency_domain'
+    frequency_domain = session.spec.study.type == FREQUENCY_DOMAIN_STUDY
     keys = []
     for physics, component in _primary_fields(session):
         harmonic_primary = getattr(session.renderer(physics), 'harmonic_primary', '') if frequency_domain else ''

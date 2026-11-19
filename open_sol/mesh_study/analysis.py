@@ -1,5 +1,5 @@
 """S7.8 analysis (CPU): errors vs cells / seconds per accuracy case, power-law fits and cells needed for target errors,
-PCG iteration thresholds, line_block speed-ups, per-physics totals and the gate verdicts of mesh_study_plan.md
+PCG iteration thresholds, line_block speed-ups, per-physics totals and the gate verdicts
 -> tables/*.csv, figures/*.png, mesh_study_report.json.
 References: analytic (coax, disc_heater: the model's derived references; disk: exact cylinder resonance), else a
 Richardson extrapolation of the three finest uniform runs (rib, strip_heater; the fit order is reported)."""
@@ -225,12 +225,16 @@ def analyse_accuracy(options):
 
 
 def pcg_counters(record):
-    """The pcg counters (cg_iterations, solves, unconverged_solves) of the run's linear role."""
+    """The pcg counters (cg_iterations, solves, unconverged_solves) of the run's linear role; {} for a run that did
+    not complete, KeyError for a completed one without them (a renamed pcg counter must not empty the table)."""
     for physics_record in (record.get('solvers') or {}).values():
         for role in (physics_record.get('roles') or {}).values():
             counters = role.get('counters') or {}
             if 'cg_iterations' in counters:
                 return counters
+    if record.get('status') == COMPLETED:
+        raise KeyError(f"pcg run {record.get('label')!r}: no solver role reports 'cg_iterations' in summary.json "
+                       f"solvers (pcg work_counters renamed?)")
     return {}
 
 
@@ -381,7 +385,7 @@ def _verdict(value, go, marginal):
 
 
 def gates(gain_rows, thresholds, line_rows, totals, audit_data):
-    """Gate records {gate, measured, rule, verdict} of mesh_study_plan.md."""
+    """Gate records {gate, measured, rule, verdict} (go / marginal / no-go)."""
     records = []
     ratios = [total['ratio'] for total in totals if total['ratio'] is not None]
     median = statistics.median(ratios) if ratios else None

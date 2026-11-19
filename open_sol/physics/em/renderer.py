@@ -6,6 +6,7 @@ from dataclasses import replace
 from ...core.constants import C0, DTYPE
 from ...core.renderer import FieldInfo, PhysicsRenderer
 from ...core.wavelengths import wavelength_label
+from ...model.schema import FREQUENCY_DOMAIN_STUDY   # requires_study of the harmonic FDTD fields (2D, BOR)
 from .fields import collocate_to_centres
 from .harmonic import face_mean_at_centres
 
@@ -15,7 +16,6 @@ _MODULUS_FIELD_INFOS = {
     'e_intensity': FieldInfo('e_intensity', '|E|^2', unit='V^2/m^2', cmap='inferno'),
     'h_abs': FieldInfo('h_abs', '|H|', unit='A/m', cmap='viridis'),
 }
-_HARMONIC_STUDY = 'frequency_domain'   # FieldInfo.requires_study of the harmonic FDTD fields (harmonic_fdtd.py)
 # mirror parity (core.mirror) of the out-of-plane component: E_z polar, H_z axial
 OUT_OF_PLANE_PARITY = {'ez': 'polar_z', 'hz': 'axial_z'}
 
@@ -33,15 +33,15 @@ def _harmonic_fdtd_field_infos(out_of_plane, label, unit):
     """Re / Im / modulus / argument of the normalised harmonic FDTD phasor of `out_of_plane`, |E| and |E|^2 of the
     E phasor (ez: |E_z|, hz: in-plane) and the absorbed power density, all frequency_domain only."""
     infos = {f'{out_of_plane}_{part}': FieldInfo(f'{out_of_plane}_{part}', text, unit=part_unit, signed=signed,
-                                                 cmap=cmap, requires_study=_HARMONIC_STUDY, parity=parity)
+                                                 cmap=cmap, requires_study=FREQUENCY_DOMAIN_STUDY, parity=parity)
              for part, text, part_unit, signed, cmap, parity in _phasor_parts(out_of_plane, label, unit,
                                                                                ' (phasor)')}
     infos['e_abs_harmonic'] = FieldInfo('e_abs_harmonic', '|E| (phasor)', unit='V/m', cmap='inferno',
-                                        requires_study=_HARMONIC_STUDY)
+                                        requires_study=FREQUENCY_DOMAIN_STUDY)
     infos['e_intensity_harmonic'] = FieldInfo('e_intensity_harmonic', '|E|^2 (phasor)', unit='V^2/m^2',
-                                              cmap='inferno', requires_study=_HARMONIC_STUDY)
+                                              cmap='inferno', requires_study=FREQUENCY_DOMAIN_STUDY)
     infos['absorbed_power_harmonic'] = FieldInfo('absorbed_power_harmonic', 'Absorbed power density (time average)',
-                                                 unit='W/m^3', cmap='magma', requires_study=_HARMONIC_STUDY)
+                                                 unit='W/m^3', cmap='magma', requires_study=FREQUENCY_DOMAIN_STUDY)
     return infos
 
 

@@ -1,4 +1,4 @@
-"""Degree-of-freedom maps on a TetrahedronMesh (igor3d_plan section 7, T5): Lagrange P1 / P2 and Nedelec first kind
+"""Degree-of-freedom maps on a TetrahedronMesh: Lagrange P1 / P2 and Nedelec first kind
 degree 1 / 2 over the whole mesh, a dof = its mesh entity; periodic dof partners and the Bloch masters / phases (em3d,
 the tetrahedra solid). Host numpy."""
 # Numbering: Lagrange P0 element, P1 node, P2 node or n_points + edge; Nedelec degree 1 edge, degree 2 2 edge + slot (slot 0 =

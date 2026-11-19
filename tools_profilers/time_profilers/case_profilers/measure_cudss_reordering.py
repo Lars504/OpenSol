@@ -1,4 +1,4 @@
-"""S6 measurement (speedup_plan.md): cuDSS plan / factorise / solve time, factor fill and peak memory per nvmath
+"""Measurement of cuDSS plan / factorise / solve time, factor fill and peak memory per nvmath
 DirectSolverReorderingAlg on matrices like open_sol's (3D P2 Helmholtz on Kuhn tetrahedra, 2D / 3D finite-difference
 Helmholtz), with the DirectSolver options open_sol uses (blocking, single-threaded host planning, LDL^T on the lower
 triangle for 'symmetric', LU for 'general'). Measurement only: open_sol's default ordering is not changed.

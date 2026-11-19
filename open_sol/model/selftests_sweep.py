@@ -7,13 +7,11 @@ import tempfile
 
 import numpy as np
 
-from .schema import SelfTestCase
+from .schema import FREQUENCY_DOMAIN_STUDY, STATIONARY_STUDY, SelfTestCase
 from .selftest_helpers import relative_error
 from .spec import (DerivedValueSpec, DomainSpec, FeatureSpec, MaterialSpec, MeshSpec, ModelSpec, ParameterSpec,
                    PhysicsSpec, SolverDefaultsSpec, StudySpec, SweepSpec)
 
-_STATIONARY = 'stationary'
-_FREQUENCY_DOMAIN = 'frequency_domain'
 _SWEEP = 'sweep'
 _POWERS = (1.0, 2.0)                  # W/m of the mode source per sweep value (a linear problem: dndT = 0)
 _WAVELENGTH_STEP = 1.01               # second study wavelength = 1.01 x the strip wavelength
@@ -38,10 +36,10 @@ def _feedback_specs():
     """'stationary' and 'frequency_domain' (its one wavelength, coupled: em_heat_joule reads the FDFD physics) of the
     heated strip (dndT 1e-3 /K)."""
     from ..coupling.selftests import _DNDT, _WAVELENGTH, _strip_spec
-    coupled = _strip_spec(_FREQUENCY_DOMAIN, _DNDT)
-    coupled.study.type = _FREQUENCY_DOMAIN
+    coupled = _strip_spec(FREQUENCY_DOMAIN_STUDY, _DNDT)
+    coupled.study.type = FREQUENCY_DOMAIN_STUDY
     coupled.study.settings['wavelengths'] = [_WAVELENGTH]
-    return {_STATIONARY: _strip_spec(_STATIONARY, _DNDT), _FREQUENCY_DOMAIN: coupled}
+    return {STATIONARY_STUDY: _strip_spec(STATIONARY_STUDY, _DNDT), FREQUENCY_DOMAIN_STUDY: coupled}
 
 
 def _power_sweep_specs():
@@ -51,7 +49,7 @@ def _power_sweep_specs():
     spec = _strip_spec('power sweep', 0.0)
     spec.parameters.append(ParameterSpec('P_in', repr(_POWERS[0])))
     spec.physics_by_name('em').feature('source').params['power'] = 'P_in'
-    spec.study.type = _FREQUENCY_DOMAIN
+    spec.study.type = FREQUENCY_DOMAIN_STUDY
     spec.study.settings['wavelengths'] = [_WAVELENGTH, _WAVELENGTH * _WAVELENGTH_STEP]
     spec.study.sweep = SweepSpec('P_in', list(_POWERS), keep_fields=True)
     return {_SWEEP: spec}
@@ -79,7 +77,7 @@ def _string_sweep_specs():
             solver_defaults=SolverDefaultsSpec(backend='cpu'),
             derived_values=[DerivedValueSpec('u_z_mean', 'u_z', [], 'mean'),
                             DerivedValueSpec('u_z_max', 'u_z', [], 'max')],
-            study=StudySpec(type=_STATIONARY, settings={'warm_start': run == 'warm'}))
+            study=StudySpec(type=STATIONARY_STUDY, settings={'warm_start': run == 'warm'}))
         spec.study.sweep = SweepSpec('q0', list(_STRING_LOADS))
         specs[run] = spec
     return specs
@@ -118,18 +116,18 @@ def _phase_difference(results):
 def _check_feedback(results_by_name):
     """The coupled frequency_domain strip reproduces the stationary one: P_absorbed, T_max, the mode-monitor phase
     difference and the fixed-point iteration count; one wavelength fixed point, converged."""
-    stationary, coupled = results_by_name[_STATIONARY], results_by_name[_FREQUENCY_DOMAIN]
+    stationary, coupled = results_by_name[STATIONARY_STUDY], results_by_name[FREQUENCY_DOMAIN_STUDY]
     summaries = {name: results.summary() for name, results in results_by_name.items()}
-    errors = {name: relative_error(float(summaries[_FREQUENCY_DOMAIN]['derived'][name]),
-                              float(summaries[_STATIONARY]['derived'][name])) for name in ('P_absorbed', 'T_max')}
+    errors = {name: relative_error(float(summaries[FREQUENCY_DOMAIN_STUDY]['derived'][name]),
+                              float(summaries[STATIONARY_STUDY]['derived'][name])) for name in ('P_absorbed', 'T_max')}
     phase_stationary, phase_coupled = _phase_difference(stationary), _phase_difference(coupled)
     errors['phase'] = abs(phase_coupled - phase_stationary)
     failed = []
-    records = summaries[_FREQUENCY_DOMAIN].get('wavelength_fixed_points') or []
+    records = summaries[FREQUENCY_DOMAIN_STUDY].get('wavelength_fixed_points') or []
     if len(records) != 1 or not records[0]['converged']:
         failed.append(f'wavelength_fixed_points {records!r}: expected one converged record')
     iterations = {name: (summary.get('fixed_point') or {}).get('iterations') for name, summary in summaries.items()}
-    if iterations[_STATIONARY] != iterations[_FREQUENCY_DOMAIN]:
+    if iterations[STATIONARY_STUDY] != iterations[FREQUENCY_DOMAIN_STUDY]:
         failed.append(f'fixed-point iterations differ: {iterations}')
     error = max(errors.values()) / _TWIN_TOLERANCE + len(failed)   # NaN propagates
     return {'measured': phase_coupled, 'expected': phase_stationary, 'error': error, 'tolerance': 1.0,

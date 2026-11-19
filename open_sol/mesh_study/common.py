@@ -1,4 +1,4 @@
-"""Shared helpers of the S7.8 mesh study (mesh_study_plan.md): mesh variants, check + run of each variant, one JSON
+"""Shared helpers of the S7.8 mesh study: mesh variants, check + run of each variant, one JSON
 line per run in <out>/records/, read back with the last line per label winning."""
 import json
 import math
@@ -18,7 +18,7 @@ COMPLETED = 'completed'
 
 @dataclass
 class StudyOptions:
-    """Command-line options shared by the parts (defaults = mesh_study_plan.md)."""
+    """Command-line options shared by the parts (defaults = the CLI defaults)."""
     out_dir: Path = Path('mesh_study_out')
     force: bool = False            # re-run every recorded variant
     retry_failed: bool = False     # re-run recorded variants whose status is not completed
@@ -173,7 +173,12 @@ def _json_default(value):
 # ---- runs ----
 def run_variants(case, base_spec, variants, path, options):
     """Check + run every variant not yet recorded in path (one JSON line each, failures recorded too); returns the
-    number of runs made."""
+    number of runs made. Labels must be unique within the case (a repeated one would be skipped as recorded)."""
+    labels = [variant.label for variant in variants]
+    repeated = sorted({label for label in labels if labels.count(label) > 1})
+    if repeated:
+        raise ValueError(f"[{case}] variants share the labels {', '.join(repeated)}: add the differing value to "
+                         f"Variant.sweep")
     skip = labels_to_skip(path, options)
     n_runs = 0
     for variant in variants:

@@ -392,7 +392,7 @@ SELFTEST_CASES = (
                      f'k_xy = {BACKGROUND_K_XY:g}, a centred {(CROSS_BLOCK[1] - CROSS_BLOCK[0]) * 1e3:g} mm block with '
                      f'k_xy = {BLOCK_K_XY:g}) with all four faces at {HOT_TEMPERATURE:g} K and T0 = {DEFAULT_T0:g} K, '
                      f'on mesh nonuniform: base {CELL_SIZE * 1e6:g} um, the block refined to '
-                     f'{CROSS_GRADED_CELL * 1e6:g} um, so the cells grade around it (solver_plan S7.1: the vertex '
+                     f'{CROSS_GRADED_CELL * 1e6:g} um, so the cells grade around it (the vertex '
                      'rectangles take area-weighted k_xy; uniform and graded widths share that one assembly, and the '
                      f'block and far field are uniform zones). Exact: T = {HOT_TEMPERATURE:g} K everywhere; measured '
                      f'= max |T - {HOT_TEMPERATURE:g} K| / (T - T0), expected 0. The vertex-based k_xy stencil is '

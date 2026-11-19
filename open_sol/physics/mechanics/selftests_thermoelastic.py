@@ -5,14 +5,14 @@ the template 'silicon_beam_thermoelastic_damping'; no physics imports."""
 import cmath
 import math
 
-from ...model.schema import SelfTestCase
+from ...model.schema import EIGENFREQUENCY_STUDY, SelfTestCase
 from ...model.selftest_helpers import SubChecks, cpu_defaults
 from ...model.spec import (DerivedValueSpec, DomainSpec, FeatureSpec, MaterialSpec, MeshSpec, ModelSpec, ParameterSpec,
                            PhysicsSpec, StudySpec)
 
 _PHYSICS = 'solid'
 _TED = 'ted'
-_STUDY = 'eigenfrequency'   # = model.study_eigenfrequency.STUDY_NAME
+_STUDY = EIGENFREQUENCY_STUDY
 _COLUMNS = ('resonance_number', 'frequency', 'q_ted', 'ted_frequency_shift', 'q_other', 'q_total')   # TABLE_COLUMNS
 # silicon-like isotropic solid; the conductivity of each run puts its mode at the chosen omega tau (Euler-Bernoulli /
 # Kirchhoff estimate of omega, the checks use the computed one)

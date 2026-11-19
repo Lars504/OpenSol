@@ -5,14 +5,14 @@ import math
 
 import numpy as np
 
-from ...model.schema import SelfTestCase, SelfTestVariant
+from ...model.schema import EIGENFREQUENCY_STUDY, SelfTestCase, SelfTestVariant
 from ...model.selftest_helpers import float32_value, scaled_worst_result, solver_role, with_exact_cg
 from ...model.spec import DomainSpec, FeatureSpec, MaterialSpec, MeshSpec, ModelSpec, PhysicsSpec, SolverSpec, StudySpec
 from .selftests import _lame
 
 _PHYSICS = 'solid'
 _SOLID_TYPE = 'solid_mechanics'   # = selftests.SOLID_TYPE_NAME
-_STUDY = 'eigenfrequency'         # = model.study_eigenfrequency.STUDY_NAME
+_STUDY = EIGENFREQUENCY_STUDY
 _TABLE = 'modes'
 _FREQUENCY_COLUMN = 1             # frequency [Hz] in the resonance_table rows
 

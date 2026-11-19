@@ -1,4 +1,4 @@
-"""Nonlinear sheets of the NLFD-chi solver (nonlinear_optics_plan 3.3 / 3.4, stage 4): surface chi(2) on the interface
+"""Nonlinear sheets of the NLFD-chi solver: surface chi(2) on the interface
 faces of a domain selection and 2D-material sheets (chi_s(2), sigma(3)) on an axis-aligned line, as sites that sample
 the channel grid fields and deposit their surface polarisation back by the exact adjoint (numpy at module level)."""
 # Site s samples a model-frame vector E_s = (E_x, E_y, E_z) from a channel's grid fields (ez: E_z at the cell centres;

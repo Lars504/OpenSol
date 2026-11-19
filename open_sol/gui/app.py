@@ -1,6 +1,7 @@
 """GUI entry point: Qt application set-up, uncaught exceptions routed to the Messages tab, and the
 document / worker bridge / main window wiring."""
 import argparse
+import os
 import sys
 import threading
 import traceback
@@ -12,7 +13,7 @@ from ..model.expressions import error_message
 from ..model.schema import get_registry
 from ..model.templates import make_template
 from .document import ModelDocument
-from .main_window import SETTINGS_APPLICATION, SETTINGS_ORGANIZATION, MainWindow
+from .main_window import SETTINGS_APPLICATION, SETTINGS_ORGANIZATION, MainWindow, window_copy_directory
 from .worker_bridge import WorkerBridge
 
 DEFAULT_TEMPLATE = 'dielectric_cylinder'
@@ -101,7 +102,17 @@ def main(argv=None) -> int:
                                      description='open_sol model editor and GPU solver')
     parser.add_argument('model', nargs='?', default=None,
                         help=f'model file (.json) to open; default: the {DEFAULT_TEMPLATE} template')
+    # internal, from MainWindow.launch_window: Duplicate in new window's copy (read as untitled, then deleted) and its
+    # display name; --cascade = started by another window
+    parser.add_argument('--copy', default=None, help=argparse.SUPPRESS)
+    parser.add_argument('--copy-name', default='another window', help=argparse.SUPPRESS)
+    parser.add_argument('--cascade', action='store_true', help=argparse.SUPPRESS)
     arguments = parser.parse_args(sys.argv[1:] if argv is None else list(argv))
+    if arguments.copy is not None:
+        if arguments.model:
+            parser.error('give a model file or --copy, not both')
+        if os.path.dirname(os.path.abspath(arguments.copy)) != os.path.abspath(window_copy_directory()):
+            parser.error(f'--copy reads (and deletes) only files in {window_copy_directory()}')
 
     registry = get_registry()
     app = QtWidgets.QApplication.instance()
@@ -118,7 +129,17 @@ def main(argv=None) -> int:
     try:
         document = ModelDocument(registry, make_template(DEFAULT_TEMPLATE))
         open_error = None
-        if arguments.model:
+        copy_status = None
+        if arguments.copy is not None:
+            try:
+                document.new_from_file(arguments.copy)
+            except (OSError, ValueError, KeyError) as exc:   # the copy is kept for a look at what failed
+                open_error = (f'Could not read the copy of {arguments.copy_name} ({arguments.copy}): '
+                              f'{error_message(exc)}\nShowing the {DEFAULT_TEMPLATE} template.')
+            else:
+                os.remove(arguments.copy)
+                copy_status = f'Copy of {arguments.copy_name}, untitled: Save As keeps it'
+        elif arguments.model:
             try:
                 document.open(arguments.model)
             except (OSError, ValueError, KeyError) as exc:
@@ -128,7 +149,11 @@ def main(argv=None) -> int:
         try:
             window = MainWindow(document, bridge, registry)
             relay.report = window.report_uncaught_exception   # also gets exceptions raised while it was built
+            if arguments.cascade:
+                window.cascade()
             window.show()
+            if copy_status is not None:
+                window.show_status(copy_status)
             if open_error is not None:
                 window.log_message('error', open_error)
                 QtWidgets.QMessageBox.warning(window, 'Open failed', open_error)

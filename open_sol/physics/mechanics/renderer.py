@@ -3,11 +3,9 @@ SolidMechanicsPhysics, plus the optomechanical moving-boundary density and (tria
 from dataclasses import replace
 
 from ...core.renderer import FieldInfo, PhysicsRenderer
+from ...model.schema import FREQUENCY_RESPONSE_STUDY, OPTOMECHANICS_STUDY
 from .fields import ENERGY_DENSITY_FIELDS, HARMONIC_IMAG_FIELDS
 from .optomechanics import shown_integrand
-
-_OPTOMECHANICS_STUDY = 'optomechanics'   # = model.study_optomechanics.STUDY_NAME (FieldInfo.requires_study)
-_FREQUENCY_RESPONSE_STUDY = 'frequency_response'   # = model.study_frequency_response.STUDY_NAME
 
 
 class SolidRenderer(PhysicsRenderer):
@@ -21,9 +19,9 @@ class SolidRenderer(PhysicsRenderer):
         'u_y': FieldInfo('u_y', 'Displacement y', unit='m', signed=True, cmap='RdBu_r', parity='polar_y'),
         # frequency_response on a triangle mesh: Im of the complex displacement (u_x / u_y hold the real parts)
         'u_x_im': FieldInfo('u_x_im', 'Displacement x, imaginary part', unit='m', signed=True, cmap='RdBu_r',
-                            parity='polar_x', requires_study=_FREQUENCY_RESPONSE_STUDY),
+                            parity='polar_x', requires_study=FREQUENCY_RESPONSE_STUDY),
         'u_y_im': FieldInfo('u_y_im', 'Displacement y, imaginary part', unit='m', signed=True, cmap='RdBu_r',
-                            parity='polar_y', requires_study=_FREQUENCY_RESPONSE_STUDY),
+                            parity='polar_y', requires_study=FREQUENCY_RESPONSE_STUDY),
         # guided (2.5D) vibration modes only: amplitude of u_z = u_z sin(k_z z - omega t); 0 in plane strain
         'u_z': FieldInfo('u_z', 'Displacement z (guided modes)', unit='m', signed=True, cmap='RdBu_r',
                          parity='polar_z'),
@@ -69,7 +67,7 @@ class SolidRenderer(PhysicsRenderer):
         # moving-boundary g_om density of the shown mechanical mode (first optomechanical_coupling): Q_n times the
         # permittivity-jump face term, half to each cell of the face, per cell area; mirror-even (Q_n, |E|^2 even)
         'om_integrand': FieldInfo('om_integrand', 'Optomechanical moving-boundary density', unit='rad/s/m^3',
-                                  signed=True, cmap='RdBu_r', requires_study=_OPTOMECHANICS_STUDY, parity='even'),
+                                  signed=True, cmap='RdBu_r', requires_study=OPTOMECHANICS_STUDY, parity='even'),
     }
 
     def __init__(self, physics):

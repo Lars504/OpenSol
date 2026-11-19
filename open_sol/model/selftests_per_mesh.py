@@ -1,4 +1,4 @@
-"""Per-physics mesh Session / results self-test (S7.2, mesh plan stage P3): the currents strip of coupling/selftests
+"""Per-physics mesh Session / results self-test (S7.2): the currents strip of coupling/selftests
 with heat on its own coarse mesh (cpu run): fields and snapshots on their own meshes, derived values per mesh (D3)
 and across meshes, the D3 validation info, summary records and the results_io round trip of mesh names and
 meshes.npz; registered by study.register."""

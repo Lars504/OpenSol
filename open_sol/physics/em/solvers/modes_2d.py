@@ -5,7 +5,7 @@ import math
 import time
 
 import numpy as np
-from ....core.backend import to_host
+from ....core.backend import check_backend_array, to_host
 
 from ....core.constants import C0, DTYPE, EPS0, MU0
 from ....core.cut_cells import dual_cell_cuts, union_test
@@ -31,7 +31,7 @@ from ..nonlinear_overlap import ShgOverlapMonitor
 from ..renderer import ModeRenderer
 from ..subpixel_smoothing import SubpixelSmoothing
 from ..yee_grid import cpml_grading_cell_size, grid_cell_widths
-from .fdtd_2d_base import _check_cell_array, add_pec_cells, record_dispersive_region
+from .fdtd_2d_base import add_pec_cells, record_dispersive_region
 
 MODE_POLARIZATION = 'modes'   # EM_MATERIAL_SCHEMAS key; no in-plane polarisation (placement helpers refuse it)
 MODE_PERMITTIVITY_ARRAYS = ('eps_r', 'eps_xx', 'eps_yy')   # eps_r holds eps_zz (as for the E_z types)
@@ -43,6 +43,11 @@ MODE_TABLE_UNITS = ('1', '1', '1', 'dB/cm', '1', '1', 'm^2', '1', '1/m', '')
 _DB_PER_NEPER = 20.0 / math.log(10.0)   # power loss in dB of a field decaying by e^-1
 # factor_kind prefixes of the eigen solver's own MUMPS / PARDISO factor (its description, e.g. 'MUMPS LDL^T')
 HOST_DIRECT_KINDS = tuple(dict.fromkeys(factor_label(name) for name in HOST_DIRECT_FACTORIZATIONS))
+
+
+def bend_reference(reference_x, size_x):
+    """x [m] where the bend factor is 1: the bend_reference_x setting, None = size_x / 2 (ModePhysics, validation)."""
+    return 0.5 * float(size_x) if reference_x is None else float(reference_x)
 
 
 def bend_factor_message(x_edges, radius, reference_x):
@@ -97,7 +102,8 @@ class _ModeStudyMixin:
 
     def reset_records(self):
         """RerunSolver (reused sweep build): omega back to the build's wavelength setting (a frequency_domain run left
-        its last one) and the per-wavelength records dropped; every study hook solves afresh anyway."""
+        its last one) and the per-wavelength records dropped (every monitor's clear(): an accumulating monitor needs
+        one); every study hook solves afresh anyway. No em_modes setting has follows_parameters."""
         self.omega = self._setting_omega
         for monitor in self.monitors:
             clear = getattr(monitor, 'clear', None)
@@ -202,7 +208,9 @@ class ModePhysics(_ModeStudyMixin, PhysicsSolver):
         self._line_block = shifted_solver if isinstance(shifted_solver, LineBlockSolver) else None
         self._planned_omegas = ()
         self._plan_serial = None
-        self._material_serial = 0     # bumped by every material / geometry change (inject_source, materials_changed)
+        # bumped by every change of the solved system (inject_source, materials_changed, add_pec_region, add_dispersive,
+        # set_subpixel_smoothing; a new one bumps it too): a kept line-block batch of an older serial is stale
+        self._material_serial = 0
         self._batch = {}              # omega -> line_block.LineBlockFactorization of the kept batch
         self._batch_problems = {}     # omega -> its unsolved cross_section_modes.CrossSectionProblem
         self._batch_serial = None
@@ -214,7 +222,7 @@ class ModePhysics(_ModeStudyMixin, PhysicsSolver):
         self._init_mode_study(wavelength, n_modes, mode_index, n_eff_guess, group_index)
         bend_radius = float(bend_radius)
         x_edges = domain.cell_edges()[0]
-        reference_x = 0.5 * float(domain.size_x) if bend_reference_x is None else float(bend_reference_x)
+        reference_x = bend_reference(bend_reference_x, domain.size_x)
         message = bend_factor_message(x_edges, bend_radius, reference_x)
         if message is not None:
             raise ValueError(f'ModePhysics: {message}')
@@ -405,7 +413,7 @@ class ModePhysics(_ModeStudyMixin, PhysicsSolver):
                                     self._cross_section_materials(omega), self._bend)
 
     def error_indicator(self):
-        """S7.7 hook (mesh plan A2): energy-weighted interpolation eta^2 parts (2, *window) of the selected mode (after a
+        """S7.7 hook: energy-weighted interpolation eta^2 parts (2, *window) of the selected mode (after a
         study the mode_index one): E components x eps0 |eps_ii|, H x mu0 (core.error_indicators)."""
         if self.selected_mode is None:
             raise ValueError(f"em_modes '{self.name}' has no solved mode")
@@ -590,13 +598,13 @@ class ModePhysics(_ModeStudyMixin, PhysicsSolver):
         if not isinstance(pole, (DrudePole, LorentzPole)):
             raise TypeError(f"add_dispersive needs a DrudePole or LorentzPole, got {type(pole).__name__}")
         if mask is not None:
-            _check_cell_array(mask, self.mode_fields['ex'].shape, np.bool_, 'Pole mask', xp=self.domain.xp)
+            check_backend_array(mask, self.mode_fields['ex'].shape, np.bool_, 'Pole mask', xp=self.domain.xp)
         record_dispersive_region(self.dispersive_regions, pole, mask)
         self._material_serial += 1
 
     def add_pec_region(self, mask):
         """Perfect electric conductor on a run-backend bool (nx, ny) cell mask."""
-        _check_cell_array(mask, self.mode_fields['ex'].shape, np.bool_, 'PEC mask', xp=self.domain.xp)
+        check_backend_array(mask, self.mode_fields['ex'].shape, np.bool_, 'PEC mask', xp=self.domain.xp)
         self.pec_cells = add_pec_cells(self.pec_cells, mask)
         self._material_serial += 1
 

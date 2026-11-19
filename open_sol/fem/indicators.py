@@ -1,4 +1,4 @@
-"""Error indicators on triangle meshes (mesh plan A3, S7.7): eta^2 per element of a scalar Lagrange solution (element
+"""Error indicators on triangle meshes: eta^2 per element of a scalar Lagrange solution (element
 residual + Kelly edge jumps of the normal flux C grad u . n, energy-norm weighted, P1 / P2) and the edge sampling of
 both sides of an edge that the em_modes jumps (tangential H, normal D) share. Host numpy."""
 import math

@@ -8,7 +8,7 @@ state. Host numpy (scipy in fem)."""
 # 1D, the C0 interior penalty form on P2 triangles. A hole is an element with rho_s <= 0, every tension component 0
 # (material + coupled) and no bending stiffness: it carries no dofs and its outline is a free edge. Subclasses
 # (solver_fem: triangles, solver_line: 1D) provide the geometry: _prepare_geometry, _element_values, _field_array,
-# _new_system, _apply_coefficients, _pml, _probe_value, _element_phasors, renderer.
+# _new_system, _apply_coefficients, _pml, _probe_value, _element_phasors (or an own _publish), renderer.
 import math
 import time
 from dataclasses import dataclass
@@ -141,8 +141,7 @@ class MembraneBase(PhysicsSolver):
         self.n_frequency_solves = 0
         self.assembly_seconds = 0.0      # host wall time of _ready_system (dof maps, PML, assembly, pencil)
         self._prepare_geometry()
-        self.values = np.zeros(self._n_full(), dtype=np.complex128)   # full-numbering w of the shown solution
-        self._device_values = None   # cupy copy of values when they are the system's last direct cuDSS solve (R6)
+        self._show_values(np.zeros(self._n_full(), dtype=np.complex128))
 
     def finalize(self) -> None:
         """Read the coefficients once: a negative or non-finite areal density, or a model of holes only, fails here."""
@@ -263,7 +262,9 @@ class MembraneBase(PhysicsSolver):
 
     def _ready_system(self, omega_reference):
         """The harmonic system for a PML reference angular frequency [rad/s] (rebuilt when the PML stretch changes),
-        its coefficients brought up to date and assembled (timed: assembly_seconds)."""
+        its coefficients brought up to date and assembled (timed: assembly_seconds, the seconds_counter of the
+        estimate's build items, definition._build_items): callers do not wrap it in another timed group, and later work
+        on the system (Bloch / per-frequency reduction, port DtN) stays in the study's untimed rest."""
         started = time.perf_counter()
         coefficients = self._read_coefficients()
         cached, mesh = self._pml_of, getattr(self.domain, 'mesh', None)   # a sweep keeps one reference: build once
@@ -374,7 +375,8 @@ class MembraneBase(PhysicsSolver):
         return self.eigen_solve
 
     def _shift_solver(self, system):
-        """(solve_at, count_below) of the system's eigen pencil (pencil_shift_solver)."""
+        """(solve_at, count_below) of the system's eigen pencil (pencil_shift_solver); a new pencil variant (a Bloch
+        cell: the reduced pencil) overrides this, never the searches."""
         eigen = system.eigen_pencil()
         return pencil_shift_solver(eigen.stiffness, eigen.mass, self.eigen_solver, in_window=eigen.in_window,
                                    energy_weights=eigen.energy_weights(), in_region=eigen.in_region,
@@ -387,8 +389,7 @@ class MembraneBase(PhysicsSolver):
         values = np.array(resonance.field, dtype=np.complex128)
         displacement = values[self._displacement_dofs()]
         peak = displacement[int(np.argmax(np.abs(displacement)))] if displacement.size else 0.0
-        self.values = values / peak if peak != 0.0 else values
-        self._device_values = None
+        self._show_values(values / peak if peak != 0.0 else values)
         self.selected_resonance = number
         self.response_frequency = None
         self._publish()
@@ -446,8 +447,7 @@ class MembraneBase(PhysicsSolver):
                 ('probe', probe.name), lambda values, probe=probe: self._probe_value(probe, values))))
         self._record_frequency(frequency)
         if fields:
-            self.values = np.array(system.values, dtype=np.complex128)
-            self._device_values = system.device_values()
+            self._show_values(np.array(system.values, dtype=np.complex128), system.device_values())
             self._publish()
         self._unpublished_frequency = None if fields else frequency
 
@@ -458,8 +458,8 @@ class MembraneBase(PhysicsSolver):
         system = self.system
         if frequency is None or system is None:
             return
-        self.values = np.array(system.publish_fields(), dtype=np.complex128)
-        self._device_values = system.device_values()   # None after a reduced publish (V y on the host)
+        # device_values: None after a reduced publish (V y on the host)
+        self._show_values(np.array(system.publish_fields(), dtype=np.complex128), system.device_values())
         self._publish()
 
     # --- snapshot solutions (solver_hooks.SolutionStateSolver) -----------------
@@ -484,8 +484,7 @@ class MembraneBase(PhysicsSolver):
     def restore_solution(self, state) -> None:
         """Write a solution_state back (values replaced, never written in place: the line phasor cache keys on them);
         slots / materials only where they differ, which re-reads the coefficients (the next solve re-applies them)."""
-        self.values = np.array(state['values'])
-        self._device_values = None
+        self._show_values(np.array(state['values']))
         self.selected_resonance, self.response_frequency = state['selected_resonance'], state['response_frequency']
         for name, values in state['phasors'].items():
             write_host_into(self.fields[name], values)
@@ -498,6 +497,13 @@ class MembraneBase(PhysicsSolver):
                 self._coefficients_dirty = True
 
     # --- probes and state ---------------------------------------------------------
+    def _show_values(self, values, device_values=None) -> None:
+        """Set the shown full-numbering w (host `values`, replaced, never written in place) and its cupy copy when it
+        is the system's last direct cuDSS solve (`device_values`; _publish then forms the phasors on the device, R6):
+        the one writer of both, so a stale device copy never outlives new values."""
+        self.values = values
+        self._device_values = device_values
+
     def _new_probe(self, name, location) -> MembraneProbe:
         probe = MembraneProbe(str(name), location, HarmonicProbeRecord('w', unit='m', label=f'w at {name}'))
         self.probes.append(probe)

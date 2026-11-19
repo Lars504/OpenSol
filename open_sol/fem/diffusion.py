@@ -1,4 +1,4 @@
-"""FEM scalar diffusion on triangle meshes (mesh plan 2.7, stage T4): -div(C grad u) + a u (+ c du/dt) = f by Lagrange
+"""FEM scalar diffusion on triangle meshes: -div(C grad u) + a u (+ c du/dt) = f by Lagrange
 P1 / P2 on the conducting window elements. FEMDiffusionSystem: host assembly (fem.assembly), Dirichlet / Neumann /
 Robin edge conditions (outer faces on the window edge, object outlines), held element regions, P0 and point sources,
 implicit-Euler capacity, (r, z) ring weights per radian; the linear solve by a solver of the PCGSolver protocol on the
@@ -23,7 +23,7 @@ from .assembly import (_element_groups, _lagrange_at, _weights, assemble_edge_lo
 from .dofs import lagrange_dofs
 from .elements import element_geometry, lagrange_basis
 from .mesh import one_sided, side_members
-from .mesher import MERGE_TOLERANCE
+from .mesher import clamp_into_window, window_inset
 from .sampling import evaluate, locator
 
 FACES = ('x_lo', 'x_hi', 'y_lo', 'y_hi')
@@ -36,7 +36,7 @@ FEM_FILL_FACTOR = 2.0             # SuperLU fill of an FEM operator over the 5-p
 class EdgeCondition:
     """Condition on mesh edges in the unknown's units: 'dirichlet' (u = value), 'neumann' (inward flux value [c u / m])
     or 'robin' (inward flux h (external - u); h and external numbers or arrays per mesh edge / 3D face, e.g. a
-    linearised radiation loss)."""
+    linearised radiation loss: code reading h goes through robin_assembled / robin_anchoring, never h > 0)."""
     kind: str = 'neumann'
     value: float = 0.0
     h: float = 0.0
@@ -53,7 +53,7 @@ class FEMDiffusionSystemCommon:
         from ..solvers.sparse_direct import DiffusionDirectSolver, SparseDirectSolver
         if order not in (1, 2):
             raise ValueError(f'{label()}: element order must be 1 or 2, got {order!r}')
-        if linear_solver is None:   # scripts: the triangle / tetrahedra Automatic (mesh plan D11: host SuperLU)
+        if linear_solver is None:   # scripts: the triangle / tetrahedra Automatic (host SuperLU)
             linear_solver = SparseDirectSolver(backend=backend)
         if isinstance(linear_solver, SparseDirectSolver):
             linear_solver = DiffusionDirectSolver(linear_solver)
@@ -489,7 +489,7 @@ def window_face_edges(mesh, face) -> np.ndarray:
     x0, y0, x1, y1 = mesh.window
     axis = 0 if face[0] == 'x' else 1
     line = {'x_lo': x0, 'x_hi': x1, 'y_lo': y0, 'y_hi': y1}[face]
-    tolerance = MERGE_TOLERANCE * max(x1 - x0, y1 - y0)
+    tolerance = window_inset(mesh.window)
     ends = mesh.points[mesh.edges[boundary]][:, :, axis]
     return boundary[np.all(np.abs(ends - line) <= tolerance, axis=1)].astype(np.int64)
 
@@ -501,11 +501,8 @@ def ring_dof_locations(full) -> tuple:
     if (mesh.pml_faces == 0).all():
         return np.zeros(0, dtype=np.int64), None
     points = full.dof_points()
-    x0, y0, x1, y1 = mesh.window
-    inset = MERGE_TOLERANCE * max(x1 - x0, y1 - y0)
-    clamped = np.column_stack([np.clip(points[:, 0], x0 + inset, x1 - inset),
-                               np.clip(points[:, 1], y0 + inset, y1 - inset)])
-    ids = np.flatnonzero(np.any(np.abs(clamped - points) > 2.0 * inset, axis=1))
+    clamped = clamp_into_window(points, mesh.window)
+    ids = np.flatnonzero(np.any(np.abs(clamped - points) > 2.0 * window_inset(mesh.window), axis=1))
     return ids, locator(mesh, full.geometry_order).locate(clamped[ids])
 
 
@@ -894,7 +891,8 @@ def lagrange_entries_per_dof(mesh, order) -> float:
 
 
 def fem_diffusion_estimate(mesh, order, element_fields, nodal_fields=1, direct=False, multigrid=False, cudss=None,
-                           refactorizes=False, active_fraction=1.0, kept_terms=True) -> MemoryEstimate:
+                           refactorizes=False, active_fraction=1.0, kept_terms=True, *, precision,
+                           mixed) -> MemoryEstimate:
     """FEMDiffusionSystem + its physics on a TriangleMeshEstimate (fem_system_estimate; SuperLU fill FEM_FILL_FACTOR on
     the 2D heuristic; direct: direct_factor_item); cudss = the 'linear' cuDSS back end (cudss_back_end) or None;
     kept_terms False: a system of its own without KeptTerms / SlotSum / ReducedSplit (magnetostatics on triangles)."""
@@ -906,7 +904,8 @@ def fem_diffusion_estimate(mesh, order, element_fields, nodal_fields=1, direct=F
                                int(mesh.n_elements),
                                element_fields, nodal_fields, 2, direct_factor=direct_factor, multigrid=multigrid,
                                cudss=cudss, refactorizes=refactorizes, active_fraction=active_fraction,
-                               host_direct=host_direct_name(direct), kept_terms=kept_terms)
+                               host_direct=host_direct_name(direct), kept_terms=kept_terms, precision=precision,
+                               mixed=mixed)
 
 
 def host_direct_name(direct):
@@ -948,12 +947,14 @@ def painted_fraction(mesh, material_names) -> float:
 
 def fem_system_estimate(n_dofs, entries_per_dof, local_dofs, n_elements, element_fields, nodal_fields, dimensions,
                         direct_factor=None, multigrid=False, cudss=None, refactorizes=False,
-                        active_fraction=1.0, host_direct=None, kept_terms=True) -> MemoryEstimate:
+                        active_fraction=1.0, host_direct=None, kept_terms=True, *, precision,
+                        mixed) -> MemoryEstimate:
     """FEMDiffusionSystem[3D] and physics: float32 element state, host nodal arrays, the operator and linear solver on
     the active dofs (pcg keeps its run-backend copy, SuperLU / cuDSS / MUMPS / PARDISO take it as a temporary);
     refactorizes: per change; host_direct: the MUMPS / PARDISO back end of direct_factor (its own arrays beside the
     library factor, host_direct.solver_host_bytes) or None; kept_terms: the system keeps its terms and slot maps across
-    re-assemblies (FEMDiffusionSystem[3D]; False for a caller's own system class)."""
+    re-assemblies (FEMDiffusionSystem[3D]; False for a caller's own system class); precision / mixed: the pcg's dtype
+    name and whether it runs 'mixed' (as diffusion_system_estimate; its workspace from solvers.pcg.workspace_bytes)."""
     n_active = active_dofs(n_dofs, active_fraction)
     entries = int(round(float(entries_per_dof) * n_active))
     csr_bytes = FLOAT64_CSR_ENTRY_BYTES * entries + INT32_BYTES * (n_active + 1)
@@ -983,13 +984,22 @@ def fem_system_estimate(n_dofs, entries_per_dof, local_dofs, n_elements, element
                                                  mixed=host_direct_precision(host_direct) == 'mixed')))
         build_extra = refactor_extra = csr_bytes
     else:   # pcg keeps the run-backend operator; a re-assembly makes the new copy before the old one goes
-        items.append(('FEM operator and CG vectors (run backend)', csr_bytes + 4 * FLOAT64_BYTES * n_active))
-        refactor_extra = csr_bytes
+        from ..solvers.pcg import DTYPE_PRECISIONS, PRECISION_DTYPES, workspace_bytes   # numpy only
+        pcg_precision = 'mixed' if mixed else DTYPE_PRECISIONS[precision]
+        value_bytes = np.dtype(PRECISION_DTYPES[pcg_precision]).itemsize   # _solve_dtype: float32 only at 'single'
+        device_csr = value_bytes * entries + INT32_BYTES * (n_active + 1)
+        jacobi = not multigrid
+        # solution + (Jacobi, not mixed: workspace_bytes counts the mixed float32 one) pcg's inverse diagonal
+        vectors = (1 + int(jacobi and not mixed)) * value_bytes * n_active
+        items.append((f'FEM operator, solution and CG workspace (run backend, pcg {pcg_precision})',
+                      device_csr + vectors + workspace_bytes(n_active, pcg_precision, jacobi=jacobi,
+                                                             csr_entries=entries)))
+        refactor_extra = device_csr
         if multigrid:
             from ..solvers import multigrid as amg
             items.append(('multigrid hierarchy (operators, prolongations, vectors)',
-                          amg.hierarchy_bytes(n_active, FLOAT64_BYTES, entries_per_dof)))
-            build_extra = amg.setup_extra_bytes(n_active, FLOAT64_BYTES, entries_per_dof)
+                          amg.hierarchy_bytes(n_active, value_bytes, entries_per_dof)))
+            build_extra = amg.setup_extra_bytes(n_active, value_bytes, entries_per_dof)
             refactor_extra += build_extra
     if refactorizes:
         transient_items.append(('refactorisation', 'FEM operator copy and solver setup (run backend)', refactor_extra))

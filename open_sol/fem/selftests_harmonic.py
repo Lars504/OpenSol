@@ -1,4 +1,4 @@
-"""Self-tests of fem.pml, fem.harmonic, fem.harmonic3d and fem.harmonic_resonances (new_modules_plan S1, S2, S8; CPU,
+"""Self-tests of fem.pml, fem.harmonic, fem.harmonic3d and fem.harmonic_resonances (CPU,
 specs() empty, check({}) on structured triangle / Kuhn meshes, no gmsh): stretch values and the pml3d identity, exact
 polynomial and convergent plane-wave fields, Robin / PML absorption, axisymmetric Bessel / Hankel fields, closed,
 lossy and PML-terminated cavity resonances; on the GPU the cuDSS device-pencil sweep against host SuperLU. error = number
@@ -25,7 +25,7 @@ _EXACT_RTOL = 1e-10                # polynomial fields the element space holds: 
 _SPEED = 340.0
 _FREQUENCY = 1000.0
 _PML_REFLECTION = 1e-6
-_REFLECTION_TOLERANCE = 1e-3       # plan S2: PML reflection < 1e-3 of a 1D-like strip
+_REFLECTION_TOLERANCE = 1e-3       # PML reflection < 1e-3 of a 1D-like strip
 # resonances: a membrane-like rectangle (c = sqrt(T / rho) = 100 m/s) and an impedance-step strip cavity
 _TENSION = 1.0
 _DENSITY = 1e-4
@@ -551,7 +551,7 @@ HARMONIC_SELFTEST_CASES = (
                     'wavelength): a Robin drive at x_lo (value 2 j k a, damping a / c) launches exp(-j k x); a Robin '
                     'x_hi absorber (damping a / c, exact at normal incidence) gives the field within 2e-3 and a fitted '
                     'reflection |B / A| <= 1e-4; a one-wavelength fem.pml ring (16 cells, R = 1e-6 at the drive '
-                    'frequency, outer side held) reflects <= 1e-3 (plan S2) with |A - 1| <= 2e-3. error = number of '
+                    'frequency, outer side held) reflects <= 1e-3 with |A - 1| <= 2e-3. error = number of '
                     'failed sub-checks, tolerance 0.',
         specs=lambda: {},
         check=_check_harmonic_waves,

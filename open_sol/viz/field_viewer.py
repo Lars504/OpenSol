@@ -17,11 +17,12 @@ sizes, colour and axis limits, colour bar and label places). 2D maps whose layer
 
 import json
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import numpy as np
 
+from .common import time_unit
 from .mode_player import _b64, length_scale
 
 TEMPLATE_FILE = 'field_viewer.html'
@@ -43,7 +44,6 @@ LOG_DECADES = 9                       # log codes span hi * 10^-9 .. hi (step ~0
 ROBUST_PERCENTILE = 99.5              # frame 'robust' of signed fields (`_robust_magnitude`)
 LOG_CODE_RATIO = 1e-3                 # non-negative frames with lo <= this * hi get log codes (intensities, |E|)
 _AXIS_INDEX = {'x': 0, 'y': 1, 'z': 2}
-_TIME_UNITS = ((1e-15, 'fs'), (1e-12, 'ps'), (1e-9, 'ns'), (1e-6, 'µs'), (1e-3, 'ms'), (1.0, 's'))
 MATERIAL_COLORS = ('#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f',
                    '#bcbd22', '#17becf')   # matplotlib tab10, as viz.scene_figure's default material colours
 NO_MATERIAL_COLOR = '#b0b0b0'
@@ -61,7 +61,7 @@ MAX_VOLUME_FRAMES = 60                # frames a caller reads volumes for (each 
 MAX_VOLUME_SIDE = 256                 # lattice samples along one axis (WebGL2's guaranteed 3D texture size)
 _UNIFORM_TOLERANCE = 1e-3             # relative spread of the centre steps below which a volume axis is uniform
 _OUTER_FACES = ('x_lo', 'x_hi', 'y_lo', 'y_hi', 'z_lo', 'z_hi')
-# Plot settings of the page (its panel edits the same keys; field_viewer.html FIGURE_CHOICES / FIGURE_RANGES)
+# Plot settings of the page (its panel edits the same keys; the page reads these rules from DATA.figure_rules)
 FIGURE_CHOICES = {
     'title': ('top_left', 'top_center', 'top_right', 'off'),                     # heading: frame label and field
     'colorbar': ('bottom_right', 'bottom_left', 'top_right', 'top_left', 'right', 'left', 'top', 'bottom', 'off'),
@@ -85,7 +85,9 @@ class ViewerLayer:
     """One sampled surface of a frame. values (nu, nv) on the u_centres x v_centres grid (m) along axes, or with
     triangulation (nodes (n, 2) in (u, v) m, triangles (k, 3)) values (n,) per node; plane (normal axis, position m)
     places it in 3D, None = a 2D map at z = 0; extent (u0, u1, v0, v1) m clips its object outlines (None: from
-    the samples)."""
+    the samples). Per-sample arrays (values, quadrature, displacement) are resampled by every layer rebuild
+    (`_strided`, `_plane_padded`, api `_hide_void`; the others carry over through dataclasses.replace) and counted by
+    `_check_layers` / `_layer_codes`: a new one joins all of them."""
     values: np.ndarray
     u_centres: np.ndarray | None = None
     v_centres: np.ndarray | None = None
@@ -256,11 +258,8 @@ def _clipped_triangulation(nodes, triangles, extent):
 def time_label(seconds) -> str:
     """'t = 1.25 ps' of a time in s."""
     seconds = float(seconds)
-    magnitude = abs(seconds)
-    for scale, unit in _TIME_UNITS:
-        if magnitude < 1000 * scale:
-            return f't = {seconds / scale:.4g} {unit}'
-    return f't = {seconds:.4g} s'
+    scale, unit = time_unit(abs(seconds))
+    return f't = {seconds / scale:.4g} {unit}'
 
 
 # ---- packing ----
@@ -352,12 +351,11 @@ def _strided(layer, stride):
         return layer
     displacement = (None if layer.displacement is None
                     else tuple(_block_mean(channel, stride, (0, 1)) for channel in layer.displacement))
-    return ViewerLayer(values=_block_mean(layer.values, stride, (0, 1)),
-                       u_centres=_block_mean(layer.u_centres, stride, (0,)),
-                       v_centres=_block_mean(layer.v_centres, stride, (0,)), axes=layer.axes, plane=layer.plane,
-                       extent=layer.extent, vectors=layer.vectors,
-                       quadrature=None if layer.quadrature is None else _block_mean(layer.quadrature, stride, (0, 1)),
-                       displacement=displacement)
+    return replace(layer, values=_block_mean(layer.values, stride, (0, 1)),
+                   u_centres=_block_mean(layer.u_centres, stride, (0,)),
+                   v_centres=_block_mean(layer.v_centres, stride, (0,)),
+                   quadrature=None if layer.quadrature is None else _block_mean(layer.quadrature, stride, (0, 1)),
+                   displacement=displacement)
 
 
 def _log_floor(low, high):
@@ -770,9 +768,8 @@ def _plane_padded(layer, pads, phase, motion=None):
                 even = (motion.mirror_signs.get(face, 1) > 0 if name == 'n'
                         else MOTION_COMPONENTS.index(name) != index)
                 channels[k] = _padded_row(channels[k], index, side, even)
-    return ViewerLayer(values=values, u_centres=centres[0], v_centres=centres[1], axes=layer.axes, plane=layer.plane,
-                       extent=layer.extent, vectors=layer.vectors, quadrature=quadrature,
-                       displacement=None if channels is None else tuple(channels))
+    return replace(layer, values=values, u_centres=centres[0], v_centres=centres[1], quadrature=quadrature,
+                   displacement=None if channels is None else tuple(channels))
 
 
 def _mirror_padded_frames(frames, mirrors, phase, motion=None):
@@ -784,9 +781,8 @@ def _mirror_padded_frames(frames, mirrors, phase, motion=None):
     pads = [_plane_pads(layer, mirrors, tolerance) for layer in frames[0].layers]
     if not any(pads):
         return frames
-    return [ViewerFrame([_plane_padded(layer, pad, phase, motion) if pad else layer
-                         for layer, pad in zip(frame.layers, pads)],
-                        frame.label, frame.time, frame.volume) for frame in frames]
+    return [replace(frame, layers=[_plane_padded(layer, pad, phase, motion) if pad else layer
+                                   for layer, pad in zip(frame.layers, pads)]) for frame in frames]
 
 
 def _mirror_data(mirrors, scale):
@@ -1116,8 +1112,8 @@ def viewer_data(frames, quantity, title='', subtitle='', frame_kind='labelled', 
         raise ValueError('every frame needs a volume, or none does')
     if plan is None:
         plan = plan_frames(frames[0].layers, len(frames), max_bytes, max_frames)
-        frames = [ViewerFrame([_strided(layer, plan.stride) for layer in frames[index].layers], frames[index].label,
-                              frames[index].time, frames[index].volume) for index in plan.indices]
+        frames = [replace(frames[index], layers=[_strided(layer, plan.stride) for layer in frames[index].layers])
+                  for index in plan.indices]
     elif len(frames) != len(plan.indices):
         raise ValueError(f'{len(frames)} frames for a plan of {len(plan.indices)}')
     mirrors = list(mirrors or [])
@@ -1188,6 +1184,8 @@ def viewer_data(frames, quantity, title='', subtitle='', frame_kind='labelled', 
         'dimensions': 3 if any(layer.plane is not None for layer in first) else 2,
         'length_unit': unit, 'length_scale': float(scale),   # m per length unit of the page
         'figure': figure or None,
+        'figure_rules': {'choices': FIGURE_CHOICES, 'ranges': FIGURE_RANGES, 'limits': FIGURE_LIMITS,
+                         'lengths': FIGURE_LENGTHS},
         'quantity': {'label': quantity.label, 'unit': quantity.unit, 'signed': bool(quantity.signed),
                      'phase': bool(quantity.phase)},
         'layers': [_layer_geometry(layer, scale) for layer in first],

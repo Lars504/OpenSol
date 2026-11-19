@@ -8,7 +8,7 @@ import math
 import numpy as np
 
 from ...core.constants import C0, ETA0
-from ...model.schema import SelfTestCase, SelfTestVariant
+from ...model.schema import EIGENFREQUENCY_STUDY, FREQUENCY_DOMAIN_STUDY, SelfTestCase, SelfTestVariant
 from ...model.selftest_helpers import cpu_defaults, float_list, scaled_worst_result
 from ...model.spec import (DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshAxisSpec, MeshSegmentSpec,
                            MeshSpec, ModelSpec, PhysicsSpec, StudySpec)
@@ -298,7 +298,7 @@ def _mie_model_specs():
         mesh=MeshSpec(mode='nonuniform', dx=_MODEL_CELL,
                       axes=[MeshAxisSpec('y', segments=[MeshSegmentSpec(_MODEL_ANGLE_CELLS)])]),
         solver_defaults=cpu_defaults(),
-        study=StudySpec(type='frequency_domain', settings={'wavelengths': list(_MODEL_WAVELENGTHS)}))}
+        study=StudySpec(type=FREQUENCY_DOMAIN_STUDY, settings={'wavelengths': list(_MODEL_WAVELENGTHS)}))}
 
 
 def _check_mie_model(results_by_name):
@@ -330,7 +330,7 @@ def _cavity_model_specs():
                              features=[FeatureSpec('resonances', 'resonance_table', [], {})])],
         mesh=MeshSpec(mode='uniform', dx=_MODEL_CAVITY_CELL),
         solver_defaults=cpu_defaults(),
-        study=StudySpec(type='eigenfrequency', settings={'n_resonances': _MODEL_CAVITY_RESONANCES}))}
+        study=StudySpec(type=EIGENFREQUENCY_STUDY, settings={'n_resonances': _MODEL_CAVITY_RESONANCES}))}
 
 
 def _check_cavity_model(results_by_name):

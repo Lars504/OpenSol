@@ -1,4 +1,4 @@
-"""Elastic PML shell of solid_mechanics_3d on a tetrahedron mesh (piezo_3d_plan stage 6, D13): complex coordinate
+"""Elastic PML shell of solid_mechanics_3d on a tetrahedron mesh: complex coordinate
 stretches over the mesh's shell beyond the PML faces, their strength from a target reflection at the eigenfrequency
 target, and the mesh padding the definition requests (PMLPadding). Host numpy."""
 # Stretch (exp(+j omega t)): s_i = 1 - j beta_f (d / w)^2 at depth d into the shell of face f (thickness w) along its

@@ -26,14 +26,16 @@ from ...model.definition_helpers import (CG_ELASTIC_3D_LINEAR_ROLE, DISCRETIZATI
                                          linear_solver_precision, on_tetrahedra,
                                          point_cells, reduced_sweep_memory_items, validate_points_inside,
                                          validated_linear_precision)
-from ...model.schema import DomainRequirements, FeatureType, Issue, Param, PhysicsType, feature_path
+from ...model.schema import (STATIONARY_STUDY, TIME_DEPENDENT_STUDY, DomainRequirements, FeatureType, Issue, Param,
+                             PhysicsType, feature_path)
 from ...solvers.arpack_shift_invert import APPLICATIONS_PER_BASIS_GUESS, CUDSS_FACTORIZATIONS, arnoldi_basis_size
 from ...solvers.host_direct import (HOST_DIRECT_BACK_ENDS, double_of, factor_label, host_direct_precision,
                                     solver_host_bytes, superlu_bytes_scale)
 from ...solvers.pcg import workspace_bytes
 from ...solvers.sparse_direct import CUDSS_BACK_ENDS, SPLU_3D_LIMIT_UNKNOWNS, SPLU_3D_WARN_UNKNOWNS
-from .definition_common import (DENSITY_PARAM, EIGENFREQUENCY_STUDY, GEOMETRIC_NONLINEARITY_PARAMS,
-                                INITIAL_STRESS_PROPERTIES_3D, LOSS_PROPERTIES, MATERIAL_PROPERTIES, MODAL_STUDIES,
+from .definition_common import (DENSITY_PARAM, EIGENFREQUENCY_STUDY, ELECTRODE_CONNECTION_HELP,
+                                ELECTRODE_VOLTAGE_HELP, GEOMETRIC_NONLINEARITY_PARAMS, INITIAL_STRESS_PROPERTIES_3D,
+                                LOSS_PROPERTIES, MATERIAL_PROPERTIES, MODAL_STUDIES,
                                 PIEZO_MATERIAL_PROPERTIES_3D, STIFFNESS_TENSOR_PROPERTIES_3D,
                                 STRESS_STIFFENING_PARAM, SUPPORT_FEATURES, TED_MATERIAL_PROPERTIES, apply_body_force,
                                 apply_temperature_change, background_context, displacement_param, eigen_search_issues,
@@ -114,10 +116,6 @@ _FUSED_UPDATE_FLOPS_PER_DOF = 10
 _FUSED_DIRECTION_FLOPS_PER_DOF = 3
 _PROBE_FIELDS = OUTPUT_ARRAYS_3D + ELECTRIC_OUTPUT_ARRAYS_3D + ENERGY_OUTPUT_ARRAYS_3D
 _TETRAHEDRA_ONLY_FIELDS = ELECTRIC_OUTPUT_ARRAYS_3D + ENERGY_OUTPUT_ARRAYS_3D   # the tensor state() has none
-# frequency response: a complex factor over the real one at equal unknowns (complex multiply-adds ~4 real flops, each
-# value 2 x the bytes); uncalibrated
-_COMPLEX_LU_FLOPS = 4.0
-_COMPLEX_SOLVE_BYTES = 2.0
 _COMPLEX_BYTES = 16
 _INT64_BYTES = 8
 # = piezo.ELECTRODE_CONNECTIONS + (piezo.RESISTIVE_LOAD,) (piezo imports cupy)
@@ -135,28 +133,20 @@ _FILM_KNUDSEN_LIMIT = 880.0     # Veijola fit range 0 <= Kn <= 880
 
 _PIEZOELECTRIC_PARAM = Param(
     'piezoelectric', 'bool', False, label='Piezoelectric',
-    help="On (tetrahedron mesh, MeshSpec kind 'tetrahedra', only): the full 3D piezoelectric solid. A potential phi "
-         '(the Lagrange elements of the discretization setting) lives on every window element, void ones included as '
-         'dielectric, and couples to the displacement through the 18 piezo_e* material entries (solid elements) with the '
-         'clamped permittivity eps0 eps_dc (the six eps_dc_* entries, every window element, unset = 1): T = c S - e^T E, '
-         'D = e S + eps E, E = -grad phi, div D = 0. Electrode / Electrode (domain) features fix phi (connection voltage; '
-         'at least one, the ground, is required) or make an isolated equipotential carrying a net charge [C] (floating); '
-         'every other boundary is insulating (D . n = 0). The coupled symmetric indefinite operator is factorised once '
-         "per assembly by the 'linear' sparse_direct solver (host SuperLU, cuDSS LDL^T with back_end cudss on a GPU, or "
-         'an opt-in MUMPS / PARDISO host LDL^T), with the potential scaled to balance the blocks. With every e = 0 it '
-         'is a 3D anisotropic electrostatics solve (electrode capacitance with fringing in the air around the solid). Outputs electric_potential, '
-         'electric_field_x / _y / _z, electric_displacement_x / _y / _z and the stress with its -e^T E part. Studies '
-         'stationary / time_dependent (static solves) and eigenfrequency: the modes of the coupled pencil (massless '
-         "potential) nearest target_frequency by the 'eigen' solver, voltage electrodes held at 0 V (short circuit: "
-         'resonance frequencies f_r) and floating ones at zero charge (open circuit: antiresonance frequencies f_a); '
-         'their voltage / charge values are ignored there. Run the model once with the drive electrode voltage and '
-         'once floating: k_eff^2 = (f_a^2 - f_r^2) / f_a^2. An electrode with connection resistive_load damps the modes '
-         '(complex frequencies: kappa_e = 2 Im omega of that load). Each mode shows its potential (the voltage map) '
-         'and E / D '
-         'with the shape. frequency_response: the driven coupled pencil with eps (1 - j dielectric_loss_tangent), '
-         'electrode voltages / charges as phase-0 amplitudes, the Admittance feature Y = j omega Q / V in S. '
-         "A {'model': 'crystal', 'plane': 'full'} entry sets c_IJ, piezo_e* and eps_dc*. A "
-         'rectangular-cell mesh refuses it.',
+    help='Tetrahedron mesh only: the full 3D piezoelectric solid. A potential phi (elements of setting '
+         'discretization) on every window element (void ones dielectric) couples through the 18 piezo_e* entries '
+         '(solid elements), clamped permittivity eps0 eps_dc (six eps_dc_* entries, unset = 1): T = c S - e^T E, D = e '
+         'S + eps E, E = -grad phi, div D = 0. Electrode features hold phi (connection voltage; at least one, the '
+         'ground), float with a net charge [C] or load a resistor (resistive_load); other boundaries are insulating '
+         "(D . n = 0). The symmetric indefinite operator is factorised once per assembly by the 'linear' sparse_direct "
+         'solver (potential scaled to balance the blocks). With every e = 0: 3D anisotropic electrostatics (capacitance '
+         'with fringing). Outputs electric_potential, electric_field_*, electric_displacement_*; stress includes -e^T E. '
+         'Eigenfrequency: modes of the coupled pencil (massless potential) nearest target_frequency, voltage '
+         'electrodes at 0 V (short circuit: resonances f_r), floating ones at zero charge (open circuit: antiresonances '
+         'f_a), k_eff^2 = (f_a^2 - f_r^2) / f_a^2 from two runs; each mode shows its potential and E / D; '
+         'resistive_load damps the modes (kappa_e = 2 Im omega). frequency_response: eps (1 - j '
+         'dielectric_loss_tangent), electrode values as phase-0 amplitudes, admittance Y = j omega Q / V in S. A '
+         "{'model': 'crystal', 'plane': 'full'} entry sets c_IJ, piezo_e*, eps_dc*.",
     tip='Turns on the piezoelectric effect: the electric potential is solved together with the deformation, and '
         'electrodes apply voltages or measure charges. Tetrahedron meshes only.\n\nNeeds at least one Electrode with a '
         'fixed voltage (the ground). In an eigenfrequency study fixed-voltage electrodes are shorted and floating ones '
@@ -165,26 +155,21 @@ _PIEZOELECTRIC_PARAM = Param(
 _ELECTRODE_EDGE_SIZE_PARAM = Param(
     'electrode_edge_size', 'float', 0.0, label='Electrode edge size', unit='m', min=0.0,
     visible_if=(('piezoelectric', (True,)),),
-    help="Piezoelectric on a gmsh tetrahedron mesh (mesher 'gmsh'): the element size along the edges of every "
-         'domain object an enabled Electrode / Electrode (domain) feature selects (box edges, cylinder rims), growing '
-         'by the mesh max_ratio away from them; 0 = off. The electric field is singular at an electrode edge, so the '
-         'capacitance C0 and k_eff^2 converge slowly without it; typical a fifth to a tenth of the film thickness. '
-         'Outer-face electrodes, spheres and shapes gmsh does not mesh conformally get none; the builtin mesher '
-         'ignores it.',
+    help="Piezoelectric, mesher 'gmsh': element size along the edges of every domain object an enabled electrode "
+         'feature selects (box edges, cylinder rims), growing by the mesh max_ratio; 0 = off. The field is singular at '
+         'electrode edges, so C0 and k_eff^2 converge slowly without it; typical a fifth to a tenth of the film '
+         'thickness. Not for outer-face electrodes, spheres or shapes gmsh does not mesh conformally; the builtin '
+         'mesher ignores it.',
     tip='Finer mesh along the edges of the electrode objects, where the electric field is concentrated.\n\nOnly for '
         'the gmsh mesher. 0 means no extra refinement.')
 
 _TARGET_FREQUENCY_PARAM = Param(
     'target_frequency', 'float', 0.0, label='Eigenfrequency target', unit='Hz', min=0.0,
-    help="Eigenfrequency study on a tetrahedron mesh (MeshSpec kind 'tetrahedra') only: the vibration modes nearest "
-         'this frequency are searched (shift-invert about (2 pi target_frequency)^2, moved 1e-4 above it so a target '
-         'on a resonance still factors); 0 = the lowest modes. A free body (free-free: no supports, or supports that '
-         'leave a rigid motion free) and a free Bloch cell (periodic axes with every bloch_k 0) need a target > 0: '
-         'their rigid-body modes (f below 1e-4 x the target, six for an unsupported body) are dropped, and a target '
-         'below the first elastic mode is fine. Static solves of a free body stay refused (a frequency response at f '
-         '> 0 is regular). A '
-         'tensor mesh finds the lowest modes only (matrix-free shift-invert at 0): a nonzero value is a validation '
-         'error there. Ignored by the other studies.',
+    help='Eigenfrequency study on tetrahedra: the modes nearest this frequency (shift-invert about (2 pi f)^2, moved '
+         '1e-4 above so a target on a resonance factors); 0 = the lowest. A free body (supports leaving a rigid motion '
+         'free) or free Bloch cell (every bloch_k 0) needs a target > 0, below the first elastic mode is fine: its '
+         'rigid-body modes (f < 1e-4 x target) are dropped; static solves of a free body stay refused. Tensor mesh: '
+         'lowest modes only, a nonzero value is a validation error.',
     tip="Used only by an 'Eigenfrequency' study on a tetrahedron mesh: the vibration modes closest to this frequency "
         'are found.\n\n0 finds the lowest modes. A body without supports (free-free) needs a value above 0: its '
         'rigid-body motions at 0 Hz are then left out.')
@@ -194,30 +179,26 @@ def _pml_params():
     """pml_<face> per outer face, pml_cells and pml_reflection (elastic PML shell: tetrahedra, eigenfrequency)."""
     faces = tuple(Param(
         f'pml_{face}', 'bool', False, label=f'PML on {face}',
-        help=(f'Tetrahedron mesh, eigenfrequency study, piezoelectric off only: an elastic perfectly matched layer '
-              f'beyond {face}. The mesh grows a shell of pml_cells element layers (x the mesh dx) there, its material '
-              'continued from the window edge, with the complex coordinate stretch s = 1 - j beta (d / w)^2 (d the '
-              'depth, w the thickness), beta set by pml_reflection at the target frequency for the fastest wave '
-              '(sqrt(c_II / rho)); its outer side is clamped. Waves leaving the window through that face are absorbed, '
-              'so the modes are complex: frequency_imag > 0 and the radiation Q = f / (2 frequency_imag) in the '
-              'Resonance table (mode shapes shown as their real part and |u|); modes with more than half of their '
-              '|u|^2 in the shell are PML modes and dropped. The pencil stays linear in omega^2 (beta is frequency '
-              'independent), so no iteration on the target; absorption weakens for modes far below it. Supports and '
-              f'loads must stay off {face} (it is the inner side of the shell). Needs target_frequency > 0.'),
+        help=('Tetrahedron mesh, eigenfrequency study, target_frequency > 0, piezoelectric off: an elastic PML shell '
+              'of pml_cells element layers beyond this face, material continued from the window edge, stretch s = 1 - '
+              'j beta (d / w)^2 (d depth, w thickness), beta from pml_reflection at the target for the fastest wave '
+              'sqrt(c_II / rho); outer side clamped. Modes become complex: frequency_imag > 0, radiation Q = f / (2 '
+              'frequency_imag) in the Resonance table, shapes shown as real part and |u|; modes with over half their '
+              '|u|^2 in the shell are dropped. beta is frequency independent, so absorption weakens far below the '
+              'target. Supports and loads stay off this face.'),
         tip=(f'Absorbs vibrations leaving through {face}, as if the solid continued forever there.\n\nGives each '
              'resonance a radiation quality factor. Only for an eigenfrequency study on a tetrahedron mesh.'))
         for face in FACES_3D)
     cells = Param('pml_cells', 'int', DEFAULT_PML_CELLS, label='PML element layers', min=1, max=100,
-                  help='Thickness of the elastic PML shell in element layers of the mesh dx (h_max) on every pml_<face> '
-                       'face; the profile needs about 6-10 layers, and the shell should span a fair part of the '
-                       'longest wavelength (c / f at the target) for a low reflection.',
+                  help='PML shell thickness in element layers of the mesh dx (h_max) on every pml_<face> face; the '
+                       'profile needs ~6-10 layers and the shell a fair part of the longest wavelength (c / f at the '
+                       'target).',
                   tip='How many layers of elements the absorbing layer has.\n\n8 is typical.')
     reflection = Param('pml_reflection', 'float', DEFAULT_PML_REFLECTION, label='PML reflection', unit='1', min=0.0,
                        min_exclusive=True, max=1.0,
-                       help='Theoretical round-trip reflection of the elastic PML for the fastest wave at the target '
-                            'frequency (sets beta = 3 ln(1 / R) c / (2 omega_t w)); slower waves are absorbed more. A '
-                            'very small value makes the profile steep, which the discretisation reflects instead: '
-                            '1e-4 to 1e-8 typical.',
+                       help='Round-trip reflection of the elastic PML for the fastest wave at the target frequency '
+                            '(beta = 3 ln(1 / R) c / (2 omega_t w)); slower waves are absorbed more. Too small a value '
+                            'steepens the profile, which the discretisation reflects: 1e-4 to 1e-8 typical.',
                        tip='How strongly the absorbing layer damps a wave crossing it and back.\n\n1e-6 is typical.')
     return faces + (cells, reflection)
 
@@ -231,24 +212,22 @@ def _periodic_params():
     """periodic_x / _y / _z and bloch_kx / _ky / _kz (Bloch / Floquet unit cells: tetrahedra, eigenfrequency)."""
     periodic = tuple(Param(
         f'periodic_{axis}', 'bool', False, label=f'Periodic {axis}',
-        help=(f'Tetrahedron mesh, eigenfrequency study only: {axis}_lo and {axis}_hi are one Bloch-periodic pair, u '
-              f'and phi on {axis}_hi equal those on {axis}_lo times exp(-j bloch_k{axis} L) (L = the mesh extent along '
-              f'{axis}, exp(+j omega t)). The two faces must be meshed alike node for node (the builtin mesher does; '
-              'mesher gmsh writes periodic surfaces for it); supports and electrodes must stay off them. The modes '
-              'come from the reduced pencil P^H K P, P^H M P (complex Hermitian; real when every k L is a multiple '
-              'of pi) and are complex: shown as their real part (phase 0) with u_abs = |u|, electrode tables not '
-              'available. With every periodic bloch_k 0 a free cell keeps its rigid translations (and the rotation '
-              'about a single periodic axis): set target_frequency > 0, which drops them, or hold the cell; a '
-              'piezoelectric cell then also needs a ground electrode, while k != 0 needs none.'),
+        help=('Tetrahedron mesh, eigenfrequency study: the lo and hi faces of this axis are one Bloch-periodic pair, '
+              'u and phi on hi = on lo times exp(-j k L) (k its bloch_k, L the mesh extent along it, exp(+j omega t)). '
+              'The faces must be meshed alike node for node (the builtin mesher does; gmsh writes periodic surfaces); '
+              'supports and electrodes stay off them. Modes of P^H K P, P^H M P (complex Hermitian; real when every k '
+              'L is a multiple of pi), shown as real part (phase 0) and u_abs = |u|; no electrode tables. Every '
+              'bloch_k 0: a free cell keeps its rigid translations (and the rotation about a single periodic axis): '
+              'set target_frequency > 0 (drops them) or hold it; piezoelectric then needs a ground electrode (k != 0: '
+              'none).'),
         tip=(f'Makes the {axis} faces periodic: the model is one cell of an infinite periodic structure, such as a '
              'phononic crystal.\n\nOnly for an eigenfrequency study on a tetrahedron mesh.')) for axis in _AXES)
     bloch = tuple(Param(
         f'bloch_k{axis}', 'float', 0.0, label=f'Bloch wave vector {axis}', unit='rad/m',
         visible_if=((f'periodic_{axis}', (True,)),),
-        help=(f'Bloch wave vector along {axis} in rad/m, used only when periodic_{axis} is on: the phase step exp(-j '
-              f'k{axis} L) per period L; k{axis} and k{axis} + 2 pi / L are the same state; 0 = plain periodic. Swept '
-              'through a parameter, one eigenfrequency study per k gives the band diagram (template '
-              f'{_BAND_TEMPLATE}). Typical: pi / L at the zone edge.'),
+        help=('Bloch wave vector of this axis (its periodic setting on): phase step exp(-j k L) per period L; k and k '
+              '+ 2 pi / L are the same state; 0 = plain periodic, pi / L the zone edge. One eigenfrequency study per k '
+              f'gives a band diagram (template {_BAND_TEMPLATE}).'),
         tip=('Phase step of the vibration from one period to the next along this axis, in radians per metre.\n\n0 '
              'means no phase step. Swept, it gives the bands of a phononic crystal.')) for axis in _AXES)
     return periodic + bloch
@@ -256,16 +235,15 @@ def _periodic_params():
 
 # ---- feature texts ----
 _SUPPORT_RESULT_TEXT = (
-    "Result 'table' of the latest solve with one row [feature, F_x, F_y, F_z] (units '', N, N, N) and the extras F_x, "
-    'F_y and F_z: the force the support exerts on the solid (sum of K u - f over its held dofs, so components it does '
-    'not hold read 0); a dof held by two supports counts in both (the later value holds it). After a frequency_response '
-    'study on a tetrahedron mesh: a table of the complex reaction per solved frequency instead, columns frequency, '
-    'F_x_re, F_x_im, F_y_re, F_y_im, F_z_re, F_z_im (Hz, N; the sum of the complex A x - f).')
-_FACE_ONLY_TEXT = ('Outer faces, z_lo / z_hi included; on a tetrahedron mesh also domain objects (their interface '
-                   'faces, outer boundary faces of the object included; a tensor mesh refuses objects: use Fixed '
-                   '(domain) there). Holds every node of the faces, edges and corners included.')
-_OUTER_FACES_TEXT = ('Outer faces only, z_lo / z_hi included (a support on an object boundary: Fixed (domain) on the '
-                     'object). Holds every node of the face, edges and corners included.')
+    "Result 'table' of the latest solve, row [feature, F_x, F_y, F_z] (N), extras F_x, F_y, F_z: the force the support "
+    'exerts on the solid, sum of K u - f over its held dofs (0 for unheld components; a dof held by two supports counts '
+    'in both, the later value holds it). After a frequency_response on tetrahedra: the complex reaction per frequency '
+    'instead (columns frequency, F_x_re, F_x_im, F_y_re, F_y_im, F_z_re, F_z_im).')
+_SUPPORT_RESULT_REF = 'Result: the reaction table, as fixed.'
+_FACE_ONLY_TEXT = ('Outer faces and, on tetrahedra, domain objects (their interface and outer boundary faces; a tensor '
+                   'mesh refuses objects: use Fixed (domain)); every node of the faces, edges and corners included.')
+_OUTER_FACES_TEXT = ('Outer faces only (on an object boundary use Fixed (domain)); every node of the face, edges and '
+                     'corners included.')
 
 
 # ---- feature apply / result callbacks (worker thread, GPU) ----
@@ -667,6 +645,20 @@ def eigen_host_direct(solvers, unknowns):
     return name
 
 
+def _linear_type_issues(vctx, physics_spec, path, tetrahedra):
+    """Error for a 'linear' node of the type the mesh kind's system refuses at create (both fit the role): a
+    tetrahedron mesh factorises (sparse_direct only: system_fem3d), the rectangular-cell solid iterates matrix-free (pcg
+    only: solver_common)."""
+    resolved = (vctx.solvers(physics_spec) or {}).get('linear')
+    needed = 'sparse_direct' if tetrahedra else 'pcg'
+    if resolved is None or resolved.solver_type.name == needed:
+        return []
+    how = ('on a tetrahedron mesh the solid solves with sparse_direct (host SuperLU, or cuDSS by its back ends)'
+           if tetrahedra else 'on a rectangular-cell mesh the solid solves by matrix-free pcg (no matrix to factor)')
+    return [Issue('error', path, f"linear solver '{resolved.node or resolved.solver_type.name}' is "
+                                 f'{resolved.solver_type.name}: {how}: assign Automatic or a {needed} node')]
+
+
 def _tetrahedra_issues(vctx, physics_spec, settings_values, path):
     """Tetrahedron mesh (FEM): the host SuperLU size rule of the factorised unknowns (displacement, + potential when
     piezoelectric: the 'linear' factor of a static solve or of the complex frequency-response pencil, the eigen factor
@@ -957,6 +949,7 @@ def _validate_solid_3d_rules(vctx, physics_spec, settings_values, path, tetrahed
     issues.extend(_mirror_issues(vctx, physics_spec))
     issues.extend(_electrode_edge_issues(vctx, physics_spec, settings_values, path))
     issues.extend(_squeeze_film_issues(vctx, physics_spec, settings_values, tetrahedra))
+    issues.extend(_linear_type_issues(vctx, physics_spec, path, tetrahedra))
     if tetrahedra:
         issues.extend(_tetrahedra_issues(vctx, physics_spec, settings_values, path))
         element_name = f"{settings_values.get('discretization', 'quadratic')} tetrahedron"
@@ -1244,8 +1237,8 @@ def _tetrahedra_time_estimate(settings_values, mesh, context):
     _TET_SOLVE_TIME_SCALE: static = 'linear' factorisations (one per assembly; per solve when the stiffness follows a
     state field) and back substitutions; eigenfrequency = one 'eigen' shift factorisation (SuperLU, or the cuDSS 3D
     recipe fitted to curl-curl systems, uncalibrated here) and its Lanczos applications; frequency_response = one
-    complex 'linear' factorisation and solve per frequency (_COMPLEX_LU_FLOPS / _COMPLEX_SOLVE_BYTES over the real
-    recipe; a Bloch cell with bloch_k != 0 or an elastic PML prices its eigen factor so too). Geometric nonlinearity:
+    complex 'linear' factorisation and solve per frequency (value_bytes 16: the roles price complex operators; a Bloch
+    cell with bloch_k != 0 or an elastic PML prices its eigen factor so too). Geometric nonlinearity:
     each static solve (once for the pencil of the modal / response studies) is _newton_time. Piezoelectric: every
     recipe at the coupled unknowns (the scales of the vector stiffness, uncalibrated for it); a resistive_load
     electrode: the complex 'loaded' pencil of three terms (SolverWork.pencil_terms); losses make only a non-piezo pencil
@@ -1257,8 +1250,7 @@ def _tetrahedra_time_estimate(settings_values, mesh, context):
     scales = dict(nnz=float(_tetrahedra_entries(settings_values, mesh, context.spec)), dimensions=3,
                   factor_scale=_TET_LU_TIME_SCALE[order] * periodic_factor,
                   solve_scale=_TET_SOLVE_TIME_SCALE[order] * periodic_fill)
-    complex_scales = dict(scales, factor_scale=_COMPLEX_LU_FLOPS * scales['factor_scale'],
-                          solve_scale=_COMPLEX_SOLVE_BYTES * scales['solve_scale'])
+    complex_scales = dict(scales, value_bytes=_COMPLEX_BYTES)
     nonlinear = bool(settings_values.get('geometric_nonlinearity'))
     if nonlinear and context.study.type in (*MODAL_STUDIES, FREQUENCY_RESPONSE_STUDY):
         # the nonlinear static state of the pencils (once, in place of the linear one), then the study's linear recipe
@@ -1271,10 +1263,9 @@ def _tetrahedra_time_estimate(settings_values, mesh, context):
                       + _estimated_rigid_motions(settings_values, context))
         loaded = _resistive_load(settings_values, context.physics_spec)
         complex_pencil = _complex_pencil(settings_values) or loaded or _lossy_pencil(settings_values, context)
-        if eigen_factorization(context.solvers) in CUDSS_FACTORIZATIONS:   # the device recipe reads value_bytes
-            factor = dict(scales, value_bytes=_COMPLEX_BYTES if complex_pencil else FLOAT64_BYTES)
-        else:   # host SuperLU: the complex cost is in complex_scales
-            factor = dict(complex_scales if complex_pencil else scales, backend='cpu')
+        factor = complex_scales if complex_pencil else scales
+        if eigen_factorization(context.solvers) not in CUDSS_FACTORIZATIONS:   # SuperLU / MUMPS / PARDISO: host
+            factor = dict(factor, backend='cpu')
         shift_work, _ = eigen_search_counts(context)   # one shift-invert per shift of the eigenfrequency search
         parts = [context.solver_work('eigen', unknowns=unknowns, eigenpairs=eigenpairs, plan_reused=True,
                                      pencil_terms=3 if loaded else 2, **shift_work, **factor)]
@@ -1357,7 +1348,7 @@ def _newton_time(settings_values, mesh, context, unknowns, scales, solves, kind,
     scatter_bytes = _TANGENT_SCATTER_BYTES_PER_COO * coo_entries
     linear = (context.solvers or {}).get('linear')
     if context.backend == 'gpu' and linear is not None and linear.values.get('back_end') in CUDSS_BACK_ENDS:
-        # device TangentAssembler3D (plan G5) on the element kernel: per chunk (sized by the chunk byte cap) one CUDA
+        # device TangentAssembler3D on the element kernel: per chunk (sized by the chunk byte cap) one CUDA
         # block per element, the block scatter_add, the displacement up and the force down
         chunks = -(-int(mesh.n_elements) // device_tangent_chunk_elements(local, points, element_kernel=True))
         ops = (te.DenseFlops(kernel_flops),
@@ -1378,7 +1369,7 @@ def _newton_time(settings_values, mesh, context, unknowns, scales, solves, kind,
 
 
 def _device_tangent_items(order, elements, scalar_dofs, entries, reduced_entries, factored):
-    """(run items, transient items) of the device Newton tangents (plan G5, uncalibrated): the kept TangentAssembler3D
+    """(run items, transient items) of the device Newton tangents (uncalibrated): the kept TangentAssembler3D
     caches, values, vectors and cuDSS index maps; one chunk's temporaries per tangent assembly."""
     local = 10 if order == 2 else 4
     points = _TANGENT_RULE_POINTS[order]
@@ -1456,7 +1447,7 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
         factors.append(('frequency response cuDSS factor', factored, factored_entries, _COMPLEX_BYTES, fill,
                         linear_back_end == 'cudss_mixed'))
     coupled_csr = (FLOAT64_CSR_ENTRY_BYTES * factored_entries + INT32_BYTES * factored)
-    # Newton tangents on the GPU (plan G5): system_fem3d.device_tangent = gpu backend and a cuDSS 'linear' back end
+    # Newton tangents on the GPU: system_fem3d.device_tangent = gpu backend and a cuDSS 'linear' back end
     device_tangent = (bool(settings_values.get('geometric_nonlinearity')) and static_solve
                       and on_gpu and linear_back_end in CUDSS_BACK_ENDS)
     if device_tangent:
@@ -1719,65 +1710,53 @@ _ELECTRODE_PARAMS = (
     Param('connection', 'choice', 'voltage', label='Connection', choices=_ELECTRODE_CONNECTIONS,
           choice_labels=(('voltage', 'Fixed voltage'), ('floating', 'Floating (isolated)'),
                          ('resistive_load', 'Resistor to ground')),
-          help='voltage: phi = voltage on every node of the electrode (0 = ground; the eigenfrequency study holds 0: '
-               'short circuit, the resonance frequencies). floating: one shared, unknown potential carrying the net '
-               'free charge of the charge setting (0 = an isolated electrode; the eigenfrequency study uses 0: open '
-               'circuit, the antiresonance frequencies). resistive_load: one shared potential V tied to ground through '
-               'load_resistance R, j omega Q = -V / R (exp(+j omega t)); eigenfrequency study (target_frequency > 0): '
-               'damped complex modes, the Resonance table adds frequency_imag, q_factor and energy_decay_rate = 2 Im '
-               'omega = kappa_e of a line of impedance R (the pencil is frozen at the target and each mode refined by '
-               'Newton on its Rayleigh functional: exact for the mode on the target, second order for the others); '
-               'frequency_response: the resistor loads the response of the driven electrode; static studies refuse it. '
-               'At least one voltage electrode is required (the reference of phi).',
+          help=f'{ELECTRODE_CONNECTION_HELP} resistive_load: one shared potential V tied to ground through '
+               'load_resistance R, j omega Q = -V / R (exp(+j omega t)); eigenfrequency (target_frequency > 0): damped '
+               'complex modes, energy_decay_rate = 2 Im omega = kappa_e of a line of impedance R (pencil frozen at the '
+               'target, each mode Newton-refined: exact at the target, second order elsewhere); frequency_response: it '
+               'loads the driven response; static studies refuse it.',
           tip='Fixed voltage: the electrode is held at the voltage (or shorted to ground in an eigenfrequency study).'
               '\n\nFloating: the electrode is isolated, its voltage follows from the charge on it (open circuit in an '
               'eigenfrequency study).\n\nResistor to ground: the electrode drains through a resistor, which damps the '
               'vibration modes (for example a 50 Ohm transmission line); eigenfrequency and frequency response '
               'studies only.'),
     Param('voltage', 'float', 0.0, label='Voltage', unit='V',
-          help='Potential of a voltage electrode in a static (stationary or time-dependent) solve; ignored by floating '
-               'electrodes and by the eigenfrequency study (0 V).',
+          help=ELECTRODE_VOLTAGE_HELP,
           tip='Voltage applied to the electrode; 0 is ground.'),
     Param('charge', 'float', 0.0, label='Charge', unit='C',
-          help='Net free charge on a floating electrode in a static solve (its voltage follows); ignored by voltage '
-               'electrodes and by the eigenfrequency study (0 C).',
+          help='Net free charge on a floating electrode in a static solve (its voltage follows); ignored otherwise '
+               '(eigenfrequency: 0).',
           tip='Electric charge put on an isolated electrode.'),
     Param('load_resistance', 'float', 50.0, label='Load resistance', unit='Ohm', min=0.0,
           visible_if=(('connection', ('resistive_load',)),),
-          help='Resistance from a resistive_load electrode to ground, > 0 (typical: 50 Ohm, a matched transmission '
-               'line); ignored by the other connections.',
+          help='Resistance of a resistive_load electrode to ground, > 0 (typical: 50 Ohm, a matched line).',
           tip='Resistance between the electrode and ground, for example 50 Ohm for a transmission line.'),
 )
 _ELECTRODE_RESULT_TEXT = (
-    "Result 'table' of the latest static solve (eigenfrequency study: of the shown mode, per its 1 m peak displacement) "
-    "with one row [feature, V, Q] (units '', V, C) and the extras V and Q: the electrode potential and the net free "
-    'charge on it (Q = -sum of the potential rows of A x over its nodes, the discrete Gauss law; a voltage electrode: '
-    'the charge its source delivered, so Q / V of a single driven electrode against ground is its capacitance, '
-    'fringing included; a mode: the short-circuit charge of a voltage electrode, the open-circuit voltage of a '
-    'floating one).')
+    "Result 'table' of the latest static solve or shown mode (per its 1 m peak displacement), row [feature, V, Q] (V, "
+    'C), extras V, Q: the potential and the net free charge (Q = -sum of the potential rows of A x over its nodes, the '
+    'discrete Gauss law; a driven electrode against ground: Q / V = its capacitance, fringing included; a mode: the '
+    'short-circuit charge of a voltage electrode, the open-circuit voltage of a floating one).')
 _ELECTRODE_TEXT = (
-    "piezoelectric only, tetrahedron mesh (ignored with a validation warning when piezoelectric is off): an "
-    'equipotential electrode, connection voltage (held phi), floating (one shared phi with a net charge) or '
-    'resistive_load (one shared phi through a resistor to ground: damped modes, a loaded response). Two '
-    'electrodes must not share a node (adjacent faces share their edge nodes: a build error; select both in one feature '
-    'instead). Its nodes keep their mechanical supports and loads (a thin metal film without stiffness).')
+    'Piezoelectric only (else ignored, validation warning): one equipotential, connection voltage, floating or '
+    'resistive_load. Two electrodes must not share a node (adjacent faces share edge nodes: build error; select both in '
+    'one feature). Its nodes keep their supports and loads (a thin film without stiffness).')
 
 
 # ---- squeeze_film_damping feature (tetrahedra, eigenfrequency study; physics/mechanics/squeeze_film.py runtime on
 # fem/squeeze_film.py) ----
 _GAS_COLUMNS_TEXT = (
-    'per mode for the mode shape of the eigenfrequency study (peak |u| = 1 m): gas_damping c = -Re F [kg/s] and '
-    'gas_stiffness k = omega Im F [N/m] of the modal gas force F = int p conj(w) dA per unit modal velocity (both scale '
-    'with the square of the shape normalisation), gamma_gas = c / m_eff [1/s] (the energy decay rate, the linewidth in '
-    'rad/s) and q_gas = omega m_eff / c, with m_eff = int rho |u|^2 dV of the same shape (independent of it)')
+    'for the mode shape (peak |u| = 1 m): gas_damping c = -Re F [kg/s] and gas_stiffness k = omega Im F [N/m] of the '
+    'modal gas force F = int p conj(w) dA per unit modal velocity (both scale with the normalisation squared), '
+    'gamma_gas = c / m_eff [1/s] (energy decay rate = linewidth in rad/s), q_gas = omega m_eff / c, m_eff = int rho '
+    '|u|^2 dV (gamma_gas, q_gas normalisation free)')
 _SQUEEZE_FILM_PARAMS = (
     *SQUEEZE_FILM_GAS_PARAMS,   # gap, viscosity, ambient_pressure, slip, mean_free_path (model.definition_helpers)
     Param('gap_side', 'choice', 'auto', label='Gap side', choices=GAP_SIDES,
-          help='Side of the solid the gap lies on: auto = the selected outer face (the gap lies outside the window '
-               'there); for domain objects the direction of the face outward normal (z_lo: the bottom face of a plate '
-               'over a substrate, z_hi: under a lid): of the selected objects\' interface faces those flat on that '
-               'axis plane, beside a solid element and facing that side, on the outermost such plane, form the '
-               'footprint.',
+          help='Side of the solid the gap is on: auto = the selected outer face (gap outside the window); domain '
+               'objects: the outward normal (z_lo: bottom of a plate over a substrate, z_hi: under a lid); their '
+               'interface faces flat on that plane, beside a solid element, facing that side, on the outermost such '
+               'plane form the footprint.',
           tip='Where the gap is, seen from the solid: auto uses the selected domain face; for a drawn object choose '
               'the side of the object facing the wall (for example the bottom).'),
     Param('vents', 'choice', 'all', label='Vented rim', choices=VENT_CHOICES,
@@ -1785,11 +1764,10 @@ _SQUEEZE_FILM_PARAMS = (
                          ('x_sealed', 'Sealed on the x boundary planes'),
                          ('y_sealed', 'Sealed on the y boundary planes'),
                          ('z_sealed', 'Sealed on the z boundary planes'), ('none', 'Closed (no vent)')),
-          help='Which rim edges of the footprint vent to the ambient (p = 0; the others are sealed, no gas flux): all = '
-               'the whole rim; window_sealed = rim edges lying on the domain boundary planes sealed (mirror planes of '
-               'a half / quarter model), the rest vented; x_sealed / y_sealed / z_sealed = only those on the x / y / z '
-               'boundary planes sealed (an in-plane axis; e.g. a strip vented on two sides); none = a closed film '
-               '(needs ambient_pressure > 0: a trapped gas spring).',
+          help='Rim edges venting to the ambient (p = 0; the others sealed, no flux): all; window_sealed = those on '
+               'the domain boundary planes sealed (mirror planes of a half / quarter model); x_sealed / y_sealed / '
+               "z_sealed = only those on that axis' boundary planes sealed (e.g. a strip vented on two sides); none = "
+               'a closed film (needs ambient_pressure > 0: a gas spring).',
           tip='Where the gas can escape from the gap. Edges on a symmetry plane of a half or quarter model must be '
               'sealed.'),
 )
@@ -1798,29 +1776,27 @@ SQUEEZE_FILM_FEATURE = FeatureType(
     summary='Estimates how much a thin gas layer between a flat face of the solid and a fixed wall damps each vibration '
             'mode, as in MEMS resonators.',
     description=('Gas damping of a thin film (gap H) between one flat face of the solid and a fixed parallel wall, '
-                 'evaluated per resonance after the eigenfrequency solve (tetrahedron mesh; it does not change the '
-                 'modes). Selection: one outer face, or domain objects with gap_side (their interface faces flat on '
-                 'that side form the footprint; a curved or stepped selection is a build error). On the footprint '
-                 '(a P2 triangle mesh of the tetrahedron faces) the linearised compressible Reynolds equation div(H^3 / '
-                 '(12 mu_eff) grad p) - j omega (H / p_a) p = j omega w is solved per mode, w = -u . n_out the '
-                 'gap-opening normal displacement of the mode, p = 0 on the vented rim edges (vents), no flux on '
-                 "sealed ones. Result 'table', one row per mode: resonance_number, frequency [Hz], "
-                 f'effective_mass [kg], {_GAS_COLUMNS_TEXT}; extras area [m^2], gap [m], surface_elements, '
-                 'vent_edges. The Resonance table appends gas_damping, gas_stiffness, gamma_gas and q_gas summed '
-                 'over every enabled film (select each face once). Complex modes (PML, loss, resistive loads) use Re '
-                 'omega and m_eff = Re(u^H M u); Bloch cells refuse it. Only the eigenfrequency study evaluates it.'),
+                 'per resonance after the modal solve (it does not change the modes). Selection: one outer face, or '
+                 'domain objects with gap_side (curved or stepped: build error). On the footprint (P2 triangles of the '
+                 'tetrahedron faces) the linearised compressible Reynolds equation div(H^3 / (12 mu_eff) grad p) - j '
+                 'omega (H / p_a) p = j omega w is solved per mode, w = -u . n_out the gap opening, p = 0 on vented rim '
+                 "edges, no flux on sealed ones. Result 'table', one row per mode: resonance_number, frequency [Hz], "
+                 f'effective_mass [kg], gas columns {_GAS_COLUMNS_TEXT}; extras area [m^2], gap [m], surface_elements, '
+                 'vent_edges. The Resonance table appends the gas columns summed over the enabled films (select each '
+                 'face once). Complex modes (PML, loss, resistive loads): Re omega and m_eff = Re(u^H M u); Bloch cells '
+                 'refuse it. Not evaluated in frequency_response.'),
     apply=_apply_squeeze_film, result=_squeeze_film_result, memory_estimate=_squeeze_film_memory,
     grids=(_TETRAHEDRA,))
 
 
 def _resonance_table_feature():
     """The shared resonance_table with the squeeze-film columns of the tetrahedra solver."""
-    feature = resonance_table_feature('the lowest first on a tensor mesh (target_frequency reads 0); on a tetrahedron '
-                                      'mesh nearest the target (the target_frequency setting) first')
+    feature = resonance_table_feature('the lowest first on a tensor mesh (target_frequency reads 0), nearest '
+                                      'target_frequency first on tetrahedra')
     return replace(feature, grids=_GRIDS, result=_resonance_table_result,
-                   description=(f'{feature.description} With {_SQUEEZE_FILM} features (tetrahedron mesh) the table '
-                                f"appends {', '.join(GAS_TABLE_COLUMNS)}: the totals of every enabled film "
-                                f'({_GAS_COLUMNS_TEXT}; c, k and gamma add over the films).'))
+                   description=(f'{feature.description} With {_SQUEEZE_FILM} features the table appends '
+                                f"{', '.join(GAS_TABLE_COLUMNS)}: the totals over the enabled films (c, k and gamma "
+                                f'add; defined in {_SQUEEZE_FILM}).'))
 
 
 # ---- mode_shapes feature (tetrahedra; mode_shapes.py, result kind 'mode_shapes') ----
@@ -1848,10 +1824,9 @@ _MODE_SHAPES_FIELDS_PARAM = Param(
     'fields', 'choice', 'stress', label='Kept fields', choices=('displacement', 'stress', 'stress_strain'),
     choice_labels=(('displacement', 'Displacement'), ('stress', 'Displacement and stress'),
                    ('stress_strain', 'Displacement, stress and strain')),
-    help=("What each resonance keeps on the surface besides the displacement: 'stress' adds the complex modal stress "
-          "(the web page then also colours by stress components, von Mises, principal stresses and pressure), "
-          "'stress_strain' also the strain (strain components, volumetric strain and the strain energy density); "
-          "'displacement' keeps the result smallest."),
+    help=('Kept besides the displacement: stress adds the complex modal stress (the web page colours by components, '
+          'von Mises, principal stresses, pressure); stress_strain also the strain (components, volumetric strain, '
+          'strain energy density); displacement is smallest.'),
     tip=('What the mode animation can colour by besides the displacement: stress (von Mises, principal stresses, '
          'components) and strain (components, strain energy density). Each tensor costs twice the displacement.'))
 
@@ -1861,24 +1836,20 @@ MODE_SHAPES_FEATURE = FeatureType(
     summary=('Keeps the vibration shape of every resonance on the surface of the solid, for each value of a sweep, so '
              'the modes can be animated later (for example beside a phononic band diagram).'),
     description=(
-        'Complex surface displacement of every resonance of the last eigenfrequency (or optomechanics) solve, '
-        'tetrahedron mesh only; one result per sweep value (Results.sweep_result). Surface = the faces with exactly '
-        'one solid window element (element with stiffness: youngs_modulus or c11; solid / void interfaces and the '
-        'outer box faces of solid elements). Quadratic discretization: nodes = the three vertices and three edge '
-        'midpoints of each surface face (its P2 dofs), each face split into 4 triangles; linear: the vertices and '
-        'faces as they are. Triangles counter-clockwise seen from outside the solid. Result \'mode_shapes\': nodes '
-        '(n, 3) m, triangles (m, 3), resonance_number / frequency [Hz] / q_factor (NaN undamped) in the '
-        'resonance_table row order, displacement_re / _im (r, n, 3) float32 m with the solver normalisation (peak '
-        'node |u| = 1 m, its largest component real positive; real modes have _im = 0), bloch_k (3,) rad/m (0 off '
-        'the periodic axes), periodic (3,) 0 / 1, period (3,) = the mesh extent per axis in m and phase_convention: '
-        'the displacement of the neighbouring cell at x + L is this one times exp(-j k L) (time exp(+j omega t)), '
-        "density (n,) kg/m^3 (mean over the solid elements around each node). fields 'stress' adds stress_re / "
-        "_im (r, n, 6) float32 Pa and, piezoelectric, potential_re / _im (r, n) float32 V; 'stress_strain' also "
-        'strain_re / _im (r, n, 6) float32: components xx, yy, zz, xy, xz, yz (tensor shear strain), the nodal '
-        'averages the stress / strain fields of the selected mode show (modal: no thermal part, no initial stress), '
-        "in the displacement's normalisation and phase. Size about r x n x 24 bytes per value for the displacement, "
-        '48 more for each tensor. A GUI Compute adds one (default fields) to a solid without one, so View in browser '
-        'animates the modes; headless runs (api.run, CLI) keep only the features of the model.'),
+        'Complex surface displacement of every resonance of the last eigenfrequency (or optomechanics) solve; one '
+        'result per sweep value (Results.sweep_result). Surface = faces with exactly one solid window element '
+        '(stiffness: youngs_modulus or c11). Quadratic: nodes = vertices and edge midpoints of each face, split into 4 '
+        'triangles; linear: vertices and faces as they are; triangles counter-clockwise seen from outside. Result '
+        "'mode_shapes': nodes (n, 3) m, triangles (m, 3), resonance_number / frequency [Hz] / q_factor (NaN "
+        'undamped) in resonance_table order, displacement_re / _im (r, n, 3) float32 m (peak node |u| = 1 m, its '
+        'largest component real positive; real modes _im = 0), bloch_k (3,) rad/m (0 off periodic axes), periodic '
+        '(3,) 0 / 1, period (3,) m, phase_convention (the neighbour cell at x + L = this times exp(-j k L), time exp(+j '
+        'omega t)), density (n,) kg/m^3 (node mean). fields stress adds stress_re / _im (r, n, 6) float32 Pa and, '
+        'piezoelectric, potential_re / _im (r, n) V; stress_strain also strain_re / _im (r, n, 6): components xx, yy, '
+        'zz, xy, xz, yz (tensor shear), the node averages the selected mode shows (no thermal part, no initial '
+        'stress), in the displacement normalisation and phase. Size ~ r x n x 24 bytes for the displacement, 48 more '
+        'per tensor. A GUI Compute adds one (default fields) for View in browser; headless runs (api.run, CLI) keep '
+        "only the model's features."),
     apply=_apply_mode_shapes, result=_mode_shapes_result, validate=_validate_mode_shapes, grids=(_TETRAHEDRA,),
     gui_run_studies=MODAL_STUDIES)
 
@@ -1887,138 +1858,122 @@ MODE_SHAPES_FEATURE = FeatureType(
 _FEATURES = (
     FeatureType('fixed', 'Fixed', 'boundary_condition', 'boundary', result_kind='table',
                 summary='Clamps the selected domain faces: they cannot move in any direction.',
-                description=f'Clamped support: u_x = u_y = u_z = 0. {_FACE_ONLY_TEXT} {_SUPPORT_RESULT_TEXT}',
+                description=f'u_x = u_y = u_z = 0. {_FACE_ONLY_TEXT} {_SUPPORT_RESULT_TEXT}',
                 apply=_apply_fixed, result=_support_result, memory_estimate=_support_memory, grids=_GRIDS),
     FeatureType('roller', 'Roller', 'boundary_condition', 'boundary', allow_interior=False, result_kind='table',
                 summary='Lets the selected domain faces slide along themselves but not move away from or into the '
                         'domain. Also the symmetry condition of a mirror-symmetric model.',
-                description='Roller (symmetry) support: the normal displacement is 0 (u_x on x_lo / x_hi, u_y on '
-                            'y_lo / y_hi, u_z on z_lo / z_hi), the tangential ones free (zero shear traction). '
-                            'Rollers on one x, one y and one z face hold a solid completely. '
-                            f'{_OUTER_FACES_TEXT} {_SUPPORT_RESULT_TEXT}',
+                description='Normal displacement 0 (u_x on x faces, u_y on y, u_z on z), tangential free (zero shear '
+                            'traction); a mirror plane (warning on a face of a crystal not mirror symmetric there). '
+                            'Rollers on one x, one y and one z face hold a solid. '
+                            f'{_OUTER_FACES_TEXT} {_SUPPORT_RESULT_REF}',
                 apply=_apply_roller, result=_support_result, memory_estimate=_support_memory, grids=_GRIDS),
     FeatureType('displacement', 'Displacement', 'boundary_condition', 'boundary',
                 params=following(tuple(displacement_param(f'u_{axis}', axis) for axis in _AXES)), result_kind='table',
                 summary='Moves the selected domain faces by a given displacement, for example to stretch a sample.',
-                description='Prescribed displacement: u_x, u_y and / or u_z [m] on every node of the selected faces; an '
-                            'empty component stays free (validation error when all are empty). A later support on '
-                            f'the same face component sets its value (warning). {_FACE_ONLY_TEXT} '
-                            f'{_SUPPORT_RESULT_TEXT}',
+                description='Prescribed u_x, u_y and / or u_z; an empty component stays free (all empty: validation '
+                            'error). A later support on the same component sets its value (warning). '
+                            f'{_FACE_ONLY_TEXT} {_SUPPORT_RESULT_REF}',
                 apply=_apply_displacement, result=_support_result, validate=_validate_displacement,
                 memory_estimate=_support_memory, grids=_GRIDS),
     FeatureType('fixed_domain', 'Fixed (domain)', 'domain_condition', 'domain', result_kind='table',
                 summary='Holds the selected domains rigidly in place, like a substrate or a rigid clamp.',
-                description='Holds u_x = u_y = u_z = 0 on every corner node of the selected cells (a tetrahedron mesh: '
-                            'every node of the selected elements; a rigid region whose boundary is clamped to the '
-                            f"solid around it, whatever the cells' own stiffness). {_SUPPORT_RESULT_TEXT}",
+                description='u_x = u_y = u_z = 0 on every corner node of the selected cells (tetrahedra: every node of '
+                            'the selected elements): a rigid region clamped to the solid around it, whatever its own '
+                            f'stiffness. {_SUPPORT_RESULT_REF}',
                 apply=_apply_fixed_domain, result=_support_result, memory_estimate=_support_memory, grids=_GRIDS),
     FeatureType('prescribed_displacement_domain', 'Prescribed displacement (domain)', 'domain_condition', 'domain',
                 params=following(tuple(replace(displacement_param(f'u_{axis}', axis),
-                                               help=f'Prescribed u_{axis} [m] on every node of the selected domains; '
-                                                    f'empty (null) leaves u_{axis} free.',
                                                tip=f'Displacement along {axis} the selected domains are held at; empty '
                                                    'leaves this direction free.')
                                        for axis in _AXES)),
                 result_kind='table',
                 summary='Holds chosen displacement components of the selected domains, for example the in-plane '
                         'motion of a film while it may still deflect.',
-                description='Prescribed displacement per component on every corner node of the selected cells (a '
-                            'tetrahedron mesh: every node of the selected elements): u_x, u_y and / or u_z [m], an '
-                            'empty component stays free (validation error when all are empty), e.g. u_x = u_y = 0 '
-                            'with u_z free for a no-slip film. A 3D solid held so through its whole thickness cannot '
-                            'rotate its cross-sections: its bending turns into transverse shear and, with geometric '
-                            'nonlinearity, the membrane stretching is partly relieved by thickness change; a no-slip '
-                            'mid-surface (a shell model) is not the same constraint. A later support on the same node '
-                            f'component sets its value. {_SUPPORT_RESULT_TEXT}',
+                description='Prescribed u_x, u_y and / or u_z on every corner node of the selected cells (tetrahedra: '
+                            'every node of the selected elements); an empty component stays free (all empty: '
+                            'validation error), e.g. u_x = u_y = 0, u_z free for a no-slip film. Held so through its '
+                            'whole thickness a solid cannot rotate its cross-sections: bending turns into transverse '
+                            'shear and, with geometric nonlinearity, membrane stretching is partly relieved by '
+                            "thickness change (not a shell model's no-slip mid-surface). A later support on the same "
+                            f'component sets its value. {_SUPPORT_RESULT_REF}',
                 apply=_apply_prescribed_displacement_domain, result=_support_result, validate=_validate_displacement,
                 memory_estimate=_support_memory, grids=_GRIDS),
     FeatureType('boundary_load', 'Boundary load', 'boundary_condition', 'boundary',
                 params=following((Param('t_x', 'float', 0.0, label='Traction x', unit='Pa',
-                              help='Force per area along +x on the selected outer faces (a pressure p pushing into the '
-                                   'x_hi face is t_x = -p).',
+                              help='Along +x (a pressure p pushing into x_hi: t_x = -p).',
                               tip='Force per area along x on the face; on the x_hi face a negative value pushes into '
                                   'the domain.'),
                         Param('t_y', 'float', 0.0, label='Traction y', unit='Pa',
-                              help='Force per area along +y on the selected outer faces (a pressure p on y_hi is t_y = '
-                                   '-p).',
+                              help='Along +y (a pressure p on y_hi: t_y = -p).',
                               tip='Force per area along y on the face.'),
                         Param('t_z', 'float', -1e6, label='Traction z', unit='Pa',
-                              help='Force per area along +z on the selected outer faces (a pressure p on z_hi is t_z = '
-                                   '-p). Typical 1e5-1e8.',
+                              help='Along +z (a pressure p on z_hi: t_z = -p). Typical 1e5-1e8.',
                               tip='Force per area along z on the face; on the top face a negative value presses down.'
                                   '\n\nTypical 0.1 to 100 MPa.'))),
                 summary='Applies a force per area on the selected domain faces.',
-                description='Surface traction (t_x, t_y, t_z) [Pa] on outer faces, in the model axes (not the face '
-                            'normal): consistent nodal forces t times the tributary area of each face node (a quarter '
-                            'of each adjacent face cell) [N]. Several loads add; on a held component it only enters the '
-                            'reaction. On a tetrahedron mesh the consistent face loads int t N dA of the element faces '
-                            'beside a solid element, also on domain objects (their interface faces: between two solid '
-                            'elements a sheet force on both; a tensor mesh refuses objects).',
+                description='Traction (t_x, t_y, t_z) in model axes (not the face normal) on outer faces as consistent '
+                            'nodal forces [N]; on tetrahedra also on domain objects (their interface faces: between two '
+                            'solid elements a sheet force on both; a tensor mesh refuses objects). Several add; on a '
+                            'held component it only enters the reaction.',
                 apply=_apply_boundary_load, grids=_GRIDS),
     FeatureType('body_force', 'Body force', 'domain_condition', 'domain',
                 params=following((Param('f_x', 'float', 0.0, label='Body force x', unit='N/m^3', field_dependent=True,
-                              help='Force per volume along +x; may depend on x, y and z.',
+                              help='Along +x (may use z too).',
                               tip='Force per volume along x, for example from an acceleration.'),
                         Param('f_y', 'float', 0.0, label='Body force y', unit='N/m^3', field_dependent=True,
-                              help='Force per volume along +y; may depend on x, y and z.',
+                              help='Along +y (may use z too).',
                               tip='Force per volume along y.'),
                         Param('f_z', 'float', -2.16e4, label='Body force z', unit='N/m^3', field_dependent=True,
-                              help='Force per volume along +z; gravity along -z is -rho g (silica -2.16e4). May depend '
-                                   'on x, y and z.',
+                              help='Along +z (may use z too); gravity along -z is -rho g (silica -2.16e4).',
                               tip='Force per volume along z; gravity is minus density times 9.81.'))),
                 summary='Applies a force per volume throughout the selected domains, such as gravity.',
-                description='Applied body force density [N/m^3], consistent nodal forces f times cell volume / 8 to the '
-                            'eight corners of each selected cell (a tetrahedron mesh: int f N dV with f per element at '
-                            'its centroid); void cells (youngs_modulus 0) drop it. Several body forces add; the coupled '
-                            'slots body_force_x / _y / _z are separate.',
+                description='Body force density on the selected cells as consistent nodal forces (tetrahedra: f per '
+                            'element at its centroid); void cells drop it. Several add; the coupled slots body_force_x '
+                            '/ _y / _z are separate.',
                 apply=partial(apply_body_force, names=_BODY_FORCES), grids=_GRIDS),
     FeatureType('temperature_change', 'Temperature change', 'domain_condition', 'domain',
                 params=(Param('delta_T', 'float', 10.0, label='Temperature change', unit='K', field_dependent=True,
-                              help='Temperature above the stress-free state on the selected cells (added to '
-                                   'temperature_rise_ext; several add); the thermal strain is alpha * delta_T. May '
-                                   'depend on x, y and z.',
+                              help='Temperature above the stress-free state (several add); thermal strain alpha '
+                                   'delta_T; may use z too.',
                               tip='How much warmer the selected domains are than when they were stress free.'),),
                 summary='Heats the selected domains by a given amount without a heat physics, so that they expand.',
-                description='Applied temperature change [K] for thermal strain, without a heat physics: added to '
-                            'temperature_rise_ext, which adds to the coupled temperature_rise of '
-                            f'{THERMAL_STRAIN_COUPLING}.',
+                description='Temperature change for thermal strain without a heat physics (field temperature_rise_ext, '
+                            f'added to the coupled temperature_rise of {THERMAL_STRAIN_COUPLING}).',
                 apply=apply_temperature_change, grids=_GRIDS),
     FeatureType('solid_probe', 'Solid probe', 'probe', 'point',
                 params=(Param('component', 'choice', 'u_abs', label='Quantity',
                               choices=_PROBE_FIELDS,
                               choice_labels=tuple((name, SolidRenderer3D.field_infos[name].label)
                                                   for name in _PROBE_FIELDS),
-                              help='Output field sampled at the point (unit of that field); the electric_* ones (0 '
-                                   'without piezoelectric) and the *_energy_density ones only on a tetrahedron mesh.',
+                              help='Sampled field (its unit); electric_* (0 without piezoelectric) and *_energy_density '
+                                   'on tetrahedra only.',
                               tip='Quantity recorded at the point.'),),
                 object_kinds=('point',), max_entities=1, result_kind='timeseries',
                 summary='Records a displacement, strain or stress at a point after every solve.',
-                description='Samples one output field in the cell containing the point (its z param, mid-height when '
-                            'unset; one sample per re-solve and one per stationary iteration or end-of-run flush, all '
-                            'at t = 0 in a stationary study); on a tetrahedron mesh the nodal display field evaluated '
-                            'at the point (strain and stress: the node-averaged values).',
+                description='Samples one output field at the point per re-solve, stationary iteration or end-of-run '
+                            'flush (t = 0 in a stationary study): the containing cell on a tensor mesh (z: its z '
+                            'param, mid-height when unset), the nodal field on tetrahedra (strain / stress '
+                            'node-averaged).',
                 apply=_apply_probe, result=_probe_result, validate=validate_points_inside, grids=_GRIDS),
     frequency_probe_feature(_apply_frequency_probe, ('u_x', 'u_y', 'u_z'), (_TETRAHEDRA,)),
     _resonance_table_feature(),
     MODE_SHAPES_FEATURE,
     SQUEEZE_FILM_FEATURE,
-    thermoelastic_damping_feature((_TETRAHEDRA,), 'on tetrahedron meshes of solid_mechanics_3d (a tensor mesh '
-                                                 'refuses it: its modes are matrix-free)'),
+    thermoelastic_damping_feature((_TETRAHEDRA,), 'tetrahedra only (a tensor mesh refuses it: matrix-free modes)'),
     FeatureType('electrode', 'Electrode', 'boundary_condition', 'boundary', params=_ELECTRODE_PARAMS,
                 result_kind='table',
                 summary='Puts an electrode on the selected faces of a piezoelectric solid: a fixed voltage, ground, or '
                         'an isolated electrode.',
-                description='Electrode on outer faces and on domain objects (their interface faces, outer boundary '
-                            'faces of the object included): every node of the faces, edges and corners included, one '
-                            f'equipotential. {_ELECTRODE_TEXT} {_ELECTRODE_RESULT_TEXT}',
+                description='Electrode on outer faces and domain objects (their interface and outer boundary faces): '
+                            f'every node, edges and corners included. {_ELECTRODE_TEXT} {_ELECTRODE_RESULT_TEXT}',
                 apply=_apply_electrode, result=partial(electrode_result, charge_unit='C'), grids=(_TETRAHEDRA,)),
     FeatureType('electrode_domain', 'Electrode (domain)', 'domain_condition', 'domain', params=_ELECTRODE_PARAMS,
                 result_kind='table',
                 summary='Makes the selected domains (for example a drawn metal film) one electrode of a piezoelectric '
                         'solid.',
-                description='Electrode on every node of the selected elements (a meshed metal electrode: give it its '
-                            'own stiffness and density for mass loading, or none). '
-                            f'{_ELECTRODE_TEXT} {_ELECTRODE_RESULT_TEXT}',
+                description='Electrode on every node of the selected elements (a meshed metal electrode: give it '
+                            'stiffness and density for mass loading, or none). Rules and result as electrode.',
                 apply=_apply_electrode_domain, result=partial(electrode_result, charge_unit='C'), grids=(_TETRAHEDRA,)),
     replace(ADMITTANCE_FEATURE, grids=(_TETRAHEDRA,)),
     replace(OPTOMECHANICAL_COUPLING_FEATURE, grids=(_TETRAHEDRA,)),   # em_fdfd_bor optics (optomechanics_fem)
@@ -2046,106 +2001,44 @@ SOLID_MECHANICS_3D = PhysicsType(
     group='structural',
     dimensions=(3,),
     summary='Static deformation and stress of solids in 3D under supports, loads and thermal expansion.',
-    description='3D static linear elasticity, small strain, isotropic cells (youngs_modulus, poisson_ratio -> Lame '
-                'lambda, mu) with anisotropic thermal expansion alpha_xx / alpha_yy / alpha_zz: sigma = lambda tr(eps) '
-                'I + 2 mu eps - beta dT, beta_i = 2 mu alpha_ii + lambda (alpha_xx + alpha_yy + alpha_zz), dT = '
-                f'temperature_rise (coupled, {THERMAL_STRAIN_COUPLING}) + temperature_rise_ext (temperature_change '
-                'features). Discretisation: trilinear bricks on the cells of the physical window, displacement on the '
-                'cell corners, matrix-free stiffness product, 3 x 3 block-Jacobi PCG (about 20 iterations per cell '
-                "along the longest window axis; pcg precision mixed runs them in float32 on float32 copies of the "
-                'operator, refined against the float64 residual to the double answer: much cheaper per iteration '
-                'on GPUs with slow float64 arithmetic, so the Automatic linear solver on the gpu backend is pcg mixed; '
-                'cpu: double); outputs at the cell centres (u = mean of the 8 corners; strain, '
-                'stress and von Mises from the centre gradients), 0 in void cells (youngs_modulus 0: not solved, carry '
-                'nothing), edge-extended into any PML shell. Forces and reactions in N. strain_xy / _xz / _yz are '
-                'tensor shear strains (half the engineering strain); elastic_strain_* = strain - alpha dT. Faces '
-                'without a support or load are traction free. Every solid region (cells with stiffness joined through '
-                'faces, edges or corners) needs supports that stop all six rigid motions, e.g. rollers on one x, one y '
-                'and one z face (validation checks the three directions, the build the rank per region; regions '
-                'touching only along an edge or at a corner count as joined, so a hinge there shows as an unconverged '
-                'solve). Bricks are stiff in bending of thin members: mesh a film with >= 4 cells through its '
-                'thickness. A stationary study solves it after the physics it reads; in a time-dependent study it '
-                're-solves only when a material, support, load or coupled input changed (quasi-static, no inertia). '
-                'On a tensor mesh an eigenfrequency study finds the n_resonances LOWEST undamped vibration modes K u = '
-                'omega^2 M u '
-                '(consistent trilinear mass of rho, needed in every solid cell; no target frequency): matrix-free '
-                'shift-invert Lanczos at 0 (scipy eigsh, the eigen solver role arpack_shift_invert without a factor), '
-                "each Lanczos step one block-Jacobi PCG solve of the stiffness by the 'linear' solver, which "
-                'must be double or mixed; the Lanczos tolerance is at least '
-                f'{LANCZOS_TOLERANCE_PER_CG:g} x the CG tolerance (the inexact inner solves floor its residual), so '
-                'the CG tolerance sets the frequency accuracy (1e-8: ~1e-8 relative; 1e-12 for exact checks). Cost: '
-                '~(n_resonances + 4) x a few solves of ~20 CG iterations per cell along the longest axis, no host '
-                'factor (memory: a few float64 vectors on the run backend, the Lanczos basis on the host; the cpu '
-                'backend runs numpy versions of the matrix-free kernels, the stiffness product numba-compiled when '
-                'numba is installed, much slower per CG iteration than the GPU). '
-                'An eigen solver node of type block_eigen (opt-in) replaces the Lanczos search by factor-free block '
-                'iterations (LOBPCG) on the stiffness and mass products, preconditioned by one multigrid V-cycle (or '
-                'block Jacobi) per vector and iteration, no inner CG solves: its own residual tolerance sets the '
-                'accuracy (frequency error ~ its square), memory 9 vectors of the system size per block row on the '
-                'run backend, mixed precision by default. '
-                'Supports held at '
-                '0, loads / thermal strain ignored (no prestress); one snapshot per mode labelled "resonance k: f = '
-                '<Hz> Hz" with the mode shape scaled to a peak node |u| of 1 m (strain and stress per that shape, no '
-                'thermal part; support reactions are not available); the resonance_table feature lists the '
-                'frequencies. Interior targets (an indefinite K - sigma M, which CG cannot solve) and free-free bodies '
-                'are not available on that mesh. The strain-optic and optical-force couplings are 2D only '
-                '(solid_mechanics); the optomechanics study runs on a tetrahedron mesh only, with em_fdfd_bor optics '
-                '(optomechanical_coupling: the modes sampled on rings about the body-of-revolution axis; piezoelectric '
-                'and periodic axes off). Output u_x, u_y, u_z are the displacement [m], u_abs its magnitude. The '
-                "instance is usually named solid. On a tetrahedron mesh (MeshSpec kind 'tetrahedra', 3D Cartesian): "
-                'Lagrange elements of the discretization setting (quadratic P2 default, linear P1 locks in bending and '
-                'toward poisson_ratio 0.5; affine elements) on the window elements with stiffness (a PML shell is '
-                'void); cells may also be anisotropic there: the 21 c_IJ material entries (Voigt 1 xx, 2 yy, 3 zz, 4 yz, '
-                '5 xz, 6 xy, engineering shear; T = c S - beta dT with beta_I = c_IJ alpha_J, shear rows included; '
-                'an unset entry takes the isotropic value of youngs_modulus / poisson_ratio, a cell is solid when c11 '
-                "> 0, the 6 x 6 must be positive definite; a {'model': 'crystal', 'plane': 'full'} entry sets all 21; "
-                'a rectangular-cell mesh refuses them), one host SuperLU of the stiffness per assembly (linear solver '
-                'sparse_direct, Automatic there; '
-                'pcg does not run on tetrahedra), every support and load feature (Fixed, Displacement and Boundary '
-                'load also on domain objects: their interface faces; Fixed (domain) holds every node of the selected '
-                'elements), probes evaluated at the point; the eigenfrequency study then finds the n_resonances modes '
-                'nearest target_frequency (0 = the lowest) by shift-invert Lanczos on a factor of K - sigma M (eigen '
-                "solver factorization superlu on the host, or cudss / cudss_mixed: cuDSS LDL^T of the real symmetric "
-                'pencil on the GPU, the mixed one in float32 refined to full accuracy); with target_frequency > 0 a free '
-                'body (free-free: no supports, or supports that leave rigid motions free) is allowed in that study, its '
-                'rigid-body modes (0 Hz) dropped, and in the frequency_response study (regular at f > 0), while static '
-                'solves still need supports; a mechanical_loss_factor damps the modes there (complex frequencies, Q '
-                'in the resonance table); initial_stress_* material entries prestress every static solve (total '
-                'stress sigma0 + C eps - beta dT) and setting stress_stiffening adds the geometric stiffness of the '
-                'static state to the eigenfrequency / frequency-response pencils; the frequency_probe feature and '
-                'the support results record complex values per frequency; setting geometric_nonlinearity solves '
-                'every static state by total-Lagrangian Newton iterations (Green-Lagrange strain, second '
-                'Piola-Kirchhoff stress, load_steps, reactions from the internal force) and linearises the pencils '
-                'about it; outputs strain_energy_density / kinetic_energy_density (time averages for a mode or a '
-                'response; 0 on the rectangular-cell mesh); the Prescribed displacement (domain) feature holds chosen '
-                'components of every node of a domain. '
-                'state() and coupled slots are '
-                'one value per element (centroid; heat on the same tetrahedron mesh couples through '
-                f'{THERMAL_STRAIN_COUPLING}), displayed fields nodal (displacement exact, strain / stress averaged over '
-                'the solid elements at each node: a material interface is smeared over one element). Setting '
-                'piezoelectric (tetrahedra only): a potential on every window element (void ones dielectric) with the '
-                'piezo_e* / eps_dc* material entries, Electrode / Electrode (domain) features (voltage or floating, '
-                'charges in C), the static coupled solve by the linear sparse_direct solver, the eigenfrequency study '
-                'on the coupled pencil (voltage electrodes shorted, floating ones open; each mode with its potential), '
-                'outputs electric_potential, electric_field_* and electric_displacement_* (0 without it; the '
-                'rectangular-cell mesh shows them as 0). The frequency_response study (tetrahedra only; elastic or '
-                'piezoelectric with mechanical_loss_factor / dielectric_loss_tangent) factorises the complex symmetric '
-                "K (1 + j eta) - omega^2 M once per frequency by the 'linear' sparse_direct solver (host SuperLU, or "
-                'cuDSS LDL^T with back_end cudss on a GPU, its plan reused across frequencies, or an opt-in MUMPS / '
-                'PARDISO host LDL^T reusing its analysis); the Admittance feature '
-                'gives Y(f) in S with the BVD fit and kappa_e. Settings periodic_x / _y / _z with bloch_kx / _ky / _kz '
-                '(tetrahedra, eigenfrequency study only): Bloch / Floquet unit cells, u and phi on each hi face = the lo '
-                'face values times exp(-j k L), the modes of the reduced pencil P^H K P, P^H M P (complex Hermitian, '
-                'complex modes shown as their real part and |u|), a band diagram by sweeping bloch_k (template '
-                f'{_BAND_TEMPLATE}). Settings pml_<face> (tetrahedra, eigenfrequency study, piezoelectric off): an '
-                'elastic PML shell of pml_cells element layers beyond those faces (complex coordinate stretch, outer '
-                'side clamped), complex modes with the radiation Q in the resonance table. Setting electrode_edge_size: '
-                'a gmsh mesh refined along the edges of the electrode objects. The squeeze_film_damping feature '
-                '(tetrahedra, eigenfrequency / optomechanics studies) adds the gas damping of a thin film under a flat face per mode '
-                '(Reynolds equation on the face, vents, slip) to the resonance table. A Roller on a face of a '
-                'crystal that is '
-                'not mirror symmetric there gets a warning (a half model would be wrong). Sizes and estimates on '
-                'tetrahedra are uncalibrated.',
+    description='3D static linear elasticity, small strain: sigma = C (eps - alpha dT), C isotropic (youngs_modulus, '
+                'poisson_ratio) or, on tetrahedra, the 21 c_IJ entries (see c11), alpha per axis (alpha_xx / _yy / '
+                f'_zz), dT = temperature_rise (coupled, {THERMAL_STRAIN_COUPLING}) + temperature_rise_ext '
+                '(temperature_change features). Forces and reactions in N. u_x, u_y, u_z are the displacement [m], '
+                'u_abs its magnitude; strain_xy / _xz / _yz tensor shear strains (half the engineering strain); '
+                'elastic_strain_* = strain - alpha dT. Void cells (no stiffness) are not solved and output 0. Faces '
+                'without a support or load are traction free; every solid region needs supports stopping all six rigid '
+                'motions, e.g. rollers on one x, one y and one z face (validation checks the directions, the build the '
+                'rank per region; regions touching along an edge or at a corner count as joined, so a hinge there '
+                'shows as an unconverged solve). Tensor mesh: trilinear bricks on the window cells, matrix-free '
+                'block-Jacobi pcg (~20 iterations per cell along the longest axis; the cpu backend is much slower per '
+                'iteration), outputs at the cell centres (u = mean of the 8 corners), edge-extended into a PML shell; '
+                'bricks are stiff in bending (>= 4 cells through a film). Its eigenfrequency study finds the '
+                'n_resonances LOWEST modes only (no target_frequency, search targets / band or free bodies): '
+                "matrix-free shift-invert Lanczos at 0, each step one pcg solve by the 'linear' solver (double or "
+                'mixed), whose tolerance sets the frequency accuracy (1e-8: ~1e-8 relative; the Lanczos tolerance is '
+                f'>= {LANCZOS_TOLERANCE_PER_CG:g} x it); an eigen node block_eigen (opt-in) instead runs LOBPCG '
+                'preconditioned by one multigrid V-cycle (or block Jacobi) per vector and iteration, its own residual '
+                'tolerance setting the accuracy (frequency error ~ its square), 9 system-size vectors per block row. '
+                'Tetrahedron mesh: Lagrange elements (setting discretization; linear P1 locks in bending and toward '
+                'poisson_ratio 0.5) on the elements with stiffness (a PML shell is void), sparse_direct; state() and '
+                'coupled slots one value per element (centroid), displayed fields nodal (strain / stress '
+                'node-averaged: an interface smears over one element). Only there: c_IJ, supports and loads on domain '
+                'objects, eigenfrequency about target_frequency (free bodies at target > 0, search targets / band, '
+                'damped modes by mechanical_loss_factor), frequency_response, initial_stress_*, stress_stiffening, '
+                'geometric_nonlinearity, piezoelectric, Bloch cells (periodic_* with bloch_k*, band diagram template '
+                f'{_BAND_TEMPLATE}), pml_<face>, squeeze_film_damping, thermoelastic_damping, mode_shapes, '
+                'frequency_probe, complex support reactions, the electric and energy-density outputs (0 on the tensor '
+                'mesh); sizes and estimates there are uncalibrated. Studies: stationary (after the physics it reads); '
+                'time_dependent quasi-static (re-solves when a material, support, load or coupled input changed; no '
+                'inertia); eigenfrequency: K u = omega^2 M u (consistent mass of rho, needed in every solid cell; '
+                'supports held at 0, loads and thermal strain ignored without stress_stiffening), one snapshot per '
+                'mode labelled "resonance k: f = <Hz> Hz", shape scaled to a peak node |u| of 1 m (no thermal part, no '
+                'support reactions), listed by resonance_table; frequency_response: (K (1 + j eta) - omega^2 M) u = f '
+                'per frequency (loads, prescribed displacements and electrode voltages are phase-0 amplitudes; '
+                'thermal loads static), one snapshot per frequency (real parts, u_abs = |u|); optomechanics: '
+                'em_fdfd_bor optics, optomechanical_coupling samples the modes on rings about the BOR axis '
+                '(piezoelectric and periodic axes off). The strain-optic and optical-force couplings are 2D only.',
     settings=(DISCRETIZATION_PARAM, _TARGET_FREQUENCY_PARAM, STRESS_STIFFENING_PARAM, *GEOMETRIC_NONLINEARITY_PARAMS,
               _PIEZOELECTRIC_PARAM, _ELECTRODE_EDGE_SIZE_PARAM, *_periodic_params(), *_pml_params()),
     features=_FEATURES,
@@ -2158,9 +2051,9 @@ SOLID_MECHANICS_3D = PhysicsType(
     state_fields=_STATE_FIELD_INFOS,
     output_fields=_FIELD_INFOS,
     source_slots=_SLOT_DOCS,
-    supported_studies=('stationary', 'time_dependent', EIGENFREQUENCY_STUDY, FREQUENCY_RESPONSE_STUDY,
+    supported_studies=(STATIONARY_STUDY, TIME_DEPENDENT_STUDY, EIGENFREQUENCY_STUDY, FREQUENCY_RESPONSE_STUDY,
                        OPTOMECHANICS_STUDY),
-    default_study={'type': 'stationary'},
+    default_study={'type': STATIONARY_STUDY},
     # eigen: the factor-free eigsh_inverse on tensor meshes; on tetrahedra eigsh_shifted (SuperLU or cuDSS LDL^T of the
     # real SPD / symmetric pencil; cudss_mixed refines every solve to full accuracy). Automatic is the double factor:
     # ARPACK applies it 37-63 times, double wins from ~11 applications (2 ms per solve against 6-14 ms refined).

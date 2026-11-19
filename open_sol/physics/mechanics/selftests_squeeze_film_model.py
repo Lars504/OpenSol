@@ -1,4 +1,4 @@
-"""Model-run self-test of the solid_mechanics_3d squeeze_film_damping feature (new_modules_plan S6w): the thickness mode
+"""Model-run self-test of the solid_mechanics_3d squeeze_film_damping feature: the thickness mode
 of a roller-guided column (a rigid piston on its top face) under three films against the strip, compressible-strip and
 vented-rectangle closed forms, and the resonance-table totals. definition3d registers it."""
 import math

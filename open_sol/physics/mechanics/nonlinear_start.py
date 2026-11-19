@@ -1,6 +1,6 @@
 """Start states of the total-Lagrangian Newton of the nonlinear solids (2D triangles, 3D tetrahedra): a sweep seed of
 another build, the last converged state of the same assembly or u = 0, the load ramp from that state, and the cold-ramp
-fallback when a warm start does not converge (plan C2). numpy only."""
+fallback when a warm start does not converge. numpy only."""
 import numpy as np
 
 COLD_START = 'cold start'

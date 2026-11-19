@@ -704,7 +704,7 @@ HZ_SELFTEST_CASES = (
                     f'{_MIE_GRADED_CELL * 1e9:g} nm with a {_MIE_GRADED_MARGIN * 1e6:g} um margin, so x and y grade '
                     'inside the TFSF box while its edges and the flux lines stay on base cells: the plane_wave_tfsf '
                     'incident line runs on the graded x widths and the side corrections use the local spacings '
-                    '(solver_plan S7.1 lift; a mismatch would leak incident light into the scattered-field box). Same '
+                    '(a mismatch would leak incident light into the scattered-field box). Same '
                     f'check and tolerance; raises unless both builds reached dx_min <= {_GRADED_DX_MIN_FRACTION:g} x '
                     'the base cell. Not yet confirmed by a run.',
         specs=_graded_mie_specs,

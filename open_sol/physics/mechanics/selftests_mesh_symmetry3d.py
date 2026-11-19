@@ -1,4 +1,4 @@
-"""Electrode-edge mesh sizes and the mirror-plane check of solid_mechanics_3d (piezo_3d_plan stage 6): gmsh3d edge
+"""Electrode-edge mesh sizes and the mirror-plane check of solid_mechanics_3d: gmsh3d edge
 distances, MathEval edge fields and a gmsh mesh refined along an electrode box (skipped without gmsh), the
 electrode_edge_size setting through tetrahedron_sizing and the mesh estimate, crystal_tensors.mirror_violation and the
 Roller warning. definition3d registers them."""

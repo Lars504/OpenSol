@@ -19,15 +19,15 @@ from ..model.meshing import (MESH_ESTIMATE_ERRORS, element_mesh_key, element_win
                              fitted_memory_estimate, physics_settings, with_built_counts)
 from ..model.schema import (FREE_MESH_KINDS, GLOBAL_DERIVED_OPERATION, INTERFACE_SIDES, MESH_KINDS, SELECTION_KINDS,
                             SOLVER_ROLES, coupling_role_text,
-                            coupling_type_accepts, fill_defaults, new_physics_space, output_field_names,
-                            scalar_output_names, solver_backend, solver_misfit, state_field_names,
+                            coupling_type_accepts, fill_defaults, known_physics, new_physics_space, output_field_names,
+                            scalar_output_names, solver_backend, solver_grid, solver_misfit, state_field_names,
                             with_default_precision)
 from ..model.spec import (RESERVED_ENTITY_NAMES, AnalyticCurveSpec, CouplingSpec, DerivedCurveSpec,
                           DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec,
                           ParameterSpec, PhysicsSpec, SelectionSpec, SolverSpec, StudySpec, SweepSpec)
 from ..model.study import sweep_value_spec
 from ..model.templates import make_template
-from ..model.time_estimate import estimate_time
+from ..model.time_estimate import estimate_overheads, estimate_time
 from ..model.validate import internal_error_text, memory_verdict, validate
 from ..solvers.roles import BACKENDS
 
@@ -200,6 +200,47 @@ class SpecEstimates:
                 return None, ''
         return self._cached('time_estimate', estimate)
 
+    def plain_roles(self):
+        """plain_roles of the cached memory estimate (meshing.fitted_memory_estimate), frozenset() without one."""
+        return self._memory_estimates()[2] or frozenset()
+
+    def run_time_estimate(self):
+        """(TimeEstimate or None, message) of one study run at the model's parameter values (estimate_time per_run:
+        counters kept, so solver items name their role) on the cached used-mesh estimates and plain roles; the solve
+        flow chart's per-step items. Cached per revision; (None, '') when a mesh or the memory estimate fails."""
+        def estimate():
+            estimates, _errors = self.used_mesh_estimates()
+            memory = self.memory_estimate()
+            if not estimates or any(mesh is None for mesh in estimates.values()) or memory is None:
+                return None, ''
+            try:
+                return estimate_time(self.spec, self.parameters(), self.registry, estimates, per_run=True,
+                                     plain_roles=self.plain_roles())
+            except MESH_ESTIMATE_ERRORS:
+                return None, ''
+            except Exception:   # crashing recipe: traceback to the log
+                sys.excepthook(*sys.exc_info())
+                return None, ''
+        return self._cached('run_time_estimate', estimate)
+
+    def time_overheads(self) -> dict:
+        """estimate_overheads(per_run=True) of one run ({'build', 'output'} TimeEstimates; {} without a machine profile
+        or estimate), cached per revision."""
+        def estimate():
+            estimates, _errors = self.used_mesh_estimates()
+            memory = self.memory_estimate()
+            if not estimates or any(mesh is None for mesh in estimates.values()) or memory is None:
+                return {}
+            try:
+                return estimate_overheads(self.spec, self.parameters(), self.registry, estimates, per_run=True,
+                                          memory=memory)
+            except MESH_ESTIMATE_ERRORS:
+                return {}
+            except Exception:   # crashing estimator: traceback to the log
+                sys.excepthook(*sys.exc_info())
+                return {}
+        return self._cached('time_overheads', estimate)
+
     def issues(self) -> list:
         """validate(spec) findings (Issue list), reusing the cached mesh and memory estimates (or the mesh failure
         message) and checking against the last known GPU budget and available host RAM."""
@@ -309,6 +350,7 @@ class ModelDocument(QtCore.QObject, SpecEstimates):
         self.host_memory_budget = None       # last available host RAM [bytes] the worker reported (likewise)
         self._element_counts = {}            # mesh name -> {element_mesh_key: built_mesh_counts} (set_element_counts)
         self.estimate_inputs_version = 0     # bumped by new element counts / budgets (SweepValueEstimates' caches)
+        self._built_inputs = (None, None)    # (a built spec, its results_inputs): results_current, by identity
         self.set_spec(spec if spec is not None else ModelSpec())
 
     # ---- whole-model state ----
@@ -347,6 +389,16 @@ class ModelDocument(QtCore.QObject, SpecEstimates):
     def spec_dict(self) -> dict:
         """spec.to_dict() of the current revision, serialised once per edit: read only, never modify it."""
         return self._spec_dict
+
+    def results_current(self, built_spec) -> bool:
+        """True when built_spec (the bridge's results_spec) has this model's results_inputs, so its results are of the
+        current model (a post-processing edit or an undo back to it keeps them current); False for None. The one
+        out-of-date rule of the Results panel and the solve flow's measured values."""
+        if built_spec is None:
+            return False
+        if self._built_inputs[0] is not built_spec:   # serialised once per build
+            self._built_inputs = (built_spec, results_inputs(built_spec.to_dict()))
+        return self._built_inputs[1] == self._cached(('results_inputs',), lambda: results_inputs(self._spec_dict))
 
     def undo(self):
         """Restore the model before the last edit (keeps the current node if it still exists, else its parent)."""
@@ -957,6 +1009,7 @@ class ModelDocument(QtCore.QObject, SpecEstimates):
             'physics': lambda spec: spec.rename_physics(old_name, new_name, self.registry),
             'mesh': lambda spec: spec.rename_mesh(old_name, new_name),
             'solver': lambda spec: spec.rename_solver(old_name, new_name),
+            'derived_curve': lambda spec: spec.rename_derived_curve(old_name, new_name),
         }
         rename = spec_renames.get(kind) or (lambda spec: _rename_unreferenced(spec, path, new_name))
         section = 'all' if kind in _REFERENCED_KINDS or kind == 'feature' else _SECTION_OF_KIND[kind]
@@ -1334,15 +1387,12 @@ def solver_fits(spec, registry, solver_type, values, roles=None):
     if backend not in BACKENDS:   # an invalid backend value: reported by validation
         backend = 'gpu'
     fits = []
-    for physics_spec in spec.physics:
-        try:
-            physics_type = registry.physics_type(physics_spec.type)
-        except KeyError:
-            continue
+    for physics_spec, physics_type in known_physics(spec, registry):
         for role in (solver_type.roles if roles is None else roles):
             if role in physics_type.solver_roles and role in solver_type.roles:
                 fits.append((physics_spec.name, role,
-                             solver_misfit(solver_type, values, physics_type, role, study, backend)))
+                             solver_misfit(solver_type, values, physics_type, role, study, backend,
+                                           solver_grid(spec, physics_spec))))
     return fits
 
 
@@ -1445,15 +1495,15 @@ def _renamed_path(path, old_path, new_name):
 
 
 def _rename_unreferenced(spec, path, new_name):
-    """Rename a feature / coupling / derived value / analytic or derived curve (no other node refers to them by name,
-    except the result keys 'physics.feature' of sources, targets and inputs, renamed with a feature, and derived
-    values named in later derived-value expressions)."""
+    """Rename a feature / coupling / derived value / analytic curve (no other node refers to them by name, except the
+    result keys 'physics.feature' of sources, targets and inputs, renamed with a feature, and derived values named in
+    later derived-value expressions)."""
     if path[0] == 'derived':
         spec.rename_derived_value(path[1], new_name)
         return
     items, item = _locate(spec, path)
     category = {'feature': f'feature in physics {path[1]!r}', 'coupling': 'coupling',
-                'derived': 'derived value', 'curve': 'analytic curve', 'derived_curve': 'derived curve'}[path[0]]
+                'derived': 'derived value', 'curve': 'analytic curve'}[path[0]]
     if not is_identifier(new_name):
         raise ValueError(f'{new_name!r} is not a valid {category} name (letters, digits and _, not starting with a '
                          f'digit)')

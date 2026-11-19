@@ -1,4 +1,4 @@
-"""Self-tests and templates of the NLFD-chi nonlinear sheets (nonlinear_optics_plan stage 4, self-test 9): the CPU site
+"""Self-tests and templates of the NLFD-chi nonlinear sheets: the CPU site
 check (tensors, sampling / deposit adjoint, power identity, smoothed disk, sheet transpose and absorption), the GPU
 surface dipole layers (normal incidence exact, grazing on two meshes), the smoothed disk SHG vs the continuum integral,
 the 2D-material sheet SHG / THG against exact lattice references, and the gold_ridge / graphene templates."""

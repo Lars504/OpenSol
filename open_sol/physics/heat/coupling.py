@@ -40,7 +40,7 @@ _thermo_optic_index_shift = twin('heat.thermo_optic_index_shift', cp.Elementwise
     ''',
     'heat_thermo_optic_index_shift'), _thermo_optic_index_shift_host)
 
-_DNDT_ARRAYS = {'eps_r_update': 'dndT_zz', 'eps_xx_update': 'dndT_xx', 'eps_yy_update': 'dndT_yy'}
+DNDT_ARRAYS = {'eps_r_update': 'dndT_zz', 'eps_xx_update': 'dndT_xx', 'eps_yy_update': 'dndT_yy'}   # index slot -> dndT
 
 
 def em_to_heat_power(q_accum, em, heat=None):
@@ -87,5 +87,5 @@ def _index_shift(T, heat, slot, with_expansion=True):
     alpha_xx, alpha_yy = ((materials.alpha_xx, materials.alpha_yy) if with_expansion
                           else (DTYPE(0.0), DTYPE(0.0)))
     n0 = reference_index(materials, slot)
-    dndT = getattr(materials, _DNDT_ARRAYS[slot])
+    dndT = getattr(materials, DNDT_ARRAYS[slot])
     return _thermo_optic_index_shift(T, DTYPE(heat.T0), n0, dndT, alpha_xx, alpha_yy)

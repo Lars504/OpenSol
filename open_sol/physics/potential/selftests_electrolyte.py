@@ -1,4 +1,4 @@
-"""Analytic self-tests of the electrolyte of electrostatics (igor 1.6): linearised (Debye-Hueckel) slit between two
+"""Analytic self-tests of the electrolyte of electrostatics: linearised (Debye-Hueckel) slit between two
 plates and charged wall anchored by the electrolyte alone (planar and axisymmetric pore); nonlinear (Poisson-Boltzmann)
 Gouy-Chapman wall (1:1, Grahame and the tanh profile) and a 2:1 wall (the first-integral quadrature); an electrode
 behind a Stern layer (Gouy-Chapman-Stern, linear and nonlinear); the c_ion_k concentration fields; registered by

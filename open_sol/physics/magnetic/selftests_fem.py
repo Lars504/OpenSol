@@ -1,4 +1,4 @@
-"""Self-tests of magnetostatics on triangle meshes (magnetic plan section 10.4, MagneticFEMPhysics): the finite-difference
+"""Self-tests of magnetostatics on triangle meshes (MagneticFEMPhysics): the finite-difference
 check of residual and tangent with a scripted Newton run, the planar current sheet, the axisymmetric uniform field,
 the coil pair, the remanent slab, the flux-driven saturating slab, the current-driven saturating sheets (J_s curve deep
 in saturation, tabulated curve), triangles vs the tensor grid on the iron C-core, and the 'iron_c_core_saturation' template. Every

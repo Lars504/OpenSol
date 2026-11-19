@@ -34,15 +34,20 @@ def probe_cell(domain, polarization, x, y, field_component):
     if field_component not in components:
         raise ValueError(f"field probe component of an {polarization!r} physics must be one of {components}, "
                          f"got {field_component!r}")
-    domain.validate_physical_pos(x, y, "Field probe")
-    ix, iy = domain.pos_to_cell(x, y)
+    ix, iy = window_cell(domain, x, y, "Field probe")
     return ix, iy, field_component
+
+
+def window_cell(domain, x, y, label):
+    """(ix, iy) of the cell containing (x, y): every point source / probe of a 2D EM solver; ValueError (label) outside
+    the physical window."""
+    domain.validate_physical_pos(x, y, label)
+    return domain.pos_to_cell(x, y)
 
 
 def point_source_cell(domain, x, y, label):
     """(ix, iy, Yee cell area dx_i dy_j [m^2] from grid_cell_widths) of a point-like source at (x, y)."""
-    domain.validate_physical_pos(x, y, label)
-    ix, iy = domain.pos_to_cell(x, y)
+    ix, iy = window_cell(domain, x, y, label)
     dx_cells, dy_cells = grid_cell_widths(domain.grid)
     return ix, iy, float(dx_cells[ix] * dy_cells[iy])
 
@@ -190,6 +195,20 @@ def port_cells(domain, axis, position, span, label):
     return line_cell, span_cells, warning_label
 
 
+def cpml_extended_span(domain, boundary_config, axis, span_cells):
+    """Half-open span cells along a line (axis 'x' = along x) with an end on a cpml window edge continued to the grid
+    end, as PortLine does: a uniform profile is untouched by the stretch, so a window-wide sheet does not diffract like
+    a slit."""
+    along_axis = 0 if axis == 'x' else 1
+    window = domain.physical_window()[along_axis]
+    lo, hi = span_cells
+    if lo == window.start and getattr(boundary_config, f'{axis}_lo').value == 'cpml':
+        lo = 0
+    if hi == window.stop and getattr(boundary_config, f'{axis}_hi').value == 'cpml':
+        hi = (domain.grid.nx, domain.grid.ny)[along_axis]
+    return lo, hi
+
+
 @dataclass(frozen=True, eq=False)
 class SheetLine:
     """Cells of a sheet current: line cell across the line, span cells along it (None = whole grid line) as `along`,
@@ -221,15 +240,7 @@ def sheet_line(domain, boundary_config, polarization, axis, position, span, labe
         start, end = sorted((float(span[0]), float(span[1])))
         for coord in (start, end):
             _validate_on_line(domain, axis, position, coord, f"{label} span")
-        span_lo, span_hi = along_cell(start), along_cell(end) + 1
-        # As PortLine: an end on a cpml window edge continues through the PML (a uniform profile is untouched by the
-        # stretch), so a window-wide line does not diffract like a slit.
-        window = domain.physical_window()[along_axis]
-        if span_lo == window.start and getattr(boundary_config, f'{axis}_lo').value == 'cpml':
-            span_lo = 0
-        if span_hi == window.stop and getattr(boundary_config, f'{axis}_hi').value == 'cpml':
-            span_hi = along_centers.size
-        span_cells = (span_lo, span_hi)
+        span_cells = cpml_extended_span(domain, boundary_config, axis, (along_cell(start), along_cell(end) + 1))
         along = slice(*span_cells)
 
     if waist is None:

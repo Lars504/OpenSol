@@ -1,4 +1,4 @@
-"""Model-run self-test of the pcg 'multigrid' preconditioner (solvers.multigrid, solver_plan S7.0 / S7.1): a heated dot
+"""Model-run self-test of the pcg 'multigrid' preconditioner (solvers.multigrid): a heated dot
 on an outer-graded mesh solved by multigrid-PCG against a cpu SuperLU field, and far fewer CG iterations than
 Jacobi-PCG; specs fresh. Also the gpu device aggregation against the host numpy one (no model run)."""
 import numpy as np

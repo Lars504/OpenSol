@@ -1,5 +1,5 @@
-"""Self-tests of the solid prestress, damped-mode, frequency-probe and solved-physics wiring (new_modules_plan K2a, K2,
-K3, K4, K0 free-body response): model runs on triangles and tetrahedra against closed forms (roller boxes under a
+"""Self-tests of the solid prestress, damped-mode, frequency-probe and solved-physics wiring:
+model runs on triangles and tetrahedra against closed forms (roller boxes under a
 uniform initial stress, a released initial stress, the diluted Q of a lossy prestressed box, a driven lossy bar's complex
 probe and reaction, a free bar's response) and the StudySpec.solved_physics selection; definition / definition3d
 register them."""

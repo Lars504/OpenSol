@@ -1,4 +1,4 @@
-"""Exact checks of 3D cylindrical (r, phi, z) sectors (symmetry plan 2.21: core.metric.window_metric_3d and the 3D
+"""Exact checks of 3D cylindrical (r, phi, z) sectors (core.metric.window_metric_3d and the 3D
 DiffusionSystem on it): metric identities and scripted HeatPhysics on padding-free polar Domain3D windows of the cpu
 backend, incl. the phi wrap; the model path (DomainSpec polar + size_z: mesh, memory estimate, validation, mapped
 rasters, build and Session on the cpu backend); registered by definition.register."""
@@ -511,7 +511,7 @@ def _check_model_paths(_results):
 CYLINDRICAL_3D_SELFTEST_CASES = (
     SelfTestCase(
         name='metric_cylindrical_geometry_3d', label='Metric: exact areas and volumes of 3D cylindrical sectors',
-        description=('CPU check of core.metric.window_metric_3d (symmetry plan 2.21) on graded widths: Cartesian '
+        description=('CPU check of core.metric.window_metric_3d on graded widths: Cartesian '
                      'volumes / x-face areas as width products; a cylindrical (r, phi, z) sector (radius_min 30 um, '
                      'span 2 rad): summed volumes = (R^2 - r_min^2) Phi H / 2, r_hi A_hi - r_lo A_lo = 2 V on every '
                      'cell (div of r e_r), the outer arc R Phi H, a phi face (R - r_min) H, a z face the sector area, '
@@ -522,7 +522,7 @@ CYLINDRICAL_3D_SELFTEST_CASES = (
     SelfTestCase(
         name='heat_cylindrical_sector_3d', label='Heat: 3D cylindrical (r, phi, z) sectors, exact discrete solutions',
         description=('Scripted stationary HeatPhysics on padding-free polar Domain3D windows of the cpu backend '
-                     f'(symmetry plan 2.21; k = {CONDUCTIVITY:g} W/(m*K) along r, phi and z, float64 CG to '
+                     f'(k = {CONDUCTIVITY:g} W/(m*K) along r, phi and z, float64 CG to '
                      f'{CG_TOLERANCE:g}). (1) Uniform Q = {POWER_DENSITY:g} W/m^3 on the sector r <= '
                      f'{OUTER_RADIUS * 1e6:g} um ({DISK_CELLS} uniform dr, graded phi and z), T(R) = 0: T = Q (R^2 - '
                      'r^2) / (4 k) + Q dr^2 / (16 k) in every cell, cell_volume = r_c dr dphi dz. (2) Source-free '
@@ -540,7 +540,7 @@ CYLINDRICAL_3D_SELFTEST_CASES = (
         specs=lambda: {}, check=_check_sector, max_wall_time=60.0),
     SelfTestCase(
         name='model_cylindrical_sector_paths', label='Model: cylindrical (r, phi, z) sector mesh, rasters, validation',
-        description=('CPU check of the model path of DomainSpec coordinates polar + size_z (symmetry plan 2.21): the '
+        description=('CPU check of the model path of DomainSpec coordinates polar + size_z: the '
                      f'mesh estimate of a full periodic ring (R = {RING_RADIUS * 1e6:g} um, H = '
                      f'{RING_HEIGHT * 1e6:g} um, dx = {RING_CELL * 1e6:g} um: radial cells R / dx, angle cells ceil(2 '
                      'pi R / dx), z cells H / dx, the domain map), the heat memory estimate (the phi wrap\'s 9-slot '
@@ -553,7 +553,7 @@ CYLINDRICAL_3D_SELFTEST_CASES = (
         specs=lambda: {}, check=_check_model_paths, max_wall_time=60.0),
     SelfTestCase(
         name='heat_cylindrical_sector_3d_model', label='Heat: cylindrical (r, phi, z) sector models, exact discrete',
-        description=('Two stationary heat models on DomainSpec coordinates polar + size_z (symmetry plan 2.21), cpu '
+        description=('Two stationary heat models on DomainSpec coordinates polar + size_z, cpu '
                      f'backend, float64 CG to {MODEL_CG_TOLERANCE:g}, read by Results.volume ((r, phi, z) centres). '
                      f'(1) ring: a full 2 pi periodic ring r < {RING_RADIUS * 1e6:g} um, k = {CONDUCTIVITY:g} '
                      f'W/(m*K), Q = {MODEL_POWER:g} W/m^3 on the core circle r < {CORE_RADIUS * 1e6:g} um (mapped '

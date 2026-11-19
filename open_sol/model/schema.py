@@ -13,6 +13,7 @@ from functools import cached_property
 
 import numpy as np
 
+from ..core.constants import FREE_MESH_KINDS   # element mesh kinds (sized by h_max / h_min / growth), re-exported
 from ..core.mesh import has_uniform_spacing
 from ..core.metric import GRIDS
 from ..core.renderer import FieldInfo
@@ -61,8 +62,7 @@ SPACES = {**SPACES_2D, '3d': 'a 3D model'}
 # DomainSpec.coordinates of a polar grid -> the SPACES its physics take (validate's _check_coordinate_grid: the
 # coordinates fix how the drawing extends into 3D); a Cartesian domain restricts nothing
 COORDINATE_SPACES = {'polar': ('planar', 'cross_section'), 'spherical': ('axisymmetric',)}
-MESH_KINDS = ('tensor', 'triangles', 'tetrahedra')   # MeshSpec.kind; also the grid kinds PhysicsType.grids name
-FREE_MESH_KINDS = ('triangles', 'tetrahedra')   # element meshes sized by h_max / h_min / growth (no tensor options)
+MESH_KINDS = ('tensor',) + FREE_MESH_KINDS   # MeshSpec.kind; also the grid kinds PhysicsType.grids name
 # MeshSpec values whose null means a default of the mesh kind (free triangle / tetrahedron meshes: the industry-standard
 # growth 1.3; five quadratic elements per wavelength)
 MESH_KIND_DEFAULTS = {'tensor': {'max_ratio': 1.15, 'points_per_wavelength': 20.0},
@@ -217,10 +217,11 @@ class FeatureType:
     apply: Callable | None = None    # apply(ctx, solver, feature_spec, values, selection) -> runtime obj | None
     result: Callable | None = None   # result(session, solver, runtime_obj, feature_spec, options: dict) -> dict
     validate: Callable | None = None  # validate(vctx, physics_spec, feature_spec, values) -> list[Issue]
-    # memory_estimate(values, n_selected_cells, mesh_estimate) -> core.memory_estimate.MemoryEstimate (CPU only);
+    # memory_estimate(values, n_selected_cells, mesh_estimate) -> core.memory_estimate.MemoryEstimate (CPU only;
+    # n_selected_cells = full-grid cells of the selection's bounding box, 3D boxes in 3D: meshing._selection_cells);
     # set on features that allocate per-region or per-frequency arrays (meshing.estimate_memory)
     memory_estimate: Callable | None = None
-    # stepper precisions the feature works at (solver_plan S3.3; validate checks the resolved 'stepper' solver)
+    # stepper precisions the feature works at (validate checks the resolved 'stepper' solver)
     precisions: tuple = tuple(PRECISIONS)
     # MESH_KINDS of the meshes the feature works on (validate refuses an enabled one on another kind)
     grids: tuple = ('tensor',)
@@ -295,7 +296,7 @@ class PhysicsType:
     memory_estimate: Callable | None = None
     # time_estimate(settings_values, mesh_estimate, context) -> core.time_estimate.TimeEstimate (CPU, unpriced; context
     # = model.time_estimate.TimeContext): the work per step / solve / wavelength as ops and solver roles' work, never
-    # seconds; None = 'not estimated' (time_estimation_plan)
+    # seconds; None = 'not estimated'
     time_estimate: Callable | None = None
     # scalar_outputs(settings_values, physics_spec) -> tuple of names the solver's scalars() reports (derived values:
     # <physics>_<name>; physics_spec for names that follow its features, CPU only); scalar_outputs_help (units,
@@ -317,13 +318,13 @@ class PhysicsType:
     # (physics_type_misfit; '3d' from dimensions)
     spaces_2d: tuple = ('planar',)
     space_settings: dict = field(default_factory=dict)
-    # SOLVER_ROLES key -> SolverRole (solvers.roles): the numerical jobs the type hands out (solver_plan S3.3);
+    # SOLVER_ROLES key -> SolverRole (solvers.roles): the numerical jobs the type hands out;
     # register_physics checks every default_type is a registered SolverType
     solver_roles: dict = field(default_factory=dict)
     # honours solver_defaults.subpixel_smoothing (igor 1.5): the builder hands its solver the interface geometry by
     # set_subpixel_smoothing(geometry) right after create (subpixel_smoothing_physics decides where it applies)
     subpixel_smoothing: bool = False
-    # honours solver_defaults.conformal_boundaries (solver_plan S7.6): the builder hands its solver a
+    # honours solver_defaults.conformal_boundaries: the builder hands its solver a
     # model.boundary_locator.GeometryLocator by set_conformal_boundaries(locator) right after create, in models of
     # the conformal_dimensions (em_fdtd_3d: (3,), a 3D locator) whose 2D DomainSpec.coordinates are in
     # conformal_coordinates (heat / potential also 'polar' / 'spherical': the locator then takes logical coordinates)
@@ -331,7 +332,7 @@ class PhysicsType:
     conformal_dimensions: tuple = (2,)
     conformal_coordinates: tuple = ('cartesian',)
     # run backends (solvers.roles BACKENDS) the type's own code runs on: engine, renderer, features, the couplings it
-    # owns (solver_plan S6); a type adds 'cpu' only once all of it runs on numpy (validate errors on the cpu otherwise)
+    # owns; a type adds 'cpu' only once all of it runs on numpy (validate errors on the cpu otherwise)
     backends: tuple = ('gpu',)
     # core.metric GRIDS of the 2D in-plane grid the type solves on (DomainSpec.coordinates 'polar' / 'spherical' map to
     # 'polar'); validate refuses the others; its solver's PhysicsSolver.coordinate_grids must agree
@@ -375,6 +376,8 @@ class PhysicsType:
                                  f"{role!r}: {solver_role!r}")
         if not isinstance(self.family, str):
             raise TypeError(f'{owner}: family must be text, got {type(self.family).__name__}')
+        if self.family == 'em' and not self.uses_dispersion:   # the builder would drop every pole silently
+            raise ValueError(f"{owner}: a family 'em' type needs uses_dispersion=True")
         if not (isinstance(self.dimensions, tuple) and self.dimensions
                 and set(self.dimensions) <= {1, 2, 3}):
             raise ValueError(f'{owner}: dimensions must be a non-empty tuple of 1, 2, 3, got {self.dimensions!r}')
@@ -545,6 +548,10 @@ class CouplingType:
     # the transform also reads the target's own state (fluid_heat_convection: heat T): a loop-back the stationary study
     # iterates, so the time estimate's fixed point counts it as a self-coupling of the target
     reads_target: bool = False
+    # the transform calls its EM source's take_absorbed_power() (em_heat_joule, em_semiconductor_generation): each call
+    # resets a time-stepped source's window, so validation allows one such reader per FDTD source; the EM definitions
+    # count it as a q_accum reference (definition_common._q_accum_referenced: memory, Bloch / em3d refusals)
+    reads_absorbed_power: bool = False
 
     def __post_init__(self):
         owner = f"CouplingType '{self.name}'"
@@ -582,6 +589,14 @@ def coupling_writes(vctx, coupling_spec) -> dict:
     return dict(coupling_type.writes(vctx, coupling_spec)) if coupling_type.writes is not None else {}
 
 
+def coupling_reads_absorbed_power(registry, coupling_spec) -> bool:
+    """CouplingType.reads_absorbed_power of a coupling spec's type; False for an unknown type."""
+    try:
+        return registry.coupling_type(coupling_spec.type).reads_absorbed_power
+    except KeyError:
+        return False
+
+
 def coupling_type_accepts(coupling_type, role, physics_type_name) -> bool:
     """True when a physics of type physics_type_name may be the role ('source' | 'target') of the coupling type."""
     accepted = _coupling_role_types(coupling_type, role)
@@ -592,6 +607,17 @@ def coupling_role_text(coupling_type, role) -> str:
     """Accepted physics types of a coupling role for messages: "'a'", "'a' or 'b'", or 'any'."""
     accepted = _coupling_role_types(coupling_type, role)
     return 'any' if accepted is None else ' or '.join(f"'{name}'" for name in accepted)
+
+
+# built-in study names (model.study / study_eigenfrequency / study_frequency_response / study_optomechanics
+# register them); physics compare study names against these, never the literal (FieldInfo.requires_study of harmonic
+# fields, wavelength settings frequency_domain overrides)
+FREQUENCY_DOMAIN_STUDY = 'frequency_domain'   # the wavelength-based harmonic study
+EIGENFREQUENCY_STUDY = 'eigenfrequency'
+TIME_DEPENDENT_STUDY = 'time_dependent'
+STATIONARY_STUDY = 'stationary'
+FREQUENCY_RESPONSE_STUDY = 'frequency_response'   # the frequency-list (Hz) harmonic study
+OPTOMECHANICS_STUDY = 'optomechanics'
 
 
 @dataclass(frozen=True)
@@ -620,6 +646,9 @@ class StudyType:
     default_stored_fields: Callable | None = None
     # StudySpec.adaptation allowed (S7.7: mesh refinement levels, model.study_adaptation); validate refuses it else
     supports_adaptation: bool = False
+    # StudySpec.solved_physics allowed (the physics it leaves out run as background_study physics, so one is needed);
+    # validate refuses it else
+    supports_solved_physics: bool = False
     # time_counts(values) -> {name: number} the run-time recipes read (model.time_estimate.StudyCounts: duration,
     # harmonic_points, max_duration, eigenpairs, iterations, fixed_point_limit); None = no counts (recipes assume one
     # solve)
@@ -636,6 +665,8 @@ class StudyType:
         unknown = sorted(set(self.final_state_settings) - {param.name for param in self.params})
         if unknown:
             raise ValueError(f"StudyType '{self.name}': final_state_settings names no param {unknown}")
+        if self.supports_solved_physics and not self.background_study:
+            raise ValueError(f"StudyType '{self.name}': supports_solved_physics needs a background_study")
         if not (isinstance(self.solver_protocols, tuple) and all(
                 getattr(protocol, '_is_runtime_protocol', False) for protocol in self.solver_protocols)):
             raise TypeError(f"StudyType '{self.name}': solver_protocols must be a tuple of runtime-checkable "
@@ -670,7 +701,7 @@ class TemplateEntry:
 @dataclass(frozen=True)
 class SelfTestVariant:
     """A repeat of a SelfTestCase's runs on another backend and / or solver precision, passed against its own
-    tolerance (solver_plan S3.6): api.selftest re-runs specs() moved by api._variant_spec and re-uses check()."""
+    tolerance: api.selftest re-runs specs() moved by api._variant_spec and re-uses check()."""
     name: str                       # identifier, unique within the case (report key, run directory variant_<name>)
     tolerance: float                # replaces the tolerance check() returns
     backend: str | None = None      # 'cpu' | 'gpu': solver_defaults.backend of every run; None = the specs' own
@@ -811,7 +842,8 @@ class ValidationContext:
 
     @property
     def mesh_uniform(self):
-        """True when a tensor mesh estimate exists and its dx, dy (3D: dz) cell widths are each constant (rel 1e-6)."""
+        """True when a tensor mesh estimate exists and its dx, dy (3D: dz) cell widths are each constant (rel 1e-6) over
+        the full grid, PML included (MeshEstimate.uniform judges the window only)."""
         return (self.mesh is not None and self.mesh.kind == 'tensor' and has_uniform_spacing(self.mesh.dx_cells)
                 and has_uniform_spacing(self.mesh.dy_cells)
                 and (self.mesh.dz_cells is None or has_uniform_spacing(self.mesh.dz_cells)))
@@ -872,6 +904,7 @@ class Registry:
         self._selftests = {}
         self._selftest_loaders = []
         self._selftest_lock = threading.Lock()
+        self._selftest_loading_thread = None   # thread running the loaders (a loader calling selftests() raises)
 
     @staticmethod
     def _add(table, item, expected_type):
@@ -957,13 +990,21 @@ class Registry:
         self._selftest_loaders.append(loader)
 
     def selftests(self):
-        """Every SelfTestCase in loader order; the first call runs the loaders (duplicate names raise)."""
+        """Every SelfTestCase in loader order; the first call runs the loaders (duplicate names raise). A loader that
+        raises registers no case and the next call retries every loader, so a broken selftests module fails selftest
+        runs, not get_registry."""
+        if self._selftest_loading_thread == threading.get_ident():
+            raise RuntimeError('Registry.selftests() called from a selftest loader')
         with self._selftest_lock:
             if self._selftest_loaders:
-                cases = dict(self._selftests)
-                for loader in self._selftest_loaders:
-                    for case in loader():
-                        self._add(cases, case, SelfTestCase)
+                self._selftest_loading_thread = threading.get_ident()
+                try:
+                    cases = dict(self._selftests)
+                    for loader in self._selftest_loaders:
+                        for case in loader():
+                            self._add(cases, case, SelfTestCase)
+                finally:
+                    self._selftest_loading_thread = None
                 self._selftests, self._selftest_loaders = cases, []
         return list(self._selftests.values())
 
@@ -1093,7 +1134,7 @@ def memory_check_level(spec) -> str:
 
 def solver_backend(spec) -> str:
     """Backend of a run: solver_defaults.backend, 'auto' = 'gpu' when cupy imports, else 'cpu' (no driver query:
-    GUI-thread safe; a machine with cupy but no CUDA device still resolves 'gpu', solver_plan S6 stage 0)."""
+    GUI-thread safe; a machine with cupy but no CUDA device still resolves 'gpu')."""
     backend = spec.solver_defaults.backend
     if backend == 'auto':
         return 'gpu' if cupy_installed() else 'cpu'
@@ -1118,7 +1159,7 @@ SOLVER_DEFAULT_PRECISIONS = ('auto', *PRECISIONS)   # SolverDefaultsSpec.precisi
 
 
 def with_default_precision(spec, solver_type, settings, solver_role=None) -> dict:
-    """settings (raw) plus 'precision' = solver_defaults.precision (solver_plan S9) when settings set none and
+    """settings (raw) plus 'precision' = solver_defaults.precision when settings set none and
     solver_type (and solver_role, when given) offer it; else settings unchanged. An explicit node precision wins."""
     precision = getattr(spec.solver_defaults, 'precision', 'auto')
     if (precision == 'auto' or 'precision' in settings or precision not in solver_type.precisions
@@ -1137,7 +1178,7 @@ def with_node_precision(spec, solver_type, settings, solver_role, backend, grid,
         return filled
     automatic_type, automatic_settings = solver_role.automatic(backend, grid, study)
     if automatic_type != solver_type.name and study is not None:
-        automatic_type, automatic_settings = solver_role.automatic(backend, grid)
+        automatic_type, automatic_settings = solver_role.automatic(backend, grid, None)
     if automatic_type != solver_type.name or 'precision' not in automatic_settings:
         return filled
     return {**filled, 'precision': automatic_settings['precision']}
@@ -1271,8 +1312,7 @@ def resolved_solvers(spec, registry, physics_spec, study, parameters, plain_role
                                                 {key: value for key, value in raw.items() if key != 'precision'},
                                                 solver_role)
                 raw = filled if 'precision' in filled else raw
-            values = resolve_values(solver_type.params, with_default_precision(spec, solver_type, raw, solver_role),
-                                    parameters)
+            values = resolve_values(solver_type.params, raw, parameters)   # raw has the default precision already
         except (KeyError, ValueError) as exc:
             text = exc.args[0] if isinstance(exc, KeyError) and exc.args else exc
             raise ValueError(f"physics '{physics_spec.name}' {role} solver: {text}") from exc
@@ -1332,7 +1372,7 @@ def auto_back_end_values(values, solver_role, backend, grid) -> dict:
 
 
 def restricted_feature_precisions(feature_type) -> tuple:
-    """The stepper precisions feature_type is limited to, () when it works at every precision (solver_plan S3.3)."""
+    """The stepper precisions feature_type is limited to, () when it works at every precision."""
     return () if set(feature_type.precisions) == set(PRECISIONS) else feature_type.precisions
 
 
@@ -1346,7 +1386,7 @@ def feature_precision_note(feature_type) -> str:
 
 def feature_precision_misfit(feature_type, resolved) -> str:
     """'' when feature_type works at the precision of the resolved 'stepper' solver ({role: ResolvedSolver}; no
-    stepper = no restriction), else the reason naming that precision (solver_plan S3.3)."""
+    stepper = no restriction), else the reason naming that precision."""
     stepper = resolved.get('stepper')
     if stepper is None:
         return ''
@@ -1512,20 +1552,15 @@ MESH_PARAMS = (
               'Cartesian models only).\n'
               '- Tetrahedra: free tetrahedra that follow spheres, boxes and cylinders, for the physics that support '
               'them (3D Cartesian models only; best with the Gmsh mesher).',
-          help="tensor: rectilinear cells (uniform or graded rows and columns; every physics type); triangles: a "
-               "conforming triangle mesh for finite elements (2D Cartesian models only); tetrahedra: a tetrahedron "
-               "mesh for finite elements (3D Cartesian models only; mesher 'gmsh' conforms to boxes, spheres, z "
-               "cylinders and z-prism rectangles / circles, composite inputs included, other objects are tagged "
-               "per element; 'builtin' = a Kuhn split of the bricks of a rectilinear grid graded like a tensor mesh, "
-               "see mesher). Physics, features and solvers declare the kinds they run on, validation refuses the "
-               "others. On triangles / gmsh tetrahedra dx is the maximum element size, max_ratio the maximum element "
-               "growth rate, refinements the maximum sizes in or along their objects (margin and dx_x / dx_y / dx_z "
-               "unused; gmsh tetrahedra also along the edges or at the surface only: RefinementSpec.where), axes "
-               "and outer_dx / outer_ratio do not apply; builtin tetrahedra take the tensor rules "
-               "(refinements with margin and dx_x / dx_y / dx_z, axes, outer_dx / outer_ratio; no size_points); "
-               "h_min, curvature_factor and mesher apply to triangles / tetrahedra only, pml_layers and mirror_x / "
-               "mirror_y to triangles only (a tetrahedron PML shell is meshed like the window), face_sizes to "
-               "tetrahedra only; size_points are [x, y, h] on triangles, [x, y, z, h] on gmsh tetrahedra."),
+          help="tensor: rectilinear cells (uniform or graded; every physics type); triangles: conforming finite "
+               "elements (2D Cartesian models only); tetrahedra: finite elements (3D Cartesian models only; see "
+               "mesher). Physics, features and solvers declare the kinds they run on (validation refuses the "
+               "others). On triangles / gmsh tetrahedra dx is the maximum element size, max_ratio the element "
+               "growth rate, refinements the maximum sizes in or along their objects (margin, dx_x / dx_y / dx_z, "
+               "axes and outer_dx / outer_ratio unused; gmsh tetrahedra also RefinementSpec.where); builtin "
+               "tetrahedra take the tensor rules (no size_points). h_min, curvature_factor and mesher: triangles / "
+               "tetrahedra only; pml_layers and mirror_x / mirror_y: triangles only (a tetrahedron PML shell is "
+               "meshed like the window); face_sizes: tetrahedra only."),
     Param('mode', 'choice', 'uniform', label='Mesh mode', choices=('uniform', 'nonuniform', 'auto'),
           choice_labels=(('uniform', 'Uniform'), ('nonuniform', 'Graded'), ('auto', 'Automatic')),
           tip='How the cell sizes are chosen.\n\n'
@@ -1542,31 +1577,20 @@ MESH_PARAMS = (
               'and the refinements (marked automatic) so you can change them; choosing Automatic again recalculates '
               'them. Switching from Automatic to Uniform keeps the cell size (empty: fills in the smallest automatic '
               'size).',
-          help='uniform: one cell size dx; nonuniform: base size dx plus the mesh refinements, graded by max_ratio; '
-               'auto with an EM physics (family em) on this mesh or wavelength_min set: cell size wavelength_min / '
-               '(points_per_wavelength * n) in each material, n = |sqrt(eps * mu_r)| '
-               'at wavelength_min, largest over the permittivity arrays the mesh\'s physics types use, eps = the '
-               'array background (a component such as eps_zz over eps_r, else the Drude eps_inf) - j sigma_e / '
-               '(omega eps0) + the dispersion poles at that wavelength (a metal is meshed by its skin depth: gold '
-               '|n| ~11 at 1.55 um), plus the refinements; auto without either (physics-controlled, S7.8): base '
-               'size = the longest domain side / 50, every domain object the mesh\'s physics use (material '
-               'selections setting one of their properties, their feature selections) refined to its smallest '
-               'bounding-box side / 4, plus the refinements; with laminar_flow on the mesh a uniform grid at the '
-               'smallest such side / 16 (lattice Boltzmann); a set dx scales every auto size so the finest equals '
-               'it (see dx; null = the rule alone). auto raises for a permittivity, sigma_e, mu_r or pole '
-               'value it uses that depends on x, y, z or a field (use nonuniform there). '
-               'Graded meshes are rectilinear (one width per grid column and per row): a refinement refines every '
-               'column and row its object plus margin spans, across the whole domain, so a waveguide crossing the '
-               'domain refines that whole axis unless the refinement sets per-axis sizes (dx_x / dx_y / dx_z; a '
-               'value >= the base size leaves that axis unrefined); the grading ramps lie outside the refined bands. '
-               'MeshSpec.axes adds per-axis options: max_ratio, coordinate bands, and custom edges or segments '
-               '(uniform / geometric / tanh) that replace the graded cells of that axis. '
-               'In 3D models z is graded the same way: a refinement refines the z layers of its object\'s z extent '
-               'plus margin (points / lines at their z, unset z = the whole height; an open prism end reaches the '
-               'domain edge), set z0 / z1 '
-               'faces of prisms are exact cell edges, and z cells away from refinements take the base size. '
-               'nonuniform and auto fall back to a uniform grid when no refinement is finer than the base size, or '
-               '(at the finest size) when a feature needs a uniform mesh (FDFD plane wave, laminar flow faces).'),
+          help='uniform: one cell size dx; nonuniform: base size dx plus the refinements, graded by max_ratio; auto '
+               'with an EM physics on this mesh or wavelength_min set: cell size wavelength_min / '
+               '(points_per_wavelength * n) per material, n = |sqrt(eps * mu_r)| at wavelength_min, largest over '
+               "the permittivity arrays the mesh's physics use, eps including - j sigma_e / (omega eps0) and the "
+               'dispersion poles (a metal is meshed by its skin depth: gold |n| ~11 at 1.55 um), plus the '
+               'refinements; auto without either (physics-controlled): base size = the longest domain side / 50, '
+               "every domain object the mesh's physics use refined to its smallest bounding-box side / 4, plus the "
+               'refinements; with laminar_flow a uniform grid at the smallest such side / 16. auto raises for a '
+               'permittivity, sigma_e, mu_r or pole value depending on x, y, z or a field (use nonuniform). Graded '
+               'meshes are rectilinear: a refinement refines every column and row its object plus margin spans, '
+               'across the whole domain (per-axis sizes dx_x / dx_y / dx_z limit that); grading ramps lie outside '
+               "the refined bands. 3D: z is graded the same way (refinements over their object's z extent plus "
+               'margin; set prism z0 / z1 faces are exact cell edges; z cells away from refinements take the base '
+               'size).'),
     Param('dx', 'float', 20e-9, label='Cell size', unit='m', min=0.0, min_exclusive=True, optional=True,
           tip='Size of every cell of a uniform mesh, or of the largest cells of a graded mesh (on triangles: the '
               'maximum element size).\n\n'
@@ -1575,39 +1599,29 @@ MESH_PARAMS = (
               "In Automatic mode it is the smallest cell size: the automatic sizes are scaled so the finest cells "
               "get it, which replaces 'Points per wavelength'. Empty: the automatic rule alone sizes the cells.",
           help='Cell size of a uniform mesh, or the base (coarsest) size of a nonuniform one (required in both); '
-               'typically lambda / (20 n) for EM, n the largest refractive index. In auto mode the smallest cell '
-               'size: every auto size (base and object refinements, of the wavelength or the physics-controlled '
-               'rule) is scaled by one factor so the finest equals dx, replacing points_per_wavelength (the '
-               'wavelength rule still sets the size ratios between materials); the lattice Boltzmann rule takes it '
-               'as its uniform size; null = the auto rule alone. Explicit refinements are not scaled. The grid is '
-               'limited to 400e6 cells and '
-               '50,000 cells per axis, counting the PML cells that are added outside the domain; a uniform mesh '
-               'rounds size_x / size_y up to whole cells, so the meshed window can be one cell larger. Validation '
-               'previews materials on float64 centres while the build tests float32 clamped cell centres, so a '
-               'material edge exactly on a cell centre can differ: avoid placing edges exactly on cell centres.'),
+               'typically lambda / (20 n) for EM, n the largest refractive index. auto: the smallest cell size, '
+               'every auto size scaled by one factor so the finest equals dx (replacing points_per_wavelength; the '
+               'material size ratios stay; lattice Boltzmann: its uniform size); null = the auto rule alone. '
+               'Explicit refinements are not scaled.'),
     Param('max_ratio', 'float', None, label='Maximum growth ratio', unit='1', min=1.0, min_exclusive=True,
           visible_if=(('mode', ('nonuniform', 'auto')), ('kind', FREE_MESH_KINDS)), optional=True,
           tip='Largest size ratio between neighbouring cells of a graded or automatic mesh, or between '
               'neighbouring triangles or tetrahedra.\n\n'
               '1.1 to 1.3 is typical. Smaller values grade more smoothly, with fewer reflections, but need more '
               'cells. Empty: 1.15 for rectangular cells, 1.3 for triangles.',
-          help='Largest size ratio of neighbouring cells on a graded mesh, or the maximum element growth rate of a '
-               'triangle mesh (> 1); typically 1.1-1.3. Smaller ratios grade more smoothly (less numerical '
-               'reflection) but need more cells. null = the kind default: 1.15 (tensor), 1.3 (triangles, the '
-               'industry-standard default).'),
+          help='Largest size ratio of neighbouring cells, or the element growth rate on triangles / tetrahedra; '
+               'typically 1.1-1.3 (smaller: less numerical reflection, more cells). null = 1.15 (tensor), 1.3 '
+               '(triangles).'),
     Param('wavelength_min', 'float', None, label='Shortest wavelength', unit='m', min=0.0, min_exclusive=True,
           visible_if=(('mode', ('nonuniform', 'auto')),), optional=True,
           tip='Shortest vacuum wavelength the automatic mesh must resolve, in metres: 1.55e-6 for 1550 nm. Used in '
               'Automatic mode only.\n\n'
               'Empty: the shortest source or solved wavelength of the physics. Set it to keep one mesh during a '
               'sweep.',
-          help='Shortest vacuum wavelength to resolve in auto mode. The auto cell size in a material of index n is '
-               'wavelength_min / (points_per_wavelength * n). Empty (null): the shortest wavelength over the '
-               'physics: FDFD and em_modes the shortest solved one (a frequency_domain study: its shortest '
-               'wavelength, else the wavelength setting), FDTD the shortest significant source wavelength (gaussian lambda / (1 + '
-               'bandwidth), ricker lambda / 2) of the physics on this mesh; a model error when an EM physics is on '
-               'the mesh but none gives one (without EM physics auto mode takes the physics-controlled rule). A '
-               'parameter sweep that changes that wavelength re-meshes per value. Set it to keep one mesh, to mesh '
+          help='Shortest vacuum wavelength to resolve in auto mode (see mode). null = the shortest of the physics on '
+               'this mesh: FDFD and em_modes the shortest solved one, FDTD the shortest significant source '
+               'wavelength (gaussian lambda / (1 + bandwidth), ricker lambda / 2); a model error when an EM physics '
+               'gives none. A sweep changing that wavelength re-meshes per value: set it to keep one mesh, to mesh '
                'finer, or for a wavelength the physics do not know (e.g. one generated inside the model).'),
     Param('points_per_wavelength', 'float', None, label='Points per wavelength', unit='1', min=1.0,
           visible_if=(('mode', ('nonuniform', 'auto')),), optional=True,
@@ -1615,23 +1629,21 @@ MESH_PARAMS = (
               '15 to 30 is typical for rectangular cells, about 5 for triangles. Too few cause phase errors that grow '
               "with the distance travelled. Empty: 20 for rectangular cells, 5 for triangles. Not used while 'Cell "
               "size' is set: it fixes the smallest cells instead.",
-          help='Cells (triangles: elements) per wavelength inside each material in auto mode; typically 15-30 on '
-               'tensor meshes. Too few cells give numerical dispersion (phase errors that grow with the propagation '
-               "distance). null = the kind default: 20 (tensor), 5 (triangles: the industry-standard five quadratic "
-               'elements per wavelength). Unused while dx is set (the finest cells take dx).'),
+          help='Cells (triangles: elements) per wavelength in each material in auto mode; typically 15-30 on '
+               'tensor meshes (too few: phase errors growing with distance). null = 20 (tensor), 5 (triangles, '
+               'quadratic elements). Unused while dx is set.'),
     Param('outer_dx', 'float', None, label='Outer cell size', unit='m', min=0.0, min_exclusive=True,
           visible_if=(('mode', ('nonuniform', 'auto')),), optional=True,
           tip='Largest cell size far from the structure. Leave empty to keep the main cell size everywhere.\n\n'
               'Outside the refined region the cells keep growing up to this size, so a large domain (for example '
               'a thousand times the structure) costs only a few dozen extra cells per side. Meant for heat, '
               'electrostatics and other slowly decaying fields, not for wave physics.',
-          help='Outer grading (graded meshes; null = off): outside the refined core of each axis (the span of every '
-               'refinement and band on that axis, margins included) cells grow geometrically from the base size '
-               'by outer_ratio per cell up to outer_dx, so a domain ~1e3 x the structure costs a few dozen cells '
-               'per side (quasi-static far fields: steady heat, electrostatics, low-frequency thermal noise). An '
-               'axis without refinements is not outer graded; outer_dx <= the base size does nothing. Independent '
-               'of the PML ramp (PML cells still grade toward the base size). Jacobi-PCG iterations grow with the '
-               'grading: sparse direct solvers suit it better.'),
+          help='Outer grading (null = off): outside the refined core of each axis (its refinements and bands with '
+               'margins) cells grow from the base size by outer_ratio per cell up to outer_dx, so a domain ~1e3 x '
+               'the structure costs a few dozen cells per side (quasi-static far fields: steady heat, '
+               'electrostatics, low-frequency thermal noise). An axis without refinements, or outer_dx <= the base '
+               'size, is not outer graded; the PML ramp is unaffected. Jacobi-PCG iterations grow with the grading: '
+               'sparse direct solvers suit it better.'),
     Param('outer_ratio', 'float', None, label='Outer growth ratio', unit='1', min=1.0, min_exclusive=True,
           visible_if=(('mode', ('nonuniform', 'auto')),), optional=True,
           tip='Size ratio between neighbouring cells of the outer grading. Empty: the maximum growth ratio.',
@@ -1658,19 +1670,16 @@ MESH_PARAMS = (
               'surfaces; Built-in splits the boxes of a rectangular grid into tetrahedra. That grid is graded '
               'like rectangular cells (refinements with sizes per axis, face sizes and the per-axis options), '
               'so it suits thin or long flat structures; curved objects get a staircase.',
-          help="Triangles: 'builtin' = open_sol's conforming Delaunay refinement (numpy / scipy, deterministic); "
-               "tetrahedra: 'builtin' = the bricks of a rectilinear grid split into 6 tetrahedra each (Kuhn "
-               "orthoschemes: every dihedral angle <= 90 deg, no slivers at any brick aspect ratio; periodic sides "
-               'match). Uniform mode, or nothing finer than dx: equal cells <= dx per axis. Else the grid is graded '
-               'like a nonuniform tensor mesh at base dx: refinements (and auto ones) with margin and dx_x / dx_y / '
-               'dx_z, axes (bands, edges, segments, max_ratio), outer_dx / outer_ratio, face_sizes as bands '
-               '[c - distance, c + distance] across their face plane, and every flat face of a domain object (box, '
-               'rectangle prism sides, set prism ends) snapped as an element face. The PML shell takes cells of dx. '
-               'Curved objects are tagged per element (a staircase); size_points are refused (mesher gmsh), h_min '
-               "and a physics' edge sizes are unused (a warning). Example, a slender clamped string: refinement "
-               '{string, dx 0.5 um, dx_y = dx_z = 50 nm} plus face_sizes x_lo / x_hi 50 nm. '
-               "'gmsh' = the gmsh program run as an external process (OPEN_SOL_GMSH or the PATH; never linked), a "
-               'validation error when it is not found.'),
+          help="Triangles: 'builtin' = conforming Delaunay refinement (deterministic); tetrahedra: 'builtin' = the "
+               'bricks of a rectilinear grid split into 6 tetrahedra each (no slivers at any aspect ratio; periodic '
+               'sides match), equal cells <= dx in uniform mode, else graded like a nonuniform tensor mesh at base dx '
+               '(refinements with margin and per-axis sizes, axes, outer grading, face_sizes as bands across their '
+               'face plane), every flat face of a domain object snapped as an element face, the PML shell in cells '
+               "of dx; curved objects are a staircase; size_points refused, h_min and a physics' edge sizes unused "
+               '(a warning). Example, a slender clamped string: refinement {string, dx 0.5 um, dx_y = dx_z = 50 nm} '
+               "plus face_sizes x_lo / x_hi 50 nm. 'gmsh' = the external gmsh program (OPEN_SOL_GMSH or the PATH; a "
+               'validation error when not found): tetrahedra conform to boxes, spheres, z cylinders and z-prism '
+               'rectangles / circles (composite inputs included), other objects are tagged per element.'),
     Param('sweep_axis', 'choice', 'none', label='Swept layers', choices=('none', 'z'),
           choice_labels=(('none', 'Off'), ('z', 'Along z (prism layers)')),
           visible_if=(('kind', ('tetrahedra',)),),
@@ -1682,18 +1691,15 @@ MESH_PARAMS = (
               'and bottom faces). Every flat top or bottom face of an object is a layer boundary.\n\n'
               'Boxes, z cylinders and straight z prisms follow exactly; spheres and tapered or x / y extruded shapes '
               '(except rectangles) get a staircase.',
-          help="Tetrahedra only (experiment plan D5). 'none' = the 3D mesher of mesher. 'z' = swept prism layers: "
-               'the xy footprint meshed by the triangle mesher of mesher (builtin / gmsh 2D; dx = maximum element '
-               'size, refinement dx in / along their objects\' footprints over the whole height, h_min, '
-               "curvature_factor, max_ratio growth; a physics' edge sizes refine along the objects' outlines), "
-               'extruded through the z layers of the tensor planner (as builtin tetrahedra along z: refinements '
-               '(dx_z, else dx) with margins, a z MeshAxisSpec, face_sizes on z_lo / z_hi faces as bands, outer_dx; '
-               'every set z face of a domain object snapped as a layer plane; the PML shell in cells of dx) and '
-               'each prism split into 3 tetrahedra by the minimum-vertex rule (conforming; periodic sides matched; '
-               'about 3 x triangles x layers elements). Conforming: boxes, z cylinders, untapered z prisms and '
-               'untapered x / y rectangles; spheres, other x / y prisms and tapers are tagged per element (a '
-               'warning). The x / y PML ring has pml_layers structured layers. Refused: size_points, x / y axes '
-               'options, dx_x / dx_y unlike dx, face sizes on x / y faces, where edges / surface.'),
+          help="Tetrahedra only. 'none' = the 3D mesher of mesher. 'z' = swept prism layers: the xy footprint "
+               "meshed by mesher's triangle mesher (dx, refinement dx over the objects' footprints, h_min, "
+               'curvature_factor, max_ratio), extruded through z layers graded as builtin tetrahedra along z '
+               '(refinement dx_z else dx with margins, a z MeshAxisSpec, face_sizes on z_lo / z_hi, outer_dx; every '
+               'set z face of a domain object a layer plane), each prism split into 3 tetrahedra (about 3 x '
+               'triangles x layers elements). Conforming: boxes, z cylinders, untapered z prisms and x / y '
+               'rectangles; spheres, other x / y prisms and tapers are tagged per element (a warning). The x / y PML '
+               'ring has pml_layers layers. Refused: size_points, x / y axes options, dx_x / dx_y unlike dx, face '
+               'sizes on x / y faces, where edges / surface.'),
     Param('pml_layers', 'int', 8, label='Absorbing layers', unit='1', min=1.0,
           visible_if=(('kind', ('triangles',)), ('sweep_axis', ('z',))),
           tip='Number of structured element layers across each absorbing (PML) boundary layer of a triangle mesh '
@@ -1707,18 +1713,16 @@ MESH_PARAMS = (
               'For structures that are symmetric left to right, so the results keep the symmetry exactly (no '
               'mixing of even and odd modes by an uneven mesh). The mesh follows the drawn objects and their '
               'mirror images; the absorbing layers on the left and right must be equal.',
-          help='Triangles: mesh the half window x <= size_x / 2 (it conforms to the geometry and its mirror image), '
-               'then mirror it about x = size_x / 2 (nodes on the line shared, the PML ring mirrored too), so the '
-               'mesh and every operator on it are exactly mirror symmetric: an even drive gives no odd response '
-               'beyond rounding (parity selection rules). The size field is the smaller of the sizes at a point and '
-               'at its image. Needs equal absorbing rings on x_lo and x_hi (else the mesh estimate fails); a '
-               'warning names material objects that are not mirror symmetric (the mesh still conforms to them; '
-               'sources and probes are not checked). Default false.'),
+          help='Triangles: mesh the half window x <= size_x / 2 (conforming to the geometry and its mirror image) '
+               'and mirror it about x = size_x / 2, so the mesh and every operator are exactly mirror symmetric (an '
+               'even drive gives no odd response beyond rounding). Needs equal absorbing rings on x_lo and x_hi; a '
+               'warning names material objects that are not mirror symmetric (sources and probes are not '
+               'checked).'),
     Param('mirror_y', 'bool', False, label='Mirror-symmetric in y', visible_if=(('kind', ('triangles',)),),
           tip='Like Mirror-symmetric in x, across the horizontal centre line: the bottom half is meshed and copied '
               'to the top. Both together mesh one quarter.',
           help='Triangles: as mirror_x about y = size_y / 2 (equal absorbing rings on y_lo and y_hi); with mirror_x '
-               'the quarter window is meshed and mirrored twice. Default false.'),
+               'the quarter window is meshed and mirrored twice.'),
 )
 
 
@@ -1730,10 +1734,9 @@ def fill_defaults(params, values):
 
 
 def param_visible(param, values):
-    """visible_if semantics: no conditions, or ANY (param, accepted values) pair matches `values`.
-    `values` must include defaults (fill_defaults) — a missing controlling key reads as None."""
-    return not param.visible_if or any(values.get(controller) in accepted
-                                       for controller, accepted in param.visible_if)
+    """visible_if semantics: no conditions, or ANY (param, accepted values) pair matches `values`, which must include
+    the defaults (fill_defaults): a missing controlling key raises KeyError."""
+    return not param.visible_if or any(values[controller] in accepted for controller, accepted in param.visible_if)
 
 
 def resolve_values(params, values, parameters):

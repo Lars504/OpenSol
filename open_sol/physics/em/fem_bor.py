@@ -4,8 +4,8 @@ through eigenfrequency.solve_resonances. Host numpy (scipy inside functions)."""
 # Formulation (r = x - the window's x_lo edge = the axis, z = y, fields ~ exp(j omega t - j m phi), u = -j E_phi as in
 # body_of_revolution: every entry is real without loss / PML). Unknowns e = (E_r, E_z) (Nedelec, covariant Piola) and
 # w = r u (Lagrange of the same degree: the mixed axisymmetric element of the literature, r E_phi nodal and E_t on
-# edges). With G = grad w + m e and rot e = dE_z/dr - dE_r/dz, curl E = (-j G_z / r, -rot e, j G_r / r) in (r, phi, z),
-# so per radian
+# edges; with u itself the discrete gradients w = -m p would leave the space: spurious modes at m != 0). With G =
+# grad w + m e and rot e = dE_z/dr - dE_r/dz, curl E = (-j G_z / r, -rot e, j G_r / r) in (r, phi, z), so per radian
 #   K(m) = int [ nu G . G / r + nu r rot(e)^2 ] dr dz,   M = int [ r (eps_rr E_r^2 + eps_zz E_z^2) + eps_phi w^2 / r ],
 # K x = k^2 M x (unconjugated Galerkin: complex symmetric with loss / PML, D = I). K(m) = K0 + m K1 + m^2 K2 as the Yee
 # operator: K0 = (e, e) nu r rot rot + (w, w) nu grad . grad / r, K1 = (e, w) nu e . grad / r + its transpose, K2 =
@@ -62,7 +62,6 @@ _AXIS_TOLERANCE = 1e-9    # x within this times the longest window side of the a
 _SAMPLE_DEGREE = 4        # rule of the element means (state fields)
 _CHUNK_ELEMENTS = 16384   # elements per field-evaluation block
 _NATURAL_WALLS = frozenset({BCType.PMC})
-_PERIODIC_TYPES = frozenset({BCType.PERIODIC, BCType.BLOCH})
 _CENTROID = np.array([1.0 / 3.0, 1.0 / 3.0])
 
 
@@ -126,10 +125,10 @@ def fem_bor_layout(mesh, order, boundary_config, pec=None) -> FEMBORLayout:
     reaching below r = 0 or when every element is PEC."""
     if order not in (1, 2):
         raise ValueError(f'fem_bor_layout: order must be 1 or 2, got {order!r}')
+    if boundary_config.periodic_x or boundary_config.periodic_y:
+        raise ValueError(f'em_fdfd_bor on triangles: {PERIODIC_TEXT}')
     faces = {face: getattr(boundary_config, face) for face in FACE_BITS}
     for face, kind in faces.items():
-        if kind in _PERIODIC_TYPES:
-            raise ValueError(f'em_fdfd_bor on triangles: {PERIODIC_TEXT}')
         if kind in MIRROR_TYPES:
             raise ValueError(f'em_fdfd_bor on triangles: {face} is a {kind.value} mirror; use pec / pmc walls (a pec / '
                              'pmc z_lo wall is the mirror plane)')

@@ -10,13 +10,12 @@ SOLVER_ROLES = {'stepper': 'Time stepping', 'linear': 'Linear systems', 'shifted
 OPERATOR_CLASSES = {'spd': 'symmetric positive definite', 'complex_symmetric': 'complex symmetric',
                     'general': 'general (non-symmetric)'}
 BACKENDS = {'gpu': 'GPU', 'cpu': 'CPU'}
-# precision -> GUI text; storage / compute dtypes per role are the runtime's business (solver_plan S5)
+# precision -> GUI text; storage / compute dtypes per role are the runtime's business
 PRECISIONS = {'single': 'single precision', 'double': 'double precision', 'mixed': 'mixed precision',
               'half_storage': 'half-precision storage'}
-# solver_plan S7.0 adds kinds; a 'line' (1D model, one cell across: symmetry 2.20) and a 'tensor_3d' (a 3D model's
+# a 'line' (1D model, one cell across: symmetry 2.20) and a 'tensor_3d' (a 3D model's
 # tensor mesh: its own kind only so that grid_defaults can differ from 2D) are tensor meshes, so solvers and physics
-# declaring 'tensor' fit them too (solver_misfit); 'triangles' / 'tetrahedra' = a MeshSpec of that kind (FEM, S7.5;
-# igor3d_plan T4b)
+# declaring 'tensor' fit them too (solver_misfit); 'triangles' / 'tetrahedra' = a MeshSpec of that kind (FEM)
 GRID_KINDS = {'tensor': 'rectilinear (uniform or graded) mesh', 'line': '1D line of cells (a 1D model)',
               'tensor_3d': '3D rectilinear (uniform or graded) mesh',
               'triangles': 'triangle (finite element) mesh', 'tetrahedra': 'tetrahedron (finite element) mesh'}
@@ -65,9 +64,11 @@ class SolverRole:
     # solid Q1: 2); the host direct size rule and the fit guard count with it (definition_helpers.direct_unknowns)
     direct_components: int = 1
 
-    def automatic(self, backend='gpu', grid='tensor', study=None) -> tuple:
-        """(SolverType name, settings dict) Automatic resolves to in the study (None: any) on the backend and grid
-        kind."""
+    def automatic(self, backend, grid, study) -> tuple:
+        """(SolverType name, settings dict) Automatic resolves to in the study on the backend and grid kind: the
+        study_defaults entry (on study_default_backends), else grid_defaults, else backend_defaults, else the default;
+        study None skips study_defaults (meshing.fitted_memory_estimate's plain roles). Required, so no caller drops
+        the study by accident."""
         by_study = study is not None and (not self.study_default_backends or backend in self.study_default_backends)
         found = self.study_defaults.get((study, grid)) if by_study else None
         type_name, settings = found if found is not None else self.grid_defaults.get(
@@ -182,9 +183,10 @@ def resolved_precision(solver_type, values) -> str:
     return values.get('precision', solver_type.precisions[0])
 
 
-def solver_misfit(solver_type, values, physics_type, role, study, backend, grid='tensor') -> str:
+def solver_misfit(solver_type, values, physics_type, role, study, backend, grid) -> str:
     """'' when solver_type (with its resolved values) can fill `role` of physics_type in the study on the backend and
-    grid kind, else the GUI / validation reason (plain text, labels only)."""
+    grid kind (`schema.solver_grid` of the physics: no default, so no caller judges a line or an FEM mesh as 'tensor'),
+    else the GUI / validation reason (plain text, labels only)."""
     solver_role = getattr(physics_type, 'solver_roles', {}).get(role)
     physics_label = physics_type.label
     if solver_role is None:

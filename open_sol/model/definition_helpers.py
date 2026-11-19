@@ -7,7 +7,7 @@ import math
 
 import numpy as np
 
-from ..core.constants import FACES_3D
+from ..core.constants import AXISYMMETRIC, AZIMUTHAL_ORDER_SETTING, FACES_3D, GEOMETRY_SETTING
 from ..core.fv_diffusion import BCSide
 from ..core.mirror import mirror_faces
 from ..core.monitors import probe_result
@@ -18,7 +18,8 @@ from ..solvers.roles import SolverRole, resolved_precision
 from .expressions import TIME_NAMES, Expression, ExpressionError, evaluate_scalar, referenced_names
 from .geometry import (bounding_box, domain_size_z, expand_entities, perimeter_weights, point_z,
                        preview_pixel_centers)
-from .schema import Issue, Param, feature_path, known_physics, state_field_names
+from .schema import (EIGENFREQUENCY_STUDY, FREE_MESH_KINDS, FREQUENCY_RESPONSE_STUDY, Issue, Param, feature_path,
+                     known_physics, state_field_names)
 
 
 def evaluates_to(value, parameters, predicate):
@@ -120,17 +121,19 @@ def face_conflicts(vctx, physics_spec, boundary_feature_types, path):
             for face, names in owners.items() if len(names) > 1]
 
 
-def mirror_face_issues(vctx, physics_spec, boundary_feature_types, path, consequence, severity='warning'):
-    """One issue per enabled boundary feature of physics_spec setting a face that is an EM mirror plane (core.mirror:
-    a physics' bc_<face> symmetric / antisymmetric): only the default zero-flux face there is the even mirror image
-    of the unfolded model; consequence = the type's sentence on what the feature models instead."""
-    faces = mirror_faces(vctx.spec)
+def mirror_face_issues(vctx, physics_spec, boundary_feature_types, path, consequence, severity='warning',
+                       faces=None):
+    """One issue per enabled boundary feature of physics_spec setting a face that is a model mirror plane (core.mirror
+    mirror_faces, or the given `faces`: a physics' bc_<face> symmetric / antisymmetric, a mirror feature of another
+    physics): only the default zero-flux face there is the even mirror image of the unfolded model; consequence = the
+    type's sentence on what the feature models instead."""
+    faces = mirror_faces(vctx.spec) if faces is None else faces
     issues = []
     for feature, entities in enabled_feature_entities(vctx, physics_spec, boundary_feature_types) if faces else ():
         on_plane = [face for face in faces if face in entities]
         if on_plane:
             issues.append(Issue(severity, feature_path(physics_spec, feature),
-                                f"{', '.join(on_plane)} lies on an EM mirror plane, where the mirrored (unfolded) "
+                                f"{', '.join(on_plane)} lies on a mirror plane of the model, where the mirrored (unfolded) "
                                 f'model needs this physics insulated (no boundary feature): {consequence}'))
     return issues
 
@@ -194,6 +197,20 @@ def study_duration(vctx):
     return None if values is None else values.get('duration')
 
 
+def study_frequencies(values, ascending=False) -> list:
+    """Frequencies [Hz] of a frequency sweep study's resolved settings, in solve order: the explicit list (sorted with
+    ascending), else n_frequencies from frequency_start to frequency_stop, linear or (log_spacing) geometric; 1 = the
+    arithmetic / geometric mean. The one spacing rule (frequency_response / thermal_noise, physics PML references)."""
+    if values['frequencies']:
+        frequencies = [float(frequency) for frequency in values['frequencies']]
+        return sorted(frequencies) if ascending else frequencies
+    start, stop, count = values['frequency_start'], values['frequency_stop'], values['n_frequencies']
+    if count == 1:
+        return [math.sqrt(start * stop) if values['log_spacing'] else 0.5 * (start + stop)]
+    spaced = np.geomspace(start, stop, count) if values['log_spacing'] else np.linspace(start, stop, count)
+    return [float(frequency) for frequency in spaced]
+
+
 def wavelength_range_issues(values, path):
     """[] or the one error for a wavelength_start / wavelength_stop range that does not increase (equal ends only
     with n_wavelengths = 1)."""
@@ -242,14 +259,14 @@ def cg_iteration_issues(vctx, solver_values, path, all_cell_sink=False):
 DIFFUSION_DIRECT_BACK_ENDS = ('auto', 'scipy_splu', 'cudss', 'cudss_mixed') + HOST_DIRECT_BACK_ENDS
 # The 'linear' SolverRole of solid_mechanics_3d: pcg single / double / 'mixed' (float32 inner CG on float32 copies of
 # the matrix-free brick operator and its block inverses); Automatic on the gpu backend (tensor mesh)
-# = pcg mixed (speed plan A1: the float64 brick product runs at the FP64 rate of consumer cards, slower than a 10-thread
+# = pcg mixed (the float64 brick product runs at the FP64 rate of consumer cards, slower than a 10-thread
 # CPU; mixed reached the same 1e-12 answer 17x faster at 2e5 nodes; a pcg node setting no precision takes it too,
 # schema.with_node_precision); on a tetrahedron mesh (FEM) Automatic =
 # sparse_direct, one host SuperLU per assembly through DiffusionDirectSolver (a new sparse_direct back end belongs in
 # DIFFUSION_DIRECT_BACK_ENDS); back_end 'auto' = cudss_mixed there on the gpu backend (B1a: the 3D factor dominates and
 # double runs ~12x the mixed factor time; a failing float32 factor is rejected early and remembered per pattern, H4).
 # preconditioner 'multigrid' (any precision, mixed included): the geometric V-cycle of physics.mechanics.multigrid3d on
-# the brick operator (speed plan A2), opt-in until void / bilayer / graded cases pass with it
+# the brick operator, opt-in until void / bilayer / graded cases pass with it
 CG_ELASTIC_3D_LINEAR_ROLE = SolverRole('spd', 'pcg', precisions=('single', 'double', 'mixed'),
                                        setting_choices={'preconditioner': ('jacobi', 'multigrid'),
                                                         'back_end': DIFFUSION_DIRECT_BACK_ENDS},
@@ -259,15 +276,15 @@ CG_ELASTIC_3D_LINEAR_ROLE = SolverRole('spd', 'pcg', precisions=('single', 'doub
                                        auto_back_ends={'tetrahedra': 'cudss_mixed'})
 # ... of the DiffusionSystem types (heat, electric_currents, electrostatics, magnetostatics): an assembled scalar CSR,
 # so a pcg node may also run 'mixed' or the multigrid preconditioner (2D solid mechanics: block Jacobi only); Automatic
-# on the gpu backend: pcg with multigrid (mesh plan D16 / M0; with solver_defaults.precision 'mixed'
-# schema.resolved_solvers falls back to jacobi); on the cpu backend: host SuperLU in 2D (solver_plan S3.4: a 2D direct
+# on the gpu backend: pcg with multigrid (with solver_defaults.precision 'mixed'
+# schema.resolved_solvers falls back to jacobi); on the cpu backend: host SuperLU in 2D (a 2D direct
 # solve beats Jacobi-PCG on a CPU up to ~1e6 cells; 700 x 700: 4.2 s for a factor + 20 steps vs 7.1 s multigrid PCG),
 # but pcg with multigrid on a 3D tensor mesh on both backends (grid 'tensor_3d': SuperLU fill ~ n^(4/3); 60^3 cells:
 # 38.6 s for one SuperLU solve vs 1.0 s multigrid PCG); in a 1D model (grid 'line', symmetry 2.20) on both backends:
-# the banded host Cholesky; on a triangle / tetrahedron mesh (FEM, mesh plan D11) on both backends: sparse_direct (host
+# the banded host Cholesky; on a triangle / tetrahedron mesh (FEM) on both backends: sparse_direct (host
 # SuperLU; a pcg node is opt-in there; back_end 'auto' = cudss on the gpu backend, B1a: double, since magnetostatics'
 # mu_r makes cond(E) pass the float32 limit and one factor serves few solves). A time_dependent study on a 2D tensor
-# mesh: sparse_direct on both backends (study_defaults; speed plan A3: heat_2d spent 5.0 of 5.6 s in 1000 multigrid
+# mesh: sparse_direct on both backends (study_defaults; heat_2d spent 5.0 of 5.6 s in 1000 multigrid
 # PCG solves, while a fixed dt keeps one factor, DiffusionSystem.refresh_capacity), back_end 'auto' = cudss on the gpu;
 # steady studies and 3D stay multigrid
 CG_DIFFUSION_LINEAR_ROLE = SolverRole('spd', 'pcg', default_settings={'preconditioner': 'multigrid'},
@@ -354,22 +371,28 @@ def optimization_evaluations(context) -> tuple:
     return min(float(context.count('iterations', 1)) + 1.0, limit), 'guess', limit
 
 
-def material_follows_state(context, property_names) -> bool:
-    """Whether a spec material sets one of property_names to an expression of a physics state field or time t (a
-    DynamicMaterialUpdate re-writes it during the run)."""
-    state_names = frozenset(state_field_names(context.spec, context.registry)) | TIME_NAMES
-    for material in context.spec.materials:
-        properties = material.properties if isinstance(material.properties, dict) else {}
-        for name in property_names:
-            value = properties.get(name)
-            if not isinstance(value, str):
+def dynamic_material_values(spec, registry, property_names=None):
+    """(material, property name) of every spec material value (of property_names; None: any) that references a
+    physics state field or time t: the builder makes each a DynamicMaterialUpdate (builder._is_dynamic), re-written
+    during the run. The one CPU rule for "is this property dynamic" (estimates, validate, refactorisation choices)."""
+    state_names = frozenset(state_field_names(spec, registry)) | TIME_NAMES
+    for material in spec.materials:
+        if not isinstance(material.properties, dict):
+            continue
+        for name, value in material.properties.items():
+            if not isinstance(value, str) or (property_names is not None and name not in property_names):
                 continue
             try:
                 if not referenced_names(value).isdisjoint(state_names):
-                    return True
+                    yield material, name
             except ExpressionError:   # reported by validate
                 continue
-    return False
+
+
+def material_follows_state(context, property_names) -> bool:
+    """Whether a spec material sets one of property_names to an expression of a physics state field or time t (a
+    DynamicMaterialUpdate re-writes it during the run)."""
+    return next(dynamic_material_values(context.spec, context.registry, property_names), None) is not None
 
 
 def resolved_stepper_precision(solvers) -> str:
@@ -434,7 +457,7 @@ def direct_unknowns(mesh, components=1) -> int:
     """Unknowns of a direct 'linear' operator on a MeshEstimate (SolverRole.direct_components): element meshes
     components x (nodes + edges) (P2, an upper figure for P1); tensor meshes the window cells (components 1, cell-centred)
     or components x the window nodes (2D solid Q1)."""
-    if mesh.kind in ('triangles', 'tetrahedra'):
+    if mesh.kind in FREE_MESH_KINDS:
         return components * (int(mesh.n_nodes) + int(mesh.n_edges))
     if components == 1:
         return math.prod(mesh.window_axis_cells)
@@ -466,7 +489,7 @@ MAGNETIC_AC_DIRECT_BACK_ENDS = ('auto', 'scipy_splu', 'cudss') + HOST_DIRECT_DOU
 MAGNETIC_AC_LINEAR_ROLE = SolverRole('general', 'sparse_direct', precisions=('double',),
                                      setting_choices={'back_end': MAGNETIC_AC_DIRECT_BACK_ENDS},
                                      auto_back_ends={'triangles': 'cudss'})
-# ... of em_fdfd_ez / _hz: also a line_block node (solver_plan Part II stage 2; Automatic stays sparse_direct) and the
+# ... of em_fdfd_ez / _hz: also a line_block node (Automatic stays sparse_direct) and the
 # opt-in cuDSS back ends (tensor: LDL^T of the symmetrised D A, plan reused across wavelengths and material changes;
 # triangles: LDL^T of the FEM pencil; physics/em sub file FDFD) and the host direct ones (the same LDL^T on the host);
 # back_end 'auto' = cudss on the gpu backend (B1a: double, one factor serves many source / port / adjoint solves and
@@ -541,7 +564,7 @@ def eigen_factorization(solvers):
 def eigen_search(spec) -> str:
     """The eigenfrequency study's search setting of a ModelSpec ('nearest' unset, or in any other study)."""
     study = spec.study
-    if study.type != 'eigenfrequency':
+    if study.type != EIGENFREQUENCY_STUDY:
         return 'nearest'
     search = (study.settings if isinstance(study.settings, dict) else {}).get('search', 'nearest')
     return search if isinstance(search, str) else 'nearest'
@@ -593,7 +616,7 @@ def reduced_sweep_memory_items(context, unknowns, csr_entries) -> list:
     from ..solvers.arpack_shift_invert import arnoldi_basis_size
     from .schema import resolve_values
     study = context.spec.study
-    if study.type != 'frequency_response':
+    if study.type != FREQUENCY_RESPONSE_STUDY:
         return []
     try:
         values = resolve_values(context.registry.study_type(study.type).params,
@@ -955,7 +978,7 @@ def make_apply_inward_flux(param_name):
     tetrahedron mesh the object interfaces as a face (sheet) source (solver.add_surface_flux)."""
     def apply_inward_flux(ctx, solver, feature_spec, values, selection):
         faces = list(selection.outer_faces)
-        if ctx.domain.grid_kind in ('triangles', 'tetrahedra'):
+        if ctx.domain.grid_kind in FREE_MESH_KINDS:
             return _apply_inward_flux_elements(ctx, solver, feature_spec, values[param_name], selection)
         perimeter = None   # (weights, outline) of the selected object perimeters
         if selection.objects:
@@ -1065,7 +1088,7 @@ def make_point_probe(quantity, unit):
     """(apply, result) callbacks of a one-point DiffusionSystem probe feature reading `quantity` in `unit` (a triangle
     mesh: the point's mesh node; tetrahedra: the field evaluated at the point)."""
     def apply_probe(ctx, solver, feature_spec, values, selection):
-        if ctx.domain.grid_kind in ('triangles', 'tetrahedra'):
+        if ctx.domain.grid_kind in FREE_MESH_KINDS:
             if len(selection.objects) != 1:
                 raise ValueError(f"{quantity} probe '{feature_spec.name}' needs exactly one point object, "
                                  f"got {len(selection.objects)}")
@@ -1145,9 +1168,7 @@ def cross_term_materials(vctx, prefix):
             if evaluates_to(properties.get(f'{prefix}_xy'), vctx.parameters, lambda value: value != 0.0)]
 
 
-# ---- 'geometry' setting: planar or axisymmetric (r, z) (heat, potential, magnetic) ----
-GEOMETRY_SETTING = 'geometry'
-AXISYMMETRIC = 'axisymmetric'
+# ---- 'geometry' setting: planar or axisymmetric (r, z) (heat, potential, magnetic; names in core.constants) ----
 AXISYMMETRIC_SPACE_SETTINGS = {AXISYMMETRIC: {GEOMETRY_SETTING: AXISYMMETRIC}}   # PhysicsType.space_settings
 _AXIS_CONSEQUENCE = 'it has no area, so this feature does nothing there'
 
@@ -1164,13 +1185,8 @@ def geometry_param(planar_help, axisymmetric_help, planar_tip, axisymmetric_tip,
              '- Axisymmetric: the drawing is a half cross-section of a round object, rotated about the left domain '
              f'edge. x is the distance from that axis, y the height. {axisymmetric_tip}\n\n'
              'Do not put a boundary condition on the left edge in axisymmetric mode: it is the axis.'),
-        help=(f'planar: {planar_help}. axisymmetric: a body of revolution about the x_lo window edge (x = r >= 0, y = '
-              f'z): {axisymmetric_help}. x_lo is the axis (r = 0: symmetry, {axis_text}). Field derived values of the '
-              "whole model are weighted by the ring volume 2 pi r dx dy ('integral' a whole-body total, 'mean' a "
-              'volume mean; also for fields of other physics). A coupled physics that is planar (its type has no '
-              "geometry setting, e.g. EM, or it is set to planar) solves the drawing as a planar cut per unit z "
-              'length, so its fields are applied per cell as rings (validation warns); a partner with geometry '
-              'axisymmetric too is consistent.'))
+        help=(f'planar: {planar_help}. axisymmetric (x = r, y = z; spec notes): {axisymmetric_help}. x_lo is the axis '
+              f'({axis_text}).'))
 
 
 def is_axisymmetric(settings_values):
@@ -1178,7 +1194,7 @@ def is_axisymmetric(settings_values):
     return bool(settings_values) and settings_values.get(GEOMETRY_SETTING) == AXISYMMETRIC
 
 
-# ---- 'discretization' setting of the types that run on 'triangles' meshes (FEM, mesh plan D5) ----
+# ---- 'discretization' setting of the types that run on 'triangles' meshes (FEM) ----
 DISCRETIZATION_SETTING = 'discretization'
 DISCRETIZATION_PARAM = Param(
     DISCRETIZATION_SETTING, 'choice', 'quadratic', label='Discretization', choices=('quadratic', 'linear'),
@@ -1186,10 +1202,9 @@ DISCRETIZATION_PARAM = Param(
     tip=('Order of the finite elements on a triangle or tetrahedron mesh; ignored on a rectangular-cell mesh.\n\n'
          '- Quadratic: more accurate for the same mesh, the usual choice.\n'
          '- Linear: cheaper per element, needs a finer mesh.'),
-    help=('Lagrange order of the unknown on a triangle or tetrahedron mesh (MeshSpec kind triangles / tetrahedra; '
-          'ignored on tensor meshes): quadratic (P2, the industry-standard default) or linear (P1). On triangles '
-          'elements with an edge on a circle / ellipse are mapped isoparametrically with quadratic elements (geometry '
-          'shape order = the element order), straight with linear ones; tetrahedra are always straight (affine).'))
+    help=('Lagrange order on a triangles / tetrahedra mesh (ignored on tensor meshes): quadratic (P2) or linear (P1). '
+          'Quadratic triangles with an edge on a circle / ellipse are curved (isoparametric), linear ones straight; '
+          'tetrahedra are always straight.'))
 
 
 def element_order(settings_values) -> int:
@@ -1214,7 +1229,6 @@ def on_tetrahedra(vctx, physics_spec) -> bool:
 
 
 # ---- 'azimuthal_order' setting of the axisymmetric DiffusionSystem types (symmetry 2.14; heat, potential) ----
-AZIMUTHAL_ORDER_SETTING = 'azimuthal_order'
 # one Param object shared by every type that has it (azimuthal_order_issues finds the partners by identity)
 AZIMUTHAL_ORDER_PARAM = Param(
     AZIMUTHAL_ORDER_SETTING, 'int', 0, label='Azimuthal order', min=0,
@@ -1225,21 +1239,15 @@ AZIMUTHAL_ORDER_PARAM = Param(
          'this number times the angle, for example 1 for a uniform field across the axis.\n\n'
          'With an order above 0 every value you enter and every result is the size of that cosine part, and '
          'totals over the rings take half the weight of order 0.'),
-    help=('Azimuthal order m >= 0 of an axisymmetric (r, z) solve (symmetry 2.14). 0: rotationally symmetric. m >= 1: '
-          'the order-m part u_m(r, z) cos(m phi) of a load on the body of revolution (m = 1: a uniform transverse '
-          'field, V = -E0 r cos(phi)); the operator gains c_xx m^2 / r^2 per cell volume (r_c the cell-centre radius; '
-          'the radial coefficient _xx is also taken along phi), which makes u_m vanish on the axis and anchors every '
-          'cell with c_xx > 0 (no other anchor needed). Every field, source density, boundary, held and initial value '
-          'is then the amplitude of cos(m phi) (heat: T - T0 is the amplitude, T0 drops out), field components are '
-          'the in-plane r / z amplitudes (the phi part is not output), and ring totals carry pi instead of 2 pi (the '
-          "phi integral of cos^2): held currents / charges, scalar outputs and field 'integral' derived values are "
-          'cos(m phi) moments (e.g. the integral of rho cos(m phi) dV), a point source P is the order-m part of a '
-          'point source P at phi = 0 (its Fourier sum over m: the m = 0 ring of total P plus every order with the '
-          'same P), and a dissipation density (q_joule) is twice its phi mean, so its integral is the total power. '
-          "Needs geometry 'axisymmetric' on a Cartesian domain; every physics of the model with this setting shares "
-          'one m (derived values weight rings by one angle); couplings of an order-m physics warn (products such as '
-          'Joule heating are no single order). solid_mechanics: the mode amplitudes U_r, U_z ~ cos(m phi), U_phi ~ '
-          'sin(m phi) (see its description).'))
+    help=('Azimuthal order m of an axisymmetric (r, z) solve. 0: rotationally symmetric. m >= 1: the order-m part '
+          'u_m(r, z) cos(m phi) of a load (m = 1: a uniform transverse field, V = -E0 r cos(phi)); the operator gains '
+          'c_xx m^2 / r_c^2 per cell volume, so u_m vanishes on the axis. Every field, source density, boundary, held '
+          'and initial value is then a cos(m phi) amplitude (heat: of T - T0), field components the r / z amplitudes, '
+          'and ring totals carry pi instead of 2 pi: held currents / charges, scalar outputs and field integrals are '
+          'cos(m phi) moments, a point source P is the order-m part of P at phi = 0, a dissipation density (q_joule) '
+          "is twice its phi mean (its integral = the total power). Needs geometry 'axisymmetric' on a Cartesian "
+          'domain; every physics with this setting shares one m; couplings of an order-m physics warn (products such '
+          'as Joule heating are no single order). solid_mechanics: U_r, U_z ~ cos(m phi), U_phi ~ sin(m phi).'))
 
 
 def azimuthal_order_of(settings_values):
@@ -1382,33 +1390,29 @@ def mapped_domain_issues(vctx, physics_spec, perimeter_flux_types, cross_prefix)
 # ---- gas Params of the squeeze_film_damping features (fem.squeeze_film; solid_mechanics_3d, membrane) ----
 FILM_GAP_PARAM = Param(
     'gap', 'float', 2e-6, label='Gap height', unit='m', min=0.0, min_exclusive=True,
-    help='Height H of the gas gap between the vibrating surface and the fixed wall facing it [m], uniform; the film '
-         'equation assumes H much smaller than the footprint (typical MEMS 0.5-10 um). The damping scales as 1 / H^3.',
+    help='Uniform gas gap H to the fixed facing wall, << the footprint (MEMS 0.5-10 um); damping ~ 1 / H^3.',
     tip='Thickness of the thin gas layer between the vibrating surface and the fixed wall below or above it.\n\n'
         'Typical 1 to 10 micrometres.')
 GAS_VISCOSITY_PARAM = Param(
     'viscosity', 'float', 1.81e-5, label='Gas viscosity', unit='Pa s', min=0.0, min_exclusive=True,
-    help='Dynamic viscosity mu of the gas [Pa s] (air at 20 C: 1.81e-5), independent of pressure; slip reduces it to '
-         'mu_eff in the gap.',
+    help='Dynamic viscosity mu (air at 20 C: 1.81e-5), pressure-independent; slip reduces it to mu_eff.',
     tip='How viscous the gas is. Air at room temperature: 1.81e-5 Pa s.')
 AMBIENT_PRESSURE_PARAM = Param(
     'ambient_pressure', 'float', 101325.0, label='Ambient pressure', unit='Pa', min=0.0,
-    help='Ambient gas pressure p_a [Pa] (1 atm = 101325): sets the gas compressibility H / p_a of the film; 0 = an '
-         'incompressible film (pure damping, no gas stiffness; needs vents). Compressibility matters at squeeze numbers '
-         'sigma = 12 mu omega L^2 / (p_a H^2) of order 1 and above (L the distance to a vent): the damping falls and a '
-         'gas spring appears. The mean free path is not rescaled with it: set both.',
+    help='p_a, sets the film compressibility H / p_a; 0 = incompressible (pure damping, needs vents). From squeeze '
+         'number sigma = 12 mu omega L^2 / (p_a H^2) ~ 1 (L = distance to a vent) damping falls and a gas spring '
+         'appears. mean_free_path does not follow it: set both.',
     tip='Pressure of the surrounding gas.\n\n0 treats the gas as incompressible (damping only, no spring).')
 GAS_SLIP_PARAM = Param(
     'slip', 'choice', 'veijola', label='Gas slip', choices=SLIP_MODELS,
     choice_labels=(('veijola', 'Rarefied gas (Veijola slip)'), ('none', 'No slip')),
-    help='veijola: the slip-flow viscosity mu_eff = mu / (1 + 9.638 Kn^1.159), Kn = mean_free_path / gap (Veijola et '
-         'al. 1995, 0 <= Kn <= 880, about 5 %); none: mu_eff = mu (continuum, Kn << 0.01).',
+    help='veijola: mu_eff = mu / (1 + 9.638 Kn^1.159), Kn = mean_free_path / gap (Veijola 1995, Kn <= 880, ~5 %); '
+         'none: mu_eff = mu (continuum, Kn << 0.01).',
     tip='Rarefied gas: the gas slips on the walls of a narrow gap or at low pressure, which lowers the damping.\n\n'
         'No slip: the continuum gas of a wide gap.')
 MEAN_FREE_PATH_PARAM = Param(
     'mean_free_path', 'float', 68e-9, label='Mean free path', unit='m', min=0.0, visible_if=(('slip', ('veijola',)),),
-    help='Molecular mean free path of the gas at the ambient pressure [m] (air: 68e-9 at 101325 Pa, scaling as 1 / p_a: '
-         '6.8e-6 at 1013 Pa); used by slip veijola.',
+    help='At the ambient pressure, ~1 / p_a (air: 68e-9 at 101325 Pa, 6.8e-6 at 1013 Pa).',
     tip='Average distance a gas molecule travels between collisions; about 68 nanometres for air at 1 atm, longer at '
         'lower pressure.')
 SQUEEZE_FILM_GAS_PARAMS = (FILM_GAP_PARAM, GAS_VISCOSITY_PARAM, AMBIENT_PRESSURE_PARAM, GAS_SLIP_PARAM,

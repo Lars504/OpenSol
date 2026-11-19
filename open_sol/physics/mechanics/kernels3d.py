@@ -67,7 +67,7 @@ __device__ __forceinline__ void brick_block(
             K[a][b] = lam * I[a][b] + mu * I[b][a] + (a == b ? mu * trace : (real_t)0);
 }
 
-// Products in the per-axis sum / difference (Walsh) basis of an element's 8 corner values (speed plan A4): local corner
+// Products in the per-axis sum / difference (Walsh) basis of an element's 8 corner values: local corner
 // l = 4 lx + 2 ly + lz, mode m = 4 bx + 2 by + bz (bit set = the difference along that axis). C_m = sum_l S(m, l) u_l
 // with S = +1 on a sum bit, 2 l_d - 1 on a difference bit. The trilinear field is sum_m c_m prod_d psi_(m_d)(t_d), psi_0
 // = 1, psi_1 = t - 1/2, c_m = 2^-(zero bits) C_m; the 1D integrals are orthogonal there (int 1 = 1, int psi_1^2 = 1/12,
@@ -450,7 +450,7 @@ void block_precondition3_rows(
     block_precondition3_node((int)(index % n_nodes), inverse, r + row_start, z + row_start);
 }
 """,
-    # Fused CG step, first launch (speed plan A3): alpha = rho / (p . q) from the p . q block partials of the last
+    # Fused CG step, first launch: alpha = rho / (p . q) from the p . q block partials of the last
     # elastic_direction_product (update 0: no update, the start of a solve), x += alpha p, r -= alpha q, z = B^-1 r per
     # node (reduced inverse blocks), block partials of r . z. Grid-stride over the nodes: gridDim.x partials.
     'elastic_update_precondition': r"""
@@ -934,7 +934,7 @@ def _elastic_direction_product_host(preconditioned, direction, next_direction, p
 
 
 def _block_precondition3_numba(numba):
-    """numba twin of block_precondition3 (speed plan A6: the numpy twin's three stacked temporaries per call)."""
+    """numba twin of block_precondition3 (the numpy twin's three stacked temporaries per call)."""
     @numba.njit(parallel=True, cache=True)
     def kernel(inverse, residual, out, n_nodes):
         for prange_i in numba.prange(n_nodes):
@@ -1214,7 +1214,8 @@ class BrickKernels:
                      (blocks, lame_lambda, mu, *widths, *self._element_args))
 
     def reduce_invert_blocks(self, blocks, free_dofs):
-        """In place: reduce each block to the free dofs (1 on fixed diagonals) and invert it."""
+        """In place: reduce each block to the free dofs (1 on fixed diagonals) and invert it. The node blocks are not
+        diagonal: inverting before the reduction would put free residual into the held components of a roller node."""
         self._launch('reduce_invert_blocks', self._node_blocks, (blocks, free_dofs, self._n_nodes_i32))
 
     def precondition(self, inverse_blocks, residual, out):

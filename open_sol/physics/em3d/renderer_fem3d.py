@@ -1,4 +1,4 @@
-"""Renderer of em_fdfd_3d on a 'tetrahedra' mesh (igor3d_plan T4b): the FDFDRenderer3D field names sampled at points
+"""Renderer of em_fdfd_3d on a 'tetrahedra' mesh: the FDFDRenderer3D field names sampled at points
 (sample(component, points): Re / Im / modulus of E and H, e_abs, e_intensity, h_abs, w_e, eps_r per element; NaN
 outside the mesh), the Session's tetrahedron reads; device_field = the values at the element centroids."""
 import re
@@ -9,7 +9,7 @@ import numpy as np
 from ...core.backend import to_host
 from ...core.constants import EPS0
 from ...core.renderer import PhysicsRenderer
-from .mode_ports3d import AXIS_PERMITTIVITY
+from .mode_ports3d import axis_permittivity
 from .renderer_fdfd3d import FDFDRenderer3D
 
 _COMPONENT_INDEX = {'x': 0, 'y': 1, 'z': 2}
@@ -46,9 +46,9 @@ class FEMRenderer3D(PhysicsRenderer):
             intensity = np.sum(np.abs(fields['h' if component == 'h_abs' else 'e']) ** 2, axis=1)
             return intensity if component == 'e_intensity' else np.sqrt(intensity)
         if component == 'w_e':
-            allocated = self.domain.materials.property_names()
-            eps = np.stack([self._host(name if name in allocated else 'eps_r')[element] for name in AXIS_PERMITTIVITY],
-                           axis=1)
+            materials = self.domain.materials
+            eps = np.stack([to_host(axis_permittivity(materials, axis))[element].astype(np.float64)
+                            for axis in range(3)], axis=1)
             return np.where(inside, 0.25 * EPS0 * np.sum(eps * np.abs(fields['e']) ** 2, axis=1), np.nan)
         name, _, part = component.rpartition('_')
         values = fields[name[0]][:, _COMPONENT_INDEX[name[1]]]

@@ -1,4 +1,4 @@
-"""Optional gmsh tetrahedral mesher (igor3d_plan section 7, T3): primitive solids (box, sphere, z cylinder)
+"""Optional gmsh tetrahedral mesher: primitive solids (box, sphere, z cylinder)
 fragmented with the meshed box (window + PML shell) so interfaces conform, only the fragments inside the box kept,
 written as an OpenCASCADE .geo in normalised coordinates, `gmsh -3` run as an external process (never imported,
 linked or vendored, as fem.gmsh_io), the .msh 4.1 ASCII tetrahedra read back into a TetrahedronMesh. Host numpy."""
@@ -53,8 +53,8 @@ import numpy as np
 
 from .gmsh_io import (GMSH_ENVIRONMENT, GMSH_TIMEOUT, PINNED_OUTPUT_OPTIONS, find_gmsh, geo_number, gmsh_errors,
                       node_index, read_msh_blocks)
-from .mesh3d import (OUTER_FACES_3D, PLANE_TOLERANCE, build_tetrahedron_mesh, entity_majority, region_tags,
-                     span_adjugate)
+from .mesh3d import (OUTER_FACES_3D, PLANE_TOLERANCE, build_tetrahedron_mesh, clamp_into_window_3d, entity_majority,
+                     region_tags, span_adjugate)
 
 SOLID_KINDS = ('box', 'sphere', 'cylinder')
 CURVATURE_ELEMENTS = 16   # elements per 2 pi of surface curvature
@@ -189,7 +189,7 @@ def _outside_distance(solid, points) -> np.ndarray:
 
 @dataclass(frozen=True)
 class SizedRegion:
-    """Element size `size` [m] inside a composite of gmsh3d Solids (plan D1): kind 'solid' (solid) or 'union' /
+    """Element size `size` [m] inside a composite of gmsh3d Solids: kind 'solid' (solid) or 'union' /
     'intersection' / 'difference' (children; difference: the base first), ramping outside like a sized solid."""
     kind: str
     size: float
@@ -224,7 +224,7 @@ class SizedRegion:
         return np.minimum(values, h_max)
 
     def surface_distance(self, points) -> np.ndarray:
-        """Distance [m] of points (..., 3) to the region's surface (plan D3b): the max of the outside distance and
+        """Distance [m] of points (..., 3) to the region's surface: the max of the outside distance and
         the depth trees (children's sizes unused; inf deep in a part whose every face is clipped)."""
         points = np.asarray(points, dtype=np.float64)
         return np.maximum(_region_distance(self, points, False, None), _region_distance(self, points, True, None))
@@ -277,7 +277,7 @@ def _child_clips(region, clip) -> list:
 
 @dataclass(frozen=True)
 class SizedFace:
-    """Axis-aligned rectangle of a tetrahedron size field (new_modules_plan G1): the plane normal to axis 0 / 1 / 2 at
+    """Axis-aligned rectangle of a tetrahedron size field: the plane normal to axis 0 / 1 / 2 at
     coordinate, extents low / high [m] along the two other axes (ascending axis order); element size `size` within
     `distance` of the rectangle, size + (growth - 1) x the distance beyond the band (gmsh: Max of two MathEvals)."""
     axis: int
@@ -341,9 +341,7 @@ def mesh_solids_with_gmsh(window, solids, h_max, pml_widths=None, h_min=None, tr
             return region_tags(centroids, solids)
     region = None
     if region_names:
-        low, high = np.array(window[:3], dtype=np.float64), np.array(window[3:], dtype=np.float64)
-        inset = PLANE_TOLERANCE * float((high - low).max())   # TetrahedronMesh.inset_centroids rule (builder masks)
-        region = entity_majority(region_of(np.clip(points[tets].mean(axis=1), low + inset, high - inset)), entities)
+        region = entity_majority(region_of(clamp_into_window_3d(points[tets].mean(axis=1), window)), entities)
     tagged = time.perf_counter()
     built = build_tetrahedron_mesh(points, tets, window=window, region=region, region_names=tuple(region_names or ()),
                                    entities=entities)
@@ -870,7 +868,8 @@ def _depth_texts(solid, unit, scale) -> list:
 
 def _math_eval_rows(number, text) -> list:
     """.geo rows of MathEval field `number`; ValueError when the expression exceeds GEO_STRING_MAX (gmsh stops reading
-    the .geo at a longer string and meshes without every later row)."""
+    the .geo at a longer string and meshes without every later row). Shorten with Max / Min fields combining several
+    MathEvals, never a MathEval reading another field (F<n>: gmsh -3 then ran for minutes on a 15k-element cube)."""
     if len(text) > GEO_STRING_MAX:
         raise ValueError(f'mesher gmsh: MathEval field {number} has {len(text)} characters, gmsh reads at most '
                          f'{GEO_STRING_MAX} per .geo string')

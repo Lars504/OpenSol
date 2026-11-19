@@ -1,4 +1,4 @@
-"""FEM scalar diffusion on tetrahedron meshes (the 2D fem.diffusion analogue, igor3d_plan T4b): -div(C grad u) + a u
+"""FEM scalar diffusion on tetrahedron meshes (the 2D fem.diffusion analogue): -div(C grad u) + a u
 (+ c du/dt) = f by Lagrange P1 / P2 on the active window elements (full 3 x 3 tensor C). FEMDiffusionSystem3D: host
 assembly (fem.assembly3d), Dirichlet / Neumann / Robin face conditions (outer faces on the window, object interface
 faces), held element regions and fixed dofs, P0, point and gradient (extra) loads, implicit-Euler capacity; the linear
@@ -23,7 +23,7 @@ from .diffusion import (EdgeCondition as FaceCondition,   # FaceCondition: the s
                         robin_assembled)
 from .dofs3d import lagrange_dofs_3d
 from .mesh import side_members
-from .mesh3d import PLANE_TOLERANCE, window_faces
+from .mesh3d import clamp_into_window_3d, plane_slack, window_faces
 from .sampling3d import PointLocator3D, centroid_values_3d, evaluate_lagrange_3d
 
 FEM_FILL_FACTOR_3D = {1: 2.0, 2: 3.0}      # SuperLU fill over the 7-point 3D heuristic at equal unknowns (uncalibrated)
@@ -310,9 +310,8 @@ def shell_dof_locations(full) -> tuple:
     if mesh.window_elements().all():
         return np.zeros(0, dtype=np.int64), np.zeros(0, dtype=np.int64), np.zeros((0, 3))
     points = full.dof_points()
-    low, high = np.array(mesh.window[:3]), np.array(mesh.window[3:])
-    inset = PLANE_TOLERANCE * float((high - low).max())
-    clamped = np.clip(points, low + inset, high - inset)
+    clamped = clamp_into_window_3d(points, mesh.window)
+    inset = plane_slack(mesh.window)
     ids = np.flatnonzero(np.any(np.abs(clamped - points) > 2.0 * inset, axis=1))
     elements, reference = PointLocator3D(mesh).locate(clamped[ids])
     return ids, elements, reference
@@ -385,7 +384,8 @@ class FEMDiffusionPhysicsBase3D(FEMDiffusionPhysicsCommon):
 
 
 def fem_diffusion_estimate_3d(mesh, order, element_fields, nodal_fields=1, direct=False, multigrid=False, cudss=None,
-                              refactorizes=False, active_fraction=1.0) -> MemoryEstimate:
+                              refactorizes=False, active_fraction=1.0, *, precision,
+                              mixed) -> MemoryEstimate:
     """FEMDiffusionSystem3D + its physics on a TetrahedronMeshEstimate (fem.diffusion.fem_system_estimate,
     uncalibrated; SuperLU fill FEM_FILL_FACTOR_3D on the 3D heuristic, MUMPS / PARDISO scaled from it:
     fem.diffusion.direct_factor_item); cudss = the 'linear' cuDSS back end or None."""
@@ -397,4 +397,4 @@ def fem_diffusion_estimate_3d(mesh, order, element_fields, nodal_fields=1, direc
                                int(mesh.n_elements),
                                element_fields, nodal_fields, 3, direct_factor=direct_factor, multigrid=multigrid,
                                cudss=cudss, refactorizes=refactorizes, active_fraction=active_fraction,
-                               host_direct=host_direct_name(direct))
+                               host_direct=host_direct_name(direct), precision=precision, mixed=mixed)

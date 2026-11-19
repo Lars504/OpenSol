@@ -1,4 +1,4 @@
-"""EMEPhysics: bidirectional eigenmode expansion of a 2D in-plane model along x or y (eme_plan stage 1): sections from
+"""EMEPhysics: bidirectional eigenmode expansion of a 2D in-plane model along x or y: sections from
 the mesh, slab line modes per section (PML modes kept), mode-matched interfaces, the S-matrix cascade, port results and
 the field reconstructed over the window. EMEBase holds the solve flow shared with the 3D EMEPhysics3D (solver3d)."""
 # FDFDPhysics attribute set (domain, polarization, boundary_config, sources, monitors, dispersive_regions, pec_cells,
@@ -18,7 +18,7 @@ import math
 import time
 
 import numpy as np
-from ...core.backend import host_copy, to_host, write_host_into
+from ...core.backend import check_backend_array, host_copy, to_host, write_host_into
 
 from ...core.constants import C0, DTYPE, EPS0
 from ...core.solver_base import PhysicsSolver
@@ -29,8 +29,9 @@ from ..em.design_density import DesignRegion, paint_regions
 from ..em.materials import DrudePole, LorentzPole, register_em_arrays
 from ..em.mode_ports import PortLine
 from ..em.operators import check_zero_bloch
+from ..em.placement import PERMITTIVITY_ARRAYS
 from ..em.slab_modes import solve_slab_modes
-from ..em.solvers.fdtd_2d_base import _check_cell_array, add_pec_cells, record_dispersive_region
+from ..em.solvers.fdtd_2d_base import add_pec_cells, record_dispersive_region
 from ..em.yee_grid import grid_cell_widths
 from .adjoint import (EMEObjective, PeriodicAdjointFields, face_gradient_to_cells, objective_cotangents,
                       section_gradient)
@@ -683,13 +684,13 @@ class EMEPhysics(EMEBase):
         if not isinstance(pole, (DrudePole, LorentzPole)):
             raise TypeError(f'add_dispersive needs a DrudePole or LorentzPole, got {type(pole).__name__}')
         if mask is not None:
-            _check_cell_array(mask, self._zeros.shape, np.bool_, 'Pole mask', xp=self.domain.xp)
+            check_backend_array(mask, self._zeros.shape, np.bool_, 'Pole mask', xp=self.domain.xp)
         record_dispersive_region(self.dispersive_regions, pole, mask)
         self._dirty = True
 
     def add_pec_region(self, mask):
         """Perfect electric conductor on a run-backend bool (nx, ny) cell mask."""
-        _check_cell_array(mask, self._zeros.shape, np.bool_, 'PEC mask', xp=self.domain.xp)
+        check_backend_array(mask, self._zeros.shape, np.bool_, 'PEC mask', xp=self.domain.xp)
         self.pec_cells = add_pec_cells(self.pec_cells, mask)
         self._dirty = True
 
@@ -698,13 +699,13 @@ class EMEPhysics(EMEBase):
     @property
     def _design_arrays(self) -> tuple:
         """Permittivity arrays a design region writes: ez eps_r; hz eps_xx and eps_yy (an isotropic change)."""
-        return ('eps_r',) if self.polarization == 'ez' else ('eps_xx', 'eps_yy')
+        return PERMITTIVITY_ARRAYS[self.polarization]
 
     def add_design_region(self, mask, eps_min, eps_max, initial_density=0.5, filter_radius=0.0, projection_beta=0.0,
                           projection_eta=0.5):
         """Density design region (_design_arrays) on the window cells of a run-backend bool (nx, ny) mask; ValueError
         when it touches the first or last window slice (the ports) or overlaps an earlier region."""
-        _check_cell_array(mask, self._zeros.shape, np.bool_, 'Design region mask', xp=self.domain.xp)
+        check_backend_array(mask, self._zeros.shape, np.bool_, 'Design region mask', xp=self.domain.xp)
         region = DesignRegion(self.domain, mask, self._design_arrays, eps_min, eps_max, initial_density, filter_radius,
                               projection_beta, projection_eta, objective_unit=self.objective_unit)
         window = self.domain.physical_window()[self._axis_index]

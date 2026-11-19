@@ -26,19 +26,18 @@ _PLANE_WAVE_PARAMS = (
     Param('direction', 'choice', '+z', label='Direction', choices=PLANE_WAVE_DIRECTIONS,
           choice_labels=tuple((name, f'Toward {name}') for name in PLANE_WAVE_DIRECTIONS),
           tip='Direction in which the plane wave travels.',
-          help='Propagation direction of the plane wave along one axis (normal incidence on the box faces); it may '
-               'not run along a periodic axis.'),
+          help='Along one axis (normal incidence on the box faces); not along a periodic axis.'),
     Param('polarization', 'choice', 'x', label='Electric field direction', choices=AXES,
           choice_labels=(('x', 'Along x'), ('y', 'Along y'), ('z', 'Along z')),
           tip='Direction of the electric field of the wave. It must be across the direction of travel.',
-          help='Axis of the incident E (linear polarisation), perpendicular to the propagation axis; H = k x E / '
-               '(eta) lies along the third axis.'),
+          help='Axis of the incident E (linear), perpendicular to the propagation axis; H = k x E / eta along the '
+               'third axis.'),
     *waveform_params(),
     Param('amplitude', 'float', 1.0, label='Amplitude', unit='V/m',
           tip='Peak electric field of the incident wave. Fields scale linearly with it; 1 is typical.',
-          help='Peak incident E [V/m] of the waveform envelope in the background medium (exact at the centre '
-               'wavelength: the 1D incident line is calibrated there); the cw intensity is amplitude^2 / (2 eta), '
-               'eta = eta0 sqrt(mu_r / eps_r) of the background.'),
+          help='Peak incident E of the envelope in the background medium (exact at the centre wavelength, where the 1D '
+               'incident line is calibrated); cw intensity amplitude^2 / (2 eta), eta = eta0 sqrt(mu_r / eps_r) of '
+               'the background.'),
 )
 
 _NORMAL_PARAM = Param('normal', 'choice', 'z', label='Propagation axis', choices=AXES,
@@ -48,103 +47,98 @@ _NORMAL_PARAM = Param('normal', 'choice', 'z', label='Propagation axis', choices
                            'cross-section (PML included) and must cut a straight guide.')
 _POSITION_PARAM = Param('position', 'float', 0.0, label='Plane position', unit='m',
                         tip='Coordinate of the port plane along its axis, from the lower domain edge.',
-                        help='Coordinate [m] of the plane along the normal: a source takes the cell containing it '
-                             '(its first total-field layer), a monitor the nearest cell edge.')
-_MODE_NUMBER_HELP = ('1-based mode index in descending Re(beta^2) of the cross-section solve (1 = the fundamental, most '
-                     'strongly guided mode); a symmetric guide has near-degenerate pairs (square cores, fibres) that '
-                     'come back as arbitrary mixtures: make the cross-section asymmetric to select one.')
+                        help='Plane coordinate along the normal: a source takes the containing cell (its first '
+                             'total-field layer), a monitor the nearest cell edge.')
+_MODE_NUMBER_HELP = ('Mode rank in descending Re(beta^2) of the cross-section solve: 1 = fundamental; near-degenerate '
+                     'pairs of symmetric guides (square cores, fibres) come back as arbitrary mixtures: make the '
+                     'cross-section asymmetric to select one.')
 _MODE_SOURCE_PARAMS = (
     _NORMAL_PARAM,
     _POSITION_PARAM,
     Param('mode_number', 'int', 1, label='Mode number', min=1,
           tip='Which guided mode to launch: 1 is the fundamental, most strongly guided mode, 2 the next, and so on.',
-          help=f'{_MODE_NUMBER_HELP} The source result table lists the first max(mode_number + 2, 4) modes.'),
+          help=f'{_MODE_NUMBER_HELP} The result table lists the first max(mode_number + 2, 4) modes.'),
     Param('direction', 'choice', 'positive', label='Direction', choices=MODE_DIRECTIONS,
           choice_labels=(('positive', 'Toward + along the axis'), ('negative', 'Toward - along the axis')),
           tip='Direction in which the mode travels away from the plane. Practically nothing goes the other way.',
-          help='positive launches toward +normal (total field from the plane cell downstream), negative toward '
-               '-normal; one-sided at the source wavelength.'),
+          help='positive launches toward +normal, negative toward -normal; one-sided at the source wavelength.'),
     Param('waveform', 'choice', 'gaussian', label='Waveform', choices=('gaussian', 'cw'),
           choice_labels=(('gaussian', 'Gaussian pulse'), ('cw', 'Continuous wave')),
           tip='Time shape of the source: a short pulse for spectra, or one steady wavelength.',
-          help='gaussian (sin carrier under a gaussian envelope) or cw; the complex mode profile is driven by the '
-               'carrier and its quadrature (cos) partner, so ricker is not offered.'),
+          help='gaussian (sin carrier, gaussian envelope) or cw; the complex profile is driven by the carrier and its '
+               'cos quadrature, so no ricker.'),
     Param('wavelength', 'float', 1.55e-6, label='Wavelength', unit='m', min=0.0, min_exclusive=True,
           tip='Vacuum wavelength of the source, entered in metres (1.55e-6 for 1550 nm). The mode is computed at '
               'this wavelength only.',
-          help='Vacuum wavelength lambda0 = C0 / f0 of the carrier, the only wavelength at which the mode is solved '
-               '(profile, n_eff): the launch is exact and one-sided there.'),
+          help='Vacuum carrier wavelength C0 / f0, the only one at which the mode (profile, n_eff) is solved: the '
+               'launch is exact and one-sided there.'),
     Param('bandwidth', 'float', 0.3, label='Relative bandwidth', unit='1', min=0.0, min_exclusive=True,
           visible_if=(('waveform', ('gaussian',)),),
           tip='Spectral width of the pulse as a fraction of the centre frequency; 0.1 to 0.3 is typical.',
-          help='Spectral width / f0 of the gaussian pulse; away from f0 the dispersing guide makes the launch leak '
-               'backward and into radiation, and above 0.6 the build warns (quadrature partner, DC part).'),
+          help='Spectral width / f0; away from f0 the dispersing guide makes the launch leak backward and into '
+               'radiation; above 0.6 the build warns (quadrature partner, DC part).'),
     Param('power', 'float', 1.0, label='Mode power', unit='W', min=0.0, min_exclusive=True,
           tip='Power carried by the launched mode. Fields grow with its square root, so 1 is the usual choice.',
-          help='Mode power [W] as a flux plane on the guide reads it at the source wavelength (the discrete Yee '
-               'flux; cw: time-averaged after the ramp, gaussian: at the envelope peak).'),
+          help='Mode power as a flux plane on the guide reads it at the source wavelength (discrete Yee flux; cw: '
+               'time average after the ramp, gaussian: at the envelope peak).'),
 )
 _MODE_MONITOR_PARAMS = (
     _NORMAL_PARAM,
     _POSITION_PARAM,
     Param('mode_number', 'int', 1, label='Mode number', min=1,
           tip='Which guided mode to measure: 1 is the fundamental, most strongly guided mode.',
-          help=f'{_MODE_NUMBER_HELP} It picks the mode at the middle wavelength; the others follow it by overlap '
-               f'(a build warning lists wavelengths where that overlap stays below 0.9).'),
-) + spectral_params(5, 'Each wavelength costs one cross-section mode solve at build (host scipy) and four complex128 '
-                       'window planes; 3-11 typical, so the default is 5 (21 for the 2D mode_monitor).',
+          help=f'{_MODE_NUMBER_HELP} Picked at the middle wavelength and followed to the others by overlap (the '
+               f'build warns where the overlap stays below 0.9).'),
+) + spectral_params(5, 'Each wavelength costs a cross-section mode solve at build (host scipy) and four complex128 '
+                       'window planes; 3-11 typical.',
                     'Each wavelength adds a mode calculation at the start; 3 to 11 is typical.')
 _FAR_FIELD_PARAMS = spectral_params(5, 'Each wavelength stores four complex128 spectra on the six box faces (64 B '
-                                       'per face cell), so the default is 5 (21 for the 2D far_field).',
+                                       'per face cell).',
                                     'A few wavelengths are typical; each one adds memory on the box faces.') + (
     Param('cut_plane', 'choice', 'xz', label='Cut plane', choices=tuple(CUT_PLANES),
           choice_labels=(('xz', 'x-z plane'), ('yz', 'y-z plane'), ('xy', 'x-y plane')),
           tip='Plane through the box centre in which the radiation pattern is shown.',
-          help='Plane of the observation directions: angles run counter-clockwise from its first axis (+x for xz '
-               'and xy, +y for yz) toward its second (+z, +z, +y).'),
+          help='Angles run counter-clockwise from its first axis (+x for xz and xy, +y for yz) toward its second (+z, '
+               '+z, +y).'),
     Param('n_angles', 'int', 360, label='Number of angles', min=1,
           tip='Number of directions, evenly spaced over the full circle of the cut plane; 360 gives 1-degree steps.',
-          help='Directions evenly spaced over 360 degrees in the cut plane.'),
+          help='Evenly spaced over 360 degrees in the cut plane.'),
 )
 
 # ---- descriptions ----
-_PLANE_WAVE_TEXT = ('Total-field / scattered-field plane wave along one axis on a box object: total field inside the '
-                    'box (incident + scattered), only the scattered field outside, fed by a 1D incident line in the '
-                    'background medium (read from the cell before the upstream face), on uniform or graded meshes (the '
-                    'line runs on the grid\'s own cell widths along the propagation axis, so grading leaks nothing). '
-                    'Every box face needs one scattered-field cell inside the domain, '
-                    'except: on a periodic axis the box spans the whole period (its extent there is ignored), and with '
-                    'both transverse axes periodic a downstream face on the domain edge opens the box into the CPML '
-                    '(a one-sided plane-wave source: everything downstream is total field, upstream only what comes '
-                    'back), and a transverse face may reach a mirror face about which the incident wave is even '
-                    '(symmetric when the plane is normal to the third axis, antisymmetric when normal to the '
-                    'polarization; the other parity is an error): the box opens there and its image completes it. '
+_PLANE_WAVE_TEXT = ('Total-field / scattered-field plane wave along one axis on a box object: total field inside '
+                    '(incident + scattered), scattered only outside, fed by a 1D incident line in the background medium '
+                    "(read from the cell before the upstream face) on the grid's own cell widths, so graded meshes leak "
+                    'nothing. Every box face needs one scattered-field cell inside the domain, except: on a periodic '
+                    'axis the box spans the whole period (its extent ignored); with both transverse axes periodic a '
+                    'downstream face on the domain edge opens the box into the CPML (one-sided source: everything '
+                    'downstream is total field); a transverse face may reach a mirror face about which the incident '
+                    'wave is even (symmetric when the plane is normal to the third axis, antisymmetric when normal to '
+                    'the polarization; the other parity is an error): the box opens there and its image completes it. '
                     'Keep the box faces in one uniform lossless medium (the build warns otherwise).')
-_MODE_SOURCE_TEXT = ('Guided mode of the cross-section (full-vector A5 solve with scipy at build, on the whole grid '
-                     'layer containing the position, PML included, at the FDTD numerical frequency) injected as a '
-                     'one-sided total-field / scattered-field plane: total field from that layer downstream. The '
-                     'mode is solved once before the first step; later material changes keep it. pec / pmc domain '
-                     'faces are approximate for modes that reach them. Result \'table\' at the source wavelength: '
-                     'mode_number, n_eff, n_eff_imag, loss_db_per_cm, te_fraction, effective_area [m^2], '
-                     'pml_fraction, selected; extras wavelength, power, direction, mode_number.')
-_MODE_MONITOR_TEXT = ("Mode decomposition on the cell-edge plane nearest the position across the physical window: "
-                      "running DFTs of the tangential E (averaged across the plane) and H, projected on the "
-                      "cross-section mode solved per wavelength at build. Result 'xy' versus wavelength: "
-                      'power_positive / power_negative (a.u., the flux-plane convention, so comparable with a flux '
-                      'plane), power_per_cw_* [W] when every source shares one waveform, fraction_* = mode power / '
-                      'source power with exactly one mode source (transmission downstream, reflection upstream; NaN '
-                      'where its spectrum is below 1e-6 of the peak); extras n_eff (real part), n_eff_imag, mode_number, '
-                      'normalized.')
+_MODE_SOURCE_TEXT = ('Guided cross-section mode (full-vector solve with scipy at build, on the whole grid layer '
+                     'containing position, PML included, at the FDTD numerical frequency) injected as a one-sided '
+                     'total-field / scattered-field plane: total field from that layer downstream. Solved once before '
+                     'the first step; later material changes keep it. pec / pmc domain faces are approximate for modes '
+                     "reaching them. Result 'table' at the source wavelength: mode_number, n_eff, n_eff_imag, "
+                     'loss_db_per_cm, te_fraction, effective_area [m^2], pml_fraction, selected; extras wavelength, '
+                     'power, direction, mode_number.')
+_MODE_MONITOR_TEXT = ('Mode decomposition on a plane across the physical window: running DFTs of the tangential E '
+                      '(averaged across the plane) and H, projected on the cross-section mode solved per wavelength at '
+                      "build. Result 'xy' versus wavelength: power_positive / power_negative (a.u., flux-plane "
+                      'convention), power_per_cw_* [W] when every source shares one waveform, fraction_* = mode power '
+                      '/ source power with exactly one mode source (downstream transmission, upstream reflection; NaN '
+                      'where its spectrum is below 1e-6 of the peak); extras n_eff (real part), n_eff_imag, '
+                      'mode_number, normalized.')
 _FAR_FIELD_TEXT = ('Near-to-far-field transform of the tangential E and H on the six faces of a closed box object '
-                   '(each face snapped to the nearest cell edge; the box must enclose every source and scatterer, '
-                   'with vacuum outside). Result \'far_field\' in one cut plane: angles [rad] from its first axis, '
-                   'power (n_f, n_angles) = radiated power per steradian of the dt-weighted spectra (a.u., no 1/2), '
-                   'power_per_cw [W/sr] when every source shares one waveform (its integral over the sphere is the '
-                   'flux box power_per_cw / cos(omega dt / 2): the flux spectra carry that re-timing factor, the far '
-                   'field does not; ~0.3 % at 25 cells per wavelength), quantity \'' + FAR_FIELD_QUANTITY + '\', extras cut_plane, angle_axes. '
-                   'Mirror faces: the pattern of the unfolded structure (the images of the box currents are added '
-                   'and a box face on a mirror plane is dropped, so the box and its images must enclose the '
-                   'unfolded sources; at most one mirror per axis).')
+                   '(each snapped to the nearest cell edge; the box must enclose every source and scatterer, vacuum '
+                   "outside; periodic axes are refused). Result 'far_field' in one cut plane: angles [rad] from its "
+                   'first axis, power (n_f, n_angles) = radiated power per steradian of the dt-weighted spectra (a.u., '
+                   'no 1/2), power_per_cw [W/sr] when every source shares one waveform (its sphere integral = flux box '
+                   "power_per_cw / cos(omega dt / 2), ~0.3 % at 25 cells per wavelength), quantity '"
+                   + FAR_FIELD_QUANTITY + "', extras cut_plane, angle_axes. Mirror faces: the pattern of the unfolded "
+                   'structure (box-current images added, a box face on a mirror plane dropped, so box plus images must '
+                   'enclose the unfolded sources; at most one mirror per axis).')
 
 
 # ---- apply ----

@@ -1,4 +1,4 @@
-"""Exact self-tests of electric_currents on polar (r, phi) model domains (symmetry plan 2.16, DomainSpec.coordinates):
+"""Exact self-tests of electric_currents on polar (r, phi) model domains (DomainSpec.coordinates):
 a sector resistor between two held arcs and a periodic (phi-wrapped) annulus with a sin(phi) source, read on the
 native (r, angle) cells; registered by definition."""
 import math

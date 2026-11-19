@@ -26,15 +26,12 @@ import numpy as np
 from ...core.constants import C0, EPS0
 from ...fem.assembly import (assemble_curl_curl, assemble_gradient_coupling, assemble_mass, assemble_stiffness,
                              assemble_vector_mass, restrict)
-from ...fem.mesh import FACE_BITS
 from ...solvers.arpack_shift_invert import ArpackShiftInvertSolver
-from .boundaries import BCType
 from .eigenfrequency import solve_resonances
 from .fem_modes import PERIODIC_TEXT, _coefficients, _sample_fields, fem_mode_layout, sample_permeability
 
 FEM_CONICAL_SIZE_REMEDY = ('coarsen the triangle mesh (larger maximum element size), use discretization linear, or cut '
                            'the cross-section by a symmetric / antisymmetric mirror face')
-_PERIODIC_TYPES = frozenset({BCType.PERIODIC, BCType.BLOCH})
 _WINDOW_TOLERANCE = 1e-9   # dof points within this times the longest window side of the window count as inside
 
 
@@ -71,9 +68,8 @@ class FEMConicalField:
 def fem_conical_layout(mesh, order, boundary_config, pec=None):
     """fem_modes.FEMModeLayout of element degree order (1 / 2) with the walls / PML ring of boundary_config and the
     per-element PEC mask; ValueError for periodic / Bloch faces."""
-    for face in FACE_BITS:
-        if getattr(boundary_config, face) in _PERIODIC_TYPES:
-            raise ValueError(f'em_fdfd_conical on triangles: {PERIODIC_TEXT}')
+    if boundary_config.periodic_x or boundary_config.periodic_y:
+        raise ValueError(f'em_fdfd_conical on triangles: {PERIODIC_TEXT}')
     return fem_mode_layout(mesh, order, boundary_config, pec)
 
 

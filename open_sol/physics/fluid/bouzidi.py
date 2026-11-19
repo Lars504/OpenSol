@@ -1,4 +1,4 @@
-"""Wall links of the interpolated (Bouzidi, linear) bounce-back of laminar_flow (solver_plan S7.6; host numpy): per
+"""Wall links of the interpolated (Bouzidi, linear) bounce-back of laminar_flow (host numpy): per
 fluid window cell next to a solid cell, the wall position along each lattice link from the drawn geometry."""
 import numpy as np
 

@@ -1,4 +1,4 @@
-"""Physics-neutral squeeze-film gas damping (new_modules_plan S6, Basiri E4): SqueezeFilm solves the linearised
+"""Physics-neutral squeeze-film gas damping (Basiri E4): SqueezeFilm solves the linearised
 compressible Reynolds equation by fem.harmonic.ScalarHarmonicSystem on a planar TriangleMesh (a solid's footprint or a
 membrane's own mesh, optionally on an element subset) with vents p = 0 and the Veijola slip viscosity, giving per mode
 c_psi, the gas stiffness, gamma_gas = c_psi / m_eff and Q_gas; closed forms (rigid vented annulus, squeeze number)."""

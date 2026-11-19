@@ -53,7 +53,7 @@ class WorkerBridge(QtCore.QObject):
         self._jobs = deque()                  # submitted build/run jobs not yet ended, in worker order
         self._paused = False
         self._polling = False                 # a handler running a nested event loop must not re-enter _poll
-        self._callbacks = {}                  # task id -> (on_result, on_error)
+        self._callbacks = {}                  # task id -> (on_result, on_error, generation or None = keep)
         self.results_spec = None              # copy of the spec the worker session was built from
         self.last_build_summary = None        # BuildSummary of that session (Built)
         self.last_study_summary = None        # StudyFinished.summary of its last study (None: built only / failed)
@@ -137,18 +137,20 @@ class WorkerBridge(QtCore.QObject):
         """Field streamed as live_frame while a study runs."""
         self._worker.set_live_field(physics, component, max_pixels)
 
-    def call(self, fn, on_result=None, on_error=None) -> int:
-        """Run fn(session) on the worker; on_result(value) / on_error(message) run later on the GUI thread. A session
-        built after the last delivered Built is refused (on_error). Returns the task id."""
+    def call(self, fn, on_result=None, on_error=None, keep_if_replaced=False) -> int:
+        """Run fn(session) on the worker; on_result(value) / on_error(message) run later on the GUI thread, both
+        dropped when the document was replaced meanwhile (advance_generation) unless keep_if_replaced (e.g. Save run
+        of the session it captured). A session built after the last delivered Built is refused (on_error). Returns the
+        task id."""
         task_id = self._worker.call(fn, session_serial=self._session_serial)
-        self._callbacks[task_id] = (on_result, on_error)
+        self._callbacks[task_id] = (on_result, on_error, None if keep_if_replaced else self.generation)
         return task_id
 
-    def call_without_session(self, fn, on_result=None, on_error=None) -> int:
+    def call_without_session(self, fn, on_result=None, on_error=None, keep_if_replaced=False) -> int:
         """Run fn() (host work, no session: e.g. a triangle mesh preview) on the worker, between jobs or at study
         checkpoints; callbacks as call(). Returns the task id."""
         task_id = self._worker.call(fn, needs_session=False)
-        self._callbacks[task_id] = (on_result, on_error)
+        self._callbacks[task_id] = (on_result, on_error, None if keep_if_replaced else self.generation)
         return task_id
 
     def shutdown(self, timeout=2.0) -> bool:
@@ -305,12 +307,14 @@ class WorkerBridge(QtCore.QObject):
         self.device_info.emit(event)
 
     def _on_task_result(self, event):
-        on_result, _ = self._callbacks.pop(event.task_id, (None, None))
-        if on_result is not None:
+        on_result, _, generation = self._callbacks.pop(event.task_id, (None, None, None))
+        if on_result is not None and generation in (None, self.generation):
             _invoke(on_result, event.value)
 
     def _on_task_failed(self, event):
-        _, on_error = self._callbacks.pop(event.task_id, (None, None))
+        _, on_error, generation = self._callbacks.pop(event.task_id, (None, None, None))
+        if generation not in (None, self.generation):
+            return   # a call for a replaced document (call: keep_if_replaced False)
         if on_error is not None:
             _invoke(on_error, event.message)
         else:

@@ -1,5 +1,5 @@
 """Damped fixed-point / Newton loop shared by the nonlinear DiffusionSystem loops (electrostatics Poisson-Boltzmann,
-magnetic B-H Picard; plans_overview decision 7), optionally Anderson-accelerated. Array-module agnostic (numpy or cupy
+magnetic B-H Picard), optionally Anderson-accelerated. Array-module agnostic (numpy or cupy
 state; numpy for the host least squares)."""
 import math
 from dataclasses import dataclass

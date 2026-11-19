@@ -399,7 +399,8 @@ class _BORPort:
         line_materials = BORMaterials(eps=line(materials.eps), mu=line(materials.mu), pec=line(materials.pec),
                                       eps_rr=line(materials.eps_rr), eps_zz=line(materials.eps_zz))
         n_modes = max(self.mode_number + 2, 4)
-        # ports on identical lines (span, row width, line materials, mode count) share one solve per key
+        # ports on identical lines (span, row width, line materials, mode count) share one solve per key: PortModes /
+        # PortMode are read-only, each port tracks and phase-aligns its own copy (aligned_mode)
         line_key = (self.start, self.n_line, self.end_kind, self.n_window, self.truncated, n_modes, row_width) + tuple(
             None if values is None else (values.dtype.str, np.ascontiguousarray(values).tobytes())
             for values in (line_materials.eps, line_materials.mu, line_materials.pec, line_materials.eps_rr,

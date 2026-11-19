@@ -10,13 +10,14 @@ from ...core.memory_estimate import (BOOL_BYTES, COMPLEX64_BYTES, COMPLEX128_BYT
 from ...model.definition_helpers import (eigen_factorization, eigen_subspace_size, host_direct_back_end,
                                          linear_solver_cudss, resolved_back_end, resolved_stepper_precision)
 from ...model.definition_resonance import point_trace_items
-from ...model.schema import resolve_values, solver_backend
+from ...model.schema import EIGENFREQUENCY_STUDY, resolve_values, solver_backend
 from ...solvers.arpack_shift_invert import (CUDSS_FACTORIZATIONS, MIXED_EIGEN_MIN_UNKNOWNS, arnoldi_basis_bytes,
                                             arnoldi_basis_size, device_arnoldi_fits)
 from ...solvers.cudss_factor import (CUDSS_SOLVE_PHASE, FactorFill, factor_device_bytes, index_map_bytes,
                                      operator_copy_bytes, refresh_peak_bytes, solve_buffer_bytes, solve_peak_bytes)
-from ...solvers.host_direct import (HOST_DIRECT_BACK_ENDS, HOST_DIRECT_FACTORIZATIONS, factor_label,
-                                    host_direct_precision, solver_host_bytes, superlu_bytes_scale)
+from ...solvers.host_direct import (HOST_DIRECT_FACTORIZATIONS, factor_label, host_direct_precision, solver_host_bytes,
+                                    superlu_bytes_scale)
+from ...solvers.sparse_direct import CUDSS_BACK_ENDS, HOST_FACTOR_BACK_ENDS
 from .definition_bloch import bloch_active_axes
 from .definition_common import FREQUENCY_DOMAIN_STUDY, _q_accum_referenced, _study_wavelengths, eigen_solved
 from .eigenfrequency import FILTER_BLOCK_COLUMNS
@@ -38,12 +39,15 @@ ASSEMBLY_PHASE = 'assembly'                 # operator assembly temporaries (the
 SOLVE_PHASE = 'solve'                       # one solve's material temporaries, an own (not kept) factor's copies
 EIGEN_PHASE = 'eigen solve'                 # solve_resonances / a mode solve: own factor copies, Krylov basis, filter
 REFACTOR_PHASE = 'cuDSS refactorisation'    # refactorize on the planned pattern (a later frequency / order / iteration)
+# fdtd_memory_estimate item names (the label before ' (') the cpu numba Yee twins stream (definition_fdtd prices only
+# these as numba): fields, update coefficients and the Bloch imaginary set (its bulk is fields)
+FDTD_FIELDS_ITEM, FDTD_COEFFICIENTS_ITEM, FDTD_BLOCH_ITEM = 'fields', 'update coefficients', 'Bloch imaginary field set'
+FDTD_NUMBA_STREAMED_ITEMS = (FDTD_FIELDS_ITEM, FDTD_COEFFICIENTS_ITEM, FDTD_BLOCH_ITEM)
 ADJOINT_PHASE = 'adjoint solve'             # one eps_sensitivity: transposed-solve temporaries and the gradients
 # _ResonanceFilter.measures: device column blocks alive at once (columns, conjugate, A v, B v and one product
 # temporary; + D v with a row scale)
 _FILTER_BLOCKS = 5
 _DFT_SPECTRA = {'ez': 1, 'hz': 3}   # complex64 (n_wavelengths, mx, my) spectra of a DFTMonitor (monitors.py)
-_EIGENFREQUENCY_STUDY = 'eigenfrequency'   # = model.study_eigenfrequency.STUDY_NAME
 # FieldProbe users (core.monitors: growable float32 device trace + float64 host times); counted by the FDTD physics
 # estimator because a FeatureType estimator does not see the study duration
 _POINT_TRACE_FEATURES = ('field_probe', 'resonance_monitor')
@@ -68,7 +72,9 @@ def _bor_factor_entries(nr, nz, coupled) -> int:
     """Factor entries of one triangle of the tensor BOR operator on an (nr, nz) grid (the full unknown set): the
     fem.dissection count on its cliques, one per curl point (body_of_revolution a_phi: 2 E_r + 2 E_z, a_r: 2 u + E_z,
     a_z: 2 u + E_r; C^T W C couples exactly the unknowns one point differences); coupled False (m = 0): the u block
-    and the E_r / E_z block apart, added."""
+    and the E_r / E_z block apart, added. Cached per grid (seconds above ~1e6 cells). The n log2 n growth law it
+    replaced has no per-row part and read 27 % low (em_bor_cpu_gpu ports, 19,200 unknowns: 13.0 MB of 25.6 MB
+    permanent were factor entries); the conical, modes and 2D FDFD cuDSS estimators still use that law."""
     import numpy as np
     from ...fem.dissection import element_dissection_pairs
     n_radial, n_cells = (nr + 1) * nz, nr * nz
@@ -335,8 +341,9 @@ def fdtd_memory_estimate(polarization):
         q_accum = bool(settings_values.get('track_absorption')) or _q_accum_referenced(
             context.spec, context.physics_spec.name, context.registry)
         n_coefficients = 4 if polarization == 'ez' else 8   # da, db + ca, cb (ez) / ca, cb, eps per face set (hz)
-        items = [(f'fields (3 x {real_name})', 3 * real_bytes * n_cells),
-                 (f'update coefficients ({n_coefficients} x {real_name})', n_coefficients * real_bytes * n_cells),
+        items = [(f'{FDTD_FIELDS_ITEM} (3 x {real_name})', 3 * real_bytes * n_cells),
+                 (f'{FDTD_COEFFICIENTS_ITEM} ({n_coefficients} x {real_name})',
+                  n_coefficients * real_bytes * n_cells),
                  ('CPML psi slabs', _cpml_psi_bytes(mesh, settings_values, real_bytes))]
         # C5 nonlinear_medium (its own arrays: the feature estimator): hz adds its cells to the pole cell mask and its
         # power to the pole power totals
@@ -363,7 +370,7 @@ def fdtd_memory_estimate(polarization):
                                        * box_cells for box_cells, n_drude, n_lorentz in regions)
             if polarization == 'ez' and any_drude:
                 imaginary_pole_bytes += real_bytes * n_cells   # imaginary jz_total
-            items.append(('Bloch imaginary field set', 3 * real_bytes * n_cells
+            items.append((FDTD_BLOCH_ITEM, 3 * real_bytes * n_cells
                           + _cpml_psi_bytes(mesh, settings_values, real_bytes) + imaginary_pole_bytes))
         trace_items, run_items, host_items = _point_trace_items(context, mesh)
         transient_items = []
@@ -426,13 +433,13 @@ def fdfd_memory_estimate(polarization):
             superlu_host = not line_block_items and eigen_factorization(context.solvers) not in CUDSS_FACTORIZATIONS
             transient_items += eigen_transient
             run_items += line_block_items
-        elif back_end == 'scipy_splu' or back_end in HOST_DIRECT_BACK_ENDS:
+        elif back_end in HOST_FACTOR_BACK_ENDS:
             # MUMPS / PARDISO: the LDL^T of D A (an LU with a Bloch phase), recyclable like SuperLU (one kept factor)
             host_items = [*host_factor_items(back_end, 'SuperLU L + U factors (heuristic)', host_lu_bytes(n_cells),
                                              n_cells, entries, symmetric=not bloch_active_axes(settings_values)),
                           ('host operator copy', operator_copy)]
             superlu_host = True
-        elif back_end in ('cudss', 'cudss_mixed'):   # kept between solves (_factorization, _cudss_previous)
+        elif back_end in CUDSS_BACK_ENDS:   # kept between solves (_factorization, _cudss_previous)
             mixed = back_end == 'cudss_mixed'
             # no symmetrizer with a Bloch phase: an LU, and an adjoint solve its transpose's LU; with eps_xy D A passes
             # the asymmetry check (an LDL^T, one plan: em_fdfd_adjoint_cpu_gpu xy runs, 2026-11)
@@ -837,7 +844,7 @@ def bor_memory_estimate(settings_values, mesh, context):
     n_cells = int(mesh.n_cells)
     unknowns = 3 * n_cells
     study_type = context.spec.study.type
-    eigen = study_type == _EIGENFREQUENCY_STUDY
+    eigen = study_type == EIGENFREQUENCY_STUDY
     shifted = (context.solvers or {}).get('shifted')
     line_block = shifted is not None and shifted.solver_type.name == 'line_block'
     factorization = host_factorization(context.solvers, eigen)

@@ -1,4 +1,4 @@
-"""CUDA source snippets of the stepper precisions (solver_plan S5): fp16 field storage with float32 arithmetic by
+"""CUDA source snippets of the stepper precisions: fp16 field storage with float32 arithmetic by
 the PTX cvt instructions (no cuda_fp16.h needed by NVRTC); arrays are cupy float16, kernels see unsigned short. No
 cupy import: engines paste these into their RawKernel / ElementwiseKernel sources."""
 import numpy as np

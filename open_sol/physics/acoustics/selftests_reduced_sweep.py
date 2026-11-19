@@ -1,4 +1,4 @@
-"""Self-tests of pressure_acoustics frequency sweeps with sweep_method adaptive (experiment plan A3 / A4): the plane-wave
+"""Self-tests of pressure_acoustics frequency sweeps with sweep_method adaptive: the plane-wave
 duct of selftests_harmonic driven by a vibrating end ((j omega) loads: moment matching) and by a held pressure under a
 background plane wave (non-polynomial load and held offsets: snapshots), each against its direct sweep."""
 import math

@@ -131,13 +131,12 @@ PIEZO_COUPLING = CouplingType(
         Param('back_action', 'choice', 'bound_charge', label='Back-action on the field', choices=BACK_ACTIONS,
               choice_labels=(('bound_charge', 'Two-way (bound charge, stiffening)'),
                              ('none', 'One-way (drive only)')),
-              help="bound_charge (two-way): after every acoustic step the bound charge rho_b = -div(e S) of the "
-                   "strain goes into the electrostatics slot 'charge_density', the electrostatics re-solves "
-                   '(warm-started CG; with driven terminals only the DC part) and its E goes back in the same '
-                   'transfer, so the waves feel the piezoelectric stiffening without lag and the acoustic dt uses c^D '
-                   '= c^E + e^T eps^-1 e; costs one CG solve per acoustic step, needs the coupling every equal to the '
-                   "acoustics' every and writes charge_density alone. none (one-way): only the field is handed over "
-                   '(wave speeds about K^2 / 2 low, no charge back).',
+              help="bound_charge (two-way): after every acoustic step the strain's bound charge goes into the "
+                   "electrostatics slot 'charge_density', the electrostatics re-solves (warm-started CG; driven "
+                   'terminals: only the DC part) and its E returns in the same transfer, so the waves are stiffened '
+                   'without lag (acoustic dt from c^D = c^E + e^T eps^-1 e); one CG solve per acoustic step, needs '
+                   "the coupling every equal to the acoustics' every and writes charge_density alone. none (one-way): "
+                   'wave speeds about K^2 / 2 low (~2 % for a YZ lithium niobate SAW).',
               tip='Whether the waves act back on the electric field.\n\n- Two-way: the strain of the waves charges '
                   'the crystal, which changes the field and stiffens the material (correct wave speeds, one '
                   'electrostatics solve per time step).\n- One-way: the field only drives the waves (faster, wave '
@@ -145,21 +144,16 @@ PIEZO_COUPLING = CouplingType(
     summary='Couples the electric field of the electrostatics with the waves in a piezoelectric material of the '
             'elastic waves, as an interdigital transducer launching surface waves; by default the waves act back on '
             'the field (piezoelectric stiffening).',
-    description='Piezoelectric coupling (planar, sagittal plane): each transfer hands the electrostatics E_x / E_y '
-                '(cell centres) to the electric_field_x / _y slots of elastic_waves, which adds T = -e^T (E - '
-                'E_last) to its stresses at once (piezo_e* material arrays in reduced Voigt form, usually from a '
-                'crystal entry; the first transfer only records the field, the initial state being its '
-                'equilibrium). Transfers right after the physics step (every 1 with both at every 1); a '
-                'time-varying field comes from voltage / terminal waveforms (superposed static solves, the field at '
-                'the end time of each step), so the stress at t_n uses E(t_n). back_action bound_charge (default, '
-                'two-way): before the field, the bound charge rho_b = -div(e S) of the accumulated strain S (face '
-                'form: the mean P = e S of the two cells per face; at a Dirichlet / Robin outer face of the '
-                'electrostatics the cell P, its surface charge landing on the electrode; insulating outer faces none) '
-                "goes into the electrostatics slot 'charge_density' and the electrostatics re-solves at the "
-                'acoustics time, so D = eps E + e S is source-free and the waves are stiffened without lag (dt from '
-                'c^D = c^E + e^T eps^-1 e). back_action none: one-way, wave speeds about K^2 / 2 low (~2 % for a YZ '
-                'lithium niobate SAW). Not modelled: pyroelectric and thermal-strain charge, the anti-plane coupling '
-                'of cuts whose model plane is no crystal mirror plane (validation warns).',
+    description='Planar, sagittal plane: each transfer hands the electrostatics E_x / E_y (cell centres) to the '
+                'electric_field_x / _y slots of elastic_waves, which adds T = -e^T (E - E_last) to its stresses at '
+                'once (piezo_e* arrays in reduced Voigt form, usually from a crystal entry; the first transfer only '
+                'records the field: the initial state is its equilibrium). Transfers right after the physics step; a '
+                "time-varying field comes from voltage / terminal waveforms (superposed static solves at each step's "
+                'end time), so the stress at t_n uses E(t_n). bound_charge: rho_b = -div(e S) of the accumulated '
+                'strain S in face form (the mean P = e S of the two cells per face; at a Dirichlet / Robin outer face '
+                'of the electrostatics the cell P, its surface charge landing on the electrode; insulating outer '
+                'faces none), so D = eps E + e S is source-free. Not modelled: pyroelectric and thermal-strain charge, '
+                'the anti-plane coupling of cuts whose model plane is no crystal mirror plane (validation warns).',
     create=_create_piezo,
     validate=_validate_piezo,
     writes=_writes_fields)

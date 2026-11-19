@@ -23,8 +23,8 @@ imported inside the runners."""
 # multigrid hierarchy; arpack: none), total = the lowest_modes call. Residual = max ||K u - omega^2 M u|| / (omega^2 ||M
 # u||) of the returned modes (float64 brick products; block_eigen's own measure), tolerance at least the solver's
 # (arpack: the Lanczos tolerance it used); reference_error = max relative omega error against the closed form (rank
-# order); gpu_peak_bytes = the cupy pool's high water of the call over its live bytes at the start (cached blocks
-# freed before the timer).
+# order); gpu_peak_bytes = the cupy pool's high water of the call (gpu_memory.pool_high_water_bytes) over its live
+# bytes at the start (pool released before the timer).
 import math
 import time
 from dataclasses import dataclass
@@ -352,20 +352,19 @@ def run_arpack(problem, values, arrays) -> dict:
 def _solve_modes(problem, arrays, eigen_solver):
     """(ModalSolve, wall seconds, gpu pool high water [bytes] or None) of one timed ElasticSystem3D.lowest_modes call
     on the problem's system with its density, as SolidMechanics3DPhysics.solve_eigenfrequencies makes it; on the gpu
-    the pool's cached blocks are freed first (outside the timer), so the reserved bytes after the call over the live
-    bytes before are the call's device high water."""
+    the pool is released first (outside the timer), so pool_high_water_bytes after the call (which keeps the peak of
+    a release_cached_blocks inside it, e.g. before a cuDSS plan) over the live bytes before is the call's high water."""
     modes = arrays.system
     backend = arrays.backend
     live_before = None
     if backend == 'gpu':
-        import cupy as cp
         from open_sol.core import gpu_memory
-        cp.get_default_memory_pool().free_all_blocks()
+        gpu_memory.release_all(collect_garbage=False)
         live_before = gpu_memory.pool_used_bytes()
     started = _clock(backend)
     solve = modes.system.lowest_modes(modes.density, problem.eigen['n_resonances'], eigen_solver)
     finished = _clock(backend)
-    high_water = None if live_before is None else max(gpu_memory.pool_reserved_bytes() - live_before, 0)
+    high_water = None if live_before is None else max(gpu_memory.pool_high_water_bytes() - live_before, 0)
     return solve, finished - started, high_water
 
 
@@ -401,11 +400,11 @@ def _modes_details(problem, arrays, solve, high_water) -> dict:
     difference against the baseline), the closed-form ones and the error against them, the linear solver settings."""
     info = solve.info
     omegas = [float(resonance.omega) for resonance in solve.resonances]
-    details = {'method': info.get('eigen_method') or info.get('method'), 'n_free': info.get('n_free'),
-               'operator_applications': info.get('operator_applications'),
-               'eigenvalues_requested': info.get('eigenvalues_requested'),
-               'eigenvalues_converged': info.get('eigenvalues_converged'), 'resonances_found': len(omegas),
-               'warnings': list(info.get('warnings') or ()), 'eigenvalues': [[omega, 0.0] for omega in omegas],
+    details = {'method': info.get('eigen_method') or info['method'], 'n_free': info['n_free'],   # eigen_method: block
+               'operator_applications': info['operator_applications'],
+               'eigenvalues_requested': info['eigenvalues_requested'],
+               'eigenvalues_converged': info['eigenvalues_converged'], 'resonances_found': len(omegas),
+               'warnings': list(info['warnings']), 'eigenvalues': [[omega, 0.0] for omega in omegas],
                'reference_eigenvalues': list(problem.eigen['reference_omegas']),
                'reference_error': _reference_error(problem, omegas), 'linear_solver': arrays.system.linear_values}
     if high_water is not None:
@@ -432,14 +431,14 @@ def _run_arpack_modes(problem, arrays, solver) -> dict:
     solve, total, high_water = _solve_modes(problem, arrays, solver)
     info = solve.info
     details = _modes_details(problem, arrays, solve, high_water)
-    details.update(iterations=_number(info.get('cg_iterations')), inner_solves=info.get('operator_applications'),
-                   lanczos_tolerance=info.get('lanczos_tolerance'),
+    details.update(iterations=_number(info['cg_iterations']), inner_solves=info['operator_applications'],
+                   lanczos_tolerance=info['lanczos_tolerance'],
                    counters={name: _number(value) for name, value in solver.work_counters().items()})
     residuals = _mode_residuals(arrays.system, solve.resonances)
     unconverged = (linear_solver.n_unconverged > unconverged_before
-                   or info.get('eigenvalues_converged', 0) < info.get('eigenvalues_requested', 0))
-    phases = {'analysis': None, 'factor': None, 'solve': info.get('eigen_seconds'), 'refactor': None, 'total': total}
-    tolerance = max(float(info.get('lanczos_tolerance') or 0.0), _direct_tolerance())
+                   or info['eigenvalues_converged'] < info['eigenvalues_requested'])
+    phases = {'analysis': None, 'factor': None, 'solve': info['eigen_seconds'], 'refactor': None, 'total': total}
+    tolerance = max(float(info['lanczos_tolerance']), _direct_tolerance())
     return _repeat(phases, max(residuals) if residuals else None, details, tolerance,
                    _modes_status(problem, solve, unconverged))
 
@@ -460,14 +459,14 @@ def run_block_eigen(problem, values, arrays) -> dict:
     counters = {name: _number(value) for name, value in solver.work_counters().items()}
     details = _modes_details(problem, arrays, solve, high_water)
     details.update(iterations=counters['eigen_iterations'], single_iterations=counters['eigen_single_iterations'],
-                   double_iterations=counters['eigen_double_iterations'], preconditioner=info.get('preconditioner'),
+                   double_iterations=counters['eigen_double_iterations'], preconditioner=info['preconditioner'],
                    preconditioner_applications=counters['preconditioner_applications'],
                    mass_applications=counters['mass_applications'], block_size=counters['eigen_block_size'],
-                   block_residual=info.get('block_residual'), counters=counters)
+                   block_residual=info['block_residual'], counters=counters)
     residuals = _mode_residuals(arrays.system, solve.resonances)
-    eigen_seconds = info.get('eigen_seconds')
-    phases = {'analysis': None, 'factor': None if eigen_seconds is None else max(total - eigen_seconds, 0.0),
-              'solve': eigen_seconds, 'refactor': None, 'total': total}
+    eigen_seconds = info['eigen_seconds']
+    phases = {'analysis': None, 'factor': max(total - eigen_seconds, 0.0), 'solve': eigen_seconds, 'refactor': None,
+              'total': total}
     tolerance = max(solver.tolerance, _direct_tolerance())
     return _repeat(phases, max(residuals) if residuals else None, details, tolerance,
                    _modes_status(problem, solve, counters['eigen_unconverged'] > 0))

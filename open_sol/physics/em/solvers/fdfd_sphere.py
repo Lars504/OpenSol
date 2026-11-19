@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from ....core.backend import host_copy, to_host, write_host_into
+from ....core.backend import check_backend_array, host_copy, to_host, write_host_into
 from ....core.constants import C0, DTYPE
 from ....core.solver_base import PhysicsSolver
 from ....core.wavelengths import wavelength_label
@@ -24,7 +24,7 @@ from ..spherical_multipoles import (COMPONENT_UNITS, DIPOLE_ORIENTATIONS, FAMILY
                                     absorbed_power_density, assemble_sphere, centre_fields, homogeneous_dipole_power,
                                     mie_cross_sections, outgoing_coefficient, plane_wave_amplitude, plane_wave_rhs,
                                     solve_term_resonances, sphere_grid)
-from .fdtd_2d_base import _check_cell_array, add_pec_cells, record_dispersive_region
+from .fdtd_2d_base import add_pec_cells, record_dispersive_region
 
 SPHERE_POLARIZATION = 'sphere'        # no in-plane polarisation (sheet placement helpers refuse it)
 SPHERE_MATERIAL_SCHEMA_KEY = 'ez'     # EM_MATERIAL_SCHEMAS key: eps_r (isotropic), mu_r, sigma_e, sigma_m
@@ -382,13 +382,13 @@ class SpherePhysics(PhysicsSolver):
         if not isinstance(pole, (DrudePole, LorentzPole)):
             raise TypeError(f'add_dispersive needs a DrudePole or LorentzPole, got {type(pole).__name__}')
         if mask is not None:
-            _check_cell_array(mask, self.fields['e_intensity'].shape, self.xp.bool_, 'Pole mask', xp=self.xp)
+            check_backend_array(mask, self.fields['e_intensity'].shape, self.xp.bool_, 'Pole mask', xp=self.xp)
         record_dispersive_region(self.dispersive_regions, pole, mask)
         self._solution_dirty = True
 
     def add_pec_region(self, mask):
         """Perfect electric conductor (spherical shells) on a run-backend bool (nx, 1) cell mask."""
-        _check_cell_array(mask, self.fields['e_intensity'].shape, self.xp.bool_, 'PEC mask', xp=self.xp)
+        check_backend_array(mask, self.fields['e_intensity'].shape, self.xp.bool_, 'PEC mask', xp=self.xp)
         self.pec_cells = add_pec_cells(self.pec_cells, mask)
         self._solution_dirty = True
 

@@ -52,6 +52,7 @@ class FEMDriftDiffusionPhysics(DriftDiffusionPhysics):
         """Register the material arrays, allocate the per-element fields and the nodal system (features come later)."""
         if getattr(domain, 'grid_kind', 'tensor') != 'triangles':
             raise ValueError(f"drift_diffusion '{self.name}': FEMDriftDiffusionPhysics needs a triangle mesh")
+        self._check_first_prepare()
         self.domain = domain
         self.xp = domain.xp
         mesh = domain.mesh

@@ -19,6 +19,7 @@ from ..solvers.roles import SolverRequest
 from .expressions import (FIELD_COORDINATE_NAMES, THREE_D_COORDINATE_NAMES, TIME_NAMES, Expression, ExpressionError,
                           compile_expression, error_message, evaluate_parameters, evaluate_scalar)
 from .build_masks import mesh_masks
+from .definition_helpers import uses_time
 from .geometry import (GEOMETRY_KINDS, cross_section_runs, domain_map, domain_object_rasterizer, expand_entities,
                        paint_material_index, point_z, resolve_geometry)
 from .meshing import make_domain, mesh_material_types, optional_material_arrays, physics_settings
@@ -92,6 +93,7 @@ class _SharedBuild:
         self.sim = None
         self.solver_records = {}         # physics name -> {role: BuiltSolver} (solver stage, before physics create)
         self.time_updates = []           # TimeDependentUpdate of feature values of t (follow_time), attached after them
+        self.range_checks = []           # per dynamic material update: host check of its running range (study end)
         self.live_parameters = frozenset()   # reused sweep build: the swept parameter and those depending on it
         self.parameter_followers = []    # sweep_reuse.ParameterFollower of follow_parameters (Session.set_sweep_value)
         self.conformal_locators = {}     # honouring physics names -> the build's GeometryLocator
@@ -153,6 +155,12 @@ class BuildContext:
     def parameter_followers(self) -> list:
         return self._shared.parameter_followers
 
+    def check_dynamic_ranges(self):
+        """Host check of every dynamic material update's running range (ExpressionError): the study end, so values after
+        the last periodic check (_check_dynamic_range) are judged too."""
+        for check in self._shared.range_checks:
+            check()
+
     @property
     def conformal_locators(self) -> dict:
         """solver_defaults.conformal_boundaries (S7.6): honouring physics names -> the build's GeometryLocator (set
@@ -170,6 +178,7 @@ class BuildContext:
         shared.solver_records, shared.transfers, shared.conformal_locators = {}, {}, {}
         shared.time_updates.clear()
         shared.parameter_followers.clear()
+        shared.range_checks.clear()
 
     # ---- meshes (S7.2) ----
     def mesh_of_physics(self, physics_name) -> str:
@@ -282,7 +291,7 @@ class BuildContext:
         TimeDependentUpdate attached after the features; setter runs only when the value changed (setters are
         incremental, so a repeat is a no-op: ramps that level off, steps). ExpressionError for a value outside
         bounds_param's range."""
-        if not (isinstance(value, Expression) and not value.names.isdisjoint(TIME_NAMES)):
+        if not uses_time(value):
             setter(self.eval_scalar(value) if isinstance(value, (str, Expression)) else value)
             return
         runner = self.sim.runner
@@ -309,11 +318,12 @@ class BuildContext:
 
     def follow_parameters(self, raw_params, values, names, setter, solver, label) -> bool:
         """Feature values / physics settings `names` (Param.follows_parameters) on a reused sweep build: when the raw
-        spec value of one (raw_params: the feature spec's params or physics spec's settings; a missing name = its
-        default) names a live sweep parameter and solver
-        is a RerunSolver, registers a sweep_reuse.ParameterFollower whose setter(*values of names) Session.set_sweep_value
-        calls when one changed (the others pass their resolved `values` object unchanged; incremental: the apply set
-        the build values itself, keeping host data only, never build caches). True when registered."""
+        spec value of one (raw_params: the feature spec's params or physics spec's settings dict itself, never a
+        copy: sweep_reuse.unfollowed_values matches it by identity; a missing name = its default) names a live sweep
+        parameter and solver is a RerunSolver, registers a sweep_reuse.ParameterFollower whose setter(*values of
+        names) Session.set_sweep_value calls when one changed (the others pass their resolved `values` object
+        unchanged; incremental: the apply set the build values itself, keeping host data only, never build caches).
+        True when registered."""
         live = self._shared.live_parameters
         if not live or not isinstance(solver, RerunSolver):
             return False
@@ -322,8 +332,9 @@ class BuildContext:
                     for name in names]
         if all(entry is None for entry in followed):
             return False
+        keys = [(id(raw_params), name) for name, entry in zip(names, followed) if entry is not None]
         self.parameter_followers.append(ParameterFollower(label, followed, [values[name] for name in names], setter,
-                                                          self.parameters))
+                                                          self.parameters, keys))
         return True
 
     # ---- selections and masks ----
@@ -443,14 +454,22 @@ class BuildContext:
         return float(x), float(y)
 
     def line(self, name):
-        """(x0, y0, x1, y1) of a line object (end points as given)."""
-        values = self._shape(name, 'line').values
+        """(x0, y0, x1, y1) of a line object (end points as given); ValueError on a mapped window (_unmapped_shape)."""
+        values = self._unmapped_shape(name, 'line').values
         return float(values['x0']), float(values['y0']), float(values['x1']), float(values['y1'])
 
     def rect(self, name):
-        """(x0, y0, x1, y1) of a rectangle object (sorted corners)."""
-        values = self._shape(name, 'rectangle').values
+        """(x0, y0, x1, y1) of a rectangle object (sorted corners); ValueError on a mapped window (_unmapped_shape)."""
+        values = self._unmapped_shape(name, 'rectangle').values
         return float(values['x0']), float(values['y0']), float(values['x1']), float(values['y1'])
+
+    def _unmapped_shape(self, name, kind):
+        """_shape for the drawn-coordinate readers (line / rect): their values are drawing-plane positions, which
+        only a Cartesian window takes as Domain coordinates."""
+        if self.domain_map.mapped:
+            raise ValueError(f"object '{name}': {kind} coordinates are not mapped onto a {self.domain_map.grid_text} "
+                             'window; this feature needs a Cartesian domain')
+        return self._shape(name, kind)
 
     def release_caches(self):
         """Drop the domain coordinate grids, the cached object / perimeter masks and the material-region masks
@@ -474,7 +493,7 @@ class BuildContext:
         """evaluate(physics_by_name) closure of a state- or time-dependent expression (x, y and in 3D z captured as
         zero-stride grids; t = clock.t, the runner time; state of a physics on another mesh interpolated onto this one
         into a persistent buffer, S7.2); see _check_dynamic_range for when its running range under mask is checked
-        against bounds_param (host sync)."""
+        against bounds_param (host sync; check_dynamic_ranges at the study end)."""
         names = expression.names
         readers = {}   # state name of a physics on another mesh -> [GridTransfer, its output buffer]
         for name, physics, _ in state_references:
@@ -489,6 +508,9 @@ class BuildContext:
         running_extremes = _new_running_extremes(xp)
         n_evaluations = [0]
         checked_solve_counts = [None]   # source n_solves at the last host check
+        text = f'{label} = {expression.text!r}'
+        self._shared.range_checks.append(
+            lambda: _check_running_range(text, bounds_param, running_extremes, ' inside its region'))
 
         def evaluate(physics_by_name):
             namespace = dict(base)
@@ -506,7 +528,7 @@ class BuildContext:
             _accumulate_extremes(running_extremes, value, mask)
             n_evaluations[0] += 1
             _check_dynamic_range(running_extremes, n_evaluations[0], checked_solve_counts, physics_by_name,
-                                 source_physics, f'{label} = {expression.text!r}', bounds_param)
+                                 source_physics, text, bounds_param)
             return value
 
         return evaluate
@@ -718,8 +740,7 @@ def _build_on_gpu(spec, registry, parameters, shapes, log, ledger, start, live_p
     for mesh_name in dict.fromkeys(ctx.mesh_of_physics(name) for name in smoothed_physics):
         with ledger.track(_mesh_owner('subpixel geometry', mesh_name, several)), _issue_at(('solvers',)):
             smoothing_geometries[mesh_name] = interface_geometry(contexts[mesh_name])
-    # solver_plan S7.6: one host geometry locator (mesh-independent), handed to the honouring solvers before their
-    # features apply
+    # one host geometry locator (mesh-independent), handed to the honouring solvers before their features apply
     conformal_physics, _ = conformal_boundaries_physics(spec, registry)
     locator = geometry_locator(ctx) if conformal_physics else None
     ctx.conformal_locators = {name: locator for name in conformal_physics}
@@ -856,14 +877,15 @@ def _apply_static_materials(ctx, present_types):
                                                                        bounds_param=param))
                 for array in owned_arrays:
                     materials.assign(array, region.mask, value)
-                _follow_material(ctx, region, name, owned_arrays, raw_value)
+                _follow_material(ctx, region, name, param, owned_arrays, raw_value)
     return deferred
 
 
-def _follow_material(ctx, region, name, owned_arrays, raw_value):
+def _follow_material(ctx, region, name, param, owned_arrays, raw_value):
     """Reused sweep build (sweep_reuse._material_follows): a uniform material value of a live parameter repaints its
     owned arrays under the region mask (regions never overlap) and calls materials_changed of every solver on this
-    mesh; it keeps its own reference to the bool mask (as a dynamic material update; release_caches drops the
+    mesh, after checking the value against param's range as the build does (ExpressionError: that sweep value
+    fails); it keeps its own reference to the bool mask (as a dynamic material update; release_caches drops the
     region's)."""
     live = ctx._shared.live_parameters
     names = value_names(raw_value)
@@ -873,6 +895,7 @@ def _follow_material(ctx, region, name, owned_arrays, raw_value):
     changed = frozenset(owned_arrays)
 
     def repaint(value):
+        _check_range(f"material '{region.name}' {name} {raw_value!r}", param, value, value)
         for array in owned_arrays:
             materials.assign(array, mask, value)
         sim = shared.sim

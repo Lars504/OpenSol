@@ -1,4 +1,4 @@
-"""Complex scalar harmonic FEM on tetrahedron meshes (new_modules_plan S2): ScalarHarmonicSystem3D, the fem.harmonic
+"""Complex scalar harmonic FEM on tetrahedron meshes: ScalarHarmonicSystem3D, the fem.harmonic
 system -div(a grad u) + (b + j omega c - omega^2 m) u = f by Lagrange P1 / P2 on an element selection, with a fem.pml
 shell, Dirichlet / Neumann / Robin face conditions and point loads, over assembly3d / dofs3d. Host numpy, scipy inside
 functions."""

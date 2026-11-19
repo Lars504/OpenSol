@@ -15,7 +15,7 @@ from .expressions import evaluate_parameters
 from .geometry import resolve_geometry
 from .mesh_refinement import (adaptive_mesh_spec, frozen_mesh_spec, refined_axes, uniform_mesh_spec, window_cells,
                               window_widths)
-from .meshing import backend_memory, estimate_memory, estimate_mesh
+from .meshing import backend_memory, estimate_mesh, fitted_memory_estimate
 from .schema import memory_check_level, solver_backend
 from .session import live_snapshot_index, snapshot_solution_names
 from .solver_hooks import ErrorIndicatorSolver
@@ -190,7 +190,9 @@ def _next_level(session, level_spec, setup, estimates, registry, emit):
             next_spec.meshes = [refined if mesh_spec.name == name else mesh_spec for mesh_spec in next_spec.meshes]
         next_estimates = {mesh_spec.name: estimate_mesh(next_spec, setup.parameters, registry, mesh_spec.name)
                           for mesh_spec in next_spec.used_meshes()}
-        memory = estimate_memory(next_spec, setup.parameters, registry, mesh_estimate=next_estimates)
+        # as the level's build judges it: an over-budget study default resolves without its study (D1 4b)
+        memory = fitted_memory_estimate(next_spec, setup.parameters, registry, next_estimates,
+                                        gpu_memory.budget_bytes())[0]
     except Exception as exc:
         if gpu_memory.is_out_of_memory(exc):
             raise

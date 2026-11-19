@@ -1,4 +1,4 @@
-"""Self-tests of the later cut-cell parts of solver_defaults.conformal_boundaries (solver_plan S7.6): outline pieces and
+"""Self-tests of the later cut-cell parts of solver_defaults.conformal_boundaries: outline pieces and
 dual-cell cuts (CPU), perimeter heat_flux / convection on a drawn curved edge and insulated walls, static and following
 k(T) (GPU heat runs), the em_modes conformal PEC of a circular metal pipe (cpu model runs)."""
 import math

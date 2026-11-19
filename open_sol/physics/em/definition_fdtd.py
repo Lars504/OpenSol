@@ -8,6 +8,7 @@ from ...core.time_estimate import explicit_step_estimate
 from ...model.definition_helpers import STEPPER_ROLE, validate_points_inside
 from ...model.schema import FeatureType, Param, PhysicsType
 from .definition_common import (BOX_CELLS, CPML_BC_HELP, EM_FAMILY, EZ_CURRENT_TIP, EZ_PROBE_COMPONENT_TIP, FACE_MEAN,
+                                EZ_GAUSSIAN_BEAM_DESCRIPTION, EZ_LINE_SOURCE_DESCRIPTION, PLANE_WAVE_SPAN,
                                 FLUX_PARAMS, FREQUENCY_DOMAIN_STUDY, HZ_PROBE_COMPONENT_TIP, MIRROR_BC_HELP,
                                 MODE_MONITOR_PARAMS, MODE_MONITOR_RESULT_TEXT, MODE_SOLVE_TEXT, MODE_SOURCE_PARAMS,
                                 MODE_SOURCE_RESULT_TEXT, MODE_SOURCE_TEXT, PERIODIC_BC_HELP, PER_CW_TEXT,
@@ -32,8 +33,9 @@ from .definition_effective_index import effective_index_feature
 from .definition_nonlinear import gain_medium_feature, nonlinear_medium_feature
 from .definition_phase_change import phase_change_medium_feature
 from .materials import EM_MATERIAL_SCHEMAS
-from .memory_estimates import (dft_monitor_memory_estimate, far_field_memory_estimate, fdtd_memory_estimate,
-                               line_spectra_memory_estimate, pec_memory_estimate)
+from .memory_estimates import (FDTD_NUMBA_STREAMED_ITEMS, dft_monitor_memory_estimate, far_field_memory_estimate,
+                               fdtd_memory_estimate, line_spectra_memory_estimate, pec_memory_estimate)
+from .placement import PERMITTIVITY_SLOTS
 from .renderer import EMRenderer, EMRendererHz
 
 _Q_ACCUM_INFO = FieldInfo('q_accum', 'Absorbed energy density', unit='J/m^3', cmap='magma')
@@ -43,47 +45,31 @@ _JZ_TOTAL_INFO = FieldInfo('jz_total', 'Dispersive current density J_z', unit='A
 # ---- settings ----
 # polarisation -> (wall text, mirror parity text, re-pin text) between the shared boundary help pieces
 _BC_TEXTS = {
-    'ez': ('pec (E_z = 0 at the centre of the outermost domain cell) and pmc (tangential H = 0 on the inner face of that '
-           'cell) are perfect electric / magnetic walls up to one cell inside the domain edge.',
-           'For E_z: symmetric = E_z even about the plane (E_z of the ghost cell copied from its neighbour, as pmc: a '
-           'PMC plane), antisymmetric = E_z odd (copied negated, so E = 0 on the plane: a PEC plane).',
-           'These walls are re-applied after the sources are injected, so a source value in the outermost cell of a pec '
-           'or pmc face is overwritten every step and radiates nothing, while a source next to a mirror plane sees its '
-           'exact image.'),
-    'hz': ('pec (tangential E = 0 on the inner face of the outermost domain cell, H_z mirrored into that cell) and pmc '
-           '(H_z = 0 at the centre of that cell) are perfect electric / magnetic walls up to one cell inside the domain '
-           'edge.',
-           'For H_z: symmetric = H_z odd about the plane; antisymmetric = H_z even with tangential E = 0 on the plane (the '
-           'same as pec on that face).',
-           'These walls are re-applied after the sources are injected, so a source value on a pinned row or face is '
-           'overwritten every step and radiates nothing (validation warns): H_z in the outermost cell of a pec or pmc '
-           'face (a magnetic_current point source there), and the tangential E on the inner face of that cell of a pec '
-           'face or on the plane of an antisymmetric one (a line source / gaussian beam sheet on that face, and the '
-           'current parallel to the face of an electric_dipole in one of the two outermost cells).'),
+    'ez': ('pec / pmc are perfect electric / magnetic walls up to one cell inside the domain edge.',
+           'E_z: symmetric = E_z even, antisymmetric = E_z odd about the plane.',
+           'Walls are re-applied after source injection: a source value in the outermost cell of a pec or pmc face '
+           'radiates nothing; a source next to a mirror plane sees its exact image.'),
+    'hz': ('pec / pmc are perfect electric / magnetic walls up to one cell inside the domain edge.',
+           'H_z: symmetric = H_z odd, antisymmetric = H_z even (tangential E = 0 on the plane, as pec).',
+           'Walls are re-applied after source injection, so a source value on a pinned row or face radiates nothing '
+           '(validation warns; cases: the point_source, line_source and gaussian_beam texts).'),
 }
-# polarisation -> (permittivity in the stability bound, its name in 'plain ... values', the runtime-rewritten arrays)
-_COURANT_TEXTS = {'ez': ('eps_r', 'eps_r', 'eps_r'), 'hz': ('min(eps_xx, eps_yy)', 'permittivity', 'eps_xx / eps_yy')}
+# polarisation -> (permittivity in the stability bound, the runtime-rewritten arrays)
+_COURANT_TEXTS = {'ez': ('eps_r', 'eps_r'), 'hz': ('min(eps_xx, eps_yy)', 'eps_xx / eps_yy')}
+_ABSORPTION_SWITCH = ('Switched on automatically when a material expression, derived value, field_transfer, '
+                      'em_heat_joule or em_semiconductor_generation reads q_accum, or a derived value reads '
+                      'absorbed_power (else absorbed_power is 0). absorbed_power shows the current accumulation '
+                      'window, else the last completed one; em_heat_joule resets q_accum at each transfer, else the '
+                      'window spans the whole run.')
 _TRACK_ABSORPTION_HELP = {
-    'ez': ('Accumulate J.E losses (output absorbed_power in W/m^3, state q_accum in J/m^3) also '
-           'without an em_heat_joule coupling; costs about one extra GPU pass per step over the '
-           'bounding boxes of the conducting and dispersive cells. The state q_accum exists only '
-           'while accumulation runs (jz_total only with a Drude pole). It is switched on '
-           'automatically when a material expression, a derived value, a field_transfer, '
-           'em_heat_joule or em_semiconductor_generation reads q_accum, or a derived value reads absorbed_power '
-           '(else absorbed_power is 0 everywhere). absorbed_power shows the current '
-           'accumulation window, else the last completed one; em_heat_joule resets q_accum at each '
-           'transfer, otherwise the window spans the whole run.'),
-    'hz': ('Accumulate J.E losses J_x E_x + J_y E_y + sigma_e |E|^2 on the cell faces (output '
-           'absorbed_power in W/m^3, state q_accum in J/m^3) also without an em_heat_joule coupling; '
-           'costs about one extra full-grid GPU pass per step. The conductivity loss of a face goes '
-           "to each of its two cells by that cell's own sigma_e; the loss of a pole current goes to "
-           'the cells of the dispersive material (half / half between two different dispersive '
-           'cells). The state q_accum exists only while accumulation runs; it is switched on '
-           'automatically when a material expression, a derived value, a field_transfer, em_heat_joule or '
-           'em_semiconductor_generation reads q_accum, or a derived value reads absorbed_power (else '
-           'absorbed_power is 0 everywhere). absorbed_power shows the current accumulation window, else '
-           'the last completed one; em_heat_joule resets q_accum at each transfer, otherwise the '
-           'window spans the whole run.'),
+    'ez': ('Accumulate J.E losses (output absorbed_power in W/m^3, state q_accum in J/m^3) also without '
+           'em_heat_joule; ~one extra GPU pass per step over the bounding boxes of the conducting and dispersive '
+           f'cells. q_accum (and jz_total, with a Drude pole) exists only while accumulating. {_ABSORPTION_SWITCH}'),
+    'hz': ('Accumulate J.E losses J_x E_x + J_y E_y + sigma_e |E|^2 on the cell faces (output absorbed_power in '
+           'W/m^3, state q_accum in J/m^3) also without em_heat_joule; ~one extra full-grid GPU pass per step. A '
+           "face's conductivity loss goes to each of its two cells by that cell's sigma_e, a pole current's loss to "
+           'the dispersive cells (half / half between two different dispersive cells). q_accum exists only while '
+           f'accumulating. {_ABSORPTION_SWITCH}'),
 }
 
 
@@ -91,52 +77,42 @@ def _settings(polarization):
     """Boundary, Courant and absorption-tracking settings of em_fdtd_<polarization>."""
     walls, mirrors, repin = _BC_TEXTS[polarization]
     bc_help = ' '.join((CPML_BC_HELP, walls, PERIODIC_BC_HELP, MIRROR_BC_HELP, mirrors, repin))
-    eps_product, plain_values, rewritten = _COURANT_TEXTS[polarization]
-    courant_help = ('Time step as a fraction of the 2D CFL limit: dt = factor / (C0 sqrt(1/dx^2 + 1/dy^2)) on a uniform '
-                    'mesh (factor * dx / (C0 sqrt(2)) for square cells; on a graded mesh the limit of the finest cells); '
-                    '0.99 default. Stable only where '
-                    f'{eps_product} * mu_r >= (C0 dt)^2 (1/dx^2 + 1/dy^2) (= factor^2 on a uniform mesh; coarser '
-                    'cells of a graded mesh have margin) + mu_r P, P = (omega_p dt)^2 / 4 per Drude pole and '
-                    'delta_eps (omega_0 dt)^2 / (4 - (omega_0 dt)^2) per Lorentz pole: plain '
-                    f'{plain_values} and mu_r values must be >= 1, but an eps_inf ~1 metal needs a lower factor at '
-                    'coarse cells. The build checks every cell (field-dependent values, Drude eps_inf < 1, poles), '
-                    f'names the worst one and the largest stable factor, but runtime {rewritten} rewrites '
-                    '(thermo-optic) are not checked.')
+    eps_product, rewritten = _COURANT_TEXTS[polarization]
+    courant_help = ('Time step as a fraction of the 2D CFL limit: dt = factor / (C0 sqrt(1/dx^2 + 1/dy^2)) (graded '
+                    f'mesh: the finest cells). Stable only where {eps_product} * mu_r >= (C0 dt)^2 (1/dx^2 + 1/dy^2) '
+                    '+ mu_r P, P = (omega_p dt)^2 / 4 per Drude pole and delta_eps (omega_0 dt)^2 / (4 - (omega_0 '
+                    'dt)^2) per Lorentz pole: an eps_inf ~1 metal needs a lower factor at coarse cells. The build '
+                    'checks every cell and names the worst one and the largest stable factor; runtime '
+                    f'{rewritten} rewrites (thermo-optic) are not checked.')
     return settings_params(bc_help, courant_help, _TRACK_ABSORPTION_HELP[polarization]) + bloch_params()
 
 
 # ---- material vocabulary ----
+_REAL_EPS = 'n^2 of a lossless dielectric (glass ~2.1-2.25, silicon ~12.1 at 1.55 um).'
+_STATE_EPS = ('A state-dependent eps_r (e.g. of T) is rewritten once per step of the physics it reads, not every EM '
+              'step.')
+_WEAK_ABSORBER = ('Weak absorber of index n, extinction kappa at omega: sigma_e = 2 n kappa omega eps0; model metals '
+                  'with a Drude pole, not their DC conductivity.')
+_MATCHED_ABSORBER = ('sigma_m / (mu0 mu_r) = sigma_e / (eps0 eps_r) is an impedance-matched absorber (no reflection at '
+                     'normal incidence).')
 _MATERIAL_HELPS = {
     'ez': {
-        'eps_r': 'Real relative permittivity (>= 1), n^2 of a lossless dielectric: glass ~2.1-2.25, silicon ~12.1 at '
-                 '1.55 um; may depend on x, y and physics fields. E_z sees eps_zz instead when the material sets it. '
-                 'For a dispersive material it is the background eps_inf: an explicit eps_r (or eps_zz) wins over the '
-                 'Drude eps_inf, which applies only when neither is set. A state-dependent eps_r (e.g. of T) is '
-                 'rewritten once per step of the physics it reads, not every EM step.',
-        'sigma_e': 'Ohmic loss J = sigma_e E_z in S/m, default 0. A weak absorber with index n and extinction '
-                   'coefficient kappa at angular frequency omega has sigma_e = 2 n kappa omega eps0; model metals with '
-                   'a Drude pole, not their DC conductivity.',
-        'mu_r': 'Real relative permeability (>= 1); 1 for practically every optical material. It enters the Courant '
-                'check (eps_r * mu_r) and the local impedance of line sources.',
-        'sigma_m': 'Magnetic loss on H_x, H_y in Ohm/m, default 0; sigma_m / (mu0 mu_r) = sigma_e / (eps0 eps_r) gives '
-                   'an impedance-matched absorber without reflection at normal incidence.',
+        'eps_r': f'{_REAL_EPS} E_z sees eps_zz instead when set. With poles it is the background eps_inf (an explicit '
+                 f'eps_r or eps_zz wins over the Drude eps_inf). {_STATE_EPS}',
+        'sigma_e': f'Ohmic loss J = sigma_e E_z. {_WEAK_ABSORBER}',
+        'mu_r': 'Enters the Courant check (eps_r * mu_r) and the local impedance of line sources; 1 for practically '
+                'every optical material.',
+        'sigma_m': f'Magnetic loss on H_x, H_y; {_MATCHED_ABSORBER}',
     },
     'hz': {
-        'eps_r': 'Isotropic in-plane relative permittivity (>= 1): sets eps_xx and eps_yy unless the material sets '
-                 'those components (a component wins over eps_r). n^2 of a lossless dielectric: glass ~2.1-2.25, '
-                 'silicon ~12.1 at 1.55 um; may depend on x, y and physics fields. E_x / E_y sit on cell faces and '
-                 f'{FACE_MEAN} (solver_defaults.subpixel_smoothing averages interface faces anisotropically). For a '
-                 'dispersive material it is the background eps_inf: an '
-                 'explicit permittivity wins over the Drude eps_inf, which applies only when none is set. A '
-                 'state-dependent eps_r (e.g. of T) is rewritten once per step of the physics it reads, not every EM '
-                 'step.',
-        'sigma_e': f'Ohmic loss J = sigma_e E on E_x and E_y in S/m, default 0 ({FACE_MEAN}). A weak absorber with '
-                   'index n and extinction coefficient kappa at angular frequency omega has sigma_e = 2 n kappa omega '
-                   'eps0; model metals with a Drude pole, not their DC conductivity.',
-        'mu_r': 'Real relative permeability (>= 1); H_z sees mu_zz = mu_r. 1 for practically every optical material. '
-                'It enters the Courant check (min(eps_xx, eps_yy) * mu_r) and the local impedance of line sources.',
-        'sigma_m': 'Magnetic loss on H_z in Ohm/m, default 0; sigma_m / (mu0 mu_r) = sigma_e / (eps0 eps_r) gives an '
-                   'impedance-matched absorber without reflection at normal incidence.',
+        'eps_r': 'Isotropic in-plane value: sets eps_xx and eps_yy unless the material sets those (a component wins). '
+                 f'{_REAL_EPS} E_x / E_y sit on cell faces: {FACE_MEAN} (solver_defaults.subpixel_smoothing averages '
+                 'interface faces anisotropically). With poles it is the background eps_inf (an explicit permittivity '
+                 f'wins over the Drude eps_inf). {_STATE_EPS}',
+        'sigma_e': f'Ohmic loss J = sigma_e E on E_x and E_y ({FACE_MEAN}). {_WEAK_ABSORBER}',
+        'mu_r': 'H_z sees mu_zz = mu_r. Enters the Courant check (min(eps_xx, eps_yy) * mu_r) and the local impedance '
+                'of line sources; 1 for practically every optical material.',
+        'sigma_m': f'Magnetic loss on H_z; {_MATCHED_ABSORBER}',
     },
 }
 
@@ -144,10 +120,9 @@ _MATERIAL_HELPS = {
 # ---- feature parameters ----
 _EZ_POINT_SOURCE_PARAMS = waveform_params() + (
     Param('current', 'float', 1e-3, label='Electric line current', unit='A', tip=EZ_CURRENT_TIP,
-          help='Peak z-directed filament current I. The radiated field does not depend on the mesh: for cw in a '
-               'homogeneous non-magnetic medium of wavenumber k, |E_z| = omega mu0 I / 4 |H0^(2)(k r)| (1 mA at '
-               f'wavelength 1 um: ~2e5 V/m at r = 1 um). Fields are linear, so results scale with I. '
-               f'{POINT_SOURCE_SIGN}'),)
+          help='Peak z-directed filament current I; mesh-independent field, for cw |E_z| = omega mu0 I / 4 |H0^(2)(k '
+               'r)| in a homogeneous non-magnetic medium of wavenumber k (1 mA at wavelength 1 um: ~2e5 V/m at r = 1 '
+               f'um). {POINT_SOURCE_SIGN}'),)
 
 
 def _line_source_params(polarization):
@@ -161,25 +136,22 @@ def _gaussian_beam_params(polarization):
 
 
 _TFSF_PARAMS = {
-    'ez': source_params('Peak incident E_z of the +x plane wave (computed for vacuum); the scattered field outside the '
-                        'box is relative to it. Typical 1 V/m.',
+    'ez': source_params('Peak incident E_z (computed for vacuum).',
                         'Peak out-of-plane electric field of the incoming plane wave. Fields scale linearly with it; '
                         '1 is typical.'),
-    'hz': source_params('Peak incident E_y of the +x plane wave (computed for vacuum, H_z = E_y / eta0); the scattered '
-                        'field outside the box is relative to it. Typical 1 V/m.',
+    'hz': source_params('Peak incident E_y (computed for vacuum, H_z = E_y / eta0).',
                         'Peak in-plane electric field (along y) of the incoming plane wave. Fields scale linearly with '
                         'it; 1 is typical.'),
 }
 _PROBE_PARAMS = {
     'ez': (Param('component', 'choice', 'ez', label='Field component', choices=('ez', 'hx', 'hy'),
                  choice_labels=PROBE_COMPONENT_CHOICE_LABELS['ez'], tip=EZ_PROBE_COMPONENT_TIP,
-                 help='ez in V/m, hx or hy in A/m, sampled in the cell containing the point after every step; hx / hy '
-                      'sit on the +y / +x face of that cell, half a time step before the recorded time.'),),
+                 help='ez (V/m) at the centre of the cell containing the point; hx / hy (A/m) on its +y / +x face, '
+                      'half a time step before the recorded time.'),),
     'hz': (Param('component', 'choice', 'hz', label='Field component', choices=('hz', 'ex', 'ey'),
                  choice_labels=PROBE_COMPONENT_CHOICE_LABELS['hz'], tip=HZ_PROBE_COMPONENT_TIP,
-                 help='hz in A/m at the centre of the cell containing the point, half a time step before the recorded '
-                      'time; ex / ey in V/m on the +y / +x face of that cell (raw staggered samples, not averaged). '
-                      'Sampled after every step.'),),
+                 help='hz (A/m) at the centre of the cell containing the point, half a time step before the recorded '
+                      'time; ex / ey (V/m) on its +y / +x face (raw staggered samples, not averaged).'),),
 }
 _DFT_N_WAVELENGTHS_TIP = 'Each wavelength needs graphics card memory for the whole rectangle; 1 to 21 is typical.'
 _DFT_DOWNSAMPLE_PARAM = Param(
@@ -187,20 +159,19 @@ _DFT_DOWNSAMPLE_PARAM = Param(
     tip='Records only every n-th cell along x and along y, so a large rectangle needs about n x n times less graphics '
         'card memory and work per time step.\n\n1 records every cell. The map then shows one sample per n x n block of '
         'cells, so details smaller than the blocks are missed.',
-    help='Stride s in cells along x and y: the monitor records cells x_start + min(s, box cells) // 2 + k s (likewise '
-         'in y), point samples at those cell centres (the hz in-plane E is still the face mean onto each sampled '
-         'centre), no averaging over the s x s block; memory and work per step drop by ~s^2. x_centers / y_centers of '
-         'the result are the sampled centres and shape the recorded counts; extent stays the whole box. 1 = every '
-         'cell. Features smaller than s cells alias.')
+    help='Stride s in cells along x and y: records cells x_start + min(s, box cells) // 2 + k s (likewise y), point '
+         'samples at those centres (hz in-plane E: still the face mean onto each sampled centre), no block averaging; '
+         'memory and work per step ~1 / s^2. Result x_centers / y_centers are the sampled centres; extent stays the '
+         'whole box. Features smaller than s cells alias.')
 _DFT_PARAMS = {
     'ez': spectral_params(
-        5, 'GPU memory: 2 * n_wavelengths * box cells * 4 B / downsample^2 (1000 x 1000 cells at 10 wavelengths: 80 '
-           'MB), and every wavelength adds work per time step (validation warns above 1 GiB); 1-21 typical.',
+        5, 'GPU memory 2 * n_wavelengths * box cells * 4 B / downsample^2 (1000 x 1000 cells at 10 wavelengths: 80 '
+           'MB; validation warns above 1 GiB), and each wavelength adds work per step; 1-21 typical.',
         _DFT_N_WAVELENGTHS_TIP) + (_DFT_DOWNSAMPLE_PARAM,),
     'hz': spectral_params(
-        5, 'GPU memory: 6 * n_wavelengths * box cells * 4 B / downsample^2 (H_z, E_x and E_y spectra; 1000 x 1000 '
-           'cells at 10 wavelengths: 240 MB), and every wavelength adds work per time step (validation warns above 1 '
-           'GiB); 1-21 typical.', _DFT_N_WAVELENGTHS_TIP) + (_DFT_DOWNSAMPLE_PARAM,),
+        5, 'GPU memory 6 * n_wavelengths * box cells * 4 B / downsample^2 (H_z, E_x, E_y; 1000 x 1000 cells at 10 '
+           'wavelengths: 240 MB; validation warns above 1 GiB), and each wavelength adds work per step; 1-21 '
+           'typical.', _DFT_N_WAVELENGTHS_TIP) + (_DFT_DOWNSAMPLE_PARAM,),
 }
 _FAR_FIELD_SPECTRA = {'ez': 'E_z / H', 'hz': 'H_z / E'}
 
@@ -210,141 +181,106 @@ _FAR_FIELD_SPECTRA = {'ez': 'E_z / H', 'hz': 'H_z / E'}
 _PORT_FIELDS = {'ez': ('E_z', 'H_y (vertical line) / H_x (horizontal line)'),
                 'hz': ('H_z', 'E_y (vertical line) / E_x (horizontal line)')}
 _PROBE_UNITS = {'ez': 'V/m or A/m', 'hz': 'A/m or V/m'}
-_TFSF_TAIL = ('Uniform or graded meshes (the 1D incident line runs on the grid\'s own x widths, so graded x and y '
-              'cells leak nothing); the incident field is computed for vacuum, so the box edges must lie in vacuum '
-              '(warning otherwise), and the box needs one scattered-field cell inside the domain on every side, '
-              'except at a y mirror face of the wave\'s parity (ez: symmetric, hz: antisymmetric), where it may reach '
-              'the plane: the box opens there and its mirror image completes it (the other parity, or an x mirror '
-              'face, is an error). Keep '
-              'flux and mode monitors entirely inside the box (their hi face too) or outside it (validation warns). '
-              f'The box covers {BOX_CELLS}.')
+_TFSF_TAIL = ("Uniform or graded meshes (the 1D incident line runs on the grid's own x widths: graded cells leak "
+              'nothing). The incident field is computed for vacuum, so the box edges must lie in vacuum (warning '
+              'otherwise), one scattered-field cell inside the domain on every side, except at a y mirror face of the '
+              "wave's parity (ez: symmetric, hz: antisymmetric): there it may reach the plane and its image completes "
+              'it (the other parity, or an x mirror face, is an error). Keep flux and mode monitors (hi face '
+              f'included) entirely inside or outside the box (validation warns). The box covers {BOX_CELLS}.')
 
 
 def _mode_source_description(polarization):
     """Description of the mode_source feature in `polarization`."""
     cell_field, face_field = _PORT_FIELDS[polarization]
     return ('Port source launching one guided mode of the cross-section under an axis-aligned line in one direction: '
-            'a vertical line (x = const) launches toward +x (direction positive) or -x (negative), a horizontal one '
-            f'toward +y or -y. The mode drives {cell_field} in the line cells and {face_field} on their upstream face, '
-            'i.e. the lo face of the line cells for positive and their hi face for negative. '
-            f"{MODE_SOURCE_TEXT} {MODE_SOLVE_TEXT} {mode_end_text(polarization, 'fdtd')} The line covers "
-            f'{SPAN_CELLS}. {MODE_SOURCE_RESULT_TEXT}')
+            f'the mode drives {cell_field} in the line cells and {face_field} on their upstream face (lo face of the '
+            f"line cells for positive, hi face for negative). {MODE_SOURCE_TEXT} {MODE_SOLVE_TEXT} "
+            f"{mode_end_text(polarization, 'fdtd')} The line covers {SPAN_CELLS}. {MODE_SOURCE_RESULT_TEXT}")
 
 
 def _mode_monitor_description(polarization):
     """Description of the mode_monitor feature in `polarization`."""
     cell_field, face_field = _PORT_FIELDS[polarization]
-    return ('Port monitor splitting the field on an axis-aligned line into the forward (positive: toward +x for a '
-            'vertical line, +y for a horizontal one) and backward (negative) amplitudes a of one guided mode at every '
-            f'monitor wavelength: running DFTs of {cell_field} in the line cells and of {face_field} on their hi face '
-            'are projected on the mode solved at that wavelength, so each direction is measured separately, unlike a '
-            f"flux_monitor. {MODE_SOLVE_TEXT} {mode_end_text(polarization, 'fdtd')} The line covers {SPAN_CELLS}. "
+    return ('Port monitor splitting the field on an axis-aligned line into the forward (positive: toward +x / +y) and '
+            'backward (negative) amplitudes a of one guided mode per monitor wavelength: running DFTs of '
+            f'{cell_field} in the line cells and of {face_field} on their hi face are projected on the mode solved '
+            'at that wavelength, so each direction is measured separately, unlike a flux_monitor. '
+            f"{MODE_SOLVE_TEXT} {mode_end_text(polarization, 'fdtd')} The line covers {SPAN_CELLS}. "
             f'{MODE_MONITOR_RESULT_TEXT}')
+
+
+_HZ_SHEET_WALLS = ('The line must not lie in the last cell row / column before a non-periodic hi face without PML (the '
+                   'sheet would be the outer grid wall), nor, next to a pec or antisymmetric face, put the sheet on the '
+                   'inner face of the outermost cell (line in the outermost lo cell or the last-but-one hi cell), which '
+                   'the wall pins to 0 every step (warning: it radiates nothing).')
+_SPECTRAL_FLUX = ('power in a.u. per unit z length, not normalised by the source spectrum: compare runs by ratios '
+                  '(transmission = device run / reference run with the same source); power_per_cw = power / (2 '
+                  f'|S(omega)|^2) is the cw power in W/m. {PER_CW_TEXT} The line covers {SPAN_CELLS}.')
+
+
+# descriptions alike for both polarisations (one text, so describe prints it once)
+_TFSF_DESCRIPTION = ('Plane wave along +x on the outline of a total-field box: total field inside, only the scattered '
+                     f'field outside (H_z: the outline E faces included). {_TFSF_TAIL}')
+_FAR_FIELD_DESCRIPTION = (
+    'Near-to-far-field transform of the out-of-plane field and the in-plane one on a rectangle outline: power per '
+    'angle rho |E|^2 / eta0 of the far-field |E| (H_z: |eta0 H_z|; a.u.: dt-weighted spectra without the 1/2, so its '
+    'angle integral matches a closed flux box) versus angle counter-clockwise from +x, per wavelength. Enclose every '
+    'scatterer; with a TFSF source keep the box outside the TFSF box, in the scattered field: x0 / y0 edges at least '
+    'one cell before those of the TFSF box, x1 / y1 edges in the last TFSF cell or beyond (validation warns '
+    'otherwise). The contour runs through the centres of the first box cells and of the cells one beyond x1 / y1 '
+    '(keep the box one cell off the x_hi / y_hi edges), the in-plane field averaged onto the centres; graded meshes '
+    f'work. The box covers {BOX_CELLS}.')
 
 
 _DESCRIPTIONS = {
     'ez': {
         'point_source': 'z-directed filament current I in the cell containing the point (a coordinate exactly on a '
-                        'cell edge goes to the upper cell). It radiates a cylindrical wave whose field does not depend '
-                        'on the mesh: |E_z| = omega mu0 I / 4 |H0^(2)(k r)| in a homogeneous non-magnetic medium.',
-        'line_source': 'Sheet current on an axis-aligned line radiating amplitude V/m of E_z to each side in the local '
-                       'medium: a vertical line (x = const) sends waves along +x and -x, a horizontal one along +y and '
-                       '-y. For a plane wave, span the whole domain: an end on a cpml domain edge continues through the '
-                       'PML (on a periodic axis span the whole period); a shorter line diffracts like a slit. The line '
-                       f'covers {SPAN_CELLS}.',
-        'gaussian_beam': 'Line source with the profile exp(-((s - center) / waist)^2) along the line, radiating a beam '
-                         'of peak E_z = amplitude V/m to each side in the local medium (vertical line: along +x and -x; '
-                         f'horizontal: along +y and -y); the waist lies on the line. The line covers {SPAN_CELLS}.',
-        'plane_wave_tfsf': 'Plane wave travelling along +x only, injected on the outline of a total-field box: total '
-                           'field inside the box, only the scattered field outside; amplitude = incident E_z. '
-                           f'{_TFSF_TAIL}',
-        'pec_domain': 'Perfect electric conductor: E_z = 0 (and no dispersive current) in every cell whose centre '
-                      'lies in the selected domains, staircased to the mesh; with solver_defaults.conformal_boundaries '
-                      'the H links from free cells into it put E_z = 0 at the drawn wall instead (exact wall '
-                      'distance, floored per cell so the time step stays stable).',
+                        'cell edge goes to the upper cell), radiating a mesh-independent cylindrical wave.',
+        'line_source': EZ_LINE_SOURCE_DESCRIPTION,
+        'gaussian_beam': EZ_GAUSSIAN_BEAM_DESCRIPTION,
+        'plane_wave_tfsf': _TFSF_DESCRIPTION,
+        'pec_domain': 'Perfect electric conductor: E_z = 0 (no dispersive current) in every cell whose centre lies in '
+                      'the selected domains, staircased; with solver_defaults.conformal_boundaries the H links from '
+                      'free cells put E_z = 0 at the drawn wall (exact wall distance, floored per cell so the time '
+                      'step stays stable).',
         'flux_monitor': 'Spectral Poynting flux through an axis-aligned line: the Yee discrete flux through the hi face '
-                        'of the line cells, > 0 toward +x for a vertical line and toward +y for a horizontal one. power '
-                        'is in a.u. per unit z length and not normalised by the source spectrum, so compare runs by '
-                        'ratios (transmission = device run / reference run with the same source); power_per_cw = power '
-                        f'/ (2 |S(omega)|^2) is the cw power in W/m. {PER_CW_TEXT} The line covers {SPAN_CELLS}.',
-        'dft_monitor': 'Running DFT of E_z over a rectangle, accumulating exp(-i omega t) at the actual sample times: '
-                       '|E_z(omega)|^2 per wavelength in a.u., not normalised by the source spectrum (one wavelength '
-                       'per freq_index); intensity x intensity_per_cw_factor[freq_index] (1 / |S(omega)|^2 per '
-                       f'wavelength) is the cw |E_z|^2 in (V/m)^2. {PER_CW_TEXT} The box covers {BOX_CELLS}.',
-        'far_field': 'Near-to-far-field transform of E_z / H on the outline of a rectangle: radiated power per angle '
-                     'rho |E_z|^2 / eta0 (a.u.: dt-weighted spectra without the 1/2, so its angle integral matches a '
-                     'closed flux box) versus angle, counter-clockwise from +x, per wavelength. Enclose every scatterer '
-                     'with the box; with a TFSF source keep it outside the TFSF box, in the scattered field: its x0 / '
-                     'y0 edges at least one cell before those of the TFSF box and its x1 / y1 edges in the last TFSF '
-                     'cell or beyond (the TFSF outline faces hold scattered field; validation warns otherwise). The '
-                     'closed contour runs through the centres of the first box cells and of the cells one beyond x1 / '
-                     'y1 (keep the box one cell off the x_hi / y_hi edges), H averaged from the faces on both sides '
-                     'onto the centres; graded meshes work (actual centres, trapezoid weights of their spacing); the '
-                     f'box covers {BOX_CELLS}.',
+                        f'of the line cells, > 0 toward +x (vertical line) / +y (horizontal). {_SPECTRAL_FLUX}',
+        'dft_monitor': 'Running DFT of E_z over a rectangle (exp(-i omega t) at the actual sample times): '
+                       '|E_z(omega)|^2 per wavelength (one per freq_index) in a.u., not normalised by the source '
+                       'spectrum; intensity '
+                       'x intensity_per_cw_factor[freq_index] (1 / |S(omega)|^2) is the cw |E_z|^2 in (V/m)^2. '
+                       f'{PER_CW_TEXT} The box covers {BOX_CELLS}.',
+        'far_field': _FAR_FIELD_DESCRIPTION,
     },
     'hz': {
-        'point_source': 'Current-calibrated point excitation in the cell containing the point (a coordinate exactly on '
-                        'a cell edge goes to the upper cell); its field does not depend on the mesh. magnetic_current: '
-                        'a z-directed magnetic line current K_m [V] added to H_z at the cell centre, radiating |H_z| = '
-                        'omega eps0 eps_r K_m / 4 |H0^(2)(k r)|. electric_dipole: an in-plane electric current element '
-                        'of strength M [A] along orientation, split over the two E_x faces (+y / -y) and the two E_y '
-                        'faces (+x / -x) of the cell, radiating |H_z| = k M / 4 |H1^(2)(k r)| |sin(phi - orientation)|. '
-                        'The wall boundaries overwrite some values every step (warning): a magnetic_current in the '
-                        'outermost cell of a pec, pmc, symmetric or antisymmetric face radiates nothing, and so does '
-                        'the current parallel to a pec or antisymmetric face of an electric_dipole in one of the two '
-                        'outermost cells.',
-        'line_source': 'Electric sheet current on an axis-aligned line radiating amplitude V/m of tangential E to each '
-                       'side in the local medium: a vertical line (x = const) drives E_y and sends waves along +x and '
-                       '-x, a horizontal one drives E_x and sends them along +y and -y. The sheet sits on the hi face '
-                       'of the line cells (+x face of a vertical line, +y face of a horizontal one), and the local '
-                       'impedance uses that face permittivity (width-weighted mean of its two cells). For a plane '
-                       'wave, span the whole domain: an end on a cpml domain edge continues through the PML (on a '
-                       'periodic axis span the whole period); a shorter line diffracts like a slit. The line covers '
-                       f'{SPAN_CELLS}. The line must not lie in the last cell row / column before a non-periodic hi '
-                       'face without PML: its hi face is then the outer grid wall. Next to a pec or antisymmetric face '
-                       'the sheet must not be the inner face of the outermost cell either (the line in the outermost lo '
-                       'cell or the last-but-one hi cell): the wall pins that E face to 0 every step, so the line '
-                       'radiates nothing (warning).',
-        'gaussian_beam': 'Line source with the profile exp(-((s - center) / waist)^2) along the line, radiating a beam '
-                         'of peak tangential E = amplitude V/m to each side in the local medium (vertical line: E_y, '
-                         'along +x and -x; horizontal: E_x, along +y and -y); the waist lies on the line and the sheet '
-                         'on the hi face of the line cells, so the line must not lie in the last cell row / column '
-                         'before a non-periodic hi face without PML (the outer grid wall), nor, next to a pec or '
-                         'antisymmetric face, put the sheet on the inner face of the outermost cell, which the wall '
-                         'pins to 0 every step (warning: the beam radiates nothing). The line covers '
-                         f'{SPAN_CELLS}.',
-        'plane_wave_tfsf': 'Plane wave travelling along +x only (E_y, H_z = E_y / eta0), injected on the outline of a '
-                           'total-field box: total field inside the box (its H_z cells), only the scattered field '
-                           'outside (the E faces on the outline included); amplitude = incident E_y. '
-                           f'{_TFSF_TAIL}',
-        'pec_domain': 'Perfect electric conductor: tangential E = 0 on every face of each cell whose centre lies in '
-                      'the selected domains (E_x on its +y and -y faces, E_y on its +x and -x faces), with no '
-                      'dispersive current on those faces; staircased to the mesh. With '
+        'point_source': 'Current-calibrated, mesh-independent point excitation (see excitation) in the cell containing '
+                        'the point (a coordinate exactly on a cell edge goes to the upper cell). Walls overwrite some '
+                        'values every step (warning): a magnetic_current in the outermost cell of a pec, pmc, '
+                        'symmetric or antisymmetric face radiates nothing, nor does the face-parallel current of an '
+                        'electric_dipole in one of the two outermost cells of a pec or antisymmetric face.',
+        'line_source': 'Electric sheet current on the hi face of the line cells (+x face of a vertical line, +y face '
+                       'of a horizontal one) sending amplitude (tangential E) to each side in the local medium: a '
+                       'vertical line (x = const) drives E_y along +x and -x, a horizontal one E_x along +y and -y. '
+                       f'{PLANE_WAVE_SPAN} The line covers {SPAN_CELLS}. {_HZ_SHEET_WALLS}',
+        'gaussian_beam': 'Line source with the profile exp(-((s - center) / waist)^2) along the line: a beam of peak '
+                         'tangential E = amplitude to each side in the local medium (vertical line: E_y, along +x and '
+                         '-x; horizontal: E_x, along +y and -y), waist on the line, sheet on the hi face of the line '
+                         f'cells. The line covers {SPAN_CELLS}. {_HZ_SHEET_WALLS}',
+        'plane_wave_tfsf': _TFSF_DESCRIPTION,
+        'pec_domain': 'Perfect electric conductor: tangential E = 0 (no dispersive current) on the four faces of each '
+                      'cell whose centre lies in the selected domains, staircased. With '
                       'solver_defaults.conformal_boundaries (Dey-Mittra) only faces wholly inside the drawn metal are '
-                      'PEC and each cut cell updates H_z from its free face lengths and free area (enlarged where '
-                      'needed so the time step stays stable).',
-        'flux_monitor': 'Spectral Poynting flux through an axis-aligned line: S_x = Re(E_y H_z*) through a vertical '
-                        'line, S_y = -Re(E_x H_z*) through a horizontal one, > 0 toward +x / +y. E is taken on the hi '
-                        'face of the line cells and H_z at their centres (time-centred, not interpolated in space). '
-                        'power is in a.u. per unit z length and not normalised by the source spectrum, so compare runs '
-                        'by ratios (transmission = device run / reference run with the same source); power_per_cw = '
-                        f'power / (2 |S(omega)|^2) is the cw power in W/m. {PER_CW_TEXT} The line covers {SPAN_CELLS}.',
-        'dft_monitor': 'Running DFT of H_z, E_x and E_y over a rectangle, accumulating exp(-i omega t) at the actual '
-                       'sample times (H_z half a step earlier), with E_x / E_y averaged onto the cell centres: '
-                       'intensity = |E_x(omega)|^2 + |E_y(omega)|^2 and hz_intensity = |H_z(omega)|^2 per wavelength in '
-                       'a.u., not normalised by the source spectrum (one wavelength per freq_index); intensity x '
-                       'intensity_per_cw_factor[freq_index] (1 / |S(omega)|^2 per wavelength) is the cw |E|^2 in '
-                       f'(V/m)^2. {PER_CW_TEXT} The box covers {BOX_CELLS}.',
-        'far_field': 'Near-to-far-field transform of H_z / E on the outline of a rectangle: radiated power per angle '
-                     'rho |eta0 H_z|^2 / eta0 (the far-field |E|^2 in vacuum; a.u.: dt-weighted spectra without the '
-                     '1/2, so its angle integral matches a closed flux box) versus angle, counter-clockwise from +x, '
-                     'per wavelength. Enclose every scatterer with the box; with a TFSF source keep it outside the TFSF '
-                     'box, in the scattered field: its x0 / y0 edges at least one cell before those of the TFSF box and '
-                     'its x1 / y1 edges in the last TFSF cell or beyond (the TFSF outline faces hold scattered field; '
-                     'validation warns otherwise). The closed contour runs through the centres of the first box cells '
-                     'and of the cells one beyond x1 / y1 (keep the box one cell off the x_hi / y_hi edges), E averaged '
-                     'from the faces on both sides onto the centres; graded meshes work (actual centres, trapezoid '
-                     f'weights of their spacing); the box covers {BOX_CELLS}.',
+                      'PEC; cut cells update H_z from their free face lengths and free area (enlarged where needed so '
+                      'the time step stays stable).',
+        'flux_monitor': 'Spectral Poynting flux through an axis-aligned line: S_x = Re(E_y H_z*) (vertical line), S_y '
+                        '= -Re(E_x H_z*) (horizontal), > 0 toward +x / +y; E on the hi face of the line cells, H_z at '
+                        f'their centres (time-centred, not interpolated in space). {_SPECTRAL_FLUX}',
+        'dft_monitor': 'Running DFT of H_z, E_x and E_y over a rectangle (exp(-i omega t) at the actual sample times, '
+                       'H_z half a step earlier; E_x / E_y averaged onto the cell centres): intensity = |E_x(omega)|^2 '
+                       '+ |E_y(omega)|^2 and hz_intensity = |H_z(omega)|^2 per wavelength (one per freq_index) in '
+                       'a.u., not normalised by the source spectrum; intensity x intensity_per_cw_factor[freq_index] (1 '
+                       f'/ |S(omega)|^2) is the cw |E|^2 in (V/m)^2. {PER_CW_TEXT} The box covers {BOX_CELLS}.',
+        'far_field': _FAR_FIELD_DESCRIPTION,
     },
 }
 _DFT_SUMMARY = ('Stores maps of the {fields} intensity over a rectangle at chosen wavelengths, collected over the whole '
@@ -390,53 +326,39 @@ _PHYSICS_SUMMARIES = {
            'points out of the plane and the electric field lies in it: choose it for metals, plasmonics and light '
            'polarised in the plane.'),
 }
+_TIME_DOMAIN_TEXT = ('gaussian and cw sources use a sin carrier (ricker is a real wavelet), DFT-based monitors '
+                     'accumulate exp(-i omega t) at the actual sample times, every wavelength is a vacuum wavelength; '
+                     'CPML cells are added outside the domain. e_abs / e_intensity / h_abs = |E|, |E|^2, |H| at the '
+                     'cell centres: instantaneous values, where em_fdfd_* give phasor moduli. One Courant step per '
+                     'runner tick, so every must be 1.')
 _PHYSICS_DESCRIPTIONS = {
     'ez': ('2D finite-difference time-domain solver for the E_z polarisation: E_z out of plane in V/m, H_x and H_y in '
-           'plane in A/m, x to the right and y up. On the Yee grid E_z sits at cell centres and H_x / H_y on the +y / '
-           '+x cell faces, half a time step earlier. gaussian and cw sources use a sin carrier (ricker is a real '
-           'wavelet), DFT-based monitors accumulate exp(-i omega t) at the actual sample times, and every wavelength '
-           'is a vacuum wavelength. Boundaries: CPML (cells added outside the domain), PEC, PMC, periodic and mirror '
-           'planes on the domain edge; materials: eps_r (eps_zz wins for E_z), sigma_e, mu_r, sigma_m plus Drude / Lorentz poles; '
-           'current-calibrated sources and mode (port) sources; probe, flux, mode, DFT and far-field monitors. Outputs '
-           'e_abs, e_intensity and h_abs (|E|, |E|^2, |H| at the cell centres; instantaneous values, the FDFD types '
-           'give phasor moduli under the same names). It advances one Courant step per runner tick, so every must be '
-           "1; the instance is usually named 'em'."),
+           'plane in A/m, x to the right and y up; Yee grid: E_z at cell centres, H_x / H_y on the +y / +x cell faces '
+           f'half a time step earlier. {_TIME_DOMAIN_TEXT}'),
     'hz': ('2D finite-difference time-domain solver for the H_z polarisation: H_z out of plane in A/m, E_x and E_y in '
-           'plane in V/m, x to the right and y up. On the Yee grid H_z sits at cell centres half a time step before '
-           'the recorded time, E_x on the +y and E_y on the +x cell faces. Each face takes the arithmetic mean of the '
-           'permittivity, conductivity and dispersive susceptibility of its two cells, weighted by their widths across '
-           'the face (yee_grid.face_average; solver_defaults.subpixel_smoothing averages the permittivity of '
-           'interface faces anisotropically instead): curved interfaces are otherwise staircased and plasmon '
-           'resonances shift on coarse meshes, so use cells of a few nm for plasmonics. In-plane E is what gives '
-           'particle plasmons and guided modes whose E lies in the propagation plane (e.g. surface plasmon polaritons '
-           'on metal films). gaussian and cw sources use a sin carrier (ricker is a real wavelet), DFT-based monitors '
-           'accumulate exp(-i omega t) at the actual sample times, and every wavelength is a vacuum wavelength. '
-           'Boundaries: CPML (cells added outside the domain), PEC, PMC, periodic and mirror planes on the domain '
-           'edge; materials: eps_r (or eps_xx, eps_yy), sigma_e, mu_r, sigma_m plus Drude / Lorentz poles; current-calibrated '
-           'sources (magnetic line current, electric dipole, sheet currents, TFSF plane wave) and mode (port) sources; '
-           'probe, flux, mode, DFT and far-field monitors. Outputs e_abs, e_intensity and h_abs (|E|, |E|^2, |H| at '
-           'the cell centres; instantaneous values, the FDFD types give phasor moduli under the same names). It '
-           'advances one Courant step per runner tick, so every must be 1. A model with an em_fdtd_ez physics too '
-           '(e.g. unpolarised light as one physics per polarisation) needs another instance name (e.g. em_hz) and the '
-           'same bc_* / pml_* settings: both share one boundary configuration.'),
+           'plane in V/m, x to the right and y up; Yee grid: H_z at cell centres half a time step before the recorded '
+           'time, E_x on the +y and E_y on the +x cell faces (face materials: see eps_r). Curved interfaces are '
+           'staircased and plasmon resonances shift on coarse meshes: use cells of a few nm for plasmonics. '
+           f'{_TIME_DOMAIN_TEXT} With an em_fdtd_ez physics in the same model (e.g. one per polarisation) it needs '
+           'another instance name (e.g. em_hz) and equal bc_* / pml_* settings (one shared boundary configuration).'),
 }
 
 
-_STEPPER_TEXT = ('Stepper solver (role stepper, explicit_kernels): precision single (float32 fields, default) or double '
-                 '(float64 fields, coefficients, CPML and pole arrays: ~2x the field memory and time, for long or high-Q '
-                 'ring-downs where float32 coefficient rounding, ~1e-7 of a mode frequency, accumulates into phase '
-                 'drift); materials, absorbed power, probe traces and field-map spectra stay float32, and '
-                 'nonlinear_medium / gain_medium need single.')
+_STEPPER_TEXT = ('Stepper (role stepper, explicit_kernels): precision single (float32, default) or double (float64 '
+                 'fields, coefficients, CPML and pole arrays: ~2x field memory and time, for long or high-Q ring-downs '
+                 'where float32 coefficient rounding, ~1e-7 of a mode frequency, accumulates into phase drift); '
+                 'materials, absorbed power, probe traces and field-map spectra stay float32; nonlinear_medium / '
+                 'gain_medium need single.')
 
 
 # ---- type factory ----
 # polarisation -> (renderer, permittivity slot -> MaterialGrid array, renderer state field names, extra state fields,
 # point-source params / apply / validate, line-feature validate); material_schema = EM_MATERIAL_SCHEMAS
 _POLARIZATIONS = {
-    'ez': (EMRenderer, {'eps_r_update': 'eps_r'}, ('ez', 'hx', 'hy', 'eps_r', 'sigma_e'),
+    'ez': (EMRenderer, PERMITTIVITY_SLOTS['ez'], ('ez', 'hx', 'hy', 'eps_r', 'sigma_e'),
            (_JZ_TOTAL_INFO, _Q_ACCUM_INFO),
            _EZ_POINT_SOURCE_PARAMS, apply_ez_point_source, validate_ez_point_feature, validate_ez_line_feature),
-    'hz': (EMRendererHz, {'eps_xx_update': 'eps_xx', 'eps_yy_update': 'eps_yy'}, ('hz', 'eps_xx', 'eps_yy', 'sigma_e'),
+    'hz': (EMRendererHz, PERMITTIVITY_SLOTS['hz'], ('hz', 'eps_xx', 'eps_yy', 'sigma_e'),
            (_Q_ACCUM_INFO,),
            hz_point_source_params(waveform_params(), time_domain=True), apply_hz_point_source,
            validate_hz_point_source, validate_hz_line_feature),
@@ -605,9 +527,8 @@ def fdtd_time_step_estimate(polarization, settings_values, mesh, context):
 
 
 def _numba_stepped(item_label):
-    """Memory items (fdtd_memory_estimate labels) the numba Yee twins stream: fields and update coefficients (the
-    Bloch imaginary set counted with them: its bulk is the fields)."""
-    return item_label.startswith(('fields ', 'update coefficients', 'Bloch imaginary field set'))
+    """Whether a memory item is one the numba Yee twins stream (memory_estimates FDTD_NUMBA_STREAMED_ITEMS)."""
+    return item_label.partition(' (')[0] in FDTD_NUMBA_STREAMED_ITEMS
 
 
 EM_FDTD_EZ = _fdtd_physics_type('ez')

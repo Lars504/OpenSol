@@ -1,6 +1,6 @@
 """FixedPatternCsr: the CSR pattern of a sum of element blocks, built once with the data slot of every block entry and
 the free-free restriction, so a re-assembly only sums values (constant pattern, explicit zeros kept); scatter_add, the
-bincount form of np.add.at. DevicePatternCsr is its cupy twin (plan G5). Host numpy, scipy / core.backend inside
+bincount form of np.add.at. DevicePatternCsr is its cupy twin. Host numpy, scipy / core.backend inside
 functions."""
 # Vector maps with interleaved dofs (block d + component) take block=components: the pattern is built on the scalar
 # element dofs and every scalar entry expanded to a dense block x block block (block^2 fewer COO entries and slot

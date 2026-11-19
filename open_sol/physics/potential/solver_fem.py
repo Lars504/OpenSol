@@ -1,9 +1,9 @@
-"""Electric currents / electrostatics on a triangle mesh (mesh plan 2.7, stage T4): FEMPotentialPhysics, P1 / P2
+"""Electric currents / electrostatics on a triangle mesh: FEMPotentialPhysics, P1 / P2
 Lagrange V on the window (fem.diffusion), planar or axisymmetric (r, z); the PotentialPhysics field names, slots, held
 regions, scalar outputs and linear electrolytes where they apply (no nonlinear electrolytes, driven terminals or
-azimuthal orders). State arrays are per element (D12: V at the element centroid, E / J / D element means, q_joule the
+azimuthal orders). State arrays are per element (V at the element centroid, E / J / D element means, q_joule the
 element dissipation density, rho_ion from the element mean V); FEMPotentialMixin is the physics shared with
-FEMPotentialPhysics3D."""
+FEMPotentialPhysics3D: a change to steps, sources, held reactions or publishing goes there, for both."""
 import math
 from dataclasses import dataclass
 
@@ -15,12 +15,11 @@ from ...core.fv_diffusion import BCSide, host_copies, write_host_copies
 from ...core.mirror import touch_factor
 from ...fem.diffusion import FEMDiffusionPhysicsBase, coefficient_tensor, element_means
 from ...fem.indicators import diffusion_indicator
-from ...fem.mesher import MERGE_TOLERANCE
+from ...fem.mesher import window_inset
 from ...fem.renderer import FEMFieldRenderer
-from .electrolyte import ION_CONCENTRATION_FIELDS, number_densities, screening_coefficient, species_concentration
-from .solver import (ELECTROLYTE_SCALAR_PREFIXES, KINDS, REMEDY_TEXT, RENDERERS, IonicMedium, _face_held_by,
-                     held_face_bc)
-
+from .electrolyte import ION_CONCENTRATION_FIELDS, species_concentration
+from .solver import (HELD_SCALAR_PREFIXES, KINDS, REMEDY_TEXT, RENDERERS, IonicMedium, _face_held_by,
+                     electrolyte_scalars, faces_touch_mirror, held_face_bc, ionic_medium)
 
 
 class FEMPotentialMixin:
@@ -132,7 +131,7 @@ class FEMPotentialMixin:
 
     def _held_scalars(self) -> dict:
         """current_<feature> or charge_<feature> [flux_unit] of every kept region."""
-        prefix = 'current_' if self.kind == 'currents' else 'charge_'
+        prefix = HELD_SCALAR_PREFIXES[self.kind]
         return {f'{prefix}{region.name}': self.held_flux(region) for region in self.held_regions}
 
     def _held_reaction(self, region) -> float:
@@ -310,17 +309,8 @@ class FEMPotentialPhysics(FEMPotentialMixin, FEMDiffusionPhysicsBase):
         if model != 'linear':
             raise ValueError(f"{label}: electrolyte model {model!r} needs a tensor mesh (rectangular cells); on "
                              f"triangles use model 'linear'")
-        concentrations = tuple(float(value) for value in concentrations)
-        valences = tuple(float(value) for value in valences)
-        if (not concentrations or len(concentrations) != len(valences) or 0.0 in valences
-                or not all(math.isfinite(value) and value >= 0.0 for value in concentrations)):
-            raise ValueError(f'electrolyte needs one non-zero valence per finite concentration >= 0, got '
-                             f'{concentrations} and {valences}')
-        if not float(temperature) > 0.0:
-            raise ValueError(f'electrolyte temperature must be > 0 K, got {temperature}')
-        medium = IonicMedium(self.element_mask(mask).copy(), model, concentrations, number_densities(concentrations),
-                             valences, float(temperature), float(bulk_potential),
-                             screening_coefficient(concentrations, valences, temperature))
+        medium = ionic_medium(self.element_mask(mask).copy(), model, concentrations, valences, temperature,
+                              bulk_potential)
         self.ionic_media.append(medium)
         self.system.operator_dirty = True
         return medium
@@ -394,11 +384,7 @@ class FEMPotentialPhysics(FEMPotentialMixin, FEMDiffusionPhysicsBase):
         debye_length_<feature> [m] of every electrolyte; {} before a solve."""
         if self.system.n_solves == 0:
             return {}
-        scalars = self._held_scalars()
-        for region in self.electrolytes:
-            scalars.update({f'{name_prefix}{region.name}': getattr(region, attribute)
-                            for name_prefix, attribute in ELECTROLYTE_SCALAR_PREFIXES.items()})
-        return scalars
+        return {**self._held_scalars(), **electrolyte_scalars(self.electrolytes)}
 
     def held_flux(self, region: FEMHeldRegion) -> float:
         """Flux [flux_unit] leaving the held faces / outline / elements of `region` into the domain (> 0 out): faces
@@ -424,7 +410,7 @@ class FEMPotentialPhysics(FEMPotentialMixin, FEMDiffusionPhysicsBase):
         touched = set()
         mesh = self.system.mesh
         x0, y0, x1, y1 = mesh.window
-        tolerance = MERGE_TOLERANCE * max(x1 - x0, y1 - y0)
+        tolerance = window_inset(mesh.window)
         nodes = []
         if region.edges is not None:
             nodes.append(mesh.edges[region.edges].ravel())
@@ -432,10 +418,9 @@ class FEMPotentialPhysics(FEMPotentialMixin, FEMDiffusionPhysicsBase):
             nodes.append(mesh.triangles[region.elements].ravel())
         points = mesh.points[np.concatenate(nodes)] if nodes else np.zeros((0, 2))
         for mirror in self.mirror_faces:
-            opposite = mirror[0] + ('_hi' if mirror.endswith('lo') else '_lo')
             axis = 0 if mirror[0] == 'x' else 1
             line = {'x_lo': x0, 'x_hi': x1, 'y_lo': y0, 'y_hi': y1}[mirror]
-            if any(face != opposite for face in region.faces) or bool(
+            if faces_touch_mirror(mirror, region.faces) or bool(
                     (np.abs(points[:, axis] - line) <= tolerance).any()):
                 touched.add(mirror)
         return touch_factor(self.mirror_faces, touched)
@@ -471,7 +456,7 @@ class FEMPotentialPhysics(FEMPotentialMixin, FEMDiffusionPhysicsBase):
         raise KeyError(f"{spec.label} '{self.name}' has no field '{component}'")
 
     def error_indicator(self):
-        """eta^2 per element (float64 (n_elements,)) of the last solve for mesh refinement (S7.7, mesh plan A3):
+        """eta^2 per element (float64 (n_elements,)) of the last solve for mesh refinement (S7.7):
         fem.indicators.diffusion_indicator with the sources source_ext + source."""
         return diffusion_indicator(self.system, self._tensor, self._source())
 

@@ -1,4 +1,4 @@
-"""Self-tests of the prestressed Si3N4 nanostring of the Hirsch tutorial (hirsch2025 plan E1, new_modules_plan K2) on
+"""Self-tests of the prestressed Si3N4 nanostring of the Hirsch tutorial on
 triangles in plane stress: a prescribed tension (variant A, f1 .. f5) and a released equibiaxial film stress (variant B,
 the mid-span stress and f1 .. f3) against the exact clamped-clamped tensioned-beam roots; definition registers them."""
 import math
@@ -20,12 +20,12 @@ _TABLE = 'modes'
 # The in-plane flexural modes are those of the narrow Euler-Bernoulli beam E I w'''' - T w'' = rho A omega^2 w (I = d
 # h^3 / 12, T = sigma d h, A = d h: d cancels) clamped at both ends: k1^2 = s+, k2^2 = -s- of E I s^2 - T s - rho A
 # omega^2 = 0, symmetric modes k2 sin(k2 L / 2) + k1 cos(k2 L / 2) tanh(k1 L / 2) = 0, antisymmetric k1 sin(k2 L / 2) -
-# k2 cos(k2 L / 2) tanh(k1 L / 2) = 0 (the plan's reference algorithm). A: initial_stress_xx = 1 GPa: the clamped strip
+# k2 cos(k2 L / 2) tanh(k1 L / 2) = 0 (the reference algorithm). A: initial_stress_xx = 1 GPa: the clamped strip
 # keeps u = 0 (the initial-stress force acts on the held end faces only), so sigma = 1 GPa (f1 .. f5 = 2.82113 ..
 # 14.14048 MHz). B: initial_stress_xx = _yy = 1 GPa released by the static solve of stress_stiffening: sigma_yy -> 0
 # and sigma_xx -> sigma0 (1 - nu) = 0.770 GPa away from the clamps (f1 .. f3 = 2.47879 .. 7.44434 MHz); a stationary run
-# of B probes the mid-span stress. Tolerances: the plan's 1e-3 (f), 5e-3 (mid-span stress); the computed roots must
-# match the plan's tabulated ones to 1e-5 (pins the reference itself).
+# of B probes the mid-span stress. Tolerances: the reference's 1e-3 (f), 5e-3 (mid-span stress); the computed roots must
+# match its tabulated ones to 1e-5 (pins the reference itself).
 _LENGTH = 100e-6
 _HEIGHT = 100e-9
 _MATERIAL = (250e9, 0.23, 3200.0)    # E [Pa], nu, rho [kg/m^3]
@@ -33,12 +33,12 @@ _FILM_STRESS = 1e9                   # Pa
 _ELEMENT = 50e-9
 _MODES_A = 5
 _MODES_B = 3
-_PLAN_A = (2.82113e6, 5.64400e6, 8.47036e6, 11.30194e6, 14.14048e6)   # Hz, hirsch plan section 6
+_PLAN_A = (2.82113e6, 5.64400e6, 8.47036e6, 11.30194e6, 14.14048e6)   # Hz, Hirsch reference table
 _PLAN_B = (2.47879e6, 4.95958e6, 7.44434e6)
 _PLAN_RELEASED_STRESS = 0.770e9
 _FREQUENCY_TOLERANCE = 1e-3
 _STRESS_TOLERANCE = 5e-3
-_REFERENCE_TOLERANCE = 1e-5          # computed roots vs the plan's 6-digit values
+_REFERENCE_TOLERANCE = 1e-5          # computed roots vs the reference 6-digit values
 
 
 def _material(released):
@@ -118,7 +118,8 @@ def _table_frequencies(results):
 
 
 def _check(results_by_name):
-    """Table frequencies of A and B against the beam roots, the roots against the plan, the released mid-span stress."""
+    """Table frequencies of A and B against the beam roots, the roots against the reference table, the released
+    mid-span stress."""
     _, poisson_ratio, _ = (float32_value(value) for value in _MATERIAL)
     released_stress = _FILM_STRESS * (1.0 - poisson_ratio)
     errors, tolerances, details = {}, {}, {}

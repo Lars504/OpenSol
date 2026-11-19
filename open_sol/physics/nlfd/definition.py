@@ -7,13 +7,17 @@ register."""
 # (sparse_direct, one runtime shared by every channel, each channel keeping its own factor) with the FDFD checks
 # (definition_fdfd.direct_solver_issues).
 import math
+import re
 from dataclasses import dataclass, replace
+from difflib import SequenceMatcher
 
 from ...core import time_estimate as te
-from ...core.constants import C0, ETA0
+from ...core.constants import C0, ETA0, FACES
 from ...core.memory_estimate import (BOOL_BYTES, COMPLEX128_BYTES, FLOAT32_BYTES, FLOAT64_BYTES, MemoryEstimate,
                                      combine)
-from ...model.definition_helpers import DIRECT_LINEAR_ROLE, optimization_evaluations, resolved_back_end
+from ...core.mirror import MIRROR_SIGNS
+from ...model.definition_helpers import (DIRECT_LINEAR_ROLE, optimization_evaluations, resolved_back_end,
+                                         selected_material_data)
 from ...model.expressions import is_identifier
 from ...model.geometry import bounding_box, expand_entities
 from ...model.schema import FeatureType, Issue, Param, PhysicsType, feature_path, resolve_values
@@ -23,7 +27,7 @@ from ..em.definition_common import (EM_FAMILY, em_material_params, make_validate
                                     quasi_static_domain_requirements, source_slot_docs, write_dispersive_materials)
 from ..em.definition_bloch import is_fdfd_port_feature
 from ..em.definition_conducting_sheet import sheet_conductivity_from_values
-from ..em.definition_design import design_region_feature
+from ..em.definition_design import OPTIMIZATION_STUDY, design_region_feature
 from ..em.definition_fdfd import ASSEMBLY_BYTES_PER_ENTRY, EM_FDFD_EZ, EM_FDFD_HZ, direct_solver_issues
 from ..em.definition_feature_validation import bloch_period_line_issues, conducting_sheet_line_issues
 from ..em.materials import EM_MATERIAL_SCHEMAS
@@ -62,16 +66,15 @@ _CHANNEL_FEATURE_NAMES = ('point_source', 'line_source', 'gaussian_beam', 'plane
                           'field_probe', 'flux_monitor', 'mode_monitor', 'far_field', 'adjoint_objective')
 # channel source params that follow a reused sweep build (Param.follows_parameters): the FDFD source re-set in place by
 # its set_amplitude(*values of its amplitude_params) (fdfd_sources / fdfd_ports phasors; point_source: the names of every
-# excitation, the built phasor follows its own)
+# excitation, the built phasor follows its own). A new entry needs such an in-place setter, never a rebuilt source: the
+# channel's source list and the nonlinear phasors hold the object.
 _FOLLOWING_SOURCE_PARAMS = {'line_source': ('amplitude', 'phase'), 'gaussian_beam': ('amplitude', 'phase'),
                             'point_source': ('current', 'magnetic_current', 'dipole_moment', 'phase'),
                             'plane_wave_tfsf': ('amplitude', 'phase'), 'mode_source': ('power', 'phase')}
-OPTIMIZATION_STUDY = 'optimization'   # = model.study_optimization.STUDY_NAME
 _SLOT_ARRAYS = {**PERMITTIVITY_SLOTS['ez'], **PERMITTIVITY_SLOTS['hz']}
 _LOW_ORDER_INFO_TERMS = 3   # near misses / off-set products listed by validation
 _DENSITY_TRANSIENT_ARRAYS = 3   # complex128 full-grid temporaries of one density evaluation (box products, magnitude)
-_ABSOLUTE_AMPLITUDE_TEXT = ('Amplitudes are absolute: the nonlinear response scales with them (P ~ E^n), unlike a '
-                            'linear FDFD result.')
+_ABSOLUTE_AMPLITUDE_TEXT = 'Amplitudes are absolute: the nonlinear response scales as P ~ E^n.'
 _UNDEPLETED_WARN_RATIO = 0.3   # generated / weakest source field estimate above which undepleted is doubtful
 _AMPLITUDE_PARAMS = {'line_source': 'amplitude', 'gaussian_beam': 'amplitude', 'plane_wave_tfsf': 'amplitude'}
 _POWER_PARAMS = {'mode_source': 'power'}   # W/m: peak |E| <= sqrt(4 eta0 P / lambda) (mode width >= lambda / (2 n))
@@ -368,27 +371,63 @@ def _merged_text(ez_text, hz_text, separator=' '):
     return ez_text if ez_text == hz_text else f'E_z channels: {ez_text}{separator}H_z channels: {hz_text}'
 
 
+_CLAUSE_END = re.compile(r'(?<=[.;:]) ')   # _clauses: split after a full stop, semicolon or colon
+
+
+def _clauses(text):
+    """text split after '. ', '; ' and ': ' into clauses (each keeps its punctuation), never inside parentheses."""
+    clauses, current = [], ''
+    for part in _CLAUSE_END.split(text):
+        current = f'{current} {part}' if current else part
+        if current.count('(') == current.count(')'):
+            clauses.append(current)
+            current = ''
+    if current:
+        clauses.append(current)
+    return clauses
+
+
+def _merged_help(ez_text, hz_text):
+    """One help / description for both polarisations: clauses the two texts share (in order, a clause diff) are
+    printed once; each run that differs becomes 'E_z channels: <ez run> H_z channels: <hz run>' in place (a side
+    without a run reads 'only')."""
+    if ez_text == hz_text:
+        return ez_text
+    ez_parts, hz_parts = _clauses(ez_text), _clauses(hz_text)
+    pieces = []
+    for tag, ez_lo, ez_hi, hz_lo, hz_hi in SequenceMatcher(None, ez_parts, hz_parts, autojunk=False).get_opcodes():
+        ez_run, hz_run = ' '.join(ez_parts[ez_lo:ez_hi]), ' '.join(hz_parts[hz_lo:hz_hi])
+        if tag == 'equal':
+            pieces.append(ez_run)
+        elif not hz_run:
+            pieces.append(f'E_z channels only: {ez_run}')
+        elif not ez_run:
+            pieces.append(f'H_z channels only: {hz_run}')
+        else:
+            pieces.append(f'E_z channels: {ez_run} H_z channels: {hz_run}')
+    return ' '.join(pieces)
+
+
 def _merged_param(ez_param, hz_param):
     """One Param for both polarisations: help / tip per polarisation; differing choices united, default None = the
     channel's out-of-plane field (field_probe component)."""
     if ez_param == hz_param:
         return ez_param
-    merged = replace(ez_param, help=_merged_text(ez_param.help, hz_param.help),
+    merged = replace(ez_param, help=_merged_help(ez_param.help, hz_param.help),
                      tip=_merged_text(ez_param.tip, hz_param.tip, '\n\n'))
     if ez_param.choices != hz_param.choices:
         merged = replace(merged, choices=tuple(dict.fromkeys(ez_param.choices + hz_param.choices)), default=None,
                          optional=True, choice_labels=tuple(dict.fromkeys(ez_param.choice_labels
                                                                           + hz_param.choice_labels)),
-                         help=f"Empty (None, the default) = the channel's out-of-plane field ({ez_param.default} or "
+                         help=f"Empty (default) = the channel's out-of-plane field ({ez_param.default} or "
                               f'{hz_param.default}). {merged.help}')
     return merged
 
 
 _CHANNEL_PARAM = Param(
     'channel', 'str', '', label='Channel',
-    help='Name of the harmonic_channel (its feature name) this feature acts on; a polarization both channel splits '
-         'into <name>_ez and <name>_hz: name one of those. The channel polarisation picks the E_z (em_fdfd_ez) or H_z '
-         '(em_fdfd_hz) form of the feature; params of the other form are ignored (validation warns).',
+    help='harmonic_channel feature name this feature acts on (a polarization both channel: <name>_ez or <name>_hz). '
+         'Its polarisation picks the em_fdfd_ez or em_fdfd_hz form; params of the other form are ignored (warning).',
     tip='Harmonic channel (wavelength) this source or monitor belongs to: the name of a harmonic channel.\n\n'
         "A channel with both polarisations is split into '<name>_ez' and '<name>_hz'; pick one of those.")
 
@@ -504,9 +543,8 @@ def _make_channel_validate(name):
 def _channel_feature_type(name):
     """FeatureType `name` acting on one channel: the em_fdfd_ez / _hz feature by the channel's polarisation."""
     ez_type, hz_type = _fdfd_feature('ez', name), _fdfd_feature('hz', name)
-    description = (f"The em_fdfd_ez / em_fdfd_hz feature {name} on one harmonic channel (setting channel): its "
-                   'polarisation picks the E_z or H_z form, the channel frequency is the solve frequency. '
-                   + _merged_text(ez_type.description, hz_type.description))
+    description = (f'em_fdfd_ez / _hz {name} on one harmonic channel (param channel) at its frequency. '
+                   + _merged_help(ez_type.description, hz_type.description))
     if ez_type.category == 'source':
         description = f'{description} {_ABSOLUTE_AMPLITUDE_TEXT}'
     adjoint = name == 'adjoint_objective'
@@ -524,17 +562,14 @@ def _channel_feature_type(name):
 
 
 _CASCADE_ADJOINT_TEXT = (
-    'In em_fdfd_nonlinear the output field eps_sensitivity is dJ/d eps of J summed over the objectives of every '
-    'channel through the coupled channels (undepleted: one transposed solve per channel in reverse solve order; '
-    'pump_depleted: the transposed fixed point (I - T) nu = T(c) by real GMRES to the physics tolerance, each '
-    'product one transposed solve per channel, then one gradient sweep; the nonlinear sources back-propagated exactly, '
-    'back-action and SPM / XPM included, the surface_chi2 / sheet_nonlinearity sites and the free carriers (newton) '
-    'too; an isotropic change: the eps_r, eps_xx and eps_yy terms added); pump_depleted picard with a chi3 medium '
-    '(lagged Kerr / carrier operator: use newton) and an em_fdfd_hz eps_xy are not differentiated (error when the '
-    'field is read with a weighted objective; validation error in an optimization study); the chi2 / chi3 / sheet '
-    'tensors, poling, the sheet sites and the chi3 n0^2 / Miller factors are held fixed (free carriers: where '
-    'generation is > 0). The pump_depleted gradient is that of the converged fixed point: it is as accurate as the '
-    'tolerance.')
+    'Here eps_sensitivity is dJ/d eps of J summed over every channel\'s objectives through the coupled channels '
+    '(undepleted: one transposed solve per channel in reverse order; pump_depleted: the transposed fixed point (I - '
+    'T) nu = T(c) by real GMRES to the physics tolerance, then one gradient sweep, as accurate as that tolerance); '
+    'nonlinear sources, back-action, SPM / XPM, sheet sites and free carriers (newton) back-propagated exactly; an '
+    'isotropic change adds the eps_r, eps_xx, eps_yy terms. Not differentiated: pump_depleted picard with a chi3 '
+    'medium (use newton) and an em_fdfd_hz eps_xy (error with a weighted objective; validation error in an '
+    'optimization study). Held fixed: chi2 / chi3 / sheet tensors, poling, sheet sites, chi3 n0^2 / Miller factors '
+    '(free carriers: where generation > 0).')
 
 
 _CASCADE_ADJOINT_TEMPORARIES = 16   # complex128 full grids of cascade_sensitivity (adjoint source, adjoint, face terms,
@@ -583,42 +618,37 @@ def _validate_conducting_sheet(vctx, physics_spec, feature_spec, values):
 HARMONIC_CHANNEL_PARAMS = (
     Param('definition', 'choice', 'wavelength', label='Defined by', choices=('wavelength', 'combination'),
           choice_labels=(('wavelength', 'Wavelength (input)'), ('combination', 'Combination of channels')),
-          help='wavelength: an input channel at a given vacuum wavelength (rank 0). combination: a generated channel '
-               'whose frequency is an integer combination of other channels (rank 1 + the highest rank it names), '
-               'so mixing products land on it exactly.',
+          help='wavelength: an input channel (rank 0). combination: a generated channel at an integer combination of '
+               'other channels (rank 1 + the highest rank it names), so mixing products land on it exactly.',
           tip='How the frequency of this channel is set: by its own wavelength (a pump or signal), or as a '
               'combination of other channels (a harmonic or mixing product).'),
     Param('wavelength', 'float', 1.55e-6, label='Wavelength', unit='m', min=0.0, min_exclusive=True,
           visible_if=(('definition', ('wavelength',)),),
-          help='Vacuum wavelength of an input channel [m] (omega = 2 pi C0 / wavelength); a parameter sweep over it '
-               'gives spectra (e.g. SHG versus pump wavelength). Typical 0.8e-6 to 2e-6 m.',
+          help='Vacuum wavelength of an input channel; sweep it for spectra (e.g. SHG versus pump wavelength). Typical '
+               '0.8e-6 to 2e-6 m.',
           tip='Vacuum wavelength of this input channel, in metres: 1.55e-6 for 1550 nm.'),
     Param('combination', 'str', '2 p', label='Combination', visible_if=(('definition', ('combination',)),),
-          help="Integer combination of other channel names (their feature names), e.g. '2 p' (second harmonic of "
-               "p), 'p + s' (sum frequency), 'p - s' (difference frequency), '2 p - s' (four-wave mixing idler); "
-               "'*' between count and name is optional. Parsed, not evaluated; the frequency must be > 0 and no "
-               'cycle is allowed. Name the frequency name of a polarization both channel (without _ez / _hz).',
+          help="Integer combination of other channel names, e.g. '2 p' (SHG of p), 'p + s' (SFG), 'p - s' (DFG), "
+               "'2 p - s' (FWM idler); '*' optional. Parsed, not evaluated; frequency > 0, no cycles. A polarization "
+               'both channel is named without _ez / _hz.',
           tip="Frequency of this channel as a combination of other channels, for example '2 p' for the second "
               "harmonic of channel p or 'p + s' for their sum frequency."),
     Param('polarization', 'choice', 'ez', label='Polarisation', choices=POLARIZATIONS,
           choice_labels=(('ez', 'Electric field out of plane'), ('hz', 'Magnetic field out of plane'),
                          ('both', 'Both (two channels)')),
-          help='ez: the channel carries E_z (an em_fdfd_ez solve); hz: E_x, E_y (an em_fdfd_hz solve); both: two '
-               'channels <name>_ez and <name>_hz at the same frequency (two factorisations: memory doubles). Chi2 '
-               'tensors couple the polarisations (d31 E_z^2 -> P_x, GaAs d14 E_x E_y -> P_z), so a generated channel '
-               'may need the other polarisation than its pump.',
+          help='ez: E_z (an em_fdfd_ez solve); hz: E_x, E_y (em_fdfd_hz); both: two channels <name>_ez, <name>_hz '
+               '(two factorisations: memory doubles). Chi2 tensors couple the polarisations (d31 E_z^2 -> P_x, GaAs '
+               'd14 E_x E_y -> P_z), so a generated channel may need the other polarisation than its pump.',
           tip='Which field the channel solves: electric field out of the plane, magnetic field out of the plane '
               '(electric field in the plane), or both as two channels.'),
     *(Param(f'bloch_k{axis}', 'float', 0.0, label=f'Bloch wave vector {axis}', unit='rad/m',
             visible_if=(('definition', ('wavelength',)),),
-            help=f'Input channels: Bloch wave vector along {axis} in rad/m, used only when bc_{axis}_lo / bc_{axis}_hi '
-                 f'are periodic (validation warns otherwise): the channel solves the Bloch wave F({axis} + L) = '
-                 f'F({axis}) exp(-j k{axis} L) per meshed period L, as em_fdfd_* bloch_k{axis} (oblique incidence on '
-                 'a grating or photonic crystal: k0 sin(theta) of that input). A generated channel carries the same '
-                 'combination of its inputs\' k (2 p: 2 k_p), which keeps every polarisation a Bloch wave of its '
-                 'target; an input that a process reaches by frequency only must have the matching k modulo 2 pi / L '
-                 '(validation error otherwise). With k != 0 on any channel: no surface_chi2 / sheet_nonlinearity '
-                 '(error) and no port line spanning that Bloch period. 0 = plain periodic.',
+            help=f'Input channels, only with periodic bc_{axis}_lo / _hi (validation warns otherwise): Bloch wave '
+                 f'F({axis} + L) = F({axis}) exp(-j k{axis} L) per meshed period L, as em_fdfd_* bloch_k{axis} '
+                 '(oblique incidence: k0 sin(theta)). A generated channel carries the combination of its inputs\' k '
+                 '(2 p: 2 k_p); an input reached by frequency only must match k modulo 2 pi / L (validation error). '
+                 'k != 0 on any channel: no surface_chi2 / sheet_nonlinearity (error), no port line spanning that '
+                 'period.',
             tip=f'Phase step of this input wave from one period to the next along {axis}, in radians per metre, for '
                 'periodic edges.\n\n0 means no phase step, as at normal incidence. Generated channels take the '
                 'matching phase step themselves.')
@@ -626,38 +656,28 @@ HARMONIC_CHANNEL_PARAMS = (
 )
 _HARMONIC_CHANNEL = FeatureType(
     _CHANNEL_FEATURE, 'Harmonic channel', 'domain_condition', None, params=HARMONIC_CHANNEL_PARAMS,
-    description='One frequency (and polarisation) solved by the nonlinear physics; the feature name is the channel '
-                'name (an identifier). Input channels have a wavelength, generated ones an integer combination of '
-                'other channels (the frequency matches exactly). Every channel is its own em_fdfd_ez / _hz solve on '
-                'the shared mesh and materials, each material evaluated at the channel frequency (phase matching comes '
-                'from the material dispersion). The mixing table lists every chi2 / chi3 process landing on a declared '
-                'channel; products off the channel set are not computed (no automatic closure, validation info). '
-                'Undepleted mode: channels are solved once in rank order (inputs 0, a combination 1 + the highest '
-                'rank it names), each with the nonlinear polarisation of lower-rank channels as its source; back-action '
-                'on the pump and SPM / XPM are neglected (pump_depleted includes them). At least one input channel is '
-                'needed; sources and monitors name their channel. Mirror faces (symmetric / antisymmetric bc_*): the '
-                'input channels have that E parity, a generated channel the parity of its combination, s^(sum of its '
-                'coefficients) (2 p and p - s are even, 3 p and p + s - i odd), so under an antisymmetric face an even '
-                'channel solves with that face symmetric (its unfolded fields follow); an input reached by frequency '
-                'only must have the parity of the process (validation error otherwise). The image half holds the '
-                'mirror image of the drawn crystal. Bloch k: bloch_kx / bloch_ky of the inputs, the combination for '
-                'generated channels.',
+    description='One frequency (and polarisation); the feature name (an identifier) is the channel name. Every channel '
+                'is its own em_fdfd_ez / _hz solve on the shared mesh, materials evaluated at its frequency (phase '
+                'matching comes from the dispersion). Only chi2 / chi3 processes landing on a declared channel are '
+                'computed (no automatic closure; validation info lists near misses). At least one input channel; '
+                'sources and monitors name their channel. Mirror faces: inputs have that E parity, a generated channel '
+                's^(sum of its coefficients) (2 p, p - s even; 3 p, p + s - i odd), so an even channel solves an '
+                'antisymmetric face as symmetric (unfolded fields follow); an input reached by frequency only must '
+                'have the parity of the process (validation error). The image half holds the mirrored crystal.',
     summary='Declares one wavelength the nonlinear model solves: an input such as a pump, or a product such as '
             'the second harmonic. Sources and monitors name the channel they belong to.')
 
 _D_HELP_CLASSES = {name: tuple(crystal_class for crystal_class, names in CRYSTAL_CLASSES.items() if name in names)
                    for name in CRYSTAL_CLASSES['general']}
-_VOIGT_TEXT = ('Voigt index pair il: i = polarisation component (1 x, 2 y, 3 z of the crystal axes), l = field pair (1 '
-               'xx, 2 yy, 3 zz, 4 yz, 5 xz, 6 xy)')
+# one help for every d_il (no name or class list: visible_if shows the classes), so equal neighbours share one entry
+_D_HELP = ('d = chi2 / 2 in crystal axes, Voigt il: i = polarisation component (1 x, 2 y, 3 z), l = field pair (1 xx, '
+           '2 yy, 3 zz, 4 yz, 5 xz, 6 xy); 1 pm/V = 1e-12 m/V. SHG with one field component: P(2 omega) = eps0 d E^2.')
 
 
 def _d_param(name):
     classes = _D_HELP_CLASSES[name]
     return Param(name, 'float', 0.0, label=name, unit='m/V', visible_if=(('crystal_class', classes),),
-                 help=f'Second-order coefficient {name} in m/V of the crystal axes (1 pm/V = 1e-12 m/V; d = chi2 / 2), '
-                      f"{_VOIGT_TEXT}; used by the classes {', '.join(classes)}. P(2 omega) = eps0 d E^2 for SHG with "
-                      'one field component (exp(+j omega t) phasors).',
-                 tip=f'Nonlinear coefficient {name} in metres per volt: 1 pm/V is 1e-12.')
+                 help=_D_HELP, tip=f'Nonlinear coefficient {name} in metres per volt: 1 pm/V is 1e-12.')
 
 
 CHI2_MEDIUM_PARAMS = (
@@ -665,13 +685,12 @@ CHI2_MEDIUM_PARAMS = (
           choice_labels=(('3m', '3m (lithium niobate)'), ('-43m', '-43m (gallium arsenide)'),
                          ('6mm', '6mm (aluminium or gallium nitride)'), ('mm2', 'mm2 (KTP)'), ('32', '32 (quartz)'),
                          ('general', 'General (every coefficient)')),
-          help='Point group fixing the non-zero d_il (Kleinman symmetry assumed, except general): 3m (LiNbO3, LiTaO3, '
-               'BBO: d22, d31 = d15 = d24, d33, with d16 = d21 = -d22; LN |d33| ~ 2.5e-11, |d31| ~ 4.6e-12, |d22| ~ '
-               '2.1e-12 m/V at 1.06 um), -43m (GaAs, GaP, InP, ZnS: d14 = d25 = d36; GaAs ~ 1.2e-10 m/V at 1.55 um '
-               'SHG), 6mm (AlN, GaN, ZnO: d15 = d24, d31 = d32, d33), mm2 (KTP: d15, d24, d31, d32, d33), 32 '
-               '(quartz: d11, d12 = d26 = -d11, d14, d25 = -d14), general (all 18 d_il; the power exchange identity '
-               'is then exact only for Kleinman-symmetric values). Signs follow the crystal axes of the orientation '
-               'setting.',
+          help='Point group fixing the non-zero d_il (Kleinman symmetry, except general): 3m (LiNbO3, LiTaO3, BBO: '
+               'd22, d31 = d15 = d24, d33, d16 = d21 = -d22; LN |d33| ~ 2.5e-11, |d31| ~ 4.6e-12, |d22| ~ 2.1e-12 m/V '
+               'at 1.06 um), -43m (GaAs, GaP, InP, ZnS: d14 = d25 = d36; GaAs ~ 1.2e-10 m/V at 1.55 um), 6mm (AlN, '
+               'GaN, ZnO: d15 = d24, d31 = d32, d33), mm2 (KTP: d15, d24, d31, d32, d33), 32 (quartz: d11, d12 = d26 = '
+               '-d11, d14, d25 = -d14), general (all 18; power exchange exact only for Kleinman-symmetric values). '
+               'Signs follow the crystal axes of orientation.',
           tip='Symmetry class of the crystal, which decides which nonlinear coefficients exist: 3m for lithium '
               'niobate, -43m for gallium arsenide, 6mm for aluminium or gallium nitride, mm2 for KTP, 32 for quartz.'),
     *(_d_param(name) for name in CRYSTAL_CLASSES['general']),
@@ -680,23 +699,21 @@ _ORIENTATION_PARAMS = (
     Param('orientation', 'choice', 'z_cut', label='Orientation', choices=('z_cut', 'x_cut', 'y_cut', 'euler'),
           choice_labels=(('z_cut', 'Crystal axis c along z (out of plane)'), ('x_cut', 'Crystal axis c along x'),
                          ('y_cut', 'Crystal axis c along y'), ('euler', 'Euler angles')),
-          help='Crystal axes in model axes: z_cut = crystal x, y, z along model x, y, z (c axis out of plane, so E_z '
-               'channels see d33); x_cut = crystal x, y, z along model y, z, x (c axis along model x); y_cut = crystal '
-               'x, y, z along model z, x, y (c axis along model y); euler = Rz(euler_alpha) Rx(euler_beta) '
-               'Rz(euler_gamma) (z-x-z, degrees; column a of the rotation = crystal axis a in model coordinates).',
+          help='Crystal x, y, z along model: z_cut x, y, z (c out of plane, E_z channels see d33); x_cut y, z, x (c '
+               'along x); y_cut z, x, y (c along y); euler: Rz(euler_alpha) Rx(euler_beta) Rz(euler_gamma) (column a = '
+               'crystal axis a in model coordinates).',
           tip='How the crystal is cut relative to the drawing: the crystal c axis out of the plane, along x or along y, '
               'or general Euler angles.'),
     *(Param(f'euler_{angle}', 'float', 0.0, label=f'Euler {angle}', unit='deg', visible_if=(('orientation', ('euler',)),),
-            help=f'z-x-z Euler angle {angle} in degrees (rotation crystal -> model axes Rz(alpha) Rx(beta) Rz(gamma)).',
+            help='z-x-z Euler angle of the rotation crystal -> model axes Rz(alpha) Rx(beta) Rz(gamma).',
             tip='Euler angle of the crystal orientation, in degrees.')
       for angle in ('alpha', 'beta', 'gamma')),
 )
 CHI2_MEDIUM_PARAMS = CHI2_MEDIUM_PARAMS + _ORIENTATION_PARAMS + (
     Param('poling', 'float', 1.0, label='Poling', unit='1', field_dependent=True,
-          help='Domain sign per cell, an expression of x, y and parameters: values >= 0 keep the tensor, < 0 invert it '
-               '(chi2 -> -chi2). Periodic poling for quasi phase matching: sign(sin(2 * pi * x / Lambda)) with the '
-               'period Lambda = 2 pi / |k(2 omega) - 2 k(omega)| = lambda / (2 |n(2 omega) - n(omega)|) of the '
-               'guided modes; 1 = unpoled. Chirped gratings and domain walls work the same way.',
+          help='Domain sign per cell: >= 0 keeps the tensor, < 0 inverts it. Periodic poling (QPM): sign(sin(2 * pi * '
+               'x / Lambda)), Lambda = 2 pi / |k(2 omega) - 2 k(omega)| = lambda / (2 |n(2 omega) - n(omega)|) of the '
+               'guided modes; chirped gratings likewise. 1 = unpoled.',
           tip='Sign of the crystal domain at each point: 1 keeps the crystal as is, -1 flips it. A formula such as '
               'sign(sin(2*pi*x/period)) gives periodic poling for quasi phase matching.'),
 )
@@ -704,12 +721,11 @@ CHI2_MEDIUM_PARAMS = CHI2_MEDIUM_PARAMS + _ORIENTATION_PARAMS + (
 
 def _miller_param(reference):
     return Param('miller_scaling', 'bool', False, label="Miller's rule",
-                 help="Scale every process of this medium by Miller's rule, chi(n)(w; w1..wn) proportional to chi1(w) "
-                      'chi1(w1)..chi1(wn), chi1 = Re eps_r - 1 averaged over the medium cells at each channel frequency '
-                      '(poles included, evaluated once at build; the run log lists the scaled factors), normalised so '
-                      f'that the given coefficients hold for {reference}. Off: one frequency-independent tensor. '
-                      'Validation estimates use the unscaled values; Miller-scaled tensors are not fully permutation '
-                      'symmetric, so power_exchange_imbalance is no longer ~0.',
+                 help="Miller's rule on every process: chi(n)(w; w1..wn) ~ chi1(w) chi1(w1)..chi1(wn), chi1 = Re eps_r "
+                      '- 1 averaged over the medium at each channel frequency (once at build; run log lists the '
+                      f'factors), normalised so the given coefficients hold for {reference}. Off: one '
+                      'frequency-independent tensor. Validation uses unscaled values; scaled tensors are not fully '
+                      'permutation symmetric (power_exchange_imbalance no longer ~0).',
                  tip='Lets the nonlinear coefficient follow the material dispersion (Miller\'s rule); off uses one '
                      'value at every wavelength.')
 
@@ -718,21 +734,18 @@ CHI2_MEDIUM_PARAMS = CHI2_MEDIUM_PARAMS + (
     _miller_param('SHG of reference_wavelength, d(2 w_r; w_r, w_r)'),
     Param('reference_wavelength', 'float', None, label='Reference wavelength', unit='m', min=0.0, min_exclusive=True,
           optional=True, visible_if=(('miller_scaling', (True,)),),
-          help="Vacuum pump wavelength [m] of the SHG process the d coefficients are given for (Miller's rule "
-               'reference); empty (None, the default) = the first input channel.',
+          help="Pump wavelength of the SHG process the d coefficients are given for (Miller's rule reference); empty "
+               '= the first input channel.',
           tip='Pump wavelength at which the nonlinear coefficients are given; empty means the first input channel.'),
 )
 _CHI2_MEDIUM = FeatureType(
     _CHI2_FEATURE, 'Second-order nonlinear medium', 'domain_condition', 'domain', params=CHI2_MEDIUM_PARAMS,
     description='Bulk chi2 of the selected domains: the crystal-class tensor rotated into model axes, times the '
-                'poling sign per cell (stored as int8 on the selection bounding box). Response (exp(+j omega t) '
-                'phasors): P(w3) = eps0 2^(1-n) sum over ordered source tuples chi2 : E E, so SHG P(2w) = eps0 d E^2, '
-                'SFG P(w1 + w2) = 2 eps0 d E1 E2, DFG P(w1 - w2) = eps0 chi2 E1 conj(E2) (d = chi2 / 2). Products are '
-                'formed at the cell centres (hz E_x / E_y collocated by the face mean C, the polarisation returned to '
-                'the faces by its area-weighted adjoint, which keeps the discrete power exchange exact). One tensor '
-                "for every process, or Miller's rule (miller_scaling) relative to the SHG of reference_wavelength. "
-                'Overlapping media add. Fields and powers are 2D: per unit length in z, so a conversion efficiency '
-                'P_2w / P_w^2 has unit m/W (multiply by an effective height to compare with a 3D guide).',
+                'poling sign per cell. Response (exp(+j omega t) phasors): P(w3) = eps0 2^(1-n) sum over ordered '
+                'source tuples chi2 : E E, so SHG P(2w) = eps0 d E^2, SFG P(w1 + w2) = 2 eps0 d E1 E2, DFG P(w1 - w2) '
+                '= eps0 chi2 E1 conj(E2). Products at the cell centres (hz E_x / E_y by face means, P returned by the '
+                'area-weighted adjoint: discrete power exchange exact). Overlapping media add. 2D: fields and powers '
+                'per unit z length, so P_2w / P_w^2 is in m/W (multiply by an effective height for a 3D guide).',
     summary='Gives the selected region a second-order optical nonlinearity (second harmonic, sum and difference '
             'frequencies), with crystal class, cut and optional periodic poling.',
     apply=_apply_chi2_medium, validate=_validate_chi2_medium, memory_estimate=_chi2_memory_estimate)
@@ -743,9 +756,9 @@ _FREE_CARRIERS = (('free_carriers', (True,)),)
 CHI3_MEDIUM_PARAMS = (
     Param('tensor', 'choice', 'isotropic', label='Tensor', choices=('isotropic', 'cubic'),
           choice_labels=(('isotropic', 'Isotropic (glass, amorphous)'), ('cubic', 'Cubic crystal (silicon)')),
-          help='isotropic: chi_xxyy = chi_xyxy = chi_xyyx = chi_xxxx / 3 (glasses, amorphous films, a common '
-               'approximation); cubic: chi_iijj = chi_ijij = chi_ijji = anisotropy chi_xxxx / 3 in the crystal axes '
-               '(m3m: Si, Ge, GaAs Kerr), rotated by the orientation setting.',
+          help='isotropic: chi_xxyy = chi_xyxy = chi_xyyx = chi_xxxx / 3 (glasses, amorphous films); cubic: chi_iijj '
+               '= chi_ijij = chi_ijji = anisotropy chi_xxxx / 3 in crystal axes (m3m: Si, Ge, GaAs), rotated by '
+               'orientation.',
           tip='Symmetry of the third-order response: isotropic for glasses, cubic for crystals such as silicon.'),
     Param('anisotropy', 'float', 1.0, label='Anisotropy', unit='1', min=0.0, visible_if=(('tensor', ('cubic',)),),
           help='rho = 3 chi_xxyy / chi_xxxx of the cubic tensor (1 = isotropic; silicon ~1.27 at 1.55 um).',
@@ -754,96 +767,86 @@ CHI3_MEDIUM_PARAMS = (
       for param in _ORIENTATION_PARAMS),
     Param('strength', 'choice', 'n2_beta', label='Strength given by', choices=('n2_beta', 'chi3'),
           choice_labels=(('n2_beta', 'Kerr index and two-photon absorption'), ('chi3', 'chi3 directly')),
-          help='n2_beta: chi_xxxx = (4 eps0 c n0^2 / 3) (n2 - j c tpa_beta / (2 omega_ref)) (the em_fdtd_* '
-               'nonlinear_medium vocabulary); chi3: chi_xxxx = chi3_real + j chi3_imag directly. One '
-               'frequency-independent chi3 serves every process (THG, SPM / XPM, FWM), although real materials '
-               'differ per process.',
+          help='n2_beta: chi_xxxx = (4 eps0 c n0^2 / 3) (n2 - j c tpa_beta / (2 omega_ref)) (as em_fdtd_* '
+               'nonlinear_medium); chi3: chi_xxxx = chi3_real + j chi3_imag. One chi3 serves every process (real '
+               'materials differ: thg_scale, fwm_scale, miller_scaling).',
           tip='Whether the strength is given as the Kerr index and two-photon absorption, or as the '
               'susceptibility chi3 itself.'),
     Param('n2', 'float', 0.0, label='Kerr index n2', unit='m^2/W', visible_if=_N2_BETA,
-          help='Kerr coefficient: dn = n2 I, I = n0 c eps0 |E|^2 / 2 for a linearly polarised plane wave (SPM P = (3/4) '
-               'eps0 chi3 |E|^2 E with exp(+j omega t) phasors). Silicon ~4.5e-18 to 6e-18, Si3N4 ~2.5e-19, silica '
-               '~2.6e-20 m^2/W at 1.55 um.',
+          help='dn = n2 I, I = n0 c eps0 |E|^2 / 2 (linearly polarised plane wave). Silicon ~4.5e-18 to 6e-18, Si3N4 '
+               '~2.5e-19, silica ~2.6e-20 m^2/W at 1.55 um.',
           tip='Intensity-dependent refractive index: silicon about 5e-18, silicon nitride about 2.5e-19 square '
               'metres per watt.'),
     Param('tpa_beta', 'float', 0.0, label='Two-photon absorption', unit='m/W', min=0.0, visible_if=_N2_BETA,
-          help='Two-photon absorption dI/dz = -beta I^2 (Im chi3 < 0 in exp(+j omega t)); silicon ~8e-12 m/W at 1.55 '
-               'um. Its power is the scalar nonlinear_absorption (pump_depleted).',
+          help='dI/dz = -beta I^2 (Im chi3 < 0); silicon ~8e-12 m/W at 1.55 um. Its power: scalar '
+               'nonlinear_absorption (pump_depleted).',
           tip='Two-photon absorption coefficient: silicon at 1550 nm about 8e-12 metres per watt.'),
     Param('background_index', 'float', None, label='Background index', unit='1', min=0.0, min_exclusive=True,
           optional=True, visible_if=_N2_BETA + _FREE_CARRIERS,
-          help='n0 of the n2 / beta conversion and of the free-carrier permittivity; empty (None, the default) = Re '
-               'sqrt(eps_r(omega_ref)) of each cell (poles included), evaluated once at build.',
+          help='n0 of the n2 / beta conversion and the free-carrier permittivity; empty = Re sqrt(eps_r(omega_ref)) '
+               'per cell (poles included, once at build).',
           tip='Refractive index used to convert the Kerr index into chi3; leave empty to use the material index of '
               'each cell.'),
     Param('reference_wavelength', 'float', None, label='Reference wavelength', unit='m', min=0.0,
           min_exclusive=True, optional=True, visible_if=_N2_BETA + _MILLER + _FREE_CARRIERS,
-          help='Vacuum wavelength [m] at which n2 and tpa_beta are given (omega_ref of the TPA term and of n0), the '
-               "Miller's-rule reference (SPM at it) and the wavelength of the free-carrier coefficients; empty = the "
-               'first input channel.',
+          help="Wavelength of n2 / tpa_beta (omega_ref of the TPA term and n0), the Miller's-rule reference (SPM) and "
+               'the free-carrier coefficients; empty = the first input channel.',
           tip='Wavelength at which the Kerr index and two-photon absorption are given; empty means the first '
               'input channel.'),
     Param('chi3_real', 'float', 0.0, label='chi3 real part', unit='m^2/V^2', visible_if=(('strength', ('chi3',)),),
-          help='Re chi_xxxx [m^2/V^2] (P = eps0 2^(1-n) sum chi3 E E E; silicon ~2.5e-19 at 1.55 um).',
+          help='Re chi_xxxx (silicon ~2.5e-19 at 1.55 um).',
           tip='Real part of the third-order susceptibility, in square metres per square volt.'),
     Param('chi3_imag', 'float', 0.0, label='chi3 imaginary part', unit='m^2/V^2', max=0.0,
           visible_if=(('strength', ('chi3',)),),
-          help='Im chi_xxxx [m^2/V^2], <= 0 (loss in exp(+j omega t)).',
+          help='Im chi_xxxx (< 0 = loss).',
           tip='Imaginary part of the third-order susceptibility: zero or negative (absorption).'),
     Param('thg_scale', 'float', 1.0, label='Third-harmonic factor', unit='1',
-          help='Factor on chi3 for the sum-frequency processes THG (3 w) and TFG (w1 + w2 + w3) of this medium '
-               '(per-process chi3: the THG susceptibility of real materials differs from the Kerr one, which n2 / '
-               'tpa_beta set); 1 = the Kerr chi3, 0 drops these terms. A factor != 1 breaks the full permutation '
-               'symmetry (power_exchange_imbalance no longer ~0).',
+          help='Factor on chi3 for THG (3 w) and TFG (w1 + w2 + w3) of this medium (real THG chi3 differs from the '
+               'Kerr one); 1 = Kerr chi3, 0 drops them. != 1 breaks full permutation symmetry '
+               '(power_exchange_imbalance no longer ~0).',
           tip='Multiplies the third-order susceptibility for third-harmonic generation only; 1 uses the Kerr value.'),
     Param('fwm_scale', 'float', 1.0, label='Four-wave mixing factor', unit='1',
-          help='Factor on chi3 for the FWM processes of this medium (w1 + w2 - w3 onto a channel, other than SPM / XPM '
-               'of a channel on itself); 1 = the Kerr chi3, 0 drops these terms.',
+          help='Factor on chi3 for FWM (w1 + w2 - w3 onto a channel, not SPM / XPM) of this medium; 1 = Kerr chi3, '
+               '0 drops them.',
           tip='Multiplies the third-order susceptibility for four-wave mixing only; 1 uses the Kerr value.'),
     _miller_param('SPM at reference_wavelength (the n2 / tpa_beta process)'),
     Param('free_carriers', 'bool', False, label='Free carriers',
-          help='Steady-state free carriers from two-photon absorption (coupling_mode pump_depleted only; ignored '
-               'undepleted, with a warning): N = carrier_lifetime G per cell, G = the TPA power density of the applied '
-               'SPM / XPM terms / (2 hbar omega) (one electron-hole pair per two photons; no diffusion, so N follows '
-               'the local intensity squared), and every channel sees dn = -fcd_coefficient N and alpha = '
-               'fca_cross_section N, both x (lambda / reference_wavelength)^2 (Drude scaling), as delta eps = 2 n0 dn '
-               '- j n0 c alpha / omega (n0 = background_index or Re sqrt eps_r(omega_ref) per cell). Linear in N (the '
-               'Soref-Bennett N^0.8 hole term is linearised into fcd_coefficient). Field carrier_density, scalars '
-               'free_carrier_absorption and peak_carrier_density.',
+          help='Steady-state carriers from TPA (pump_depleted only; undepleted ignores them with a warning): N = '
+               'carrier_lifetime G per cell, G = TPA power density of the SPM / XPM terms / (2 hbar omega) (no '
+               'diffusion: N follows the local I^2); every channel sees dn = -fcd_coefficient N and alpha = '
+               'fca_cross_section N, both x (lambda / reference_wavelength)^2, as delta eps = 2 n0 dn - j n0 c alpha / '
+               'omega. Linear in N. Field carrier_density, scalars free_carrier_absorption, peak_carrier_density.',
           tip='Adds the absorption and index change of free carriers created by two-photon absorption (silicon); '
               'only in the self-consistent (pump depleted) mode.'),
     Param('carrier_lifetime', 'float', 1e-9, label='Carrier lifetime', unit='s', min=0.0, visible_if=_FREE_CARRIERS,
-          help='Effective free-carrier lifetime tau [s]: silicon wires ~0.5-3 ns, with carrier sweep-out by a '
-               'reverse-biased junction ~10-100 ps; 0 = no carriers.',
+          help='Effective lifetime: silicon wires ~0.5-3 ns, ~10-100 ps with sweep-out by a reverse-biased junction; '
+               '0 = no carriers.',
           tip='How long the free carriers live: about 1 ns in a silicon waveguide, much less with carrier sweep-out.'),
     Param('fcd_coefficient', 'float', 1.35e-27, label='Carrier index coefficient', unit='m^3', min=0.0,
           visible_if=_FREE_CARRIERS,
-          help='Free-carrier dispersion dn = -fcd_coefficient N at reference_wavelength [m^3]; silicon at 1.55 um '
-               '~1.35e-27 (equal electron and hole densities, a linear fit of Soref-Bennett).',
+          help='dn = -fcd_coefficient N at reference_wavelength; silicon at 1.55 um ~1.35e-27 (equal electron and hole '
+               'densities, linear Soref-Bennett fit).',
           tip='Index decrease per free carrier, in cubic metres: about 1.35e-27 for silicon at 1550 nm.'),
     Param('fca_cross_section', 'float', 1.45e-21, label='Carrier absorption cross-section', unit='m^2', min=0.0,
           visible_if=_FREE_CARRIERS,
-          help='Free-carrier absorption alpha = fca_cross_section N at reference_wavelength [m^2]; silicon at 1.55 um '
-               '~1.45e-21 (equal electron and hole densities).',
+          help='alpha = fca_cross_section N at reference_wavelength; silicon at 1.55 um ~1.45e-21 (equal electron and '
+               'hole densities).',
           tip='Absorption per free carrier, in square metres: about 1.45e-21 for silicon at 1550 nm.'),
 )
 _CHI3_MEDIUM = FeatureType(
     _CHI3_FEATURE, 'Third-order nonlinear medium', 'domain_condition', 'domain', params=CHI3_MEDIUM_PARAMS,
     description='Bulk chi3 of the selected domains (tensor rotated into model axes, n2 / beta scaled by n0^2 per '
                 'cell). Response (exp(+j omega t) phasors): THG P(3w) = (1/4) eps0 chi3 E^3, SPM P(w) = (3/4) eps0 '
-                'chi3 |E|^2 E, XPM P(w1) = (6/4) eps0 chi3 |E2|^2 E1, degenerate FWM P(2 wp - ws) = (3/4) eps0 chi3 Ep^2 '
-                'conj(Es). Undepleted mode keeps only THG / FWM-type terms feeding higher-rank channels (SPM / XPM act '
-                'on a channel from itself: pump_depleted, where with the picard iteration their diagonal enters the '
-                'channel operator lagged per sweep). Per-process factors thg_scale / fwm_scale or Miller\'s rule '
-                'relative to SPM at reference_wavelength; optional steady-state free carriers from two-photon '
-                'absorption (pump_depleted). Products formed at the cell centres as for chi2_medium; overlapping chi3 '
-                'media add. Fields and powers are 2D: per unit length in z.',
+                'chi3 |E|^2 E, XPM P(w1) = (6/4) eps0 chi3 |E2|^2 E1, degenerate FWM P(2 wp - ws) = (3/4) eps0 chi3 '
+                'Ep^2 conj(Es). Undepleted keeps only THG / FWM-type terms feeding higher-rank channels; SPM / XPM '
+                '(a channel on itself) need pump_depleted. Products at the cell centres as chi2_medium; overlapping '
+                'media add; 2D (per unit z length).',
     summary='Gives the selected region a third-order optical nonlinearity: Kerr effect, two-photon absorption, third '
             'harmonic and four-wave mixing.',
     apply=_apply_chi3_medium, validate=_validate_chi3_medium, memory_estimate=_chi3_memory_estimate)
 _PEC_DOMAIN = FeatureType(
     'pec_domain', 'Perfect electric conductor', 'domain_condition', 'domain',
-    description='Perfect electric conductor in every channel. E_z channels: '
+    description='In every channel. E_z channels: '
                 f"{_fdfd_feature('ez', 'pec_domain').description} H_z channels: "
                 f"{_fdfd_feature('hz', 'pec_domain').description}",
     summary=_fdfd_feature('ez', 'pec_domain').summary, apply=_apply_pec,
@@ -853,17 +856,16 @@ _EZ_SHEET = _fdfd_feature('ez', _SHEET_FEATURE)
 _CONDUCTING_SHEET = FeatureType(
     _SHEET_FEATURE, _EZ_SHEET.label, _EZ_SHEET.category, _EZ_SHEET.selection_kind, params=_EZ_SHEET.params,
     object_kinds=_EZ_SHEET.object_kinds, max_entities=_EZ_SHEET.max_entities,
-    description=('Conducting sheet in every channel, sigma_s evaluated at each channel frequency (the linear '
-                 f'response; sheet_nonlinearity on the same line adds the nonlinear one). {_EZ_SHEET.description}'),
+    description=('In every channel, sigma_s at each channel frequency (linear; sheet_nonlinearity on the same line '
+                 f'adds the nonlinear response). {_EZ_SHEET.description}'),
     summary=_EZ_SHEET.summary, apply=_apply_conducting_sheet, validate=_validate_conducting_sheet,
     memory_estimate=_EZ_SHEET.memory_estimate)   # run items of one assembly at a time (channels assemble in turn)
 _FDFD_DESIGN_REGION = design_region_feature()
 _DESIGN_REGION = replace(   # the em_fdfd_* feature on NonlinearHarmonicPhysics.add_design_region (same signature)
     _FDFD_DESIGN_REGION,
-    description=f'{_FDFD_DESIGN_REGION.description} In em_fdfd_nonlinear one region writes eps_r, eps_xx and eps_yy '
-                '(every channel sees the design, each at its own frequency); the chi2 / chi3 media and their poling '
-                "stay where they are drawn. The optimization study runs coupling_mode 'undepleted' (cascade adjoint) "
-                "or 'pump_depleted' (fixed-point adjoint; iteration_method 'newton' with a chi3 medium).")
+    description=f'{_FDFD_DESIGN_REGION.description} Here one region writes eps_r, eps_xx, eps_yy (every channel at '
+                'its own frequency); chi2 / chi3 media and poling stay as drawn. Optimization: undepleted (cascade '
+                "adjoint) or pump_depleted (fixed-point adjoint; iteration_method newton with a chi3 medium).")
 
 
 # ---- settings and material vocabulary ----
@@ -875,69 +877,59 @@ _PUMP_DEPLETED = (('coupling_mode', ('pump_depleted',)),)
 _NONLINEAR_SETTINGS = (
     Param('coupling_mode', 'choice', 'undepleted', label='Coupling mode', choices=COUPLING_MODES,
           choice_labels=(('undepleted', 'Undepleted (one pass)'), ('pump_depleted', 'Pump depleted (self-consistent)')),
-          help='undepleted: every channel solved once in rank order, fed only by lower-rank channels (no back-action, '
-               'no SPM / XPM, no free carriers; valid at small conversion). pump_depleted: every mixing term '
-               '(back-action, parametric gain, SPM / XPM) and the chi3 free carriers, solved self-consistently by '
-               'iteration_method until the stored channel fields change by <= tolerance.',
+          help='undepleted: each channel solved once in rank order (inputs 0, a combination 1 + the highest rank it '
+               'names), fed only by lower-rank channels (no back-action, SPM / XPM or free carriers; small '
+               'conversion). pump_depleted: every mixing term and the chi3 free carriers, self-consistent by '
+               'iteration_method to tolerance.',
           tip='Undepleted solves each wavelength once and ignores the reaction on the pump; pump depleted iterates '
               'until all wavelengths agree (strong conversion, Kerr effect, parametric gain).'),
     Param('iteration_method', 'choice', 'picard', label='Iteration method', choices=ITERATION_METHODS,
           choice_labels=(('picard', 'Sweeps with Anderson acceleration'), ('newton', 'Newton-Krylov')),
           visible_if=_PUMP_DEPLETED,
-          help='pump_depleted solver. picard: block Gauss-Seidel sweeps over the channels in rank order with '
-               'relaxation and Anderson acceleration, the SPM / XPM / free-carrier diagonal lagged in the channel '
-               'operator (those channels reassemble and solve by GMRES on the recycled factor every sweep); cheap per '
-               'sweep, converges while the conversion per pass is moderate. newton: Newton-Krylov on the coupled '
-               'channels, the exact real-linear (Wirtinger) Jacobian of the polynomial mixing and carrier terms, GMRES '
-               f'(restart {GMRES_RESTART}, at most {GMRES_MAX_ITERATIONS} products per Newton step) left-preconditioned '
-               "by the channels' own factors (every channel solved from the same iterate), Eisenstat-Walker forcing "
-               'and backtracking on the scaled residual; each GMRES product costs one back-substitution per nonlinear '
-               'channel, and it converges quadratically near the solution (high conversion, parametric gain near '
-               'threshold, cavities, strong Kerr phase). Kerr and carriers stay in the rhs (no reassembly; q_abs then '
-               'holds only the linear losses); relaxation and anderson_depth are ignored. cusolver_qr refactorises '
-               'every solve, which newton multiplies.',
+          help='picard: block Gauss-Seidel sweeps in rank order with relaxation and Anderson acceleration, the SPM / '
+               'XPM / carrier diagonal lagged in the channel operator (reassembled, GMRES on the recycled factor each '
+               'sweep); cheap, converges while conversion per pass is moderate. newton: Newton-Krylov with the exact '
+               f'Wirtinger Jacobian, GMRES (restart {GMRES_RESTART}, <= {GMRES_MAX_ITERATIONS} products per step) '
+               "preconditioned by the channels' factors, Eisenstat-Walker forcing, backtracking; one back-substitution "
+               'per nonlinear channel per product; quadratic near the solution (high conversion, parametric gain near '
+               'threshold, cavities, strong Kerr). Kerr and carriers stay in the rhs (q_abs then holds only linear '
+               'losses). cusolver_qr refactorises every solve, which newton multiplies.',
           tip='How the self-consistent solve iterates: sweeps with acceleration, or Newton steps (fewer but more '
               'expensive iterations; more robust at strong conversion).'),
     Param('tolerance', 'float', 1e-8, label='Iteration tolerance', unit='1', min=0.0, min_exclusive=True,
           visible_if=_PUMP_DEPLETED,
-          help='pump_depleted stops when the largest relative channel change ||G_k - x_k|| / ||G_k|| is <= tolerance, '
-               'G = the channel fields solved from the stored fields x (picard: over one sweep; newton: one solve of '
-               'every channel from the Newton iterate); the fixed-point update, not the operator residual. The '
-               'recycled GMRES solves of picard reach 1e-10, so stay above ~1e-9.',
+          help='Stop at max_k ||G_k - x_k|| / ||G_k|| <= tolerance, G = channel fields solved from the stored fields x '
+               '(picard: one sweep; newton: one solve per channel from the iterate): the fixed-point update, not the '
+               'operator residual. Picard GMRES reaches 1e-10: stay above ~1e-9.',
           tip='How little the fields may still change between iterations when the self-consistent solve stops.'),
     Param('max_iterations', 'int', 50, label='Iteration limit', min=1, visible_if=_PUMP_DEPLETED,
-          help='Sweeps (picard) or Newton steps (newton) per continuation step at most; not converged then: warning, '
-               'the last iterate is kept (snapshot labels say so, summary nonlinear_solve converged false).',
+          help='Sweeps (picard) or Newton steps per continuation step; not converged: warning, last iterate kept '
+               '(snapshot labels say so, summary nonlinear_solve converged false).',
           tip='Largest number of iterations of the self-consistent solve (per continuation step).'),
     Param('relaxation', 'float', 1.0, label='Relaxation', unit='1', min=0.0, max=1.0, min_exclusive=True,
           visible_if=_PUMP_DEPLETED,
-          help='picard only: under-relaxation beta of the mixing x + beta f (1 = plain sweeps); lower it (0.3-0.7) '
-               'for an oscillating iteration (high conversion, cavities).',
+          help='picard only: x + beta f (1 = plain sweeps); 0.3-0.7 for an oscillating iteration (high conversion, '
+               'cavities).',
           tip='Damping of the sweeps: 1 is undamped; smaller values help when the iteration oscillates.'),
     Param('anderson_depth', 'int', 5, label='Anderson depth', min=0, visible_if=_PUMP_DEPLETED,
-          help='picard only: history m of the Anderson acceleration between sweeps (0 = relaxed Picard); costs 2 m '
-               'stacked copies of every channel field on the GPU.',
+          help='picard only: history m (0 = relaxed Picard); 2 m stacked copies of every channel field on the GPU.',
           tip='How many previous sweeps the accelerated iteration remembers; 0 switches the acceleration off.'),
     Param('continuation_steps', 'int', 1, label='Continuation steps', min=1, visible_if=_PUMP_DEPLETED,
-          help='Ramp every linear source amplitude through k / steps, k = 1..steps, each step warm-started from the '
-               'previous (1 = none). Helps near bistability; a Kerr S-curve has several solutions and the branch '
-               'reached depends on the ramp.',
+          help='Ramp every source amplitude through k / steps, each step warm-started from the previous (1 = none). '
+               'Helps near bistability; on a Kerr S-curve the branch reached depends on the ramp.',
           tip='Number of steps in which the sources are ramped up to full strength; 1 means no ramp.'),
 )
 _SETTINGS = tuple(param for param in EM_FDFD_EZ.settings if param.name not in _OMITTED_SETTINGS) + _NONLINEAR_SETTINGS
-_COMPLEX_EPS = ('Each channel uses the complex permittivity at its own frequency: this value - j sigma_e / (omega '
-                'eps0) plus every Drude / Lorentz pole chi(omega), so the material dispersion sets the phase mismatch '
-                'between channels (non-dispersive materials are phase matched by construction).')
+_COMPLEX_EPS = ('Each channel uses the complex value at its own frequency: this - j sigma_e / (omega eps0) + every '
+                'Drude / Lorentz pole chi(omega), so the dispersion sets the phase mismatch (non-dispersive materials '
+                'are phase matched by construction).')
 _MATERIAL_PROPERTIES = em_material_params('modes', {
-    'eps_r': ('Isotropic relative permittivity (>= 1): sets eps_zz (E_z channels) and eps_xx, eps_yy (H_z channels) '
-              'unless the material sets those components. n^2 of a lossless dielectric; may depend on x, y and '
-              f'physics fields. {_COMPLEX_EPS} For a dispersive material it is the background eps_inf.'),
-    'eps_zz': ('z component of the relative permittivity (>= 1), the one E_z channels see; overrides eps_r for E_z. '
-               'z-cut lithium niobate: eps_r = n_o^2, eps_zz = n_e^2.'),
-    'sigma_e': f'Ohmic loss in S/m on every E component, default 0. {_COMPLEX_EPS}',
-    'mu_r': 'Real relative permeability (>= 1), 1 for practically every optical material; mu_r - j sigma_m / (omega '
-            'mu0) per channel.',
-    'sigma_m': 'Magnetic loss in Ohm/m, default 0: mu_r gains -j sigma_m / (omega mu0) (artificial absorbers only).',
+    'eps_r': ('Isotropic: eps_zz (E_z channels) and eps_xx, eps_yy (H_z channels) unless the material sets a '
+              f'component. {_COMPLEX_EPS} For a dispersive material the background eps_inf.'),
+    'eps_zz': 'The component E_z channels see; overrides eps_r for E_z. z-cut LN: eps_r = n_o^2, eps_zz = n_e^2.',
+    'sigma_e': 'On every E component; enters each channel at its own omega (see eps_r).',
+    'mu_r': 'Real, 1 for optical materials; mu_r - j sigma_m / (omega mu0) per channel.',
+    'sigma_m': 'mu_r gains -j sigma_m / (omega mu0) (artificial absorbers only).',
 }, tips={'eps_zz': ('Permittivity for the electric field along z, out of the plane, seen by the channels with the '
                     "electric field out of the plane. When set it replaces 'Relative permittivity' for that "
                     'direction.')})
@@ -950,16 +942,8 @@ _shared_validate = make_validate_physics(_SLOT_ARRAYS, time_domain=False, solved
 
 
 def _has_dispersive_material(vctx):
-    """True when a material (library merged) carries Drude / Lorentz poles or an nk_fit."""
-    from ...materials import effective_material_data
-    for material in vctx.spec.materials:
-        try:
-            _, dispersion = effective_material_data(material.library, material.properties, material.dispersion)
-        except (ValueError, KeyError, TypeError):
-            continue
-        if dispersion:
-            return True
-    return False
+    """True when a selected material (library merged) carries Drude / Lorentz poles or an nk_fit."""
+    return any(poles for _, _, poles in selected_material_data(vctx.spec))
 
 
 def _source_channels(physics_spec):
@@ -1180,7 +1164,6 @@ def _mixing_issues(vctx, physics_spec, settings_values, path):
 
 
 _NONLINEAR_SHEET_FEATURES = (SURFACE_CHI2.name, SHEET_NONLINEARITY.name)
-_FACE_NAMES = ('x_lo', 'x_hi', 'y_lo', 'y_hi')
 
 
 def _channel_phase_issues(vctx, physics_spec, settings_values, path):
@@ -1220,7 +1203,7 @@ def _channel_phase_issues(vctx, physics_spec, settings_values, path):
     else:
         lengths = tuple(vctx.domain_size) if vctx.domain_size else (None, None)
     periods = tuple(length if periodic[axis] else None for axis, length in zip('xy', lengths))
-    odd_mirror = any(settings_values[f'bc_{face}'] == 'antisymmetric' for face in _FACE_NAMES)
+    odd_mirror = any(MIRROR_SIGNS.get(settings_values[f'bc_{face}']) == -1 for face in FACES)
     for text in inexact_term_issues(build_mixing_table(channels, media), periods, odd_mirror):
         issues.append(Issue('error', path, text))
     return issues
@@ -1543,49 +1526,34 @@ def _scalar_outputs(settings_values, physics_spec):
 
 
 _SCALAR_OUTPUTS_HELP = (
-    'power_exchange_<channel> in W/m: time-averaged power the nonlinear polarisation of the applied mixing terms '
-    '(and the free carriers) delivers to that channel, W_k = (omega_k / 2) sum_cells A Im(conj(E_k) . P_k), per unit '
-    'length in z (2D); > 0 = the channel gains power (a generated channel), < 0 = it loses power (a depleted pump, '
-    'pump_depleted only), 0 on input channels in the undepleted mode (no back-action). power_exchange_imbalance (1): '
-    '|sum_k W_k| / sum_k |W_k| over every term of the mixing table on the current fields, ~1e-12 for real tensors '
-    'with Kleinman symmetry whatever the fields: an implementation check, not a convergence measure (larger for '
-    'general / non-Kleinman d values, per-process or Miller factors, with Im chi3 and carriers, where the sum is the '
-    'nonlinear loss). nonlinear_absorption in W/m: -W of the applied SPM / XPM terms of chi3 media and sigma3 sheets '
-    '(two-photon absorption; 0 undepleted). free_carrier_absorption in W/m: -W of the free-carrier polarisation over '
-    'every channel (> 0 absorbs; 0 without carriers). peak_carrier_density in 1/m^3: the largest steady-state N. iterations (1): sweeps '
-    '(picard) or Newton steps (newton) of the last solve (1 undepleted, summed over continuation steps); residual (1): '
-    "the last iterate's largest relative channel field change (0 undepleted).")
+    'power_exchange_<channel> (W/m): time-averaged power the applied mixing terms (and free carriers) deliver to that '
+    'channel, W_k = (omega_k / 2) sum_cells A Im(conj(E_k) . P_k); > 0 = gains (generated channel), < 0 = loses '
+    '(depleted pump, pump_depleted only), 0 on inputs undepleted. power_exchange_imbalance (1): |sum_k W_k| / sum_k '
+    '|W_k| over the whole mixing table, ~1e-12 for real Kleinman-symmetric tensors whatever the fields: an '
+    'implementation check, not convergence (larger for general / non-Kleinman d, per-process or Miller factors, Im '
+    'chi3 and carriers, where the sum is the nonlinear loss). nonlinear_absorption (W/m): -W of the applied SPM / XPM '
+    'terms of chi3 media and sigma3 sheets (TPA; 0 undepleted). free_carrier_absorption (W/m): -W of the carrier '
+    'polarisation over every channel (> 0 absorbs). peak_carrier_density (1/m^3): the largest steady-state N. '
+    'iterations (1): sweeps or Newton steps of the last solve (1 undepleted, summed over continuation steps); '
+    "residual (1): the last iterate's largest relative channel change (0 undepleted).")
 _DESCRIPTION = (
-    '2D frequency-domain chi2 / chi3 mixing between harmonic channels (nonlinear_optics_plan stages 1-4): every '
-    'harmonic_channel feature is one em_fdfd_ez or em_fdfd_hz solve (E_z or H_z polarisation, both = two channels) at '
-    'its own frequency on the shared mesh and materials, each material evaluated at that frequency, so phase matching '
-    'comes from the material dispersion. chi2_medium / chi3_medium features add the nonlinear polarisation as a phasor '
-    'source of the target channels (exp(+j omega t), P = eps0 2^(1-n) sum chi : E..E; SHG P(2w) = eps0 d E^2, THG '
-    'P(3w) = (1/4) eps0 chi3 E^3); surface_chi2 (the interface of a selection) and sheet_nonlinearity (a 2D material '
-    'on a line) add surface polarisations on cell faces / line cells. coupling_mode undepleted: solved once per '
-    'channel in rank order from the lower '
-    'ranks (no pump back-action, no SPM / XPM), valid while the conversion stays small; pump_depleted: every term '
-    '(depletion, parametric gain, SPM / XPM, steady-state free carriers of chi3 media) solved self-consistently, by '
-    'block Gauss-Seidel sweeps with relaxation and Anderson acceleration (iteration_method picard; the Kerr diagonal '
-    'lagged in the channel operator; high-gain parametric or bistable cavities may not converge) or by Newton-Krylov '
-    '(newton: exact Jacobian, GMRES preconditioned by the channel factors), with optional source continuation, until '
-    'the fields change by <= tolerance. Sources and '
-    'monitors are the em_fdfd_ez / _hz features with a channel setting; fields and '
-    'powers are absolute and per unit length in z, so nonlinear results scale with the source amplitudes (a 2D SHG '
-    'efficiency P_2w / P_w^2 has unit m/W). Each channel factorises its own operator (host SuperLU, MUMPS or PARDISO '
-    'memory adds up per channel). Study: nonlinear_frequency_domain (one snapshot per channel). Output fields of the '
-    'shown channel: '
-    'the phasor quartets of both polarisations (the other polarisation reads 0), e_abs (primary), e_intensity, h_abs, '
-    'absorbed_power, nonlinear_polarization_abs |P_NL|, the chi2 poling sign and carrier_density (0 without free '
-    'carriers), eps_sensitivity (the cascade adjoint of the adjoint_objective features) and design_density. '
-    'Couplings: thermo-optic and other permittivity writers act on every channel; em_heat_joule reads the absorbed '
-    'power of every channel (linear q_abs plus the exact two-photon and free-carrier absorption of the applied terms, '
-    'the same for picard and newton) back into a background heat physics (solution feedback rounds of the study). '
-    'Studies: nonlinear_frequency_domain, and optimization (coupling_mode undepleted, or pump_depleted with the '
-    'fixed-point adjoint, iteration_method newton when a chi3 medium is present: design_region on the shared '
-    'permittivity, adjoint_objective features on the channels). Periodic faces carry a Bloch phase per channel '
-    '(harmonic_channel bloch_kx / bloch_ky of the inputs; generated channels the combination of their inputs\' k), '
-    'mirror faces a parity per channel (harmonic_channel). The instance is usually named \'nl\'.')
+    '2D frequency-domain chi2 / chi3 mixing between harmonic channels: every harmonic_channel feature is one '
+    'em_fdfd_ez or em_fdfd_hz solve at its own frequency on the shared mesh and materials (phase matching from the '
+    'material dispersion). chi2_medium / chi3_medium add the nonlinear polarisation as a phasor source of the target '
+    'channels (exp(+j omega t), P = eps0 2^(1-n) sum chi : E..E); surface_chi2 (selection interface) and '
+    'sheet_nonlinearity (2D material on a line) add surface polarisations. coupling_mode: undepleted (one pass in '
+    'rank order) or pump_depleted (self-consistent; picard may not converge for high-gain parametric or bistable '
+    'cavities: newton). Sources and monitors are the em_fdfd_ez / _hz features with a channel param; fields and '
+    'powers are absolute and per unit z length (2D SHG efficiency P_2w / P_w^2 in m/W). Each channel factorises its '
+    'own operator (host SuperLU, MUMPS or PARDISO memory adds up per channel). Studies: nonlinear_frequency_domain '
+    '(one snapshot per channel), optimization (design_region on the shared permittivity, adjoint_objective on the '
+    'channels; pump_depleted needs newton with a chi3 medium). Output fields of the shown channel: phasors of both '
+    'polarisations (the other reads 0), nonlinear_polarization_abs |P_NL|, poling, carrier_density (0 without '
+    'carriers), eps_sensitivity (adjoint of the adjoint_objective features), design_density. Couplings: permittivity '
+    'writers (thermo-optic) act on every channel; em_heat_joule reads the absorbed power of every channel (linear '
+    'q_abs plus the exact TPA and free-carrier absorption, the same for picard and newton) into a background heat '
+    'physics (solution feedback rounds). Bloch phase and mirror parity per channel: see harmonic_channel. Instance '
+    "usually 'nl'.")
 
 EM_FDFD_NONLINEAR = PhysicsType(
     name=TYPE_NAME,

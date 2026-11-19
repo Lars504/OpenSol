@@ -1,4 +1,4 @@
-"""Tetrahedron meshes of 'tetrahedra' MeshSpecs (igor3d_plan T4b): the model's 3D primitives as gmsh solids (the only
+"""Tetrahedron meshes of 'tetrahedra' MeshSpecs: the model's 3D primitives as gmsh solids (the only
 reader of shape internals for the 3D mesher), the gmsh mesher or the builtin Kuhn split, element regions tagged by the
 builder's 3D inclusion rules (geometry.contains_points_3d at clamped centroids, majority per gmsh volume:
 TetrahedronMesh.by_entity_majority, as the builder's object masks), object interface face tags (mesh.object_faces from
@@ -18,7 +18,7 @@ element_membership, the builder's mask rule). Host numpy only."""
 # MeshSpec.face_sizes (TetrahedronSizing.face_sizes: window faces, object bounding-box faces) and size_points
 # [x, y, z, h] act through gmsh fields for any object kind; the builtin Kuhn split takes the sizing's graded axis edges
 # (meshing.builtin_axis_edges: refinements, axes options and face_sizes along whole axes, flat object faces snapped).
-# MeshSpec.sweep_axis 'z' dispatches to model.swept_meshing (the 2D footprint swept through z layers, plan D5).
+# MeshSpec.sweep_axis 'z' dispatches to model.swept_meshing (the 2D footprint swept through z layers).
 import time
 from dataclasses import replace
 
@@ -60,7 +60,7 @@ def tetrahedralize(spec, parameters, registry=None, mesh=None, *, shapes=None, s
     widths = sizing.pml_widths
     started = time.perf_counter()
     timings = {}
-    if getattr(sizing, 'sweep_axis', ''):   # swept prism layers (plan D5): the 2D mesher (builtin / gmsh) in-plane
+    if getattr(sizing, 'sweep_axis', ''):   # swept prism layers: the 2D mesher (builtin / gmsh) in-plane
         from .swept_meshing import swept_tetrahedra
         built = swept_tetrahedra(spec, parameters, shapes, sizing, names, region_of, timings)
     elif sizing.mesher == 'gmsh':
@@ -125,12 +125,12 @@ def model_solids(shapes, sizing, low, high) -> list:
 
 def sized_regions(shapes, sizing, low, high) -> tuple:
     """fem.gmsh3d SizedRegions of the refined composite domain objects (union, intersection, difference, array): the
-    size holds inside the composite only, not over its inputs' whole volumes (plan D1)."""
+    size holds inside the composite only, not over its inputs' whole volumes."""
     return _sized_regions(shapes, sizing.object_sizes, low, high, composites_only=True)
 
 
 def sized_surfaces(shapes, sizing, low, high) -> tuple:
-    """fem.gmsh3d SizedRegions (plain objects too) of sizing.surface_sizes (RefinementSpec.where 'surface', plan D3b):
+    """fem.gmsh3d SizedRegions (plain objects too) of sizing.surface_sizes (RefinementSpec.where 'surface'):
     the size holds at the object's surface, growing to both sides; objects without a gmsh solid drop out."""
     return _sized_regions(shapes, sizing.surface_sizes, low, high)
 

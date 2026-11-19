@@ -154,34 +154,27 @@ def _select_channel(solver, channel_name):
     solver.select_channel(channel_name)
 
 
-_PARAMS = (*_background_fixed_point_params('the nonlinear solve', 'the nonlinear optics solve'), _FEEDBACK_ROUNDS_PARAM)
+_PARAMS = (*_background_fixed_point_params('the nonlinear optics solve'), _FEEDBACK_ROUNDS_PARAM)
 _DESCRIPTION = (
-    'Cascaded frequency-domain nonlinear optics of every physics listing nonlinear_frequency_domain among its '
-    'supported studies (em_fdfd_nonlinear): its harmonic channels are solved together, not one wavelength after the '
-    'other as in frequency_domain. Undepleted mode: each channel is one FDFD solve in rank order (inputs, then the '
-    'channels generated from them, each driven by the nonlinear polarisation of the lower ranks); pump_depleted: '
-    'sweeps (picard) or Newton steps (newton) over all channels until self-consistent (a log line per sweep / step '
-    'with its residual; not converged within max_iterations: a warning, the last iterate is stored and the snapshot '
-    'labels end in "(not converged)"); Progress '
-    'before each channel solve, cancel between them. Every other physics must support the stationary study and runs as a '
-    'background physics first (heat is always steady here), iterated to a stationary fixed point, then every coupling '
-    'from background to nonlinear physics (heat_em_thermo_optic, field_transfer, state-dependent material '
-    'properties) is applied once. Solution feedback: a coupling from a nonlinear physics into a background physics '
-    '(em_heat_joule into heat: linear, two-photon and free-carrier absorption of every channel) makes the run '
-    'alternate rounds of background solve (that coupling applied before each of its sweeps) and nonlinear solve '
-    '(pump_depleted warm-started from the last fields) until every primary field changes by at most tolerance between '
-    'rounds or feedback_rounds is reached (warning), with a log line per round and the summary key feedback '
-    '{couplings, rounds, converged, relative_change, tolerance, history} (None without feedback); couplings into a '
-    'nonlinear physics from a nonlinear physics and material properties reading one are validation errors. The run '
-    'log lists the mixing terms and each channel solve summary. Stores one snapshot per channel in '
-    'solve order of the stored fields (default the primary e_abs), labelled "channel <name>: lambda = <nm> nm" '
-    '(several nonlinear physics: their name first, the others NaN); afterwards each shows its first input channel '
-    '(Results.field). ticks = n_channels = the channel snapshots; summary nonlinear_solve = {physics: {mode, order '
-    '(channel names in solve order), channel_solves, sweeps, converged, residual, tolerance, residual_history, '
-    "continuation_steps, method ('picard' | 'newton', '' undepleted), gmres_iterations, backtracks}}. Spectra (a QPM "
-    'tuning curve, SHG versus pump '
-    'wavelength) and power curves are parameter sweeps over the poling period, the input wavelength or the source '
-    'amplitude, with derived values of channel monitors or the power_exchange_<channel> scalars.')
+    'Cascaded frequency-domain nonlinear optics (em_fdfd_nonlinear): its harmonic channels are solved together, not '
+    'one wavelength after the other as in frequency_domain. Undepleted: each channel one FDFD solve in rank order '
+    '(inputs, then the channels generated from them, each driven by the nonlinear polarisation of the lower ranks); '
+    'pump_depleted: sweeps (picard) or Newton steps (newton) over all channels until self-consistent (a log line per '
+    'sweep / step with its residual; not converged within max_iterations: a warning, the last iterate is stored and '
+    'the snapshot labels end in "(not converged)"); cancel between channel solves. Background physics iterate to a '
+    'stationary fixed point, then their couplings into the nonlinear physics apply once. Solution feedback: a '
+    'coupling from a nonlinear physics into a background physics (em_heat_joule into heat: linear, two-photon and '
+    'free-carrier absorption of every channel) alternates background and nonlinear solves (pump_depleted '
+    'warm-started) up to feedback_rounds, a log line per round, summary feedback {couplings, rounds, converged, '
+    'relative_change, tolerance, history} (None without feedback); couplings between nonlinear physics and material '
+    'properties reading one are validation errors. The run log lists the mixing terms and each channel solve. One '
+    'snapshot per channel in solve order (default stored field the primary e_abs), labelled "channel <name>: lambda '
+    '= <nm> nm" (several nonlinear physics: their name first, the others NaN); afterwards each shows its first input '
+    'channel. ticks = n_channels; summary nonlinear_solve = {physics: {mode, order (channel names in solve order), '
+    "channel_solves, sweeps, converged, residual, tolerance, residual_history, continuation_steps, method ('picard' | "
+    "'newton', '' undepleted), gmres_iterations, backtracks}}. Spectra (a QPM tuning curve, SHG versus pump "
+    'wavelength) and power curves: parameter sweeps over the poling period, input wavelength or source amplitude, '
+    'with derived values of channel monitors or the power_exchange_<channel> scalars.')
 
 
 def register(registry):

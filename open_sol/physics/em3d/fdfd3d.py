@@ -1,4 +1,4 @@
-"""FDFDPhysics3D: the PhysicsSolver of em_fdfd_3d (igor3d_plan): the 3D Yee curl-curl operator (operators3d) on the live
+"""FDFDPhysics3D: the PhysicsSolver of em_fdfd_3d: the 3D Yee curl-curl operator (operators3d) on the live
 E faces of a Domain3D, materials and PML frozen at the target omega, resonances by shift-invert on a host SuperLU or
 cuDSS factor (eigenfrequency.solve_resonances, squared Cayley map) and the selected resonance's E / H on the run backend."""
 # Materials (host, at omega_t = 2 pi C0 / wavelength): per E face the width-weighted mean (yee_grid.face_shares) of its

@@ -10,7 +10,7 @@ from .selftests import (_FILM, _MEMBRANE_TYPE, _PHYSICS, _RECTANGLE, _STRING_POI
                         _STRING_RESPONSE_TOLERANCE, _probe_phasors, _string_closed_form, _string_spec, _triangles)
 
 _ROM_TOLERANCE = 1e-10            # training residual: Q x residual stays far below the checked errors
-_LINE_MAX_FACTORIZATIONS = 6      # expansions + the verification (plan A1)
+_LINE_MAX_FACTORIZATIONS = 6      # expansions + the verification
 # clamped 1 x 0.7 mm rectangle, eta = 1e-2 (Q = 100), point force off every nodal line of the lowest modes; the window
 # 0.42 - 1.30 MHz holds f_11 .. f_13 (eight modes)
 _WINDOW_HZ = (0.42e6, 1.30e6)

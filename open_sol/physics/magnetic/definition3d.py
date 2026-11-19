@@ -1,4 +1,4 @@
-"""Model-layer definition of the 'magnetostatics_3d' physics type (stages 1-3 of magnetostatics_3d_plan: fields of
+"""Model-layer definition of the 'magnetostatics_3d' physics type (fields of
 permeable and saturating materials, permanent magnets, ideal iron, a uniform applied field and stranded coils by the
 reduced scalar potential; settings, features, material vocabulary, validation, memory estimate, scalars) plus its
 template and selftests; registered through definition.py. On a 'tetrahedra' mesh the create builds MagneticFEMPhysics3D
@@ -42,33 +42,29 @@ def _material_property(name, label, unit, help_text, tip, positive=False):
 
 
 _MU_DC_HELP = (
-    'Isotropic static relative permeability (> 0): sets mu_dc_xx, mu_dc_yy and mu_dc_zz (component entries override '
-    'it); unset = 1 (vacuum). NOT the optical mu_r of the wave physics. Typical: air, copper, aluminium 1; ferrite 1e3 '
-    '- 1e4; electrical steel 4e3; Metglas 1e4 - 1e5; mu-metal 5e4. The finite volumes solve a large contrast exactly; '
-    "the pcg multigrid (Automatic on the gpu) keeps the iteration count moderate (a few hundred at 1e5). With "
-    'saturation_polarization it is the initial (small-field) permeability of the B-H curve.')
+    'Sets mu_dc_xx, _yy and _zz (component entries override it); unset = 1 (vacuum). NOT the optical mu_r of the '
+    'wave physics. Typical: air, copper, aluminium 1; ferrite 1e3 - 1e4; electrical steel 4e3; Metglas 1e4 - 1e5; '
+    'mu-metal 5e4. A large contrast is exact; pcg multigrid needs a few hundred iterations at 1e5. With '
+    'saturation_polarization: the initial permeability of the B-H curve.')
 _MU_COMPONENT_TIP = ("Static relative permeability along {axis} of a material that magnetises differently along x, y "
                      "and z. Replaces 'Static relative permeability' for this direction.")
 _REMANENCE_HELP = (
-    'Remanent flux density B_r [T] along {axis} of a permanent magnet: B = mu0 mu_dc H + B_r, entered as face drives '
-    'B_r / mu_dc at the magnet faces (exact for a uniformly magnetised region, also across its edges). Typical: NdFeB '
-    '1.2 - 1.4 T with mu_dc 1.05, SmCo 1.0 T, ferrite 0.4 T with mu_dc 1.1. Unset = 0 (the remanence arrays are '
-    'allocated only when a material sets one).')
+    'Remanent flux density B_r along the axis in its name, of a permanent magnet: B = mu0 mu_dc H + B_r, entered '
+    'as face drives B_r / mu_dc (exact for a uniformly magnetised region). Typical: NdFeB 1.2 - 1.4 T with mu_dc '
+    '1.05, SmCo 1.0 T, ferrite 0.4 T with mu_dc 1.1. Unset = 0.')
 _REMANENCE_TIP = ('Built-in magnetisation of a permanent magnet along {axis}, as a flux density.\n\n'
                   'Typical: neodymium magnets about 1.3.')
 _SATURATION_HELP = (
-    'Saturation polarisation J_s [T] (> 0) of an anhysteretic B-H curve: the Frohlich-Kennelly curve B = mu0 H + J_s a '
-    'H / (1 + a H) with a = mu0 (mu_dc - 1) / J_s, i.e. initial permeability mu_dc, B -> mu0 H + J_s in strong fields, '
-    'no hysteresis. Isotropic: mu_dc_xx, mu_dc_yy and mu_dc_zz must be equal in the material (validation error). Solved '
-    'by a fixed point on ln of the secant permeability mu = B(|H|) / (mu0 |H|) at the cell-centre |H| of each solve, '
-    'Anderson-accelerated (settings nonlinear_*); energy and coil inductances are then secant values, not the integral '
-    'of H dB. Unset = linear (the array is allocated only when a material sets it); mu_dc <= 1 stays linear. Not '
-    'combinable with a remanence or a bh_curve in the same material (validation error). Typical: iron 2.15, electrical '
-    'steel 2.0, Metglas 0.6 - 1.6, Mn-Zn ferrite 0.4 - 0.5, NiFe (mu-metal) 0.8.')
+    'Saturation polarisation J_s of an anhysteretic B-H curve: Frohlich-Kennelly B = mu0 H + J_s a H / (1 + a H), a = '
+    'mu0 (mu_dc - 1) / J_s (initial permeability mu_dc, B -> mu0 H + J_s), no hysteresis. Isotropic: mu_dc_xx, _yy, '
+    '_zz must be equal (validation error). A fixed point on ln of the secant permeability mu = B(|H|) / (mu0 |H|) at '
+    'the cell-centre |H| (settings nonlinear_*); energy and coil inductances are then secant values. Unset = linear; '
+    'mu_dc <= 1 stays linear. Not with a remanence or a bh_curve in the same material (validation error). Typical: '
+    'iron 2.15, electrical steel 2.0, Metglas 0.6 - 1.6, Mn-Zn ferrite 0.4 - 0.5, NiFe (mu-metal) 0.8.')
 _MATERIAL_PROPERTIES = (
     _material_property('mu_dc', 'Static relative permeability', '1', _MU_DC_HELP, _MU_DC_TIP, positive=True),
     *(_material_property(f'mu_dc_{axis}{axis}', f'Static relative permeability along {axis}', '1',
-                         f'Static relative permeability along {axis}, > 0; overrides mu_dc for this axis.',
+                         'Overrides mu_dc for this axis.',
                          _MU_COMPONENT_TIP.format(axis=axis), positive=True) for axis in 'xyz'),
     *(_material_property(name, f'Remanence along {axis}', 'T', _REMANENCE_HELP.format(axis=axis),
                          _REMANENCE_TIP.format(axis=axis)) for name, axis in zip(REMANENCE_3D_ARRAYS, 'xyz')),
@@ -82,82 +78,59 @@ _MATERIAL_PROPERTIES = (
 
 # ---- feature texts ----
 _INSULATION_DESCRIPTION = (
-    'Magnetic insulation B.n = 0 on the selected outer faces (z_lo / z_hi included; the default of every face no '
-    'feature sets): field lines run along the face (Neumann on phi_m). It is the mirror plane of a field parallel to '
-    'it, and stands in for a distant boundary far from the sources. Does not anchor phi_m: with insulation on every '
-    'face, no external field, symmetry face or ideal iron the type holds the window corner cell at phi_m = 0 (the '
-    'problem is then unique up to that constant; the corner cell reads B = 0).')
+    'B.n = 0 on the selected outer faces (z_lo / z_hi included; the default of every face no feature sets): field '
+    'lines run along the face (Neumann on phi_m); the mirror plane of a field parallel to it, or a distant boundary. '
+    'Does not anchor: without a symmetry face, external field or ideal iron the window corner cell is held at phi_m = '
+    '0 (it reads B = 0; tetrahedra: the window node nearest the lower corner).')
 _SYMMETRY_DESCRIPTION = (
-    'Symmetry (field normal) on the selected outer faces: phi_m = 0 there (Dirichlet), so the tangential H is 0 and '
-    'field lines cross the face at right angles; the mirror plane of a field normal to it (the midplane between a '
-    'magnet and its mirror image), or a face next to ideal iron. The opposite face kinds of 2D magnetostatics (there '
-    'A = 0 is insulation): this type solves for the scalar potential. Anchors the solve.')
+    'phi_m = 0 (Dirichlet) on the selected outer faces: no tangential H, field lines cross at right angles; the mirror '
+    'plane of a field normal to it (midway between a magnet and its mirror image) or a face next to ideal iron. The '
+    'reverse of 2D magnetostatics (this type solves for the scalar potential). Anchors the solve.')
 _EXTERNAL_FIELD_DESCRIPTION = (
-    "Uniform applied flux density (B_x, B_y, B_z) [T], selection 'all' only, at most one per physics: the outermost "
-    'window cells (all six faces) are held at the applied potential phi_m = -B . r / mu0 evaluated at their faces '
-    'toward the free cells (r from the window corner), so a uniform field is exact on any cell widths. Inside, objects '
-    'perturb the field; keep them several object sizes from the window edges (the ring holds the undisturbed field: '
-    'error ~ (object size / distance)^3 of a dipole). The ring cells leave the solve (B, H read 0 there) and face '
-    'features have no effect under it. Anchors the solve. Typical: the Earth field ~5e-5 T, a Helmholtz coil 1e-4 - '
-    '1e-2 T.')
+    "Uniform applied flux density (B_x, B_y, B_z), selection 'all' only, one per physics: the outermost window cells "
+    '(all six faces) are held at phi_m = -B . r / mu0 (r from the window corner), exact for a uniform field on any '
+    'cell widths. Keep objects several object sizes from the window edges (error ~ (object size / distance)^3 of a '
+    'dipole). The ring cells leave the solve (B, H read 0 there) and face features under it do nothing. Tetrahedra: '
+    'phi_m held on the window faces, no ring (every element stays free; wins over face features). Anchors the solve. '
+    'Typical: the Earth field ~5e-5 T, a Helmholtz coil 1e-4 - 1e-2 T.')
 _IDEAL_IRON_DESCRIPTION = (
-    'Holds the magnetic scalar potential phi_m on the selected cells for the whole run: ideal iron (mu -> infinity), '
-    'H = 0 inside and B normal to its surface; the cells leave the solve (B and H read 0 in them). Two regions at '
-    'different potentials drive the flux between them like the poles of a yoke (the magnetomotive force is their '
-    'difference in A). The opposite of the 2D fixed vector potential (a flux excluder). Anchors the solve.')
+    'Ideal iron (mu -> infinity): phi_m held on the selected cells for the whole run, H = 0 inside, B normal to its '
+    'surface; the cells leave the solve (B, H read 0). Two regions at different potentials drive flux between them '
+    'like yoke poles. The reverse of the 2D fixed vector potential (a flux excluder). Anchors the solve.')
 _COIL_DESCRIPTION = (
-    "Stranded coil (many thin insulated turns) wound around the axis 'x', 'y' or 'z' (setting axis) on the selected "
-    'winding objects, e.g. a circle prism along that axis minus a smaller one (difference): every window slice normal '
-    'to the axis that holds winding cells must close around a hole inside the window, else the build fails naming the '
-    'coil. current [A] > 0 circulates counter-clockwise seen from +axis (B along +axis inside). The drive is the coil '
-    'field T along the axis (T-Omega, H = T - grad phi_m): T = turns current / h in the enclosed hole, ramping to 0 '
-    'across the winding by the distances to the hole and to the outside (uniform J in a circular ring), 0 outside; h = '
-    'the winding\'s axial length. J = curl T is shown in fields J_x / J_y / J_z (its total through a half plane from '
-    'the axis is turns current). Result \'table\': one row [feature, current, turns, flux_linkage, inductance] of the '
-    'latest solve and the same extras: flux_linkage [Wb] = the integral of T . B / current over the coil\'s support '
-    '(the flux through each turn, summed), inductance = flux_linkage / current [H] (nan at zero current); with several '
-    "coils a coil's value includes the flux of the others (mutual terms). Exact energy identity W = flux_linkage "
-    'current / 2 for one coil with no held cells (no ring, ideal iron or symmetry face); held cells add their '
-    'boundary term. Scalars <feature>_flux_linkage and <feature>_inductance carry the same numbers. With a core of '
-    "mu_dc above ~1e3 in the hole, use pcg precision 'double' or 'mixed' (T - grad phi_m cancels to a few digits "
-    "there; validation warns for 'single'). On a tetrahedron mesh T is held as edge integrals (lowest-order edge "
-    'elements; the hole / winding / outside ramp from a fine lattice over the winding), so the current through the '
-    'coil is exactly turns current and J is constant per element; the winding must be one piece along the axis and '
-    'its axial length h is the extent of its elements.')
-_PROBE_DESCRIPTION = ('B_abs [T] or phi_m [A] (setting component) of the cell containing the point (its z, '
-                      'mid-height when unset; a tetrahedron mesh: evaluated at the point), one sample per re-solve plus '
-                      'one at the end of the run (stationary: all at t = 0).')
+    'Stranded coil around the axis (param axis) on the selected winding objects, e.g. a circle prism minus a smaller '
+    'one: every window slice normal to the axis through winding cells must close around a hole inside the window, '
+    'else the build fails. Drive: the coil field T along the axis (H = T - grad phi_m), T = turns current / h in the '
+    "hole (h the winding's axial length), ramping to 0 across the winding (uniform J in a circular ring), 0 outside; "
+    "J = curl T in fields J_x / J_y / J_z. Result 'table': one row [feature, current, turns, flux_linkage, inductance] "
+    'of the latest solve (also scalars <feature>_flux_linkage / _inductance): flux_linkage = integral of T . B / '
+    "current over the coil's support (the flux through each turn, summed), inductance = flux_linkage / current (nan "
+    "at zero current); with several coils a coil's value includes the mutual flux. W = flux_linkage current / 2 "
+    'exactly for one coil with no held cells (ring, ideal iron, symmetry face). A core of mu_dc above ~1e3 in the hole '
+    "needs pcg precision 'double' or 'mixed' (T - grad phi_m cancels; validation warns for 'single'). Tetrahedra: T as "
+    'lowest-order edge integrals, so the coil current is exactly turns current and J is constant per element; the '
+    'winding must be one piece along the axis, h its element extent.')
+_PROBE_DESCRIPTION = ('Value in the cell containing the point (z unset: mid-height; tetrahedra: at the point), one '
+                      'sample per re-solve plus one at the end of the run (stationary: all at t = 0).')
 _SCALARS_HELP = (
-    'energy [J]: magnetic field energy of the free cells, the sum over faces of B_n^2 / (2 mu0 mu_face) times the face '
-    'volume (held cells and the external-field ring excluded, held-free faces count their free half cell; with '
-    "remanence the energy of B alone, not the magnet's co-energy; with saturating materials the secant value at the "
-    'converged mu, not the integral of H dB); <coil>_flux_linkage [Wb] and <coil>_inductance [H] of every enabled '
-    'coil feature, as its table result (secant values when saturating).')
+    'energy [J]: field energy of the free cells, the sum over faces of B_n^2 / (2 mu0 mu_face) times the face volume '
+    '(held cells and the external-field ring excluded, held-free faces count their free half cell; with remanence the '
+    'energy of B alone; saturating: the secant value; tetrahedra: exact integrals of the element fields); '
+    '<coil>_flux_linkage [Wb] and <coil>_inductance [H] of every enabled coil, as its table result.')
 _PHYSICS_DESCRIPTION = (
-    '3D magnetostatics by the reduced magnetic scalar potential (finite volumes, 7-point stencil on the physical window '
-    'of a 3D model): H = T - grad phi_m with T the coil fields, B = mu0 mu_dc H + B_r, div B = 0, solved for u = mu0 '
-    'phi_m [T m] with the coefficients c = mu_dc per axis (mu_dc_xx, mu_dc_yy, mu_dc_zz; no cross terms) and the face '
-    'drive w = mu0 T + B_r / mu_dc, so the face flux is B itself: B is taken from the face fluxes averaged to the cell '
-    'centres (accurate in high-mu cells and iron cores too), H = (B - B_r) / (mu0 mu_dc) per axis, w_mag = sum of B^2 '
-    '/ (2 mu0 mu_dc) per axis (the density of the energy scalar, as in 2D; not B . H / 2 inside magnets), '
-    'phi_m [A], J = curl T [A/m^2]. Every outer face is magnetic insulation (B.n = 0) unless a symmetry feature sets '
-    'phi_m = 0 there; sources are coils, an external_field (held outer ring), ideal_iron regions at a potential and '
-    'material remanence; with none of the anchors (symmetry face, ring, ideal iron) the type holds the window corner '
-    'cell at 0. Saturating materials (saturation_polarization or a bh_curve, isotropic) run a fixed point on ln of '
-    'their secant permeability, each iteration one assembly and one warm-started solve (settings nonlinear_*; '
-    "'newton' is not available on this grid); field mu_eff shows the assembled permeability. Scalars: energy and per "
-    'coil flux linkage and inductance. The Lorentz force is not available yet (magnetostatics_3d_plan stage 4); eddy '
-    'currents in 3D are out of scope. Linear solver: pcg (Automatic: multigrid on both backends). A '
-    'time-dependent study re-solves only when mu_dc, a saturation or a remanence changed. Fields are edge-extended into '
-    'an EM PML shell. On a tetrahedron mesh (MeshSpec kind tetrahedra; 3D Cartesian) the same model by finite elements '
-    '(setting discretization: quadratic or linear Lagrange phi_m on affine tetrahedra), solved by the sparse direct '
-    'solver (Automatic: cuDSS on the gpu backend with nvmath-python, else host SuperLU; one factorisation per '
-    'saturation iteration, cuDSS refreshing its plan): the external field holds phi_m on '
-    'the window faces (no held ring: every element stays free and wins over face features there), the corner anchor is '
-    'the window node nearest the lower corner, B, H, w_mag, J and mu_eff are element means (constant per element on '
-    'the display), phi_m is the element field, energy and flux linkage exact integrals of the element fields; field '
-    'derived values are not available on tetrahedra yet (use probes and the coil table). The instance is usually named '
-    'magnetic.')
+    '3D magnetostatics by the reduced scalar potential, finite volumes (7-point stencil): H = T - grad phi_m (T the '
+    'coil fields), B = mu0 mu_dc H + B_r, div B = 0, solved for u = mu0 phi_m with per-axis mu_dc (no cross terms) '
+    'and face drive w = mu0 T + B_r / mu_dc, so the face flux is B (accurate also in high-mu cores); B averaged from '
+    'the face fluxes to the cell centres, H = (B - B_r) / (mu0 mu_dc) per axis, w_mag = sum of B^2 / (2 mu0 mu_dc) '
+    'per axis (not B . H / 2 in magnets), J = curl T. Outer faces default to magnetic insulation. Saturating materials '
+    '(isotropic) run a fixed point on ln of the secant permeability, one assembly and warm-started solve per iteration '
+    "(settings nonlinear_*; no 'newton'); field mu_eff shows the assembled permeability. No Lorentz force yet, no eddy "
+    'currents. Linear solver pcg (Automatic: multigrid). A time-dependent study re-solves only when mu_dc, a '
+    'saturation or a remanence changed. Fields are edge-extended into an EM PML shell. Tetrahedron mesh (3D '
+    'Cartesian): phi_m elements (setting discretization) on affine tetrahedra, sparse direct solver (Automatic: cuDSS '
+    'on the gpu backend with nvmath-python, else host SuperLU; one factorisation per saturation iteration); B, H, '
+    'w_mag, J and mu_eff are element means; field derived values are not available there yet (use probes and the coil '
+    'table).')
 _PHYSICS_SUMMARY = ('Static magnetic fields of coils, permanent magnets, magnetic (also saturating) materials and an '
                     'applied field in 3D, by the magnetic scalar potential. Gives the flux density, the field energy '
                     'and coil inductances.')
@@ -383,7 +356,8 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
     n_fields = len(MAGNETIC_3D_FIELD_NAMES) + len(MAGNETIC_3D_CURRENT_NAMES) * int(coils) + int(saturation)
     system = fem_diffusion_estimate_3d(mesh, element_order(settings_values), element_fields=n_fields,
                                        direct=linear_solver_direct(context), multigrid=linear_solver_multigrid(context),
-                                       cudss=cudss_back_end(context.solvers), refactorizes=bool(saturation))
+                                       cudss=cudss_back_end(context.solvers), refactorizes=bool(saturation),
+                                       precision=linear_solver_precision(context), mixed=linear_solver_mixed(context))
     loop_arrays = int(saturation) * (_SATURATION_ARRAYS + (
         _ANDERSON_STATE_ARRAYS if settings_values.get('nonlinear_method') in ('auto', 'anderson') else 0))
     own = MemoryEstimate.from_items(host_items=(
@@ -459,21 +433,20 @@ _FEATURES = (
                 description=_SYMMETRY_DESCRIPTION, apply=_apply_symmetry, grids=_GRIDS),
     FeatureType('external_field', 'External magnetic field', 'domain_condition', 'domain', max_entities=1,
                 params=(Param('B_x', 'float', 0.0, label='Applied flux density x', unit='T',
-                              help='x component of the uniform applied flux density.',
+                              help='Component of the uniform applied flux density.',
                               tip='Strength of the applied field along x.'),
                         Param('B_y', 'float', 0.0, label='Applied flux density y', unit='T',
-                              help='y component of the uniform applied flux density.',
+                              help='Component of the uniform applied flux density.',
                               tip='Strength of the applied field along y.'),
                         Param('B_z', 'float', 1e-4, label='Applied flux density z', unit='T',
-                              help='z component of the uniform applied flux density.',
+                              help='Component of the uniform applied flux density.',
                               tip='Strength of the applied field along z.\n\nThe Earth field is about 0.00005.')),
                 summary='Applies a uniform magnetic field, held at the domain faces, around the objects inside.',
                 description=_EXTERNAL_FIELD_DESCRIPTION, apply=_apply_external_field,
                 validate=_validate_whole_window, grids=_GRIDS),
     FeatureType('ideal_iron', 'Ideal iron (fixed magnetic potential)', 'domain_condition', 'domain',
                 params=(Param('potential', 'float', 0.0, label='Magnetic scalar potential', unit='A',
-                              help='Held phi_m [A] (magnetomotive force against phi_m = 0); 0 for a single iron '
-                                   'region.',
+                              help='Magnetomotive force against phi_m = 0; 0 for a single iron region.',
                               tip='Magnetic potential the selected domains are held at; the difference between two '
                                   'such regions drives the flux between them.'),),
                 summary='Treats the selected domains as ideal iron: no field inside, flux enters and leaves at right '
@@ -481,14 +454,13 @@ _FEATURES = (
                 description=_IDEAL_IRON_DESCRIPTION, apply=_apply_ideal_iron, grids=_GRIDS),
     FeatureType('coil', 'Coil', 'domain_condition', 'domain', result_kind='table',
                 params=(Param('axis', 'choice', 'z', label='Coil axis', choices=('x', 'y', 'z'),
-                              help='Axis the winding circles; every slice normal to it through the winding must close '
-                                   'around a hole inside the window.',
+                              help='Axis the winding circles.',
                               tip='Direction of the coil axis: the winding goes around it.'),
                         Param('current', 'float', 1.0, label='Current', unit='A',
-                              help='Current per turn, > 0 counter-clockwise seen from +axis (B along +axis inside).',
+                              help='Per turn, > 0 counter-clockwise seen from +axis (B along +axis inside).',
                               tip='Current in each turn of the coil; the sign sets the direction.'),
                         Param('turns', 'int', 1, label='Turns', unit='1', min=1,
-                              help='Number of turns spread over the winding (stranded).',
+                              help='Spread over the winding.',
                               tip='Number of wire turns in the winding.')),
                 summary='A winding of many thin turns around an axis: drives the current through the selected ring '
                         'and reports its flux linkage and inductance.',
@@ -498,7 +470,7 @@ _FEATURES = (
                 params=(Param('component', 'choice', 'B_abs', label='Quantity', choices=MAGNETIC_3D_PROBE_COMPONENTS,
                               choice_labels=tuple((name, MAGNETIC_3D_FIELD_INFOS[name].label)
                                                   for name in MAGNETIC_3D_PROBE_COMPONENTS),
-                              help='Field sampled at the point: B_abs [T] or phi_m [A].',
+                              help='Field sampled at the point.',
                               tip='Quantity recorded at the point.'),),
                 result_kind='timeseries',
                 summary='Records the magnetic flux density magnitude or the scalar potential at a point after every '

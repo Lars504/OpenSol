@@ -10,8 +10,8 @@ import numpy as np
 from .analytic import split_key
 from .estimation import curve_model, fit_statistics, resolve_estimation, weighted_residuals
 from .expressions import evaluate_parameters
-from .meshing import remember_element_meshes, remembers_element_meshes
-from .study import (Cancelled, LogEvent, Progress, StudyFailed, StudyStarted, _clamped_fraction, _fail_sweep_setup,
+from .meshing import element_meshes_kept
+from .study import (LogEvent, Progress, StudyFailed, StudyStarted, _clamped_fraction, _fail_sweep_setup,
                     _parity_sectors_requested, _record_failure, _run_built, build_session, release_session,
                     summed_runs)
 
@@ -46,14 +46,8 @@ def run_estimation(spec, registry, build, emit, control, service, on_session):
     except Exception as exc:   # text only; reported through the build path with the node paths
         _fail_sweep_setup(spec, registry, build, emit, on_session, _record_failure(exc), what='parameter estimation')
         return None
-    remembered = remembers_element_meshes()
-    if not remembered:   # a geometry-free parameter then rebuilds without remeshing
-        remember_element_meshes()
-    try:
+    with element_meshes_kept():   # a geometry-free parameter then rebuilds without remeshing
         return _Estimation(spec, resolved, sectors, registry, build, emit, control, service, on_session).run()
-    finally:
-        if not remembered:
-            remember_element_meshes(False)
 
 
 class _Estimation:
@@ -138,13 +132,10 @@ class _Estimation:
         if key in self.cache:
             return self.cache[key]
         resolved = self.resolved
-        if self.evaluations >= resolved.max_evaluations:
+        if self.evaluations >= resolved.max_evaluations:   # own count: scipy's max_nfev skips the Jacobian runs
             raise _Stop('max_evaluations', f'max_evaluations ({resolved.max_evaluations}) reached')
-        if self.evaluations > 0:
-            try:
-                self.control.checkpoint(self.service)
-            except Cancelled:
-                raise _Stop('cancelled', f'cancelled after {self.evaluations} evaluations') from None
+        if self.evaluations > 0 and self.control.checkpoint_cancelled(self.service):
+            raise _Stop('cancelled', f'cancelled after {self.evaluations} evaluations')
         values = resolved.values_of(key)
         self.evaluations += 1
         index = self.evaluations

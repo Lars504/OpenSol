@@ -1,4 +1,4 @@
-"""Element meshes for display (mesh plan T6, igor3d_plan T4b): the worker session's built triangle / tetrahedron meshes
+"""Element meshes for display: the worker session's built triangle / tetrahedron meshes
 and mesher previews of the mesh form ('Build mesh'), kept as host data (viz.common.TriangleMeshLines, or
 TetrahedronMeshData the canvas cuts by its shown plane) with a key of the inputs they were made from, so a view shows a
 mesh only while the model would still give it. Their element counts go to the document (set_element_counts), whose
@@ -146,7 +146,6 @@ class ElementMeshStore(QtCore.QObject):
             return ''
         spec, parameters = source.spec.copy(), dict(source.parameters())
         kind = spec.mesh_by_name(mesh_name).kind
-        generation = self._bridge.generation
 
         def run():
             from ..model.meshing import element_mesh
@@ -160,9 +159,7 @@ class ElementMeshStore(QtCore.QObject):
                        ['display data', time.perf_counter() - meshed]]
             return data, meshed - start, seconds, reused, built_mesh_counts(mesh)
 
-        def done(result):
-            if self._bridge.generation != generation:
-                return
+        def done(result):   # callbacks of a replaced document are dropped by the bridge
             data, seconds, stage_seconds, reused, counts = result
             self._finish_preview(mesh_name, key)
             previews = self._previews.setdefault(mesh_name, {})
@@ -181,8 +178,6 @@ class ElementMeshStore(QtCore.QObject):
                                                        title=f"Build mesh '{mesh_name}'{at_text} time by stage"))
 
         def failed(error):
-            if self._bridge.generation != generation:
-                return
             self._finish_preview(mesh_name, key)
             self._failures[mesh_name] = (key, str(error).splitlines()[0] if error else 'failed')
             self.changed.emit(mesh_name)
@@ -256,21 +251,14 @@ class ElementMeshStore(QtCore.QObject):
         """No session, but the worker keeps the element meshes a failed build made (e.g. one refused for memory on
         their counts): their counts make the document's estimate and memory issue those of the built meshes."""
         self._clear_built()
-        generation = self._bridge.generation
 
         def done(kept):
-            if self._bridge.generation != generation:
-                return
             for name, (key, counts) in kept.items():
                 self._document.set_element_counts(name, key, counts)
         self._bridge.call_without_session(kept_element_mesh_counts, on_result=done, on_error=lambda _error: None)
 
     def _fetch_built(self):
-        generation = self._bridge.generation
-
         def done(drawings):
-            if self._bridge.generation != generation:
-                return
             names = set(self._built) | set(drawings)
             self._built = {name: MeshDrawing(name, key, data, 'built', kind=kind, counts=counts)
                            for name, (key, kind, data, counts) in drawings.items()}
@@ -280,7 +268,7 @@ class ElementMeshStore(QtCore.QObject):
                 self.changed.emit(name)
 
         def failed(error):   # a sweep rebuilt meanwhile: StudyFinished fetches again
-            if self._bridge.generation == generation and 'session changed' not in str(error):
+            if 'session changed' not in str(error):
                 self.message.emit(f'Built element meshes not shown: {str(error).splitlines()[0]}')
         self._bridge.call(_built_mesh_drawings, on_result=done, on_error=failed)
 

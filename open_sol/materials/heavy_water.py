@@ -12,11 +12,9 @@ HEAVY_WATER = Material(
     electrical=dict(eps_dc=78.1),
     # dynamic viscosity at 20 C: a fluid in laminar_flow
     fluid=dict(viscosity=1.25e-3),
-    description='Heavy water (D2O) at 1.55 um and 20 C (n = 1.3170) with its absorption (extinction 4.47e-6, about '
-                '0.36 /cm) as sigma_e, valid only near 1.55 um (sigma_e = 2 n kappa omega eps0) and an optical loss '
-                'proxy (no sigma_dc); the index is non-dispersive. dndT is an estimate from the water value; '
-                "alpha = 0 because a liquid region is its container's (every measured dndT, solid or liquid, "
-                'includes the density change).',
+    description='Heavy water (D2O) at 20 C, n = 1.3170, its absorption (extinction 4.47e-6, ~0.36 /cm) as sigma_e '
+                '(an optical loss proxy valid near 1.55 um only, as water). dndT is estimated from water; alpha = 0 '
+                'as water.',
     summary='Heavy water at 1550 nm and 20 degrees Celsius: refractive index 1.317, with its weak absorption.\n\n'
             'The optical values hold only near 1550 nm.',
 )

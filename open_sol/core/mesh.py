@@ -427,7 +427,8 @@ def _profile_at(sample_pos, target_dx, position):
 
 
 def _march_segment(sample_pos, target_dx, lo, hi, previous_cell, ratios):
-    """Cells lo -> hi at the smaller interpolated target of each cell's two ends, within the local ratio of the one before
+    """Cells lo -> hi at the smaller interpolated target of each cell's two ends (else the ratio clamp lifts a
+    refinement's first cell: selftest mesh_tensor_options anisotropic_y_fine), within the local ratio of the one before
     (previous_cell: last cell of the previous segment, or None); the end remainder is rounded to whole cells."""
     cells = []
     pos = lo

@@ -12,7 +12,7 @@ from ...core.memory_estimate import (COMPLEX128_BYTES, COMPLEX128_CSR_ENTRY_BYTE
                                      host_counted_lu_bytes)
 from ...model.definition_helpers import (AXISYMMETRIC, AXISYMMETRIC_SPACE_SETTINGS, DIRECT_LINEAR_ROLE,
                                          GEOMETRY_SETTING, eigen_role)
-from ...model.schema import FeatureType, Issue, Param, PhysicsType, resolve_values
+from ...model.schema import STATIONARY_STUDY, FeatureType, Issue, Param, PhysicsType, resolve_values
 from ...solvers.arpack_shift_invert import APPLICATIONS_PER_BASIS_GUESS, arnoldi_basis_size
 from .definition_common import (EIGENFREQUENCY_STUDY, EM_FAMILY, FREQUENCY_DOMAIN_STUDY, DEFAULT_WAVELENGTH,
                                 _complex_index, _em_physics_types, _material_issues, _permittivity_writer_issues,
@@ -32,7 +32,7 @@ from .solvers.fdfd_sphere import (SPHERE_MATERIAL_SCHEMA_KEY, SPHERE_PERMITTIVIT
 from .spherical_multipoles import DIPOLE_ORIENTATIONS, SPHERE_FAMILIES, SPHERE_FIELD_COMPONENTS
 
 _TYPE_NAME = 'em_fdfd_sphere'
-_DRIVEN_STUDIES = ('stationary', FREQUENCY_DOMAIN_STUDY)
+_DRIVEN_STUDIES = (STATIONARY_STUDY, FREQUENCY_DOMAIN_STUDY)
 _FAMILY_CHOICES = ('both',) + SPHERE_FAMILIES
 _MIN_CELLS_PER_WAVELENGTH = 10.0
 _MIN_CELLS_PER_SKIN_DEPTH = 2.0
@@ -532,7 +532,7 @@ EM_FDFD_SPHERE = PhysicsType(
     + (replace(SphereRenderer.field_infos['absorbed_power'], name='q_abs'),),
     output_fields=tuple(SphereRenderer.field_infos.values()),
     source_slots=source_slot_docs(SPHERE_PERMITTIVITY_SLOTS),
-    supported_studies=(FREQUENCY_DOMAIN_STUDY, 'stationary', EIGENFREQUENCY_STUDY),
+    supported_studies=(FREQUENCY_DOMAIN_STUDY, STATIONARY_STUDY, EIGENFREQUENCY_STUDY),
     default_study={'type': FREQUENCY_DOMAIN_STUDY},
     uses_dispersion=True,
     solver_roles={'linear': DIRECT_LINEAR_ROLE, 'eigen': eigen_role((EIGENFREQUENCY_STUDY,))},

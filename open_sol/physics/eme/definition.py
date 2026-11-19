@@ -7,7 +7,8 @@ from dataclasses import replace
 from ...core import time_estimate as te
 from ...core.memory_estimate import COMPLEX128_BYTES, FLOAT32_BYTES, FLOAT64_BYTES, MemoryEstimate
 from ...model.definition_helpers import optimization_evaluations
-from ...model.schema import FeatureType, Issue, Param, PhysicsType, feature_path, known_physics
+from ...model.schema import (STATIONARY_STUDY, FeatureType, Issue, Param, PhysicsType, feature_path,
+                             known_physics)   # STATIONARY_STUDY re-exported for definition3d
 from ...solvers.arpack_shift_invert import APPLICATIONS_PER_BASIS_GUESS, arnoldi_basis_size
 from ..em.definition_common import (CPML_BC_HELP, DEFAULT_WAVELENGTH, EM_FAMILY, FREQUENCY_DOMAIN_STUDY,
                                     PERIODIC_BC_HELP, all_solved_wavelengths, apply_pec, boundary_settings_params,
@@ -26,76 +27,71 @@ from .solver import (LENGTH_SWEEP_LIVE_BLOCKS, MODE_CACHE_BYTES, EME_PERMITTIVIT
                      section_table_result)
 
 TYPE_NAME = 'em_eme'
-_STATIONARY_STUDY = 'stationary'
 PORTS_FEATURE = 'eme_ports'
 _DEFAULT_PORT_MODES = 4
+_DEFAULT_STRETCH_FACTORS = (0.5, 1.0, 1.5, 2.0)   # eme_length_sweep default (estimates of an unset value)
+_DEFAULT_PERIODS = 10                            # eme_periodic n_periods default (likewise)
 
-# ---- settings ----
+# ---- settings (help texts shared with definition3d) ----
+TRUNCATED_BASIS_HELP = ('A truncated basis leaves a projection error, reported as the section table reciprocity_defect '
+                        '(run-log warning above 1e-3): raise n_modes until the port results converge.')
+COMPLEX_EPS_HELP = 'The mode solves use eps - j sigma_e / (omega eps0) + every Drude / Lorentz pole chi(omega).'
 _BC_HELP = ' '.join((
-    'The two faces along propagation_axis are the ports: the first and last cell layers of the domain continue to '
-    'infinity, so their bc is not read (pec or pmc avoids the unused padding of cpml; periodic and mirrors are '
-    'refused there). The two other (transverse) faces bound every section line as in the em_fdfd_* types:',
+    'The faces along propagation_axis are the ports: the end cell layers continue to infinity and their bc is not '
+    'read (pec / pmc avoid the unused cpml padding; periodic and mirrors are refused). The transverse faces bound '
+    'every section line as in em_fdfd_*:',
     CPML_BC_HELP,
-    'In the mode solve it is the complex coordinate stretch of the pml_* settings and the modes localised in it are '
-    'kept (unlike em_modes and the mode ports): they stand for the radiation, so a radiating structure converges in '
-    'n_modes more slowly.',
+    'The mode solves keep the PML modes as radiation (unlike em_modes and mode ports), so radiating structures '
+    'converge more slowly in n_modes.',
     PERIODIC_BC_HELP,
-    'pec, pmc and the mirrors (symmetric / antisymmetric) pin the outermost cell as the em_fdfd_* walls do.',
+    'pec, pmc and mirrors pin the outermost cell as the em_fdfd_* walls do.',
 ))
 _SETTINGS = (
     Param('polarization', 'choice', 'ez', label='Polarisation', choices=('ez', 'hz'),
           choice_labels=(('ez', 'Electric field out of the plane'), ('hz', 'Magnetic field out of the plane')),
-          help="Field out of the xy plane: 'ez' (E_z, H_x, H_y; reads eps_r = eps_zz) or 'hz' (H_z, E_x, E_y; reads "
-               'eps_xx / eps_yy). The mode lines and interfaces are those of em_fdfd_ez / em_fdfd_hz.',
+          help='ez: E_z, H_x, H_y, reads eps_r (= eps_zz); hz: H_z, E_x, E_y, reads eps_xx / eps_yy. Lines and '
+               'interfaces as em_fdfd_ez / em_fdfd_hz.',
           tip='Which field points out of the drawing: the electric field (light polarised out of the plane) or the '
               'magnetic field (light polarised in the plane).'),
     Param('propagation_axis', 'choice', 'x', label='Propagation axis', choices=('x', 'y'),
           choice_labels=(('x', 'Along x'), ('y', 'Along y')),
-          help='Axis along which the device is cut into sections: every cell layer normal to it is a slice, '
-               'consecutive equal slices form one section (so a taper is a staircase at the mesh resolution along '
-               'this axis: refine the mesh there to smooth it), and its lo / hi faces are the ports.',
+          help='Axis along which the device is cut: each cell layer normal to it is a slice, consecutive equal '
+               'slices form a section (a taper is a staircase at the mesh resolution: refine there); its lo / hi '
+               'faces are the ports.',
           tip='Direction in which the light travels through the device; its two edges are the input and output.'),
     Param('wavelength', 'float', DEFAULT_WAVELENGTH, label='Wavelength', unit='m', min=0.0, min_exclusive=True,
           follows_parameters=True,
-          help='Vacuum wavelength lambda0 of a stationary solve (omega = 2 pi C0 / lambda0); a frequency_domain study '
-               'solves its own wavelengths instead (one cold solve each). Materials enter at omega (sigma_e and '
-               'Drude / Lorentz poles complex). The line modes need >= 10 cells per lambda0 / |n| along the line '
-               '(validation checks it at the build value only). A reused sweep build (sweep reuse_build) follows a '
-               'value of parameters only without rebuilding (not on an auto mesh sized by it). Typical 1.31e-6 or '
-               '1.55e-6 m.',
+          help='Vacuum wavelength of a stationary solve; a frequency_domain study solves its own wavelengths '
+               'instead. Materials enter at omega (sigma_e and poles complex). Line modes need >= 10 cells per '
+               'lambda0 / |n| along the line (validated at the build value only). A sweep with reuse_build follows '
+               'it without rebuilding (not on an auto mesh sized by it). Typical 1.31e-6 or 1.55e-6 m.',
           tip='Vacuum wavelength of the light in metres: 1.55e-6 for 1550 nm. A frequency domain study uses its own '
               'list instead.'),
     Param('n_modes', 'int', 20, label='Modes per section', min=0,
-          help='Modes of each section line (slab_modes ranking: descending Re(k_t^2), evanescent last, PML modes '
-               'kept); 0 = every active cell of the line, a complete basis: the mode matching is then exact for the '
-               'discretised line (reciprocal S and, lossless, power conserved) but each section costs O(m^3) for m '
-               'line cells. A truncated basis leaves a projection error that the section table reports as the '
-               'interfaces\' reciprocity defect (a run-log warning above 1e-3); raise n_modes until the port results '
-               'converge. 10-40 typical, more for radiating (cpml) lines.',
+          help='Modes per section line (descending Re(k_t^2), evanescent last, PML modes kept). 0 = every active '
+               'line cell, a complete basis: mode matching exact for the discretised line (reciprocal S; lossless: '
+               'power conserved), O(m^3) per section for m line cells. ' + TRUNCATED_BASIS_HELP + ' 10-40 typical, '
+               'more with cpml line faces.',
           tip='How many modes describe the light in each slice of the device. More modes are more accurate and '
               'slower; 0 uses all of them.'),
     Param('section_tolerance', 'float', 0.0, label='Section tolerance', unit='1', min=0.0,
-          help='Slices whose material rows (permittivity, sigma_e, mu_r, sigma_m, pole regions, PEC) differ from the '
-               'first slice of the current section by at most this fraction of each row\'s largest |value| join that '
-               'section (solved once, on its first slice); 0 = identical slices only. A value > 0 merges smoothly '
-               'varying (e.g. heated) regions at the cost of a staircase in the material.',
+          help="Slices whose material rows (permittivity, sigma_e, mu_r, sigma_m, pole regions, PEC) differ from the "
+               "section's first slice by at most this fraction of each row's max |value| join it (solved on that "
+               'slice); 0 = identical slices only. > 0 merges smoothly varying (e.g. heated) regions into a material '
+               'staircase.',
           tip='How different two neighbouring slices may be and still count as one section. Keep 0 unless the '
               'material varies smoothly, e.g. after heating.'),
 ) + boundary_settings_params(_BC_HELP)
 
 # ---- material vocabulary (the em_modes rows: all three permittivity arrays exist) ----
-_COMPLEX_EPS = ('The mode solves use the complex permittivity at omega: this value - j sigma_e / (omega eps0) plus '
-                'every Drude / Lorentz pole chi(omega).')
+SIGMA_M_HELP = 'Magnetic loss: mu_r gains -j sigma_m / (omega mu0) (artificial absorbers only).'
 _MATERIAL_PROPERTIES = em_material_params('modes', {
-    'eps_r': ('Isotropic relative permittivity (>= 1): sets eps_zz (polarization ez) and eps_xx, eps_yy (hz) unless '
-              f'the material sets those components; may depend on x, y and physics fields. {_COMPLEX_EPS} For a '
-              'dispersive material it is the background eps_inf.'),
-    'eps_zz': ('z component of the relative permittivity (>= 1), the one E_z sees (polarization ez); overrides eps_r '
-               'for E_z.'),
-    'sigma_e': f'Ohmic loss in S/m on every E component, default 0. {_COMPLEX_EPS}',
-    'mu_r': 'Real relative permeability (>= 1), 1 for practically every optical material; mu_r - j sigma_m / (omega '
-            'mu0) in the solve.',
-    'sigma_m': 'Magnetic loss in Ohm/m, default 0: mu_r gains -j sigma_m / (omega mu0) (artificial absorbers only).',
+    'eps_r': ('Isotropic: sets eps_zz (ez) and eps_xx, eps_yy (hz) unless the material sets those. '
+              f'{COMPLEX_EPS_HELP} Dispersive material: the background eps_inf.'),
+    'eps_zz': 'The only component E_z sees (polarization ez); overrides eps_r for E_z.',
+    'sigma_e': f'Ohmic loss on every E component. {COMPLEX_EPS_HELP}',
+    'mu_r': 'Real relative permeability, 1 for practically every optical material.',
+    'sigma_m': SIGMA_M_HELP,
 }, tips={'eps_zz': ('Permittivity for the electric field along z, out of the plane, used with the electric field out '
                     "of the plane. When set it replaces 'Relative permittivity' for that direction.")})
 
@@ -103,42 +99,40 @@ _MATERIAL_PROPERTIES = em_material_params('modes', {
 _PORTS_PARAMS = (
     Param('input_face', 'choice', 'lo', label='Input face', choices=('lo', 'hi'),
           choice_labels=(('lo', 'Low end (x_lo or y_lo)'), ('hi', 'High end (x_hi or y_hi)')),
-          help='Port face of the incident mode: lo = x_lo / y_lo of propagation_axis (travelling toward +axis), hi '
-               'the opposite one.',
+          help='Port face of the incident mode: lo = x_lo / y_lo of propagation_axis (incident toward +axis), hi the '
+               'opposite.',
           tip='Edge of the device where the light comes in.'),
     Param('input_mode', 'int', 1, label='Input mode', min=1,
-          help='1-based rank of the incident mode among the port modes of the input face (the mode solver ranking: '
-               '1 = largest Re n_eff, the PML modes of a cpml face listed after all others, so mode k is the k-th '
-               'mode the mode ports would find). It must carry power (a propagating mode), else the power fractions '
-               'are NaN with a run-log warning.',
+          help='Rank of the incident mode among the input face port modes (mode solver ranking: 1 = largest Re '
+               'n_eff, PML modes of a cpml face last, so mode k is the k-th mode mode ports would find). It must '
+               'propagate, else the power fractions are NaN with a run-log warning.',
           tip='Which mode of the input waveguide comes in: 1 is the fundamental mode.'),
     Param('input_power', 'float', 1.0, label='Input power', unit='W/m', min=0.0, min_exclusive=True,
-          help='Power per unit length in z of the incident mode; scales only the reconstructed fields (the S-matrix '
-               'and power fractions do not depend on it).',
+          help='Incident mode power per unit length in z; scales only the reconstructed fields, not the S-matrix or '
+               'power fractions.',
           tip='Power of the incoming light per metre out of the plane; it only scales the field plots.'),
     Param('n_port_modes', 'int', _DEFAULT_PORT_MODES, label='Reported port modes', min=1,
-          help='Port modes per face listed in the result table and the S-matrix extras, and the number of '
-               'transmission_<k> scalar outputs.',
+          help='Port modes per face in the result table and S-matrix extras; also the number of transmission_<k> '
+               'scalar outputs.',
           tip='How many modes of each end are listed in the results.'),
 )
 _PORTS_DESCRIPTION = (
-    "Ports of the EME device and its excitation. Result 'table' (one row per reported port mode of each face, the "
-    'input face first = reflection, then the output face = transmission): output_face, mode_number, n_eff, n_eff_imag '
-    '(of that port mode, Im < 0 lossy), s_abs2 = |S|^2 of the bilinear-normalised amplitudes, phase_deg = arg S (the '
-    'reference planes are the window faces along propagation_axis; each mode is real > 0 at its peak cell), '
-    'power_fraction = |S|^2 p_out / p_in (p = the flux one unit of amplitude carries: power fractions are |S|^2 for '
-    'lossless propagating modes). Port mode k = the k-th mode of the first / last section, the PML modes of cpml '
-    'faces listed last. Extras: wavelength, input_face, input_mode, input_power, transmission and '
-    'reflection (power fractions summed over every mode of the face), s_matrix_real / s_matrix_imag = the port '
-    'S-matrix [[S11, S12], [S21, S22]] over the reported modes (lo modes first; S21 = lo -> hi) and s_matrix_modes '
-    "{'lo': n, 'hi': n}. Without this feature the excitation is mode 1 at 1 W/m from lo. At most one per physics.")
-SECTION_TABLE_DESCRIPTION = (
+    "Ports and excitation. Result 'table', one row per reported port mode of each face (input face first = "
+    'reflection, then output face = transmission): output_face, mode_number, n_eff, n_eff_imag (Im < 0 lossy), s_abs2 '
+    '= |S|^2 of the bilinear-normalised amplitudes, phase_deg = arg S (reference planes = the window faces along '
+    'propagation_axis; each mode real > 0 at its peak cell), power_fraction = |S|^2 p_out / p_in (p = flux per unit '
+    'amplitude; = |S|^2 for lossless propagating modes). Port mode k = the k-th mode of the first / last section '
+    '(input_mode ranking). Extras: wavelength, input_face, input_mode, input_power, transmission and reflection '
+    '(summed over every mode of the face), s_matrix_real / s_matrix_imag = port S-matrix [[S11, S12], [S21, S22]] '
+    "over the reported modes (lo first; S21 = lo -> hi), s_matrix_modes {'lo': n, 'hi': n}. Without this feature: "
+    'mode 1 at 1 W/m from lo. At most one per physics.')
+SECTION_TABLE_DESCRIPTION = (   # definition3d replaces 'along propagation_axis' and 'cell layers'
     "Sections of the last solve. Result 'table', one row per section from lo to hi: section (1-based), start and "
-    'length in m along propagation_axis, n_slices (cell layers), n_modes (modes found on its line), n_eff_1 / n_eff_2 '
-    '(Re n_eff of its first two modes), power_defect and reciprocity_defect of the interface to the next section '
-    '(NaN for the last): power = max over the propagating incident modes of |1 - power reflected and transmitted into '
-    'propagating modes| (meaningful for lossless lines without cpml only), reciprocity = max |S12 - S21^T| / max |S21| '
-    '(0 for a complete basis; the convergence measure in n_modes). Extra wavelength.')
+    'length [m] along propagation_axis, n_slices (cell layers), n_modes (modes found), n_eff_1 / n_eff_2 (Re n_eff '
+    'of its first two modes), power_defect and reciprocity_defect of the interface to the next section (NaN for the '
+    'last): power = max over propagating incident modes of |1 - power reflected and transmitted into propagating '
+    'modes| (lossless lines without cpml only), reciprocity = max |S12 - S21^T| / max |S21| (0 for a complete basis; '
+    'the n_modes convergence measure). Extra wavelength.')
 
 
 def port_params():
@@ -173,27 +167,25 @@ def length_sweep_params(axis_text):
     """eme_length_sweep Params; axis_text names the propagation axis in the help texts."""
     return (
         Param('start', 'float', 0.0, label='Range start', unit='m',
-              help=f'Lower end of the stretched range along {axis_text} [m, model coordinates]: every section whose '
-                   'centre lies in [start, stop] gets its length times each stretch factor.',
+              help=f'Lower end of the stretched range along {axis_text} (model coordinates).',
               tip='Where the part of the device whose length is varied begins, along the propagation direction.'),
         Param('stop', 'float', 1e-6, label='Range stop', unit='m',
-              help=f'Upper end of the stretched range along {axis_text} [m], > start.',
+              help=f'Upper end of the stretched range along {axis_text}; > start.',
               tip='Where the part of the device whose length is varied ends.'),
-        Param('stretch_factors', 'float_list', [0.5, 1.0, 1.5, 2.0], label='Stretch factors', unit='1', min=0.0,
-              min_exclusive=True,
-              help='Factors applied to the lengths of the sections in the range, one re-cascade each (no new mode '
-                   'solve: the modes and interfaces of the solve are reused), e.g. 0.5 .. 4 for a taper length scan.',
+        Param('stretch_factors', 'float_list', list(_DEFAULT_STRETCH_FACTORS), label='Stretch factors', unit='1',
+              min=0.0, min_exclusive=True,
+              help='One re-cascade per factor (modes and interfaces reused), e.g. 0.5 .. 4 for a taper length scan.',
               tip='How much the part is stretched for each point of the curve: 2 makes it twice as long.'),
     )
 
 
 LENGTH_SWEEP_DESCRIPTION = (
-    "Cheap length scan of the last solve: the sections whose centre lies in [start, stop] are re-propagated with their "
-    'lengths times each stretch factor and the S-matrix re-cascaded from the kept interfaces (no mode solve; a taper '
-    "staircase is stretched step by step, so it stays the same taper, longer). Result 'xy' versus the stretched length "
-    '[m] of the range (in factor order): series transmission_<k> (k = 1 .. n_port_modes of eme_ports), transmission '
-    'and reflection power fractions of the excitation, as the scalar outputs; extras stretch_factors, wavelength, '
-    'n_sections_stretched. Keeps the interface S-matrices of every solve (4 N^2 complex per section).')
+    'Cheap length scan of the last solve: the sections whose centre lies in [start, stop] get their lengths times '
+    'each stretch factor and the S-matrix is re-cascaded from the kept interfaces (no mode solve; a taper staircase '
+    "stays the same taper, longer). Result 'xy' versus the stretched range length [m] (factor order): series "
+    'transmission_<k> (k = 1 .. n_port_modes), transmission, reflection, as the scalar outputs; extras '
+    "stretch_factors, wavelength, n_sections_stretched. Keeps every solve's interface S-matrices (4 N^2 complex per "
+    'section).')
 
 
 def apply_length_sweep(ctx, solver, feature_spec, values, selection):
@@ -231,41 +223,38 @@ def _range_issues(values, path):
 def _range_params(axis_text, what, start_tip, stop_tip):
     """start / stop Params of a range along the propagation axis selecting the sections whose centre lies in it."""
     return (Param('start', 'float', 0.0, label='Range start', unit='m',
-                  help=f'Lower end of the {what} along {axis_text} [m, model coordinates]: the sections (cell layers) '
-                       'whose centre lies in [start, stop] belong to it.', tip=start_tip),
+                  help=f'Lower end of the {what} along {axis_text} (model coordinates).', tip=start_tip),
             Param('stop', 'float', 1e-6, label='Range stop', unit='m',
-                  help=f'Upper end of the {what} along {axis_text} [m], > start.', tip=stop_tip))
+                  help=f'Upper end of the {what} along {axis_text}; > start.', tip=stop_tip))
 
 
 def periodic_params(axis_text):
     """eme_periodic Params; axis_text names the propagation axis in the help texts."""
     return _range_params(axis_text, 'unit cell', 'Where the drawn period of the grating begins along the propagation '
                                                  'direction.', 'Where the drawn period ends.') + (
-        Param('n_periods', 'int', 10, label='Number of periods', min=1,
-              help='Periods of the device: the drawn unit cell stands for n_periods copies in a row (its S-matrix '
-                   'raised to that power by repeated star products, cost log2(n_periods)); the sections after the '
-                   'range follow the last period, so the hi port plane is (n_periods - 1) periods beyond the window '
-                   'face. 1 = only the Bloch analysis.',
+        Param('n_periods', 'int', _DEFAULT_PERIODS, label='Number of periods', min=1,
+              help='The drawn unit cell stands for n_periods copies in a row (cost ~log2(n_periods) star products); '
+                   'the sections after the range follow the last period, so the hi port plane lies (n_periods - 1) '
+                   'periods beyond the window face. 1 = Bloch analysis only.',
               tip='How many times the drawn period repeats. The output part of the drawing follows the last one.'),
         Param('n_bloch_modes', 'int', 4, label='Reported Bloch modes', min=1,
-              help='Forward Bloch modes of the unit cell listed in the result table, least attenuated first.',
+              help='Forward Bloch modes listed in the result table.',
               tip='How many Bloch modes of the period are listed in the results.'))
 
 
 PERIODIC_DESCRIPTION = (
     "Periodic block (gratings, Bragg mirrors, band edges): the sections whose centre lies in [start, stop] are one "
-    'period, drawn once and repeated n_periods times. The unit cell S-matrix (the junction from its last to its first '
-    'section, then its sections) is raised to the power n_periods - 1 by repeated Redheffer star products and '
-    'inserted after the drawn period, so the port results, scalars and length sweep see the whole periodic device '
-    '(at least one section must follow the range when n_periods > 1); the field plot shows the first period, the '
-    'sections after it carry the field leaving the last period. Bloch modes: the eigenvectors of the unit cell, '
-    'fields one period on = lam times the fields (lam = exp(-j K period)), from the generalised eigenproblem of its '
-    "S-matrix. Result 'table' (forward modes: |lam| < 1, or on the unit circle with net forward power; least "
-    'attenuated first): bloch_mode, n_bloch = Re K / k0 (unfolded to the Brillouin zone nearest the length-weighted '
-    'mean Re n_eff of mode 1 over the cell), n_bloch_imag = Im K / k0 (< 0: decaying, a stop band when the dominant '
-    'mode decays without loss), multiplier_abs = |lam| per period, phase_per_period_deg = Re K period [deg, in (-180, '
-    "180]], dominant_mode = the cell mode carrying most of the Bloch mode. Extras wavelength, period [m], n_periods, "
-    'first_section / last_section (1-based section table rows). At most one per physics.')
+    'period, drawn once and repeated n_periods times: the unit-cell S-matrix (junction from its last to its first '
+    'section, then its sections) raised to n_periods - 1 by star products is inserted after the drawn period, so '
+    'port results, scalars and length sweep see the whole device (at least one section must follow the range when '
+    'n_periods > 1); the field plot shows the first period, the sections after it the field leaving the last. Bloch '
+    'modes: unit-cell eigenvectors (fields one period on = lam times the fields, lam = exp(-j K period)) from the '
+    "generalised eigenproblem of its S-matrix. Result 'table' (forward modes: |lam| < 1, or |lam| = 1 with net "
+    'forward power; least attenuated first): bloch_mode, n_bloch = Re K / k0 (unfolded to the Brillouin zone nearest '
+    'the length-weighted mean Re n_eff of mode 1 over the cell), n_bloch_imag = Im K / k0 (< 0 decaying; a stop band '
+    'when the dominant mode decays without loss), multiplier_abs = |lam| per period, phase_per_period_deg = Re K '
+    'period [deg, in (-180, 180]], dominant_mode (the cell mode carrying most of it). Extras wavelength, period [m], '
+    'n_periods, first_section / last_section (section table rows). At most one per physics.')
 _PERIODIC_SUMMARY = ('A grating or other repeated structure drawn as one period: repeats it many times at almost no '
                      'cost and lists its Bloch modes (band gaps).')
 
@@ -296,13 +285,13 @@ def bend_params(axis_text, reference_text, reference_tip):
     return _range_params(axis_text, 'bend', 'Where the bent part begins, measured along the straightened guide.',
                          'Where the bent part ends, measured along the straightened guide.') + (
         Param('radius', 'float', 10e-6, label='Bend radius', unit='m',
-              help=f'Radius R [m] of the reference line ({reference_text}); > 0 bends toward lower coordinates (the '
-                   'centre of curvature at reference - R), < 0 the other way. The bend angle is the range length / '
-                   '|R|; the centre of curvature must lie outside the section line or cross-section.',
+              help=f'Radius R of the reference line ({reference_text}); > 0 bends toward lower coordinates (centre '
+                   'of curvature at reference - R), < 0 the other way. Angle = range length / |R|; the centre of '
+                   'curvature must lie outside the section line or cross-section.',
               tip='Radius of the bend at the reference position. Its sign sets the direction it turns.'),
         Param('reference', 'float', 0.0, label='Reference position', unit='m',
-              help=f'{reference_text} [m, model coordinates] of the line whose radius is R: the drawn range length is '
-                   'its arc length and the section n_eff its beta / k0.', tip=reference_tip))
+              help=f'{reference_text} (model coordinates) of the line whose radius is R: the drawn range length is its '
+                   'arc length and the section n_eff its beta / k0.', tip=reference_tip))
 
 
 def bend_validate(vctx, physics_spec, feature_spec, values):
@@ -339,14 +328,13 @@ def bend_feature(axis_text, reference_text, reference_tip, description):
 
 BEND_DESCRIPTION_2D = (
     'Circular bend: the sections whose centre lies in [start, stop] along propagation_axis are a bend of radius R '
-    'about the line coordinate reference, drawn straightened (the range length = the arc length at the reference, '
-    'the angle = length / |R|). Exact for the 2D line: each bent section solves the cylindrical operator (r / R^2) '
-    'd/dr (r du/dr) + k0^2 q (r / R)^2 (r = R + line coordinate - reference; ez q = eps mu, hz with the eps weights '
-    'of the em_fdfd_hz line), so its n_eff = beta / k0 at r = R, propagation e^{-j beta R theta}, and the straight - '
-    'bent interfaces are mode-matched like any other (radiation of a tight bend goes into the PML modes of cpml line '
-    'faces). The field plot shows the straightened bend (the in-plane component along the axis is H_theta / '
-    'E_theta); absorbed_power is the physical density, so its integral over the straightened drawing misses the '
-    'factor r / R. Ranges must not overlap.')
+    'about the line coordinate reference, drawn straightened. Exact for the 2D line: each bent section solves the '
+    'cylindrical operator (r / R^2) d/dr (r du/dr) + k0^2 q (r / R)^2 (r = R + line coordinate - reference; ez q = '
+    'eps mu, hz with the em_fdfd_hz eps weights), so n_eff = beta / k0 at r = R, propagation e^{-j beta R theta}; '
+    'straight - bent interfaces are mode-matched like any other (tight-bend radiation goes into the PML modes of cpml '
+    'line faces). The field plot shows the straightened bend (the in-plane component along the axis is H_theta / '
+    'E_theta); absorbed_power is the physical density, so its integral over the drawing misses the factor r / R. '
+    'Ranges must not overlap.')
 
 
 # ---- adjoint objective and design region (adjoint.py; optimization study) ----
@@ -356,35 +344,30 @@ _OBJECTIVE_PARAMS = (
           choice_labels=(('transmission_mode', 'Transmission into one mode'),
                          ('reflection_mode', 'Reflection into one mode'),
                          ('transmission', 'Total transmission'), ('reflection', 'Total reflection')),
-          help='Power fraction of the excitation (eme_ports, else mode 1 from lo) this term measures, as the scalar '
-               'outputs: transmission_mode = into port mode mode_number of the output face (transmission_<k>), '
-               'reflection_mode = back into port mode mode_number of the input face, transmission / reflection = '
-               'summed over every mode of that face. J = the sum of weight * quantity over the enabled '
-               'adjoint_objective features.',
+          help='Power fraction of the excitation (eme_ports, else mode 1 from lo), as the scalar outputs: '
+               'transmission_mode = into port mode mode_number of the output face (transmission_<k>), '
+               'reflection_mode = back into that mode of the input face, transmission / reflection = summed over '
+               'every mode of that face. J = sum of weight * quantity over the enabled adjoint_objective features.',
           tip='What this objective measures: the light reaching one mode or all modes of the output, or the light '
               'reflected back.'),
     Param('mode_number', 'int', 1, label='Mode number', min=1, visible_if=(('quantity', _OBJECTIVE_MODE_QUANTITIES),),
-          help='1-based port mode of transmission_mode / reflection_mode (the eme_ports ranking: 1 = largest Re n_eff, '
-               'PML modes last); at most n_modes when n_modes > 0.',
+          help='Port mode of transmission_mode / reflection_mode (eme_ports input_mode ranking); at most n_modes when '
+               'n_modes > 0.',
           tip='Which mode is measured: 1 is the fundamental mode.'),
     Param('weight', 'float', 1.0, label='Weight', unit='1',
-          help='Factor of this term in J: 1 to maximise the quantity, -1 to minimise it, 0 to record it only.',
+          help='Factor in J: 1 maximises the quantity, -1 minimises it, 0 only records it.',
           tip='How much this measurement counts in the total objective: 1 to increase it, -1 to decrease it, 0 to only '
               'record it.'),
 )
 _OBJECTIVE_DESCRIPTION = (
-    'Objective term of the EME cascade adjoint: weight times a port power fraction of the excitation. Every solve '
-    'records the quantity; the output field eps_sensitivity is dJ/d eps per unit area [1/m^2] of J = the sum of '
-    'weight * quantity (ez: eps_r; hz: the sum of the eps_xx and eps_yy terms, both differentiated: the line cells '
-    'and the face means along the line), from the forward and one adjoint cascade field (Lorentz '
-    'reciprocity of the section equation: no extra mode solve; computed on the slices of the design regions, on every '
-    'slice without one, when the field is read). Exact for a complete basis (n_modes 0), otherwise the same formula on '
-    'the truncated fields (converging with n_modes). The drawn cell of an eme_periodic block stands for all its '
-    'n_periods periods: its gradient sums the field products of every period. The port modes (first and last cell '
-    'layer along propagation_axis) are held fixed; sigma_e, poles and mu_r are not differentiated. An optimization '
-    'study '
-    "maximises J by the design_region densities. Result 'xy' versus vacuum wavelength: series value and weighted "
-    '(unit 1); extras frequency, wavelength, quantity, mode_number, weight.')
+    'Objective term of the EME cascade adjoint: weight times a port power fraction of the excitation, recorded every '
+    'solve. Output field eps_sensitivity = dJ/d eps per unit area [1/m^2] of J (ez: eps_r; hz: the sum of the eps_xx '
+    'and eps_yy terms), from the forward and one adjoint cascade field (no extra mode solve; computed when the field '
+    'is read, on the design-region slices, or every slice without one). Exact for a complete basis (n_modes 0), else '
+    'converging with n_modes. An eme_periodic drawn cell stands for all n_periods periods (its gradient sums every '
+    'period). Port modes (first and last cell layer) are held fixed; sigma_e, poles and mu_r are not differentiated. '
+    "An optimization study maximises J by the design_region densities. Result 'xy' versus vacuum wavelength: series "
+    'value and weighted (unit 1); extras frequency, wavelength, quantity, mode_number, weight.')
 
 
 def _settings_value(physics_spec, name, default):
@@ -423,17 +406,14 @@ OBJECTIVE_FEATURE = FeatureType(   # definition3d replaces its description
     apply=_apply_objective, result=object_result(objective_result), validate=_validate_objective)
 _FDFD_DESIGN_REGION = design_region_feature()
 _DESIGN_DESCRIPTION = (
-    'Density design region on the selected domains: each window cell carries a density rho in [0, 1], filtered by a '
-    'conic filter of filter_radius and projected by a tanh of projection_beta / projection_eta to rho_bar, and gets '
-    'eps = eps_min + rho_bar (eps_max - eps_min) (polarization ez: eps_r; hz: eps_xx and eps_yy, an isotropic '
-    'change), overwriting the material permittivity there '
-    "(sigma_e, poles and mu_r stay the material's). The same map and chain rule as the em_fdfd_* design_region. The "
-    'optimization study varies rho to maximise the adjoint_objective sum J; any other study solves the '
-    'initial_density design. Keep the region off the first and last cell layer along propagation_axis (the port '
-    'sections: the build refuses it). Every distinct slice of the region becomes its own section (one mode solve '
-    'each per evaluation). Design regions of one physics must not share cells. Output field design_density = rho_bar '
-    "(0 outside every region). Result 'xy' versus iteration (0 = initial design): series objective (J of the whole "
-    'model, unit 1: power fractions) and grayness (mean 4 rho_bar (1 - rho_bar), 0 = binary); extras n_cells, eps_min, eps_max, mean_density, '
+    'Density design region on the selected domains: each window cell density rho in [0, 1] is conic-filtered and '
+    'tanh-projected to rho_bar, which sets eps_r (ez) or eps_xx and eps_yy (hz, isotropic), overwriting the material '
+    'permittivity; map and chain rule as the em_fdfd_* design_region. The optimization study varies rho to maximise '
+    'the adjoint_objective sum J; other studies solve initial_density. Keep the region off the first and last cell '
+    'layer along propagation_axis (port sections: the build refuses it). Every distinct slice of the region is its '
+    'own section (one mode solve each per evaluation). Regions of one physics must not share cells. Output field '
+    "design_density = rho_bar (0 outside). Result 'xy' versus iteration (0 = initial): series objective (J, unit 1) "
+    'and grayness (mean 4 rho_bar (1 - rho_bar), 0 = binary); extras n_cells, eps_min, eps_max, mean_density, '
     'final_grayness, note.')
 
 
@@ -454,9 +434,8 @@ _FEATURES = (
                  'Position across the waveguide, usually its centre, at which the bend has exactly the given radius.',
                  BEND_DESCRIPTION_2D),
     FeatureType('pec_domain', 'Perfect electric conductor', 'domain_condition', 'domain',
-                description='Perfect electric conductor: the cells whose centre lies in the selected domains are '
-                            'inactive in every section line (u = 0 for ez; hz faces next to them carry no tangential '
-                            'E), staircased to the mesh.',
+                description='Perfect electric conductor: cells whose centre lies in the selected domains are inactive '
+                            'in every section line (ez: u = 0; hz: adjacent faces carry no tangential E), staircased.',
                 summary='Turns the selected domains into a perfect metal, following the mesh cells.',
                 apply=apply_pec, memory_estimate=pec_memory_estimate(0)),
     OBJECTIVE_FEATURE,
@@ -568,11 +547,11 @@ def _create(ctx, physics_spec, settings_values):
 
 
 def follow_wavelength_setting(ctx, physics_spec, settings_values, solver):
-    """A reused sweep build re-sets the wavelength setting (EMEBase.set_wavelength; a frequency_domain study solves
-    its own wavelengths, the setting is unused there). 2D and 3D create."""
-    if ctx.study_type != FREQUENCY_DOMAIN_STUDY:
-        ctx.follow_parameters(physics_spec.settings, settings_values, ('wavelength',), solver.set_wavelength, solver,
-                              f"physics '{physics_spec.name}' wavelength")
+    """A reused sweep build re-sets the wavelength setting (EMEBase.set_wavelength). 2D and 3D create; also in a
+    frequency_domain study, whose own wavelengths override it (sweep_reuse.unfollowed_values expects a follower for
+    every flagged value a live parameter reaches)."""
+    ctx.follow_parameters(physics_spec.settings, settings_values, ('wavelength',), solver.set_wavelength, solver,
+                          f"physics '{physics_spec.name}' wavelength")
 
 
 def _port_mode_count(physics_spec):
@@ -591,12 +570,11 @@ def scalar_outputs(settings_values, physics_spec):
 
 
 SCALAR_OUTPUTS_HELP = (
-    'Power fractions (unit 1) of the excitation (eme_ports, else mode 1 from lo) of the last solve: '
-    'transmission_<k> into port mode k of the output face (k = 1 .. n_port_modes, modes found only), transmission '
-    'and reflection summed over every mode of the output / input face (|S|^2 p_out / p_in; lossless: 1 = '
-    'transmission + reflection, radiation into kept PML modes included). A missing value (an evanescent input mode, '
-    'too few modes) gives NaN plus a run-log warning. Example derived value {"name": "T1", "expression": '
-    '"eme_transmission_1"}.')
+    'Power fractions (unit 1) of the excitation (eme_ports, else mode 1 from lo), last solve: transmission_<k> into '
+    'port mode k of the output face (k = 1 .. n_port_modes, modes found only), transmission and reflection summed '
+    'over every mode of the output / input face (|S|^2 p_out / p_in; lossless: transmission + reflection = 1, kept '
+    'PML modes included). NaN plus a run-log warning when missing (evanescent input mode, too few modes). Example '
+    'derived value {"name": "T1", "expression": "eme_transmission_1"}.')
 
 
 # device float64 temporaries of adjoint.sensitivity_density (cell areas, the gradient sum, the quotient) alive at once
@@ -606,7 +584,7 @@ _SENSITIVITY_TEMPORARIES = 3
 def length_sweep_host_items(features, n_modes):
     """Host item of the stacked length-sweep re-cascade (one chunk of stretch factors; the monitors record one after
     another), () without an enabled eme_length_sweep (2D and 3D)."""
-    counts = [len(values) if isinstance(values, (list, tuple)) else _DEFAULT_STRETCH_FACTORS
+    counts = [len(values) if isinstance(values, (list, tuple)) else len(_DEFAULT_STRETCH_FACTORS)
               for values in (feature.params.get('stretch_factors') for feature in features
                              if feature.type == 'eme_length_sweep' and isinstance(feature.params, dict))]
     if not counts:
@@ -623,13 +601,12 @@ def _memory_estimate(settings_values, mesh, context):
     n_modes = min(settings_values['n_modes'] or line_cells, line_cells)
     n_cells = int(mesh.n_cells)
     mode_set_bytes = COMPLEX128_BYTES * (3 * n_modes * line_cells + line_cells + 2 * n_modes)
-    n_rows = 7   # read arrays (hz 5), pole regions, PEC: a typical count
     # host: mode-set cache (capped), per section 4 N^2 partial cascades + 4 N^2 interfaces (every slice taken as a
     # section: an upper figure), the material stack, the reconstructed field and the q_abs inputs
     host_items = (
         ('mode-set cache (capped)', min(slices * mode_set_bytes, MODE_CACHE_BYTES)),
         ('partial cascades and interfaces (8 N^2 per section)', 8 * COMPLEX128_BYTES * n_modes ** 2 * slices),
-        ('host material stack', n_rows * FLOAT64_BYTES * n_cells),
+        ('host material stack', _MATERIAL_ROWS * FLOAT64_BYTES * n_cells),
         ('reconstructed field (complex u, in-plane |field|^2)', (COMPLEX128_BYTES + FLOAT64_BYTES) * n_cells),
         ('absorbed power inputs (Gauss mean |E|^2, loss)', 2 * FLOAT64_BYTES * n_cells),
     )
@@ -647,7 +624,7 @@ def _memory_estimate(settings_values, mesh, context):
                                 f'({_SENSITIVITY_TEMPORARIES} x float64)',
                                 _SENSITIVITY_TEMPORARIES * FLOAT64_BYTES * n_cells))
         host_items += ((f'host adjoint gradients ({n_gradients} x float64)', n_gradients * FLOAT64_BYTES * n_cells),)
-    periods = [feature.params.get('n_periods', 10) for feature in features
+    periods = [feature.params.get('n_periods', _DEFAULT_PERIODS) for feature in features
                if feature.type == 'eme_periodic' and isinstance(feature.params, dict)]
     if adjoint and periods and isinstance(periods[0], int) and periods[0] > 1:
         host_items += (('periodic adjoint: partial cascades between the periods (2 N^2 each)',
@@ -669,8 +646,7 @@ REAL_LINE_EIG_FLOPS = 10.0
 TRIDIAGONAL_EIG_FLOPS = 100.0
 # complex multiply-adds / N^3 of one Redheffer star: 2 LUs (2/3 each) with 2 N right-hand columns (2 per N), 8 products
 STAR_COMPLEX_PRODUCTS = 2.0 * (2.0 / 3.0 + 4.0) + 8.0
-_MATERIAL_ROWS = 7             # read arrays, pole regions, PEC: as the memory estimate
-_DEFAULT_STRETCH_FACTORS = 4   # eme_length_sweep stretch_factors default length
+_MATERIAL_ROWS = 7   # read arrays (hz 5), pole regions, PEC: a typical count (memory and time estimates)
 
 
 def physics_counter(context, name):
@@ -742,8 +718,10 @@ def shared_time_estimate(context, slices, n_modes, transverse_points, solve_ops,
     features = [feature for feature in context.physics_spec.features
                 if feature.enabled and isinstance(feature.params, dict)]
     sweeps = [feature.params.get('stretch_factors') for feature in features if feature.type == 'eme_length_sweep']
-    factors = sum(len(values) if isinstance(values, (list, tuple)) else _DEFAULT_STRETCH_FACTORS for values in sweeps)
-    periods = [feature.params.get('n_periods', 10) for feature in features if feature.type == 'eme_periodic']
+    factors = sum(len(values) if isinstance(values, (list, tuple)) else len(_DEFAULT_STRETCH_FACTORS)
+                  for values in sweeps)
+    periods = [feature.params.get('n_periods', _DEFAULT_PERIODS) for feature in features
+               if feature.type == 'eme_periodic']
     periodic = bool(periods) and isinstance(periods[0], int)
     # unit cell, star powers by squaring, link (assemble_total rebuilds it for every stretch factor too)
     link_stars = 2 * math.ceil(math.log2(max(periods[0], 2))) + 2 if periodic else 0
@@ -821,34 +799,21 @@ def _time_estimate(settings_values, mesh, context):
 
 # ---- type ----
 _DESCRIPTION = (
-    'Bidirectional eigenmode expansion (EME) of a 2D in-plane device along propagation_axis (x or y), for devices long '
-    'along that axis (tapers, MMIs, couplers, gratings) where em_fdfd_* would be large. Every cell layer normal to the '
-    'axis is a slice; consecutive equal slices (section_tolerance) form a section, so tapers are staircases at the '
-    'mesh resolution. Each section line is solved once for n_modes slab modes (the em_fdfd_ez / _hz line stencil '
-    'along the other axis, transverse bc_* faces, complex PML stretch with the PML modes kept as radiation; the same '
-    'material rows repeated reuse their modes). Modes are normalised to the unconjugated product <e, h> = sum u (g u) '
-    'w s = 1 (orthogonal also for lossy lines); interfaces are mode-matched by these overlaps (tangential u and its '
-    'transverse partner continuous: R = (I + P P^T)^-1 (I - P P^T), T = P^T (I + R)) and the S-matrices cascaded by '
-    'Redheffer star products (stable with evanescent modes). Exact for a complete basis (n_modes = 0), otherwise '
-    'converging in n_modes (section table reciprocity_defect). The faces along propagation_axis are semi-infinite '
-    'ports at the window planes: their bc is not read. Outputs of the excitation (eme_ports): the reconstructed '
-    'phasor at the cell centres, sum over modes of a_n e^{-j k_n s} + b_n e^{-j k_n (L - s)} per section '
-    '(<pol>_re / _im / _abs / _phase of the out-of-plane field; the other polarisation reads 0), e_abs (primary), '
-    'e_intensity and h_abs (the in-plane component along the axis from the line differences, face mean), '
-    'absorbed_power = 1/2 omega eps0 (-Im eps) times the cell mean of |E|^2 along the axis (3-point Gauss, so its '
-    'integral is the exact absorbed power of the continuum propagation: 1 - T - R of a lossy guide between lossless '
-    'ports), and the materials. Scalar outputs transmission_<k>, transmission, reflection. em_heat_joule reads '
-    'absorbed_power (the time average of the last solve); heat_em_thermo_optic / Pockels write eps_r, eps_xx, eps_yy. '
-    'eme_bend makes a range a circular bend (exact cylindrical line operator), eme_periodic repeats a drawn period '
-    'n times (star powers) and lists its Bloch modes. Optimization study (ez or hz): design_region features '
-    'write eps_r (ez) or eps_xx and eps_yy (hz) and adjoint_objective features weight port power fractions; dJ/d eps '
-    '(output field eps_sensitivity) comes from the cascade adjoint without extra mode solves (exact for n_modes 0). '
-    'Exact '
-    'identities: a complete basis with the discrete '
-    'propagation of the self-tests solves the em_fdfd_ez / _hz lattice of the sectioned guide (both polarisations). '
-    'Studies: stationary (a solve whenever materials changed), frequency_domain (one solve per wavelength; the '
-    'line solves are direct) and optimization. Bloch k is not supported; cannot share the model with another EM type. The instance '
-    "is usually named 'eme'.")
+    'Bidirectional eigenmode expansion (EME) of a 2D in-plane device cut into sections along propagation_axis, for '
+    'long devices (tapers, MMIs, couplers, gratings) where em_fdfd_* would be large. Each section line is solved once '
+    'for n_modes slab modes (em_fdfd_ez / _hz line stencil, transverse bc_* faces, PML modes kept as radiation; '
+    'repeated material rows reuse their modes), normalised to the unconjugated <e, h> = 1 (orthogonal also when '
+    'lossy); interfaces are mode-matched by these overlaps (R = (I + P P^T)^-1 (I - P P^T), T = P^T (I + R)) and '
+    'S-matrices cascaded by Redheffer star products (stable with evanescent modes). Exact for a complete basis '
+    '(n_modes 0), else converging in n_modes. Outputs of the excitation (eme_ports), from the reconstructed phasor at '
+    'cell centres (sum of a_n e^{-j k_n s} + b_n e^{-j k_n (L - s)} per section): <pol>_re / _im / _abs / _phase of '
+    'the out-of-plane field (the other polarisation reads 0), e_abs (primary), e_intensity, h_abs (in-plane component '
+    'along the axis from line differences, face mean), absorbed_power = 1/2 omega eps0 (-Im eps) times the 3-point '
+    'Gauss cell mean of |E|^2 along the axis (integrates to 1 - T - R of a lossy guide between lossless ports), and '
+    'the materials. em_heat_joule reads absorbed_power (last solve); heat_em_thermo_optic / Pockels write eps_r, '
+    'eps_xx, eps_yy. Studies: stationary (a solve whenever materials changed), frequency_domain (one solve per '
+    'wavelength) and optimization (design_region + adjoint_objective, ez or hz). Bloch k is not supported; cannot '
+    'share the model with another EM type.')
 
 EM_EME = PhysicsType(
     name=TYPE_NAME,
@@ -868,8 +833,8 @@ EM_EME = PhysicsType(
                                                            *EME_PERMITTIVITY_ARRAYS, 'sigma_e')),
     output_fields=tuple(EME_FIELD_INFOS.values()),
     source_slots=source_slot_docs(EME_PERMITTIVITY_SLOTS),
-    supported_studies=(_STATIONARY_STUDY, FREQUENCY_DOMAIN_STUDY, OPTIMIZATION_STUDY),
-    default_study={'type': _STATIONARY_STUDY},
+    supported_studies=(STATIONARY_STUDY, FREQUENCY_DOMAIN_STUDY, OPTIMIZATION_STUDY),
+    default_study={'type': STATIONARY_STUDY},
     uses_dispersion=True,
     create=_create,
     domain_requirements=quasi_static_domain_requirements,

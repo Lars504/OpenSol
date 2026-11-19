@@ -1,4 +1,4 @@
-"""Self-tests of subpixel smoothing (igor 1.5): interface geometry, the averaged eps of the FDTD / FDFD / em_modes /
+"""Self-tests of subpixel smoothing: interface geometry, the averaged eps of the FDTD / FDFD / em_modes /
 em_fdtd_3d engines and of the mode ports (builds only, on the cpu backend and the gpu, cpu vs gpu), and the
 translation invariance of a dielectric-disk resonance (model runs; em_modes slab modes: example
 analytic_modes_subpixel_slab_thickness)."""

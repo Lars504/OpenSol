@@ -5,6 +5,7 @@ from ..model.definition_helpers import selected_material_sets
 from ..model.schema import CouplingType, Issue
 from ..physics.acoustics.couplings import acousto_optic_shear_shift, make_acousto_optic_transform
 from .coupling_term import CouplingTerm
+from .definitions import INDEX_SUM_TEXT
 from .index_terms import (after_source_step, has_off_diagonal_slot, index_contributor, index_slots, physics_and_type,
                           target_type, writes_index_and_off_diagonal_slots)
 
@@ -124,29 +125,22 @@ def acoustics_coupling_types(optical_types, absorbing_optical_types):
         summary='Changes the refractive index of a frequency-domain wave physics from the strain of the elastic '
                 'waves, as in an acousto-optic modulator. The optics is solved again on the frozen strain every few '
                 'acoustic steps.',
-        description='Acousto-optic (photoelastic) effect: each transfer writes, for every permittivity component ii '
-                    'of the EM physics (E_z: zz through eps_r_update; H_z: xx and yy), dn_ii = -1/2 n0_ii^3 '
-                    '(photoelastic_p11 e_ii + photoelastic_p12 (e_jj + e_kk)) of the elastic strain of the acoustic '
-                    'stresses (elastic_strain_xx / _yy: the in-plane stiffness inverted at the cell centres, fluids '
-                    'half the volumetric strain each, e_zz = 0 plane strain; the photoelastic math of '
-                    'solid_em_strain_optic without its deformation term); n0 = the E13 '
-                    'shared reference index. A crystal (a material with the photoelastic tensor entries photoelastic_p16 '
-                    '.. _p66, set by a {"model": "crystal"} entry) instead gets the in-plane row of its model-axis '
-                    'tensor, dn_ii = -1/2 n0_ii^3 (p_i1 e_xx + p_i2 e_yy + p_i6 g), g = 2 e_xy the engineering shear at '
-                    'the cell centre (mean of its 4 corners), unset entries = the isotropic values. em_fdfd_hz also '
-                    'gets the xy row in its eps_xy_update slot (a sum contributor): Delta eps_xy = -n0_xx^2 n0_yy^2 '
-                    '(p_61 e_xx + p_62 e_yy + p_66 g), isotropic p_66 = (p11 - p12) / 2 (so a shear wave in glass '
-                    'rotates the in-plane index ellipse; photoelastic_p44 is not read here: library silicon gets '
-                    '(p11 - p12) / 2 = -0.0555 instead of its p44 = -0.051: set photoelastic_p66 = p44 on the material '
-                    'for the cubic shear with cube axes along x, y); em_fdfd_ez needs no xy term (E_z does not see it). The '
-                    'anti-plane change (Delta(1/n^2)_yz, _xz) is dropped (validation warns for crystals). With piezo '
-                    'arrays the strain is the accumulated total strain. It is an E13 index contributor (adds to heat_em_thermo_optic / '
-                    'electrostatics_em_pockels on the same physics, one every). Only frequency-domain EM types: in a '
-                    'time_dependent study the EM physics re-solves on the frozen strain every k acoustic steps (its '
-                    'every, which this coupling inherits: transfer just before each re-solve), a stroboscopic sequence '
-                    'of optical states; an optical FDTD in the same run is refused (its step is ~1e5 times shorter). '
-                    'Choose k so k dt samples the acoustic period finely enough, keeping in mind each re-solve is a '
-                    'sparse direct solve.',
+        description='Each transfer writes, per permittivity component ii of the EM physics (E_z: zz via '
+                    'eps_r_update; H_z: xx and yy), dn_ii = -1/2 n0_ii^3 (photoelastic_p11 e_ii + photoelastic_p12 '
+                    '(e_jj + e_kk)) of the acoustic strain (elastic_strain_xx / _yy: the in-plane stiffness inverted '
+                    'at the cell centres, fluids half the volumetric strain each, e_zz = 0; with piezo arrays the '
+                    "accumulated total strain; solid_em_strain_optic's math without deformation). A crystal "
+                    '(photoelastic_p16 .. _p66 from a {"model": "crystal"} entry) gets the in-plane row of its '
+                    'model-axis tensor, dn_ii = -1/2 n0_ii^3 (p_i1 e_xx + p_i2 e_yy + p_i6 g), g = 2 e_xy at the cell '
+                    'centre (mean of its 4 corners), unset entries isotropic. em_fdfd_hz also gets Delta eps_xy = '
+                    '-n0_xx^2 n0_yy^2 (p_61 e_xx + p_62 e_yy + p_66 g) in eps_xy_update (a sum contributor), isotropic '
+                    'p_66 = (p11 - p12) / 2 (photoelastic_p44 is not read: library silicon gets -0.0555 instead of p44 '
+                    '= -0.051; set photoelastic_p66 = p44 for the cubic shear with cube axes along x, y). The '
+                    'anti-plane change is dropped (validation warns for crystals). ' + INDEX_SUM_TEXT
+                    + ' time_dependent study: the EM physics re-solves on the frozen strain every k acoustic steps '
+                    '(its every, inherited by this coupling: transfer just before each re-solve), a stroboscopic '
+                    'sequence; an optical FDTD in the same run is refused. Choose k so k dt samples the acoustic '
+                    'period finely; each re-solve is a sparse direct solve.',
         create=_create_acousto_optic,
         validate=_validate_acousto_optic,
         writes=writes_index_and_off_diagonal_slots)
@@ -155,14 +149,13 @@ def acoustics_coupling_types(optical_types, absorbing_optical_types):
         absorbing_optical_types, ACOUSTICS_TYPE_NAME,
         summary='Turns the light absorbed in a frequency-domain wave physics into heating of the elastic waves, which '
                 "makes sound (photoacoustics). Set the elastic waves' coupled heating envelope to a gaussian pulse.",
-        description='Photoacoustic source: the absorbed power density q_abs [W/m^3] of the last solve of the EM '
-                    'physics (time-averaged 1/2 omega eps0 (-Im eps) |E|^2, as em_heat_joule) is added to the '
-                    'heating_power slot of elastic_waves, which multiplies it by its heating_envelope (gaussian: a '
-                    'laser pulse of energy density q sqrt(pi) heating_pulse_width; instantaneous: steady heating for '
-                    'the whole run, validation warns) and adds -gruneisen q to d(sxx)/dt and d(syy)/dt. It is a '
-                    "'sum' contributor: several such couplings (e.g. one per wavelength) add; a field_transfer into "
-                    'heating_power cannot be combined with them. Time_dependent study: transferred after each re-solve '
-                    'of the EM physics (normally only its first, unless its permittivity changes).',
+        description='q_abs [W/m^3] of the last EM solve (time-averaged 1/2 omega eps0 (-Im eps) |E|^2, as '
+                    'em_heat_joule) is added to the heating_power slot of elastic_waves, which multiplies it by its '
+                    'heating_envelope (gaussian: a pulse of energy density q sqrt(pi) heating_pulse_width; '
+                    'instantaneous: steady heating for the whole run, validation warns) and adds -gruneisen q to '
+                    'd(sxx)/dt and d(syy)/dt. Additive: several (e.g. one per wavelength) sum; no field_transfer into '
+                    'heating_power beside them. Transferred after each EM re-solve (normally only the first, unless '
+                    'its permittivity changes).',
         create=_create_photoacoustic,
         validate=_validate_photoacoustic,
         writes=_writes_heating,

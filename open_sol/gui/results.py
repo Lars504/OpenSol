@@ -9,15 +9,14 @@ import numpy as np
 from PySide6 import QtCore, QtWidgets
 import pyqtgraph as pg
 
-from ..core.mirror import mirror_faces, unfold_field
+from ..core.mirror import unfold_faces, unfold_field
 from ..core.renderer import FieldInfo
 from ..io.model_io import export_field, export_result, export_volume
-from ..model.analytic import (DEGREE_FIT_OPERATIONS, FFT_SERIES, RATIO_SERIES, built_parameters, derived_curve_plots, derived_curve_result,
-                              feature_curve, field_plane_height, is_curve_source, is_segment_3d, is_wavelength_xy,
-                              line_curve,
-                              line_endpoints, line_plane, numeric_table_columns, parameters_with, relative_error,
-                              result_value, snapshot_index, split_key, sweep_curve, sweep_table_xy, sweep_value_curve,
-                              table_xy)
+from ..model.analytic import (DEGREE_FIT_OPERATIONS, FFT_SERIES, RATIO_SERIES, built_parameters, derived_curve_plots,
+                              feature_curve, field_plane_height, is_curve_source, is_iteration_series, is_segment_3d,
+                              is_wavelength_xy, line_curve, line_endpoints, line_plane, numeric_table_columns,
+                              parameters_with, relative_error, snapshot_index, split_key, sweep_curve, sweep_table_xy,
+                              sweep_value_curve, table_xy)
 from ..model.interface_sampling import interface_line_profile, line_curve_field_keys, projected_info
 from ..model.expressions import evaluate_parameters, evaluate_scalar, error_message
 from ..model.meshing import MESH_ESTIMATE_ERRORS, estimate_mesh
@@ -27,7 +26,6 @@ from ..physics.em.results import _DFT_QUANTITY
 from ..viz.result_plots import table_cell_text
 from ..viz.common import length_unit, line_profile, normalised_db, probe_spectrum, safe_ratio, time_unit
 from .estimation_results import EstimationTab, estimation_curve_options, estimation_plots, estimation_report
-from .document import results_inputs
 from .forms import (derived_operation_text, display_label, fill_table, read_only_table, rich_tooltip, selectable,
                     table_number, wrapped_label)
 from .helpers import (USER_ERRORS, ask_save_path, evaluation_mesh, field_mesh_name, format_duration,
@@ -91,14 +89,7 @@ def _evaluate_derived_values(session, derived_specs, curves):
         definition = _derived_definition(derived, curves_by_name)
         earlier = {name: entry[1] for name, entry in values.items()}   # names of the derived values listed above
         try:
-            if is_curve_source(derived.source):
-                curve = curves_by_name.get(derived.source)
-                if curve is None:
-                    raise KeyError(f'no derived curve named {derived.source!r}')
-                value = result_value(derived_curve_result(curve, fetch, session.parameters), derived,
-                                     {**earlier, **session.parameters})
-            else:
-                value = session.derived_value(derived, fetch, earlier)
+            value = session.derived_value(derived, fetch, earlier, curves_by_name)
             values[derived.name] = (definition, value, None)
         except Exception as exc:   # one failing value must not hide the others; shown in the table
             values[derived.name] = (definition, math.nan, f'{type(exc).__name__}: {exc}')
@@ -310,7 +301,7 @@ def _iteration_axis(times):
     """(1-based sample index, axis label) when every sample shares one time (stationary iterations), else None;
     the rule of visualization._draw_timeseries."""
     times = np.asarray(times, dtype=np.float64)
-    if times.size == 0 or (times.size > 1 and np.ptp(times) > 0):
+    if not is_iteration_series(times):
         return None
     return np.arange(1, times.size + 1), f'Iteration (all at t = {_time_text(times[0])})'
 
@@ -385,7 +376,8 @@ def _built_cells_text(summary):
 class ResultsPanel(QtWidgets.QWidget):
     """Results dock: field display / snapshots / export and 1D result tabs; data arrives through the WorkerBridge."""
     availability_changed = QtCore.Signal(bool)   # has_results changed (the tree's 'Results' node follows it)
-    # 3D preview cut planes: True = the shown session field or its cut changed (refetch), False = colours only
+    # 3D preview cut planes: True = the shown session field or its cut changed (refetch), False = colours only; every
+    # code path changing the shown session field emits it
     field_view_changed = QtCore.Signal(bool)
 
     def __init__(self, document, bridge, canvas, parent=None):
@@ -396,7 +388,6 @@ class ResultsPanel(QtWidgets.QWidget):
         self._summary = None             # BuildSummary of the current session
         self._study_summary = None       # StudyFinished.summary of the last study
         self._session_parameters = None  # parameters of the worker session (fetched after Built), None until known
-        self._built_inputs = (None, None)   # (bridge.results_spec, its _results_inputs) for the out-of-date check
         self._run_active = False        # a study of the current model runs (curve views show _RUN_NOTE)
         self._results = {}               # (physics, feature) -> fetched 1D result dict
         self._live_series = {}           # (physics, feature) -> live timeseries dict
@@ -801,7 +792,8 @@ class ResultsPanel(QtWidgets.QWidget):
         self._unfold_check = QtWidgets.QCheckBox('Unfold mirror planes')
         self._unfold_check.setToolTip(rich_tooltip(
             'Show the whole structure: the field is mirrored across every mirror boundary of the domain, with the '
-            'sign each field component takes under that mirror.\n\n'
+            'sign each field component takes under that mirror, and an axisymmetric heat field across its rotation '
+            'axis.\n\n'
             'Exports and line profiles then use the unfolded field too.'))
         self._unfold_check.toggled.connect(self._on_unfold_toggled)
         form.addRow('', self._unfold_check)
@@ -1384,12 +1376,8 @@ class ResultsPanel(QtWidgets.QWidget):
         return lambda *args: handler(*args) if self._bridge.event_is_current else None
 
     def _call(self, fn, on_result, on_error=None):
-        """bridge.call whose result / error is dropped when the document was replaced meanwhile."""
-        generation = self._bridge.generation
-
-        def if_current(callback):
-            return lambda value: callback(value) if self._bridge.generation == generation else None
-        self._bridge.call(fn, on_result=if_current(on_result), on_error=if_current(on_error or self._on_call_error))
+        """bridge.call (dropped when the document was replaced meanwhile), errors by default to _on_call_error."""
+        self._bridge.call(fn, on_result=on_result, on_error=on_error or self._on_call_error)
 
     # ---- curve views: shared ----
     def _redraw_views(self):
@@ -1740,9 +1728,7 @@ class ResultsPanel(QtWidgets.QWidget):
         shows_results = (self._summary is not None or bool(self._results) or bool(self._live_series)
                          or self._canvas.current_field is not None)
         built_spec = self._bridge.results_spec
-        if built_spec is not None and self._built_inputs[0] is not built_spec:   # serialised once per build
-            self._built_inputs = (built_spec, results_inputs(built_spec.to_dict()))
-        stale = built_spec is None or self._built_inputs[1] != results_inputs(self._document.spec_dict())
+        stale = not self._document.results_current(built_spec)
         cause = (self._session_lost_reason if built_spec is None and self._session_lost_reason
                  else 'the model changed after the last build / run')
         self._stale_label.setText(f'Results out of date: {cause}.')
@@ -1862,7 +1848,7 @@ class ResultsPanel(QtWidgets.QWidget):
             return cached[1]
         spec = self._bridge.results_spec or self._document.spec
         try:
-            unfolded = unfold_field(field_data, mirror_faces(spec, field_data.physics))
+            unfolded = unfold_field(field_data, unfold_faces(spec, field_data.physics))
         except ValueError as exc:
             self._show_message(f'Not unfolded: {exc}')
             return field_data
@@ -1977,7 +1963,7 @@ class ResultsPanel(QtWidgets.QWidget):
     def _unstored_cut_refused(self, every_snapshot=False):
         """True (message shown) when the chosen vertical cut has no stored cut on its axis nor a kept solution: the
         snapshot is not shown and the cut-plane combos go back to the shown field's cut (canvas and combos stay in
-        step)."""
+        step); never a fallback to the z cut, which would switch the canvas view and refit it."""
         plane = self._selected_plane()
         if plane is None or self._snapshot_plane(every_snapshot) is not None:
             return False

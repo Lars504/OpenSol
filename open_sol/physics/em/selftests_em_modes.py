@@ -5,11 +5,10 @@ import math
 import numpy as np
 
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import float_list, solver_role
+from ...model.selftest_helpers import float_list, normalized_result, solver_role
 from ...model.spec import (CouplingSpec, DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec,
                            MeshSpec, ModelSpec, ParameterSpec, PhysicsSpec, RefinementSpec, SolverSpec, StudySpec,
                            SweepSpec)
-from .selftests import normalized_result
 
 _TYPE = 'em_modes'      # = definition_modes.EM_MODES.name (definition_modes imports this module)
 _PHYSICS = 'modes'
@@ -17,7 +16,8 @@ _TABLE = 'table'
 _DISPERSION = 'dispersion'
 _TABLE_COLUMNS = {'n_eff': 1, 'n_group': 4, 'te_fraction': 5}   # column index in the mode_table rows
 
-# ---- PEC rectangular waveguide (vacuum): every wall plane sits on the inner face of the outermost cell, so the guide
+# ---- PEC rectangular waveguide (vacuum; the example analytic_modes_pec_rectangular_waveguide is its model run, this
+# spec stays for em_modes_line_block): every wall plane sits on the inner face of the outermost cell, so the guide
 # spans the cells 1 .. n-2 of each axis: a = (42 - 2) * 50 nm = 2.0 um, b = (20 - 2) * 50 nm = 0.9 um. The discrete TE_mn
 # modes of a homogeneous Yee cross-section obey beta^2 = k0^2 - K_x(m)^2 - K_y(n)^2 with K(m) = (2 / h) sin(m pi h /
 # (2 a)) exactly (the 3-point eigenvectors sin(m pi (i - 1/2) / (n - 2)) meet the odd ghost rows), so the eigen-solve
@@ -158,7 +158,7 @@ def _check_bloch_plate(results_by_name):
                               'n_eff_squared_expected': expected}, errors=errors)
 
 
-# ---- em_modes_line_block (solver_plan Part II stage 3): the PEC waveguide runs (mode_analysis with the group index:
+# ---- em_modes_line_block: the PEC waveguide runs (mode_analysis with the group index:
 # omega and omega (1 +- 1e-3) in one batch; frequency_domain at three wavelengths: one planned batch) and the Bloch
 # plate (periodic x inside the blocks, cpu backend) with a line_block node as the 'shifted' solver. The dispersion run
 # is double only: the planned-wavelength batch takes the same factorize_operators call as the modes batch, whose mixed
@@ -235,7 +235,7 @@ EM_MODES_SELFTEST_CASES = (
     SelfTestCase(
         name='em_modes_line_block',
         label='EM modes: line-block shift-invert batches',
-        description="solver_plan Part II stage 3: em_modes with a line_block solver node as its 'shifted' solver, "
+        description="em_modes with a line_block solver node as its 'shifted' solver, "
                     'whose block factors replace the host SuperLU of the shift-invert operators A - sigma B (unknowns '
                     'ordered by grid rows or columns, a periodic axis inside the blocks). Runs: a vacuum PEC '
                     f'rectangle ({_PEC_CELLS[0]} x {_PEC_CELLS[1]} cells of {_PEC_CELL * 1e9:g} nm, wall planes on the '

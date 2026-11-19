@@ -7,16 +7,18 @@ parity-sector runs of a source without definite parity (2.6); numpy only (GUI-th
 # +1 always. Fields of a physics that does not set the face itself (non-EM physics) take s = +1: their face on the
 # plane must be the even mirror (insulated / zero flux; heat and potential validation warn otherwise); the magnetic
 # types and membrane take s from their own face feature there (FACE_FEATURE_SIGNS). Besides the EM bc settings, the
-# MIRROR_FEATURES of a type (membrane symmetry / antisymmetry) make their outer faces model mirror planes too.
+# MIRROR_FEATURES of a type (membrane symmetry / antisymmetry, heat symmetry) make their outer faces model mirror planes
+# too. The (r, z) axis of an AXIS_UNFOLD_TYPES physics is no mirror plane (its ring weights already count the whole
+# revolution, so nothing doubles there) but unfolds for display (unfold_faces).
 import itertools
 from dataclasses import replace
 
 import numpy as np
 
+from .constants import AXISYMMETRIC, AZIMUTHAL_ORDER_SETTING, FACES_3D, GEOMETRY_SETTING
 from .harmonic_probe import phasor_series
 
 MIRROR_SIGNS = {'symmetric': 1, 'antisymmetric': -1}
-MIRROR_FACES = ('x_lo', 'x_hi', 'y_lo', 'y_hi', 'z_lo', 'z_hi')
 _VECTOR_KINDS = tuple(f'{vector}_{axis}' for vector in ('polar', 'axial') for axis in 'xyz')
 _PHASE_PREFIX = 'phase_'
 # FieldInfo.parity values: 'phase_<kind>' = the argument [rad] of a phasor of that kind (an odd image adds pi)
@@ -32,8 +34,13 @@ FACE_FEATURE_SIGNS = {**{type_name: ({'symmetry': 1, 'magnetic_insulation': -1},
                       'magnetostatics_3d': ({'symmetry': -1, 'magnetic_insulation': 1}, 1),
                       'membrane': ({'symmetry': 1, 'antisymmetry': -1, 'clamped': -1, 'simply_supported': -1}, 1)}
 # Face features that make their selected outer faces model mirror planes ({type: {feature type: sign}}); parity
-# sectors swap them like the EM bc settings (sector_specs; a feature selecting several sector faces is split per face)
-MIRROR_FEATURES = {'membrane': {'symmetry': 1, 'antisymmetry': -1}}
+# sectors swap them like the EM bc settings (sector_specs; a feature selecting several sector faces is split per face;
+# a type without a feature of the other sign, heat, refuses: ValueError). heat symmetry = the default insulated face.
+MIRROR_FEATURES = {'membrane': {'symmetry': 1, 'antisymmetry': -1}, 'heat': {'symmetry': 1}}
+# Types whose fields of geometry 'axisymmetric' (2D, azimuthal_order 0) unfold even across the x_lo rotation axis for
+# display (unfold_faces): every field of theirs is a scalar of r, z or an unsigned magnitude, so the image is the
+# field itself. Add a type only once its field parities are right under that image (an E_r / A_phi flips).
+AXIS_UNFOLD_TYPES = ('heat',)
 # Feature params every parity-sector copy sets ({type: {feature type: {param: value}}}): a membrane port then drives
 # an incident mode of a guide ending on a mirror plane in the sector of its parity only, at twice its amplitude
 SECTOR_FEATURE_PARAMS = {'membrane': {'port': {'sector_drive': True}}}
@@ -43,7 +50,7 @@ def own_mirror_faces(physics_spec) -> dict:
     """{face: sign} of the faces one PhysicsSpec sets to 'symmetric' (+1) / 'antisymmetric' (-1) itself."""
     settings = physics_spec.settings if isinstance(physics_spec.settings, dict) else {}
     faces = {}
-    for face in MIRROR_FACES:
+    for face in FACES_3D:
         value = settings.get(f'bc_{face}')
         sign = MIRROR_SIGNS.get(value) if isinstance(value, str) else None
         if sign is not None:
@@ -72,7 +79,7 @@ def feature_mirror_faces(spec, physics_spec) -> dict:
     faces = {}
     for _, sign, entities in _enabled_feature_entities(spec, physics_spec, MIRROR_FEATURES.get(physics_spec.type, {})):
         for name in entities or ():
-            if name in MIRROR_FACES:
+            if name in FACES_3D:
                 faces[name] = sign
     return faces
 
@@ -84,9 +91,9 @@ def physics_mirror_faces(spec, physics_spec) -> dict:
 
 def mirror_faces(spec, physics=None) -> dict:
     """{face: sign} of the model's mirror faces (a physics setting bc_<face> to 'symmetric' / 'antisymmetric', or a
-    MIRROR_FEATURES face feature: membrane symmetry +1 / antisymmetry -1); with `physics` (a name) the sign is that
-    physics' own where it sets the face, its face feature's for a FACE_FEATURE_SIGNS type, else +1 (the even mirror
-    of a non-EM physics)."""
+    MIRROR_FEATURES face feature: membrane symmetry +1 / antisymmetry -1, heat symmetry +1); with `physics` (a name)
+    the sign is that physics' own where it sets the face, its face feature's for a FACE_FEATURE_SIGNS type, else +1
+    (the even mirror of a non-EM physics). Displays unfold over unfold_faces (also the axisymmetric heat axis)."""
     faces, own, target = {}, {}, None
     for physics_spec in spec.physics:
         for face, sign in physics_mirror_faces(spec, physics_spec).items():
@@ -100,6 +107,27 @@ def mirror_faces(spec, physics=None) -> dict:
     if target is not None and target.type in FACE_FEATURE_SIGNS:
         return _feature_face_signs(spec, target, faces)
     return {face: own.get(face, 1) for face in faces}
+
+
+def unfold_faces(spec, physics) -> dict:
+    """{face: sign} a field display of `physics` (a name) unfolds across: mirror_faces(spec, physics), plus x_lo +1
+    when it is an AXIS_UNFOLD_TYPES physics with geometry 'axisymmetric' in a 2D model (its rotation axis: display
+    only, never a touch_factor face). ValueError for such a physics with an azimuthal_order other than a literal 0
+    (cos(m phi) amplitudes image as (-1)^m: not unfolded)."""
+    faces = mirror_faces(spec, physics)
+    if 'x_lo' in faces or spec.domain.size_z is not None:
+        return faces
+    physics_spec = next((candidate for candidate in spec.physics if candidate.name == physics), None)
+    if physics_spec is None or physics_spec.type not in AXIS_UNFOLD_TYPES:
+        return faces
+    settings = physics_spec.settings if isinstance(physics_spec.settings, dict) else {}
+    if settings.get(GEOMETRY_SETTING) != AXISYMMETRIC:
+        return faces
+    order = settings.get(AZIMUTHAL_ORDER_SETTING, 0)
+    if isinstance(order, bool) or order not in (0, 0.0, '0'):
+        raise ValueError(f"'{physics}' has azimuthal_order {order!r}: its fields are cos(m phi) amplitudes, which "
+                         'image as (-1)^m across the rotation axis, so the axis is unfolded at azimuthal_order 0 only')
+    return {**faces, 'x_lo': 1}
 
 
 def _feature_face_signs(spec, physics_spec, faces) -> dict:
@@ -280,7 +308,7 @@ def sector_specs(spec, faces=None) -> dict:
     missing = [face for face in faces if face not in present]
     if not faces or missing:
         raise ValueError(f"sector_specs needs mirror faces of the model (bc_<face> symmetric / antisymmetric, or a "
-                         f"membrane symmetry / antisymmetry face); {', '.join(missing) or 'none'} "
+                         f"membrane symmetry / antisymmetry or heat symmetry face); {', '.join(missing) or 'none'} "
                          f"{'is' if len(missing) == 1 else 'are'} not one; model mirror faces: "
                          f"{', '.join(sorted(present)) or 'none'}")
     sectors = {}
@@ -310,6 +338,14 @@ def _swap_mirror_features(spec, physics_spec, face_values) -> None:
     (the rest keeps its name and type, the parts are named '<name>_<type>')."""
     feature_types = MIRROR_FEATURES[physics_spec.type]
     type_of_sign = {sign: feature_type for feature_type, sign in feature_types.items()}
+    if set(type_of_sign) != set(MIRROR_SIGNS.values()):
+        for feature, _, entities in _enabled_feature_entities(spec, physics_spec, feature_types):
+            faces = [name for name in entities or () if name in face_values]
+            if faces:
+                raise ValueError(f"parity sectors: '{physics_spec.name}' ({physics_spec.type}) has no mirror feature "
+                                 f"of both signs, so its {feature.type} face(s) {', '.join(faces)} (feature "
+                                 f"'{feature.name}') cannot take the other parity; remove the feature (a full model "
+                                 'along that axis) or switch parity_sectors off')
     expanded = {id(feature): entities for feature, _, entities in
                 _enabled_feature_entities(spec, physics_spec, feature_types)}
     features = []

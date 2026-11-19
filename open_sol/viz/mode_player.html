@@ -4,7 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mode player</title>
-<!-- open_sol mode player: one self-contained page (no network). viz/mode_player.py fills the data block below. -->
+<!-- open_sol mode player: one self-contained page (no network). viz/mode_player.py fills the data block below.
+     viz/field_viewer.html copies its camera, colour maps (CMAPS / CMAP_CHOICES) and recording blocks: keep the two
+     in step. -->
 <style>
 :root {
   --bg: #f4f5f7;
@@ -1011,9 +1013,214 @@ function fileStem() { return (DATA.title || 'mode').replace(/[^\w.-]+/g, '_').sl
 function download(href, name) { const a = document.createElement('a'); a.href = href; a.download = name;
   document.body.appendChild(a); a.click(); a.remove(); }
 $('png').onclick = () => { draw(); download(canvas.toDataURL('image/png'), fileStem() + '.png'); };
+// ---------- video: H.264 MP4 written by the page (WebCodecs encoder, hand-written muxer; copy in both pages) ----------
+// Frames are rendered one by one on a fixed clock (VIDEO_FPS), so a slow view still records smoothly, and written as a
+// plain MP4 (one H.264 track, constant frame rate, index in front) that PowerPoint takes by drag and drop. A browser
+// without WebCodecs H.264 records in real time with MediaRecorder instead (Firefox then gives WebM).
+const VIDEO_FPS = 30, VIDEO_BITRATE = 16e6, VIDEO_KEY_SECONDS = 2;
+const VIDEO_MAX_PIXELS = 3840 * 2160, VIDEO_MAX_SIDE = 4096;   // 4K: what PowerPoint's decoder (Media Foundation) plays
+// level_idc, largest frame and rate in 16 x 16 macroblocks (H.264 table A-1)
+const AVC_LEVELS = [[0x1f, 3600, 108000], [0x20, 5120, 216000], [0x28, 8192, 245760], [0x2a, 8704, 522240],
+                    [0x32, 22080, 589824], [0x33, 36864, 983040], [0x34, 36864, 2073600]];
+let video = null;   // the MP4 recording in progress ({ stop }): it steps and draws the view, the page loop waits
+function videoSize(w, h) {
+  // the encoded size of a w x h canvas: at most 4K, even sides (4:2:0 chroma)
+  const s = Math.min(1, Math.sqrt(VIDEO_MAX_PIXELS / (w * h)), VIDEO_MAX_SIDE / Math.max(w, h));
+  return [2 * Math.max(1, Math.floor(0.5 * w * s)), 2 * Math.max(1, Math.floor(0.5 * h * s))];
+}
+async function videoConfig(w, h) {
+  // the first H.264 profile this browser encodes at w x h (High, Main, Constrained Baseline, Baseline), else null
+  if (!window.VideoEncoder || !window.VideoFrame) return null;
+  const mbw = Math.ceil(w / 16), mbh = Math.ceil(h / 16), mbs = mbw * mbh;
+  const level = AVC_LEVELS.find(([, fs, rate]) => mbs <= fs && mbs * VIDEO_FPS <= rate && Math.max(mbw, mbh) <= Math.sqrt(8 * fs));
+  if (!level) throw new Error('no H.264 level holds ' + w + ' x ' + h + ' at ' + VIDEO_FPS + ' fps');
+  const hex = level[0].toString(16).padStart(2, '0');
+  for (const profile of ['6400', '4d00', '42e0', '4200']) {
+    const config = { codec: 'avc1.' + profile + hex, width: w, height: h, bitrate: VIDEO_BITRATE, framerate: VIDEO_FPS,
+                     avc: { format: 'avc' } };   // 'avc': length-prefixed NAL units and an avcC record, as MP4 stores them
+    let support = null;
+    try { support = await VideoEncoder.isConfigSupported(config); } catch (err) { support = null; }   // unknown codec string
+    if (support && support.supported) return config;
+  }
+  return null;
+}
+async function recordVideo(config, seconds, step, grab, button) {
+  // round(seconds * VIDEO_FPS) frames spanning exactly `seconds` (a whole number of periods loops without a seam):
+  // step(dt) advances the view by dt seconds and draws it, grab() returns the canvas holding that picture right after.
+  // Stops early on video.stop (what was encoded is kept); returns the MP4 Blob, or null when no frame was encoded
+  const n = Math.max(1, Math.round(seconds * VIDEO_FPS)), dt = seconds / n, us = 1e6 / VIDEO_FPS;
+  const staging = document.createElement('canvas'); staging.width = config.width; staging.height = config.height;
+  const sc = staging.getContext('2d', { alpha: false });
+  const samples = []; let description = null, failure = null, sent = 0;
+  const encoder = new VideoEncoder({
+    output: (chunk, meta) => {
+      const d = meta && meta.decoderConfig && meta.decoderConfig.description;
+      if (d && !description) description = ArrayBuffer.isView(d) ? new Uint8Array(d.buffer.slice(d.byteOffset, d.byteOffset + d.byteLength))
+                                                                  : new Uint8Array(d.slice(0));
+      const data = new Uint8Array(chunk.byteLength); chunk.copyTo(data);
+      samples.push({ data, key: chunk.type === 'key', t: chunk.timestamp });
+    },
+    error: (err) => { failure = failure || err; },
+  });
+  encoder.configure(config);
+  for (let i = 0; i < n && !video.stop && !failure; i++) {
+    step(i ? dt : 0);
+    sc.drawImage(grab(), 0, 0, config.width, config.height);
+    const frame = new VideoFrame(staging, { timestamp: Math.round(i * us), duration: Math.round(us) });
+    try { encoder.encode(frame, { keyFrame: i % (VIDEO_KEY_SECONDS * VIDEO_FPS) === 0 }); sent++; } finally { frame.close(); }
+    button.textContent = 'Stop ' + Math.round(100 * (i + 1) / n) + ' %';
+    do await new Promise((r) => setTimeout(r, 0)); while (encoder.encodeQueueSize > 2 && !failure);   // repaint, let the encoder keep up
+  }
+  if (!failure) await encoder.flush().catch((err) => { failure = failure || err; });
+  if (encoder.state !== 'closed') encoder.close();
+  if (failure) throw failure;
+  if (!samples.length) return null;
+  if (!samples[0].key) throw new Error('the H.264 encoder did not start on a key frame');
+  // presentation index of each sample = rank of its timestamp (encoders with B frames emit decode order; Firefox's
+  // Media Foundation encoder returns the times shifted by a frame, so their values are not trusted): every frame once
+  if (samples.length !== sent) throw new Error('the H.264 encoder returned ' + samples.length + ' of ' + sent + ' frames');
+  const order = samples.map((s, k) => k).sort((a, b) => samples[a].t - samples[b].t);
+  order.forEach((k, p) => {
+    if (p && samples[k].t === samples[order[p - 1]].t) throw new Error('the H.264 encoder returned two frames at ' + samples[k].t + ' us');
+    samples[k].p = p;
+  });
+  return mp4Blob(samples, avcNormalized(description, samples), config.width, config.height);
+}
+function nalUnits(data, prefix) {
+  // the NAL units of an H.264 buffer: `prefix`-byte length-prefixed when that walks the buffer exactly, else Annex B
+  // start codes (00 00 01 / 00 00 00 01; a length-prefixed reading of those stops at the first unit)
+  const units = []; let o = 0;
+  while (o + prefix <= data.length) {
+    let len = 0; for (let i = 0; i < prefix; i++) len = len * 256 + data[o + i];
+    if (!len || o + prefix + len > data.length) break;
+    units.push(data.subarray(o + prefix, o + prefix + len)); o += prefix + len;
+  }
+  if (o === data.length && units.length) return units;
+  units.length = 0;
+  let start = -1;
+  const end = (i) => { let e = i; while (e > start && data[e - 1] === 0) e--; return e; };   // trailing zero bytes
+  for (let i = 0; i + 2 < data.length; i++)
+    if (data[i] === 0 && data[i + 1] === 0 && data[i + 2] === 1) {
+      if (start >= 0) units.push(data.subarray(start, end(i)));
+      start = i + 3; i += 2;
+    }
+  if (start < 0) throw new Error('an H.264 buffer holds neither length-prefixed nor start-code NAL units');
+  units.push(data.subarray(start, end(data.length)));
+  return units.filter((u) => u.length);
+}
+function avcNormalized(description, samples) {
+  // MP4 (and Media Foundation: PowerPoint, Windows players, which set the decoder up from avcC alone) wants an avcC
+  // record holding the parameter sets and 4-byte length-prefixed NAL units. Firefox's Windows encoder gives an avcC
+  // whose parameter sets do not parse (ffmpeg: 'too many reference frames 21'; Firefox and ffmpeg play the file from
+  // the valid in-band copies, Windows refuses it), and encoders may give Annex B start codes. Rewrites every sample in
+  // place (access unit delimiters dropped, SPS / PPS moved out) and returns an avcC built from the stream's own
+  // parameter sets, the description's only when the stream carries none (Chrome)
+  const sps = [], pps = [], dsps = [], dpps = [];
+  const same = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
+  const keep = (list, u) => { if (!list.some((x) => same(x, u))) list.push(u.slice()); };
+  const sorter = (S, P) => (u) => { const type = u[0] & 31; if (type === 7) keep(S, u); else if (type === 8) keep(P, u); return type; };
+  const sort = sorter(sps, pps);
+  let prefix = 4;
+  if (description && description.length > 6 && description[0] === 1) {   // an avcC record
+    const d = description; prefix = (d[4] & 3) + 1;
+    let o = 6;
+    const take = (list) => { const len = d[o] << 8 | d[o + 1]; if (o + 2 + len > d.length) throw new Error('the encoder\'s avcC record is truncated');
+      keep(list, d.subarray(o + 2, o + 2 + len)); o += 2 + len; };
+    for (let k = 0, m = d[5] & 31; k < m; k++) take(dsps);
+    for (let k = 0, m = d[o++]; k < m; k++) take(dpps);
+  } else if (description && description.length) nalUnits(description, 4).forEach(sorter(dsps, dpps));
+  for (const s of samples) {
+    const units = nalUnits(s.data, prefix).filter((u) => { const type = sort(u); return type !== 7 && type !== 8 && type !== 9; });
+    if (!units.length) throw new Error('an H.264 sample holds no picture data');
+    const data = new Uint8Array(units.reduce((n, u) => n + 4 + u.length, 0)), v = new DataView(data.buffer);
+    let o = 0; for (const u of units) { v.setUint32(o, u.length); data.set(u, o + 4); o += 4 + u.length; }
+    s.data = data;
+  }
+  if (!sps.length || !pps.length) {   // no in-band parameter sets: the description's
+    if (sps.length || pps.length) throw new Error('the H.264 stream carries ' + (sps.length ? 'an SPS but no PPS' : 'a PPS but no SPS'));
+    sps.push(...dsps); pps.push(...dpps);
+  }
+  if (!sps.length || !pps.length) throw new Error('the H.264 encoder gave no SPS / PPS parameter sets');
+  if (sps.length > 31) throw new Error('the H.264 stream changes its SPS ' + sps.length + ' times');
+  const out = [1, sps[0][1], sps[0][2], sps[0][3], 0xff, 0xe0 | sps.length];   // profile, compatibility, level; 4-byte lengths
+  const put = (u) => { out.push(u.length >> 8, u.length & 255); for (const x of u) out.push(x); };
+  sps.forEach(put); out.push(pps.length); pps.forEach(put);
+  if ([100, 110, 122, 144].includes(sps[0][1])) out.push(0xfd, 0xf8, 0xf8, 0);   // High profiles: 4:2:0, 8 bit, no SPS ext
+  return new Uint8Array(out);
+}
+function mp4Blob(samples, avcC, w, h) {
+  // ftyp, moov (one video track: every sample in one chunk, constant duration), mdat; moov first, so players and
+  // PowerPoint read the index before the data ("fast start"). samples in decode order, p = presentation index: with
+  // B frames ctts holds the non-negative display offsets (p - k + shift frames) and an edit list starts the movie
+  // `shift` frames into the media, as ffmpeg writes it; without reordering neither box is written
+  const T = 90000, delta = T / VIDEO_FPS, n = samples.length, duration = n * delta;
+  if (!Number.isInteger(delta)) throw new Error('VIDEO_FPS must divide the MP4 timescale ' + T);
+  const u32 = (a) => { const b = new Uint8Array(4 * a.length), v = new DataView(b.buffer); a.forEach((x, i) => v.setUint32(4 * i, x)); return b; };
+  const u16 = (a) => { const b = new Uint8Array(2 * a.length), v = new DataView(b.buffer); a.forEach((x, i) => v.setUint16(2 * i, x)); return b; };
+  const str = (s) => Uint8Array.from(s, (c) => c.charCodeAt(0));
+  const box = (type, ...parts) => {
+    const size = 8 + parts.reduce((s, p) => s + p.length, 0), out = new Uint8Array(size);
+    new DataView(out.buffer).setUint32(0, size); out.set(str(type), 4);
+    let o = 8; for (const p of parts) { out.set(p, o); o += p.length; }
+    return out;
+  };
+  const full = (type, flags, ...parts) => box(type, u32([flags]), ...parts);   // version 0
+  const matrix = u32([0x10000, 0, 0, 0, 0x10000, 0, 0, 0, 0x40000000]);
+  const keys = []; samples.forEach((s, i) => { if (s.key) keys.push(i + 1); });
+  const shift = samples.reduce((m, s, k) => Math.max(m, k - s.p), 0);   // frames the decode clock runs ahead
+  const reordered = samples.some((s, k) => s.p !== k), ctts = [];        // run-length (count, offset) pairs
+  if (reordered) for (const [k, s] of samples.entries()) {
+    const off = (s.p - k + shift) * delta;
+    if (k && ctts[ctts.length - 1] === off) ctts[ctts.length - 2]++; else ctts.push(1, off);
+  }
+  const optional = (on, make) => (on ? make() : new Uint8Array(0));
+  const bytes = samples.reduce((s, x) => s + x.data.length, 0);
+  if (8 + bytes > 0xffffffff) throw new Error('the recording is over 4 GB: shorten it');
+  const ftyp = box('ftyp', str('isom'), u32([0x200]), str('isomiso2avc1mp41'));
+  const moov = (offset) => box('moov',
+    full('mvhd', 0, u32([0, 0, T, duration, 0x10000]), u16([0x100, 0]), u32([0, 0]), matrix, u32([0, 0, 0, 0, 0, 0, 2])),
+    box('trak',
+      full('tkhd', 3, u32([0, 0, 1, 0, duration, 0, 0]), u16([0, 0, 0, 0]), matrix, u32([w * 0x10000, h * 0x10000])),
+      optional(reordered, () => box('edts', full('elst', 0, u32([1, duration, shift * delta, 0x10000])))),
+      box('mdia',
+        full('mdhd', 0, u32([0, 0, T, duration]), u16([0x55c4, 0])),   // language 'und'
+        full('hdlr', 0, u32([0]), str('vide'), u32([0, 0, 0]), str('VideoHandler\0')),
+        box('minf',
+          full('vmhd', 1, u16([0, 0, 0, 0])),
+          box('dinf', full('dref', 0, u32([1]), full('url ', 1))),
+          box('stbl',
+            full('stsd', 0, u32([1]), box('avc1', new Uint8Array(6), u16([1, 0, 0]), u32([0, 0, 0]), u16([w, h]),
+              u32([0x480000, 0x480000, 0]), u16([1]), new Uint8Array(32), u16([0x18, 0xffff]), box('avcC', avcC))),
+            full('stts', 0, u32([1, n, delta])),
+            optional(reordered, () => full('ctts', 0, u32([ctts.length / 2].concat(ctts)))),
+            full('stss', 0, u32([keys.length].concat(keys))),
+            full('stsc', 0, u32([1, 1, n, 1])),
+            full('stsz', 0, u32([0, n].concat(samples.map((s) => s.data.length)))),
+            full('stco', 0, u32([1, offset])))))));
+  const head = ftyp.length + moov(0).length + 8;   // the samples start after ftyp, moov and the mdat header
+  return new Blob([ftyp, moov(head), u32([8 + bytes]), str('mdat')].concat(samples.map((s) => s.data)), { type: 'video/mp4' });
+}
 let recorder = null;
-$('record').onclick = () => {
+const RECORD_PERIODS = 3;
+$('record').onclick = async () => {
   if (recorder) { recorder.stop(); return; }
+  if (video) { video.stop = true; return; }
+  video = { stop: false };
+  let config = null;
+  try { config = await videoConfig(...videoSize(canvas.width, canvas.height)); }
+  catch (err) { video = null; alert('Recording failed: ' + err.message); return; }
+  if (!config) { video = null; recordRealtime(); return; }
+  state.playing = true; syncControls();
+  $('rec').classList.add('on'); $('record').textContent = 'Stop';
+  try {
+    const blob = await recordVideo(config, RECORD_PERIODS / Math.max(state.speed, 0.05), (dt) => { advance(dt); draw(); },
+                                   () => canvas, $('record'));
+    if (blob) download(URL.createObjectURL(blob), fileStem() + '.mp4');
+  } catch (err) { alert('Recording failed: ' + err.message); }
+  finally { video = null; $('rec').classList.remove('on'); $('record').textContent = 'Record'; }
+};
+function recordRealtime() {
+  // MediaRecorder fallback (no WebCodecs H.264): real time, the browser's format (MP4 or WebM)
   if (!canvas.captureStream || !window.MediaRecorder) { alert('This browser cannot record the canvas.'); return; }
   const types = ['video/mp4;codecs=avc1', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm'];
   const type = types.find((t) => MediaRecorder.isTypeSupported(t)) || '';
@@ -1027,8 +1234,8 @@ $('record').onclick = () => {
   };
   state.playing = true; syncControls();
   recorder.start(); $('rec').classList.add('on'); $('record').textContent = 'Stop';
-  const periods = 3; setTimeout(() => { if (recorder) recorder.stop(); }, 1000 * periods / Math.max(state.speed, 0.05));
-};
+  setTimeout(() => { if (recorder) recorder.stop(); }, 1000 * RECORD_PERIODS / Math.max(state.speed, 0.05));
+}
 window.addEventListener('keydown', (e) => {
   if (e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT' && e.target.type !== 'range') return;
   const k = e.key;
@@ -1071,10 +1278,12 @@ canvas.addEventListener('dblclick', () => resetCamera());
 // ---------- loop ----------
 function layout() { resize(); fitDistance(); drawBands(); }
 let last = performance.now();
+// the page's clocks by dt seconds; a recording calls advance + draw per frame instead of frame(), so anything that
+// moves with time goes here or recordings miss it
+function advance(dt) { if (state.playing) state.theta = (state.theta + 2 * Math.PI * state.speed * dt) % (2 * Math.PI); }
 function frame(now) {
   const dt = Math.min((now - last) / 1000, 0.1); last = now;
-  if (state.playing) state.theta = (state.theta + 2 * Math.PI * state.speed * dt) % (2 * Math.PI);
-  draw();
+  if (!video) { advance(dt); draw(); }   // an MP4 recording steps and draws on its own clock
   requestAnimationFrame(frame);
 }
 readTheme();

@@ -1,5 +1,5 @@
 """Self-tests of the 2D FDTD conformal pole weights (solver_defaults.conformal_boundaries on dispersive materials,
-solver_plan S7.6; physics/em/conformal_poles): the cut-cell geometry of a Drude disk (CPU) and the normal-incidence
+physics/em/conformal_poles): the cut-cell geometry of a Drude disk (CPU) and the normal-incidence
 transmission of a thin Drude film whose faces lie off the cell faces (em_fdtd_ez / _hz runs)."""
 import math
 

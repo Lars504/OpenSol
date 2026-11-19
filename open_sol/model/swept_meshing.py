@@ -1,4 +1,4 @@
-"""Swept prism-layer tetrahedra of 'tetrahedra' MeshSpecs with sweep_axis 'z' (experiment plan D5): the xy footprint
+"""Swept prism-layer tetrahedra of 'tetrahedra' MeshSpecs with sweep_axis 'z': the xy footprint
 meshed by the 2D triangle mesher, extruded through graded z layers and split into tetrahedra (fem.prism_layers); the
 sizing rules, the element-count estimate and the entity tags. Host numpy only."""
 # In-plane sizes are the triangle rules (dx = h_max, refinement dx inside / along their objects' footprints over the

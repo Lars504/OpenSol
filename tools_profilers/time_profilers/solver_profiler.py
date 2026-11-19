@@ -27,7 +27,7 @@ if REPO_ROOT not in sys.path:   # run as a script (python tools_profilers/time_p
 from tools_profilers.time_profilers import report   # noqa: E402
 from tools_profilers.time_profilers.case_runner import PARTIAL_MARKER, RESULT_MARKER, THREAD_VARIABLES   # noqa: E402
 from tools_profilers.time_profilers.problems import PROBLEMS   # noqa: E402
-from tools_profilers.time_profilers.solver_catalog import BACKENDS, solver_candidates   # noqa: E402
+from tools_profilers.time_profilers.solver_catalog import BACKENDS, row_of, solver_candidates   # noqa: E402
 
 CHILD_MODULE = 'tools_profilers.time_profilers.case_runner'
 DEFAULT_REPEAT = 3
@@ -236,8 +236,7 @@ def _print_list(targets, sizes, catalog) -> None:
             state = 'available' if candidate.available else f'unavailable: {candidate.reason}'
             print(f'    {candidate.row}{marks}: {state}')
         for entry in excluded:
-            row = entry['label'] if entry['backend'] == 'cpu' else f"{entry['label']} @{entry['backend']}"
-            print(f"    (not offered) {row}: {entry['reason']}")
+            print(f"    (not offered) {row_of(entry['label'], entry['backend'])}: {entry['reason']}")
 
 
 def _record(target, size, candidate, result) -> dict:

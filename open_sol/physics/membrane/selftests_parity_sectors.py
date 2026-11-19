@@ -1,4 +1,4 @@
-"""Self-tests of membrane parity sectors (experiment plan F3): a driven half rectangle, the half tunnelling guide with two
+"""Self-tests of membrane parity sectors: a driven half rectangle, the half tunnelling guide with two
 incident modes of both parities, and the half plate rectangle's eigen sectors against the full models."""
 import numpy as np
 

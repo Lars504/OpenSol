@@ -75,7 +75,8 @@ class ElasticSystem3D(ElasticSystemBase):
         # CG unknown w = u - u_fix; between solves the scratch of reaction (solve rebuilds it from unknown)
         self._solution = xp.zeros(n_dofs, dtype=dtype)
         # reaction: K u of the last solve kept in _solution while (solves, assemblies) are unchanged (every PCG solve,
-        # the Lanczos inner ones too, counts in n_solves and overwrites _solution)
+        # the Lanczos inner ones too, counts in n_solves and overwrites _solution); anything else that writes
+        # _solution or unknown between solves must reset _reaction_key
         self._assemblies = 0
         self._reaction_key = None
         # 'mixed' solver: float32 widths here, float32 (lame_lambda, mu, inverse blocks) per assembly for the inner CG
@@ -391,7 +392,9 @@ class ElasticSystem3D(ElasticSystemBase):
         self.kernels.precondition(self._single_operator[2], residual, out)
 
     def _fused_operator(self):
-        """(lame_lambda, mu, inverse blocks, widths, free dofs) of the latest assembly (the fused CG iteration)."""
+        """(lame_lambda, mu, inverse blocks, widths, free dofs) of the latest assembly (the fused CG iteration). The
+        captured CG blocks hold these arrays: whatever replaces one calls linear_solver.release_block_graphs() (as
+        assemble does)."""
         return self.lame_lambda, self.mu, self.inverse_blocks, self.widths_device, self.free
 
     def _fused_operator_single(self):

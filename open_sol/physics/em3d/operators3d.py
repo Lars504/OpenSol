@@ -135,7 +135,8 @@ def with_pec_walls(shape, config, window, pec_cells=None):
 
 def live_unknowns_3d(shape, config, window, pec_cells=None):
     """LiveUnknowns3D of a grid `shape` with the BoundaryConfig3D faces of config, the physical-window slices `window`
-    (mirror planes on its edges) and host bool (nx, ny, nz) PEC cells (pec_cells None = none; pec wall layers added)."""
+    (mirror planes on its edges) and host bool (nx, ny, nz) PEC cells (pec_cells None = none; pec wall layers added).
+    definition_fdfd3d.live_unknowns_estimate repeats the layer rules on a MeshEstimate: change both."""
     import scipy.sparse
     shape = tuple(int(count) for count in shape)
     n_cells = math.prod(shape)

@@ -15,15 +15,11 @@ SILICON = Material(
     # drift_diffusion: n_i at 300 K, low-doping mobilities, radiative B (lifetimes are device-specific: unset)
     electrical=dict(eps_dc=11.7, n_intrinsic=1.0e16, mobility_n=0.135, mobility_p=0.048,
                     radiative_recombination=1.1e-20),
-    description='Crystalline silicon at 1.55 um and room temperature (n = 3.476), lossless and non-dispersive, so '
-                'every wavelength sees n = 3.476 (real silicon absorbs below about 1.1 um). An nk_fit dispersion '
-                'entry gives dispersive, absorbing silicon instead (table: Green 2008, intrinsic, 300 K, 250-1450 '
-                'nm, band-to-band absorption only). Intrinsic: no sigma_dc (doped silicon sets its own, e.g. 1e4 '
-                'S/m). Thermal conductivity: the common engineering value, below the ~148 W/(m K) of pure bulk '
-                'silicon at 300 K (doped silicon, thin device layers and higher temperatures run lower). Elastic '
-                'data: an isotropic average of the cubic crystal (E is 130 GPa along <100>, 169 GPa '
-                'along <110>). Drift-diffusion data: 300 K, mobilities of lightly doped silicon (no doping or field '
-                'dependence).',
+    description='Crystalline silicon, n = 3.476 lossless (real silicon absorbs below ~1.1 um: an nk_fit entry on its '
+                'table gives dispersive, absorbing silicon; Green 2008, intrinsic, 300 K, 250-1450 nm, band-to-band '
+                'only). Intrinsic: no sigma_dc (set it for doped silicon, e.g. 1e4 S/m). k: the common engineering '
+                'value, below the ~148 W/(m K) of pure bulk silicon. Elastic data: an isotropic average (E 130 GPa '
+                'along <100>, 169 GPa along <110>). Drift-diffusion data: 300 K, lightly doped mobilities.',
     summary='Crystalline silicon at 1550 nm: refractive index 3.476 at every wavelength and no loss; real silicon '
             'absorbs below about 1100 nm.\n\n'
             'For absorbing, dispersive silicon (250 to 1450 nm) add a tabulated-data fit pole. Undoped: set an '

@@ -32,8 +32,13 @@ class Candidate:
 
     @property
     def row(self) -> str:
-        """Report row / record key: the label, '<label> @gpu' on the gpu backend."""
-        return self.label if self.backend == 'cpu' else f'{self.label} @{self.backend}'
+        """Report row / record key: row_of(label, backend)."""
+        return row_of(self.label, self.backend)
+
+
+def row_of(label, backend) -> str:
+    """Report row / record key of a solver label on a backend: the label, '<label> @gpu' on the gpu backend."""
+    return label if backend == 'cpu' else f'{label} @{backend}'
 
 
 def choice_names(solver_type) -> tuple:
@@ -95,7 +100,7 @@ def _resolved_value(values, solver_role, backend, grid):
 
 def _automatic_label(registry, solver_role, grid, backend) -> str:
     """Label of what Automatic resolves to on the backend and grid kind (SolverRole.automatic + its 'auto' library)."""
-    type_name, settings = solver_role.automatic(backend, grid)
+    type_name, settings = solver_role.automatic(backend, grid, None)   # no study: plain Automatic
     solver_type = registry.solver_type(type_name)
     values = {param.name: param.default for param in solver_type.params}
     values.update(settings)
@@ -128,13 +133,14 @@ def _unavailable(values, backend, gpu_missing) -> str:
     (host_direct.missing_text; PARDISO off x86-64) or nvmath-python for a cuDSS back end ('' when it can)."""
     from open_sol.solvers.cudss_factor import cudss_available
     from open_sol.solvers.host_direct import HOST_DIRECT_BACK_ENDS, host_direct_available, missing_text
+    from open_sol.solvers.sparse_direct import CUDSS_BACK_ENDS   # the cuDSS factorization names alike
     if backend == 'gpu' and gpu_missing:
         return gpu_missing
     for name in LIBRARY_SETTINGS:
         library = values.get(name)
         if library in HOST_DIRECT_BACK_ENDS and not host_direct_available(library):
             return missing_text(library)
-        if library in ('cudss', 'cudss_mixed') and not cudss_available():
+        if library in CUDSS_BACK_ENDS and not cudss_available():
             return f"{name} '{library}' needs nvmath-python with cuDSS (pip install nvmath-python[cu12])"
     return ''
 

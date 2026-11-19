@@ -1,4 +1,4 @@
-"""FEMResonancePhysics3D: em_fdfd_3d on a 'tetrahedra' mesh (igor3d_plan T4b): the PhysicsSolver around
+"""FEMResonancePhysics3D: em_fdfd_3d on a 'tetrahedra' mesh: the PhysicsSolver around
 fem3d.FEMPhysics3D with per-element materials read from the TetrahedronDomain's MaterialGrid at every assembly, the
 eigenfrequency study hooks of FDFDPhysics3D and FEMRenderer3D (point samples for the Session)."""
 # Materials per element at omega_t (host): eps_xx / eps_yy / eps_r (eps_r for an unallocated component) - j sigma_e /

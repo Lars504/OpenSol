@@ -1,5 +1,5 @@
-"""Line-block layout of the 2D FDFD Helmholtz operator (solvers/line_block in the 'linear' role of em_fdfd_ez / _hz,
-solver_plan Part II stages 2 and 3): block axis rule, layout, wavelength batch size and CPU byte counts; numpy at module
+"""Line-block layout of the 2D FDFD Helmholtz operator (solvers/line_block in the 'linear' role of em_fdfd_ez / _hz):
+block axis rule, layout, wavelength batch size and CPU byte counts; numpy at module
 level."""
 # One unknown per grid cell, flat i * ny + j over the full grid (PML included). block_axis 0 = the cells of one y row j
 # (b = nx, lines coupled along y), 1 = one x column i (b = ny). The 5-point stencil (9-point with hz eps_xy) couples

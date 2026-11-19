@@ -1,7 +1,7 @@
-"""Self-tests of the geometrically nonlinear solid_mechanics_3d on tetrahedra (new_modules_plan K6) and its energy
+"""Self-tests of the geometrically nonlinear solid_mechanics_3d on tetrahedra and its energy
 densities (K5): exact uniform total-Lagrangian states (model runs: stretch with its nominal reaction, released initial
 stress, Prescribed displacement (domain)), the geometric Duffing coefficient of a prestressed string and of a square
-membrane against the Hirsch plan's closed forms (CPU, structured meshes) and the modal energy identities (CPU).
+membrane against the Hirsch closed forms (CPU, structured meshes) and the modal energy identities (CPU).
 definition3d registers them."""
 import math
 
@@ -188,7 +188,7 @@ _SILICON_NITRIDE = (250e9, 0.23)
 _STRING_STRESS = 1e9
 _RATIOS = (0.01, 0.025, 0.05, 0.075, 0.1)
 _LINEAR_RATIO = 1e-6            # alpha a^2 / k of the load that measures k
-_DUFFING_TOLERANCE = 2e-2       # relative alpha (Hirsch plan E4)
+_DUFFING_TOLERANCE = 2e-2       # relative alpha
 _NONLINEAR_SETTINGS = {'geometric_nonlinearity': True, 'nonlinear_tolerance': 1e-10, 'nonlinear_max_iterations': 30}
 
 
@@ -266,7 +266,7 @@ def _check_string(_):
     return scaled_worst_result(errors, tolerances, **details)
 
 
-# ---- solid_fem3d_nonlinear_warm_start (CPU, plan C2): the axial-free string at alpha a^2 / k = 0.05 seeds (through
+# ---- solid_fem3d_nonlinear_warm_start (CPU): the axial-free string at alpha a^2 / k = 0.05 seeds (through
 # warm_start_fields / seed_warm_start, as a sweep does) a new physics on the same mesh solving 0.1; its displacement
 # equals a cold 0.1 solve within the Newton tolerance with fewer Newton iterations. A -5 u seed and a non-finite seed
 # (the latter must fall back to the cold ramp) still match. 0.05 -> 0.1 is a strongly nonlinear step (a ~ +40 %).
@@ -288,7 +288,7 @@ def _check_warm_start(_):
     return scaled_worst_result(errors, tolerances, **details)
 
 
-# ---- solid_fem3d_tangent_update (CPU, plan G4): the axial-free string with load_steps 2 at alpha a^2 / k = 0.05 then
+# ---- solid_fem3d_tangent_update (CPU): the axial-free string with load_steps 2 at alpha a^2 / k = 0.05 then
 # 0.1, tangent_update every_iteration vs when_slow (modified Newton): equal states within the Newton tolerance, fewer
 # tangent factorisations. Helpers shared with the 2D twin: selftests_nonlinear (tangent_update_runs / _errors).
 def _check_tangent_update(_):
@@ -298,7 +298,7 @@ def _check_tangent_update(_):
     return scaled_worst_result(errors, tolerances, **details)
 
 
-# ---- solid_fem3d_newton_gpu (plan G5): the axial-free string at alpha a^2 / k = _GPU_RATIO on the gpu backend with a
+# ---- solid_fem3d_newton_gpu: the axial-free string at alpha a^2 / k = _GPU_RATIO on the gpu backend with a
 # cuDSS 'linear' solver (device TangentAssembler3D, device-value refactorisations) against the cpu SuperLU solve, with
 # tangent_update every_iteration and when_slow: equal states within the Newton tolerance, a device assembler, and (full
 # Newton) refactorisations on one cuDSS plan.

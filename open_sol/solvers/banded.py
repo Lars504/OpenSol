@@ -1,10 +1,11 @@
-"""Banded direct solver of 1D models (symmetry plan 2.20; SolverType 'banded', role 'linear'): the PCGSolver protocol
+"""Banded direct solver of 1D models (SolverType 'banded', role 'linear'): the PCGSolver protocol
 of core.fv_diffusion.DiffusionSystem on a window one cell across (unknowns in line order, so the operator is banded),
 one host banded Cholesky (scipy.linalg) per assembly, exact solves. numpy at module level, scipy inside functions."""
 import time
 
 import numpy as np
 
+from .cudss_factor import canonical_csr
 from .sparse_direct import ExactSolveRecord, require_backend_operator
 
 SYMMETRY_TOLERANCE = 1e-12   # max |A - A^T| / max |A| above which upper_bands refuses the operator (as cuDSS)
@@ -15,8 +16,7 @@ def upper_bands(matrix, max_bandwidth=None) -> np.ndarray:
     sparse matrix: ab[u + i - j, j] = a[i, j] for i <= j, u = the largest column offset of a nonzero entry. ValueError
     before any band allocation when u > max_bandwidth, or when the matrix is not symmetric (only the upper triangle
     would be read: an unsymmetric operator would be solved as its symmetrised version)."""
-    csr = matrix.tocsr(copy=True)
-    csr.sum_duplicates()   # duplicate entries (non-canonical CSR) sum
+    csr = canonical_csr(matrix)   # duplicate entries (non-canonical CSR) sum; never modifies the caller's
     coo = csr.tocoo()
     rows, cols, values = coo.row.astype(np.int64), coo.col.astype(np.int64), np.asarray(coo.data, dtype=np.float64)
     upper = (cols >= rows) & (values != 0.0)
@@ -53,8 +53,9 @@ class BandedSolver(ExactSolveRecord):
         self._host_operator = None
 
     def factorize(self, operator, preconditioner=None, n_unknowns=None) -> None:
-        """Banded Cholesky of the assembled CSR (scipy on the cpu backend, cupyx on the gpu); preconditioner ignored;
-        ValueError for a bandwidth above max_bandwidth or an operator that is not positive definite."""
+        """Host scipy banded Cholesky of the assembled CSR on both backends (a cupyx CSR is copied to the host);
+        preconditioner ignored; ValueError for a bandwidth above max_bandwidth, an unsymmetric operator or one that is
+        not positive definite."""
         from scipy.linalg import LinAlgError, cholesky_banded
         require_backend_operator(self.label(), self.backend, operator)
         host_operator = operator if isinstance(operator.data, np.ndarray) else operator.get()
