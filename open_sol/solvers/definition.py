@@ -331,7 +331,7 @@ def _validate_banded(vctx, values, path):
 
 BANDED = SolverType(
     'banded', 'Banded direct solver (1D)', roles=('linear',),
-    description='Direct solve of 1D models (domain size_y null: a line of cells, symmetry plan 2.20): the operator of '
+    description='Direct solve of 1D models (domain size_y null: a line of cells): the operator of '
                 'a window one cell across is banded (tridiagonal for heat, electric_currents, electrostatics), so one '
                 'host banded Cholesky (scipy.linalg cholesky_banded, double precision) per assembly gives exact '
                 'solves at a cost linear in the cells; on the GPU backend the operator, rhs and solution move to the '

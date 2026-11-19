@@ -100,7 +100,7 @@ DISPLAY_SELFTEST_CASES = (
     SelfTestCase(
         name='viz_triangle_plot',
         label='Triangle mesh display: raster, tripcolor, node tables',
-        description='CPU (mesh plan T6) on the 2 x 2 um disc mesh (h 0.2 um): a linear field interpolated in P2 '
+        description='CPU checks on the 2 x 2 um disc mesh (h 0.2 um): a linear field interpolated in P2 '
                     '(isoparametric) gives a raster covering the window and node values of the 1 -> 4 display '
                     'triangulation equal to the field (1e-9 relative); save_field_figure draws it by tripcolor with '
                     'contours (PNG written); results.npz stores one shared node table for a saved field and two '

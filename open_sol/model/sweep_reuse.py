@@ -5,10 +5,10 @@ import dataclasses
 
 from .expressions import COORDINATE_NAMES, ExpressionError, evaluate_scalar, referenced_names
 from .geometry import GEOMETRY_KINDS
-from .schema import known_physics, state_field_names
+from .schema import TIME_DEPENDENT_STUDY, known_physics, state_field_names
 from .solver_hooks import RerunSolver
 
-REUSE_REFUSED_STUDIES = ('time_dependent', 'optimization')   # their run state is no rerun of a kept build
+REUSE_REFUSED_STUDIES = (TIME_DEPENDENT_STUDY, 'optimization')   # their run state is no rerun of a kept build
 # Param kinds whose values are numbers / expressions (the others hold names or choices)
 _EXPRESSION_KINDS = frozenset({'float', 'int', 'float_list', 'points', 'table', 'expression'})
 # keys of free-form spec dicts (meshes, domain, material entries) that hold names or choices, never expressions

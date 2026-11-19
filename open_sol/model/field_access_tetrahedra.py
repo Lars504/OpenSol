@@ -45,7 +45,7 @@ class TetrahedraAccess(ElementAccess):
         `index` (NaN outside the elements)."""
         if not hasattr(renderer, 'sample'):
             raise ValueError(f"field '{component}': a renderer on a tetrahedron mesh must provide sample(component, "
-                             'points) (igor3d_plan T4b)')
+                             'points)')
         points, shape = self.domain.sample_plane(COORDINATE_AXES.index(axis), index)   # read-only, kept per plane
         values = np.asarray(renderer.sample(component, points), dtype=np.float64)
         return values.reshape(shape).astype(np.float32)

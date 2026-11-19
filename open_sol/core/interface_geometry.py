@@ -1,4 +1,4 @@
-"""Interface geometry of subpixel smoothing (igor 1.5): per averaging location whose volume two materials share, the
+"""Interface geometry of subpixel smoothing: per averaging location whose volume two materials share, the
 fill fraction, normal and two representative cells (2D: InterfaceGeometry, 3D: InterfaceGeometry3D); built once by
 model.subpixel_geometry, averaged by the physics."""
 from dataclasses import dataclass

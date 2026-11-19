@@ -278,7 +278,7 @@ ELEMENT_SELFTEST_CASES = (
     SelfTestCase(
         name='fem_lagrange_patch',
         label='FEM Lagrange elements: patch tests',
-        description='CPU patch tests of the FEM core (mesh plan T2) on the 2 x 2 um disc mesh (h 0.2 um, curved '
+        description='CPU patch tests of the FEM core on the 2 x 2 um disc mesh (h 0.2 um, curved '
                     'interior edges): -div(K grad u) = f with an anisotropic constant K and u exact on the outer '
                     'boundary reproduces linear u with P1, quadratic u with P2 on straight elements and linear u with '
                     'isoparametric P2 (nodal error 1e-11), also with flux (edge load) faces; point evaluation of '

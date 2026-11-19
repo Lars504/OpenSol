@@ -289,7 +289,7 @@ MESHER_SELFTEST_CASES = (
     SelfTestCase(
         name='fem_mesher_conformity',
         label='Triangle mesher: conformity, quality, curved boundaries',
-        description='CPU checks of the own conforming Delaunay mesher (mesh plan T1) on a 3 x 2 um window with a '
+        description='CPU checks of the own conforming Delaunay mesher on a 3 x 2 um window with a '
                     'refined rectangle, a circle crossing a diamond and a holed plate (circle-circle crossing), an '
                     'ellipse crossing the rectangle and a line, a 10.6 deg wedge and a point (h_max 0.12 um, '
                     'growth 1.3): every split PSLG segment is a mesh edge, straight segments are covered to 1e-9 '

@@ -2479,7 +2479,7 @@ SOLVER_SELFTEST_CASES = (
                     'Laplacian and diagonal-dominant) and q^2 0, 0.5, two complex right-hand sides; every shift '
                     'accepted and each solution against the per-shift scipy spsolve (relative error <= '
                     f'{_PARITY_TOLERANCE:g}; refinement to a 1e-9 residual). '
-                    'factorize_operators (Part II stage 3): a batch of three complex non-symmetric grid operators '
+                    'factorize_operators: a batch of three complex non-symmetric grid operators '
                     '(the sparse_direct case operator with fresh random diagonals), each shift solved against its '
                     'own scipy spsolve with the same tolerance, accepted, and invalid after the next set_operator. '
                     'Not yet run with two omega values.',
@@ -2618,7 +2618,7 @@ SOLVER_SELFTEST_CASES = (
                     'precision and whether the default is reported ignored; node settings are never written; '
                     'with_default_precision directly (fills without a role, a role refusing mixed (a pcg role of the '
                     'default precisions) and an explicit precision leave the settings). Also the Automatic linear solver multigrid resolution of the diffusion types '
-                    '(mesh plan M0, rows multigrid_*): heat, '
+                    '(rows multigrid_*): heat, '
                     'electric_currents, electrostatics and magnetostatics Automatic on the gpu backend resolve pcg '
                     'double with preconditioner multigrid (single with solver_defaults.precision single); '
                     'solver_defaults.precision mixed, a pcg node with precision mixed and a node filled with mixed '

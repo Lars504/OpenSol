@@ -432,7 +432,7 @@ TANGENT_ASSEMBLER_SELFTEST_CASES = (
         max_wall_time=120.0),
     SelfTestCase(
         name='fem3d_tangent_assembler_gpu',
-        label='FEM: device tangent assembler and device-value cuDSS refactorisation (plan G5, GPU)',
+        label='FEM: device tangent assembler and device-value cuDSS refactorisation (GPU)',
         description='The fem3d_tangent_assembler box (P1 / P2, two materials, void elements, random S0): the device '
                     'TangentAssembler3D (gradients cached and recomputed) against the host one at two random '
                     'displacements (the second reusing the device S0), without S0, and tangent(): force (with the '

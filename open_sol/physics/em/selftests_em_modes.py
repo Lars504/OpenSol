@@ -235,7 +235,7 @@ EM_MODES_SELFTEST_CASES = (
     SelfTestCase(
         name='em_modes_line_block',
         label='EM modes: line-block shift-invert batches',
-        description="solver_plan Part II stage 3: em_modes with a line_block solver node as its 'shifted' solver, "
+        description="em_modes with a line_block solver node as its 'shifted' solver, "
                     'whose block factors replace the host SuperLU of the shift-invert operators A - sigma B (unknowns '
                     'ordered by grid rows or columns, a periodic axis inside the blocks). Runs: a vacuum PEC '
                     f'rectangle ({_PEC_CELLS[0]} x {_PEC_CELLS[1]} cells of {_PEC_CELL * 1e9:g} nm, wall planes on the '

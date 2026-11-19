@@ -367,7 +367,7 @@ ROUNDED_RECTANGLE_SELFTEST_CASES = (
         name='geometry_rounded_rectangle',
         label='Rounded rectangle geometry: rasters, outlines, sections',
         description=(
-            'CPU checks of the rounded_rectangle kind (new_modules_plan G4, model.geometry): corners sorted, r above '
+            'CPU checks of the rounded_rectangle kind (model.geometry): corners sorted, r above '
             'half the shorter side refused; on 1 nm centres the raster equals the union of two rectangles and four '
             f'circles exactly, r = 0 equals the rectangle, the centre-count area is within {_RASTER_AREA_RTOL:g} of '
             'w h - (4 - pi) r^2; the 1024-segment outline lies on the boundary (1e-12 x side) with shoelace area '

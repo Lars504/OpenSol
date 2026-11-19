@@ -852,6 +852,6 @@ MEMBRANE_SELFTEST_CASES = (
         '1.55e-4 kg/m^2, quadratic triangles h = a / 80): the six lowest modes against f_mn = (c / 2) sqrt((m / a)^2 + '
         f'(n / b)^2), c = sqrt(T / rho_s), to {_RECTANGLE_TOLERANCE:g} relative (P2 eigenvalue error ~ (k h)^4) with one '
         'snapshot per mode; and against the same rectangle on em_fdfd_ez (vacuum, PEC walls, quadratic, the same '
-        f'triangles): f_n / c of both agree to {_EM_TOLERANCE:g} relative (one discrete operator; plan S4 cross-check).',
+        f'triangles): f_n / c of both agree to {_EM_TOLERANCE:g} relative (a cross-check: one discrete operator).',
         lambda: {'membrane': rectangle_modes_spec('cpu'), 'em': _em_rectangle_spec()}, _check_em_rectangle),
 )

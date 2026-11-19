@@ -551,7 +551,7 @@ HARMONIC_SELFTEST_CASES = (
                     'wavelength): a Robin drive at x_lo (value 2 j k a, damping a / c) launches exp(-j k x); a Robin '
                     'x_hi absorber (damping a / c, exact at normal incidence) gives the field within 2e-3 and a fitted '
                     'reflection |B / A| <= 1e-4; a one-wavelength fem.pml ring (16 cells, R = 1e-6 at the drive '
-                    'frequency, outer side held) reflects <= 1e-3 (plan S2) with |A - 1| <= 2e-3. error = number of '
+                    'frequency, outer side held) reflects <= 1e-3 with |A - 1| <= 2e-3. error = number of '
                     'failed sub-checks, tolerance 0.',
         specs=lambda: {},
         check=_check_harmonic_waves,

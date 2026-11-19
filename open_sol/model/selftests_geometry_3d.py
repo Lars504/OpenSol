@@ -1,4 +1,4 @@
-"""Self-test of the 3D prism extensions (igor 1.1: extrusion axis x / y, sidewall angle): rasterised volumes against
+"""Self-test of the 3D prism extensions (extrusion axis x / y, sidewall angle): rasterised volumes against
 closed forms, an x / y extrusion against the equivalent slab stack, sections, mesh snap faces and the validation
 errors. CPU only (specs() is empty, check({}) calls the geometry / meshing / validate functions directly)."""
 import math

@@ -250,7 +250,7 @@ EIGENFREQUENCY_SELFTEST_CASES = (
     SelfTestCase(
         name='em_fdfd_eigenfrequency_line_block',
         label='EM FDFD: line-block shift-invert eigenfrequencies',
-        description='solver_plan Part II stage 3: the em_fdfd_eigenfrequency_pec_cavity cavities ez and ez_lossy on '
+        description='The em_fdfd_eigenfrequency_pec_cavity cavities ez and ez_lossy on '
                     f'{_LINE_BLOCK_CELL * 1e9:g} nm cells (26 x 16; the hz walls are pinned by the SuperLU case, the '
                     'line-block factor is operator-agnostic) with a line_block solver node assigned '
                     "as the 'linear' solver, precision double (both) and mixed (ez_lossy; 3 runs; not yet confirmed "

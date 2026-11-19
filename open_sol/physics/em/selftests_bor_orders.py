@@ -632,7 +632,7 @@ BOR_ORDER_SELFTEST_CASES = (
         name='em_bor_line_block_wavelengths',
         label='EM body of revolution: line-block wavelength batches',
         description=(
-            'solver_plan Part II stage 3: model runs of em_fdfd_bor (frequency_domain at '
+            'Model runs of em_fdfd_bor (frequency_domain at '
             f'{", ".join(f"{wavelength * 1e6:g}" for wavelength in _BATCH_WAVELENGTHS)} um, m = 0) of a z '
             f'point_source in the axis cell of a {_BATCH_DOMAIN[0] * 1e6:g} x {_BATCH_DOMAIN[1] * 1e6:g} um domain '
             f'with a closed flux box ({_BATCH_BOX[1] * 1e6:g} um side, +-{_BATCH_BOX[0] * 1e6:g} um; the check compares '

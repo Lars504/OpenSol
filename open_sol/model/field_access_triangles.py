@@ -64,7 +64,7 @@ class TriangleAccess(ElementAccess):
         """(Lagrange DofMap, host float64 coefficients) of a field of a physics on this triangle mesh."""
         if not hasattr(renderer, 'fem_field'):
             raise ValueError(f"field '{component}': a renderer on a triangle mesh must provide fem_field(component) "
-                             '-> (Lagrange DofMap, coefficients) (mesh plan T3 / T4)')
+                             '-> (Lagrange DofMap, coefficients)')
         dofs, coefficients = renderer.fem_field(component)
         if dofs.family != 'lagrange':
             raise ValueError(f"field '{component}': fem_field must give a Lagrange (P0 / P1 / P2) map, got "

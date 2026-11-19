@@ -147,7 +147,7 @@ BUILTIN_TETRAHEDRA_SELFTEST_CASES = (
         name='fem_builtin_tetrahedra_graded',
         label='Tetrahedron meshes: graded builtin Kuhn split',
         description=(
-            'CPU checks of the graded builtin tetrahedra (plan D2, no gmsh): a 4 x 1 x 0.6 um box with a bar refined '
+            'CPU checks of the graded builtin tetrahedra (no gmsh): a 4 x 1 x 0.6 um box with a bar refined '
             f'across y / z to {_FINE / _UM:g} um (dx {_H_MAX / _UM:g} um, so 10:1 bricks) and face sizes '
             f'{_END / _UM:g} um at x_lo / x_hi, plus an unrefined pad box. The estimate equals the built mesh exactly '
             '(elements, nodes, edges, faces); the object_faces areas of both boxes equal their surfaces '

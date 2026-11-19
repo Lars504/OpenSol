@@ -355,7 +355,7 @@ SQUEEZE_FILM_CASES = (
         description='CPU checks of fem.squeeze_film on the bottom footprint of one 2 pi / 16 sector of the '
                     'Basiri annulus (a = 148, b = 82, t = 1.8 um; 8 x 12 P2 cells, rims vented, radial sides sealed): '
                     'the rigid piston c_sq = 3 pi mu G / (2 H^3), G = (a^4 - b^4) - (a^2 - b^2)^2 / ln(a / b), at H = '
-                    '10 / 20 um within 0.5 % (plan S6) and the table values; the m = 0 Kirchhoff bracket shapes (free-'
+                    '10 / 20 um within 0.5 % and the table values; the m = 0 Kirchhoff bracket shapes (free-'
                     'free 225.0 kHz, clamped at b 356.0 kHz; m_eff 49.9 / 58.0 ng, zeta 0 / 0.457) give c_psi within '
                     '0.5 % of the 1D radial integral and gamma_gas = c_psi / m_eff = 4235 / 12239 1/s at H = 10 um '
                     'within 1e-2 (first estimate). error = number of failed sub-checks, tolerance 0.',

@@ -265,7 +265,7 @@ def _check_empty(results_by_name):
 
 _EMPTY_DESCRIPTION = (
     f'Axisymmetric (r, z) air domain {_EMPTY_RADIUS:g} x {_EMPTY_HEIGHT:g} m at {_EMPTY_FREQUENCY:g} Hz, rigid floor '
-    f'y_lo, P2 at {_EMPTY_ELEMENT:g} m (new_modules_plan S5, Basiri E2 check i). scattered: background standing wave 2 '
+    f'y_lo, P2 at {_EMPTY_ELEMENT:g} m (Basiri E2 check i). scattered: background standing wave 2 '
     'p0 cos(k z) (p0 1 Pa, direction -y, rigid plane 0) with PMLs on x_hi and y_hi: no contrast, no obstacle and a zero '
     'floor flux, so the scattered field must vanish (probes p_s / 2 p0 <= '
     f'{_EMPTY_SCATTERED_TOLERANCE:g}: no spurious PML-interface or face source) and the total probes read 2 p0 cos(k z); '

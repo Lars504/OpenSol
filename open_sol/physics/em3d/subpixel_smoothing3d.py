@@ -1,4 +1,4 @@
-"""Subpixel smoothing of em_fdtd_3d (igor 1.5): the averaged eps of the build's interface faces
+"""Subpixel smoothing of em_fdtd_3d: the averaged eps of the build's interface faces
 (core.interface_geometry.InterfaceGeometry3D) from the engine's current table values, re-quantised (material_index3d)
 into a uint16 face index per lower cell (0 = none) and a per-id (eps_x, eps_y, eps_z) table the E coefficients read."""
 import numpy as np

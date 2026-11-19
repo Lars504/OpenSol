@@ -990,7 +990,7 @@ FDFD_SELFTEST_CASES = (
                     f'{_GRADED_FAR_FIELD_MARGIN * 1e6:g} um margin (both axes), so every face of the far-field contour '
                     'samples graded cells along it (actual centres, trapezoid weights) while the contour lines and the '
                     'flux lines stay in base cells. Same checks and tolerances as there (the far_field feature no '
-                    'longer forces a uniform mesh, solver_plan S7.1); the check raises unless both builds reached '
+                    'longer forces a uniform mesh); the check raises unless both builds reached '
                     'dx_min <= 0.6 x the base cell (no silent uniform fallback). Not yet confirmed by a run.',
         specs=lambda: cpu_specs(_graded_far_field_specs()),
         check=lambda results_by_name: _check_far_field_power(require_graded(results_by_name, _HANKEL_CELL))),
@@ -1086,7 +1086,7 @@ FDFD_SELFTEST_CASES = (
         name='em_fdfd_tfsf_graded_leakage',
         label='EM FDFD TFSF plane wave: empty box on graded meshes',
         description=f"A +x plane_wave_tfsf (1 V/m) in an empty vacuum box must leave no field outside it on graded "
-                    f"meshes (solver_plan S7.1 lift: the incident line is marched on the solved stencil's x widths). "
+                    f"meshes (the incident line is marched on the solved stencil's x widths). "
                     f"Runs 'ez' / 'hz': a {_LEAK_SIZE * 1e6:g} x {_LEAK_SIZE * 1e6:g} um all-CPML box at the vacuum "
                     f"wavelength 1 um (stationary), mode 'nonuniform' base {_LEAK_CELL * 1e9:g} nm with a rectangle "
                     f'x 1.05..1.45, y 1.3..1.7 um refined to {_LEAK_REFINED_CELL * 1e9:g} nm ({_LEAK_MARGIN * 1e6:g} '
@@ -1104,7 +1104,7 @@ FDFD_SELFTEST_CASES = (
     SelfTestCase(
         name='em_fdfd_line_block',
         label="EM FDFD line-block 'linear' solver vs sparse direct",
-        description="solver_plan Part II stage 2 (default backend: the cupy line block is its own implementation): a "
+        description="Default backend (the cupy line block is its own implementation): a "
                     '2 x 2 um copy of the em_fdfd_line_current_hankel box (ez / hz, 25 nm, 12,100 unknowns, probes '
                     'within 25 cells of the source; no periodic axis: the cheaper block axis) and a 2 um long '
                     'em_fdfd_fresnel_transmission glass strip (ez / hz, interface at mid-length, 2,300 unknowns; '
@@ -1123,7 +1123,7 @@ FDFD_SELFTEST_CASES = (
     SelfTestCase(
         name='em_fdfd_line_block_wavelengths',
         label='EM FDFD line-block wavelength batches vs sparse direct',
-        description='solver_plan Part II stage 3: the em_fdfd_line_block Hankel ez box and Fresnel ez / hz glass strips '
+        description='The em_fdfd_line_block Hankel ez box and Fresnel ez / hz glass strips '
                     '(its smaller models) '
                     f"in a frequency_domain study of {_BATCH_STUDY['n_wavelengths']} wavelengths "
                     f"{_BATCH_STUDY['wavelength_start'] * 1e6:g}-{_BATCH_STUDY['wavelength_stop'] * 1e6:g} um, solved "

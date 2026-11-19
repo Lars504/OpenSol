@@ -1,4 +1,4 @@
-"""Subpixel smoothing geometry (igor 1.5), computed once at build: supersampled rasters of the material regions, one x
+"""Subpixel smoothing geometry, computed once at build: supersampled rasters of the material regions, one x
 strip at a time, give every E_z cell / E_x (hi-y) face / E_y (hi-x) face whose averaging volume two materials share
 its fill fraction, normal and two representative cells (core.interface_geometry); 3D (em_fdtd_3d): that in-plane
 geometry per run of equal cross-sections plus sampled horizontal interfaces; plus the CPU memory estimates. Backend

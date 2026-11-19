@@ -663,7 +663,7 @@ PEC_BOX_EIGENMODES_TEMPLATE = (PEC_BOX_EIGENMODES_KEY, PEC_BOX_EIGENMODES_LABEL,
 NANOBEAM_CELL_KEY = 'nanobeam_mirror_cell_bands_3d'
 NANOBEAM_CELL_LABEL = 'Nanobeam mirror cell band diagram (3D, frequency domain)'
 NANOBEAM_CELL_DESCRIPTION = (
-    'em_fdfd_3d: one mirror cell of a silicon nanobeam photonic crystal in D2O (igor_experiment 4.3: period a = 394.3 '
+    'em_fdfd_3d: one mirror cell of a silicon nanobeam photonic crystal in D2O (period a = 394.3 '
     'nm, hole d = 279.3 nm along y through a 595.2 x 220 nm beam, n 3.47 / 1.32), quarter cross-section (x_lo '
     'antisymmetric = PEC plane, y_lo symmetric = PMC plane: the TE-like sector), 300 nm D2O and 8 CPML cells on x_hi / '
     'y_hi, z periodic with bloch_kz = k_fraction 2 pi / a swept over 0.4-0.5 (guided, below the D2O light line); an '

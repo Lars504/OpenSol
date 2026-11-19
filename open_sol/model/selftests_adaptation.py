@@ -633,7 +633,7 @@ ADAPTATION_SELFTEST_CASES = (
     SelfTestCase(
         name='adaptation_physics_indicators',
         label='Mesh refinement levels: physics error indicators (flux / traction jumps, EM energy weights)',
-        description='CPU checks of the mesh plan A2 indicators (no model run): Kelly face jumps 0.5 w |J|^2 A / c exact '
+        description='CPU checks of the physics error indicators (no model run): Kelly face jumps 0.5 w |J|^2 A / c exact '
                     'for the linear flux of u = x^2 (interior cells, half at the ends, nothing on an uncoupled face), '
                     'a complex two-component traction with per-cell compliance; the energy-weighted interpolation of a '
                     'complex field = weight x (real + imaginary parts); cpu-backend heat: two layers (k 1 | 4) '
@@ -679,7 +679,8 @@ ADAPTATION_SELFTEST_CASES = (
     SelfTestCase(
         name='adaptation_triangle_parts',
         label='Mesh refinement levels on triangles: error indicators and adapted sizes',
-        description='CPU checks of the mesh plan A3 parts (no model run) on a 1 x 1 um window with a k 1 | 4 layer '
+        description='CPU checks of the triangle error indicators and adapted sizes (no model run) on a 1 x 1 um '
+                    'window with a k 1 | 4 layer '
                     'boundary as a mesh line: the residual / flux-jump indicator vanishes (<= 1e-18 of its energy '
                     'scale) for the piecewise-linear layered field (P1 and P2) and the source parabola (P2: Hessian '
                     'residual and jumps cancel exactly); P1 with the source falls 2.5 to 6.5x when h halves (h^2); the '

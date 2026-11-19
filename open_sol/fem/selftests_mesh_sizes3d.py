@@ -518,7 +518,7 @@ MESH_SIZES_3D_SELFTEST_CASES = (
         name='fem_tetrahedron_size_fields',
         label='Tetrahedron meshes: face and point size fields',
         description=(
-            'CPU checks of MeshSpec.face_sizes / size_points on tetrahedra (new_modules_plan G1): SizedFace distances '
+            'CPU checks of MeshSpec.face_sizes / size_points on tetrahedra: SizedFace distances '
             '(1e-14); the gmsh .geo Max of two MathEval fields of a face (no field references, every string within '
             "gmsh's limit, evaluated in Python) and the radius-0 Ball of a size point equal their numpy twins "
             f'SizedFace.sizes / size_point_function ({_TWIN_RTOL:g}); the estimate density '
@@ -536,7 +536,7 @@ MESH_SIZES_3D_SELFTEST_CASES = (
         name='fem_tetrahedron_composite_sizes',
         label='Tetrahedron meshes: refinement of a composite sizes only the composite',
         description=(
-            'Plan D1 (CPU, check({})): SizedRegion.sizes of a cylinder minus cylinder is h_max at the hole centre, the '
+            'CPU, check({}): SizedRegion.sizes of a cylinder minus cylinder is h_max at the hole centre, the '
             'size in the ring, size + (growth - 1) x depth inside the hole and x distance outside (1e-9; cylinder '
             'leaves ramp, no Cylinder field step), continuous at the hole surface; a film hole whose ends lie on the film faces is not refined by them; a nested difference '
             'follows De Morgan; the bounds are the base\'s. The .geo of a box minus a film hole, a notch box and a '
@@ -553,7 +553,7 @@ MESH_SIZES_3D_SELFTEST_CASES = (
         name='fem_gmsh3d_disk_cache',
         label='Tetrahedron meshes: on-disk gmsh cache and stage timings',
         description=(
-            'Plan D4 (CPU, check({})): tetrahedralize(log=) of a builtin mesh logs one info line of its stage times; '
+            'CPU, check({}): tetrahedralize(log=) of a builtin mesh logs one info line of its stage times; '
             "mesh_cache_folder('') is off. With gmsh and a temporary cache folder: the first mesh runs gmsh and "
             'writes one .npz, the second (memory cache cleared) is read from disk without a gmsh run and has the same '
             'digest, entities and regions, a third comes from memory, a corrupted file is re-meshed and rewritten; '

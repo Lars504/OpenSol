@@ -311,14 +311,14 @@ MEMBRANE_TENSION_CASES = (
                      'discrete periodic state at zero mean strain) relaxes as background (solved_physics '
                      "['membrane']), solid_membrane_tension (thickness param 80 nm) writes N = h sigma: <N_ii> / (h "
                      'sigma0) = int tension_ii dA / (h sigma0 p^2) of the first run against the extrapolated Q4 '
-                     f'reference {_CELL_REFERENCE:g} (mauranyapin2021 plan E1, Section 6) within {_CELL_TOLERANCE:g} '
+                     f'reference {_CELL_REFERENCE:g} (mauranyapin2021 E1) within {_CELL_TOLERANCE:g} '
                      'for xx and yy; and the membrane eigen solve runs on '
                      'the Bloch cell (periodic_x / _y, no clamp, no bending) at |k| p = '
                      f"{', '.join(f'{value:g}' for value in _BAND_KP)} along x and the diagonal: the lowest band "
                      'phase velocity 2 pi f / |k| against c_eff = sqrt(n.<N>.n / <rho_s>) from the same run\'s cell '
                      f'integrals within {_BAND_TOLERANCE:g}, axis vs diagonal within {_BAND_TOLERANCE:g}, and c_eff '
-                     f'against the plan\'s {_BAND_REFERENCE_SPEED:g} m/s within {_BAND_REFERENCE_TOLERANCE:g} '
-                     '(mauranyapin2021 plan E1). measured = error in tolerance units, tolerance 1 (first estimates, not '
+                     f'against the target {_BAND_REFERENCE_SPEED:g} m/s within {_BAND_REFERENCE_TOLERANCE:g} '
+                     '(mauranyapin2021 E1). measured = error in tolerance units, tolerance 1 (first estimates, not '
                      'yet run).'),
         specs=_band_specs, check=_check_band, heavy=True),
 )
