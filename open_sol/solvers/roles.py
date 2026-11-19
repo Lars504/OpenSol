@@ -65,9 +65,11 @@ class SolverRole:
     # solid Q1: 2); the host direct size rule and the fit guard count with it (definition_helpers.direct_unknowns)
     direct_components: int = 1
 
-    def automatic(self, backend, grid, study=None) -> tuple:
-        """(SolverType name, settings dict) Automatic resolves to in the study (None: any) on the backend and grid
-        kind."""
+    def automatic(self, backend, grid, study) -> tuple:
+        """(SolverType name, settings dict) Automatic resolves to in the study on the backend and grid kind: the
+        study_defaults entry (on study_default_backends), else grid_defaults, else backend_defaults, else the default;
+        study None skips study_defaults (meshing.fitted_memory_estimate's plain roles). Required, so no caller drops
+        the study by accident."""
         by_study = study is not None and (not self.study_default_backends or backend in self.study_default_backends)
         found = self.study_defaults.get((study, grid)) if by_study else None
         type_name, settings = found if found is not None else self.grid_defaults.get(

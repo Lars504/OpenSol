@@ -95,7 +95,7 @@ def _resolved_value(values, solver_role, backend, grid):
 
 def _automatic_label(registry, solver_role, grid, backend) -> str:
     """Label of what Automatic resolves to on the backend and grid kind (SolverRole.automatic + its 'auto' library)."""
-    type_name, settings = solver_role.automatic(backend, grid)
+    type_name, settings = solver_role.automatic(backend, grid, None)   # no study: plain Automatic
     solver_type = registry.solver_type(type_name)
     values = {param.name: param.default for param in solver_type.params}
     values.update(settings)

@@ -40,7 +40,8 @@ from .schema import (ADAPTATION_METHODS, BACKENDS, DERIVED_OPERATIONS, FIELD_DER
                      conformal_boundaries_physics, coupling_role_text, coupling_type_accepts, coupling_writes,
                      default_precision_ignored, effective_coupling_every, with_default_precision, with_node_precision,
                      feature_precision_misfit, fill_defaults, get_registry, memory_check_level,
-                     output_field_names, param_visible, short_repr, solver_backend, solver_grid, solver_misfit,
+                     output_field_names, param_visible, restricted_feature_precisions, short_repr, solver_backend,
+                     solver_grid, solver_misfit,
                      state_field_names,
                      subpixel_smoothing_physics, valid_every)
 from .spec import OUTER_FACES_3D, REFINEMENT_PLACES, RESERVED_ENTITY_NAMES, SWEEP_SPACINGS, outer_faces
@@ -1647,7 +1648,7 @@ class _Validator:
                 feature_type = physics_type.feature_type(feature.type)
             except KeyError:   # reported by check_features
                 continue
-            if feature.enabled and set(feature_type.precisions) != set(PRECISIONS):
+            if feature.enabled and restricted_feature_precisions(feature_type):
                 restricted.append((feature, feature_type))
         if not restricted:
             return

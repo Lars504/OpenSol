@@ -4,199 +4,95 @@ Sub file of the root `structure_conventions.md` (read that first): spec, validat
 templates, describe. Current state, no changelog.
 
 ## Model layer
-- Expressions: ExpressionError is a ValueError; integer literals become floats; overflow fails at evaluate; any cupy
-  argument switches to cupy. `evaluate` ignores invalid / divide (np.errstate, like cupy): consumers catch NaN / inf
-  (evaluate_scalar, builder `_check_range`, curves drop non-finite samples). Syntax fix hints: `_SYNTAX_HINTS`; unknown
-  names list close matches (qualified `<physics>_<name>` first). The parser NFKC-maps the micro sign to Greek mu
-  (`_NAME_ALIASES` rewrites um, us and reserves them). An uncalled function name is a free name (`names`): only a
-  namespace entry supplies it (FDFD probe xy series 'abs'); one name both called and uncalled in one expression
-  raises at compile (one eval scope slot).
-- Special functions (j0, j1, y0, y1, i0, i1, k0, k1, erf, erfc): scipy.special on numpy (imported on first call),
-  cupyx.scipy.special on cupy; reserved like every function name (no parameter named y0 / k0).
+- Expressions: `evaluate` is silent on invalid / divide on both backends, so consumers of its values check finiteness
+  themselves (evaluate_scalar, builder `_check_range`, curves drop non-finite samples). An uncalled function name is a
+  free name that only a namespace entry supplies (an FDFD probe xy series 'abs').
 - Names: `<physics>_<field>` always, plain `<field>` when one physics alone provides it (parameters may not use it).
   Settings / feature params / material properties see parameters + x, y (field_dependent) + state names and t
   (state_dependent) / t alone (time_dependent: no x, y with t, `schema._number`); coupling 'expression': value + x, y +
   parameters; derived values: + t + `output_field_names` + `scalar_output_names` (settings resolved per call: names
   follow e.g. n_modes; with a `source`: the result's sample names instead, which shadow parameters); derived `at` /
   `reference`: parameters only; analytic curves: parameters + `analytic.curve_variables(target kind, series)`
-  (variables shadow). z joins x, y only in 3D (`expressions.FIELD_COORDINATE_NAMES`); validate
-  `_height_in_2d_message` rejects it in 2D values of kinds float / int / expression (a choice such as prism axis 'z'
-  is literal text), derived values and line curves (cut height: `analytic.field_plane_height`).
-- Analytic comparison (`analytic.py`, numpy only, GUI-thread safe): references are evaluated on the CPU from the
-  session's parameters (`_run_built` -> derived_reference / derived_error; sweep table also for failed values).
-  `result_value` reduces a source result; xy series / table column names exist only at run time (validation checks
-  names only for timeseries / flux_spectrum). Analytic curves never touch a run: drawn over `built_parameters(spec,
-  summary)` (the summary's `parameters`, also after a cancelled sweep; no summary: the sweep's last value), Sweep tab
-  overlays over `parameters_with(spec, parameter, value)`; 'sweep' curves / references by `sweep_curve` on the swept
-  values plus linear and (positive range) geometric points, so a log axis still passes every simulated point.
-  `curve_variables(kind, series)` is the one variable rule (validate, settings form, `feature_curve`): timeseries on
-  `sample_axis` (own t at 501..20000 samples, so ring-downs do not alias), `iteration` (1-based) when every t is equal
-  (`is_iteration_series`); series 'fft' only with the caller's FFT bins (`frequency=`: analytic never computes the
-  FFT); tables via `table_xy(result, x_column)`. Line curves: `plane` (3D, `line_plane`) and `snapshot`
-  (`snapshot_index`: int, or label / its text before ':'; several matches raise; wavelength labels '.6g' nm;
-  snapshots are the mid-height cut, so validate refuses plane + snapshot). A six-coordinate `line` is a 3D segment
-  (`is_segment_3d`; 3D only, no plane; final state by `Session.segment_profile`: live Results only; with `snapshot`,
-  `_SnapshotRecorder` stores every 3D-segment curve's profile per snapshot in `Snapshot.segments[curve name]`,
-  results.npz 'snapshot/<i>/segment/<name>/'; parity sectors keep sector profiles (half, not unfolded) and mean them
-  for linear signed fields in the combined snapshot). `sweep_table_xy` (api `Results.sweep_xy`, GUI Sweep table
-  columns) turns per-value 'table's into one 'xy' vs the swept parameter on request (never stored);
-  `sweep_value_curve` / `sweep_overlay_xy` are the one rule of GUI Sweep overlays and api sweep figures. Result keys
-  'physics.feature' follow `rename_physics` / `ModelSpec.rename_result_key`; a deleted feature leaves a dangling key
-  (validation error).
-- Derived curves (`DerivedCurveSpec`, `analytic.derived_curve` / `derived_curve_plots`): inputs
-  'physics.feature:sample' through `result_samples` (any derived-value sample, scalars too; far_field: its first
-  wavelength); abscissa = the first array input's, sorted; later inputs `np.interp`-ed onto it (NaN outside).
-  Expression names = parameters + aliases (shadowing) + x. `rename_parameter` skips every name that shadows
-  parameters (`ModelSpec._parameter_shadows`: aliases / x, curve variables, result sample names; xy / table sourced
-  derived-value expressions untouched) and refuses a new name one of them would shadow. Plots group by `plot or
-  name`; failing curves drop out with a text (never raise); series names unique per plot (`_unique_series_name`),
-  `curve_series` maps each curve to its own. Consumers pass `fetch(key)`: api `Results.derived_curves()` (host cache,
-  else live; summary.json derived_curves, figures/derived_<plot>.png honour log_x / log_y) and the GUI tab (worker).
-  Final results only: no per-sweep-value curves.
-- Curve calculus: `gradient` / `cumtrapz` are `analytic.CURVE_FUNCTION_ARITY`, not FUNCTION_NAMES (not reserved, not
-  callable in field expressions): every compile of a derived-curve expression passes `functions=` (validate,
-  `curve_values(functions=)`, GUI `FormContext(functions=)` -> `schema.check_value(functions=)`, kind 'expression'
-  only). `curve_functions(axis)` closes over the abscissa and works on finite samples only (NaN of an interpolated
-  input stays NaN, cumtrapz starts at the overlap).
-- Derived-curve `reference` (x + parameters) / `tolerance`: series '<series> reference', xy keys `reference_series`
-  / `curve_error` (on the curve's own abscissa, ptp scale) -> summary.json derived_curves (`curve_error`,
-  `y_reference`); selftest_examples reads them as 'derived_curve' entries of 'curves'.
-- Derived values over a source (`result_value(result, derived, parameters)`): `window` [lo, hi] filters the sorted
-  finite samples (integral adds interpolated edges), then `reduce_samples` (mean / max / min / integral, argmax,
-  fwhm, polyfit / exp_fit / lorentz_fit / two_exp_fit / two_wave_fit / richardson / multi_lorentz_fit / pole_fit with
-  `fit` / `degree`). `COMPLEX_FIT_OPERATIONS` (two_wave_fit, pole_fit) pair `<name>_re` + `_im` in result_value
-  (validate cannot see xy series names). `fit_quantities(operation, degree)` is the one rule for `fit` choices
-  (validate `fit_problem`, run, GUI): polyfit 'c<k>'; peak fits (`PEAK_FIT_QUANTITIES`, degree = number of lines)
-  '<name>_<k>' per line ordered by position, then the shared ones ('spacing' only for degree >= 2);
-  `DEGREE_FIT_OPERATIONS` read `degree`. A new fit adds its names there, not in validate or the GUI. far_field sources
-  (`wavelength`: nearest recorded) are periodic (`FAR_FIELD_PERIOD`): samples tiled over three periods, 'at' wraps, no
-  window = one period (peak-centred for argmax / fwhm). A source without '.' is a derived curve (`is_curve_source`):
-  Session.derived_value builds it (`derived_curve_result`, sample names curve name + x) from the session's feature
-  results in the ordinary derived-value step (no second pass), so sweeps get it per value; renaming the curve leaves
-  the source dangling (validation error).
-- Derived values read the values of the derived values listed BEFORE them (`Session.derived_values` /
-  `derived_value(earlier=)`; the GUI `_evaluate_derived_values` and the derived-series recorder pass them; a series
-  keeps only values whose references are in the series too, `session.earlier_derived_names`); validate errors for a
-  later name or one shadowed by a parameter / field / scalar / reserved name; `ModelSpec.rename_derived_value` renames
-  the references (later expressions, adaptation target, 'sweep' analytic-curve series). Operation 'expression'
-  (`schema.GLOBAL_DERIVED_OPERATION`, source None; in `SOURCE_FREE_DERIVED_OPERATIONS`) = a standard global evaluation:
-  one float64 `evaluate_scalar` over `Session._plain_namespace` (parameters, scalar outputs, t, earlier values; no
-  mesh, selection or point), branched in `Session.derived_value` before `evaluate`, so every consumer (summaries,
-  sweeps, series, references, parity-sector recomputes) takes it unchanged; validate `_check_global_expression`
-  refuses fields / coordinates / itself. A field-free expression under a field operation still works (broadcast
-  constant, float32 rounding). Field operations add 'mode_volume' (integral incl. mirror touch factor / max, or / the
-  value at `DerivedValueSpec.point`) and 'at' (containing cell of `point`; `at` stays the source abscissa): schema
-  `FIELD_DERIVED_OPERATIONS` / `SOURCE_DERIVED_OPERATIONS`. Figures of merit (stored energy, Purcell, n_eff,
-  perturbative shift) are recipes over these (describe DerivedValueSpec.expression), no own code. Parity-sector runs
-  re-evaluate field-free values from the combined ones (study_sectors `_recompute_value_expressions`). Mirror planes:
-  max / min (and mode_volume's maximum) of `Session.evaluate` include the images of a selection reaching a mirror face
-  (`_image_namespaces`: field x its parity's image sign, coordinates reflected; a field without parity, polar windows
-  with x / y, or a coordinate mirrored on both faces raise -> NaN + warning); interface selections take no images.
-- Interface selections (`interface_sampling.py`, host numpy; SelectionSpec kind 'interface' + side, 2D only,
-  Cartesian or polar / spherical): a derived value whose selection is exactly one interface selection reduces outline
-  samples extrapolated from one side (`interface_stencil`) with INTERFACE_VARIABLES normal_x / _y, tangent_x / _y
-  (shadow parameters) and x, y. The membership side test at +-0.1 spacing along the normal must exceed the chord sag
-  of the polyline midpoints, else small circles lose every sample. Device fields are gathered on the stencil cells only
-  (one transfer per name). Cells come through a `CellFrame` (`window_frame`): blocks picked in index space, planes
-  fitted on drawing-plane centres, `grid_normals` / `grid_tangents` along the field components' axes (radial / angular
-  on polar). Line curves with `AnalyticCurveSpec.interface` sample host FieldData (`interface_line_profile`, api and
-  GUI alike; non-finite cells never enter a fit; polar: live / GUI read `field(native=True)`, saved results and
-  snapshots the image).
-  `AnalyticCurveSpec.projection` ('normal' | 'tangential'): field is an x component, its y partner by
-  `partner_component` (validate checks it is an output field), keys `line_curve_field_keys`, label `projected_info`. A
-  side thinner than ~4 cells has no usable samples (error). Polar: blocks across an angle_wrap seam are clamped to one
-  side.
-- Curve errors (summary.json curve_error, api `_curve_errors`): every comparison goes through analytic
-  (`feature_curve_samples` = the curve at the result's own samples via the same `_axis_variables` as `feature_curve`;
-  `line_cell_curve_values` at the centres of the cells `line_profile` / `segment_cells` sampled: the containing-cell
-  staircase, not the sample positions (a half-cell offset costs ~pi dx / lambda of a pulse peak), except a 3D segment
-  with `AnalyticCurveSpec.sampling` 'trilinear' (`segment_trilinear_weights`: compares at the sample points); a line
-  ending on a material interface or void edge still samples one cell of either side, so example lines start a
-  fraction of a cell off it; `sweep_curve_values` + `sweep_simulated` for 'sweep' targets). Metric `curve_error`:
-  |difference| / ptp(analytic) (flat curve: max |analytic|); 'sweep' targets `per_point` (relative per value). A new
-  curve target kind / series rule must update both the drawing and the sample path. Series '' compares only with one
-  candidate (one xy series / table column / sweep derived value); 'fft' / 'ratio' are never compared (note, n_points
-  0).
-- `selftests_analytic.py` (CPU, registered by study.register; harmonic_probe_record's check lives in
-  core/selftests_harmonic_probe: core may not import model.schema) checks calculus, fits, windows and far-field wrap
-  on synthetic results: keep it in step with analytic.
-- `selftest_examples.py` (CPU, no api import: api runs the examples and passes summary dicts): example records, flags
-  and the ranked `selftest_report_analytic.json`. `tolerance` on DerivedValueSpec / AnalyticCurveSpec is read only
-  there (validate: finite >= 0); sweep_not_converging needs the swept parameter to change the evaluated mesh dx (auto:
-  points_per_wavelength); refinement dx sweeps are not detected.
-- Reused (cached) selftest records come back through read_json: non-finite numbers are the strings 'nan' / 'inf', so
-  report code reading them must `float()` first.
-- Case records come from `selftest_helpers`, not hand-built dicts: `SubChecks.result` / `failed_count_result` ({name:
-  (value, tolerance)}) count failed sub-checks; `worst_result` (one tolerance), `scaled_worst_result` /
-  `tolerance_units_result` / `normalized_result` (worst error in tolerance units, tolerance 1) rank NaN as the worst.
-- `selftest_cache.py` (no api import; root file "Selftest reuse"): `UNTRACKED_PATHS` files add no units and no
-  followed names, and their units are dropped from every set. Dependencies are code units: per package file each
-  top-level function, each undecorated class with methods, and MODULE_UNIT (the rest: imports, constants, kernel
-  source strings, decorated / method-less classes such as dataclasses, whose generated methods run as '<string>' and
-  are never traced), hashed as `ast.dump` without docstrings (comments, blank lines, moves do not count). A run
-  depends on the units whose code ran (`co_qualname` -> top-level name), MODULE_UNIT and its references of every
-  touched file (twin(..., numba=factory), FeatureType callbacks), the units the run code names (`_unit_refs`, imports
-  followed to the defining module) and one level more from named units that did not run (memoised getters, numba
-  factories). Gap: a plain class used only through attributes of an instance built outside the trace. That set is
-  `code_units(codes)`; the case profilers call it on cProfile's code objects with a path filter and without the
-  MODULE_UNIT references and the second level (tools_profilers/time_profilers sub file "Reuse"): keep its keyword
-  defaults the selftest's. run_all_profilers loads selftest_cache.py as a lone file (no open_sol import) for
-  `_package_path` / `_file_units`: no package import at its module level.
-  `package_units` is one snapshot per process of the bytes read at its first call (an edit mid-run makes a case stale
-  next time, never falsely fresh); parsed units are kept by file sha1 in `open_sol/__pycache__/selftest_units.pickle`
-  (the whole store is dropped when Python or selftest_cache.py itself changes), so only edited files are parsed again;
-  an edit to the unit rules must live in this file or change the store key;
-  unit ids 'normcase'd path::name'; its own file is in no dependency set. Overhead: one Python callback per Python call
-  (3.11 has no sys.monitoring). `wall_times` keep every key's last run time (any status) for the progress estimate:
-  api.selftest / selftest_examples decide reuse for every phase up front (`api._SelftestPlan`; --all plans the
-  examples run before the first case), so a new run path must go through the plan's start / finish or the numbering
-  and estimates drift.
-- Selftest subsets and reports: api `selftest(heavy=False | True | None)`; `--all` = both, then the examples run
-  once (each on its own backend; one setting backend 'gpu' is `skipped_backend` without a usable GPU); named cases run
-  whatever their flag; built-ins run in every unnamed subset, in a named run only when named; the report records
-  `subset` / `n_skipped`. Files (`api.SELFTEST_REPORT_FILES`): `selftest_report_light.json`, `_heavy.json` (`--all`
-  writes both, split by case), `_named.json`; examples `selftest_report_analytic.json` (`--examples` and `--all`); a
-  run rewrites only its own files. Every report write goes through
-  `api._write_report_keeping_timings`: the old file's per-case status / wall_time first lands in `<stem>_prev.json`
-  (one run back only), so run times can be compared across branches; a reused case keeps its old wall_time, so
-  compare `--reset` runs.
-- Reading the CLI time split ('build / study / output / other'): 'other' = everything outside the timed phases: the
-  check's Session reads plus per-run plumbing (release_session's `gc.collect()`, validation, estimates, run
-  directory). `SelftestCache` freezes the parsed cache (`gc.freeze`), else many small runs paid ~0.4 s each in
-  collection. A large 'other' on few runs means the check's reads cost: usually tetrahedron point location
-  (`TetrahedronDomain.locate` remembers point sets; check code sampling its own lattice per component re-pays it:
-  read through the Session or reuse one `locate` result).
-- `SelfTestCase.backends` (default () = from its runs: solver_defaults.backend 'cpu' = cpu run, else gpu; no runs =
-  cpu): without a usable GPU api.selftest skips the gpu runs (check gets the rest: a cpu-vs-gpu check must cope); with
-  none left its variants still judge the case (record `variants_only`, report warning); with no runnable variant the
-  case is skipped (`skipped_backend`, counted in n_skipped). A check({}) case using cupy declares ('gpu',); one
-  comparing both backends itself declares ('cpu', 'gpu') and skips its gpu half by `gpu_available()`.
-- Timing: `_run_built` adds `study_seconds` and `solvers` (`study._solver_records`: per physics the role solvers
-  {type, solver node, backend, precision, counters} and the physics' optional `work_counters()`) to the summary. A
-  study of several runs (sweep values, refinement levels, parity sectors) sums ticks / study_seconds and merges
-  time_check through `study.summed_runs` (a new multi-run loop uses it too; `solvers` stays the last run's), and
-  `run_study` sums builds into `build_seconds_total`, else the selftest split counts only the last run. Selftest run
-  records carry `timing` (api `_run_timing`), `vram` (`_run_vram`: ledger / run_memory deviations from the estimate,
-  gpu runs only) and `counts` (`_run_counts`: the time_check item most off its prediction; needs a machine profile);
-  case / example records keep the worst as `vram_deviation` / `count_deviation` + `count_item`. The vram worst is
-  picked over every part (verdict first, then beyond the 1 MiB floor), so a gpu run with an estimate always prints
-  `vram ±xx% max N MB` (sign = direction; max = `vram_max_bytes`, the largest measured part over the runs, MiB; the
-  verdict / part stay in the record, not the CLI line). Reused cache records from before the field print no max.
-- Schema: Param min/max checked only for values evaluating over the parameters (field- / state-dependent floats
-  become Expressions). The builder range-checks material properties instead (`eval_field(bounds_param=)` under the
-  region, one sync; DynamicMaterialUpdate evaluators keep device running extremes, read on the host when every source
-  physics has `n_solves`, is not transient and one re-solved since the last read, else at power-of-two evaluations
-  and every `_DEFERRED_RANGE_CHECK_CALLS`; no read at the run end, so a range exit after the last read goes
-  unreported); other field-dependent params only for finite values. `param_visible` expects `fill_defaults`;
-  `resolve_values` resolves an invisible failing param to its default; a 'ref' of '' is None. Type definitions are
-  checked at construction (`_check_params`: visible_if names a sibling param with valid choice / bool values;
-  non-None defaults pass their own kind / bounds; field_ / state_dependent only on 'float').
-- Param kind 'table' (`columns` ((name, unit), ...) required, `increasing`: >= 2 rows, every column strictly
-  increasing): rows of parameter-only numbers, min / max per entry, resolved to [row tuple, ...]
-  (`schema._table_rows`); renames treat it as a parameter-expression kind. As a material property it has no expands_to
-  (required on every other property): the builder writes nothing; the type's `create` reads `ctx.material_regions`
-  (2D `region.mask` until `release_caches`) and resolves the rows with `resolve_values` (magnetostatics `bh_curve`);
-  `Simulation.add_material` refuses table properties.
+  (variables shadow; the one rule of validate, the settings form and `feature_curve`). z (3D only, root file) is also
+  refused in 2D derived values and line curves (cut height: `analytic.field_plane_height`).
+- Analytic comparison (`analytic.py`, numpy only, GUI-thread safe): analytic curves never touch a run: drawn over
+  `built_parameters(spec, summary)` (also after a cancelled sweep), Sweep tab overlays over `parameters_with(spec,
+  parameter, value)`. Snapshots hold the mid-height cut, so validate refuses a line curve's plane + snapshot; a 3D
+  segment's profile is stored per snapshot (`Snapshot.segments`, results.npz 'snapshot/<i>/segment/<name>/'; parity
+  sectors keep half profiles and mean them for linear signed fields in the combined snapshot). `sweep_value_curve` /
+  `sweep_overlay_xy` are the one rule of GUI Sweep overlays and api sweep figures. Result keys 'physics.feature' follow
+  `rename_physics` / `ModelSpec.rename_result_key`; a deleted feature leaves a dangling key (validation error).
+- Derived curves (`DerivedCurveSpec`, `analytic.derived_curve` / `derived_curve_plots`): expression names = parameters +
+  input aliases (shadowing) + x; `rename_parameter` skips every name that shadows parameters
+  (`ModelSpec._parameter_shadows`) and refuses a new name one of them would shadow; `rename_derived_curve` follows the
+  derived-value and estimation sources. Consumers pass `fetch(key)`: api `Results.derived_curves()` (host cache, else
+  live; summary.json derived_curves with `curve_error` / `y_reference`, read by selftest_examples as 'derived_curve'
+  entries; figures/derived_<plot>.png) and the GUI tab (worker). Final results only: no per-sweep-value curves.
+- Curve calculus: `gradient` / `cumtrapz` (`analytic.CURVE_FUNCTION_ARITY`) are not FUNCTION_NAMES (not reserved, not
+  callable in field expressions): every compile of a derived-curve expression passes them as `functions=` (validate,
+  `curve_values`, GUI `FormContext(functions=)`, spec `_expression_names` for renames).
+- Derived values over a source: `fit_quantities` is the one rule for `fit` choices (validate, run, GUI): a new fit adds
+  its names to FIT_QUANTITIES / PEAK_FIT_QUANTITIES only. A source without '.' is a derived curve (`is_curve_source`),
+  built in the ordinary derived-value step (`Session.derived_value`; the GUI passes its document's curves as
+  `curves=`), so sweeps get it per value.
+- Derived values read the values of the derived values listed BEFORE them (`earlier=`: Session.derived_values, the GUI
+  and the derived-series recorder pass them; a series keeps only values whose references are in the series too,
+  `session.earlier_derived_names`); validate errors for a later name or one shadowed by a parameter / field / scalar /
+  reserved name. Operation 'expression' (source None) is branched in `Session.derived_value` before `evaluate`, so
+  every consumer (summaries, sweeps, series, references, parity-sector recomputes) takes it unchanged. Figures of merit
+  (stored energy, Purcell, n_eff, perturbative shift) are recipes over the operations (describe
+  DerivedValueSpec.expression), no own code.
+- Interface selections (`interface_sampling.py`; SelectionSpec kind 'interface' + side, 2D only): a derived value whose
+  selection is exactly one interface selection reduces one-sided outline samples (INTERFACE_VARIABLES shadow
+  parameters; no mirror images). Line curves with `AnalyticCurveSpec.interface` sample host FieldData through
+  `interface_line_profile` (api and GUI alike; polar: live / GUI read `field(native=True)`, saved results and snapshots
+  the image); `projection` reads the x component and its `partner_component` (validate checks it is an output field).
+  A side thinner than ~4 cells has no usable samples (error).
+- Curve errors (summary.json curve_error, api `_curve_errors`) all go through analytic: `feature_curve_samples` uses
+  the `_axis_variables` of `feature_curve` (a new curve target kind / series rule updates both); line curves compare at
+  the centres of the sampled cells (`line_cell_curve_values`: a half-cell offset would cost ~pi dx / lambda of a pulse
+  peak), trilinear 3D segments at the sample points. A line ending on a material interface or void edge still samples
+  one cell of either side, so example lines start a fraction of a cell off it.
+- `selftests_analytic.py` (CPU, registered by study.register) checks calculus, fits, windows and far-field wrap on
+  synthetic results: keep it in step with analytic.
+- `selftest_examples.py` (CPU, no api import: api passes summary dicts): `tolerance` on DerivedValueSpec /
+  AnalyticCurveSpec is read only there (validate: finite >= 0); sweep_not_converging sees a refinement sweep only when
+  the swept parameter changes a used mesh's dx (auto: points_per_wavelength), not MeshSpec.refinements.
+- `selftest_cache.py` (no api import; root file "Selftest reuse"; unit rules: module docstring,
+  `DependencyTrace.units`). Gap: a plain class used only through attributes of an instance built outside the trace.
+  The case profilers call `code_units` on cProfile's code objects with a path filter and without the MODULE_UNIT
+  references and the second hop (tools_profilers/time_profilers sub file "Reuse"): keep its keyword defaults the
+  selftest's. run_all_profilers loads the file alone (no open_sol import): no package import at its module level. The
+  parsed-units store is keyed by the file's sha1, so an edit to the unit rules lives in this file or changes
+  `_units_store_key`. `wall_times` feed the progress estimate: api.selftest / selftest_examples decide reuse for every
+  phase up front (`api._SelftestPlan`; --all plans the examples before the first case), so a new run path goes through
+  the plan's start / finish or the numbering and estimates drift.
+- Selftest subsets and reports: api `selftest(heavy=False | True | None)`; `--all` = both, then the examples once
+  (each on its own backend; a 'gpu' one is `skipped_backend` without a usable GPU); named cases run whatever their
+  flag; built-ins run in every unnamed subset, in a named run only when named. Files: `api.SELFTEST_REPORT_FILES`
+  (`--all` writes light and heavy, split by case) and `selftest_report_analytic.json`; a run rewrites only its own,
+  through `api._write_report_keeping_timings` (the old status / wall_time per case go to `<stem>_prev.json`, one run
+  back), so run times compare across branches; a reused case keeps its old wall_time, so compare `--reset` runs.
+- CLI time split ('build / study / output / other'): 'other' = the check's Session reads plus per-run plumbing
+  (release_session's `gc.collect()`, validation, estimates, run directory). A large 'other' on few runs is the check's
+  reads, usually tetrahedron point location: check code sampling its own lattice per component re-pays it; read
+  through the Session or reuse one `locate` result.
+- `SelfTestCase.backends`: without a usable GPU the check gets the cpu runs only (a cpu-vs-gpu check must cope); with
+  none left the variants still judge the case (record `variants_only`, report warning). A check({}) case using cupy
+  declares ('gpu',); one comparing both backends itself declares ('cpu', 'gpu') and skips its gpu half by
+  `gpu_available()`.
+- Timing: a study of several runs (sweep values, refinement levels, parity sectors, estimation points) sums ticks /
+  study_seconds and merges time_check through `study.summed_runs` (a new multi-run loop uses it too; `solvers` stays
+  the last run's), and `run_study` sums builds into `build_seconds_total`, else the selftest split counts only the
+  last run. Record fields (timing, vram, counts) and the CLI deviation line: api `_run_timing` / `_run_vram` /
+  `_run_counts` / `_set_worst_deviations`, `__main__._deviations_text`.
+- Schema: Param min/max apply only to values evaluating over the parameters (field- / state-dependent floats become
+  Expressions, `schema._number`). The builder range-checks material properties instead (`eval_field(bounds_param=)`
+  under the region, one sync); a DynamicMaterialUpdate keeps device running extremes, read at the moments of
+  `builder._check_dynamic_range` and once more at the study end (`BuildContext.check_dynamic_ranges`); other
+  field-dependent params are checked only for finite values.
+- Param kind 'table' as a material property writes no array: the type's `create` reads `ctx.material_regions` (2D
+  `region.mask` until `release_caches`) and resolves the rows with `resolve_values` (magnetostatics `bh_curve`).
 - Spec v2 (3D): `from_dict` accepts versions 1 and 2 and sets 2; `ModelSpec.is_3d` = size_z set. 2D domain kinds carry
   optional `z0 / z1` (points / lines `z`; `geometry.Z_PARAM_NAMES`): validate rejects them in 2D, as well as 3D-only
   kinds (`GeometryKind.dimensions`), z faces and types whose `dimensions` miss the model's; resolve sorts z0 / z1. In

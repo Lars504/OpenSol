@@ -833,31 +833,30 @@ PLANNED_GROUPS = 'solver groups: '   # stdout line before the build: the groups 
 
 
 def _automatic_choices(spec, backend=AUTOMATIC_BACKEND, spec_nodes=False):
-    """[{role 'physics.role', type, back_end, preconditioner}] Automatic resolves to for every role the study uses on
-    `backend`, whatever nodes the spec has (spec_nodes: a role's node instead, the run's choices foreseen before the
-    build): back_end 'auto' resolved as the model does (cuDSS where the role lists it, else host SuperLU
-    'scipy_splu'); a runtime cuDSS refusal (fallback to SuperLU) is not seen here."""
-    from open_sol.model.schema import (auto_back_end_values, fill_defaults, get_registry, solver_grid,
-                                       with_default_precision)
+    """[{role 'physics.role', type, back_end, preconditioner, precision, group}] of every role the study uses on
+    `backend` as schema.resolved_solvers resolves them, Automatic for every role (spec_nodes: a role's node instead,
+    the run's choices foreseen before the build); back_end 'auto' / factorization 'superlu' named by the host library
+    (expected_back_end). Not seen here: the build's memory fit (plain_roles) and a runtime cuDSS refusal (fallback to
+    SuperLU)."""
+    from open_sol.model.expressions import evaluate_parameters
+    from open_sol.model.schema import get_registry, resolved_precision, resolved_solvers
     from open_sol.solvers.sparse_direct import expected_back_end
     registry = get_registry()
-    nodes = {node.name: node for node in spec.solvers} if spec_nodes else {}
+    spec = copy.deepcopy(spec)
+    spec.solver_defaults.backend = backend
+    if not spec_nodes:
+        for physics_spec in spec.physics:
+            physics_spec.solvers = {}
+    parameters = evaluate_parameters(spec.parameters)
     choices = []
     for physics_spec in spec.physics:
-        for role, solver_role in registry.physics_type(physics_spec.type).solver_roles.items():
-            if not solver_role.used_in(spec.study.type):
-                continue
-            grid = solver_grid(spec, physics_spec)
-            node = nodes.get((physics_spec.solvers or {}).get(role) or '')
-            type_name, settings = ((node.type, dict(node.settings)) if node is not None else
-                                   solver_role.automatic(backend, grid, spec.study.type))   # study_defaults too
-            solver_type = registry.solver_type(type_name)
-            settings = with_default_precision(spec, solver_type, settings, solver_role)   # solver_defaults.precision
-            values = auto_back_end_values(fill_defaults(solver_type.params, settings), solver_role, backend, grid)
+        for role, resolved in resolved_solvers(spec, registry, physics_spec, spec.study.type, parameters).items():
+            values = resolved.values
             back_end = values.get('back_end', values.get('factorization'))
             if back_end in ('auto', 'superlu'):
                 back_end = expected_back_end('auto', backend)
-            precision = _solver_precision(registry, type_name, values)
+            precision = resolved_precision(resolved.solver_type, values)
+            type_name = resolved.solver_type.name
             choices.append({'role': f'{physics_spec.name}.{role}', 'type': type_name, 'back_end': back_end,
                             'preconditioner': values.get('preconditioner'), 'precision': precision,
                             'group': solver_group(back_end, precision, backend, type_name)})

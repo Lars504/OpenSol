@@ -5,6 +5,7 @@ import time
 
 import numpy as np
 
+from .cudss_factor import canonical_csr
 from .sparse_direct import ExactSolveRecord, require_backend_operator
 
 SYMMETRY_TOLERANCE = 1e-12   # max |A - A^T| / max |A| above which upper_bands refuses the operator (as cuDSS)
@@ -15,8 +16,7 @@ def upper_bands(matrix, max_bandwidth=None) -> np.ndarray:
     sparse matrix: ab[u + i - j, j] = a[i, j] for i <= j, u = the largest column offset of a nonzero entry. ValueError
     before any band allocation when u > max_bandwidth, or when the matrix is not symmetric (only the upper triangle
     would be read: an unsymmetric operator would be solved as its symmetrised version)."""
-    csr = matrix.tocsr(copy=True)
-    csr.sum_duplicates()   # duplicate entries (non-canonical CSR) sum
+    csr = canonical_csr(matrix)   # duplicate entries (non-canonical CSR) sum; never modifies the caller's
     coo = csr.tocoo()
     rows, cols, values = coo.row.astype(np.int64), coo.col.astype(np.int64), np.asarray(coo.data, dtype=np.float64)
     upper = (cols >= rows) & (values != 0.0)

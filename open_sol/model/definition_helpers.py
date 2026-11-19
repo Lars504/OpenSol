@@ -18,7 +18,7 @@ from ..solvers.roles import SolverRole, resolved_precision
 from .expressions import TIME_NAMES, Expression, ExpressionError, evaluate_scalar, referenced_names
 from .geometry import (bounding_box, domain_size_z, expand_entities, perimeter_weights, point_z,
                        preview_pixel_centers)
-from .schema import Issue, Param, feature_path, known_physics, state_field_names
+from .schema import FREE_MESH_KINDS, Issue, Param, feature_path, known_physics, state_field_names
 
 
 def evaluates_to(value, parameters, predicate):
@@ -436,7 +436,7 @@ def direct_unknowns(mesh, components=1) -> int:
     """Unknowns of a direct 'linear' operator on a MeshEstimate (SolverRole.direct_components): element meshes
     components x (nodes + edges) (P2, an upper figure for P1); tensor meshes the window cells (components 1, cell-centred)
     or components x the window nodes (2D solid Q1)."""
-    if mesh.kind in ('triangles', 'tetrahedra'):
+    if mesh.kind in FREE_MESH_KINDS:
         return components * (int(mesh.n_nodes) + int(mesh.n_edges))
     if components == 1:
         return math.prod(mesh.window_axis_cells)

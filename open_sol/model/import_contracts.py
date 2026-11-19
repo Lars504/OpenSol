@@ -145,6 +145,11 @@ CONTRACTS = (
     Contract('solver_runtimes_lazy_core', 'solvers runtimes import core inside functions only (numpy at module level)',
              importers=tree('solvers'), scope='module', never=tree('core'),
              skip=('solvers.definition', *SELFTEST_MODULES)),
+    Contract('solver_roles_pure', 'solvers.roles and solvers/__init__ import no package module but roles, so '
+             'model.schema imports (and re-exports) them at module level',
+             importers=('solvers.roles', 'solvers.__init__'), only=('solvers.roles',)),
+    Contract('nvmath_inside_functions', 'nvmath-python (optional, cuDSS) is imported inside functions only, so open_sol '
+             'imports without it', importers=('*',), scope='module', external_never=('nvmath',)),
     Contract('fem_below_model', 'fem never imports model, physics, coupling or the front ends', importers=tree('fem'),
              never=tree('model', 'physics', 'coupling', 'gui', 'io', 'viz', 'mesh_study') + ('api', 'simulation'),
              skip=SELFTEST_MODULES),

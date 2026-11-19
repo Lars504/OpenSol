@@ -1146,7 +1146,7 @@ def with_node_precision(spec, solver_type, settings, solver_role, backend, grid,
         return filled
     automatic_type, automatic_settings = solver_role.automatic(backend, grid, study)
     if automatic_type != solver_type.name and study is not None:
-        automatic_type, automatic_settings = solver_role.automatic(backend, grid)
+        automatic_type, automatic_settings = solver_role.automatic(backend, grid, None)
     if automatic_type != solver_type.name or 'precision' not in automatic_settings:
         return filled
     return {**filled, 'precision': automatic_settings['precision']}
@@ -1280,8 +1280,7 @@ def resolved_solvers(spec, registry, physics_spec, study, parameters, plain_role
                                                 {key: value for key, value in raw.items() if key != 'precision'},
                                                 solver_role)
                 raw = filled if 'precision' in filled else raw
-            values = resolve_values(solver_type.params, with_default_precision(spec, solver_type, raw, solver_role),
-                                    parameters)
+            values = resolve_values(solver_type.params, raw, parameters)   # raw has the default precision already
         except (KeyError, ValueError) as exc:
             text = exc.args[0] if isinstance(exc, KeyError) and exc.args else exc
             raise ValueError(f"physics '{physics_spec.name}' {role} solver: {text}") from exc
@@ -1703,10 +1702,9 @@ def fill_defaults(params, values):
 
 
 def param_visible(param, values):
-    """visible_if semantics: no conditions, or ANY (param, accepted values) pair matches `values`.
-    `values` must include defaults (fill_defaults) — a missing controlling key reads as None."""
-    return not param.visible_if or any(values.get(controller) in accepted
-                                       for controller, accepted in param.visible_if)
+    """visible_if semantics: no conditions, or ANY (param, accepted values) pair matches `values`, which must include
+    the defaults (fill_defaults): a missing controlling key raises KeyError."""
+    return not param.visible_if or any(values[controller] in accepted for controller, accepted in param.visible_if)
 
 
 def resolve_values(params, values, parameters):

@@ -998,6 +998,7 @@ class ModelDocument(QtCore.QObject, SpecEstimates):
             'physics': lambda spec: spec.rename_physics(old_name, new_name, self.registry),
             'mesh': lambda spec: spec.rename_mesh(old_name, new_name),
             'solver': lambda spec: spec.rename_solver(old_name, new_name),
+            'derived_curve': lambda spec: spec.rename_derived_curve(old_name, new_name),
         }
         rename = spec_renames.get(kind) or (lambda spec: _rename_unreferenced(spec, path, new_name))
         section = 'all' if kind in _REFERENCED_KINDS or kind == 'feature' else _SECTION_OF_KIND[kind]
@@ -1483,15 +1484,15 @@ def _renamed_path(path, old_path, new_name):
 
 
 def _rename_unreferenced(spec, path, new_name):
-    """Rename a feature / coupling / derived value / analytic or derived curve (no other node refers to them by name,
-    except the result keys 'physics.feature' of sources, targets and inputs, renamed with a feature, and derived
-    values named in later derived-value expressions)."""
+    """Rename a feature / coupling / derived value / analytic curve (no other node refers to them by name, except the
+    result keys 'physics.feature' of sources, targets and inputs, renamed with a feature, and derived values named in
+    later derived-value expressions)."""
     if path[0] == 'derived':
         spec.rename_derived_value(path[1], new_name)
         return
     items, item = _locate(spec, path)
     category = {'feature': f'feature in physics {path[1]!r}', 'coupling': 'coupling',
-                'derived': 'derived value', 'curve': 'analytic curve', 'derived_curve': 'derived curve'}[path[0]]
+                'derived': 'derived value', 'curve': 'analytic curve'}[path[0]]
     if not is_identifier(new_name):
         raise ValueError(f'{new_name!r} is not a valid {category} name (letters, digits and _, not starting with a '
                          f'digit)')

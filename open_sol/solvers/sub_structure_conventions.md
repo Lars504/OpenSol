@@ -3,167 +3,66 @@
 Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver roles".
 
 ## Layout and imports
-- `roles.py` (SolverRole, SolverType, SolverRequest, ResolvedSolver, `solver_misfit` = the one fit rule) is pure Python
-  and imports nothing from open_sol, so model.schema may import it; `__init__` imports only `roles`; model.schema
-  re-exports SOLVER_ROLES, ResolvedSolver, SolverRole, SolverType, solver_misfit.
-- Runtimes (`pcg.py` (+ `multigrid.py`, imported inside factorize), `line_block.py`, `sparse_direct.py`, `banded.py`,
-  `arpack_shift_invert.py`, `block_eigen.py`, `explicit_kernels.py`) import numpy only at module level; cupy / scipy / nvmath /
-  core.gpu_memory / core.backend / core.host_memory inside functions, kernels built on first use, so core.fv_diffusion,
-  model.definition_helpers and GUI-thread checks (`scipy_available`, `size_issue`, `expected_back_end`) may import them.
-  `cudss_factor.py` is the one cuDSS wrapper (sparse_direct imports it; arpack_shift_invert reaches it inside
-  factorize_host; sparse_direct's cuDSS time recipe uses arpack's CUDSS_* fit inside functions). Shared helpers, never
-  a local copy: `cudss_factor.csr_rows` / `canonical_csr` (numpy only, module level in sparse_direct, arpack,
-  multigrid), `sparse_direct.cudss_precision`, `require_backend_operator`, `ExactSolveRecord` (the PCGSolver-protocol
-  record of BandedSolver and DiffusionDirectSolver), `cudss_factor.gmres_refine` (the GMRES-IR loop of cuDSS mixed
-  factors and of host_direct, array module xp), `sparse_direct.recycled_gmres` (GMRES on an earlier factor's solve),
-  `cudss_factor.ProbedFactor` (base of CudssFactorization and HostDirectFactorization: symmetric / mixed_factor /
-  factor_precision / can_refactorize, the probe vector and gate; host_direct also takes its `_FactorRejected`),
-  `pcg.DeviceCsrProduct` (the capturable gpu CSR product: call -> its own vector, `apply(vector, out)`; mechanics
-  `_CsrApply`, time_profile).
-- `cudss_factor.warm_cudss_library()` (builder `_warm_cudss`, a gpu build resolving a cuDSS back end): a daemon host
-  thread imports nvmath.sparse.advanced and loads the library (`cudss.get_property`), nothing on the device; handles and
-  plans stay on the GPU-owning thread, and `_direct_solver` joins the thread before the first DirectSolver (cuDSS is
-  not thread-safe). nvmath's `cudss_data_ifc` / `cudss_config_ifc` set their thread-local `size_written` buffer only on
-  the importing thread, so `_direct_solver` gives the GPU thread its own (`_thread_size_buffers`; a renamed nvmath
-  module or attribute is an ImportError / AttributeError there). The handle creation is still in the first plan; measure what is left of speedup B3's 0.65 s.
-  `cudss_library_timing()` gives the thread's perf_counter stamps (started / loaded / joined) and the first join's
-  wait: an earlier start (api / CLI entry) waits on them (the load is GIL-bound: it overlaps only GIL-releasing
-  main-thread work, and an earlier start would cost every gpu process without cuDSS the nvmath import).
-- `host_direct.py` (MUMPS via python-mumps, MKL PARDISO via pydiso) imports numpy and the cudss_factor helpers at module
-  level (sparse_direct, arpack_shift_invert, definition_helpers and solvers.definition import it there), the wrappers
-  (`mumps`, `pydiso.mkl_solver`), scipy, core and `sparse_direct.recycled_gmres` inside functions only (import
-  contracts direct_wrappers_lazy / direct_wrappers_inside_functions). `HOST_DIRECT_BACK_ENDS` is the one list of the
-  host names: every other tuple, choice label and text derives from it.
-- `definition.py` (SolverTypes + `register`) <- model.schema, never cupy at module level; `get_registry()` imports it
-  right after model.study, so `register_physics` can check each `PhysicsType.solver_roles` default_type.
-- pcg.py holds the CPU numbers the definitions share (FLOAT32_TOLERANCE_FLOOR, CG_ITERATIONS_PER_AXIS_CELL,
-  `auto_max_iterations`, `resolve_max_iterations`, `DTYPE_PRECISIONS` / `SOLVER_DTYPE_NAMES`); definition_helpers builds
-  the CG iteration-limit warning from them. `resolve_max_iterations` on element meshes takes 2 x the longest window
-  side / the mean element size (triangles sqrt(area / n), tetrahedra cbrt(V / n)) as the axis.
+- `roles.py` (SolverRole, SolverType, SolverRequest, ResolvedSolver, the one fit rule `solver_misfit`) is pure Python
+  and `__init__` imports only it (contract solver_roles_pure): model.schema imports and re-exports it.
+- Runtimes import numpy and sibling solvers modules only at module level (contracts solver_runtimes*, cupy / scipy /
+  nvmath inside functions; kernels built on first use), so core.fv_diffusion, model.definition_helpers and GUI-thread
+  checks (`scipy_available`, `size_issue`, `expected_back_end`) may import them. `cudss_factor.py` is the one cuDSS
+  wrapper.
+- Shared helpers, never a local copy (grep these modules first): cudss_factor (CSR canonicalisation `canonical_csr` /
+  `csr_rows`, the GMRES-IR loop `gmres_refine` on any array module, the probed-factor base `ProbedFactor` of cuDSS and
+  host_direct), sparse_direct (`ExactSolveRecord`, `require_backend_operator`, `recycled_gmres`, `cudss_precision`),
+  pcg (`DeviceCsrProduct`, the capturable gpu CSR product; the CPU CG numbers of definition_helpers' warning).
 - Naming: `PhysicsSolver` (core.solver_base) is the physics runtime; objects here are named by role (PCGSolver is a
   LinearSolver).
 
 ## Model path (spec -> resolution -> build -> summary)
-- Spec: `ModelSpec.solvers` [SolverSpec(name, type, settings)], `ModelSpec.solver_defaults` (backend 'auto' = 'gpu'
-  when cupy is installed, else 'cpu': `schema.solver_backend`, api / CLI `backend` override), `PhysicsSpec.solvers`
-  {role: node name}; a missing role = Automatic.
-- Default precision (S9): `solver_defaults.precision` 'auto' (each solver's own) or a PRECISIONS key, applied by
-  `schema.with_default_precision(spec, solver_type, settings, solver_role)` to settings without a 'precision' key when
-  both the type and the role offer it (else unchanged, no error), per (physics, role) in resolved_solvers, validate and
-  the GUI role combos. An explicit node precision overrides; GUI-added nodes start with the default written in, JSON
-  nodes without one follow it. A precision in a role's Automatic settings (`backend_defaults` / `grid_defaults`, e.g.
-  solid_mechanics_3d gpu 'mixed') is the role's own default: resolved_solvers replaces it by a non-'auto'
-  solver_defaults.precision the role takes, and a node of the Automatic type that sets no precision (and gets none from
-  solver_defaults) takes it too (`schema.with_node_precision`: resolved_solvers, validate, GUI role combos; so a node
-  added only for a tolerance keeps mixed). `schema.default_precision_ignored` = the validate info. Code resolving
-  solver values outside resolved_solvers must go through the helpers.
-- Backends (S6): the run backend must be in `PhysicsType.backends` (default ('gpu',); see each definition; misfits are
-  validate errors per physics, greyed out in Add physics: `schema.physics_type_misfit`) and fit every role. Automatic
-  resolves per backend: `SolverRole.backend_defaults` / `SolverRole.automatic(backend, grid, study)` (register_physics
-  checks those types too): CG_DIFFUSION_LINEAR_ROLE on the cpu = sparse_direct (host SuperLU via `DiffusionDirectSolver`;
-  cusolver_qr refused) in 2D, multigrid pcg on a 3D tensor mesh. `SolverRole.study_defaults` {(study, grid): (type,
-  settings)} is read first, on every backend unless `study_default_backends` names some: CG_DIFFUSION_LINEAR_ROLE
-  ('time_dependent', 'tensor') -> sparse_direct (a fixed dt keeps one factor; back_end 'auto' -> cudss on the gpu
-  through auto_back_ends['tensor']); the 2D SOLID_LINEAR_ROLE stationary / time_dependent on 'tensor', both backends
-  -> sparse_direct (cpu / no nvmath: host SuperLU); a fallback-table rule autopick will replace. `schema.with_node_precision` reads the plain Automatic
-  when the study default is another type (a 2D solid's pcg node keeps the gpu 'mixed'). Fit guard (no size constant): `meshing.fitted_memory_estimate(spec, parameters,
-  registry, meshes, memory_budget, estimate=None, by_mesh=None, shapes=None, host_budget=None)` -> (estimate,
-  plain_roles); `schema.study_default_roles` (Automatic roles from study_defaults; a node never) resolve with study None
-  if that estimate is lower: cuDSS candidates when the gpu estimate exceeds memory_budget; host candidates
-  (`host=True`: a host factor whose Automatic without the study is another type, so cpu heat transients are none)
-  when the `backend_memory` host estimate exceeds host_budget (None: the available RAM), and regardless of the budget
-  when their `definition_helpers.direct_unknowns` (`SolverRole.direct_components` per cell / node) exceed the host
-  SuperLU limit (SPLU_LIMIT_UNKNOWNS / SPLU_3D_LIMIT_UNKNOWNS: DiffusionDirectSolver refuses it). `plain_roles` {(physics, role)} goes to
-  `resolved_solvers(..., plain_roles)`, `estimate_memory(plain_roles=)`, `ValidationContext.plain_roles`,
-  `validate(plain_roles=)` (None: fitted there against memory_budget / host_budget; one info line per physics), `estimate_time(
-  per_run, plain_roles=)`; the builder fits once against its budgets (`_fitted_estimate`) and hands it to all of them,
-  api.check (its 'solvers' block) and the GUI document likewise (its memory cache drops on a budget change). Self-test
-  `solver_study_default_fit`. Every caller of `automatic` passes the study (resolved_solvers,
-  with_node_precision, default_precision_ignored, validate, api `_variant_spec`, GUI combos); a self-test counting CG
-  iterations in a 2D transient pins a pcg node. Every role must fit (`solver_misfit`:
-  `SolverType.backends` + optional `backend_misfit(values, backend)`, Automatic roles too). Runtimes take `backend=` from
-  `SolverRequest.backend` and work on that backend's arrays only (`core.backend.array_module` / `sparse_module`): an
-  array of the other backend is a TypeError, never a silent transfer. On the cpu `check_memory` counts the device
-  estimate against host RAM.
-- Size rules: a sparse_direct diffusion 'linear' solver has `sparse_direct.diffusion_size_issue` (2D SPLU_*, 3D
-  SPLU_3D_* on window voxels; the 2D solid on 2 unknowns per node, `SolverRole.direct_components`; remedy: a pcg
-  node) at the physics via `definition_helpers.cg_solver_issues`;
-  DiffusionDirectSolver refuses above SPLU_LIMIT_UNKNOWNS; its host bytes are host items of
-  `diffusion_system_estimate(direct=)`. em_fdfd_3d's curl-curl eigen factor: `sparse_direct.vector_3d_size_issue`
-  (SPLU_VECTOR_3D_*, first values to lower from measured factors; no iterative remedy) + `host_lu_bytes(n,
-  dimensions=3)`.
-- `schema.resolved_solvers(spec, registry, physics_spec, study, parameters, plain_roles=frozenset())` is the one
-  resolution rule (validate,
-  `meshing.estimate_memory` -> `MemoryContext.solvers`, builder): only roles `used_in(study)`. A pcg preconditioner the
-  node does not set resolves 'jacobi' at precision 'mixed' unless the role lists it in `mixed_preconditioners` (so
-  the Automatic CSR multigrid never meets mixed); a
-  sparse_direct back_end 'auto' becomes the role's `auto_back_ends[grid]` on the gpu with nvmath (sparse_direct
-  section). Solver knobs never come from physics settings (CG keys on a physics fail validation as unknown settings).
-  Estimators read `context.solvers` only (`definition_helpers.linear_solver_precision(context)`, `resolved_back_end`,
-  `eigen_subspace_size`; heat's line_block items from `context.solvers['shifted']`); physics validate callbacks get
-  `ValidationContext.solvers(physics_spec)` (None when unresolved: check_solvers reports; `validated_linear_precision`
-  then assumes float64).
-- Self-test specs needing a tight CG: `model.selftest_helpers.with_exact_cg(spec[, physics_names])` (node 'exact_cg',
-  double, tolerance 1e-12, as 'linear'). Host direct nodes: `with_direct_node(spec, back_end, role='linear',
-  physics_names=(), node_name=None)` (sparse_direct back_end, or for role 'eigen' an arpack_shift_invert factorization;
-  node 'host_direct_<back_end>' / 'host_direct_eigen_<back_end>'), `available_host_direct()` (installed libraries) and
-  `skip_without_host_direct()` (skip_result when none is installed).
-- Shared roles (model.definition_helpers; solid_mechanics keeps its own `physics.mechanics.definition.SOLID_LINEAR_ROLE`:
-  pcg single / double / 'mixed', jacobi only, Automatic on the gpu backend pcg 'mixed'):
-  `CG_ELASTIC_3D_LINEAR_ROLE` (pcg single / double / 'mixed', Automatic on the gpu backend pcg 'mixed': solid_mechanics_3d),
-  `CG_DIFFUSION_LINEAR_ROLE` (+ 'mixed': heat,
-  electric_currents, electrostatics, magnetostatics; Automatic on the gpu = pcg multigrid), `DIRECT_LINEAR_ROLE`
-  (sparse_direct double, setting_choices back_end auto / scipy_splu / cusolver_qr + the host direct names:
-  em_fdfd_nonlinear), `MAGNETIC_AC_LINEAR_ROLE` (auto / scipy_splu / cudss + the double host names), `FDFD_LINEAR_ROLE`
-  (sparse_direct double / mixed, opt_in_types ('line_block',), `FDFD_DIRECT_BACK_ENDS` incl. cudss / cudss_mixed and the
-  four host names: em_fdfd_ez / _hz), `CUDSS_LINEAR_ROLE` (sparse_direct double, same back ends: drift_diffusion,
-  em_fdfd_bor, em_fdfd_conical), `DIFFUSION_DIRECT_BACK_ENDS` (+ the four host names: the CG / diffusion / pressure /
-  membrane linear roles), `eigen_role(studies)` (arpack_shift_invert; factorization auto / superlu / cudss + the double
-  host names, with mixed_factorization also cudss_mixed + the host *_mixed names), `STEPPER_ROLE` (explicit_kernels
-  single / double: em_fdtd_ez / _hz),
-  `HALF_STORAGE_STEPPER_ROLE` (+ 'half_storage': em_fdtd_3d, elastic_waves, laminar_flow). Stepper precision: estimators
-  / validate by `resolved_stepper_precision(solvers)`, a create by `explicit_kernels.stepper_precision(ctx.solvers(name))`.
-  `cg_solver_issues` gives the iteration-limit warning of an assigned pcg node (Automatic: none); the precision warning
-  is the pcg SolverType validate at the node; type-specific CG advice lives in the pcg Param help texts.
-- Opt-in roles: a SolverType fills its `opt_in_roles` only for a SolverRole whose `opt_in_types` names it, so adding a
-  role to a shared type does not offer it to every physics with that role (line_block 'linear': em_fdfd_ez / _hz only).
-  Likewise `SolverType.opt_in_settings` {setting: values} fit only a role whose `setting_choices[setting]` lists them
-  (sparse_direct back_end cudss / cudss_mixed and the host direct names), so a new back end never reaches a physics
-  that cannot hold its factor (em_modes / em_fdfd_bor 'shifted' misfit the host names: their eigen node's
-  factorization is the knob).
-  `SolverRole.setting_choices` is the generic per-role restriction of setting values (checked by `solver_misfit`).
-- Private runtimes: a script constructor given a choice string or None builds its own runtime and reports its
-  counters in the physics' `work_counters` (no role record); a build-injected one never does.
-- Validate (`check_solvers`): backend, node type / settings / SolverType.validate at ('solver', name), unused node =
-  warning; per physics: unknown role / node = error, a role this study does not use = warning, `solver_misfit` = error
-  naming the fitting choices.
-- Feature precisions (S3.3): `FeatureType.precisions` (default every PRECISIONS key); `solver_misfit` cannot see
-  features, so `_check_feature_precisions` (only when the physics' role checks passed) errors at the feature on
-  `schema.feature_precision_misfit` (the resolved 'stepper' precision): em_fdtd_3d plane wave / mode source / mode
-  monitor and resonance_monitor refuse half_storage, 2D nonlinear_medium / gain_medium refuse double. Physics-level refusals (em3d poles and
-  frequency_domain, laminar_flow steady march, elastic_waves piezo) stay in the physics validate. Shown via
-  `schema.restricted_feature_precisions` / `feature_precision_note`: a new restriction needs no describe or GUI edit.
-- Self-test variants (S3.6): `SelfTestCase.variants` repeat a case on another backend / precision with its own
-  tolerance; api `_variant_spec` gives every affected (physics, role) its own node `<variant>_<physics>_<role>`, so a
-  case's node names must not collide with that pattern. A 'cpu' variant of a gpu case is its CPU coverage: without a
-  usable GPU it still runs and judges the case (`_judge_by_variants`).
-- `solver_default_precision` (selftests.py, CPU) pins the S9 resolution table and the multigrid resolution: a change of
-  a role's precisions or Automatic type updates its `_PRECISION_CASES` / `_MULTIGRID_CASES` / `_EIGEN_ROLE_CASES`
-  ('eigen' roles, opt-in block_eigen) row.
-- Build: its own stage after 'materials', one `MemoryLedger.track("solver '<physics>.<role>'")` per solver (never inside
-  a physics create: the ledger does not nest); `BuildContext.solver_records`, `ctx.solvers(name)` -> {role: runtime}.
-  `Session.close` clears the records.
-- Summary (`study._solver_records`, summary.json 'solvers'): {physics: {roles: {role: {type, solver, backend,
-  precision, settings (resolved), counters}}, counters (the physics' own work_counters)}}; check.json the same without
-  counters. It records a machine-dependent Automatic (backend auto, cuDSS back end). A physics never repeats its role
-  counters.
-- Run-time recipes: every SolverType sets `time_estimate(values, SolverWork)` (explicit_kernels empty: the physics
-  counts its steps); items' `counter` / `seconds_counter` are its own work_counters; timers only at existing syncs.
-  Iteration counts are a priori, never fitted (a time_check deviation is a lead on the solver or model): multigrid ln(1
-  / tol) / ln(1 / MULTIGRID_RESIDUAL_REDUCTION), Jacobi sqrt(kappa) ln(2 / tol) / 2 of `SolverWork.jacobi_condition`
-  (0: CG_ITERATIONS_PER_AXIS_CELL x longest_axis), both capped by `distinct_modes` and rounded up to the check block;
-  warm solves WARM_START_ITERATION_FRACTION of a cold one (a guess). A new counter or timer is added to work_counters
-  and named by the recipe in the same edit.
+- Spec: `ModelSpec.solvers` [SolverSpec(name, type, settings)], `ModelSpec.solver_defaults`, `PhysicsSpec.solvers`
+  {role: node name}; a missing role = Automatic. `schema.resolved_solvers` is the one resolution (validate through
+  `ValidationContext.solvers`, estimators through `MemoryContext.solvers`, builder, api.check, time estimate,
+  solve_flow); other code needing a role's type or values composes the same pieces (`SolverRole.automatic`,
+  `schema.with_node_precision` / `with_default_precision`, `auto_back_end_values`), never a node's raw settings.
+- Automatic = `SolverRole.automatic(backend, grid, study)` (all required; study None = without study_defaults). The
+  grid is `schema.solver_grid(spec, physics_spec)`, also required by `solver_misfit`, so no caller judges a 1D line or
+  an FEM mesh as 'tensor'. 'line' (1D) and 'tensor_3d' are tensor meshes a declared 'tensor' fits (test
+  `roles.TENSOR_GRID_KINDS`, never == 'tensor'); 'tensor_3d' exists only so grid_defaults can differ from 2D.
+  grid_defaults win over backend_defaults, so a backend default (the solids' gpu pcg 'mixed') holds on tensor meshes
+  only. Role data and the measurements behind each choice sit at the roles (shared ones in model.definition_helpers,
+  solid_mechanics' own in physics.mechanics.definition), not here.
+- Precision (S9): `solver_defaults.precision` also replaces a precision in a role's Automatic settings (e.g.
+  solid_mechanics_3d gpu 'mixed'), and a node of the Automatic type that sets no precision takes the Automatic one
+  (`with_node_precision`: a node added only for a tolerance keeps mixed). GUI-added nodes get the default written in at
+  creation (a later solver_defaults change does not reach them); JSON nodes without one follow it.
+- Study defaults (`SolverRole.study_defaults`, e.g. a kept sparse_direct factor in 2D diffusion / solid transients):
+  `meshing.fitted_memory_estimate` resolves them without the study when the factor does not fit (`plain_roles`). The
+  builder (`_fitted_estimate`), api.check and the GUI document fit once and hand the same plain_roles to
+  `resolved_solvers`, `estimate_memory`, `validate` and `estimate_time`: all but validate default to frozenset() and
+  would silently resolve the study default. A self-test counting CG iterations in a 2D transient pins a pcg node.
+- Runtimes take `backend=` from `SolverRequest.backend` and work on that backend's arrays only
+  (`core.backend.array_module` / `sparse_module`, `sparse_direct.require_backend_operator`): an array of the other
+  backend is a TypeError, never a silent transfer.
+- A back end not every physics can hold goes into `SolverType.opt_in_settings` (offered where a role's
+  `setting_choices` list it), a role of a shared type into `opt_in_roles` (offered where the physics' role lists the
+  type in `opt_in_types`), so neither reaches other physics by default.
+- Size rules: `sparse_direct.diffusion_size_issue` / `vector_3d_size_issue` at validation (the diffusion and 2D solid
+  linear roles through `definition_helpers.cg_solver_issues`, counting `SolverRole.direct_components` per cell / node);
+  DiffusionDirectSolver refuses above the limit and the fit guard then resolves a study default without the study.
+- Estimators and physics validate callbacks read the resolution through the definition_helpers readers
+  (`linear_solver_precision`, `resolved_back_end`, `resolved_stepper_precision`, ...; `vctx.solvers` is None when it
+  does not resolve), a create reads its runtimes (`explicit_kernels.stepper_precision(ctx.solvers(name))`).
+- Feature precisions (S3.3): `solver_misfit` cannot see features, so a feature refusing a stepper precision declares
+  `FeatureType.precisions` (validate errors at the feature; describe and GUI show it through
+  `schema.restricted_feature_precisions`, no edit there); a refusal depending on physics settings stays in the physics
+  validate.
+- Self-tests: nodes through `model.selftest_helpers` (`with_exact_cg`, `with_direct_node`, `skip_without_host_direct`);
+  `SelfTestCase.variants` get nodes `<variant>_<physics>_<role>` (api `_variant_spec` raises on a clash). A change of a
+  role's precisions or Automatic type updates its row in the `solver_default_precision` tables.
+- Counters: a build-injected runtime reports in its role record (summary.json 'solvers', `study._solver_records`); a
+  runtime a script constructor builds from a choice string or None is private and reports in the physics'
+  `work_counters`.
+- Run-time recipes: every SolverType sets `time_estimate(values, SolverWork)` (explicit_kernels none: the physics counts
+  its steps); its items' `counter` / `seconds_counter` name its own work_counters, timers only at existing syncs; a new
+  counter or timer joins work_counters and the recipe in the same edit (iteration counts: pcg.py header).
 
 ## pcg (`PCGSolver`)
 - `factorize(operator, preconditioner=None, n_unknowns=None, single_operator=None, single_preconditioner=None,
@@ -386,7 +285,7 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   role, magnetic_fields_ac and em_fdfd_bor always factorise on the host (validation refuses cusolver_qr). cpu backend:
   scipy_splu or a host direct back end, `host_arrays` factors numpy in / out.
 - cuDSS back ends ('cudss' double, 'cudss_mixed' float32 / complex64 factor + float64 refinement to 1e-12): opt-in per
-  role (Model path "Opt-in roles"): the SPD roles of `DIFFUSION_DIRECT_BACK_ENDS` (via DiffusionDirectSolver),
+  role (`opt_in_settings`, Model path): the SPD roles of `DIFFUSION_DIRECT_BACK_ENDS` (via DiffusionDirectSolver),
   FDFD_LINEAR_ROLE (LDL^T, counter cudss_symmetric_factors) and CUDSS_LINEAR_ROLE (drift_diffusion real LU,
   BOR / conical LDL^T of A / D A); DIRECT_LINEAR_ROLE and every 'shifted' role misfit them until their physics adopts
   them. A role opting in needs consumers holding a CudssFactorization on that grid (no transposed LU solve, not
@@ -561,11 +460,6 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   report it (`definition_fdfd.direct_solver_issues`, also nlfd's) plus the size rule.
 
 ## banded (`BandedSolver`; role 'linear' of 1D models, symmetry 2.20)
-- Grid kinds (`roles.GRID_KINDS`; per physics `schema.solver_grid`, a required argument of `SolverRole.automatic` /
-  `solver_misfit`): 'line' (1D, banded's only grid) and 'tensor_3d' are tensor meshes (test `TENSOR_GRID_KINDS`, never
-  == 'tensor'); 'tensor_3d' exists only so `grid_defaults` can differ from 2D. `grid_defaults` win over
-  backend_defaults (rationale at the roles in definition_helpers): 'line' -> banded, 'triangles' / 'tetrahedra' ->
-  sparse_direct, so the gpu Automatic 'mixed' of both solid roles applies on tensor meshes only.
 - The runtime is the PCGSolver protocol: `factorize` copies the CSR to the host and raises ValueError above
   `max_bandwidth` (8, before allocating bands), for an unsymmetric operator (`SYMMETRY_TOLERANCE`) or a non-SPD one.
   Double only; host O(n) memory, not estimated. Not yet: per-order (m / l / q) batching, complex operators.

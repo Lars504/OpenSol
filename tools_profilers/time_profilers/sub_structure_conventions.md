@@ -97,9 +97,8 @@ Usage and what is measured: `README.md` here. Root rules: structure_conventions.
   current: `load_points` never drops what it cannot read (it raises; the old one-solver layout maps to 'auto @gpu'),
   `save_points` replaces the file whole, and every run first copies it to its history folder. A layout change needs
   a mapping in `load_points`, never a fresh start. The Automatic ring reads `runs.json` `automatic` (`_automatic_choices`:
-  per role used, `SolverRole.automatic('gpu', grid, study)` over the type's param defaults, back_end / factorization
-  'auto' through `auto_back_end_values`, then `expected_back_end`), from any variant's point of the command; it ignores
-  the spec's nodes and a runtime cuDSS fallback. Points hold solver groups (harness `solver_group` / `run_groups`:
+  `schema.resolved_solvers` on the gpu with the spec's nodes removed, host 'auto' named by `expected_back_end`), from any
+  variant's point of the command; it ignores the build's memory fit and a runtime cuDSS fallback. Points hold solver groups (harness `solver_group` / `run_groups`:
   runs.json `groups` / `automatic_groups`), and a group name is its SOLVERS key, so the ring needs no mapping. The
   plot draws only `plotted_variants` (auto per backend + the SOLVERS groups on their backend) and only COMMANDS entries:
   other variants / commands stay in profile_points.json, undrawn; a renamed flag needs RENAMED_VARIANTS to stay drawn. A new library back end needs a `LIBRARY_GROUPS` entry, else it is grouped

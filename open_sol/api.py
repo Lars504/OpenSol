@@ -3040,6 +3040,9 @@ def _variant_spec(spec, variant, registry):
                                      f"({type_name}) has no precision {variant.precision!r}")
                 continue
             node_name = f'{variant.name}_{physics_spec.name}_{role}'
+            if node_name in nodes:
+                raise ValueError(f"variant '{variant.name}': the case already has a solver node '{node_name}' (the "
+                                 'variant node pattern <variant>_<physics>_<role>): rename that node')
             spec.solvers.append(SolverSpec(node_name, type_name, dict(settings, precision=variant.precision)))
             if node is not None:
                 replaced.add(node.name)

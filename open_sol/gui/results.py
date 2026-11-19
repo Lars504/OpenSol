@@ -12,12 +12,11 @@ import pyqtgraph as pg
 from ..core.mirror import unfold_faces, unfold_field
 from ..core.renderer import FieldInfo
 from ..io.model_io import export_field, export_result, export_volume
-from ..model.analytic import (DEGREE_FIT_OPERATIONS, FFT_SERIES, RATIO_SERIES, built_parameters, derived_curve_plots, derived_curve_result,
-                              feature_curve, field_plane_height, is_curve_source, is_segment_3d, is_wavelength_xy,
-                              line_curve,
-                              line_endpoints, line_plane, numeric_table_columns, parameters_with, relative_error,
-                              result_value, snapshot_index, split_key, sweep_curve, sweep_table_xy, sweep_value_curve,
-                              table_xy)
+from ..model.analytic import (DEGREE_FIT_OPERATIONS, FFT_SERIES, RATIO_SERIES, built_parameters, derived_curve_plots,
+                              feature_curve, field_plane_height, is_curve_source, is_iteration_series, is_segment_3d,
+                              is_wavelength_xy, line_curve, line_endpoints, line_plane, numeric_table_columns,
+                              parameters_with, relative_error, snapshot_index, split_key, sweep_curve, sweep_table_xy,
+                              sweep_value_curve, table_xy)
 from ..model.interface_sampling import interface_line_profile, line_curve_field_keys, projected_info
 from ..model.expressions import evaluate_parameters, evaluate_scalar, error_message
 from ..model.meshing import MESH_ESTIMATE_ERRORS, estimate_mesh
@@ -91,14 +90,7 @@ def _evaluate_derived_values(session, derived_specs, curves):
         definition = _derived_definition(derived, curves_by_name)
         earlier = {name: entry[1] for name, entry in values.items()}   # names of the derived values listed above
         try:
-            if is_curve_source(derived.source):
-                curve = curves_by_name.get(derived.source)
-                if curve is None:
-                    raise KeyError(f'no derived curve named {derived.source!r}')
-                value = result_value(derived_curve_result(curve, fetch, session.parameters), derived,
-                                     {**earlier, **session.parameters})
-            else:
-                value = session.derived_value(derived, fetch, earlier)
+            value = session.derived_value(derived, fetch, earlier, curves_by_name)
             values[derived.name] = (definition, value, None)
         except Exception as exc:   # one failing value must not hide the others; shown in the table
             values[derived.name] = (definition, math.nan, f'{type(exc).__name__}: {exc}')
@@ -310,7 +302,7 @@ def _iteration_axis(times):
     """(1-based sample index, axis label) when every sample shares one time (stationary iterations), else None;
     the rule of visualization._draw_timeseries."""
     times = np.asarray(times, dtype=np.float64)
-    if times.size == 0 or (times.size > 1 and np.ptp(times) > 0):
+    if not is_iteration_series(times):
         return None
     return np.arange(1, times.size + 1), f'Iteration (all at t = {_time_text(times[0])})'
 

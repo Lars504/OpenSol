@@ -5,7 +5,7 @@ from copy import deepcopy
 from dataclasses import MISSING, dataclass, field, fields, is_dataclass
 
 from ..core.constants import FACES, FACES_3D
-from .expressions import (ExpressionError, is_identifier, is_reserved_name, referenced_names,
+from .expressions import (ExpressionError, compile_expression, is_identifier, is_reserved_name,
                           rename_in_expression)
 from .schema import (INTERFACE_VARIABLES, MESH_PARAMS, known_physics, output_field_names, scalar_output_names,
                      state_field_names)
@@ -599,6 +599,22 @@ class ModelSpec:
             if curve.target == 'sweep' and curve.series == old:
                 curve.series = new
 
+    def rename_derived_curve(self, old, new):
+        """Rename a derived curve and its references: derived values sourced from it (the source and the curve name in
+        their expressions) and estimation curve sources."""
+        curve = self.derived_curve(old)
+        if new == old:
+            return
+        _check_new_name(new, [other.name for other in self.derived_curves], 'derived curve')
+        curve.name = new
+        for derived in self.derived_values:
+            if derived.source == old:
+                derived.source = new
+                derived.expression = _rename_value(derived.expression, lambda name: new if name == old else None)
+        for estimated in self._estimation_items('curves'):
+            if estimated.source == old:
+                estimated.source = new
+
     def rename_mesh(self, old, new):
         """Rename a mesh and its references (PhysicsSpec.mesh, AdaptationSpec.meshes)."""
         mesh_spec = self.mesh_by_name(old)
@@ -1013,11 +1029,13 @@ def _rename_dotted(value, old, new):
 
 
 def _expression_names(value) -> frozenset:
-    """Free names of an expression string; empty for numbers and unparsable text."""
+    """Free names of an expression string (derived-curve calls such as gradient() allowed, so renames reach
+    derived-curve expressions); empty for numbers and unparsable text."""
+    from .analytic import CURVE_FUNCTION_ARITY
     if not isinstance(value, str):
         return frozenset()
     try:
-        return referenced_names(value)
+        return compile_expression(value, CURVE_FUNCTION_ARITY).names
     except ExpressionError:
         return frozenset()
 

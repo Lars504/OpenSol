@@ -92,6 +92,7 @@ class _SharedBuild:
         self.sim = None
         self.solver_records = {}         # physics name -> {role: BuiltSolver} (solver stage, before physics create)
         self.time_updates = []           # TimeDependentUpdate of feature values of t (follow_time), attached after them
+        self.range_checks = []           # per dynamic material update: host check of its running range (study end)
         self.live_parameters = frozenset()   # reused sweep build: the swept parameter and those depending on it
         self.parameter_followers = []    # sweep_reuse.ParameterFollower of follow_parameters (Session.set_sweep_value)
         self.conformal_locators = {}     # honouring physics names -> the build's GeometryLocator
@@ -153,6 +154,12 @@ class BuildContext:
     def parameter_followers(self) -> list:
         return self._shared.parameter_followers
 
+    def check_dynamic_ranges(self):
+        """Host check of every dynamic material update's running range (ExpressionError): the study end, so values after
+        the last periodic check (_check_dynamic_range) are judged too."""
+        for check in self._shared.range_checks:
+            check()
+
     @property
     def conformal_locators(self) -> dict:
         """solver_defaults.conformal_boundaries (S7.6): honouring physics names -> the build's GeometryLocator (set
@@ -170,6 +177,7 @@ class BuildContext:
         shared.solver_records, shared.transfers, shared.conformal_locators = {}, {}, {}
         shared.time_updates.clear()
         shared.parameter_followers.clear()
+        shared.range_checks.clear()
 
     # ---- meshes (S7.2) ----
     def mesh_of_physics(self, physics_name) -> str:
@@ -474,7 +482,7 @@ class BuildContext:
         """evaluate(physics_by_name) closure of a state- or time-dependent expression (x, y and in 3D z captured as
         zero-stride grids; t = clock.t, the runner time; state of a physics on another mesh interpolated onto this one
         into a persistent buffer, S7.2); see _check_dynamic_range for when its running range under mask is checked
-        against bounds_param (host sync)."""
+        against bounds_param (host sync; check_dynamic_ranges at the study end)."""
         names = expression.names
         readers = {}   # state name of a physics on another mesh -> [GridTransfer, its output buffer]
         for name, physics, _ in state_references:
@@ -489,6 +497,9 @@ class BuildContext:
         running_extremes = _new_running_extremes(xp)
         n_evaluations = [0]
         checked_solve_counts = [None]   # source n_solves at the last host check
+        text = f'{label} = {expression.text!r}'
+        self._shared.range_checks.append(
+            lambda: _check_running_range(text, bounds_param, running_extremes, ' inside its region'))
 
         def evaluate(physics_by_name):
             namespace = dict(base)
@@ -506,7 +517,7 @@ class BuildContext:
             _accumulate_extremes(running_extremes, value, mask)
             n_evaluations[0] += 1
             _check_dynamic_range(running_extremes, n_evaluations[0], checked_solve_counts, physics_by_name,
-                                 source_physics, f'{label} = {expression.text!r}', bounds_param)
+                                 source_physics, text, bounds_param)
             return value
 
         return evaluate

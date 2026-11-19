@@ -715,6 +715,7 @@ def _run_built(session, spec, registry, emit, control, service):
         additions = {'status': 'cancelled'}
     session.domain.backend.synchronize()   # kernels still queued belong to the study time (cpu: nothing)
     study_seconds = time.perf_counter() - study_start
+    session.context.check_dynamic_ranges()   # range exits after the last periodic check raise too
     # the pool keeps its freed blocks during a run: reserved - baseline = kept + run high-water mark (VER-5); the cpu
     # backend has no pool and traces the build only (MemoryLedger), so it records no run memory; free blocks stranded
     # before the build are left out (a lower bound when the run reused them), at least the used-bytes growth

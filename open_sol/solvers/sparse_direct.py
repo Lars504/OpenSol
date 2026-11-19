@@ -23,7 +23,7 @@ import time
 
 import numpy as np
 
-from .cudss_factor import csr_rows
+from .cudss_factor import canonical_csr, csr_rows
 from .host_direct import (HOST_DIRECT_BACK_ENDS, HOST_DIRECT_MIXED_BACK_ENDS, factor_label, host_direct_available,
                           host_direct_factorization, host_direct_values_factorization, is_host_direct_factor,
                           missing_text)
@@ -494,9 +494,7 @@ def _refreshed_on_device(previous, operator, back_end, symmetric, symmetrizer, d
     precision = cudss_precision(back_end)
     if not previous.can_refactorize(False, precision, symmetric, False, symmetrizer):
         return False
-    if not operator.has_canonical_format:
-        operator = operator.copy()
-        operator.sum_duplicates()
+    operator = canonical_csr(operator)
     previous.refactorize_device_values(operator.data, *previous.host_pattern_of(operator), check_symmetry=True,
                                        symmetrizer=symmetrizer, defer_check=defer_check)
     return True
@@ -1186,9 +1184,7 @@ class SparseDirectSolver:
         if self.back_end not in CUDSS_BACK_ENDS:
             raise ValueError(f"{self.label()}: factorize_device_csr needs a cuDSS back end, got '{self.back_end}'")
         start = time.perf_counter()
-        if not operator.has_canonical_format:
-            operator = operator.copy()
-            operator.sum_duplicates()
+        operator = canonical_csr(operator)
         precision = cudss_precision(self.back_end)
         try:
             if isinstance(previous, CudssFactorization) and previous.valid:

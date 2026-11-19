@@ -216,7 +216,10 @@ _library_timing = {'started': None, 'loaded': None, 'joined': None, 'join_wait':
 
 def warm_cudss_library() -> None:
     """Import nvmath's DirectSolver and load the cuDSS library on a daemon host thread, once per process (speedup B3);
-    no CUDA call there: handles and plans stay on the GPU-owning thread, which joins it first."""
+    no CUDA call there: handles and plans stay on the GPU-owning thread, which joins it first (_direct_solver). Started
+    by a gpu build that resolves a cuDSS back end (builder._warm_cudss), not at api / CLI entry: the load is GIL-bound,
+    so it overlaps only GIL-releasing main-thread work, and an earlier start would cost every gpu process without cuDSS
+    the nvmath import. The cuDSS handle is still created in the first plan (cudss_library_timing: measure first)."""
     global _library_thread
     if _library_thread is not None or not cudss_available():
         return
@@ -923,8 +926,9 @@ def _int32_csr(data, indices, indptr, shape):
 
 
 def canonical_csr(host_operator, dtype=None):
-    """host_operator itself when it is a canonical scipy CSR (sorted, no duplicates) of `dtype` (None: its own), else
-    a canonical CSR copy (explicit zeros kept); the caller's operator is never modified."""
+    """host_operator itself when it is a canonical CSR (sorted, no duplicates) of `dtype` (None: its own), else a
+    canonical CSR copy (explicit zeros kept); the caller's operator is never modified. scipy, or cupyx with dtype
+    None."""
     csr = host_operator.tocsr()
     if dtype is not None:
         csr = csr.astype(dtype, copy=False)
