@@ -115,23 +115,19 @@ _POLE_MODELS = {model: (_POLE_CLASSES[model], tuple(param.name for param in para
 
 
 # ---- settings ----
-CPML_BC_HELP = 'cpml absorbs outgoing waves in pml_cells extra cells added outside the domain.'
-PERIODIC_BC_HELP = ('periodic must be set on both faces of the axis; period = the meshed window (uniform mesh: size '
-                    'rounded up to whole cells), no phase step (k = 0, e.g. normal incidence); em_fdtd_*, em_fdfd_* '
-                    'and em_modes add a Bloch phase with bloch_kx / bloch_ky (em_fdfd_nonlinear per input '
-                    'harmonic_channel; em_eme / em_eme_3d: k = 0 only).')
-MIRROR_BC_HELP = ('Mirror planes on the domain edge itself (any face): symmetric = E mirror-even (PMC plane), '
-                  'antisymmetric = E mirror-odd (PEC plane); a ghost cell outside (edge-cell width and material) '
-                  'holds the image, so draw the structure about the edge (x = 0 for x_lo); the other physics of the '
-                  'model have their faces on the same plane, and the ez and hz types share plane and parity. A '
-                  'source in the outermost domain cell is mirrored with it. Results count the unfolded structure: a flux line or derived-integral '
-                  'selection reaching a mirror face is doubled per such face (extra mirror_factor; integrands assumed '
-                  'mirror-even), far fields add the image contour (a box touching the plane drops that face; at most '
-                  'one mirror per axis), Results.field(unfold=True) and the GUI show the mirrored field; mode-port '
-                  'powers, source powers and probes stay those of the drawn part. pec / pmc walls of the two '
-                  'polarisations are half a cell apart (E_z pec and H_z pmc at the centre of the outermost cell, E_z '
-                  'pmc and H_z pec on its inner face): a cavity is one cell wider or narrower in the other '
-                  'polarisation.')
+CPML_BC_HELP = 'cpml: pml_cells absorbing cells outside the face.'
+PERIODIC_BC_HELP = ('periodic: on both faces of the axis; period = the meshed window (uniform mesh: rounded up to '
+                    'whole cells); k = 0 (normal incidence) unless the type has bloch_kx / bloch_ky '
+                    '(em_fdfd_nonlinear: per harmonic_channel).')
+MIRROR_BC_HELP = ('symmetric / antisymmetric: mirror plane on the edge itself, E mirror-even (PMC) / -odd (PEC); a '
+                  'ghost cell outside (edge-cell width and material) holds the image, so draw the structure about the '
+                  'edge (x = 0 for x_lo); the other physics and both polarisations share plane and parity; a '
+                  'source in the outermost cell is mirrored. Results count the unfolded structure: flux lines and '
+                  'derived integrals reaching a mirror face double per face (extra mirror_factor; integrands assumed '
+                  'even), far fields add the image (at most one mirror per axis), Results.field(unfold=True) and the '
+                  'GUI unfold; mode-port powers, source powers and probes stay those of the drawn part. ez / hz walls '
+                  'are half a cell apart (E_z pec, H_z pmc at the outermost cell centre; E_z pmc, H_z pec on its inner '
+                  'face): a cavity is one cell wider or narrower in the other polarisation.')
 
 
 def settings_params(bc_help, courant_help, track_absorption_help):
@@ -175,38 +171,35 @@ def boundary_settings_params(bc_help):
               tip='Thickness of the layer added outside each absorbing edge to soak up outgoing waves, in grid '
                   'cells. The drawn domain keeps its size.\n\n'
                   '10 to 20 is typical. Use more if waves reflect from the edges.',
-              help='CPML cells added outside every cpml face (the domain keeps its size, the grid grows), dx wide on '
-                   'a uniform grid; on a graded one they grow by max_ratio per cell from the edge cell to the base size '
-                   '(thinner next to a refined edge). 10-20 typical; thicker absorbs grazing and long-wavelength waves '
-                   'better.'),
+              help='Added outside every cpml face (the domain keeps its size); dx wide on a uniform grid, on a graded '
+                   'one growing by max_ratio per cell from the edge cell to the base size. 10-20 typical; thicker '
+                   'absorbs grazing and long waves better.'),
         Param('pml_order', 'int', 3, label='Absorbing layer grading', min=1, visible_if=_PML_VISIBLE,
               tip='How steeply the absorption rises from the inner to the outer side of the absorbing layer.\n\n'
                   '3 or 4 is typical and rarely needs changing.',
-              help='Polynomial order m of the CPML sigma / kappa grading with depth; 3-4 typical.'),
+              help='Polynomial order m of the CPML sigma / kappa grading; 3-4 typical.'),
         Param('pml_sigma_factor', 'float', 1.0, label='Absorbing layer strength', unit='1', min=0.0,
               min_exclusive=True, visible_if=_PML_VISIBLE,
               tip='Absorption strength of the absorbing layer, relative to the best value for vacuum.\n\n'
                   'Keep 1. Where a dense cladding runs into the layer, 1 divided by its refractive index works '
                   'better: about 0.7 for silica, 0.3 for silicon.',
               help='Peak CPML conductivity / the vacuum optimum (m + 1) / (150 pi d) S/m (m = pml_order, d = PML '
-                   'cell width); 0.5-2 when tuning reflections. A wave of index n attenuates n times faster, so where '
-                   'a cladding of index n crosses the PML the optimum is ~1/n (silica ~0.7, silicon ~0.3).'),
+                   'cell width); 0.5-2 when tuning. Where a cladding of index n crosses the PML the optimum is ~1/n '
+                   '(silica ~0.7, silicon ~0.3).'),
         Param('pml_kappa_max', 'float', 15.0, label='Absorbing layer stretch', unit='1', min=1.0,
               visible_if=_PML_VISIBLE,
               tip='How strongly the absorbing layer stretches space, which helps it absorb fast-decaying and grazing '
                   'waves.\n\n'
                   '1 means no stretch; 5 to 15 is typical.',
-              help='Peak real coordinate stretch of the CPML (1 = none); larger damps evanescent and grazing waves '
-                   'better. 5-15 typical.'),
+              help='Peak real CPML stretch (1 = none); larger damps evanescent and grazing waves; 5-15 typical.'),
         Param('pml_alpha_max', 'float', 0.0, label='Absorbing layer low-frequency damping', unit='S/m', min=0.0,
               visible_if=_PML_VISIBLE,
               tip='Extra damping of fast-decaying and long-wavelength waves in the absorbing layer.\n\n'
                   '0 switches it off and is the default. At optical wavelengths it only has an effect from about '
                   '1e4 S/m.',
-              help='Peak complex-frequency shift alpha of the CPML stretch kappa + sigma / (alpha + j omega eps0), '
-                   'largest at the inner edge; 0 = plain CPML. Acts only where alpha ~ omega eps0 (~1.1e4 S/m at '
-                   '1550 nm, ~0.06 S/m at 1 GHz), damping evanescent and low-frequency waves; no effect below ~100 '
-                   'S/m at optical wavelengths.'),
+              help='Peak shift alpha in the stretch kappa + sigma / (alpha + j omega eps0), largest at the inner '
+                   'edge; 0 = plain CPML. Damps evanescent and low-frequency waves only where alpha ~ omega eps0 '
+                   '(~1.1e4 S/m at 1550 nm, ~0.06 S/m at 1 GHz).'),
     )
 
 
@@ -289,9 +282,8 @@ EZ_LINE_SOURCE_DESCRIPTION = ('Sheet current on an axis-aligned line sending amp
 EZ_GAUSSIAN_BEAM_DESCRIPTION = ('Line source with the profile exp(-((s - center) / waist)^2) along the line: a beam of '
                                 'peak E_z = amplitude to each side in the local medium (vertical line: along +x and '
                                 f'-x; horizontal: along +y and -y), waist on the line. The line covers {SPAN_CELLS}.')
-POINT_SOURCE_SIGN = ('Sign: the current enters the update as given (minus the textbook impressed current), so '
-                     'absolute phases (and source powers from probe fields) differ by pi from textbook formulas such '
-                     'as E_z = -(omega mu0 I / 4) H0^(2)(k r); moduli and fluxes do not.')
+POINT_SOURCE_SIGN = ('Sign: the current is minus the textbook impressed current, so phases (and powers from probe '
+                     'fields) are pi off textbook formulas; moduli and fluxes agree.')
 SHEET_POWER_DRIFT = ('A recalibration (e.g. thermo-optic eps change in the line cells) keeps the amplitude, so the '
                      'launched power ~ amplitude^2 n / (2 eta0) follows n (~0.5% for dn = 0.01 at n = 2.2).')
 MAGNETIC_CURRENT_DRIFT = ('A fixed K_m radiates power ~ n^2 of its cell, so it drifts when eps there changes; a '
@@ -431,9 +423,8 @@ HZ_PROBE_COMPONENT_TIP = ('Field recorded at the point; magnetic fields in A/m, 
 _GAUSSIAN_PULSE_TIP_LINE = '- Gaussian pulse: a short burst covering a band of wavelengths, for spectra.'
 _CW_TIP_LINE = '- Continuous wave: one wavelength, switched on smoothly and steady after about 15 periods.'
 _GAUSSIAN_WAVEFORM_HELP = ('gaussian: sin carrier of f0 = C0 / wavelength under exp(-((t - t0) / tau)^2), tau = 1 / '
-                           '(pi * bandwidth * f0), t0 = 4.5 tau, lasting ~2 t0 (550 nm, bandwidth 0.5: ~10 fs); the '
-                           'amplitude / current is the envelope peak, the carrier is 0 at t0, so the source peaks '
-                           'lower (~0.87 at bandwidth 0.5, ~0.66 at 1).')
+                           '(pi bandwidth f0), t0 = 4.5 tau, lasting ~2 t0 (550 nm, bandwidth 0.5: ~10 fs); amplitude '
+                           '= envelope peak, the carrier is 0 at t0 (source peak ~0.87 at bandwidth 0.5, ~0.66 at 1).')
 _CW_WAVEFORM_HELP = 'cw: sin(2 pi f0 t) ramped in by 1 - exp(-t / (3 T)), T = 1 / f0, steady after ~15 periods.'
 
 
@@ -450,23 +441,22 @@ def waveform_params():
               choice_labels=(('gaussian', 'Gaussian pulse'), ('cw', 'Continuous wave'), ('ricker', 'Ricker wavelet')),
               tip=f'Time shape of the source.\n\n{_GAUSSIAN_PULSE_TIP_LINE}\n{_CW_TIP_LINE}\n'
                   '- Ricker wavelet: a single, very broadband pulse.',
-              help=f'{_GAUSSIAN_WAVEFORM_HELP} {_CW_WAVEFORM_HELP} ricker: Ricker wavelet with spectral peak f0, '
-                   'delayed by 4 / f0 (broadband: 3 % of the peak at 2.5 f0, 1 % at 2.76 f0).'),
+              help=f'{_GAUSSIAN_WAVEFORM_HELP} {_CW_WAVEFORM_HELP} ricker: spectral peak f0, delayed 4 / f0 (3 % of '
+                   'the peak at 2.5 f0, 1 % at 2.76 f0).'),
         Param('wavelength', 'float', 550e-9, label='Wavelength', unit='m', min=0.0, min_exclusive=True,
               tip='Vacuum wavelength at the centre of the source spectrum, entered in metres (5.5e-7 for 550 nm).\n\n'
                   'The mesh needs at least 10, better 20, cells per wavelength inside each material.',
-              help='Vacuum wavelength lambda0 = C0 / f0 of the carrier (ricker: spectral peak), in m, not nm: '
-                   'typical 400e-9 to 1600e-9 (validation warns below 1e-9 or above 100 domain diagonals). The mesh '
-                   'needs >= 10 (better 20) cells per lambda0 / n at the highest source frequency.'),
+              help='lambda0 = C0 / f0 of the carrier (ricker: spectral peak), in m, not nm: typical 400e-9 to '
+                   '1600e-9 (validation warns below 1e-9 or above 100 domain diagonals). Mesh: >= 10 (better 20) cells '
+                   'per lambda0 / n at the highest source frequency.'),
         Param('bandwidth', 'float', 0.5, label='Relative bandwidth', unit='1', min=0.0, min_exclusive=True,
               visible_if=(('waveform', ('gaussian',)),),
               tip='Spectral width of the pulse as a fraction of the centre frequency: 0.5 at 550 nm covers about 440 '
                   'to 730 nm.\n\n'
                   '0.2 to 1 is typical. A wider band gives a shorter pulse but needs a finer mesh.',
-              help='Spectral width / f0 of the gaussian pulse, amplitude spectrum exp(-((f - f0) / (bandwidth * '
-                   'f0))^2): 0.78 of the peak at f0 (1 +- bandwidth / 2), 1/e at f0 (1 +- bandwidth) (power FWHM ~1.18 '
-                   'bandwidth f0); the mesh check and auto mesh resolve f0 (1 + bandwidth). 0.2-1 typical; wider = '
-                   'shorter pulse, finer mesh.'),
+              help='Spectral width / f0: amplitude spectrum exp(-((f - f0) / (bandwidth f0))^2), 1/e at f0 (1 +- '
+                   'bandwidth), power FWHM ~1.18 bandwidth f0; the mesh check and auto mesh resolve f0 (1 + '
+                   'bandwidth). 0.2-1 typical; wider = shorter pulse, finer mesh.'),
     )
 
 
@@ -477,16 +467,15 @@ def beam_params():
               tip='Half-width of the beam at its narrowest point, which lies on the line; there the field falls to '
                   '37 % of its peak.\n\n'
                   '1 to 5 wavelengths is typical. Make the line several waists long so the beam is not cut off.',
-              help='1/e half-width of the field profile exp(-((s - center) / waist)^2) along the line (the waist '
-                   'lies on the line). Typical 1-5 wavelengths; keep the line several waists long (validation warns '
-                   'above 1e-2 of the peak at an end inside the domain; an end on a cpml edge continues through the '
-                   'PML). Paraxial amplitude: on axis the field is ~ amplitude (1 + 1/(k waist)^2) for E_z and (1 - '
-                   '1/(k waist)^2) for H_z types, k = 2 pi n / lambda0 (+-2.5% at waist = lambda0 / n).'),
+              help='1/e half-width of the field profile along the line (waist on the line); typical 1-5 '
+                   'wavelengths. Keep the line several waists long (validation warns above 1e-2 of the peak at an end '
+                   'inside the domain). On-axis field ~ amplitude (1 + 1/(k waist)^2) for E_z, (1 - 1/(k waist)^2) '
+                   'for H_z types, k = 2 pi n / lambda0 (+-2.5% at waist = lambda0 / n).'),
         Param('center', 'float', None, label='Beam centre', unit='m', optional=True,
               tip='Position of the beam axis along the line: x for a horizontal line, y for a vertical one.\n\n'
                   'Leave empty for the middle of the line. It must lie on the line.',
-              help='Beam axis position along the line (x for a horizontal line, y for a vertical one); empty = the '
-                   'midpoint. Off the line only the profile tail is launched (validation warns).'),
+              help='Beam axis along the line (x for a horizontal line, y for a vertical one); empty = midpoint. Off '
+                   'the line only the tail launches (validation warns).'),
     )
 
 
@@ -498,30 +487,26 @@ def spectral_params(n_wavelengths, n_wavelengths_help, n_wavelengths_tip):
               min_exclusive=True,
               tip='Shortest vacuum wavelength the monitor records, entered in metres (4e-7 for 400 nm).\n\n'
                   'Keep the range inside the source spectrum; outside it the results get noisy.',
-              help='Shortest vacuum wavelength of the monitor spectrum. Keep the range inside the source spectrum '
-                   '(gaussian: lambda0 / (1 + bandwidth / 2) to lambda0 / (1 - bandwidth / 2), e.g. 440e-9 to '
-                   '733e-9 m for 550 nm, bandwidth 0.5), else normalised results get noisy; validation warns where '
-                   'every enabled source spectrum is below 1e-2 of its peak (gaussian beyond f0 (1 +- 2.15 '
-                   'bandwidth), ricker outside 0.06-2.76 f0, cw beyond 1 / duration of f0).'),
+              help='Vacuum wavelength. Keep the range inside the source spectrum (gaussian: lambda0 / (1 +- '
+                   'bandwidth / 2), e.g. 440e-9 to 733e-9 m at 550 nm, bandwidth 0.5), else normalised results get '
+                   'noisy; validation warns where every enabled source is below 1e-2 of its peak (gaussian beyond f0 '
+                   '(1 +- 2.15 bandwidth), ricker outside 0.06-2.76 f0, cw beyond 1 / duration of f0).'),
         Param('wavelength_stop', 'float', 800e-9, label='Longest wavelength', unit='m', min=0.0,
               min_exclusive=True,
               tip='Longest vacuum wavelength the monitor records, entered in metres (8e-7 for 800 nm).\n\n'
                   "It must be larger than 'Shortest wavelength' unless 'Number of wavelengths' is 1.",
-              help='Longest vacuum wavelength of the monitor spectrum; > wavelength_start (equal only with '
-                   'n_wavelengths = 1).'),
+              help='> wavelength_start (equal only with n_wavelengths = 1).'),
         Param('n_wavelengths', 'int', n_wavelengths, label='Number of wavelengths', min=1,
               tip="Number of wavelengths, evenly spaced between 'Shortest wavelength' and 'Longest wavelength'; 1 "
                   f'gives the centre of the range.\n\n{n_wavelengths_tip}',
-              help='Wavelengths evenly spaced in wavelength (not frequency) over the range; 1 = its centre. '
-                   f'{n_wavelengths_help}'),
+              help=f'Evenly spaced in wavelength (not frequency); 1 = the range centre. {n_wavelengths_help}'),
     )
 
 
 N_ANGLES_PARAM = Param('n_angles', 'int', 360, label='Number of angles', min=1,
                        tip='Number of directions, evenly spaced over the full circle counter-clockwise from +x.\n\n'
                            '360 gives 1-degree steps.',
-                       help='Far-field angles evenly spaced over 360 degrees counter-clockwise from +x; 360 = '
-                            '1-degree steps.')
+                       help='Far-field angles evenly spaced over 360 degrees counter-clockwise from +x.')
 
 
 def far_field_params(n_wavelengths_help, n_wavelengths_tip):
@@ -646,11 +631,10 @@ MODE_TABLE_ROWS =('one row per mode for the first max(mode_number + 2, 4) modes:
 MODE_SOURCE_RESULT_TEXT = (f"Result 'table' at the source wavelength, {MODE_TABLE_ROWS}; extras wavelength, power, "
                            'direction, mode_number, tracked_mode_number (rank of the launched mode in the latest '
                            'solve, changed by a re-solve during the run; selected follows it).')
-PER_CW_TEXT = ('per_cw values exist only when every source feature of the physics shares one waveform (type, '
-               'wavelength, bandwidth; coupling drives not counted); S(omega) = dt-weighted spectrum of that waveform '
-               'over the steps run; NaN where |S|^2 < 1e-6 of its value at the source wavelength (cw: also outside '
-               '|f - f0| < 1 / (steps run x dt)). They equal the em_fdfd_* values at the same amplitudes, exactly '
-               'only at the source wavelength.')
+PER_CW_TEXT = ('per_cw values need one waveform shared by every source feature (type, wavelength, bandwidth; '
+               'coupling drives not counted); S = its dt-weighted spectrum over the steps run; NaN where |S|^2 < 1e-6 '
+               'of its source-wavelength value (cw: or |f - f0| >= 1 / (steps x dt)). They match em_fdfd_* at equal '
+               'amplitudes, exactly at the source wavelength only.')
 MODE_MONITOR_RESULT_TEXT = ("Result 'xy' versus wavelength: power_positive / power_negative = 2 |a|^2 in a.u. "
                             '(flux_monitor convention, comparable with its power); power_per_cw_positive / _negative '
                             '= |a|^2 / |S|^2 in W/m (cw mode power, as em_fdfd_* power_*); with exactly one enabled '

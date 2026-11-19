@@ -350,74 +350,70 @@ _SPEC_FIELD_HELP = {
     'MeshSegmentSpec.ratio': 'Size ratio of the profile (see profile); 1 = uniform.',
     'StudySpec.type': 'Registered study type name (see the study type sections).',
     'StudySpec.settings': 'Values of the study type params by name; missing keys take the defaults.',
-    'StudySpec.solved_physics': "Physics names the study solves itself, e.g. ['membrane']; the others (also of a type "
-                                'the study could solve) run first as stationary background physics, so couplings from '
-                                "them into the listed physics are allowed. [] = every physics whose solver has the "
-                                "study's solve. Only frequency_domain, mode_analysis, eigenfrequency, "
-                                'frequency_response and optomechanics (validation error elsewhere).',
+    'StudySpec.solved_physics': "Physics the study solves itself, e.g. ['membrane']; the others run first as "
+                                'stationary background physics (couplings from them into the listed ones allowed). [] '
+                                "= every physics whose solver has the study's solve. frequency_domain, mode_analysis, "
+                                'eigenfrequency, frequency_response and optomechanics only.',
     'StudySpec.stored_fields': "Output fields stored in snapshots, as 'physics.component' (e.g. 'em.ez'); [] "
-                               '(default) = every output field of every physics (primary fields first); list fields '
-                               'to store fewer and save memory (snapshots past 1 GB keep only the final state).',
+                               '(default) = every output field (primary first); snapshots past 1 GB keep only the '
+                               'final state.',
     'StudySpec.sweep': 'Optional parameter sweep (SweepSpec): one build and run per value; null = no sweep.',
     'StudySpec.stored_cuts': "3D models only: extra cut planes [axis 'x' | 'y' | 'z', position in m (number or "
-                             'parameter expression)] each snapshot stores besides the mid-height z cut (the window '
-                             'cell containing the position; same stored fields and 1 GB limit), e.g. [["y", 1e-6]] '
-                             'for an xz side cut. Read with Results.snapshot_field(index, name, plane=(axis, position) '
-                             "or the cut's index); summary.json stored_cuts lists them (cell-centre positions). [] = "
-                             'none.',
-    'StudySpec.adaptation': 'Optional mesh refinement levels (AdaptationSpec, S7.7): the study is rebuilt and rerun on '
-                            'refined meshes until a derived value converges; null = the model meshes as they are. '
-                            'Only study types that support it (validation), no sweep or parity sectors.',
-    'AdaptationSpec.target': 'Derived value (DerivedValueSpec.name) whose relative change between levels stops the '
-                             'refinement (required).',
-    'AdaptationSpec.method': "'adaptive' (error indicator marks where to refine) or 'uniform' (every size of the "
-                             'meshes x growth^(-1/2) per level: a mesh-convergence sequence).',
+                             'parameter expression)] each snapshot stores besides the mid-height z cut (window cell '
+                             'containing the position; same fields and 1 GB limit), e.g. [["y", 1e-6]] for an xz cut. '
+                             'Read with Results.snapshot_field(index, name, plane=(axis, position) or the cut index); '
+                             'summary.json stored_cuts lists them. [] = none.',
+    'StudySpec.adaptation': 'Optional mesh refinement levels (AdaptationSpec): the study reruns on refined meshes '
+                            'until a derived value converges; null = none. Only study types that support it; no sweep '
+                            'or parity sectors.',
+    'AdaptationSpec.target': 'Derived value name whose relative change between levels stops the refinement '
+                             '(required).',
+    'AdaptationSpec.method': "'adaptive' (error indicator marks where to refine) or 'uniform' (every mesh size x "
+                             'growth^(-1/2) per level).',
     'AdaptationSpec.tolerance': 'Converged when |v_k - v_k-1| <= tolerance |v_k| (> 0).',
-    'AdaptationSpec.max_levels': 'Largest number of refinement levels after the model meshes (integer >= 1); '
-                                 'reaching it unconverged is a warning.',
+    'AdaptationSpec.max_levels': 'Levels after the model meshes (integer >= 1); reaching it unconverged warns.',
     'AdaptationSpec.growth': 'Cell / element count growth per level (> 1).',
     'AdaptationSpec.meshes': 'Mesh names refined ([] = every mesh the physics use).',
-    'AdaptationSpec.max_cells': 'Stop before a level whose cell / element count would exceed this (null = no cap; the '
-                                'memory budget always applies).',
-    'AdaptationSpec.anisotropic': 'Tensor meshes: refine x and y bands separately by the indicator part that '
-                                  'dominates (true) or both axes alike.',
+    'AdaptationSpec.max_cells': 'Stop before a level above this cell / element count (null = no cap; the memory '
+                                'budget always applies).',
+    'AdaptationSpec.anisotropic': 'Tensor meshes: refine x and y bands separately by the dominant indicator part '
+                                  '(true) or both axes alike.',
     'AdaptationSpec.keep_levels': 'true: keep every level\'s snapshots, not only the last level\'s.',
-    'StudySpec.estimation': 'Optional parameter estimation (EstimationSpec): the study is rebuilt and rerun per '
-                            'evaluation with the estimated parameters set until the weighted misfit of measured '
-                            'derived values and curves is least, then run once at the best point (summary '
-                            'estimation). null = one run. Any study type; no sweep or adaptation; parity_sectors run '
-                            'every sector per evaluation (combined values fitted). A geometry parameter remeshes per '
-                            'evaluation, adding finite-difference noise: keep diff_step large or use nelder_mead.',
-    'EstimationSpec.parameters': 'Estimated model parameters (EstimatedParameterSpec, >= 1); each evaluation sets '
-                                 'them as numbers, parameters depending on them follow.',
+    'StudySpec.estimation': 'Optional parameter estimation (EstimationSpec): the study reruns with the estimated '
+                            'parameters until the weighted misfit of measured derived values and curves is least, then '
+                            'once at the best point (summary estimation). null = one run. Any study type; no sweep or '
+                            'adaptation; parity_sectors run every sector per evaluation. A geometry parameter remeshes '
+                            'per evaluation (finite-difference noise): keep diff_step large or use nelder_mead.',
+    'EstimationSpec.parameters': 'Estimated parameters (EstimatedParameterSpec, >= 1), set as numbers per evaluation; '
+                                 'dependent parameters follow.',
     'EstimationSpec.targets': 'Measured derived values (EstimationTargetSpec); residual (model - value) / sigma.',
     'EstimationSpec.curves': 'Measured curves (EstimationCurveSpec); residual per point (model interpolated onto x - '
                              'y) / sigma.',
-    'EstimationSpec.method': "'least_squares' (scipy least_squares TRF within the bounds, finite-difference Jacobian: "
-                             "n + 1 runs per step; standard errors from J^T J) or 'nelder_mead' (bounded simplex, no "
-                             'derivatives: for noisy misfits, e.g. a remeshed geometry parameter; no standard errors).',
-    'EstimationSpec.max_evaluations': 'Largest number of study runs of the search (integer >= 1; the final run at the '
-                                      'best point is extra); reaching it ends the search at the best point so far.',
+    'EstimationSpec.method': "'least_squares' (scipy TRF within the bounds, finite-difference Jacobian: n + 1 runs "
+                             "per step; standard errors from J^T J) or 'nelder_mead' (bounded simplex for noisy "
+                             'misfits; no standard errors).',
+    'EstimationSpec.max_evaluations': 'Study runs of the search (integer >= 1; the final run at the best point is '
+                                      'extra); reaching it ends the search at the best point so far.',
     'EstimationSpec.diff_step': 'least_squares: finite-difference step relative to each parameter scale (> 0; '
                                 'default 1e-2: far above solver / mesh noise).',
-    'EstimationSpec.tolerance': 'Stop when the cost and the step change by less than this (relative; nelder_mead: '
-                                'absolute in the scaled parameters and the cost) (> 0).',
+    'EstimationSpec.tolerance': 'Stop when the cost and the step change by less than this (> 0; relative, nelder_mead: '
+                                'absolute in the scaled parameters and the cost).',
     'EstimatedParameterSpec.name': 'Model parameter name (ParameterSpec.name).',
     'EstimatedParameterSpec.initial': "Start value (number or expression of the base parameters); null = the "
-                                      "parameter's own value. Must lie strictly between lower and upper; |initial| "
-                                      '(else upper - lower, else 1) is the parameter scale of the search.',
+                                      "parameter's own value. Strictly between lower and upper; |initial| (else upper "
+                                      '- lower, else 1) is the search scale.',
     'EstimatedParameterSpec.lower': 'Lower bound (number or expression); null = unbounded.',
     'EstimatedParameterSpec.upper': 'Upper bound (number or expression); null = unbounded.',
     'EstimationTargetSpec.derived': 'Derived value (DerivedValueSpec.name) compared with the measured value (parity '
                                     'sectors: the combined value).',
     'EstimationTargetSpec.value': 'Measured value (number or expression of the base parameters).',
-    'EstimationTargetSpec.sigma': 'Measurement uncertainty (> 0, same unit); null = |value| (a relative misfit; 1 when '
-                                  'value is 0). Standard errors are absolute only when every target and curve gives '
-                                  'sigma, else scaled by the reduced chi-square.',
-    'EstimationCurveSpec.source': "Model curve: 'physics.feature:sample' of a 1D feature result (its abscissa, as a "
-                                  'derived curve input) or a derived curve name (DerivedCurveSpec.name).',
-    'EstimationCurveSpec.x': 'Measured abscissa values (numbers in the source abscissa unit), inside the model '
-                             "curve's range (the run fails otherwise).",
+    'EstimationTargetSpec.sigma': 'Measurement uncertainty (> 0, same unit); null = |value| (relative; 1 when value is '
+                                  '0). Standard errors are absolute only when every target and curve gives sigma, else '
+                                  'scaled by the reduced chi-square.',
+    'EstimationCurveSpec.source': "Model curve: 'physics.feature:sample' of a 1D feature result (as a derived curve "
+                                  'input) or a derived curve name.',
+    'EstimationCurveSpec.x': "Measured abscissa values (source abscissa unit), inside the model curve's range (the "
+                             'run fails otherwise).',
     'EstimationCurveSpec.y': 'Measured values, one per x.',
     'EstimationCurveSpec.sigma': 'Uncertainty: one number or expression (> 0), a list with one value per point, or '
                                  'null = the RMS of y.',
@@ -430,23 +426,20 @@ _SPEC_FIELD_HELP = {
                        '(a descending sweep).',
     'SweepSpec.upper': "spacing 'linear' / 'log': last value (number or parameter expression).",
     'SweepSpec.count': "spacing 'linear' / 'log': number of values including both end points (1 = lower only).",
-    'SweepSpec.keep_fields': 'true (default): keep the snapshots of every sweep value (summary sweep snapshot_times / '
-                             'snapshot_labels per value, results.npz sweep_snapshot/..., Results.sweep_field), not '
-                             'only those of the last value; past 1 GB in total only each value\'s final snapshot is '
-                             'kept (a warning). false: only the last value keeps its snapshots, earlier values keep '
-                             'their derived values and results only.',
-    'SweepSpec.reuse_build': 'true: build once and run every value on that build. The swept parameter (and those '
-                             'depending on it) may then reach only values that follow a reused build, with parameters '
-                             'only (no x / y / z / t): feature values and physics settings whose help says so (loads, '
-                             'held values, voltages, doping, em_eme wavelength, magnetic_fields_ac frequency, ...), '
-                             'material property values read by no EM type (repainted and re-read; not on 3D tensor '
-                             'meshes), derived values, analytic / derived curves and study settings; any other use '
-                             '(geometry, mesh, other material values, dispersion, physics / solver / coupling '
-                             'settings, stored cuts) is a validation error, as are the time_dependent and '
-                             'optimization studies and parity_sectors. Each value reruns the study from the previous '
-                             'state (nonlinear solids start Newton from it; summary sweep builds = 1); followed values '
-                             'are not range-checked per value. A physics that cannot rerun makes the model rebuild per '
-                             'value (an info line). false (default): one build per value.',
+    'SweepSpec.keep_fields': 'true (default): every sweep value keeps its snapshots (summary sweep snapshot_times / '
+                             'snapshot_labels, results.npz sweep_snapshot/..., Results.sweep_field); past 1 GB in '
+                             "total only each value's final snapshot (a warning). false: only the last value keeps "
+                             'snapshots, earlier ones their derived values and results.',
+    'SweepSpec.reuse_build': 'true: build once and run every value on that build. The swept parameter (and its '
+                             'dependants) may then reach, with parameters only (no x / y / z / t), only: feature '
+                             'values and physics settings whose help says so (loads, held values, voltages, doping, '
+                             'em_eme wavelength, ...), material values read by no EM type (repainted; not on 3D tensor '
+                             'meshes), derived values, curves and study settings; any other use (geometry, mesh, other '
+                             'materials, dispersion, physics / solver / coupling settings, stored cuts), '
+                             'time_dependent, optimization and parity_sectors are validation errors. Each value reruns '
+                             'from the previous state (nonlinear solids start Newton from it; summary sweep builds = '
+                             '1); followed values are not range-checked. A physics that cannot rerun rebuilds per '
+                             'value (info). false (default): one build per value.',
     'DerivedValueSpec.name': 'Identifier, unique among derived values; its key in summary.json derived.',
     'DerivedValueSpec.expression': 'source null: expression of parameters, x, y (3D: z), t and output fields '
                                    '(<physics>_<field>, or <field> when one physics alone provides it); over an '
@@ -1713,6 +1706,11 @@ def _spec_notes():
             'A physics type lists the studies it supports; a study with a background study (e.g. frequency_domain: '
             'stationary) also accepts the physics that support only that one and solves them first as background '
             'physics. Heat is solved as a steady state in every study except time_dependent.',
+            "A 2D type's geometry setting axisymmetric solves a body of revolution about the x_lo window edge (x = r "
+            '>= 0, y = z; x_lo is the axis, r = 0 a symmetry): field derived values of the whole model are then '
+            "ring-weighted by 2 pi r dx dy ('integral' a whole-body total, 'mean' a volume mean), and a coupled planar "
+            'physics (no geometry setting, e.g. EM, or set to planar) solves a planar cut per unit z length whose '
+            'fields are applied per cell as rings (validation warns).',
             'StudySpec.sweep {"parameter": name, "values": [...]} builds and runs the model once per value '
             '({"spacing": "linear" | "log", "lower", "upper", "count"} for a range); summary.json sweep holds the '
             'derived values and feature result digests per value.',

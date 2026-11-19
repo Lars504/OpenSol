@@ -88,18 +88,16 @@ _SETTINGS = boundary_settings_params(_BC_HELP) + (
               'material.'),
     Param('discretization', 'choice', 'quadratic', label='Discretization', choices=tuple(DISCRETIZATION_ORDERS),
           choice_labels=(('quadratic', 'Quadratic'), ('linear', 'Linear')),
-          help='Element order on a triangles mesh (tensor meshes ignore it: Yee cell). E_z / H_z on Lagrange '
-               'elements: quadratic (error ~h^4 in k^2, curved edges isoparametric, so round objects follow the drawn '
-               'outline; + one unknown per edge) or linear (cheaper, ~h^2); materials one value per element (H_z: the '
-               'full in-plane tensor with eps_xy); a cpml face gets mesh pml_layers element layers with the pml_* '
-               'stretch and a pec outer side. E_z: pec / antisymmetric faces and pec_domain elements hold E_z = 0, '
-               'pmc / symmetric are natural; H_z: pmc / symmetric hold H_z = 0, pec / antisymmetric and pec_domain '
-               'outlines are natural (no staircase). Driven solves factor the complex symmetric operator once per '
-               'wavelength and material state, eigenfrequency through the eigen role: host SuperLU (cusolver_qr '
-               f'unused), cudss / cudss_mixed (cuDSS LDL^T on the GPU) or {HOST_DIRECT_NAMES} (host LDL^T), the '
-               'analysis reused. Only point_source, field_probe (in-plane components from the element gradient), '
-               'pec_domain and resonance_table work on triangles; other features, periodic / Bloch faces and the '
-               'optimization / optomechanics / thermal_noise studies are validation errors.',
+          help='Element order on a triangles mesh (tensor meshes ignore it). E_z / H_z on Lagrange elements: '
+               'quadratic (error ~h^4 in k^2, curved edges isoparametric; + one unknown per edge) or linear (~h^2); '
+               'materials one value per element (H_z: the in-plane tensor with eps_xy); a cpml face gets mesh '
+               'pml_layers element layers (pml_* stretch, pec outer side). E_z: pec / antisymmetric faces and '
+               'pec_domain elements hold E_z = 0, pmc / symmetric are natural; H_z: pmc / symmetric hold H_z = 0, '
+               'pec / antisymmetric and pec_domain outlines are natural (no staircase). Factorisation: host SuperLU '
+               f'(cusolver_qr unused), cudss / cudss_mixed or {HOST_DIRECT_NAMES}, the analysis reused. Only '
+               'point_source, field_probe (in-plane components from the element gradient), pec_domain and '
+               'resonance_table work on triangles; other features, periodic / Bloch faces and the optimization / '
+               'optomechanics / thermal_noise studies are validation errors.',
           tip='Order of the finite elements when the mesh is made of triangles: quadratic is far more accurate per '
               'element, linear is cheaper.\n\nUnused on a rectangular-cell mesh.'),
 ) + fdfd_bloch_params()
@@ -157,20 +155,16 @@ _HZ_MATERIAL_PROPERTIES = em_material_params('hz', {
     GYRATION_Z, 'float', 0.0, label='Gyration, z (magneto-optic)', unit='1', field_dependent=True,
     expands_to=(GYRATION_Z,),
     help='Gyration g (real) of a magneto-optic material magnetised along z: in-plane eps = [[eps_xx, eps_xy + j g], '
-         '[eps_xy - j g, eps_yy]] (exp(+j omega t); Hermitian, a real g absorbs nothing), i.e. eps_ij += j e_ijk g_k '
-         'with gyration vector (0, 0, g); g flips sign with the magnetisation. Voigt geometry (light across the '
-         'magnetisation): a uniform medium keeps one index, eps_eff = eps - g^2 / eps, but interfaces and guides '
-         'become non-reciprocal: a z-magnetised slab guide without mirror symmetry across it has beta_forward != '
-         'beta_backward (isolator phase shift), and S_21(g) = S_12(-g). Faraday rotation per length (light along the '
-         'magnetisation) |theta_F| = pi |g| / (lambda n), so g = theta_F lambda n / pi: Ce:YIG at 1550 nm (library '
-         'ce_yig, n ~ 2.2, theta_F ~ -4500 deg/cm) |g| ~ 0.009, Bi:YIG ~ 0.01-0.02; the sign per magnetisation is '
-         'the material\'s. Solved through eta = eps^-1 as for eps_xy (det = eps_xx eps_yy - eps_xy^2 - g^2 must stay '
-         '> 0); the operator is not symmetric: direct solves take a general LU, and the adjoint solves the transposed system (= the solve with -g; g held '
-         'fixed in the gradient). Lossless g conserves power exactly (q_abs counts the diagonal loss only). Allocated '
-         'only when a material sets it; 0 in PEC cells and the outer two cell rows of a wall face; mode ports, '
-         'line-source / beam calibrations and the TFSF background ignore it (the build warns). Validation errors: '
-         'mirror faces and parity sectors (a mirror image reverses the magnetisation), triangles meshes, every other '
-         'EM type (em_modes takes gyration_x / gyration_y).',
+         '[eps_xy - j g, eps_yy]] (exp(+j omega t); Hermitian, a real g absorbs nothing); g flips sign with the '
+         'magnetisation. A uniform medium keeps one index, eps_eff = eps - g^2 / eps, but interfaces and guides become '
+         'non-reciprocal: a slab guide without mirror symmetry across it has beta_forward != beta_backward, and '
+         'S_21(g) = S_12(-g). Faraday rotation per length |theta_F| = pi |g| / (lambda n): Ce:YIG at 1550 nm (library '
+         'ce_yig, n ~ 2.2, theta_F ~ -4500 deg/cm) |g| ~ 0.009, Bi:YIG ~ 0.01-0.02. det = eps_xx eps_yy - eps_xy^2 - '
+         'g^2 must stay > 0; direct solves take a general LU (the adjoint: the transposed solve, g held fixed). 0 in '
+         'PEC cells and the outer two cell rows of a wall face; mode ports, line-source / beam calibrations and the '
+         'TFSF background ignore it (the build warns). Validation errors: mirror faces and parity sectors (the image '
+         'reverses the magnetisation), triangles meshes, every other EM type (em_modes takes gyration_x / '
+         'gyration_y).',
     tip='Strength of the magneto-optic effect of a magnetised material, such as cerium-doped yttrium iron garnet, '
         'magnetised perpendicular to the drawing. Light then travels differently forward and backward, as in an '
         'optical isolator. Usually empty.\n\n'
@@ -280,19 +274,17 @@ _MONITOR_INTERFACE_TEXT = ('Keep its measuring face (hi face of the line cells) 
                            'inside or outside a plane_wave_tfsf box: the field jumps there between total and scattered '
                            'field (validation warns).')
 _TFSF_TEXT = ('the incident wave is the discrete plane wave of the FDFD stencil in the background medium (complex eps '
-              'and mu_r of the outline cell just before the lo-x edge; uniform x cells: k from (2 / dx) sin(k dx / 2) '
-              '= n k0, n = sqrt(eps mu_r); graded x cells: marched cell by cell on the solved stencil, a grading at '
-              'the lo-x edge adds a small backward part; a lossy background attenuates it), so a box in a uniform '
-              'medium is exactly transparent on uniform and graded meshes. The box edges must lie in one uniform '
-              'medium (warning otherwise: incident light leaks into the scattered field), one scattered-field cell '
-              'inside the domain on every side, except: along a periodic y axis it may cover every y cell (y0 = 0, '
-              'y1 = the domain height; a grating or layer stack may cross it), and at a y mirror face of the '
-              "wave's parity (ez: symmetric, hz: antisymmetric) it may reach the plane, its image completing it (the "
-              'other parity, or an x mirror face, is an error). With bloch_ky != 0 (periodic y) the wave is oblique, '
-              'exp(-j (k_x x + ky y)), ky = bloch_ky, phase referred to y = 0, k_x from (2 / dx)^2 sin^2(k_x dx / 2) '
-              '= (n k0)^2 - (2 / dy)^2 sin^2(ky dy / 2) (refused when not positive: evanescent); it needs uniform y '
-              'cells (graded y: error; x may be graded). Enclose the scatterers, put a far_field box outside it; '
-              f'flux and mode monitors must not straddle its outline. The box covers {BOX_CELLS}.')
+              'and mu_r of the outline cell just before the lo-x edge; uniform x cells: (2 / dx) sin(k dx / 2) = n '
+              'k0; graded x cells: marched on the solved stencil, a grading at the lo-x edge adds a small backward '
+              'part), so a box in a uniform medium is exactly transparent. The box edges must lie in one uniform '
+              'medium (else a warning: incident light leaks out), one scattered-field cell inside the domain on every '
+              'side, except: along a periodic y axis it may cover every y cell (a grating or layer stack may cross '
+              "it), and at a y mirror face of the wave's parity (ez: symmetric, hz: antisymmetric) it may reach the "
+              'plane (the other parity, or an x mirror face, is an error). With bloch_ky != 0 the wave is oblique, '
+              'exp(-j (k_x x + ky y)), phase referred to y = 0, (2 / dx)^2 sin^2(k_x dx / 2) = (n k0)^2 - (2 / dy)^2 '
+              'sin^2(ky dy / 2) (refused when not positive); it needs uniform y cells. Enclose the scatterers, put a '
+              'far_field box outside it; flux and mode monitors must not straddle its outline. The box covers '
+              f'{BOX_CELLS}.')
 _MODE_SOURCE_TEXT = ('One-sided total-field / scattered-field line: total field from the line cells downstream, only '
                      'the scattered field (what comes back) upstream; the interface is the lo face of the line cells '
                      'for positive, their hi face for negative. The launch is exact and one-sided at every solved '
@@ -327,6 +319,16 @@ _FAR_FIELD_TEXT = ('one row per solved wavelength (ascending). Assumes vacuum ou
                    'edge sampling across a mode_source interface face). The contour runs through the centres of the '
                    'first box cells and of the cells one beyond x1 / y1 (keep the box one cell off the x_hi / y_hi '
                    f'edges); graded meshes work (actual centres, trapezoid weights). The box covers {BOX_CELLS}.')
+# feature descriptions alike for both polarisations (one text, so em_fdfd_nonlinear prints it once)
+_TFSF_DESCRIPTION = ('Plane wave along +x on the outline of a total-field box (total field in the box cells, scattered '
+                     'field outside), entering only the right-hand side; phase referred to the centres of the first '
+                     f'(lo-x) box column; {_TFSF_TEXT}')
+_FAR_FIELD_DESCRIPTION = ('Near-to-far-field transform of the phasors on a rectangle outline (the out-of-plane field '
+                          "and the in-plane one, from the curl of E_z / Ampere's law of H_z, averaged onto the centres "
+                          'at the em_fdtd_* far_field sample points, so normalised patterns compare directly): power '
+                          'per unit length and angle rho |E|^2 / (2 eta0) in W/(m rad) of the far-field |E| (H_z: '
+                          '|eta0 H_z|; angle integral = power through a closed flux box) versus angle '
+                          f'counter-clockwise from +x, {_FAR_FIELD_TEXT}')
 
 
 def _mode_source_description(polarization):
@@ -352,9 +354,7 @@ _DESCRIPTIONS = {
                         'cylindrical wave.',
         'line_source': EZ_LINE_SOURCE_DESCRIPTION,
         'gaussian_beam': EZ_GAUSSIAN_BEAM_DESCRIPTION,
-        'plane_wave_tfsf': 'Plane wave along +x on the outline of a total-field box (total E_z in the box cells, '
-                           'scattered field outside), entering only the right-hand side; phase referred to the '
-                           f'centres of the first (lo-x) box column; {_TFSF_TEXT}',
+        'plane_wave_tfsf': _TFSF_DESCRIPTION,
         'mode_source': _mode_source_description('ez'),
         'pec_domain': 'Perfect electric conductor: E_z = 0 in every cell whose centre lies in the selected domains, '
                       'staircased; with solver_defaults.conformal_boundaries the H links from free cells put E_z = 0 '
@@ -364,11 +364,7 @@ _DESCRIPTIONS = {
                         'from the curl of E_z on their hi face; > 0 toward +x / +y. '
                         f'{_MONITOR_INTERFACE_TEXT} {_FLUX_RESULT_TEXT} The line covers {SPAN_CELLS}.',
         'mode_monitor': _mode_monitor_description('ez'),
-        'far_field': 'Near-to-far-field transform of the phasors on a rectangle outline (E_z, and H from the curl of '
-                     'E_z averaged onto the centres, at the em_fdtd_ez far_field sample points, so normalised '
-                     'patterns compare directly): power per unit length and angle rho |E_z|^2 / (2 eta0) in W/(m rad) '
-                     '(angle integral = power through a closed flux box) versus angle counter-clockwise from +x, '
-                     f'{_FAR_FIELD_TEXT}',
+        'far_field': _FAR_FIELD_DESCRIPTION,
     },
     'hz': {
         'point_source': 'Current-calibrated, mesh-independent point excitation phasor (see excitation) in the cell '
@@ -381,9 +377,7 @@ _DESCRIPTIONS = {
                          'tangential E = amplitude to each side in the local medium (vertical line: E_y, along +x and '
                          '-x; horizontal: E_x, along +y and -y), waist on the line, sheet on the hi face of the line '
                          f'cells. The line covers {SPAN_CELLS}.',
-        'plane_wave_tfsf': 'Plane wave along +x on the outline of a total-field box (total H_z in the box cells, '
-                           'scattered field outside), entering only the right-hand side; phase referred to the '
-                           f'centres of the first (lo-x) box column; {_TFSF_TEXT}',
+        'plane_wave_tfsf': _TFSF_DESCRIPTION,
         'mode_source': _mode_source_description('hz'),
         'pec_domain': 'Perfect electric conductor: tangential E = 0 on the four faces of each cell whose centre lies '
                       'in the selected domains (H_z inside is 0), staircased. With solver_defaults.conformal_boundaries '
@@ -398,11 +392,7 @@ _DESCRIPTIONS = {
                         f'sent toward -x / -y). {_MONITOR_INTERFACE_TEXT} {_FLUX_RESULT_TEXT} The line covers '
                         f'{SPAN_CELLS}.',
         'mode_monitor': _mode_monitor_description('hz'),
-        'far_field': "Near-to-far-field transform of the phasors on a rectangle outline (H_z, and E from Ampere's law "
-                     'averaged onto the centres, at the em_fdtd_hz far_field sample points, so normalised patterns '
-                     'compare directly): power per unit length and angle rho |eta0 H_z|^2 / (2 eta0) in W/(m rad) '
-                     '(|eta0 H_z| = the far-field |E| in vacuum; angle integral = power through a closed flux box) '
-                     f'versus angle counter-clockwise from +x, {_FAR_FIELD_TEXT}',
+        'far_field': _FAR_FIELD_DESCRIPTION,
     },
 }
 # GUI summaries (tree / menu tooltip, settings panel): shared, then the per-polarisation ones
@@ -449,33 +439,27 @@ _PROBE_DESCRIPTION = ('Phasor of one field component in the cell containing the 
                       'from neighbouring cells: keep them off a plane_wave_tfsf outline and a mode_source interface '
                       f'face (validation warns). {_PROBE_RESULT_TEXT}')
 _COMMON_DESCRIPTION = (
-    'One sparse direct solve of the discrete Helmholtz equation per vacuum wavelength, time convention exp(+j omega '
-    't): fields are complex phasors F (real field Re(F e^{j omega t})), every source a phasor (phase setting) with '
-    'the current-calibrated, mesh-independent amplitude of the matching FDTD source. absorbed_power (state field '
-    'q_abs) = the time-averaged loss density 1/2 omega eps0 (-Im eps) |E|^2 in W/m^3 (magnetic loss not counted, as '
-    'in FDTD), what em_heat_joule hands to heat. Solver roles (see solvers): linear = sparse_direct (scipy_splu: host '
-    'SuperLU, ~1e6 unknowns nx * ny incl. PML; cusolver_qr ~1e5; cudss / cudss_mixed: a cuDSS LDL^T of D A, D the '
-    'stretched cell areas, ~20 x faster than SuperLU at 1e5 - 5e5 unknowns, prefer cudss (cudss_mixed solves are '
-    f'slower); {HOST_DIRECT_NAMES}: the same factor on the host cores; a Bloch phase, eps_xy or gyration_z makes it '
-    'a general LU and the adjoint factors the transpose too) or line_block (suits elongated grids), one '
-    'factorisation per wavelength and material state, reused for every source; eigen (eigenfrequency / '
-    'optomechanics) = arpack_shift_invert (shift-invert factor: host SuperLU, cudss / cudss_mixed, '
-    f'{HOST_DIRECT_NAMES} (mixed: loose solves plus float64 Rayleigh quotients) or the line_block factor when that '
-    'is the linear solver; a rejected solve redoes the eigen-solve on SuperLU). Studies: stationary solves once at '
-    'the wavelength setting (with heat, em_heat_joule and heat_em_thermo_optic iterate FDFD and heat to a fixed '
-    'point: plain Picard by default, which oscillates once the self-heating shift exceeds about one resonance '
-    'linewidth: set the study relaxation < 1); frequency_domain solves a wavelength list (with em_heat_joule: each '
-    "wavelength's coupled fixed point, continued from the previous one), one labelled snapshot each, probe / flux / "
-    'mode results versus wavelength, one far-field pattern each; eigenfrequency finds the source-free resonances '
-    '(complex omega, Q) nearest the wavelength setting, one snapshot each plus resonance_table; optomechanics '
-    'eigen-solves it likewise when a solid_mechanics optomechanical_coupling names it (else a stationary background; '
-    'either way no coupling or material may read it); optimization maximises the adjoint_objective sum J over the '
-    'design_region densities (L-BFGS-B, adjoint gradient); time_dependent (beside a time-stepped physics such as '
-    'elastic_waves, never an em_fdtd_* one) re-solves at the wavelength setting on the frozen state every k steps (k '
-    '= its every) when an input changed (stroboscopic, e.g. acousto-optics); monitors keep the last solve. Periodic '
-    'faces take a Bloch phase bloch_kx / bloch_ky (oblique incidence; band diagrams from an eigenfrequency study '
-    'swept over k). On a triangles mesh the field is solved on Lagrange finite elements (see discretization; '
-    'materials and state fields one value per element, the same output names on a display raster).'
+    'One sparse direct solve of the discrete Helmholtz equation per vacuum wavelength, exp(+j omega t): fields are '
+    'complex phasors F (real field Re(F e^{j omega t})), every source a phasor (phase setting) with the calibrated, '
+    'mesh-independent amplitude of the matching FDTD source. absorbed_power (state q_abs) = 1/2 omega eps0 (-Im eps) '
+    '|E|^2 in W/m^3 (magnetic loss not counted), what em_heat_joule hands to heat. Solver roles (see solvers): '
+    'linear = sparse_direct (scipy_splu: host SuperLU, ~1e6 unknowns nx * ny incl. PML; cusolver_qr ~1e5; cudss: '
+    'cuDSS LDL^T, ~20 x SuperLU at 1e5 - 5e5 unknowns (cudss_mixed solves slower); '
+    f'{HOST_DIRECT_NAMES}: the same factor on host cores; a Bloch phase, eps_xy or gyration_z makes it a general LU) '
+    'or line_block (elongated grids), one factorisation per wavelength and material state, reused for every source; '
+    'eigen = arpack_shift_invert (factor: SuperLU, cudss / cudss_mixed, '
+    f'{HOST_DIRECT_NAMES} or the line_block one when that is the linear solver; a rejected solve redoes it on '
+    'SuperLU). Studies: stationary at the wavelength setting (with heat, em_heat_joule and heat_em_thermo_optic '
+    'iterate to a fixed point; plain Picard oscillates once the self-heating shift exceeds about one linewidth: set '
+    "the study relaxation < 1); frequency_domain a wavelength list (with em_heat_joule each wavelength's fixed point, "
+    'continued from the previous), one snapshot each; eigenfrequency the source-free resonances nearest the '
+    'wavelength setting, one snapshot each plus resonance_table; optomechanics likewise when a solid_mechanics '
+    'optomechanical_coupling names it (else a stationary background; no coupling or material may read it); '
+    'optimization maximises the adjoint_objective sum over the design_region densities (L-BFGS-B); time_dependent '
+    '(beside a time-stepped physics such as elastic_waves, never em_fdtd_*) re-solves on the frozen state every k '
+    'steps (k = its every) when an input changed; monitors keep the last solve. Periodic faces take bloch_kx / '
+    'bloch_ky. On a triangles mesh: Lagrange finite elements (see discretization; materials and state fields per '
+    'element, the same output names on a display raster).'
 )
 _MODULUS_OUTPUTS = ('e_abs / e_intensity / h_abs = |E|, |E|^2, |H| at the cell centres (in-plane face phasors averaged '
                     'there first): peak amplitudes, where em_fdtd_* give instantaneous values.')
@@ -527,22 +511,20 @@ def _make_create(polarization, background_targets):
 TIME_DEPENDENT_STUDY = 'time_dependent'     # stroboscopic re-solves beside a time-stepped physics (acoustics)
 _RESONANCE_TABLE_DESCRIPTION = (
     "Resonances of the last eigenfrequency solve, nearest the target (the wavelength setting) first. Result 'table', "
-    'one row per resonance: resonance_number (1-based rank by |omega - omega_target|), wavelength = 2 pi C0 / '
-    'Re(omega) (m), frequency = Re(omega) / (2 pi) and frequency_imag = Im(omega) / (2 pi) (Hz; > 0 decays), q_factor '
-    '= Re(omega) / (2 Im(omega)) (inf when |Im omega| < 1e-12 Re omega: lossless and closed; negative = growing, '
-    'non-physical, usually a PML artefact), pml_fraction (share of the out-of-plane |field|^2 dA in PML cells: above '
-    '0.5 dropped; above ~1e-2 the PML shapes the resonance: widen the cladding); extras target_wavelength (m) and '
-    'selected_resonance. Accurate only near the target. Q versus a parameter: a derived value with source '
-    "'<physics>.<this feature>', expression q_factor, operation at, at = 0. An optional domain selection is a region: "
-    f'the table ends with {REGION_COLUMN[0]} (share of the same weights in the selected cells; on triangles in the '
-    'dofs of the selected elements, a dof on the outline counting fully), and resonances below min_region_fraction '
-    'are dropped like PML modes (rows, snapshots and resonance numbers skip them). One resonance_table with a '
-    'selection per physics.')
+    'one row per resonance: resonance_number (rank by |omega - omega_target|), wavelength = 2 pi C0 / Re(omega) (m), '
+    'frequency = Re(omega) / (2 pi), frequency_imag = Im(omega) / (2 pi) (Hz; > 0 decays), q_factor = Re(omega) / (2 '
+    'Im(omega)) (inf when |Im omega| < 1e-12 Re omega; negative = growing, usually a PML artefact), pml_fraction '
+    '(share of the out-of-plane |field|^2 dA in PML cells: above 0.5 dropped; above ~1e-2 widen the cladding); extras '
+    'target_wavelength (m), selected_resonance. Accurate only near the target. Q versus a parameter: a derived value '
+    "with source '<physics>.<this feature>', expression q_factor, operation at, at = 0. An optional domain selection "
+    f'adds {REGION_COLUMN[0]} (share of the same weights in the selected cells; triangles: dofs of the selected '
+    'elements, outline dofs counting fully) and drops resonances below min_region_fraction like PML modes. One '
+    'resonance_table with a selection per physics.')
 MIN_REGION_FRACTION_PARAM = Param(   # shared with em_fdfd_3d's resonance_table
     'min_region_fraction', 'float', 0.0, label='Minimum region fraction', unit='1', min=0.0, max=1.0,
-    help=f'Resonances with {REGION_COLUMN[0]} below this are dropped by the eigen-solve (counted in the study log; '
-         'ARPACK widens the search as for PML modes). 0 keeps all and only adds the column; > 0 needs a domain '
-         'selection. Typical 0.5: keep cavity modes, drop those of an attached guide or cladding.',
+    help=f'Resonances with {REGION_COLUMN[0]} below this are dropped (counted in the study log; the search widens as '
+         'for PML modes). 0 keeps all; > 0 needs a domain selection. Typical 0.5: keep cavity modes, drop those of an '
+         'attached guide.',
     tip='Keeps only the resonances that have at least this share of their energy inside the selected region, for '
         'example 0.5 to keep the modes of a cavity and drop those of a waveguide attached to it.\n\n'
         'Needs a selection; 0 keeps every resonance and only lists the share.')

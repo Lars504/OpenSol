@@ -217,14 +217,18 @@ _SPECTRAL_FLUX = ('power in a.u. per unit z length, not normalised by the source
                   f'|S(omega)|^2) is the cw power in W/m. {PER_CW_TEXT} The line covers {SPAN_CELLS}.')
 
 
-def _far_field_box(field):
-    """Far-field box placement text; field = the in-plane field averaged onto the centres."""
-    return ('Enclose every scatterer; with a TFSF source keep the box outside the TFSF box, in the scattered field: x0 '
-            '/ y0 edges at least one cell before those of the TFSF box, x1 / y1 edges in the last TFSF cell or beyond '
-            '(the TFSF outline faces hold scattered field; validation warns otherwise). The contour runs through the '
-            'centres of the first box cells and of the cells one beyond x1 / y1 (keep the box one cell off the x_hi / '
-            f'y_hi edges), {field} averaged from the faces onto the centres; graded meshes work (actual centres, '
-            f'trapezoid weights). The box covers {BOX_CELLS}.')
+# descriptions alike for both polarisations (one text, so describe prints it once)
+_TFSF_DESCRIPTION = ('Plane wave along +x on the outline of a total-field box: total field inside, only the scattered '
+                     f'field outside (H_z: the outline E faces included). {_TFSF_TAIL}')
+_FAR_FIELD_DESCRIPTION = (
+    'Near-to-far-field transform of the out-of-plane field and the in-plane one on a rectangle outline: power per '
+    'angle rho |E|^2 / eta0 of the far-field |E| (H_z: |eta0 H_z|; a.u.: dt-weighted spectra without the 1/2, so its '
+    'angle integral matches a closed flux box) versus angle counter-clockwise from +x, per wavelength. Enclose every '
+    'scatterer; with a TFSF source keep the box outside the TFSF box, in the scattered field: x0 / y0 edges at least '
+    'one cell before those of the TFSF box, x1 / y1 edges in the last TFSF cell or beyond (validation warns '
+    'otherwise). The contour runs through the centres of the first box cells and of the cells one beyond x1 / y1 '
+    '(keep the box one cell off the x_hi / y_hi edges), the in-plane field averaged onto the centres; graded meshes '
+    f'work. The box covers {BOX_CELLS}.')
 
 
 _DESCRIPTIONS = {
@@ -233,8 +237,7 @@ _DESCRIPTIONS = {
                         'cell edge goes to the upper cell), radiating a mesh-independent cylindrical wave.',
         'line_source': EZ_LINE_SOURCE_DESCRIPTION,
         'gaussian_beam': EZ_GAUSSIAN_BEAM_DESCRIPTION,
-        'plane_wave_tfsf': 'Plane wave along +x on the outline of a total-field box: total field inside, only the '
-                           f'scattered field outside. {_TFSF_TAIL}',
+        'plane_wave_tfsf': _TFSF_DESCRIPTION,
         'pec_domain': 'Perfect electric conductor: E_z = 0 (no dispersive current) in every cell whose centre lies in '
                       'the selected domains, staircased; with solver_defaults.conformal_boundaries the H links from '
                       'free cells put E_z = 0 at the drawn wall (exact wall distance, floored per cell so the time '
@@ -246,9 +249,7 @@ _DESCRIPTIONS = {
                        'spectrum; intensity '
                        'x intensity_per_cw_factor[freq_index] (1 / |S(omega)|^2) is the cw |E_z|^2 in (V/m)^2. '
                        f'{PER_CW_TEXT} The box covers {BOX_CELLS}.',
-        'far_field': 'Near-to-far-field transform of E_z / H on a rectangle outline: power per angle rho |E_z|^2 / '
-                     'eta0 (a.u.: dt-weighted spectra without the 1/2, so its angle integral matches a closed flux box) '
-                     'versus angle counter-clockwise from +x, per wavelength. ' + _far_field_box('H'),
+        'far_field': _FAR_FIELD_DESCRIPTION,
     },
     'hz': {
         'point_source': 'Current-calibrated, mesh-independent point excitation (see excitation) in the cell containing '
@@ -264,9 +265,7 @@ _DESCRIPTIONS = {
                          'tangential E = amplitude to each side in the local medium (vertical line: E_y, along +x and '
                          '-x; horizontal: E_x, along +y and -y), waist on the line, sheet on the hi face of the line '
                          f'cells. The line covers {SPAN_CELLS}. {_HZ_SHEET_WALLS}',
-        'plane_wave_tfsf': 'Plane wave along +x on the outline of a total-field box: total field inside (its H_z '
-                           'cells), only the scattered field outside (the outline E faces included). '
-                           f'{_TFSF_TAIL}',
+        'plane_wave_tfsf': _TFSF_DESCRIPTION,
         'pec_domain': 'Perfect electric conductor: tangential E = 0 (no dispersive current) on the four faces of each '
                       'cell whose centre lies in the selected domains, staircased. With '
                       'solver_defaults.conformal_boundaries (Dey-Mittra) only faces wholly inside the drawn metal are '
@@ -280,10 +279,7 @@ _DESCRIPTIONS = {
                        '+ |E_y(omega)|^2 and hz_intensity = |H_z(omega)|^2 per wavelength (one per freq_index) in '
                        'a.u., not normalised by the source spectrum; intensity x intensity_per_cw_factor[freq_index] (1 '
                        f'/ |S(omega)|^2) is the cw |E|^2 in (V/m)^2. {PER_CW_TEXT} The box covers {BOX_CELLS}.',
-        'far_field': 'Near-to-far-field transform of H_z / E on a rectangle outline: power per angle rho |eta0 H_z|^2 '
-                     '/ eta0 (the far-field |E|^2 in vacuum; a.u.: dt-weighted spectra without the 1/2, so its angle '
-                     'integral matches a closed flux box) versus angle counter-clockwise from +x, per wavelength. '
-                     + _far_field_box('E'),
+        'far_field': _FAR_FIELD_DESCRIPTION,
     },
 }
 _DFT_SUMMARY = ('Stores maps of the {fields} intensity over a rectangle at chosen wavelengths, collected over the whole '

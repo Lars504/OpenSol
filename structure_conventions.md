@@ -307,7 +307,8 @@ curves -> selftest_report_analytic.json); the CLI wraps them (`selftest --exampl
 - Axisymmetric (r, z) is the per-physics setting `geometry` (heat, electric_currents, electrostatics, magnetostatics,
   magnetic_fields_ac, drift_diffusion, elastic_waves (its space also sets bc_x_lo 'rigid', the axis rule),
   solid_mechanics (the solver holds u_r = 0 on the axis itself; whole-ring forces in N)),
-  always through `definition_helpers`: `geometry_param` (shared help / tip around the type's sentences),
+  always through `definition_helpers`: `geometry_param` (shared help / tip around the type's sentences; the shared
+  (r, z) help rules are one describe spec note),
   `is_axisymmetric`, `AXISYMMETRIC_SPACE_SETTINGS` and `axisymmetric_issues` (x_lo axis features, <prefix>_xy
   materials, one warning naming the coupled partners that are planar = their type has no `geometry` setting or it is
   'planar'), so moving the setting to the domain (symmetry plan 2.12 / 2.16) touches one place. The solver exposes

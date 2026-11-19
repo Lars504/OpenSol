@@ -222,7 +222,6 @@ def _temperature_param(help_text, tip, time_dependent=False, follows_parameters=
                  help=help_text, tip=tip, time_dependent=time_dependent, follows_parameters=follows_parameters)
 
 
-_TIME_VALUE_TEXT = 'A value of t is re-set at the start of every heat step (the step from t_n sees the value at t_n).'
 _TEMPERATURE_BOUNDS = _temperature_param('', '')   # min / max of a temperature evaluated at a time t
 
 
@@ -1339,7 +1338,7 @@ _PARTICLE_DESCRIPTION = (
 _FEATURES = (
     FeatureType('temperature', 'Temperature', 'boundary_condition', 'boundary',
                 params=(_temperature_param('Held on the selected outer faces or in the boundary cells inside the '
-                                           'selected objects; follows reuse_build. ' + _TIME_VALUE_TEXT
+                                           'selected objects; follows reuse_build.'
                                            + ' A value of t: outer faces only (validation error for objects).',
                                            'Temperature held on the selected domain edges, or in the boundary cells '
                                            'just inside the selected objects.\n\n'
@@ -1357,7 +1356,7 @@ _FEATURES = (
     FeatureType('heat_flux', 'Heat flux', 'boundary_condition', 'boundary',
                 params=(Param('flux', 'float', 1e4, label='Inward heat flux', unit='W/m^2', time_dependent=True,
                               help='> 0 heats the domain or the object, < 0 extracts heat. Typical 1e3-1e6 (sunlight '
-                                   '~1e3). ' + _TIME_VALUE_TEXT,
+                                   '~1e3).',
                               tip='Heat flow per area into the domain or object; negative values extract heat.\n\n'
                                   'Typical 1e3 to 1e6; sunlight is about 1e3.'),),
                 summary='Feeds a given heat flow per area in through the selected domain edges or object boundaries.',
@@ -1413,7 +1412,7 @@ _FEATURES = (
                 params=(Param('Q', 'float', 1e12, label='Power density', unit='W/m^3', field_dependent=True,
                               time_dependent=True, follows_parameters=True,
                               help='2D: Q times the area is the power per m of depth. Must be finite on the selected '
-                                   'cells. x, y (3D: z) or t, not both; follows reuse_build. ' + _TIME_VALUE_TEXT,
+                                   'cells. x, y (3D: z) or t, not both; follows reuse_build.',
                               tip='Heat generated per volume. The model is per metre of depth: power density times '
                                   'area gives watts per metre.\n\n'
                                   'A steady solve ignores it in cells that neither conduct nor lose heat.'),),
@@ -1428,7 +1427,7 @@ _FEATURES = (
                               help='Planar 2D: a line source along z, Q_ext += P / cell area in the cell containing '
                                    'the point; its temperature grows as the cell shrinks (logarithmic singularity). '
                                    "Axisymmetric: the ring's total power (on the axis cell a point source); 3D: a "
-                                   'point source. Follows reuse_build. ' + _TIME_VALUE_TEXT,
+                                   'point source. Follows reuse_build.',
                               tip='Power per metre of depth, deposited in the cell that contains the point. In an '
                                   'axisymmetric or 3D model it is the total power in watts instead.\n\n'
                                   'The temperature at the point keeps rising as the mesh is refined, as for any ideal '

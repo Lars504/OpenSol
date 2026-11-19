@@ -367,12 +367,44 @@ def _merged_text(ez_text, hz_text, separator=' '):
     return ez_text if ez_text == hz_text else f'E_z channels: {ez_text}{separator}H_z channels: {hz_text}'
 
 
+def _balanced(sentences):
+    joined = '. '.join(sentences)
+    return joined.count('(') == joined.count(')')
+
+
+def _merged_help(ez_text, hz_text):
+    """One help / description for both polarisations: the sentences ('. '-separated) both texts start and end with are
+    printed once, around 'E_z channels: <rest of ez> H_z channels: <rest of hz>' (each rest keeps >= 1 sentence; a
+    shared part never ends inside parentheses)."""
+    if ez_text == hz_text:
+        return ez_text
+    ez_parts, hz_parts = ez_text.split('. '), hz_text.split('. ')
+    shortest = min(len(ez_parts), len(hz_parts))
+    head = 0
+    while head < shortest - 1 and ez_parts[head] == hz_parts[head]:
+        head += 1
+    while head and not _balanced(ez_parts[:head]):
+        head -= 1
+    tail = 0
+    while tail < shortest - 1 - head and ez_parts[-1 - tail] == hz_parts[-1 - tail]:
+        tail += 1
+    while tail and not _balanced(ez_parts[len(ez_parts) - tail:]):
+        tail -= 1
+
+    def rest(parts):
+        text = '. '.join(parts[head:len(parts) - tail])
+        return text if text.endswith('.') else f'{text}.'
+    start = '. '.join(ez_parts[:head]) + '. ' if head else ''
+    end = ' ' + '. '.join(ez_parts[len(ez_parts) - tail:]) if tail else ''
+    return f'{start}E_z channels: {rest(ez_parts)} H_z channels: {rest(hz_parts)}{end}'
+
+
 def _merged_param(ez_param, hz_param):
     """One Param for both polarisations: help / tip per polarisation; differing choices united, default None = the
     channel's out-of-plane field (field_probe component)."""
     if ez_param == hz_param:
         return ez_param
-    merged = replace(ez_param, help=_merged_text(ez_param.help, hz_param.help),
+    merged = replace(ez_param, help=_merged_help(ez_param.help, hz_param.help),
                      tip=_merged_text(ez_param.tip, hz_param.tip, '\n\n'))
     if ez_param.choices != hz_param.choices:
         merged = replace(merged, choices=tuple(dict.fromkeys(ez_param.choices + hz_param.choices)), default=None,
@@ -503,7 +535,7 @@ def _channel_feature_type(name):
     """FeatureType `name` acting on one channel: the em_fdfd_ez / _hz feature by the channel's polarisation."""
     ez_type, hz_type = _fdfd_feature('ez', name), _fdfd_feature('hz', name)
     description = (f'em_fdfd_ez / _hz {name} on one harmonic channel (param channel) at its frequency. '
-                   + _merged_text(ez_type.description, hz_type.description))
+                   + _merged_help(ez_type.description, hz_type.description))
     if ez_type.category == 'source':
         description = f'{description} {_ABSOLUTE_AMPLITUDE_TEXT}'
     adjoint = name == 'adjoint_objective'

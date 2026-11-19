@@ -1665,30 +1665,25 @@ _PARITY_SECTORS_PARAM = Param(
         'them.\n\n'
         'Use it for a source off the symmetry plane, or to sort modes and resonances into even and odd ones. Needs '
         'a symmetric or antisymmetric boundary; each part is one more run.',
-    help="Run the study once per symmetric / antisymmetric combination of the model's mirror faces (2^k sector runs "
-         'for k faces with a bc_<face> symmetric / antisymmetric or a membrane symmetry / antisymmetry feature, '
-         'swapped per sector; each solves the drawn sources plus their images on the drawn part) and merge them; '
-         'needs a mirror face. stationary / frequency_domain / time_dependent / frequency_response: the response of '
-         'the drawn sources alone on the unfolded domain: per snapshot one combined snapshot (stationary: '
-         "'combined') with the mean of the unfolded sector fields of every linear signed stored field (Re / Im "
-         "phasors, raw components; |E|, intensities, losses, phases left out), then the sector snapshots '<label> "
-         "[<sector>]'. Derived values: quadratic integrals / means (power, flux, absorbed power, intensity, w_re^2 + "
-         'w_im^2 over regions symmetric about every mirror plane) as quadratic totals, mean / 2^k; linear ones '
-         '(signed fields) the sector mean; feature-sourced values from the combined feature results; values of '
-         'earlier derived values and parameters re-evaluated; anything else (max / min, mode volumes, phases, scalar '
-         'outputs) NaN with a warning. Combined feature results (Results.sector_result(physics, feature, '
-         'combined=True)): far_field per angle (mean complex amplitude), flux_spectrum whose line / plane / box '
-         'reaches every mirror plane (quadratic totals), membrane field_probe phasors (sector mean), port / '
-         'mode_projection guide modes (renumbered to the unfolded guide: a free mirror wall gives modes 2k - 1, a '
-         'held one 2k; amplitudes the signed sector mean, powers recomputed). A membrane port mode on a guide ending '
-         "on a mirror face is driven at twice its amplitude in its parity's sector only. Assumes a linear model: "
-         "couplings out of the wave physics see each sector's own field (validation warns). mode_analysis / "
-         "eigenfrequency: every sector's modes or resonances labelled with their parity ('mode k [x_lo symmetric]: "
-         "...'); derived values NaN. Summary parity_sectors: labels, derived, results, combined_results, "
-         'snapshot_sectors; per-sector feature results by Results.sector_result; the live state is the last sector '
-         "(the model's own mirror signs). Sweeps: each value runs its sectors (cold starts); sweep derived = the "
-         "combined values, sweep results the last sector's, sweep sector_derived per sector, parity_sectors the last "
-         "value's.")
+    help="Run the study once per symmetric / antisymmetric combination of the model's k mirror faces (bc_<face> "
+         'symmetric / antisymmetric or a membrane symmetry / antisymmetry feature; 2^k runs, each solving the drawn '
+         'sources plus their images) and merge them; needs a mirror face. stationary / frequency_domain / '
+         'time_dependent / frequency_response give the response of the drawn sources alone on the unfolded domain: '
+         "per snapshot one combined snapshot (stationary: 'combined') with the mean of the unfolded sector fields of "
+         'every linear signed stored field (|E|, intensities, losses, phases left out), then the sector snapshots '
+         "'<label> [<sector>]'. Derived values: quadratic integrals / means (power, flux, absorbed power, intensity "
+         'over regions symmetric about every mirror plane) as quadratic totals, mean / 2^k; linear ones the sector '
+         'mean; feature-sourced ones from the combined feature results; anything else (max / min, mode volumes, '
+         'phases, scalar outputs) NaN with a warning. Combined feature results (Results.sector_result(physics, '
+         'feature, combined=True)): far_field (mean complex amplitude), flux_spectrum reaching every mirror plane '
+         '(quadratic totals), membrane field_probe phasors, port / mode_projection guide modes (renumbered to the '
+         'unfolded guide: a free mirror wall gives modes 2k - 1, a held one 2k). A membrane port mode on a guide '
+         "ending on a mirror face is driven at twice its amplitude in its parity's sector only. Assumes a linear model "
+         "(couplings see each sector's own field; validation warns). mode_analysis / eigenfrequency: every sector's "
+         "modes or resonances labelled with their parity ('mode k [x_lo symmetric]: ...'); derived values NaN. "
+         'Summary parity_sectors: labels, derived, results, combined_results, snapshot_sectors; the live state is the '
+         'last sector. Sweeps: each value runs its sectors (cold starts); sweep derived = the combined values, sweep '
+         "results the last sector's, sweep sector_derived per sector.")
 
 
 def _parity_sector_issues(vctx, values):

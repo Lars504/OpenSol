@@ -60,11 +60,11 @@ _KZ_TIP = ('Wave number along the direction perpendicular to the drawing, in rad
            'sin(angle) / wavelength; for a waveguide whose cross-section is drawn it is the propagation constant, 2 pi '
            'n_eff / wavelength. Swept in an eigenfrequency study it gives the frequency versus wave number.')
 _BLOCH_HELP = (
-    'Used only when bc_{axis}_lo / _hi are periodic: Bloch wave F(x + L) = F(x) exp(-j k{axis} L) per meshed period L '
-    '(exp(+j omega t)); k{axis} and k{axis} + 2 pi / L are the same state; 0 = plain periodic. The phase sits on the '
-    'operator wrap entries (no extra cost). Point sources repeat in every period image with that phase; a line source '
-    'along the axis carries exp(-j k{axis} s) (s = cell centres from the grid lo corner), so with k_z it launches the '
-    'conical plane wave (k{axis}, k_normal, k_z). Results are those of the Bloch wave at +k.')
+    'Used only when both faces of this axis are periodic: Bloch wave F(x + L) = F(x) exp(-j k L) per meshed period L; '
+    'k and k + 2 pi / L are the same state. Phased operator wrap entries (no extra cost). Point sources repeat in '
+    'every period image with that phase; a line source along the axis carries exp(-j k s) (s = cell centres from the '
+    'grid lo corner), so with k_z it launches the conical plane wave (k, k_normal, k_z). Results are those of the '
+    'Bloch wave at +k.')
 _BLOCH_TIP = ('Phase step of the wave from one period to the next along {axis}, in radians per metre, for periodic '
               'edges.\n\n0 means no phase step. For light arriving at an angle use the in-plane share of its wave '
               'vector, e.g. 2 pi sin(angle) / wavelength in vacuum.')

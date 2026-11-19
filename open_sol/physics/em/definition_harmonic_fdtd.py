@@ -4,10 +4,9 @@ from ...core.constants import C0
 from ...model.schema import Issue
 from .definition_common import FREQUENCY_DOMAIN_STUDY, _source_band, _source_values, _study_wavelengths
 
-HARMONIC_FDTD_TEXT = ('A frequency_domain study runs one pulse for phasor fields per study wavelength (harmonic '
-                      'FDTD, see that study): every enabled source must share one gaussian or ricker waveform '
-                      '(wavelength, bandwidth; study wavelengths outside its band warn) and no coupling may read this '
-                      'physics.')
+HARMONIC_FDTD_TEXT = ('A frequency_domain study runs one pulse for the phasors at every study wavelength: all enabled '
+                      'sources share one gaussian or ricker waveform (study wavelengths outside its band warn), no '
+                      'coupling reads this physics.')
 
 
 def make_validate_harmonic_fdtd(validate_physics):

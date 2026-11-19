@@ -8,7 +8,6 @@ from ...model.schema import FeatureType, Issue, Param, feature_path
 from .definition_common import _source_values, auto_mesh_issues, resolved_solved_wavelengths
 from .phase_change import (FEATURE_NAME, GST_225, GST_225_REFERENCES, MIXING_RULES, Kinetics, Optics,
                            add_phase_change_medium)
-from .placement import PERMITTIVITY_ARRAYS
 from .selftests_phase_change import (GST_SWITCH_DESCRIPTION, GST_SWITCH_LABEL, GST_SWITCH_SUMMARY,
                                      phase_change_gst_switch_spec)
 
@@ -203,8 +202,8 @@ def _memory_estimate(values, n_selected_cells, mesh):
 
 
 def phase_change_medium_feature(polarization):
-    """FeatureType 'phase_change_medium' of an in-plane EM type of polarization 'ez' | 'hz'."""
-    arrays = ' / '.join(PERMITTIVITY_ARRAYS[polarization])
+    """FeatureType 'phase_change_medium' of an in-plane EM type of polarization 'ez' | 'hz' (one description for all
+    four types, so describe prints it once)."""
     return FeatureType(
         FEATURE_NAME, 'Phase-change medium', 'domain_condition', 'domain', params=_params(), result_kind='timeseries',
         summary='Makes the selected domains a phase-change alloy such as GST: it crystallises when heated, melts and '
@@ -212,19 +211,17 @@ def phase_change_medium_feature(polarization):
                 'from a heat physics through the phase-change coupling.',
         description='Phase-change medium (e.g. GST-225, the defaults) on the selected cells: a per-cell crystallinity '
                     'X in [0, 1] (output field crystallinity) sets eps(X) by the mixing rule of the amorphous and '
-                    f'crystalline (n - j k)^2, written as {arrays} = Re eps and sigma_e = -Im eps omega eps0 (omega of '
-                    "wavelength) over the material (later features win on overlaps; the material's poles stay; a "
-                    'state-dependent permittivity expression overwrites it). X follows the heat temperature history '
-                    f'only through {PHASE_CHANGE_COUPLING} (time_dependent study, transient heat): after each heat '
-                    'step theta += k(T) dt at the end-of-step T (JMAK kinetics and melting: see the params; a fast '
-                    'quench stays amorphous). Each update rewrites the arrays on the selection bounding box and calls '
-                    'materials_changed (FDTD: coefficients rebuilt, sources recalibrated; FDFD: re-solved at its next '
-                    'step). Not modelled: latent heat, liquid optical constants, thermal properties following X (heat '
-                    'uses the material, e.g. gst_225_amorphous), nucleation statistics. Result: timeseries of the mean '
-                    'X over the selection at every update (t = heat time). Linear at optical time scales, so it works '
-                    'in every study as a static medium at initial_crystallinity. GST crystallises in tens of ns (~1e9 '
-                    'FDTD steps): switching runs use em_fdfd_* + transient heat in a time_dependent study (the FDFD '
-                    f're-solves after every heat step). {GST_225_REFERENCES}',
+                    'crystalline (n - j k)^2, written as Re eps into the permittivity arrays and sigma_e = -Im eps '
+                    "omega eps0 (omega of wavelength) over the material (later features win on overlaps; the "
+                    "material's poles stay; a state-dependent permittivity expression overwrites it). X follows the "
+                    f'heat temperature only through {PHASE_CHANGE_COUPLING} (time_dependent study, transient heat): '
+                    'after each heat step theta += k(T) dt at the end-of-step T (JMAK kinetics and melting: see the '
+                    'params; a fast quench stays amorphous); FDTD then recalibrates its sources, FDFD re-solves at its '
+                    'next step. Not modelled: latent heat, liquid optical constants, thermal properties following X '
+                    '(heat uses the material, e.g. gst_225_amorphous), nucleation statistics. Result: timeseries of '
+                    'the mean X over the selection per update (t = heat time). In other studies a static medium at '
+                    'initial_crystallinity. GST crystallises in tens of ns (~1e9 FDTD steps): switch with em_fdfd_* + '
+                    f'transient heat in a time_dependent study. {GST_225_REFERENCES}',
         apply=_apply, validate=_validate, result=_result, memory_estimate=_memory_estimate)
 
 

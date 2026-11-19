@@ -37,23 +37,21 @@ _BAND_PARAMS = {
         Param('wavelength_min', 'float', 400e-9, label='Shortest wavelength', unit='m', min=0.0, min_exclusive=True,
               tip='Shortest vacuum wavelength searched for resonances, entered in metres (4e-7 for 400 nm).\n\n'
                   'Keep the range inside the spectrum of the source pulse.',
-              help='Shortest vacuum wavelength of the analysed band. Keep the band inside the source spectrum; '
-                   'narrower = coarser decimation, faster, better conditioned fit.'),
+              help='Vacuum wavelength. Keep the band inside the source spectrum; narrower = faster, better '
+                   'conditioned fit.'),
         Param('wavelength_max', 'float', 800e-9, label='Longest wavelength', unit='m', min=0.0, min_exclusive=True,
               tip="Longest vacuum wavelength searched for resonances, entered in metres. It must be larger than "
                   "'Shortest wavelength'.",
-              help='Longest vacuum wavelength of the analysed band; > wavelength_min.'),
+              help='> wavelength_min.'),
     ),
     'frequency': (
         Param('frequency_min', 'float', 0.5e6, label='Lowest frequency', unit='Hz', min=0.0, min_exclusive=True,
               tip='Lowest frequency searched for resonances, in hertz (5e5 for 500 kHz).\n\n'
                   'Keep the range inside the spectrum of the source pulse.',
-              help='Lowest frequency of the analysed band. Keep the band inside the source spectrum; narrower = '
-                   'coarser decimation, faster, better conditioned fit.'),
+              help='Keep the band inside the source spectrum; narrower = faster, better conditioned fit.'),
         Param('frequency_max', 'float', 2e6, label='Highest frequency', unit='Hz', min=0.0, min_exclusive=True,
               tip="Highest frequency searched for resonances, in hertz. It must be larger than 'Lowest frequency'.",
-              help='Highest frequency of the analysed band; > frequency_min, below the Nyquist frequency 1 / (2 '
-                   'dt).'),
+              help='> frequency_min, below the Nyquist frequency 1 / (2 dt).'),
     ),
 }
 _BAND_UNITS = {'wavelength': 'm', 'frequency': 'Hz'}
@@ -72,20 +70,18 @@ def _description(band, note):
     return (
         'Resonance finder (harmonic inversion, as Harminv / matrix pencil): records one component in the cell '
         f'containing each selected point (1 to {MAX_POINTS}; a coordinate on a cell edge goes to the upper cell) every '
-        'step. When the result is read (CPU, ~1 s per point) the traces from the analysis start t_s on are mixed down '
-        'to the band centre, low-pass filtered, decimated and fitted jointly (shared poles, amplitudes per point) by '
-        'damped sinusoids a exp(-gamma (t - t_s)) cos(omega (t - t_s) + phi), so a mode on a nodal line of one point '
-        "is found through the others. Result 'table', one row per resonance in the band, strongest first: "
-        f'resonance_number, {wavelength_column}frequency = omega / (2 pi) [Hz], frequency_imag = gamma / (2 pi) [Hz] '
-        '(> 0 decays, exp(+j omega t)), q_factor = omega / (2 gamma) (inf without decay), amplitude a [unit of the '
-        'component] and phase phi [rad] at t_s where the resonance is largest, error = |pole difference between two '
-        f'pencil sizes| / omega (noise estimate). Dropped: error > {MATCH_TOLERANCE:g}, amplitude < '
-        f'{AMPLITUDE_FLOOR:g} of the strongest at every point, growth > 2x over the window. Extras: component, unit, '
-        f'dt [s], start_time, end_time [s] (the window), sample_interval [steps], n_samples (<= {MAX_SAMPLES}, the '
-        f"earliest), model_order, {band}_min, {band}_max, note ('' or why none was found), points (selection order), "
-        'point_amplitudes / point_phases (per row, one per point). Q far above pi f T_window is resolved while the '
+        'step. Reading the result (CPU, ~1 s per point) fits the traces from t_s on jointly (shared poles, amplitudes '
+        'per point) by damped sinusoids a exp(-gamma (t - t_s)) cos(omega (t - t_s) + phi), so a mode on a nodal line '
+        "of one point is found through the others. Result 'table', one row per resonance in the band, strongest "
+        f'first: resonance_number, {wavelength_column}frequency = omega / (2 pi) [Hz], frequency_imag = gamma / (2 '
+        'pi) [Hz] (> 0 decays), q_factor = omega / (2 gamma), amplitude a [component unit] and phase phi [rad] at t_s '
+        'where largest, error = |pole change between two pencil sizes| / omega. Dropped: error > '
+        f'{MATCH_TOLERANCE:g}, amplitude < {AMPLITUDE_FLOOR:g} of the strongest at every point, growth > 2x over the '
+        f'window. Extras: component, unit, dt [s], start_time, end_time [s], sample_interval [steps], n_samples (<= '
+        f"{MAX_SAMPLES}), model_order, {band}_min, {band}_max, note ('' or why none was found), points, "
+        'point_amplitudes / point_phases (per row, one per point). Q far above pi f T_window resolves while the '
         'ring-down stays above float32 noise (~1e-7). A mode with a node at every point is missed; a cw source adds '
-        f'an undamped line at its {band}.{" " + note if note else ""}')
+        f'an undamped line.{" " + note if note else ""}')
 
 
 def _make_apply(probe_declaration):

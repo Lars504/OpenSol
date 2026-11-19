@@ -33,18 +33,16 @@ _PARAMS = (
 )
 _DESCRIPTION = (
     'Objective term for the adjoint sensitivity: a flux_monitor or mode_monitor quantity on an axis-aligned line '
-    'times weight. Every solve records the quantity; output field eps_sensitivity = dJ/d eps_r per unit area [W/m^3] '
-    'from one extra solve with the transposed operator on the forward factorisation (no new factorisation with '
-    'scipy_splu), computed when read (snapshot, derived value): a small change d eps over a region R changes J by the '
-    'integral of eps_sensitivity d eps over R. em_fdfd_hz: the sum of the eps_xx and eps_yy terms (isotropic change, '
-    'eps_xy held fixed), plus output eps_xy_sensitivity = dJ/d eps_xy per unit area (0 where the solve drops eps_xy: '
-    'PEC cells, the outer two rows of a wall or mirror face); objective face fields and dipole / line source face '
-    'currents are differentiated with the face permittivity. Line source calibrations and port / monitor modes are '
-    'held fixed, so the gradient is exact only off every line source, port and mode monitor line and the cells '
-    'beyond their hi faces; sigma_e, poles and mu_r are not differentiated. An optimization study maximises J, '
-    "summed over every physics, over the design_region densities. Result 'xy' versus vacuum wavelength: series value "
-    '(the quantity, W/m) and weighted (weight * value, W/m); extras frequency, wavelength, quantity, weight. Keep the '
-    f'line off a TFSF outline and a mode_source interface face, as for the monitors. The line covers {SPAN_CELLS}.')
+    'times weight. Output field eps_sensitivity = dJ/d eps_r per unit area [W/m^3] from one extra transposed solve on '
+    'the forward factorisation, computed when read (snapshot, derived value): d eps over a region R changes J by the '
+    'integral of eps_sensitivity d eps over R. em_fdfd_hz: the sum of the eps_xx and eps_yy terms (eps_xy fixed), plus '
+    'eps_xy_sensitivity = dJ/d eps_xy per unit area (0 where the solve drops eps_xy: PEC cells, the outer two rows of '
+    'a wall or mirror face). Line source calibrations and port / monitor modes are held fixed, so the gradient is '
+    'exact only off every line source, port and mode monitor line and the cells past their hi faces; sigma_e, poles '
+    'and mu_r are not differentiated. An optimization study maximises J, summed over every physics, over the '
+    "design_region densities. Result 'xy' versus vacuum wavelength: series value (the quantity, W/m) and weighted "
+    '(weight * value); extras frequency, wavelength, quantity, weight. Keep the line off a TFSF outline and a '
+    f'mode_source interface face. The line covers {SPAN_CELLS}.')
 _SUMMARY = ('Marks a power measurement on a line as a goal, so the solver also maps where a small change of the '
             'material would raise or lower it (the objective sensitivity field). Use it to guide device design.')
 

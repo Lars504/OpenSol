@@ -139,13 +139,12 @@ _SETTINGS = boundary_settings_params(_BC_HELP) + (
           tip='Order of the finite elements when the mesh is made of triangles: quadratic is far more accurate per '
               'element, linear is cheaper.\n\nUnused on a rectangular-cell mesh.'),
 ) + bloch_params(
-    'Used only when bc_{axis}_lo / _hi are periodic: Bloch modes of the periodic cross-section, F({axis} + L) = '
-    'F({axis}) exp(-j k{axis} L) per meshed period L (fields ~ exp(j (omega t - beta z))), e.g. a photonic-crystal '
-    'fibre supercell or a waveguide array at transverse phase step k{axis} L; k{axis} and k{axis} + 2 pi / L are the '
-    'same state, 0 = plain periodic. The phase sits on the operator wrap entries (same cost; operator no longer '
-    'symmetric); displayed centre fields carry it across the wrap. Validation errors with shg_overlap (2 omega modes '
-    'would need 2 k{axis}) and thermal_noise / optomechanics studies (their overlaps assume k = 0). Typical: pi / L '
-    '(edge of the first zone).',
+    'Used only when both faces of this axis are periodic: Bloch modes of the periodic cross-section, F(s + L) = F(s) '
+    'exp(-j k L) per meshed period L along the axis (fields ~ exp(j (omega t - beta z))), e.g. a photonic-crystal '
+    'fibre supercell or a waveguide array at phase step k L; k and k + 2 pi / L are the same state. Phased operator '
+    'wrap entries (same cost, operator no longer symmetric); displayed centre fields carry the phase across the wrap. '
+    'Validation errors with shg_overlap (2 omega modes would need 2 k) and thermal_noise / optomechanics studies '
+    '(overlaps assume k = 0). Typical: pi / L (first zone edge).',
     'Phase step of the mode from one period of the cross-section to the next along {axis}, in radians per metre, '
     'for periodic edges.\n\n0 means no phase step. Use pi divided by the period for the edge of the first zone.')
 

@@ -56,19 +56,17 @@ _PARAMS = (
 )
 
 _DESCRIPTION = (
-    'Zero-thickness conducting sheet (graphene, a TMD monolayer in linear response, a metal film much thinner than a '
-    'cell) on an axis-aligned line: the tangential E drives K = sigma_s E_t [A/m], the normal E does not conduct. '
-    'em_fdfd_ez: E_z of the line cells; the operator diagonal gains -j omega mu0 sigma_s / w (w the line-cell width '
-    'across the line), exact for the 3-point stencil. em_fdfd_hz: E_x (horizontal line) / E_y (vertical) on the hi '
-    'face of the line cells, whose face permittivity gains -j sigma_s / (omega eps0 w), w the face spacing; the line '
-    'may not lie in the last grid cell before a non-periodic outer face. In vacuum at normal incidence it transmits '
-    '|1 / (1 + eta0 sigma_s / 2)|^2 (on the grid exactly 1 / |1 + omega mu0 sigma_s w / (2 sin(k w))|^2, k the '
-    'discrete wavenumber). Its loss 1/2 Re sigma_s |E_t|^2 per unit sheet area goes into absorbed_power (q_abs) of '
-    'the line cells as a density over the line-cell width (em_heat_joule heats them). Only the operator sees it: '
-    'line-source and TFSF calibrations, port mode solves and the material maps do not (keep source, port and TFSF '
-    'lines off it; enclose it in the TFSF box as a scatterer). A span end on a cpml domain edge continues through the '
-    'PML. Sheets on one line add. In an eigenfrequency study sigma_s stays at its target-wavelength value '
-    '(first-order error away from it). The line covers cells [cell(start), cell(end) + 1). No result.')
+    'Zero-thickness conducting sheet (graphene, a TMD monolayer, a metal film much thinner than a cell) on an '
+    'axis-aligned line: K = sigma_s E_t [A/m] (tangential E only). em_fdfd_ez: E_z of the line cells, diagonal += -j '
+    'omega mu0 sigma_s / w (w the line-cell width across the line). em_fdfd_hz: E_x (horizontal line) / E_y '
+    '(vertical) on the hi face of the line cells, face permittivity += -j sigma_s / (omega eps0 w), w the face '
+    'spacing; not in the last cell before a non-periodic outer face. Vacuum, normal incidence: transmission |1 / (1 + '
+    'eta0 sigma_s / 2)|^2 (on the grid 1 / |1 + omega mu0 sigma_s w / (2 sin(k w))|^2, k the discrete wavenumber). '
+    'Its loss 1/2 Re sigma_s |E_t|^2 per sheet area goes into q_abs of the line cells (em_heat_joule heats them). '
+    'Only the operator sees it, not line-source / TFSF calibrations, port modes or material maps (keep source, port '
+    'and TFSF lines off it; enclose it in a TFSF box as a scatterer). A span end on a cpml edge continues through '
+    'the PML; sheets on one line add. Eigenfrequency: sigma_s at the target wavelength (first-order error away from '
+    'it). The line covers cells [cell(start), cell(end) + 1). No result.')
 _SUMMARY = ('A conducting sheet of zero thickness along a straight line, such as graphene or a very thin metal film: it '
             'reflects and absorbs light according to its sheet conductivity. Graphene can be computed from its Fermi '
             'energy.')

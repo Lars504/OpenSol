@@ -44,6 +44,8 @@ its channel features wrap the em_fdfd_ez / _hz FeatureTypes, so a change there c
   params = 'channel' + the union of both forms (field_probe component default None = the out-of-plane field); FDFD
   apply / validate / result get a feature-spec view with only their own params and (validate) a physics view with only
   that channel's channel features, so TFSF / mode-source checks stay per channel. Single channel only (no 'all' copy).
+  Descriptions / helps differing between the forms print the shared leading / trailing sentences once around
+  'E_z channels: ... H_z channels: ...' (`_merged_help`): keep the em_fdfd_ez / _hz texts identical where they can be.
   pec_domain and conducting_sheet act on every channel (sigma_s per channel omega; own validate, since the FDFD one
   reads the 'wavelength' setting this type lacks); effective_index, resonance_table, phase_change_medium are not
   offered. adjoint_objective is a channel feature; design_region is the em_fdfd FeatureType itself on
