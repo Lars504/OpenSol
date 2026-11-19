@@ -2694,7 +2694,6 @@ async function recordVideo(config, seconds, step, grab, button) {
   if (encoder.state !== 'closed') encoder.close();
   if (failure) throw failure;
   if (!samples.length) return null;
-  if (!description) throw new Error('the H.264 encoder gave no decoder configuration (avcC)');
   if (!samples[0].key) throw new Error('the H.264 encoder did not start on a key frame');
   // presentation index of each sample = rank of its timestamp (encoders with B frames emit decode order; Firefox's
   // Media Foundation encoder returns the times shifted by a frame, so their values are not trusted): every frame once
@@ -2704,7 +2703,62 @@ async function recordVideo(config, seconds, step, grab, button) {
     if (p && samples[k].t === samples[order[p - 1]].t) throw new Error('the H.264 encoder returned two frames at ' + samples[k].t + ' us');
     samples[k].p = p;
   });
-  return mp4Blob(samples, description, config.width, config.height);
+  return mp4Blob(samples, avcNormalized(description, samples), config.width, config.height);
+}
+function nalUnits(data, prefix) {
+  // the NAL units of an H.264 buffer: `prefix`-byte length-prefixed when that walks the buffer exactly, else Annex B
+  // start codes (00 00 01 / 00 00 00 01; a length-prefixed reading of those stops at the first unit)
+  const units = []; let o = 0;
+  while (o + prefix <= data.length) {
+    let len = 0; for (let i = 0; i < prefix; i++) len = len * 256 + data[o + i];
+    if (!len || o + prefix + len > data.length) break;
+    units.push(data.subarray(o + prefix, o + prefix + len)); o += prefix + len;
+  }
+  if (o === data.length && units.length) return units;
+  units.length = 0;
+  let start = -1;
+  const end = (i) => { let e = i; while (e > start && data[e - 1] === 0) e--; return e; };   // trailing zero bytes
+  for (let i = 0; i + 2 < data.length; i++)
+    if (data[i] === 0 && data[i + 1] === 0 && data[i + 2] === 1) {
+      if (start >= 0) units.push(data.subarray(start, end(i)));
+      start = i + 3; i += 2;
+    }
+  if (start < 0) throw new Error('an H.264 buffer holds neither length-prefixed nor start-code NAL units');
+  units.push(data.subarray(start, end(data.length)));
+  return units.filter((u) => u.length);
+}
+function avcNormalized(description, samples) {
+  // MP4 (and Media Foundation: PowerPoint, Windows players) wants an avcC record holding the parameter sets and
+  // 4-byte length-prefixed NAL units; Firefox's Windows encoder gives Annex B start codes (Firefox plays those, Windows
+  // does not). Rewrites every sample in place (access unit delimiters dropped, SPS / PPS moved into avcC) and returns
+  // the avcC built from the parameter sets of the description and the stream
+  const sps = [], pps = [];
+  const same = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
+  const keep = (list, u) => { if (!list.some((x) => same(x, u))) list.push(u.slice()); };
+  const sort = (u) => { const type = u[0] & 31; if (type === 7) keep(sps, u); else if (type === 8) keep(pps, u); return type; };
+  let prefix = 4;
+  if (description && description.length > 6 && description[0] === 1) {   // an avcC record
+    const d = description; prefix = (d[4] & 3) + 1;
+    let o = 6;
+    const take = (list) => { const len = d[o] << 8 | d[o + 1]; if (o + 2 + len > d.length) throw new Error('the encoder\'s avcC record is truncated');
+      keep(list, d.subarray(o + 2, o + 2 + len)); o += 2 + len; };
+    for (let k = 0, m = d[5] & 31; k < m; k++) take(sps);
+    for (let k = 0, m = d[o++]; k < m; k++) take(pps);
+  } else if (description && description.length) nalUnits(description, 4).forEach(sort);
+  for (const s of samples) {
+    const units = nalUnits(s.data, prefix).filter((u) => { const type = sort(u); return type !== 7 && type !== 8 && type !== 9; });
+    if (!units.length) throw new Error('an H.264 sample holds no picture data');
+    const data = new Uint8Array(units.reduce((n, u) => n + 4 + u.length, 0)), v = new DataView(data.buffer);
+    let o = 0; for (const u of units) { v.setUint32(o, u.length); data.set(u, o + 4); o += 4 + u.length; }
+    s.data = data;
+  }
+  if (!sps.length || !pps.length) throw new Error('the H.264 stream holds no SPS / PPS parameter sets');
+  if (sps.length > 31) throw new Error('the H.264 stream changes its SPS ' + sps.length + ' times');
+  const out = [1, sps[0][1], sps[0][2], sps[0][3], 0xff, 0xe0 | sps.length];   // profile, compatibility, level; 4-byte lengths
+  const put = (u) => { out.push(u.length >> 8, u.length & 255); for (const x of u) out.push(x); };
+  sps.forEach(put); out.push(pps.length); pps.forEach(put);
+  if ([100, 110, 122, 144].includes(sps[0][1])) out.push(0xfd, 0xf8, 0xf8, 0);   // High profiles: 4:2:0, 8 bit, no SPS ext
+  return new Uint8Array(out);
 }
 function mp4Blob(samples, avcC, w, h) {
   // ftyp, moov (one video track: every sample in one chunk, constant duration), mdat; moov first, so players and
