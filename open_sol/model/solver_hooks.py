@@ -143,7 +143,10 @@ class RerunSolver(Protocol):
 
 @runtime_checkable
 class ErrorIndicatorSolver(Protocol):
-    """Optional (StudySpec.adaptation): the solver's own per-cell / per-element refinement indicator."""
+    """Optional (StudySpec.adaptation): the solver's own refinement indicator, eta^2 parts (2, *window) on a tensor
+    mesh, (n_elements,) on triangles (the only source there: no interpolation fallback). It wins over
+    PhysicsType.indicator_fields and raises where it does not apply (study_adaptation warns and skips the physics, no
+    fallback)."""
     def error_indicator(self): ...
 
 

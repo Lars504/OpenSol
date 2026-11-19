@@ -457,7 +457,8 @@ def _run_sweep_values(spec, registry, build, emit, control, service, on_session)
         reuse_build = spec.study.sweep.reuse_build is True   # build once, re-set the following loads per value
         live_parameters = frozenset()
         if reuse_build:
-            from .sweep_reuse import live_parameter_names, non_rerun_physics, reuse_issues   # reused sweeps only
+            from .sweep_reuse import (live_parameter_names, non_rerun_physics, reuse_issues,   # reused sweeps only
+                                      unfollowed_values)
             refusals = reuse_issues(spec, registry)
             if refusals:   # validation of the full spec names every one at its node (_fail_sweep_setup)
                 raise ValueError(f'reuse_build is refused: {refusals[0][1]}'
@@ -511,10 +512,16 @@ def _run_sweep_values(spec, registry, build, emit, control, service, on_session)
             table['builds'] += 1
             if failure is None and reuse_build:
                 cannot_rerun = non_rerun_physics(session)
+                unfollowed = [] if cannot_rerun else unfollowed_values(session, registry, live_parameters)
                 if cannot_rerun:   # their solvers cannot rerun a kept build: one build per value, as without reuse
                     reuse_build, live_parameters = False, frozenset()
                     emit(LogEvent('info', f"sweep reuse_build: physics {', '.join(cannot_rerun)} cannot rerun a kept "
                                           'build (no reset_records); every sweep value is built'))
+                elif unfollowed:   # a flagged value whose apply set no follower would keep its build value
+                    reuse_build, live_parameters = False, frozenset()
+                    emit(LogEvent('warning', f"sweep reuse_build: {'; '.join(unfollowed)} follows parameters but this "
+                                             'build re-sets nothing for it (its apply calls no follow_parameters here: '
+                                             'a definition gap); every sweep value is built'))
                 else:
                     reused_session = session
                     emit(LogEvent('info', f'sweep reuse_build: this build takes every value of {parameter} (the '

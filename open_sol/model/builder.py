@@ -318,11 +318,12 @@ class BuildContext:
 
     def follow_parameters(self, raw_params, values, names, setter, solver, label) -> bool:
         """Feature values / physics settings `names` (Param.follows_parameters) on a reused sweep build: when the raw
-        spec value of one (raw_params: the feature spec's params or physics spec's settings; a missing name = its
-        default) names a live sweep parameter and solver
-        is a RerunSolver, registers a sweep_reuse.ParameterFollower whose setter(*values of names) Session.set_sweep_value
-        calls when one changed (the others pass their resolved `values` object unchanged; incremental: the apply set
-        the build values itself, keeping host data only, never build caches). True when registered."""
+        spec value of one (raw_params: the feature spec's params or physics spec's settings dict itself, never a
+        copy: sweep_reuse.unfollowed_values matches it by identity; a missing name = its default) names a live sweep
+        parameter and solver is a RerunSolver, registers a sweep_reuse.ParameterFollower whose setter(*values of
+        names) Session.set_sweep_value calls when one changed (the others pass their resolved `values` object
+        unchanged; incremental: the apply set the build values itself, keeping host data only, never build caches).
+        True when registered."""
         live = self._shared.live_parameters
         if not live or not isinstance(solver, RerunSolver):
             return False
@@ -331,8 +332,9 @@ class BuildContext:
                     for name in names]
         if all(entry is None for entry in followed):
             return False
+        keys = [(id(raw_params), name) for name, entry in zip(names, followed) if entry is not None]
         self.parameter_followers.append(ParameterFollower(label, followed, [values[name] for name in names], setter,
-                                                          self.parameters))
+                                                          self.parameters, keys))
         return True
 
     # ---- selections and masks ----

@@ -66,7 +66,7 @@ def reuse_issues(spec, registry) -> list:
     if not any(item.name == parameter for item in spec.parameters):
         return issues   # validation names the unknown parameter
     live = live_parameter_names(spec, parameter)
-    for path, what, names, following in _value_uses(spec, registry):
+    for path, what, names, following, _ in _value_uses(spec, registry):
         reached = sorted(names & live)
         if not reached:
             continue
@@ -84,37 +84,38 @@ def reuse_issues(spec, registry) -> list:
 
 
 def _value_uses(spec, registry):
-    """Yield (node path, text, names, following) of every spec value the build reads (derived values, curves and the
-    study settings excluded): following = a feature value or physics setting flagged Param.follows_parameters (a
-    setting the auto mesh sizes by excluded: _auto_wavelength_mesh), or a material value _material_follows."""
+    """Yield (node path, text, names, following, key) of every spec value the build reads (derived values, curves and
+    the study settings excluded): following = a feature value or physics setting flagged Param.follows_parameters (a
+    setting the auto mesh sizes by excluded: _auto_wavelength_mesh), or a material value _material_follows; key =
+    (id of its raw dict, name) for a physics setting or feature value (ParameterFollower.keys), else None."""
     domain = spec.domain
     for item in dataclasses.fields(domain):
         if item.name not in _TEXT_KEYS:
-            yield ('geometry',), f'domain {item.name}', value_names(getattr(domain, item.name)), False
+            yield ('geometry',), f'domain {item.name}', value_names(getattr(domain, item.name)), False, None
     for obj in spec.geometry:
         kind = GEOMETRY_KINDS.get(obj.kind)
         for name, names in _param_uses(None if kind is None else kind.params, obj.params):
-            yield ('geometry', obj.name), f'geometry object {obj.name!r} {name}', names, False
+            yield ('geometry', obj.name), f'geometry object {obj.name!r} {name}', names, False, None
     state_names = state_field_names(spec, registry)
     for material in spec.materials:
         properties = material.properties if isinstance(material.properties, dict) else {}
         for name, raw in properties.items():
             names = value_names(raw)
             yield (('material', material.name), f'material {material.name!r} {name}', names,
-                   _material_follows(spec, registry, name, names, state_names))
+                   _material_follows(spec, registry, name, names, state_names), None)
         yield ('material', material.name), f'material {material.name!r} dispersion', value_names(
-            material.dispersion), False
+            material.dispersion), False, None
     for mesh_spec in spec.meshes:
         for key, raw in dataclasses.asdict(mesh_spec).items():
             if key not in _TEXT_KEYS:
-                yield ('mesh', mesh_spec.name), f'mesh {mesh_spec.name!r} {key}', value_names(raw), False
+                yield ('mesh', mesh_spec.name), f'mesh {mesh_spec.name!r} {key}', value_names(raw), False, None
     for physics_spec, physics_type in known_physics(spec, registry):
         following = set()
         if not _auto_wavelength_mesh(spec, physics_spec, physics_type):
             following = {param.name for param in physics_type.settings if param.follows_parameters}
         for name, names in _param_uses(physics_type.settings, physics_spec.settings):
             yield ('physics', physics_spec.name), f'physics {physics_spec.name!r} setting {name}', names, \
-                name in following
+                name in following, (id(physics_spec.settings), name)
         for feature_spec in physics_spec.features:
             if not feature_spec.enabled:
                 continue
@@ -125,7 +126,8 @@ def _value_uses(spec, registry):
             following = {param.name for param in params if param.follows_parameters}
             path = ('feature', physics_spec.name, feature_spec.name)
             for name, names in _param_uses(params, feature_spec.params):
-                yield path, f'feature {physics_spec.name}/{feature_spec.name} {name}', names, name in following
+                yield path, f'feature {physics_spec.name}/{feature_spec.name} {name}', names, name in following, \
+                    (id(feature_spec.params), name)
     for coupling_spec in spec.couplings:
         if not coupling_spec.enabled:
             continue
@@ -134,15 +136,15 @@ def _value_uses(spec, registry):
         except KeyError:
             continue
         for name, names in _param_uses(params, coupling_spec.params):
-            yield ('coupling', coupling_spec.name), f'coupling {coupling_spec.name!r} {name}', names, False
+            yield ('coupling', coupling_spec.name), f'coupling {coupling_spec.name!r} {name}', names, False, None
     for node in spec.solvers:
         try:
             params = registry.solver_type(node.type).params
         except KeyError:
             params = None
         for name, names in _param_uses(params, node.settings):
-            yield ('solver', node.name), f'solver {node.name!r} {name}', names, False
-    yield ('study',), 'stored cut', value_names(spec.study.stored_cuts), False
+            yield ('solver', node.name), f'solver {node.name!r} {name}', names, False, None
+    yield ('study',), 'stored cut', value_names(spec.study.stored_cuts), False, None
 
 
 def _material_follows(spec, registry, name, names, state_names) -> bool:
@@ -191,6 +193,16 @@ def _param_uses(params, raw_values):
             yield param.name, value_names(raw)
 
 
+def unfollowed_values(session, registry, live) -> list:
+    """Texts of the following feature values / physics settings (_value_uses) that a live parameter reaches but for
+    which the build registered no ParameterFollower (an apply that skips BuildContext.follow_parameters on this grid
+    kind, solver or study): a kept build would hold their build value, so the sweep builds every value instead."""
+    followed = set().union(*(follower.keys for follower in session.context.parameter_followers))
+    return [what for _, what, names, following, key in _value_uses(session.spec, registry)
+            if following and key is not None and not names.isdisjoint(live) and names.isdisjoint(COORDINATE_NAMES)
+            and key not in followed]
+
+
 def non_rerun_physics(session) -> list:
     """Names of the session's physics whose solver cannot rerun a kept build (no RerunSolver hook)."""
     return [name for name, solver in session.runner.physics.items() if not isinstance(solver, RerunSolver)]
@@ -199,10 +211,12 @@ def non_rerun_physics(session) -> list:
 class ParameterFollower:
     """Feature values of a reused sweep build: update(parameters) calls setter(*values) when one changed (setters are
     incremental, like BuildContext.follow_time's). followed: per value its raw expression of parameters, or None to
-    pass fixed[i] (the build's own value object: a free None, an x / y field) unchanged every time."""
+    pass fixed[i] (the build's own value object: a free None, an x / y field) unchanged every time. keys: (id of the
+    raw spec dict, name) of the followed values (unfollowed_values; a material repaint has none)."""
 
-    def __init__(self, label, followed, fixed, setter, parameters):
+    def __init__(self, label, followed, fixed, setter, parameters, keys=()):
         self.label = label
+        self.keys = frozenset(keys)
         self._followed = tuple(followed)
         self._fixed = tuple(fixed)
         self._setter = setter

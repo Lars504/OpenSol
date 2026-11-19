@@ -43,8 +43,8 @@ from .model.meshing import (MESH_ESTIMATE_ERRORS, built_mesh_estimates, estimate
                             estimate_meshes, fitted_memory_estimate, line_block_hint, mesh_transfers,
                             mesh_values, physics_settings)
 from .model.scene_3d import build_scene, object_cut_targets, plane_outlines
-from .model.schema import (ISSUE_LEVELS, Issue, get_registry, node_label, resolve_values, resolved_solvers,
-                           solver_backend, solver_grid)
+from .model.schema import (FREQUENCY_DOMAIN_STUDY, ISSUE_LEVELS, Issue, get_registry, node_label, resolve_values,
+                           resolved_solvers, solver_backend, solver_grid)
 from .solvers.roles import resolved_precision
 from .model.selftest_cache import CACHE_FILE, DependencyTrace, SelftestCache, environment_key, file_hash
 from .model.selftest_examples import (ANALYTIC_REPORT_FILE, analytic_report, example_record, failed_example_record,
@@ -355,7 +355,7 @@ def _study_estimate(spec, registry, parameters, meshes):
     n_steps = (round(duration / dt_estimate) if dt_estimate and isinstance(duration, (int, float))
                else None)
     n_wavelengths = (len(resolved_wavelengths(study_values))
-                     if spec.study.type == 'frequency_domain' and study_values else None)
+                     if spec.study.type == FREQUENCY_DOMAIN_STUDY and study_values else None)
     sweep = spec.study.sweep
     n_sweep_values = 1 if sweep is None else (len(sweep.point_values()) or None)
     total_steps = None if n_steps is None or n_sweep_values is None else n_steps * n_sweep_values

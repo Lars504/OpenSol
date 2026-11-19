@@ -545,11 +545,11 @@ def _create(ctx, physics_spec, settings_values):
 
 
 def follow_wavelength_setting(ctx, physics_spec, settings_values, solver):
-    """A reused sweep build re-sets the wavelength setting (EMEBase.set_wavelength; a frequency_domain study solves
-    its own wavelengths, the setting is unused there). 2D and 3D create."""
-    if ctx.study_type != FREQUENCY_DOMAIN_STUDY:
-        ctx.follow_parameters(physics_spec.settings, settings_values, ('wavelength',), solver.set_wavelength, solver,
-                              f"physics '{physics_spec.name}' wavelength")
+    """A reused sweep build re-sets the wavelength setting (EMEBase.set_wavelength). 2D and 3D create; also in a
+    frequency_domain study, whose own wavelengths override it (sweep_reuse.unfollowed_values expects a follower for
+    every flagged value a live parameter reaches)."""
+    ctx.follow_parameters(physics_spec.settings, settings_values, ('wavelength',), solver.set_wavelength, solver,
+                          f"physics '{physics_spec.name}' wavelength")
 
 
 def _port_mode_count(physics_spec):

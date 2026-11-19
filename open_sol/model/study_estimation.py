@@ -132,7 +132,7 @@ class _Estimation:
         if key in self.cache:
             return self.cache[key]
         resolved = self.resolved
-        if self.evaluations >= resolved.max_evaluations:
+        if self.evaluations >= resolved.max_evaluations:   # own count: scipy's max_nfev skips the Jacobian runs
             raise _Stop('max_evaluations', f'max_evaluations ({resolved.max_evaluations}) reached')
         if self.evaluations > 0 and self.control.checkpoint_cancelled(self.service):
             raise _Stop('cancelled', f'cancelled after {self.evaluations} evaluations')

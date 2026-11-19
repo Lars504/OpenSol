@@ -14,7 +14,8 @@ from ..core.time_profile import load_profile, profile_from_dict, profile_path
 from . import meshing
 from .geometry import (bounding_box, domain_entities, domain_extent, domain_size_z, expand_entities, resolve_geometry,
                        z_extent)
-from .schema import FREE_MESH_KINDS, get_registry, resolve_values, resolved_solvers, solver_backend
+from .schema import (FREE_MESH_KINDS, FREQUENCY_DOMAIN_STUDY, get_registry, resolve_values, resolved_solvers,
+                     solver_backend)
 from .spec import outer_faces
 
 # a coupled fixed point (stationary study, background stage) solves the physics on or downstream of a coupling cycle
@@ -578,7 +579,7 @@ def estimate_overheads(spec, parameters, registry=None, mesh_estimate=None, prof
                   else meshing.estimate_meshes(run_spec, run_parameters, registry, run_shapes))
         memory = (given_memory if given_memory is not None
                   else meshing.estimate_memory(run_spec, run_parameters, registry, meshes, shapes=run_shapes))
-        stages =float(len(memory.items) + len(memory.host_items) + 1)
+        stages = float(len(memory.items) + len(memory.host_items) + 1)
         kept_bytes = float(memory.gpu_steady)   # the last run's arrays are the ones written
         prefix = f'{run_label}: ' if run_label else ''
         build_items += [
@@ -741,7 +742,7 @@ def _with_study_steps(parts, study) -> TimeEstimate:
                        for part, every in parts)
     stepped = []
     for part, every in parts:
-        if study.type == 'frequency_domain' and math.isfinite(part.dt_limit) and study.counts.get('max_duration'):
+        if study.type == FREQUENCY_DOMAIN_STUDY and math.isfinite(part.dt_limit) and study.counts.get('max_duration'):
             limit = study.counts['max_duration'] / part.dt_limit
             stepped.append(part.with_steps(HARMONIC_PULSE_FRACTION_GUESS * limit, 'guess', steps_limit=limit,
                                            measured_by_ticks=False))

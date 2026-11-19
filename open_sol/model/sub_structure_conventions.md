@@ -93,7 +93,7 @@ templates, describe. Current state, no changelog.
   field-dependent params are checked only for finite values.
 - Param kind 'table' as a material property writes no array: the type's `create` reads `ctx.material_regions` (2D
   `region.mask` until `release_caches`) and resolves the rows with `resolve_values` (magnetostatics `bh_curve`).
-- 3D prisms (spec v2; root file "3D models"; optional z params of the 2D kinds: `geometry.Z_PARAM_NAMES`, axis /
+- 3D prisms (root file "3D models"; optional z params of the 2D kinds: `geometry.Z_PARAM_NAMES`, axis /
   taper in the kind help): every per-z consumer goes through `geometry._section(shape, z)` -> (key, plain parts) and
   the footprint through `_footprint` (`is_plain` = neither), so a new 3D kind or option extends `_section` (and
   `surface_faces`, the 3D preview surface), never a consumer; vertical cuts (GUI side views) likewise through
@@ -162,11 +162,11 @@ templates, describe. Current state, no changelog.
   an outer cell. Auto wavelength rule: the index is taken at wavelength_min only (`_material_index`), so metals mesh by
   skin depth (gold ~11 at 1.55 um).
 - Triangle meshes (triangulate): `triangle_meshing.triangulate` (module header; mesh data and mesher rules: fem sub
-  file). `mesher_size_field` is the mesher's form of `meshing.triangle_size_field` (the estimate's raster): a size
-  rule changes in both. Element tags use the build-mask rule (`element_masks` -> `contained`, bit-identical to
-  rasterize), never a second point test. `mirror_x` / `mirror_y` mesh the half window and reflect it
-  (`_mirrored_parts`); the estimate takes the denser of each pixel and its image; asymmetric material objects only
-  warn (`mirror_mismatch`).
+  file). `mesher_size_field` is the mesher's form of `meshing.triangle_size_field` (the estimate's raster; size
+  points also `_size_point_density`'s sub-pixel samples): a size rule changes in all of them. Element tags use the
+  build-mask rule (`element_masks` -> `contained`, bit-identical to rasterize), never a second point test. `mirror_x`
+  / `mirror_y` mesh the half window and reflect it (`_mirrored_parts`); the estimate takes the denser of each pixel
+  and its image; asymmetric material objects only warn (`mirror_mismatch`).
 - Tetrahedron meshes (MeshSpec kind 'tetrahedra'): sizes `meshing.tetrahedron_sizing` (the triangle rules through
   `_element_sizing`), mesher `tetrahedral_meshing.tetrahedralize` (gmsh solids, sized regions / surfaces, Kuhn split:
   its module header), estimate `_tetrahedron_estimate`. Every gmsh size field has its twin in
@@ -302,7 +302,9 @@ templates, describe. Current state, no changelog.
   `BuildContext.follow_parameters` (mechanics `follow_load` / `follow_held_values`), which registers a
   `ParameterFollower` only for a live raw value on a `solver_hooks.RerunSolver`; a material value is repainted by
   `builder._follow_material`. Followers keep host data only. The session is kept only when every physics is a
-  RerunSolver (`non_rerun_physics`, else an info line and one build per value): per later value
+  RerunSolver (`non_rerun_physics`, else an info line and one build per value) and every following value a live
+  parameter reaches got a follower (`unfollowed_values`, matched by its raw spec dict: an apply skipping
+  follow_parameters on some grid kind / study gets a warning and one build per value): per later value
   `Session.set_sweep_value` + `reset_run_records` (take kept snapshots before), then `_run_built`; a failed run drops
   it (the next value builds anew); table `builds` counts builds. Feature values / settings are not range-checked per
   value (material values are, by their Param): flag only unbounded params, or check the bounds in the setter (EME
@@ -355,9 +357,6 @@ templates, describe. Current state, no changelog.
   records (harmonic probes, reaction tables, ports, mode projections) never depend on it, so a new per-frequency
   output belongs in the solver's records. A ReducedSweepSolver's `publish_frequency_response()` runs after every sweep
   with a solved frequency (also a cancel), before the 'last' snapshot.
-- Study counts: time recipes read eigenfrequency / frequency_response counts through
-  `definition_helpers.eigen_search_counts` / `frequency_sweep_counts` / `reduced_sweep_time_items` /
-  `reduced_sweep_memory_items`, never re-derived from the settings.
 - Solution feedback (`StudyType.solution_feedback`): only a study whose own solve ends in ONE operating point may set
   it (never one with many solved states: wavelengths, modes, resonances); couplings reading its solved physics may then
   write background physics (validate info; solved -> solved and material readers stay errors). Run side generic in
@@ -374,132 +373,46 @@ templates, describe. Current state, no changelog.
   feature results are the last sector's (api `Results._state_spec` unfolds with it); combined values are in summary
   `parity_sectors` (`_merged_summary`, `_field_sector_rule`). The GUI unfold box uses the user spec: wrong only when
   physics disagree on a face sign.
-- Mesh refinement levels (`study_adaptation.py`): `run_study` dispatches `StudySpec.adaptation` first (validation
-  refuses it with a sweep, parity sectors or a study without `StudyType.supports_adaptation`: stationary,
-  frequency_domain, mode_analysis, eigenfrequency). Per level one build + `_run_built`, one `_StageProgress` stage each,
-  the previous level's session closed first; level 0 = the user's spec (its failure fails the study); a later level's
-  failure stops with the previous summary and no live session. Stop rule (`level_stop` / `next_level_stop`, pure):
-  converged |v_k - v_k-1| <= tolerance |v_k|, not_finite, max_levels, then for the planned next level no_refinement,
-  max_cells (incl. padding), memory (CPU `estimate_memory` vs budget / host RAM). Next meshes (`mesh_refinement.py`,
-  CPU): `frozen_mesh_spec` = numbers only, auto replaced by the grid it gives (lattice Boltzmann: uniform), segments ->
-  edges; 'uniform' = every size x growth^(-1/dimensions) (custom edges resampled); 'adaptive' (tensor 2D / 1D / polar
-  radius; refused for 3D; a mesh that must stay uniform stops the loop as 'failed') = top-eta^2 cells by bisection on
-  their count until `estimate_mesh` ~ growth x cells, per axis runs of marked indices -> MeshBandSpec at base / 2^k;
-  a uniform mesh turns nonuniform and gets
-  `snap_refinements` (dx = base x (1 - 1e-6), margin 0: object faces stay cell edges, else grading moves
-  lattice-aligned interfaces off them). Triangles (`adaptive_triangle_spec`): per-element target sizes from the
-  indicator; nodes of marked elements get `MeshSpec.size_points` [x, y, h] (appended, only where finer than the old
-  size field) and the whole mesh is rebuilt. Size points apply in every mode as distance sources graded by max_ratio
-  (`triangle_sizing` rounds h down to SIZE_POINT_STEPS per octave so KD-tree levels stay few; three forms to keep
-  equal: `size_point_function` (raster / prediction), `mesher_size_field` (fem SizeField), `_triangle_estimate`
-  sub-pixel sampling; `TriangleSizing` repr shows their sha1: GUI mesh keys are reprs); validate refuses them on
-  tensor meshes. The level record counts built triangle elements (`_built_counts`). Indicator (`mesh_indicator`): a
-  solver's optional `error_indicator()` -> (2, *window) eta^2 parts (triangles: (n_elements,), required: no
-  interpolation fallback), else `core.error_indicators` on `PhysicsType.indicator_fields` (() = primary; only
-  laminar_flow sets it), scaled per field by max |u| and per physics to a unit total. The hook wins over
-  indicator_fields; it raises (warning, physics skipped, no fallback) where it does not apply. Known gap: an FDFD TFSF
-  plane wave's outline jump is flagged as error; 3D hooks raise. Hooks: DiffusionPhysicsBase Kelly flux jumps
-  (`DiffusionSystem.flux_jump_indicator`, energy norm 1 / c, only faces coupled between free cells), SolidMechanicsBase
-  traction jumps (2D, 1 / c11), em_modes (the mode_index mode) / em_fdfd_ez / _hz (shown solution or resonance)
-  energy-weighted interpolation of every E / H component; triangles in `fem.indicators` (fem sub file: residual + flux,
-  mode tangential H / normal D, traction, tangential-H jumps). Window shapes come from the level's `estimate_mesh`, not the Session.
-  `convergence_report` -> summary 'convergence' (api `_STUDY_SUMMARY_KEYS`, `Results.convergence()`, convergence.json):
-  Richardson over the last three levels (`richardson`, v = v_inf + C N^-q in the refined window cells; None + note
-  when changes alternate or do not shrink); ticks / study_seconds summed; keep_levels prefixes earlier snapshots 'level
-  k: '.
-- Parameter estimation (`StudySpec.estimation`, `study_estimation.py`; pure parts in `estimation.py`): `run_study`
-  dispatches it before adaptation (validation refuses it with a sweep or adaptation; parity sectors run
-  `study_sectors._run_sectors` + `_merge_runs` per evaluation, targets read the combined values). `resolve_estimation(
-  spec, parameters)` is the one rule set: validate calls it (imported inside `_check_estimation`, so only estimation
-  models depend on it in the selftest cache), the run raises its errors through `_fail_sweep_setup`. Each evaluation =
-  a spec copy with the estimated parameters as numbers (`study.estimation` None), built and run like a sweep value;
-  search vector z = 1 + (value - initial) / scale (scale |initial|, else upper - lower, else 1), so least_squares'
-  relative diff_step never falls back to 1e-8 at 0. Own evaluation counter (scipy's max_nfev does not count Jacobian
-  runs) raises `_Stop` through scipy, also on cancel, a failed later run and a non-finite residual; a failure of
-  evaluation 1 is StudyFailed. The best point is rerun unless it is the live session; standard errors only from a
-  least_squares Jacobian (`fit_statistics`, scaled by chi^2 / dof unless every sigma was given).
-  `remember_element_meshes` is on for the run, so a geometry-free parameter never remeshes. ticks = evaluations;
-  summary 'estimation'; time / build estimates x `estimation_runs`. Not yet: re-evaluating derived-value-only
-  parameters on one session.
-- Run-time estimate rules (CPU, GUI-thread safe): `estimate_time(spec, parameters)` -> (`core.time_estimate.
-  TimeEstimate`, message) priced on the stored machine profile of the run backend (`python -m open_sol profile
-  [--backend] [--quick]` / `api.profile_machine` -> `time_profiles/time_profile_<backend>.json` next to the package,
-  git-ignored, folder `OPEN_SOL_PROFILE_DIR`; a profile of other benchmark code or library versions is ignored: (None,
-  reason)). `PhysicsType.time_estimate(settings, mesh, TimeContext)` counts the physics' own work and asks its roles
-  through `context.solver_work(role, ...)` -> `SolverType.time_estimate(values, SolverWork)`: each op priced once,
-  each module counts only its own work. Per-step items (`per_step`, the part's `dt_limit`) are multiplied by the study
-  (`StudyType.time_counts(values)`); explicit engines take per-step bytes from their memory estimate
-  (`explicit_step_estimate`), so a new array updates both. Counts are 'exact', 'bounded' or 'guess' (a named module
-  constant to calibrate, x/÷ 3 span). Work without a recipe is listed as not estimated, never 0 s. Host matrix set-up
-  between an assembly and its factor (free-dof restrictions, pattern_sum, complex casts, a static state before a
-  pencil) is an item of the module doing it, as passes over the entry bytes (solid_mechanics `_RESTRICT_PASSES` /
-  `_CSR_REBUILD_PASSES`); no factor curve holds it. fem.harmonic scalar systems on triangles (pressure_acoustics,
-  membrane) price build and per-frequency host work through `definition_helpers.scalar_harmonic_build_items` /
-  `harmonic_frequency_items` (counted from fem.dofs / elements / assembly / harmonic: a change there updates them). A
-  complex operator goes to a role as value_bytes 16 (`SolverWork.complex`), never as a hand-made complex factor_scale.
-  MUMPS / PARDISO back ends / factorizations are priced as the SuperLU items (HostLU / HostSolve on the host profile)
-  scaled by the uncalibrated `sparse_direct.HOST_DIRECT_*` time constants: no profile curve times those libraries.
-  After a run summary.json `time_check` compares items with their `counter` paths and seconds groups
-  (`seconds_counter`: timers at existing syncs only; the rest of study_seconds = 'study'); warnings: an exact count
-  off, a group outside UNIT_RATIO_BAND with >= MIN_CHECK_SECONDS; guesses never warn. Physics work at build (port mode
-  solves, first-use kernel compiles) has no recipe yet. Several runs: `study_runs` lists sweep values and, with parity_sectors, every sector run (labels
-  '<sector>' / '<parameter> = <value> [<sector>]'), each estimated on its own without counters; a parameter
-  estimation repeats the whole (and `estimate_overheads`' build items) `estimation_runs(spec)` = max_evaluations + 1
-  times (an upper bound: exact counts become 'bounded'). per_run (the post-run check) stays one run.
-- Run-time estimate (`time_estimate.py`; ops in the core sub file): `estimate_time` runs
-  `meshing.estimate_memory(by_physics=)` first, so a recipe's `context.memory` is its own part (per_run: the builder
-  hands its own estimate's by_physics in as `memory_parts` and its estimate to `estimate_overheads(memory=)`, so a
-  build runs estimate_memory once; with fitted plain_roles the parts are estimated again). Per-step totals
-  (`_with_study_steps`): time_dependent ticks = round(duration / dt_sync), dt_sync = min dt_limit, a physics with
-  `every` n runs ticks // n steps; frequency_domain with a finite dt_limit (harmonic FDTD) a guess of
-  HARMONIC_PULSE_FRACTION_GUESS x max_duration / dt; other studies 0 steps. A recipe raising ValueError / KeyError /
-  TypeError / ZeroDivisionError lands in not_estimated ('recipe failed'), never stops validation (selftest
-  time_estimate_recipes fails on it). A sweep estimates every value's spec (its own mesh estimate; the caller's
-  mesh_estimate is not used), labels '<parameter> = <value>: ...', clears the counters; the builder estimates
-  per_run=True for the post-run `_time_check` (None without a profile or for a non-completed run). A run whose mesh
-  signature (`_mesh_signature`) and parity sector an earlier run of the same estimate had gets
-  `TimeContext.ordering_kept` -> `SolverWork.ordering_kept` (kept cuDSS orderings: `cudss_plan_fraction`); a later
-  run of a reuse_build sweep (same sector) or of a warm_start study with ordering_kept gets
-  `TimeContext.continues_previous` (the solver state continues: drift_diffusion prices one continuation step) and,
-  with reuse_build, `TimeContext.live_parameters` (a recipe whose followed setter cold-starts checks it); the
-  per_run check sets none of them. Stored-field snapshots on triangle meshes are study work (`snapshot_read_items`, whose
-  locate counts follow fem.sampling's PointLocator: a change there updates them). A quasi-static physics on or downstream of a cycle of enabled couplings
-  (`fixed_point_physics`, TimeContext.fixed_point; a self-coupling is a cycle, so is a coupling whose type reads its
-  target, `CouplingType.reads_target`) solves FIXED_POINT_ITERATIONS_GUESS times (`static_solves`), every other
-  physics once (TimeContext.coupled = "a coupling reads or writes it", the time_dependent re-solve rule). Jacobi-PCG
-  condition `TimeContext.jacobi_conditioning(HeldValues)`: (0, 0) on polar / spherical; contrast, axisymmetric
-  weighting and the transient capacity term not counted (heat passes no HeldValues for implicit steps). Re-solve-on-change recipes
-  (drift_diffusion, solid_mechanics, magnetic_fields_ac) use `definition_helpers.coupling_target(context)` /
-  `material_follows_state(context, names)` and count per-step re-solves 'bounded'. `estimate_overheads` (build per
-  sweep value (first only with `reuse_build`) x `estimation_runs`, output once per run; *_GUESS constants) is separate
-  from estimate_time, so time_check and study totals never include it; calibrate its guesses from the selftest time
-  split.
-  Counter-timed study work a physics does at build (a factorisation in finalize): the counters at study start
-  (`solvers_at_study_start`) give time_check `seconds_at_build`, and `api._study_work_at_build` moves it out of build,
-  else the 'study' rest group is short by that work.
-- Build estimate of element meshes: `mesh_build_items` adds per 'triangles' mesh "mesh '<name>': triangle mesher"
-  (guess, `mesher_rounds`), "mesh tagging" and "TriangleDomain set-up"; per swept tetrahedra mesh only "mesh '<name>': footprint triangle mesher"; mesher items only when the
-  run's `element_mesh_key` differs from the kept one. Other tetrahedra meshing is not priced. Labels must keep the
-  "mesh '<name>': " prefix: `build_time_text` sums those into the mesh's 'domain' stage. The builder logs "Build
-  estimate: domain estimated X, took Y; ..." after "Build time by stage"; check.json `time_estimate.build` is the
-  whole study's build. Constants are UNCALIBRATED; `triangulate(log=)` logs the split to calibrate them. The 'domain'
-  stage is host-only and independent of earlier sweep values: every value that remeshes pays it in full.
-- Solve flow (`solve_flow.py`, the GUI's Show solve flow chart; CPU, GUI-thread safe, nothing built): steps per row
-  (model, one mesh + materials step per used mesh, one solver step per resolved (physics, role), one physics step,
-  couplings, the study's steps, results) over lanes (one per resolved role of a physics). It reads the estimate
-  item labels, so they are an interface: memory "[mesh '<m>': ]physics '<p>': ", "feature '<p>.<f>': ", "model: ",
-  "subpixel smoothing: ", "conformal boundaries: ", "grid transfer "; time "physics '<p>': " (a solver item goes to its
-  role by its `counter` / `seconds_counter` path ('solvers', p, 'roles', role, ...), so a role recipe keeps
-  `work.counter(...)` paths), "mesh '<m>': " build items, "snapshots on mesh '<m>': ", not-estimated "physics '<p>'" /
-  "coupling '<c>'". An item no rule matches lands in the red 'Unplaced estimate items' step (never dropped): a new
-  label prefix gets a rule in `_Builder._memory_step` / `_time_step`. Study steps are per StudyType name in
-  `_study_steps` (a new study type falls back to its summary with a note: add its steps there); the study's
-  `time_counts` are listed generically. Time items come from one run (per_run); the whole-study total from estimate_time.
-  Measured values (`build_record`, `study_summary` of a run of the same model): build ledger owners go to steps by
-  `_Builder._ledger_step` (model.builder's `ledger.track` owner names, per-mesh ones suffixed ' <mesh>' with several
-  meshes: a new or renamed owner needs a rule there, else it lands in 'unplaced'); time_check items by label (a
-  multi-run check: the last '<run>: <label>' record), seconds groups by counter path (`_group_step`; 'study' = the
-  first study step). Items are timed per group only: an item's measured seconds = its count x the group ratio.
+- Mesh refinement levels (`study_adaptation.py`, next meshes `mesh_refinement.py`; loop, stop rule and mesh rules in
+  their docstrings): level 0 is the user's spec, so its failure fails the study; a later level's failure ends with
+  the previous level's summary and no live session (that session was closed before the failed build). 'adaptive'
+  turns a tensor mesh nonuniform and adds `snap_refinements`, so object faces stay cell edges (else grading moves
+  lattice-aligned interfaces off them); a mesh that must stay uniform raises, which stops the loop as 'failed'.
+  Indicator window shapes come from the level's `estimate_mesh`, never the Session; level records count the built
+  elements of element meshes (`_built_counts`: their estimate is a size integral). Indicators: the solver's
+  `solver_hooks.ErrorIndicatorSolver` hook (grep `def error_indicator`; triangles: fem sub file "Error indicators"),
+  else `core.error_indicators` on `PhysicsType.indicator_fields`. Known gap: an FDFD TFSF plane wave's outline jump
+  is flagged as error.
+- Parameter estimation (`study_estimation.py`; run-free parts `estimation.py`): `resolve_estimation` is the one rule
+  set; validate imports it inside `_check_estimation`, so only estimation models depend on it in the selftest cache.
+  Each evaluation is a spec copy with the estimated parameters as numbers, built and run like a sweep value (parity
+  sectors: `_run_sectors` + `_merge_runs`; targets read the combined values). Not yet: re-evaluating parameters that
+  only derived values read on one session. Study records of these studies (summary 'convergence', 'estimation')
+  reach summary.json through api `_STUDY_SUMMARY_KEYS`, as every study-specific record: a new one is added there.
+- Run-time estimate rules (`time_estimate.py`, ops and pricing: core sub file "Run-time estimate"; recipe rules: root
+  "Physics definitions"): `PhysicsType.time_estimate(settings, mesh, TimeContext)` counts the physics' own work and
+  asks its roles through `context.solver_work(role, ...)`: each op is priced once, by the module doing the work (host
+  matrix set-up between an assembly and its factor, such as free-dof restrictions or complex casts, is an item of
+  that module: no factor curve holds it). A complex operator goes to a role as value_bytes 16 (`SolverWork.complex`),
+  never as a hand-made factor_scale. Work without a recipe is listed as not estimated, never 0 s; a 'guess' count is
+  a named `*_GUESS` module constant to calibrate. Shared counts come from their helpers, never re-derived:
+  `definition_helpers.eigen_search_counts` / `frequency_sweep_counts` / `reduced_sweep_time_items` /
+  `reduced_sweep_memory_items` (eigenfrequency / frequency_response), `scalar_harmonic_build_items` /
+  `harmonic_frequency_items` (fem.harmonic systems on triangles), `coupling_target` / `material_follows_state`
+  (re-solves on change, counted 'bounded'). Items counted from another module's code (those helpers from fem.dofs /
+  elements / assembly / harmonic, `snapshot_read_items` from fem.sampling's PointLocator) change with that code.
+  `estimate_overheads` (build and output) stays outside estimate_time, so time_check and study totals never include
+  it; calibrate its guesses from the selftest time split. Counter-timed study work done at build (a factorisation in
+  finalize) reaches time_check as `seconds_at_build` (counters at `solvers_at_study_start`); api
+  `_study_work_at_build` moves it out of the build seconds, else the 'study' rest group is short by that work.
+- Build estimate of element meshes (`mesh_build_items`, `build_time_text`): its labels keep the "mesh '<name>': "
+  prefix, which `build_time_text` sums into that mesh's 'domain' stage (the "Build estimate: ..." log line) and the
+  solve flow places. Constants are UNCALIBRATED; `triangulate(log=)` logs the mesher split to calibrate them.
+- Solve flow (`solve_flow.py`; layout and placing rules in its module docstring): estimate item labels, role
+  recipes' `work.counter(...)` paths and the builder's `ledger.track` owner names are its interface. A new label
+  prefix needs a rule in `_Builder._memory_step` / `_time_step`, a new or renamed owner one in `_ledger_step`, a new
+  study type its steps in `_study_steps` (else a generic step with a note): unmatched items land in the red
+  'Unplaced estimate items' step, never dropped.
 
 ## Registry, templates, describe
 - A loop over `spec.physics` that skips unregistered types (validate reports them) takes

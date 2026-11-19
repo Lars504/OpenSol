@@ -18,7 +18,7 @@ import re
 from dataclasses import dataclass, fields, replace
 
 from ..solvers.roles import BACKENDS, PRECISIONS, SOLVER_ROLES, resolved_precision
-from .schema import known_physics, resolved_solvers, solver_backend, solver_grid
+from .schema import FREQUENCY_DOMAIN_STUDY, known_physics, resolved_solvers, solver_backend, solver_grid
 from .time_estimate import estimation_runs, study_counts
 
 # row kind -> row label (left margin of the chart); study rows are 'study' too, one per study step
@@ -749,7 +749,7 @@ def _study_steps(spec, study_type, counts, run_time, registry):
         return [('Stationary solve', 'fixed point over every physics',
                  'solve_stationary: every physics solves in order and the couplings apply; with a coupling cycle the '
                  'loop repeats until the relative change is below the tolerance (fixed_point in the summary).', [])]
-    if name == 'frequency_domain':
+    if name == FREQUENCY_DOMAIN_STUDY:
         points = values.get('harmonic_points')
         return background + [
             ('Pulsed harmonic physics', 'time-stepped physics only, if any',
