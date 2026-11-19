@@ -19,21 +19,19 @@ def _params(polarization):
               tip='Refractive indices of the vertical layers from bottom to top: the substrate first, then each film, '
                   'then the cover above.\n\nExample for 220 nanometre silicon on oxide under oxide: 1.444, 3.476, '
                   '1.444.',
-              help='Real refractive indices of the vertical stack, bottom to top: substrate (semi-infinite), one or '
-                   'more films, cover (semi-infinite); at least 3 entries. Losses are not modelled (real indices '
-                   'only).'),
+              help='Real refractive indices (no losses), bottom to top: substrate, one or more films, cover (both '
+                   'semi-infinite); >= 3 entries.'),
         Param('layer_thicknesses', 'float_list', [220e-9], label='Film thicknesses', unit='m', min=0.0,
               min_exclusive=True,
               tip='Thickness of each film between the substrate and the cover, from bottom to top, in metres.\n\n'
                   'One entry fewer than the film count plus two: 220e-9 for a single 220 nanometre film.',
-              help='Thicknesses of the films (layer_indices without its first and last entry), bottom to top; '
-                   'exactly len(layer_indices) - 2 entries.'),
+              help='Film thicknesses, bottom to top: exactly len(layer_indices) - 2 entries.'),
         Param('wavelength', 'float', 1.55e-6, label='Wavelength', unit='m', min=0.0, min_exclusive=True,
               tip='Vacuum wavelength at which the layer stack is collapsed to one refractive index.\n\n'
                   'Use the centre wavelength of the light you simulate: the index is not recomputed for other '
                   'wavelengths.',
-              help='Vacuum wavelength of the slab-mode solve. n_eff is computed once at this wavelength and used at '
-                   'every frequency (FDTD pulses, frequency_domain sweeps), so keep the band narrow around it.'),
+              help='Vacuum wavelength of the slab-mode solve; n_eff is used unchanged at every frequency (FDTD pulses, '
+                   'frequency_domain sweeps): keep the band narrow around it.'),
         Param('slab_polarization', 'choice', default_slab, label='Slab polarisation', choices=tuple(SLAB_POLARIZATIONS),
               choice_labels=(('te', 'Electric field along the layers'),
                              ('tm', 'Electric field across the layers')),
@@ -41,10 +39,9 @@ def _params(polarization):
                   '- Electric field along the layers: matches light whose electric field lies in the drawing plane.\n'
                   '- Electric field across the layers: matches light whose electric field points out of the '
                   'drawing.\n\nThe default matches this physics.',
-              help="'te': slab mode with E parallel to the layers, the vertical-stack partner of the in-plane-E "
-                   "top-view types em_fdtd_hz / em_fdfd_hz; 'tm': E mostly normal to the layers (H parallel), the "
-                   f"partner of em_fdtd_ez / em_fdfd_ez. Default here: '{default_slab}' (validation notes a "
-                   'mismatch).'),
+              help="'te': E parallel to the layers, partner of the in-plane-E top-view types em_fdtd_hz / em_fdfd_hz; "
+                   "'tm': E mostly normal to the layers, partner of em_fdtd_ez / em_fdfd_ez. Default: the matching one "
+                   '(validation notes a mismatch).'),
         Param('mode_number', 'int', 1, label='Slab mode', min=1,
               tip='Which guided mode of the layer stack to use: 1 is the fundamental mode.',
               help='Guided slab mode by descending n_eff, 1 = fundamental; an error when the stack guides fewer.'),
@@ -99,13 +96,11 @@ def effective_index_feature(polarization):
         FEATURE_NAME, 'Effective index (2.5D)', 'domain_condition', 'domain', params=_params(polarization),
         summary='Treats the drawing as the top view of a layered chip: the selected domains get the refractive index '
                 'of the guided mode of their vertical layer stack.',
-        description=f'Effective-index method (2.5D): at build time the guided slab mode mode_number of the vertical '
-                    f'stack layer_indices / layer_thicknesses is solved at wavelength (the A3 slab-mode solver on a '
-                    f'1D grid of ~wavelength / (100 n_max) cells, claddings deepened until the tails decay) and '
-                    f'{arrays} = n_eff^2 is written on the selected cells, replacing the material background '
-                    f'permittivity there (later features win on overlaps; the material\'s sigma_e and dispersion '
-                    f'poles stay; a state-dependent permittivity expression of a material overwrites it). Approximate: '
-                    f'vertical leakage, the n_eff dispersion away from wavelength and the vertical mode mismatch at '
-                    f'stack boundaries are ignored. Validation reports n_eff (info); thermo-optic couplings take n_eff '
-                    f'as their reference index n0.',
+        description=f'Effective-index method (2.5D): at build time slab mode mode_number of the vertical stack '
+                    f'layer_indices / layer_thicknesses is solved at wavelength (1D grid of ~wavelength / (100 n_max) '
+                    f'cells, claddings deepened until the tails decay) and {arrays} = n_eff^2 is written on the '
+                    f'selected cells over the material background permittivity (later features win on overlaps; the '
+                    f'material\'s sigma_e and poles stay; a state-dependent permittivity expression overwrites it). '
+                    f'Ignores vertical leakage and the vertical mode mismatch at stack boundaries. Validation reports '
+                    f'n_eff (info); thermo-optic couplings take n_eff as their reference index n0.',
         apply=_apply_effective_index, validate=_make_validate(polarization))

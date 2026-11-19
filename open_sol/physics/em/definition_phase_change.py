@@ -51,8 +51,7 @@ def _params():
               tip='Crystalline share of every selected cell at the start: 0 amorphous, 1 fully crystalline.\n\n'
                   'Without a phase-change coupling from a heat physics it stays at this value.',
               help='Crystallinity X at t = 0 on every selected cell (theta = (-ln(1 - X))^(1/n)); without an enabled '
-                   f'{PHASE_CHANGE_COUPLING} into this physics (time_dependent study) X stays here, which also gives '
-                   'a static, partially crystalline medium for any study.'),
+                   f'{PHASE_CHANGE_COUPLING} into this physics X stays here (a static medium in any study).'),
         Param('crystallization_temperature', 'float', GST_225['crystallization_temperature'],
               label='Crystallisation onset temperature', unit='K', min=0.0, min_exclusive=True,
               tip='Below this temperature the material does not crystallise at all.\n\n'
@@ -214,23 +213,18 @@ def phase_change_medium_feature(polarization):
         description='Phase-change medium (e.g. GST-225, the defaults) on the selected cells: a per-cell crystallinity '
                     'X in [0, 1] (output field crystallinity) sets eps(X) by the mixing rule of the amorphous and '
                     f'crystalline (n - j k)^2, written as {arrays} = Re eps and sigma_e = -Im eps omega eps0 (omega of '
-                    'wavelength) over the material there (later features win on overlaps; dispersion poles of the '
-                    'material stay; a state-dependent permittivity expression of a material overwrites it). X follows '
-                    f'the heat temperature history only through {PHASE_CHANGE_COUPLING} (time_dependent study, '
-                    'transient heat): after each heat step theta += k(T) dt with T the end-of-step temperature, X = 1 - '
-                    'exp(-theta^n) (JMAK with the additivity rule), k(T) = exp(-Ea / kB (1/T - 1/T_fast)) / tau_min '
-                    'between crystallization_temperature and fast_crystallization_temperature, 1 / tau_min from there '
-                    'to the melting point, 0 below the onset; T >= melting_temperature melts the cell (theta = 0, X = '
-                    '0), and whether it recrystallises while cooling follows from the same rate (a fast quench stays '
-                    'amorphous). Each update rewrites the arrays on the bounding box of the selection and calls '
+                    "wavelength) over the material (later features win on overlaps; the material's poles stay; a "
+                    'state-dependent permittivity expression overwrites it). X follows the heat temperature history '
+                    f'only through {PHASE_CHANGE_COUPLING} (time_dependent study, transient heat): after each heat '
+                    'step theta += k(T) dt at the end-of-step T (JMAK kinetics and melting: see the params; a fast '
+                    'quench stays amorphous). Each update rewrites the arrays on the selection bounding box and calls '
                     'materials_changed (FDTD: coefficients rebuilt, sources recalibrated; FDFD: re-solved at its next '
-                    'step). Not modelled: latent heat, the liquid optical constants, thermal properties following X '
-                    '(heat uses the material, e.g. gst_225_amorphous), nucleation statistics. Result: timeseries of '
-                    'the mean X over the selected cells at every update (t = heat time). Linear at optical time scales, '
-                    'so it works in every study (frequency_domain, FDFD, Bloch k) as a static medium at '
-                    'initial_crystallinity. Time scales: GST crystallises in tens of ns, ~1e9 FDTD steps; switching '
-                    'runs use em_fdfd_* + transient heat in a time_dependent study (the FDFD re-solves after every '
-                    f'heat step). {GST_225_REFERENCES}',
+                    'step). Not modelled: latent heat, liquid optical constants, thermal properties following X (heat '
+                    'uses the material, e.g. gst_225_amorphous), nucleation statistics. Result: timeseries of the mean '
+                    'X over the selection at every update (t = heat time). Linear at optical time scales, so it works '
+                    'in every study as a static medium at initial_crystallinity. GST crystallises in tens of ns (~1e9 '
+                    'FDTD steps): switching runs use em_fdfd_* + transient heat in a time_dependent study (the FDFD '
+                    f're-solves after every heat step). {GST_225_REFERENCES}',
         apply=_apply, validate=_validate, result=_result, memory_estimate=_memory_estimate)
 
 

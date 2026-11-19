@@ -18,64 +18,57 @@ _INFO_WAVELENGTHS = 3   # solved wavelengths listed in the sigma info (first, mi
 _PARAMS = (
     Param('model', 'choice', 'constant', label='Conductivity model', choices=SHEET_MODELS,
           choice_labels=(('constant', 'Constant'), ('graphene_kubo', 'Graphene (Kubo formula)')),
-          help="Sheet conductivity sigma_s(omega): 'constant' = sigma_real + j sigma_imag at every solved wavelength; "
-               "'graphene_kubo' = the Kubo formula of monolayer graphene (intraband Drude e^2 tau (mu + 2 kT ln(1 + "
-               'e^{-mu / kT})) / (pi hbar^2 (1 + j omega tau)) plus the interband term with temperature smearing, '
-               'sigma_0 = e^2 / (4 hbar) = 6.085e-5 S above the 2 |E_F| absorption edge; no spatial dispersion, no '
-               'magnetic field), evaluated per solved wavelength.',
+          help="'constant': sigma_real + j sigma_imag at every solved wavelength; 'graphene_kubo': the Kubo formula of "
+               'monolayer graphene per solved wavelength (intraband Drude e^2 tau (mu + 2 kT ln(1 + e^{-mu / kT})) / '
+               '(pi hbar^2 (1 + j omega tau)) plus the temperature-smeared interband term, sigma_0 = e^2 / (4 hbar) '
+               'above the 2 |E_F| edge; no spatial dispersion, no magnetic field).',
           tip='How the conductivity of the sheet is given.\n\n'
               '- Constant: one complex value at every wavelength.\n'
               '- Graphene: computed for a graphene monolayer from its Fermi energy, scattering time and temperature '
               'at each wavelength.'),
     Param('sigma_real', 'float', UNIVERSAL_SHEET_CONDUCTIVITY, label='Conductivity (real part)', unit='S',
           visible_if=_CONSTANT,
-          help='Re sigma_s [S] (> 0 absorbs; 0 lossless). The universal optical conductivity of graphene is 6.085e-5 '
-               'S (the default; 2.3 % absorption in vacuum); a metal film of thickness d << skin depth has sigma_s ~ '
-               'sigma_bulk d.',
+          help='Re sigma_s (> 0 absorbs). Default 6.085e-5 S = the universal optical conductivity of graphene (2.3 % '
+               'absorption in vacuum); a metal film of thickness d << skin depth: sigma_s ~ sigma_bulk d.',
           tip='Real part of the sheet conductivity, in siemens: it sets the absorption. 6.1e-5 S is the optical '
               'conductivity of graphene (about 2.3 % absorption).'),
     Param('sigma_imag', 'float', 0.0, label='Conductivity (imaginary part)', unit='S', visible_if=_CONSTANT,
-          help='Im sigma_s [S] in the exp(+j omega t) convention of the FDFD: < 0 inductive (free carriers, Drude 1 / '
-               '(1 + j omega tau)), > 0 capacitive. Kubo literature written in exp(-i omega t) has the opposite '
-               'sign.',
+          help='Im sigma_s (exp(+j omega t)): < 0 inductive (free carriers, Drude 1 / (1 + j omega tau)), > 0 '
+               'capacitive; Kubo literature in exp(-i omega t) has the opposite sign.',
           tip='Imaginary part of the sheet conductivity, in siemens. Negative for free carriers (inductive, as in '
               'metals and doped graphene), positive for a capacitive response.'),
     Param('fermi_energy', 'float', 0.2, label='Fermi energy', unit='eV', visible_if=_GRAPHENE,
-          help='Chemical potential E_F of graphene relative to the Dirac point [eV] (sign irrelevant, |E_F| enters); '
-               'gated or doped graphene 0.1-0.6 eV, n = (E_F / (hbar v_F))^2 / pi carriers per m^2 (v_F ~ 1e6 m/s). '
-               'Interband absorption sets in at hbar omega = 2 |E_F| (wavelength 1.24e-6 / (2 |E_F| / eV) m).',
+          help='Chemical potential E_F relative to the Dirac point (|E_F| enters): gated or doped graphene 0.1-0.6 eV, '
+               'n = (E_F / (hbar v_F))^2 / pi carriers per m^2 (v_F ~ 1e6 m/s). Interband absorption sets in at hbar '
+               'omega = 2 |E_F| (wavelength 1.24e-6 / (2 |E_F| / eV) m).',
           tip='Fermi energy of the graphene, in electronvolts, set by doping or a gate: typically 0.1 to 0.6. Light '
               'with photon energy below twice this value is not absorbed by interband transitions.'),
     Param('scattering_time', 'float', 1e-13, label='Scattering time', unit='s', min=0.0, min_exclusive=True,
           visible_if=_GRAPHENE,
-          help='Carrier relaxation time tau [s] of the intraband (Drude) term: 1e-14 - 1e-12 s (CVD graphene ~1e-13 '
-               's; mobility mu_e = e tau v_F^2 / |E_F|). The interband term is taken without broadening.',
+          help='Carrier relaxation time tau of the intraband (Drude) term: 1e-14 - 1e-12 s (CVD graphene ~1e-13 s; '
+               'mobility e tau v_F^2 / |E_F|); the interband term is unbroadened.',
           tip='Average time between carrier collisions, in seconds: about 1e-13 for typical graphene. Longer times '
               'give sharper plasmon resonances and less absorption at long wavelengths.'),
     Param('temperature', 'float', 300.0, label='Temperature', unit='K', min=0.0, min_exclusive=True,
           visible_if=_GRAPHENE,
-          help='Electron temperature T [K] of the Fermi functions (intraband weight and the smeared interband edge, '
-               'width ~4 kT).',
+          help='Electron temperature of the Fermi functions (intraband weight, interband edge smeared over ~4 kT).',
           tip='Temperature of the electrons, in kelvin. It smooths the onset of interband absorption.'),
 )
 
 _DESCRIPTION = (
-    'Zero-thickness conducting sheet (2D material: graphene, a TMD monolayer in its linear response, a metal film much '
-    'thinner than a cell) on an axis-aligned line: the tangential E drives the surface current K = sigma_s E_t [A/m], '
-    'the normal E does not conduct. E_z (em_fdfd_ez): E_z of the line cells is tangential to any line, the delta '
-    'enters the operator diagonal as -j omega mu0 sigma_s / w (w = the line-cell width across the line), exact for '
-    'the 3-point stencil. H_z (em_fdfd_hz): the tangential E is E_x (horizontal line) or E_y (vertical line) on the '
-    'hi face of the line cells (as an H_z line source), whose face permittivity gains -j sigma_s / (omega eps0 w) with '
-    'w the face spacing; the line may not lie in the last grid cell before a non-periodic outer face. A sheet in '
-    'vacuum at normal incidence transmits |1 / (1 + eta0 sigma_s / 2)|^2 (exactly 1 / |1 + omega mu0 sigma_s w / (2 '
-    'sin(k w))|^2 on the grid, k the discrete wavenumber). Loss 1/2 Re sigma_s |E_t|^2 per unit area of sheet is '
-    'added to absorbed_power (q_abs) of the line cells as a density over the line-cell width, so q_abs integrates to '
-    'the sheet loss and em_heat_joule heats those cells. The sheet enters only the operator: line-source and TFSF '
-    'calibrations, mode-port solves and the material maps do not see it (keep source lines, port lines and the TFSF '
-    'outline off it; enclose it in the TFSF box as a scatterer). A span end on a cpml domain edge continues through '
-    'the PML (as a line source: a domain-wide sheet has no end). Several sheets on one line add. In an eigenfrequency '
-    'study sigma_s stays at its value at the target wavelength (first-order error away from it). The line covers '
-    'the cells [cell(start), cell(end) + 1) along it. No result (absorbed_power and the monitors show its effect).')
+    'Zero-thickness conducting sheet (graphene, a TMD monolayer in linear response, a metal film much thinner than a '
+    'cell) on an axis-aligned line: the tangential E drives K = sigma_s E_t [A/m], the normal E does not conduct. '
+    'em_fdfd_ez: E_z of the line cells; the operator diagonal gains -j omega mu0 sigma_s / w (w the line-cell width '
+    'across the line), exact for the 3-point stencil. em_fdfd_hz: E_x (horizontal line) / E_y (vertical) on the hi '
+    'face of the line cells, whose face permittivity gains -j sigma_s / (omega eps0 w), w the face spacing; the line '
+    'may not lie in the last grid cell before a non-periodic outer face. In vacuum at normal incidence it transmits '
+    '|1 / (1 + eta0 sigma_s / 2)|^2 (on the grid exactly 1 / |1 + omega mu0 sigma_s w / (2 sin(k w))|^2, k the '
+    'discrete wavenumber). Its loss 1/2 Re sigma_s |E_t|^2 per unit sheet area goes into absorbed_power (q_abs) of '
+    'the line cells as a density over the line-cell width (em_heat_joule heats them). Only the operator sees it: '
+    'line-source and TFSF calibrations, port mode solves and the material maps do not (keep source, port and TFSF '
+    'lines off it; enclose it in the TFSF box as a scatterer). A span end on a cpml domain edge continues through the '
+    'PML. Sheets on one line add. In an eigenfrequency study sigma_s stays at its target-wavelength value '
+    '(first-order error away from it). The line covers cells [cell(start), cell(end) + 1). No result.')
 _SUMMARY = ('A conducting sheet of zero thickness along a straight line, such as graphene or a very thin metal film: it '
             'reflects and absorbs light according to its sheet conductivity. Graphene can be computed from its Fermi '
             'energy.')
