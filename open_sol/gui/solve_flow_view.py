@@ -10,18 +10,19 @@ from ..model.solve_flow import MEMORY_GROUPS, TIME_SOURCES, op_text, solve_flow
 from .forms import hint_label, rich_tooltip
 from .helpers import ask_save_path, mesh_color
 
-BOX_WIDTH = 250
-BOX_HEIGHT = 86
-WIDE_BOX_WIDTH = 560      # largest width of a box spanning several lanes (model, couplings, study, results)
-LANE_WIDTH = 280
-ROW_HEIGHT = 126
-ROW_LABEL_WIDTH = 120
-LOOP_SPACING = 34
-_BAR_HEIGHT = 4
+BOX_WIDTH = 236
+BOX_HEIGHT = 70
+WIDE_BOX_WIDTH = 520      # largest width of a box spanning several lanes (model, couplings, study, results)
+LANE_WIDTH = 256
+ROW_HEIGHT = 94
+LOOP_SPACING = 30
+_PADDING = 9.0            # box text / bar inset
+_BAR_HEIGHT = 3.0
 _REFRESH_DELAY_MS = 400
 _PICTURE_SCALE = 2.0
-_TITLE_POINTS = 10.5      # box texts at 100 % zoom
-_TEXT_POINTS = 9.0
+_TAG_POINTS = 7.0         # box texts at 100 % zoom
+_TITLE_POINTS = 10.0
+_TEXT_POINTS = 8.5
 # the opening zoom fits the chart but stays readable: between these scales (taller charts scroll)
 _MIN_READABLE_SCALE = 0.8
 _MAX_READABLE_SCALE = 1.15
@@ -37,8 +38,11 @@ _SUBTEXT_COLOR = '#4a525c'
 _MEMORY_BAR_COLOR = '#3f7fbf'
 _TIME_BAR_COLOR = '#d9822b'
 _BAR_TRACK_COLOR = QtGui.QColor(0, 0, 0, 22)
-_ROW_BAND_COLOR = QtGui.QColor(128, 128, 128, 22)   # translucent: reads on light and dark view backgrounds
-_ROW_LABEL_COLOR = '#7a838e'
+_TAG_COLOR = '#6b7480'
+# row kind shown in the corner of each box
+_KIND_TAGS = {'model': 'MODEL', 'mesh': 'MESH', 'materials': 'MATERIALS', 'solver': 'SOLVER JOB',
+              'physics': 'PHYSICS', 'couplings': 'COUPLINGS', 'study': 'STUDY', 'output': 'RESULTS',
+              'unplaced': 'UNPLACED'}
 _LINK_COLOR = '#8a4fbf'
 _LOOP_COLOR = '#7a5c2e'
 _INTRO = ('Every step of a run of this model, top to bottom: the build (mesh, materials, solver jobs, physics, '
@@ -256,20 +260,31 @@ class _FlowView(QtWidgets.QGraphicsView):
 
 
 class _StepBox(QtWidgets.QGraphicsPathItem):
-    """Rounded, selectable box of one FlowStep (no Qt selection outline: a thicker blue border instead)."""
+    """Rounded, selectable box of one FlowStep that paints its own texts (kind tag, title, subtitle, estimate line,
+    each one elided line) and its memory / time bars; no Qt selection outline: a thicker blue border instead."""
 
-    def __init__(self, step, rect, fill, border):
+    def __init__(self, step, rect, fill, border, shares):
         super().__init__()
         self.key = step.key
+        self._rect = rect
+        self._shares = shares   # (memory share, time share) of the largest step, 0 = no bar
         self._border = QtGui.QColor(border)
         path = QtGui.QPainterPath()
-        path.addRoundedRect(rect, 10.0, 10.0)
+        path.addRoundedRect(rect, 9.0, 9.0)
         self.setPath(path)
         self.setBrush(QtGui.QColor(fill))
         self._set_border(False)
         self.setFlag(QtWidgets.QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
-        self.setFlag(QtWidgets.QGraphicsItem.GraphicsItemFlag.ItemClipsChildrenToShape, True)
         self.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        estimate = []
+        if step.memory:
+            estimate.append(format_bytes(step.memory_bytes))
+        if step.time:
+            estimate.append(format_seconds(step.time_seconds))
+        if step.not_estimated:
+            estimate.append(f'{len(step.not_estimated)} not estimated')
+        self._tag = _KIND_TAGS.get(step.kind, step.kind.upper())
+        self._title, self._subtitle, self._estimate = step.title, step.subtitle, '  ·  '.join(estimate)
 
     def _set_border(self, selected):
         pen = QtGui.QPen(QtGui.QColor(_SELECTED_COLOR) if selected else self._border, 3.0 if selected else 1.3)
@@ -284,6 +299,62 @@ class _StepBox(QtWidgets.QGraphicsPathItem):
         option = QtWidgets.QStyleOptionGraphicsItem(option)
         option.state = option.state & ~QtWidgets.QStyle.StateFlag.State_Selected
         super().paint(painter, option, widget)
+        rect = self._rect
+        left, width = rect.left() + _PADDING, rect.width() - 2.0 * _PADDING
+        painter.save()
+        try:
+            painter.setClipRect(rect.adjusted(1.0, 1.0, -1.0, -1.0))
+            tag_font, title_font, text_font = _box_fonts()
+            tag_metrics = QtGui.QFontMetricsF(tag_font)
+            title_metrics = QtGui.QFontMetricsF(title_font)
+            baseline = rect.top() + _PADDING - 2.0 + title_metrics.ascent()
+            tag_width = tag_metrics.horizontalAdvance(self._tag)
+            painter.setFont(tag_font)
+            painter.setPen(QtGui.QColor(_TAG_COLOR))
+            painter.drawText(QtCore.QPointF(rect.right() - _PADDING - tag_width, baseline), self._tag)
+            painter.setFont(title_font)
+            painter.setPen(QtGui.QColor(_TEXT_COLOR))
+            painter.drawText(QtCore.QPointF(left, baseline),
+                             _elided(self._title, title_font, width - tag_width - 8.0))
+            text_metrics = QtGui.QFontMetricsF(text_font)
+            painter.setFont(text_font)
+            painter.setPen(QtGui.QColor(_SUBTEXT_COLOR))
+            for text in (self._subtitle, self._estimate):
+                baseline += text_metrics.lineSpacing() + 1.0
+                if text:
+                    painter.drawText(QtCore.QPointF(left, baseline), _elided(text, text_font, width))
+            painter.setPen(QtCore.Qt.PenStyle.NoPen)
+            for offset, (share, color) in enumerate(zip(self._shares, (_MEMORY_BAR_COLOR, _TIME_BAR_COLOR))):
+                if share <= 0.0:
+                    continue
+                top = rect.bottom() - _PADDING - 1.0 - (1 - offset) * (_BAR_HEIGHT + 2.0)
+                painter.setBrush(_BAR_TRACK_COLOR)
+                painter.drawRect(QtCore.QRectF(left, top, width, _BAR_HEIGHT))
+                painter.setBrush(QtGui.QColor(color))
+                painter.drawRect(QtCore.QRectF(left, top, max(width * share, 3.0), _BAR_HEIGHT))
+        finally:
+            painter.restore()
+
+
+_FONTS = []
+
+
+def _box_fonts():
+    """(tag, title, text) QFonts of the box texts, made once (after the QApplication exists)."""
+    if not _FONTS:
+        tag, title, text = QtGui.QFont(), QtGui.QFont(), QtGui.QFont()
+        tag.setPointSizeF(_TAG_POINTS)
+        tag.setWeight(QtGui.QFont.Weight.DemiBold)
+        tag.setLetterSpacing(QtGui.QFont.SpacingType.PercentageSpacing, 108.0)
+        title.setPointSizeF(_TITLE_POINTS)
+        title.setWeight(QtGui.QFont.Weight.DemiBold)
+        text.setPointSizeF(_TEXT_POINTS)
+        _FONTS.extend((tag, title, text))
+    return tuple(_FONTS)
+
+
+def _elided(text, font, width) -> str:
+    return QtGui.QFontMetricsF(font).elidedText(text, QtCore.Qt.TextElideMode.ElideRight, max(width, 0.0))
 
 
 # --- drawing --------------------------------------------------------------------------------------------------------
@@ -292,30 +363,17 @@ def _box_rect(step) -> QtCore.QRectF:
     """Scene rectangle of a step: centred over its lanes, one lane's box width per lane (capped for wide steps)."""
     span = step.lane_end - step.lane_start
     width = BOX_WIDTH if span <= 1.0 else min(span * LANE_WIDTH - (LANE_WIDTH - BOX_WIDTH), WIDE_BOX_WIDTH)
-    centre = ROW_LABEL_WIDTH + 0.5 * (step.lane_start + step.lane_end) * LANE_WIDTH
+    centre = 0.5 * (step.lane_start + step.lane_end) * LANE_WIDTH
     return QtCore.QRectF(centre - 0.5 * width, step.row * ROW_HEIGHT, width, BOX_HEIGHT)
 
 
 def _draw_flow(scene, flow, spec) -> dict:
-    """Draw row labels, arrows, coupling links, loops and step boxes; returns {step key: _StepBox}."""
+    """Draw arrows, coupling links, loops and step boxes (the row kind is each box's tag); returns {step key:
+    _StepBox}."""
     rects = {step.key: _box_rect(step) for step in flow.steps}
     largest_bytes = max((step.memory_bytes for step in flow.steps), default=0)
     largest_seconds = max((step.time_seconds for step in flow.steps), default=0.0)
-    right = ROW_LABEL_WIDTH + flow.lanes * LANE_WIDTH
-    band_right = right + 24 + len(flow.loops) * LOOP_SPACING
-    label_font = QtGui.QFont()
-    label_font.setPointSizeF(_TITLE_POINTS)
-    label_font.setBold(True)
-    margin = 0.5 * (ROW_HEIGHT - BOX_HEIGHT)
-    for row, label in enumerate(flow.rows):
-        if row % 2 == 0:   # every other row banded, so a row reads across several lanes
-            band = scene.addRect(QtCore.QRectF(-8.0, row * ROW_HEIGHT - margin, band_right + 8.0, ROW_HEIGHT),
-                                 QtGui.QPen(QtCore.Qt.PenStyle.NoPen), QtGui.QBrush(_ROW_BAND_COLOR))
-            band.setZValue(-1)
-        if label:
-            text = scene.addSimpleText(label, label_font)
-            text.setBrush(QtGui.QColor(_ROW_LABEL_COLOR))
-            text.setPos(4.0, row * ROW_HEIGHT + 0.5 * BOX_HEIGHT - 0.5 * text.boundingRect().height())
+    right = max((rect.right() for rect in rects.values()), default=flow.lanes * LANE_WIDTH)
     arrow_pen = QtGui.QPen(QtGui.QColor(_BORDER_COLOR), 1.2)
     for step in flow.steps:
         for before in step.after:
@@ -325,68 +383,19 @@ def _draw_flow(scene, flow, spec) -> dict:
         if link.source in rects and link.target in rects:
             _draw_link(scene, rects[link.source], rects[link.target], link.label, index)
     for index, loop in enumerate(flow.loops):
-        _draw_loop(scene, loop, right + 16 + index * LOOP_SPACING)
+        _draw_loop(scene, loop, right + 18 + index * LOOP_SPACING)
     boxes = {}
     for step in flow.steps:
         border = (mesh_color(spec, step.key.split(':', 1)[1]) if step.kind in ('mesh', 'materials')
                   else _BORDER_COLOR)
-        box = _StepBox(step, rects[step.key], _KIND_COLORS.get(step.kind, '#eeeeee'), border)
+        shares = (step.memory_bytes / largest_bytes if largest_bytes else 0.0,
+                  step.time_seconds / largest_seconds if largest_seconds else 0.0)
+        box = _StepBox(step, rects[step.key], _KIND_COLORS.get(step.kind, '#eeeeee'), border, shares)
         box.setZValue(2)
         box.setToolTip(rich_tooltip(step.title, step.subtitle, step.explanation))
         scene.addItem(box)
-        _add_box_text(box, step, rects[step.key])
-        _add_bars(box, step, rects[step.key], largest_bytes, largest_seconds)
         boxes[step.key] = box
     return boxes
-
-
-def _add_box_text(box, step, rect):
-    estimate = []
-    if step.memory:
-        estimate.append(format_bytes(step.memory_bytes))
-    if step.time:
-        estimate.append(format_seconds(step.time_seconds))
-    if step.not_estimated:
-        estimate.append(f'{len(step.not_estimated)} not estimated')
-    text = QtWidgets.QGraphicsTextItem(box)
-    font = QtGui.QFont()
-    font.setPointSizeF(_TEXT_POINTS)
-    title_font = QtGui.QFont(font)
-    title_font.setPointSizeF(_TITLE_POINTS)
-    title_font.setWeight(QtGui.QFont.Weight.DemiBold)
-    text.setFont(font)
-    text.setDefaultTextColor(QtGui.QColor(_TEXT_COLOR))
-    width = rect.width() - 22.0   # one line each (full texts in the tooltip): the bars below stay clear
-    lines = [f'<div style="font-size:{_TITLE_POINTS}pt; font-weight:600">'
-             f'{html.escape(_elided(step.title, title_font, width))}</div>',
-             f'<div style="color:{_SUBTEXT_COLOR}">{html.escape(_elided(step.subtitle, font, width))}</div>']
-    if estimate:
-        lines.append(f'<div style="color:{_SUBTEXT_COLOR}">{html.escape(_elided("  ·  ".join(estimate), font, width))}'
-                     '</div>')
-    text.setHtml(''.join(lines))
-    text.setTextWidth(rect.width() - 16.0)
-    text.setPos(rect.left() + 8.0, rect.top() + 4.0)
-
-
-def _elided(text, font, width) -> str:
-    return QtGui.QFontMetricsF(font).elidedText(text, QtCore.Qt.TextElideMode.ElideRight, width)
-
-
-def _add_bars(box, step, rect, largest_bytes, largest_seconds):
-    """Thin bars along the box bottom: memory (blue) and time (orange) relative to the largest step."""
-    width = rect.width() - 20.0
-    bars = ((step.memory_bytes, largest_bytes, _MEMORY_BAR_COLOR), (step.time_seconds, largest_seconds, _TIME_BAR_COLOR))
-    for offset, (value, largest, color) in enumerate(bars):
-        if not largest or not value:
-            continue
-        top = rect.bottom() - 15.0 + offset * (_BAR_HEIGHT + 3)
-        track = QtWidgets.QGraphicsRectItem(rect.left() + 10.0, top, width, _BAR_HEIGHT, box)
-        track.setBrush(_BAR_TRACK_COLOR)
-        track.setPen(QtGui.QPen(QtCore.Qt.PenStyle.NoPen))
-        bar = QtWidgets.QGraphicsRectItem(rect.left() + 10.0, top, max(width * value / largest, 3.0), _BAR_HEIGHT,
-                                          box)
-        bar.setBrush(QtGui.QColor(color))
-        bar.setPen(QtGui.QPen(QtCore.Qt.PenStyle.NoPen))
 
 
 def _draw_arrow(scene, source, target, pen):
@@ -410,12 +419,14 @@ def _draw_link(scene, source, target, label, index):
     else:
         start = QtCore.QPointF(source.center().x() + 12.0, source.bottom())
         end = QtCore.QPointF(target.center().x() - 12.0, target.bottom())
-    depth = 18.0 + 8.0 * (index % 3)
+    depth = 10.0 + 4.0 * (index % 3)   # inside the gap to the next row
     path = QtGui.QPainterPath(start)
     path.cubicTo(start + QtCore.QPointF(0.0, depth), end + QtCore.QPointF(0.0, depth), end)
     scene.addPath(path, pen).setZValue(3)
     _arrow_head(scene, end, QtCore.QPointF(0.0, -1.0), pen.color())
-    text = scene.addSimpleText(label)
+    font = QtGui.QFont()
+    font.setPointSizeF(_TEXT_POINTS)
+    text = scene.addSimpleText(label, font)
     text.setBrush(QtGui.QColor(_LINK_COLOR))
     width = text.boundingRect().width()
     text.setPos(0.5 * (start.x() + end.x()) - 0.5 * width, start.y() + 0.75 * depth)
@@ -433,7 +444,9 @@ def _draw_loop(scene, loop, x):
     item = scene.addPath(path, pen)
     item.setToolTip(rich_tooltip(f'{loop.title}: {loop.text}'))
     _arrow_head(scene, QtCore.QPointF(x - 10.0, top), QtCore.QPointF(-1.0, 0.0), pen.color())
-    text = scene.addSimpleText(loop.title)
+    font = QtGui.QFont()
+    font.setPointSizeF(_TEXT_POINTS)
+    text = scene.addSimpleText(loop.title, font)
     text.setBrush(QtGui.QColor(_LOOP_COLOR))
     text.setRotation(90.0)
     text.setPos(x + 4.0 + text.boundingRect().height(), top + 6.0)
