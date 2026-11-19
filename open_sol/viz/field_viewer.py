@@ -7,7 +7,8 @@ plays them), or labelled states (wavelengths, modes, DFT frequencies: a slider, 
 reads a FieldData duck-typed (viz never imports api or model); api.Results.export_html collects the frames. An
 optional `ViewerGeometry` adds the model objects: their outlines on every layer and, in 3D, their edges and surfaces;
 `ViewerMirror`s let the page draw the mirror images of a half / quarter model (a Mirror button). `figure_settings`
-checks the Plot settings a page opens with (font sizes, colour and axis limits, colour bar and label places).
+checks the Plot settings a page opens with (font sizes, colour and axis limits, colour bar and label places). 2D maps
+whose layers carry `ViewerVectors` (with a `ViewerFlow` naming them) get moving flow particles (a Flow button).
 """
 
 import json
@@ -41,6 +42,9 @@ MATERIAL_COLORS = ('#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c56
 NO_MATERIAL_COLOR = '#b0b0b0'
 GLYPH_ARM = 0.012                     # half length of a point object's cross, fraction of the largest layer span
 MAX_GEOMETRY_BYTES = 8_000_000        # packed outline segments and surface triangles (float32)
+FLOW_MAX_BYTES = 6_000_000            # flow vectors of every frame and layer (int16 x, y per sample of a uniform grid)
+FLOW_MAX_SIDE = 320                   # flow grid samples along a layer's longer side (at most; fewer for many frames)
+FLOW_MIN_SIDE = 24
 _OUTER_FACES = ('x_lo', 'x_hi', 'y_lo', 'y_hi', 'z_lo', 'z_hi')
 # Plot settings of the page (its panel edits the same keys; field_viewer.html FIGURE_CHOICES / FIGURE_RANGES)
 FIGURE_CHOICES = {
@@ -73,6 +77,26 @@ class ViewerLayer:
     plane: tuple | None = None
     triangulation: tuple | None = None   # (nodes (n, 2) float, triangles (k, 3) int)
     extent: tuple | None = None
+    vectors: 'ViewerVectors | None' = None   # in-plane vector field of a 2D map (flow particles), its own grid
+
+
+@dataclass(eq=False)
+class ViewerVectors:
+    """An in-plane vector field over a 2D map layer, drawn as moving flow particles: x, y (nu, nv) components along the
+    layer's (u, v) axes on the u_centres x v_centres grid (m; None = uniform cells over the layer extent), NaN = no
+    flow there (outside the domain, holes). Its own grid: a triangle-mesh layer passes its FieldData raster."""
+    x: np.ndarray
+    y: np.ndarray
+    u_centres: np.ndarray | None = None
+    v_centres: np.ndarray | None = None
+
+
+@dataclass(eq=False)
+class ViewerFlow:
+    """What the flow particles of a page follow (label, unit of the vectors' magnitude): every layer of every frame
+    then carries ViewerVectors."""
+    label: str
+    unit: str = ''
 
 
 @dataclass(eq=False)
@@ -111,6 +135,7 @@ class ViewerMirror:
     face: str
     position: float
     value_sign: int = 1
+    flow_sign: int = 1                   # flow particles of the image: +1 the reflected paths, -1 those run backwards
 
 
 def _centres(centres, low, high, count):
@@ -181,6 +206,7 @@ def _check_layers(frames):
             raise ValueError(f'frame {index} has {len(frame.layers)} layers, frame 0 has {len(first)}')
         for layer, reference in zip(frame.layers, first):
             same = ((layer.triangulation is None) == (reference.triangulation is None)
+                    and (layer.vectors is None) == (reference.vectors is None)
                     and layer.plane == reference.plane and tuple(layer.axes) == tuple(reference.axes)
                     and np.shape(layer.values) == np.shape(reference.values))
             if not same:
@@ -247,7 +273,7 @@ def _strided(layer, stride):
     return ViewerLayer(values=_block_mean(layer.values, stride, (0, 1)),
                        u_centres=_block_mean(layer.u_centres, stride, (0,)),
                        v_centres=_block_mean(layer.v_centres, stride, (0,)), axes=layer.axes, plane=layer.plane,
-                       extent=layer.extent)
+                       extent=layer.extent, vectors=layer.vectors)
 
 
 def _log_floor(low, high):
@@ -645,7 +671,7 @@ def _plane_padded(layer, pads, phase):
         values = np.concatenate((row, values) if side == 'lo' else (values, row), axis=index)
         centres[index] = np.concatenate(([position], centres[index]) if side == 'lo' else (centres[index], [position]))
     return ViewerLayer(values=values, u_centres=centres[0], v_centres=centres[1], axes=layer.axes, plane=layer.plane,
-                       extent=layer.extent)
+                       extent=layer.extent, vectors=layer.vectors)
 
 
 def _mirror_padded_frames(frames, mirrors, phase):
@@ -671,9 +697,110 @@ def _mirror_data(mirrors, scale):
     for mirror in mirrors:
         if mirror.face not in _OUTER_FACES or int(mirror.value_sign) not in (1, -1):
             raise ValueError(f'mirror {mirror.face!r} sign {mirror.value_sign!r}: faces {_OUTER_FACES}, signs +1 / -1')
+        if int(mirror.flow_sign) not in (1, -1):
+            raise ValueError(f'mirror {mirror.face!r} flow_sign {mirror.flow_sign!r}: +1 / -1')
         data.append({'face': mirror.face, 'axis': mirror.face[0], 'position': float(mirror.position) / scale,
-                     'sign': int(mirror.value_sign)})
+                     'sign': int(mirror.value_sign), 'flow_sign': int(mirror.flow_sign)})
     return data
+
+
+# ---- flow particles (in-plane vectors of 2D maps) ----
+def _flow_shape(extent, n_frames, n_layers, source_shape):
+    """(gu, gv) samples of a layer's uniform flow grid: FLOW_MAX_SIDE along the longer side of extent, fewer when every
+    frame and layer would pass FLOW_MAX_BYTES (int16 x, y), never finer than the source raster, at least FLOW_MIN_SIDE."""
+    u0, u1, v0, v1 = extent
+    width, height = u1 - u0, v1 - v0
+    if not (width > 0 and height > 0):
+        raise ValueError(f'flow vectors need a layer extent with area, got {extent}')
+    ratio = min(width, height) / max(width, height)
+    budget = math.sqrt(FLOW_MAX_BYTES / (4.0 * n_frames * n_layers * ratio))
+    side = int(max(FLOW_MIN_SIDE, min(FLOW_MAX_SIDE, max(source_shape), budget)))
+    short = max(2, int(round(side * ratio)))
+    return (side, short) if width >= height else (short, side)
+
+
+def _uniform_flow(vectors, extent, shape):
+    """float64 (gu, gv, 2) of ViewerVectors on a uniform grid of shape over extent (m): the mean of the finite source
+    samples whose centres fall in each cell, NaN for a cell holding only NaN samples, the source sample nearest to
+    the centre for a cell holding none (a grid finer than the source there)."""
+    u0, u1, v0, v1 = extent
+    gu, gv = shape
+    x = np.asarray(vectors.x, dtype=np.float64)
+    y = np.asarray(vectors.y, dtype=np.float64)
+    if x.ndim != 2 or x.shape != y.shape or min(x.shape) < 2:
+        raise ValueError(f'flow vectors need two (nu, nv) component arrays of at least 2 x 2, got {x.shape} / {y.shape}')
+    nu, nv = x.shape
+    centres = []
+    for given, low, high, count in ((vectors.u_centres, u0, u1, nu), (vectors.v_centres, v0, v1, nv)):
+        axis = _centres(given, low, high, count)
+        if len(axis) != count:
+            raise ValueError(f'flow vector centres ({len(axis)}) do not match the component arrays ({count})')
+        if np.any(np.diff(axis) <= 0):
+            raise ValueError('flow vector centres must ascend')
+        centres.append(axis)
+    cells = [np.clip(np.floor((axis - low) / (high - low) * count).astype(np.int64), 0, count - 1)
+             for axis, low, high, count in ((centres[0], u0, u1, gu), (centres[1], v0, v1, gv))]
+    index = (cells[0][:, None] * gv + cells[1][None, :]).reshape(-1)
+    finite = (np.isfinite(x) & np.isfinite(y)).reshape(-1)
+    size = gu * gv
+    held = np.bincount(index, minlength=size)
+    count = np.bincount(index[finite], minlength=size)
+    out = np.full((size, 2), np.nan)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        for component, values in enumerate((x, y)):
+            out[:, component] = np.bincount(index[finite], weights=values.reshape(-1)[finite], minlength=size) / count
+    empty = held == 0
+    if np.any(empty):
+        nearest = []
+        for axis, low, high, cells_along in ((centres[0], u0, u1, gu), (centres[1], v0, v1, gv)):
+            target = low + (np.arange(cells_along) + 0.5) * (high - low) / cells_along
+            right = np.clip(np.searchsorted(axis, target), 1, len(axis) - 1)
+            nearest.append(np.where(target - axis[right - 1] <= axis[right] - target, right - 1, right))
+        source = (nearest[0][:, None] * nv + nearest[1][None, :]).reshape(-1)[empty]
+        out[empty, 0] = x.reshape(-1)[source]
+        out[empty, 1] = y.reshape(-1)[source]
+        out[empty & ~np.isfinite(out).all(axis=1)] = np.nan
+    return out.reshape(gu, gv, 2)
+
+
+def _flow_data(frames, flow, scale):
+    """(page JSON of the flow, per frame {'flow': [b64 per layer], 'flow_max': float}) of the layers' ViewerVectors:
+    each layer's vectors on a uniform grid over its extent (`_uniform_flow`), int16 codes of x, y over +-the frame's
+    largest magnitude (-32768 = no flow), interleaved and stored row by row along v (texture rows); None, [] without."""
+    first = frames[0].layers
+    if all(layer.vectors is None for layer in first):
+        if flow is not None:
+            raise ValueError('flow= names the vectors of the layers, but no layer carries ViewerVectors')
+        return None, [{} for _ in frames]
+    if flow is None:
+        raise ValueError('layers carry ViewerVectors: pass flow=ViewerFlow(label, unit) naming them')
+    if any(layer.vectors is None or layer.plane is not None for layer in first):
+        raise ValueError('flow vectors need every layer to be a 2D map (plane None) carrying ViewerVectors')
+    extents = [_layer_extent(layer) for layer in first]
+    shapes = [_flow_shape(extent, len(frames), len(first), np.shape(layer.vectors.x))
+              for extent, layer in zip(extents, first)]
+    packed, peak = [], 0.0
+    for frame in frames:
+        grids = [_uniform_flow(layer.vectors, extent, shape) for layer, extent, shape in zip(frame.layers, extents, shapes)]
+        magnitudes = [np.hypot(grid[..., 0], grid[..., 1]) for grid in grids]
+        frame_max = max((float(np.nanmax(m)) for m in magnitudes if np.isfinite(m).any()), default=0.0)
+        peak = max(peak, frame_max)
+        codes = []
+        for grid in grids:
+            finite = np.isfinite(grid).all(axis=2)
+            q = np.zeros(grid.shape)
+            if frame_max > 0:
+                q = np.clip(np.round(np.where(finite[..., None], grid, 0.0) / frame_max * 32767), -32767, 32767)
+            q = q.astype('<i2')
+            q[~finite] = _Q_NAN
+            codes.append(_b64(np.ascontiguousarray(q.transpose(1, 0, 2))))   # (gv, gu, 2): texture rows along u
+        packed.append({'flow': codes, 'flow_max': frame_max})
+    if not peak > 0:
+        raise ValueError(f'the flow vectors ({flow.label}) are zero or have no finite value in every frame')
+    page = {'label': flow.label, 'unit': flow.unit, 'max': peak,
+            'layers': [{'nu': int(gu), 'nv': int(gv), 'extent': [float(edge) / scale for edge in extent]}
+                       for (gu, gv), extent in zip(shapes, extents)]}
+    return page, packed
 
 
 def figure_settings(figure) -> dict:
@@ -713,14 +840,15 @@ def figure_settings(figure) -> dict:
 
 
 def viewer_data(frames, quantity, title='', subtitle='', frame_kind='labelled', view=None, plan=None,
-                max_bytes=MAX_BYTES, max_frames=MAX_FRAMES, geometry=None, mirrors=None, figure=None):
+                max_bytes=MAX_BYTES, max_frames=MAX_FRAMES, geometry=None, mirrors=None, figure=None, flow=None):
     """The JSON-able dict the page reads. frames [ViewerFrame] (one surface set throughout), quantity ViewerQuantity,
     frame_kind 'time' | 'labelled', view (azimuth, elevation) degrees or None, geometry ViewerGeometry or None,
     mirrors [ViewerMirror] the planes the page can unfold across (a Mirror button; grid layers ending on one get a
     sample row on it). plan None: frames are thinned and grid layers strided here (plan_frames over max_bytes /
     max_frames); a plan: frames already follow it (picked and strided by the caller). The subtitle names any
     thinning or stride. figure: the page's Plot settings (`figure_settings` keys) it opens with, over the ones the
-    browser remembers."""
+    browser remembers. flow: ViewerFlow naming the ViewerVectors every layer carries (2D maps only; flow particles,
+    their mirror images follow ViewerMirror.flow_sign), None without vectors."""
     if not frames:
         raise ValueError('nothing to show: no field frames')
     if frame_kind not in FRAME_KINDS:
@@ -740,8 +868,9 @@ def viewer_data(frames, quantity, title='', subtitle='', frame_kind='labelled', 
     if geometry is not None and geometry.box is not None:
         span = max(span, *(float(size) for size in geometry.box))
     scale, unit = length_scale(span or 1.0)
+    flow_page, flow_frames = _flow_data(frames, flow, scale)
     packed, ranges = [], []
-    for frame in frames:
+    for frame, flow_frame in zip(frames, flow_frames):
         frame_range = _finite_range(layer.values for layer in frame.layers)
         if frame_range is not None:
             ranges.append(frame_range)
@@ -749,7 +878,8 @@ def viewer_data(frames, quantity, title='', subtitle='', frame_kind='labelled', 
         log_low = _log_floor(low, high)
         packed.append({'label': frame.label, 'time': None if frame.time is None else float(frame.time),
                        'lo': low, 'hi': high, 'empty': frame_range is None, 'log_lo': log_low,
-                       'values': [_b64(_quantised(layer.values, low, high, log_low)) for layer in frame.layers]})
+                       'values': [_b64(_quantised(layer.values, low, high, log_low)) for layer in frame.layers],
+                       **flow_frame})
     if not ranges:
         raise ValueError('the field has no finite value in any frame')
     low, high = min(lo for lo, _ in ranges), max(hi for _, hi in ranges)
@@ -767,6 +897,7 @@ def viewer_data(frames, quantity, title='', subtitle='', frame_kind='labelled', 
         'view': None if view is None else [float(view[0]), float(view[1])],
         'geometry': None if geometry is None else _geometry_data(geometry, first, scale),
         'mirrors': _mirror_data(mirrors, scale),
+        'flow': flow_page,
     }
 
 

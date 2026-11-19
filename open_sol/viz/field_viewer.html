@@ -122,6 +122,7 @@ button.icon { padding: 5px 8px; min-width: 32px; }
 button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
 input[type="range"] { width: 110px; accent-color: var(--accent); }
 input#frame { width: 180px; }
+input[type="range"].short { width: 70px; }
 .val { min-width: 42px; color: var(--ink); }
 .spacer { flex: 1; }
 .empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--ink-3); text-align: center;
@@ -237,6 +238,9 @@ body.present .app { padding: 10px; gap: 10px; }
     <div class="group" id="reliefgroup"><label for="relief">Relief</label>
       <input type="range" id="relief" min="0" max="1" step="0.01" value="0" title="Raise the map by its value">
       <span class="val num" id="reliefv"></span></div>
+    <div class="group" id="flowgroup"><button id="flow" aria-pressed="false">Flow</button>
+      <input type="range" id="flowdensity" class="short" min="0.2" max="4" step="0.1" value="1" title="Number of flow particles">
+      <input type="range" id="flowspeed" class="short" min="0" max="3" step="0.05" value="1" title="Speed of the flow particles (0: still)"></div>
     <div class="group" id="layergroup"></div>
     <div class="group" id="geomgroup"><label for="geom">Objects</label>
       <select id="geom" title="Model objects drawn with the field (G)"></select>
@@ -671,6 +675,7 @@ function uploadFrame() {
   if (!gl || !ready) return;
   const values = frameValues(state.frame);
   LAYERS.forEach((L, i) => { gl.bindBuffer(gl.ARRAY_BUFFER, L.valBuf); gl.bufferSubData(gl.ARRAY_BUFFER, 0, values[i]); });
+  flowState.frame = -1;                        // flow particles: the new frame's vectors on their next draw
 }
 
 // ---------- camera ----------
@@ -838,6 +843,7 @@ function draw() {
   }
   gl.disable(gl.BLEND);
   gl.bindVertexArray(null);
+  drawFlow(view, proj);
   drawGeometry(view, proj);
   drawAxes(view, proj);
   drawOverlay(view, proj);
@@ -1376,6 +1382,275 @@ window.addEventListener('keydown', (e) => {
 });
 syncGeometry();
 
+// ---- vectors ----
+// Flow particles (DATA.flow: per 2D map layer an in-plane vector on a uniform grid over the layer's extent, int16 x, y
+// per frame over +-flow_max). Stateless pathlines: particle i lives generations of FLOW_LIFE s of flow clock, each
+// starting at a hashed seed inside the window shown (the visible part of the layer, per mirror image) and moving along
+// the field in RK2 steps of the vector normalised by the page's largest magnitude (FLOW_TRAVEL of the shown span per
+// life at that magnitude: slow regions crawl, fast ones stream). A transform-feedback pass writes FLOW_TAIL + 1 points
+// of every particle's latest path, each recomputed from its seed, so nothing is kept between draws (PNG, recordings,
+// frame changes and zoom need no reset); the draw pass strokes them as screen-space quads fading to the tail, a light
+// core over a dark halo (the reverse over a light colour-map middle), so they read over any colour. Mirror images: the
+// paths are reflected, and run backwards where the product of the images' flow_sign is -1 (a vector odd along the
+// plane). No particles on a raised map (relief would hide them under its surface).
+const FLOW = DATA.flow || null;
+const FLOW_STEPS = 48, FLOW_TAIL = 16, FLOW_LIFE = 3.2, FLOW_TRAVEL = 0.32, FLOW_BASE = 2600, FLOW_MAX_PARTICLES = 30000;
+const flowState = (() => {
+  const out = { on: !!FLOW, density: 1, speed: 1, clock: 0, gl: null, frame: -1 }, kept = storedJson('flow');
+  if (typeof kept.on === 'boolean') out.on = out.on && kept.on;
+  if (typeof kept.density === 'number' && kept.density >= 0.2 && kept.density <= 4) out.density = kept.density;
+  if (typeof kept.speed === 'number' && kept.speed >= 0 && kept.speed <= 3) out.speed = kept.speed;
+  return out;
+})();
+function saveFlow() { store('flow', JSON.stringify({ on: flowState.on, density: flowState.density, speed: flowState.speed })); }
+const FLOW_TF_VS = `#version 300 es
+precision highp float;
+precision highp int;
+uniform sampler2D uVec;
+uniform vec4 uExtent;        // u0, v0, width, height of the layer's flow grid (length units)
+uniform vec4 uSeed;          // window the seeds fill: u0, v0, width, height
+uniform float uClock;        // flow clock in lives
+uniform float uStep;         // length units per step at the page's largest magnitude
+uniform float uDir;          // +1, -1: an image whose flow runs backwards
+uniform float uScale;        // this frame's largest magnitude / the page's
+uniform uint uSalt;          // per image and layer: their particles differ
+out vec4 vPoint;             // u, v, alpha, index along the tail (0 = its end)
+uint hashU(uint x) { x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16; return x; }
+float rnd(uint x) { return float(hashU(x) >> 8) / 16777216.0; }
+vec3 flowAt(vec2 p) {         // (vector / page largest, 1 inside the flow); zero outside the grid
+  vec2 t = (p - uExtent.xy) / uExtent.zw;
+  if (any(lessThan(t, vec2(0.0))) || any(greaterThan(t, vec2(1.0)))) return vec3(0.0);
+  vec4 s = texture(uVec, t);
+  return vec3(s.xy * (uScale * uDir), s.z);
+}
+void main() {
+  int i = gl_VertexID / ${FLOW_TAIL + 1}, k = gl_VertexID - i * ${FLOW_TAIL + 1};
+  uint ui = uint(i);
+  float life = uClock + rnd(ui * 7919u + uSalt);
+  float gen = floor(life), age = life - gen;
+  vec2 p = uSeed.xy; float inside = 0.0;
+  for (int t = 0; t < 4; t++) {      // a seed where something flows (not in holes, solids or the outside)
+    uint h = hashU(ui * 0x9e3779b9u ^ hashU(uint(gen) * 0x85ebca6bu + uint(t) * 0x27d4eb2fu + uSalt));
+    vec2 q = uSeed.xy + vec2(rnd(h), rnd(h ^ 0x68e31da4u)) * uSeed.zw;
+    vec3 f = flowAt(q);
+    if (f.z > 0.5 && dot(f.xy, f.xy) > 1e-6) { p = q; inside = 1.0; break; }
+  }
+  float steps = max(age * float(${FLOW_STEPS}) - float(${FLOW_TAIL} - k), 0.0);
+  int n = int(steps);
+  float frac = steps - float(n);
+  for (int s = 0; s <= ${FLOW_STEPS}; s++) {
+    if (s > n || inside < 0.5) break;
+    float h = (s == n ? frac : 1.0) * uStep;   // the last step fractional: smooth motion between draws
+    vec3 a = flowAt(p);
+    vec3 b = flowAt(p + 0.5 * h * a.xy);
+    if (a.z < 0.5 || b.z < 0.5) { inside = 0.0; break; }   // left the flow (an edge, a hole): gone
+    p += h * b.xy;
+  }
+  if (flowAt(p).z < 0.5) inside = 0.0;
+  float fade = smoothstep(0.0, 0.12, age) * (1.0 - smoothstep(0.78, 1.0, age));
+  float slow = 0.2 + 0.8 * smoothstep(0.0, 0.12, length(flowAt(p).xy));   // nearly still particles dimmed
+  vPoint = vec4(p, inside * fade * slow, float(k));
+}`;
+const FLOW_TF_FS = `#version 300 es
+precision mediump float;
+out vec4 outColor;
+void main() { outColor = vec4(0.0); }`;
+const FLOW_VS = `#version 300 es
+precision highp float;
+in vec4 aA; in vec4 aB; in vec2 aCorner;
+uniform mat4 uView; uniform mat4 uProj; uniform vec3 uCenter; uniform vec3 uStretch;
+uniform vec2 uViewport; uniform float uWidth; uniform vec3 uMirA; uniform vec3 uMirB;
+uniform vec3 uAxU; uniform vec3 uAxV; uniform vec3 uAxW;   // the layer's u, v unit axes, its plane offset
+out float vAlpha; out vec3 vPlace; out float vAcross;
+void main() {
+  vAcross = aCorner.y;
+  if (aB.w < 0.5) {                  // the step from one particle's head to the next one's tail: not drawn
+    vAlpha = 0.0; vPlace = vec3(0.0); gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+  vec3 A = (uAxU * aA.x + uAxV * aA.y + uAxW) * uMirA + uMirB;
+  vec3 B = (uAxU * aB.x + uAxV * aB.y + uAxW) * uMirA + uMirB;
+  vec4 ca = uProj * uView * vec4((A - uCenter) * uStretch, 1.0);
+  vec4 cb = uProj * uView * vec4((B - uCenter) * uStretch, 1.0);
+  vec2 d = (cb.xy / max(cb.w, 1e-6) - ca.xy / max(ca.w, 1e-6)) * uViewport;
+  float len = length(d);
+  vec2 dir = len > 1e-6 ? d / len : vec2(1.0, 0.0), across = vec2(-dir.y, dir.x);
+  float along = mix(aA.w, aB.w, aCorner.x) / ${FLOW_TAIL}.0;   // 0 tail end .. 1 head
+  float w = uWidth * (0.35 + 0.65 * along);
+  vec4 c = mix(ca, cb, aCorner.x);
+  // segments meet end to end (an overlap would show as a brighter joint); the head gets a round-ish cap
+  float cap = aB.w > ${FLOW_TAIL - 0.5} ? 0.5 * aCorner.x : 0.0;
+  c.xy += (across * aCorner.y + dir * cap) * w * c.w / uViewport;
+  vAlpha = min(aA.z, aB.z) * pow(along, 1.3);          // a step into the edge or a hole (dead end) not drawn
+  vPlace = mix(A, B, aCorner.x);
+  gl_Position = c;
+}`;
+const FLOW_FS = `#version 300 es
+precision highp float;
+in float vAlpha; in vec3 vPlace; in float vAcross;
+uniform vec4 uColor; uniform vec4 uHalo; uniform vec3 uClipLo; uniform vec3 uClipHi;
+out vec4 outColor;
+void main() {
+  if (any(lessThan(vPlace, uClipLo)) || any(greaterThan(vPlace, uClipHi))) discard;   // outside the axis limits
+  // one pass: the core across the middle ~45 % of the quad, a soft halo to its edges (two passes would brighten
+  // every joint and crossing twice)
+  float t = abs(vAcross), core = 1.0 - smoothstep(0.32, 0.5, t), halo = 1.0 - smoothstep(0.45, 1.0, t);
+  float a = vAlpha * max(core * uColor.a, halo * uHalo.a);
+  if (a < 0.004) discard;
+  outColor = vec4(mix(uHalo.rgb, uColor.rgb, core), a);
+}`;
+function flowSetup() {
+  if (!FLOW) return false;
+  const tfProg = gl.createProgram();
+  gl.attachShader(tfProg, compile(gl.VERTEX_SHADER, FLOW_TF_VS)); gl.attachShader(tfProg, compile(gl.FRAGMENT_SHADER, FLOW_TF_FS));
+  gl.transformFeedbackVaryings(tfProg, ['vPoint'], gl.INTERLEAVED_ATTRIBS);
+  gl.linkProgram(tfProg);
+  if (!gl.getProgramParameter(tfProg, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(tfProg));
+  const tfUni = {};
+  for (const name of ['uVec', 'uExtent', 'uSeed', 'uClock', 'uStep', 'uDir', 'uScale', 'uSalt']) tfUni[name] = gl.getUniformLocation(tfProg, name);
+  const drawUni = {};
+  const drawProg = linkProgram(FLOW_VS, FLOW_FS, ['uView', 'uProj', 'uCenter', 'uStretch', 'uViewport', 'uWidth', 'uMirA', 'uMirB',
+                                                  'uAxU', 'uAxV', 'uAxW', 'uColor', 'uHalo', 'uClipLo', 'uClipHi'], drawUni);
+  const textures = FLOW.layers.map((FL) => {
+    const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, FL.nu, FL.nv, 0, gl.RGBA, gl.FLOAT, null);
+    return { texture: t, scratch: new Float32Array(4 * FL.nu * FL.nv) };
+  });
+  gl.bindTexture(gl.TEXTURE_2D, null);
+  // one points buffer, rewritten by the feedback pass of each image and layer, then read by its draw: record i and
+  // i + 1 are the two ends of instance i
+  const points = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, points);
+  gl.bufferData(gl.ARRAY_BUFFER, FLOW_MAX_PARTICLES * (FLOW_TAIL + 1) * 16, gl.DYNAMIC_COPY);
+  const emptyVao = gl.createVertexArray();
+  const drawVao = gl.createVertexArray(); gl.bindVertexArray(drawVao);
+  vertexBuffer(gl.getAttribLocation(drawProg, 'aCorner'), new Float32Array([0, -1, 1, -1, 1, 1, 0, -1, 1, 1, 0, 1]), 2, gl.STATIC_DRAW);
+  gl.bindBuffer(gl.ARRAY_BUFFER, points);
+  for (const [name, offset] of [['aA', 0], ['aB', 16]]) {
+    const loc = gl.getAttribLocation(drawProg, name);
+    gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 4, gl.FLOAT, false, 16, offset); gl.vertexAttribDivisor(loc, 1);
+  }
+  gl.bindVertexArray(null); gl.bindBuffer(gl.ARRAY_BUFFER, null);
+  return { tfProg, tfUni, drawProg, drawUni, textures, points, emptyVao, drawVao, feedback: gl.createTransformFeedback() };
+}
+function flowUpload() {
+  // the shown frame's vectors into the layers' RGBA16F textures (x, y / frame largest, 1 = flow here)
+  const G = flowState.gl, F = FRAMES[state.frame];
+  flowState.frame = state.frame;
+  FLOW.layers.forEach((FL, li) => {
+    const q = i16(F.flow[li]), out = G.textures[li].scratch;
+    for (let k = 0, n = FL.nu * FL.nv; k < n; k++) {
+      const x = q[2 * k], y = q[2 * k + 1], o = 4 * k;
+      if (x === -32768) { out[o] = 0; out[o + 1] = 0; out[o + 2] = 0; out[o + 3] = 0; continue; }
+      out[o] = x / 32767; out[o + 1] = y / 32767; out[o + 2] = 1; out[o + 3] = 0;
+    }
+    gl.bindTexture(gl.TEXTURE_2D, G.textures[li].texture);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, FL.nu, FL.nv, gl.RGBA, gl.FLOAT, out);
+  });
+  gl.bindTexture(gl.TEXTURE_2D, null);
+}
+function flowDir(I) {
+  // +1 / -1: the image's flow along its reflected paths or backwards (product of its mirrors' flow_sign)
+  let d = 1;
+  for (const c of [0, 1, 2]) if (I.a[c] < 0) {
+    const M = MIRRORS.find((m) => AX[m.axis] === c && Math.abs(2 * m.position - I.b[c]) <= 1e-6 * (Math.abs(I.b[c]) + LARGEST));
+    if (!M) throw new Error('flow: no mirror plane for an image along ' + AXIS_NAMES[c]);
+    d *= M.flow_sign === -1 ? -1 : 1;
+  }
+  return d;
+}
+function flowColors() {
+  // a light core over a dark halo, or the reverse over a colour map whose middle is light (diverging maps)
+  const [r, g, b] = hexRgb(CMAPS[state.cmap][4]);
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.5 ? { core: [0.04, 0.05, 0.07, 0.9], halo: [1, 1, 1, 0.45] }
+                                                   : { core: [1, 1, 1, 0.95], halo: [0.02, 0.03, 0.06, 0.42] };
+}
+function flowShown() { return !!FLOW && flowState.on && state.relief === 0; }
+function drawFlow(view, proj) {
+  if (!flowShown() || flowState.gl === false) return;
+  if (flowState.gl === null) {
+    try { flowState.gl = flowSetup(); flowState.frame = -1; }
+    catch (err) { flowState.gl = false; $('flow').disabled = true; $('flow').title = 'Flow particles: WebGL error ' + err.message; return; }
+  }
+  const G = flowState.gl, F = FRAMES[state.frame], scale = (F.flow_max || 0) / FLOW.max;
+  if (!(scale > 0)) return;
+  if (flowState.frame !== state.frame) flowUpload();
+  const [iu, iv] = PLANE_AXES, viewLo = [bmin[iu], bmin[iv]], viewHi = [bmax[iu], bmax[iv]];
+  const viewArea = (viewHi[0] - viewLo[0]) * (viewHi[1] - viewLo[1]);
+  if (!(viewArea > 0)) return;
+  const step = FLOW_TRAVEL * Math.max(viewHi[0] - viewLo[0], viewHi[1] - viewLo[1]) / FLOW_STEPS;
+  const colors = flowColors(), f = stretch();
+  gl.disable(gl.DEPTH_TEST); gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  images().forEach((I, m) => {
+    const dir = flowDir(I);
+    FLOW.layers.forEach((FL, li) => {
+      const L = LAYERS[li];
+      if (!L.visible) return;
+      // the part of the layer this image shows: the view window mapped back (x = (x' - b) / a) and cut to the grid
+      const ext = FL.extent, lo = [], hi = [];
+      [iu, iv].forEach((c, k) => {
+        const e1 = (viewLo[k] - I.b[c]) / I.a[c], e2 = (viewHi[k] - I.b[c]) / I.a[c];
+        lo.push(Math.max(Math.min(e1, e2), ext[2 * k])); hi.push(Math.min(Math.max(e1, e2), ext[2 * k + 1]));
+      });
+      if (!(hi[0] > lo[0] && hi[1] > lo[1])) return;
+      const count = Math.min(FLOW_MAX_PARTICLES, Math.round(flowState.density * FLOW_BASE * (hi[0] - lo[0]) * (hi[1] - lo[1]) / viewArea));
+      if (count < 1) return;
+      const nPoints = count * (FLOW_TAIL + 1);
+      // feedback pass: the particles' latest paths into the points buffer
+      gl.useProgram(G.tfProg);
+      gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, G.textures[li].texture); gl.uniform1i(G.tfUni.uVec, 0);
+      gl.uniform4f(G.tfUni.uExtent, ext[0], ext[2], ext[1] - ext[0], ext[3] - ext[2]);
+      gl.uniform4f(G.tfUni.uSeed, lo[0], lo[1], hi[0] - lo[0], hi[1] - lo[1]);
+      gl.uniform1f(G.tfUni.uClock, flowState.clock); gl.uniform1f(G.tfUni.uStep, step);
+      gl.uniform1f(G.tfUni.uDir, dir); gl.uniform1f(G.tfUni.uScale, scale);
+      gl.uniform1ui(G.tfUni.uSalt, (m * 977 + li * 131 + 17) >>> 0);
+      gl.bindVertexArray(G.emptyVao);
+      gl.enable(gl.RASTERIZER_DISCARD);
+      gl.bindTransformFeedback(gl.TRANSFORM_FEEDBACK, G.feedback);
+      gl.bindBufferBase(gl.TRANSFORM_FEEDBACK_BUFFER, 0, G.points);
+      gl.beginTransformFeedback(gl.POINTS); gl.drawArrays(gl.POINTS, 0, nPoints); gl.endTransformFeedback();
+      gl.bindBufferBase(gl.TRANSFORM_FEEDBACK_BUFFER, 0, null);
+      gl.bindTransformFeedback(gl.TRANSFORM_FEEDBACK, null);
+      gl.disable(gl.RASTERIZER_DISCARD);
+      gl.bindTexture(gl.TEXTURE_2D, null);
+      // draw pass: every path as screen-space quads
+      gl.useProgram(G.drawProg);
+      const U = G.drawUni, axis = (c, s) => { const e = [0, 0, 0]; e[c] = s; return e; };
+      gl.uniformMatrix4fv(U.uView, false, view); gl.uniformMatrix4fv(U.uProj, false, proj);
+      gl.uniform3fv(U.uCenter, center); gl.uniform3fv(U.uStretch, f);
+      gl.uniform3fv(U.uClipLo, clipLo); gl.uniform3fv(U.uClipHi, clipHi);
+      gl.uniform2f(U.uViewport, canvas.width, canvas.height);
+      gl.uniform3fv(U.uAxU, axis(iu, 1)); gl.uniform3fv(U.uAxV, axis(iv, 1)); gl.uniform3fv(U.uAxW, axis(L.axis, L.position));
+      setImage(U, I);
+      gl.bindVertexArray(G.drawVao);
+      gl.uniform4fv(U.uColor, colors.core); gl.uniform4fv(U.uHalo, colors.halo); gl.uniform1f(U.uWidth, 4.8 * pixelRatio);
+      gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, nPoints - 1);
+    });
+  });
+  gl.bindVertexArray(null); gl.disable(gl.BLEND); gl.enable(gl.DEPTH_TEST);
+}
+function flowTick(dt) { if (flowShown()) flowState.clock += dt * flowState.speed / FLOW_LIFE; }
+function flowSync() {
+  if (!FLOW) return;
+  $('flow').setAttribute('aria-pressed', String(flowState.on));
+  $('flowdensity').value = String(flowState.density); $('flowspeed').value = String(flowState.speed);
+  $('flowdensity').disabled = $('flowspeed').disabled = !flowState.on;
+  $('flow').title = 'Particles moving along the ' + FLOW.label.toLowerCase() + ' (speed in proportion to its magnitude; '
+    + 'hidden while the map is raised) (V)';
+}
+$('flowgroup').style.display = FLOW ? '' : 'none';
+if (FLOW) {
+  $('flow').onclick = () => { flowState.on = !flowState.on; saveFlow(); flowSync(); updateReadout(); };
+  $('flowdensity').oninput = (e) => { flowState.density = +e.target.value; saveFlow(); };
+  $('flowspeed').oninput = (e) => { flowState.speed = +e.target.value; saveFlow(); };
+  window.addEventListener('keydown', (e) => {
+    if (e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT' && e.target.type !== 'range') return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if ((e.key === 'v' || e.key === 'V') && !$('flow').disabled) $('flow').click();
+  });
+  flowSync();
+}
+// ---- end vectors ----
+
 // ---------- heading (drawn by drawHeading) and the automatic values the Plot settings panel shows ----------
 function updateReadout() {
   const F = FRAMES[state.frame];
@@ -1388,6 +1663,7 @@ function updateReadout() {
   if (planes.length) parts.push(planes.join(', '));
   if (state.stretch && CAN_STRETCH) parts.push('stretched ' + STRETCH_TEXT);
   if (state.mirror && CAN_MIRROR) parts.push('mirrored at ' + MIRRORS.map((M) => M.face).join(', '));
+  if (flowShown()) parts.push('streaks: ' + FLOW.label.toLowerCase());
   heading.meta = parts.join('  ·  ');
   $('framev').textContent = NF > 1 ? (state.frame + 1) + ' / ' + NF : '';
   const [lo, hi] = autoLimits();
@@ -1685,6 +1961,7 @@ let last = performance.now(), frameClock = 0;
 function tick(now) {
   const dt = Math.min((now - last) / 1000, 0.1); last = now;
   if (state.spin) cam.az -= SPIN_RATE * dt;
+  flowTick(dt);
   if (state.playing && NF > 1) {
     frameClock += dt * state.fps;
     if (frameClock >= 1) { const steps = Math.floor(frameClock); frameClock -= steps; select(state.frame + steps); }
