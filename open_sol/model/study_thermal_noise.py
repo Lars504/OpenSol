@@ -93,54 +93,44 @@ def _validate_thermal_noise(vctx, values):
 
 _THERMAL_NOISE_PARAMS = (
     Param('frequency_start', 'float', 1e3, label='Start frequency', unit='Hz', min=0.0, min_exclusive=True,
-          help='Lowest noise frequency in Hz of the range (used when frequencies is empty). Below the '
-               'slowest thermal relaxation rate the spectrum is flat. At q_z = 0 the mean temperature of a region '
-               'without temperature anchor (insulated) never relaxes: that share is the static_variance of the '
-               'result, outside every band. Typical 1e2-1e4.',
+          help='Range used when frequencies is empty. Below the slowest thermal relaxation rate the spectrum is '
+               'flat. At q_z = 0 the mean temperature of an insulated region never relaxes: that share is the '
+               'static_variance of the result, outside every band. Typical 1e2-1e4.',
           tip='Lowest noise frequency, in hertz.'),
     Param('frequency_stop', 'float', 1e9, label='Stop frequency', unit='Hz', min=0.0, min_exclusive=True,
-          help='Highest noise frequency in Hz; must exceed frequency_start. Above the fastest relaxation rate D q^2 / '
-               '(2 pi) of the weighting the spectrum falls as 1/f^2 (for water and q = 1.5e7 1/m about 5 MHz). '
-               'Typical 1e9-1e11.',
+          help='Must exceed frequency_start. Above the fastest relaxation rate D q^2 / (2 pi) of the weighting the '
+               'spectrum falls as 1/f^2 (water, q = 1.5e7 1/m: about 5 MHz). Typical 1e9-1e11.',
           tip="Highest noise frequency, in hertz. Must be larger than 'Start frequency'."),
     Param('n_frequencies', 'int', 31, label='Number of frequencies', min=1,
-          help='Frequencies of the range, spaced as log_spacing selects (both ends included; 1 = the geometric mean, '
-               'or the arithmetic mean with log_spacing off). Each costs one sparse factorisation per axial '
-               'sample of every thermorefractive_noise feature (host SuperLU, or batched on the GPU with a '
-               'line_block solver as the heat shifted solver).',
+          help='Both ends included, spaced as log_spacing selects (1 = the geometric or arithmetic mean). Each costs '
+               'one sparse factorisation per axial sample of every thermorefractive_noise feature.',
           tip='Number of frequencies between the start and stop frequency.\n\nEach costs one sparse solve per '
               'noise feature.'),
     Param('log_spacing', 'bool', True, label='Logarithmic spacing',
-          help='true: the range frequencies are spaced evenly in log f (geomspace; suits spectra spanning decades); '
-               'false: evenly in f (linspace). Ignored when frequencies lists any frequency.',
+          help='true: evenly in log f (spectra spanning decades); false: evenly in f.',
           tip='On: frequencies spaced evenly on a logarithmic scale, suited to a range spanning several decades.'
               '\n\nOff: frequencies spaced evenly (equal steps in hertz).'),
     Param('frequencies', 'float_list', None, label='Frequency list', unit='Hz', min=0.0, min_exclusive=True,
           optional=True,
-          help='Explicit noise frequencies in Hz (each > 0), solved and reported in ascending order; a non-empty '
-               'list overrides frequency_start, frequency_stop and n_frequencies.',
+          help='Solved and reported in ascending order; a non-empty list overrides the range.',
           tip="Noise frequencies in hertz; when filled, it replaces the range above."),
-    *_background_fixed_point_params('the mode and noise solves', 'the mode and noise solves'),
+    *_background_fixed_point_params('the mode and noise solves'),
 )
 _DESCRIPTION = (
-    'Thermorefractive noise of a z-invariant cross-section (fluctuation-dissipation theorem; Levin-type direct '
-    'approach). Every heat physics (always planar 2D, never CG-solved here and needing no temperature anchor) '
-    'computes the one-sided PSD of X = integral w(x, y) g(z) exp(-j q0 z) dT dV of each of its thermorefractive_noise '
-    'features: S_X(f) = 4 k_B T0^2 integral dq/2pi |g~(q - q0)|^2 Re sum conj(w) u dA, where (j omega rho cp + k_zz q^2 '
-    '- div k grad) u = w on the heat window (k, boundary conditions, held cells and volumetric losses as assembled for '
-    'a steady solve: temperature / fixed-temperature cells are ideal reservoirs and do not fluctuate, insulated faces '
-    'are mirrors), one host SuperLU factorisation per (frequency, axial sample), or GPU line-block batches of them '
-    '(the heat shifted solver: sparse_direct by default, or line_block). The temperature is uniform T0 (the '
-    'heat T0 setting; a heated background is not supported). Every em_modes physics is solved first (its modes give '
-    'the mode-pair weightings); every other physics must support the stationary study and runs as a background '
-    'physics first. particle_noise features solve the same way for dilute particles diffusing in a liquid (4 n0 '
-    'instead of 4 k_B T0^2, diffusivity instead of k / rho cp). Couplings reading heat or em_modes are a validation '
-    'error. Results: one xy result per feature '
-    '(psd versus frequency) with the exact total variance (sum rule k_B T0^2 integral |w|^2 / (rho cp) dV), its '
-    'never-relaxing static part and the share of the rest inside the solved band; one snapshot per mode number after the mode solve (labelled "mode <k>: n_eff '
-    '= <value>", as in mode_analysis: step through the modes with the snapshot slider) and one final snapshot '
-    'labelled "thermal noise" (Displayed mode of each em_modes physics); ticks = factorisations; '
-    'summary noise_frequencies.')
+    'Thermorefractive noise of a z-invariant cross-section (fluctuation-dissipation theorem, Levin-type direct '
+    'approach). Every heat physics (planar 2D, never CG-solved here, no temperature anchor needed) computes the '
+    'one-sided PSD of X = integral w(x, y) g(z) exp(-j q0 z) dT dV of each thermorefractive_noise feature: S_X(f) = 4 '
+    'k_B T0^2 integral dq/2pi |g~(q - q0)|^2 Re sum conj(w) u dA, where (j omega rho cp + k_zz q^2 - div k grad) u = '
+    'w on the heat window (k, boundary conditions, held cells and losses as in a steady solve: held temperatures are '
+    'ideal reservoirs that do not fluctuate, insulated faces are mirrors), one host SuperLU factorisation per '
+    '(frequency, axial sample), or GPU line-block batches (the heat shifted solver: sparse_direct by default, or '
+    'line_block). The temperature is uniform T0 (the heat T0 setting; a heated background is not supported). Every '
+    'em_modes physics is solved first (its modes give the mode-pair weightings). particle_noise features solve the '
+    'same way for dilute particles diffusing in a liquid (4 n0 instead of 4 k_B T0^2, diffusivity instead of k / rho '
+    'cp). Couplings reading heat or em_modes: validation error. Results: one xy result per feature (psd versus '
+    'frequency) with the exact total variance (sum rule k_B T0^2 integral |w|^2 / (rho cp) dV), its never-relaxing '
+    'static part and the share of the rest inside the band; one snapshot per mode number after the mode solve (as in '
+    'mode_analysis) and a final one labelled "thermal noise"; ticks = factorisations; summary noise_frequencies.')
 
 
 def register(registry):

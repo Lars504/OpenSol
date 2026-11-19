@@ -7,7 +7,7 @@ from ..physics.magnetic.couplings import FORCE_SLOTS, HEAT_SLOT, InductionHeatSo
 from ..physics.magnetic.selftests_coupled import (INDUCTION_BILLET_DESCRIPTION, INDUCTION_BILLET_LABEL,
                                                   induction_billet_spec)
 from .coupling_term import CouplingGroup, CouplingTerm
-from .definitions import HEAT_TYPE_NAME, writes_heat_source
+from .definitions import HEAT_SOURCE_SUM_TEXT, HEAT_TYPE_NAME, writes_heat_source
 from .index_terms import after_source_step, physics_and_type
 
 # = the physics.magnetic selftests / selftests_ac / selftests_coupled constants (not imported here)
@@ -16,7 +16,6 @@ MAGNETIC_AC_TYPE_NAME = 'magnetic_fields_ac'
 INDUCTION_COUPLING_NAME = 'magnetic_heat_induction'
 LORENTZ_COUPLING_NAME = 'magnetic_solid_lorentz_force'
 SOLID_TYPE_NAME = 'solid_mechanics'
-_OTHER_HEAT_SOURCES = 'em_heat_joule, currents_heat_joule, fluid_heat_convection'   # the other 'sum' contributors
 
 
 # ---- create callbacks (worker thread, GPU) ----
@@ -60,19 +59,13 @@ MAGNETIC_HEAT_INDUCTION = CouplingType(
     INDUCTION_COUPLING_NAME, 'Induction heating (magnetic fields AC -> heat)', MAGNETIC_AC_TYPE_NAME, HEAT_TYPE_NAME,
     summary='Turns the eddy-current and magnetic losses of the alternating magnetic field into a heat source of the '
             'heat physics. It adds up with the other heating couplings of that heat physics.',
-    description='Induction heating: each transfer hands q_eddy + q_magnetic [W/m^3] of the last magnetic_fields_ac '
-                'solve (time averages over a period: sigma_dc |E|^2 / 2 of the induced and solid-conductor currents, '
-                'omega Im(nu) |B|^2 / 2 of mu_dc_loss) to the heat source volumetric_power as an additive '
-                f'contribution: it sums with {_OTHER_HEAT_SOURCES}, all with the same every (validation error '
-                'otherwise); a field_transfer into volumetric_power cannot be combined with it. Its integral over '
-                'the window is eddy_loss plus the integral of q_magnetic (magnetic_loss up to material-interface '
-                'rounding; W/m planar, W axisymmetric: use the same geometry for both physics, otherwise a '
-                'validation warning). Stranded coils carry no eddy current and their own '
-                'resistive loss (resistance of the coil result) is not transferred. Transfers right after each '
-                'magnetic solve; the magnetic solve repeats only when a material or source changed, e.g. a '
-                'temperature-dependent sigma_dc expression of heat_T (no coupling needed; each change costs one host '
-                'refactorisation unless the recycled factor converges, see the solve summary). Stationary study: '
-                'one Picard fixed point; time-dependent: transient heat steps with the loss of the latest solve.',
+    description='q_eddy + q_magnetic [W/m^3] of the last magnetic_fields_ac solve (period averages) become the heat '
+                'source. ' + HEAT_SOURCE_SUM_TEXT + ' Its window integral is eddy_loss plus the integral of '
+                'q_magnetic (W/m planar, W axisymmetric: use the same geometry for both physics, else a validation '
+                'warning). Stranded coils carry no eddy current, and their resistive loss is not transferred. '
+                'Transfers after each magnetic solve, which repeats only when a material or source changed, e.g. a '
+                'sigma_dc expression of heat_T (each change may cost a host refactorisation). Stationary study: one '
+                'Picard fixed point; time-dependent: heat steps with the loss of the latest solve.',
     create=_create_induction,
     writes=writes_heat_source,
     mesh_transfer='value')
@@ -82,16 +75,13 @@ MAGNETIC_SOLID_LORENTZ_FORCE = CouplingType(
     (MAGNETOSTATICS_TYPE_NAME, MAGNETIC_AC_TYPE_NAME), SOLID_TYPE_NAME,
     summary='Applies the magnetic force on current-carrying conductors (J x B) to the solid mechanics. Planar models '
             'only.',
-    description='Lorentz force density f = J x B [N/m^3] of a planar magnetic physics: f_x = -J_z B_y, f_y = J_z B_x '
-                'with magnetostatics J = J_coupled + J_applied (coils, current sources) and magnetic_fields_ac the '
-                'time average Re(J_total B*) / 2 of the peak phasors (the force at twice the frequency is dropped: a '
-                'static solid sees the mean). Handed per cell to body_force_x / body_force_y as an additive '
-                'contribution (it sums with em_solid_optical_force, all with one every; a field_transfer into those '
-                'slots cannot be combined with it); solid_mechanics drops it in void cells (youngs_modulus 0), so a '
-                'winding modelled as air carries no load. Only planar geometry: an axisymmetric magnetic physics is a '
-                'validation error (plane strain has no image of a ring current hoop load). No magnetisation force '
-                '(the force on permeable or magnetised material, Maxwell stress at mu_dc jumps) and no '
-                'magnetostriction. Transfers right after each magnetic solve.',
+    description='f = J x B [N/m^3] of a planar magnetic physics: f_x = -J_z B_y, f_y = J_z B_x; magnetostatics J = '
+                'J_coupled + J_applied, magnetic_fields_ac the time average Re(J_total B*) / 2 (the 2 omega part is '
+                'dropped). Handed per cell to body_force_x / _y, additive (sums with em_solid_optical_force, one '
+                'every; no field_transfer into those slots beside it); void solid cells (youngs_modulus 0) drop it, '
+                'so a winding modelled as air carries no load. Axisymmetric magnetic physics: validation error. No '
+                'magnetisation force (permeable or magnetised material, Maxwell stress at mu_dc jumps) and no '
+                'magnetostriction. Transfers after each magnetic solve.',
     create=_create_lorentz,
     validate=_validate_lorentz,
     writes=_writes_lorentz,

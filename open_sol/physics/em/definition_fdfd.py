@@ -15,6 +15,7 @@ from ...model.definition_helpers import (FDFD_LINEAR_ROLE, eigen_factorization, 
 from ...model.schema import (FeatureType, Issue, Param, PhysicsType, coupling_writes, feature_path, known_physics,
                              solver_backend)
 from .definition_common import (BOTH_GRIDS, BOX_CELLS, CPML_BC_HELP, DEFAULT_WAVELENGTH, EIGENFREQUENCY_STUDY,
+                                EZ_GAUSSIAN_BEAM_DESCRIPTION, EZ_LINE_SOURCE_DESCRIPTION, PLANE_WAVE_SPAN,
                                 EM_FAMILY, EZ_CURRENT_TIP, EZ_PROBE_COMPONENT_TIP, FACE_MEAN, FREQUENCY_DOMAIN_STUDY,
                                 HOST_DIRECT_NAMES,
                                 MIRROR_BC_HELP, MODE_DIRECTION_CHOICE_LABELS, MODE_NUMBER_TIP_START, MODE_POWER_TIP,
@@ -344,22 +345,13 @@ def _mode_monitor_description(polarization):
             f'{_MONITOR_INTERFACE_TEXT} The line covers {SPAN_CELLS}. {_MODE_MONITOR_RESULT_TEXT}')
 
 
-# the em_fdtd_ez texts word for word (describe merges them): keep both copies identical
-_PLANE_WAVE_SPAN = ('For a plane wave span the whole domain (an end on a cpml domain edge continues through the PML; on '
-                    'a periodic axis span the whole period); a shorter line diffracts like a slit.')
-_EZ_LINE_SOURCE_DESCRIPTION = ('Sheet current on an axis-aligned line sending amplitude (E_z) to each side in the local '
-                               'medium: a vertical line (x = const) along +x and -x, a horizontal one along +y and -y. '
-                               f'{_PLANE_WAVE_SPAN} The line covers {SPAN_CELLS}.')
-_EZ_GAUSSIAN_BEAM_DESCRIPTION = ('Line source with the profile exp(-((s - center) / waist)^2) along the line: a beam of '
-                                 'peak E_z = amplitude to each side in the local medium (vertical line: along +x and '
-                                 f'-x; horizontal: along +y and -y), waist on the line. The line covers {SPAN_CELLS}.')
 _DESCRIPTIONS = {
     'ez': {
         'point_source': 'z-directed filament current phasor I e^{j phase} in the cell containing the point (a '
                         'coordinate exactly on a cell edge goes to the upper cell), radiating a mesh-independent '
                         'cylindrical wave.',
-        'line_source': _EZ_LINE_SOURCE_DESCRIPTION,
-        'gaussian_beam': _EZ_GAUSSIAN_BEAM_DESCRIPTION,
+        'line_source': EZ_LINE_SOURCE_DESCRIPTION,
+        'gaussian_beam': EZ_GAUSSIAN_BEAM_DESCRIPTION,
         'plane_wave_tfsf': 'Plane wave along +x on the outline of a total-field box (total E_z in the box cells, '
                            'scattered field outside), entering only the right-hand side; phase referred to the '
                            f'centres of the first (lo-x) box column; {_TFSF_TEXT}',
@@ -384,7 +376,7 @@ _DESCRIPTIONS = {
         'line_source': 'Electric sheet current on the hi face of the line cells (+x face of a vertical line, +y face '
                        'of a horizontal one) sending amplitude (tangential E) to each side in the local medium: a '
                        'vertical line (x = const) drives E_y along +x and -x, a horizontal one E_x along +y and -y. '
-                       f'{_PLANE_WAVE_SPAN} The line covers {SPAN_CELLS}.',
+                       f'{PLANE_WAVE_SPAN} The line covers {SPAN_CELLS}.',
         'gaussian_beam': 'Line source with the profile exp(-((s - center) / waist)^2) along the line: a beam of peak '
                          'tangential E = amplitude to each side in the local medium (vertical line: E_y, along +x and '
                          '-x; horizontal: E_x, along +y and -y), waist on the line, sheet on the hi face of the line '

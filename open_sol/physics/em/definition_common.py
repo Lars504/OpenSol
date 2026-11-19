@@ -281,6 +281,14 @@ def em_material_params(polarization, helps, tips=None):
 # ---- feature parameters ----
 SPAN_CELLS = 'cells [cell(start), cell(end) + 1) (an end exactly on a cell edge adds a cell)'
 BOX_CELLS = 'cells [cell(lo), cell(hi) + 1) per axis (an edge exactly on a cell edge adds a cell)'
+PLANE_WAVE_SPAN = ('For a plane wave span the whole domain (an end on a cpml domain edge continues through the PML; on '
+                   'a periodic axis span the whole period); a shorter line diffracts like a slit.')
+EZ_LINE_SOURCE_DESCRIPTION = ('Sheet current on an axis-aligned line sending amplitude (E_z) to each side in the local '
+                              'medium: a vertical line (x = const) along +x and -x, a horizontal one along +y and -y. '
+                              f'{PLANE_WAVE_SPAN} The line covers {SPAN_CELLS}.')   # em_fdfd_ez and em_fdtd_ez
+EZ_GAUSSIAN_BEAM_DESCRIPTION = ('Line source with the profile exp(-((s - center) / waist)^2) along the line: a beam of '
+                                'peak E_z = amplitude to each side in the local medium (vertical line: along +x and '
+                                f'-x; horizontal: along +y and -y), waist on the line. The line covers {SPAN_CELLS}.')
 POINT_SOURCE_SIGN = ('Sign: the current enters the update as given (minus the textbook impressed current), so '
                      'absolute phases (and source powers from probe fields) differ by pi from textbook formulas such '
                      'as E_z = -(omega mu0 I / 4) H0^(2)(k r); moduli and fluxes do not.')

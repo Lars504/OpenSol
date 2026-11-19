@@ -35,12 +35,10 @@ _SHARED_FEATURE_NAMES = ('magnetic_insulation', 'symmetry', 'external_field', 'f
 # ---- settings ----
 _FREQUENCY_PARAM = Param(
     'frequency', 'float', 50.0, label='Frequency', unit='Hz', min=0.0, min_exclusive=True, follows_parameters=True,
-    help='Frequency f of the time-harmonic solve (omega = 2 pi f, phasors exp(+j omega t), peak amplitudes). One '
-         'frequency per build: sweep it with a parameter (each value refactorises; a reused sweep build, sweep '
-         'reuse_build, follows a value of parameters only on the kept build and reuses the factor plan). Skin '
-         'depth delta = sqrt(2 / (omega mu0 mu_dc sigma_dc)): copper 9.3 mm at 50 Hz, 0.66 mm at 10 kHz, 66 um '
-         'at 1 MHz; resolve delta with >= 3 cells near conductor surfaces. Quasi-static: displacement current neglected (sizes << the '
-         'wavelength c / f).',
+    help='omega = 2 pi f. One frequency per build: sweep it with a parameter (each value refactorises; a reused sweep '
+         'build (reuse_build) follows a parameters-only value and keeps the factor plan). Skin depth delta = sqrt(2 / '
+         '(omega mu0 mu_dc sigma_dc)): copper 9.3 mm at 50 Hz, 0.66 mm at 10 kHz, 66 um at 1 MHz; resolve delta with '
+         '>= 3 cells near conductor surfaces. Quasi-static: no displacement current (sizes << c / f).',
     tip='Frequency of the alternating currents and fields.\n\n'
         'Higher frequencies push the current to conductor surfaces (skin effect): copper about 9 mm deep at 50 Hz, '
         '0.7 mm at 10 kHz. Use cells smaller than that depth near conductors.')
@@ -54,20 +52,17 @@ def _material_property(name, label, unit, help_text, tip):
 
 
 _SIGMA_DC_HELP = (
-    'Isotropic static conductivity [S/m] carrying the eddy and solid-conductor currents (out of the plane: '
-    'magnetic_fields_ac needs sigma_dc_xx = sigma_dc_yy, else a run error); the same arrays as electric_currents, so '
-    'a sigma_dc(heat_T) expression reaches both. Unset = 0 (no induced current). Ignored inside stranded coils (no '
-    'eddy currents in a stranded winding; there it sets the wire conductivity of the coil resistance). Typical '
-    'copper 5.8e7, aluminium 3.8e7, stainless steel 1.4e6, electrical steel 2e6 (laminations: use the stack value '
-    'or a lower effective one), sea water 4.8.')
+    'Sets sigma_dc_xx and _yy (component entries override it; they must be equal, else a run error); unset = 0: no '
+    'induced current. Carries the eddy and solid-conductor currents; in stranded coils only the wire conductivity of '
+    'the coil resistance. The electric_currents arrays: a sigma_dc(heat_T) expression reaches both. Copper 5.8e7, '
+    'aluminium 3.8e7, stainless steel 1.4e6, electrical steel 2e6 (laminations: the stack value or lower), sea water '
+    '4.8.')
 _SIGMA_DC_TIP = ('Electrical conductivity of the material, where alternating fields induce eddy currents; empty means '
                  'an insulator.\n\nTypical: copper 5.8e7, aluminium 3.8e7, steel about 1e6 to 2e6.')
 _MU_LOSS_HELP = (
-    'Magnetic loss: imaginary part of the relative permeability, mu = mu_dc - j mu_dc_loss (exp(+j omega t)); '
-    '>= 0, unset = 0 (the array is allocated only when a material sets it). Dissipates q_magnetic = omega '
-    'Im(nu) |B|^2 / 2 with nu = 1 / (mu0 mu). Tabulated data (mu\', mu\'\') at the solve frequency: an expression of '
-    'the swept frequency parameter covers a dispersive material. Typical: soft ferrite mu_dc 2000, mu_dc_loss 10 - '
-    '200 (rising with f); Metglas ~1e4 / 1e3 at 100 kHz.')
+    'mu = mu_dc - j mu_dc_loss (exp(+j omega t)); unset = 0. Dissipates q_magnetic = omega Im(nu) |B|^2 / 2, nu = 1 / '
+    "(mu0 mu). Dispersive (tabulated mu', mu''): an expression of the swept frequency parameter. Typical: soft ferrite "
+    'mu_dc 2000, mu_dc_loss 10 - 200 (rising with f); Metglas ~1e4 / 1e3 at 100 kHz.')
 _MATERIAL_PROPERTIES = (
     *_DC_MATERIAL_PROPERTIES[:3],   # mu_dc, mu_dc_xx, mu_dc_yy (the magnetostatics Param objects)
     _material_property('mu_dc_loss', 'Magnetic loss (imaginary permeability)', '1', _MU_LOSS_HELP,
@@ -75,68 +70,51 @@ _MATERIAL_PROPERTIES = (
                        'Typical soft ferrites 10 to 200, rising with frequency.'),
     _material_property('sigma_dc', 'Static conductivity', 'S/m', _SIGMA_DC_HELP, _SIGMA_DC_TIP),
     _material_property('sigma_dc_xx', 'Static conductivity along x', 'S/m',
-                       'DC conductivity along x; overrides sigma_dc for this axis (magnetic_fields_ac: must equal '
-                       'sigma_dc_yy).',
+                       'Overrides sigma_dc for this axis; must equal sigma_dc_yy.',
                        "Static conductivity along x; replaces 'Static conductivity' there."),
     _material_property('sigma_dc_yy', 'Static conductivity along y', 'S/m',
-                       'DC conductivity along y; overrides sigma_dc for this axis (magnetic_fields_ac: must equal '
-                       'sigma_dc_xx).',
+                       'Overrides sigma_dc for this axis; must equal sigma_dc_xx.',
                        "Static conductivity along y; replaces 'Static conductivity' there."),
 )
 
 
 # ---- feature texts ----
 _CURRENT_SOURCE_DESCRIPTION = (
-    'Applied current density amplitude J [A/m^2] at phase 0 on the selected cells, added to field J_applied_re '
-    '(several sources and coils add; the coupled slot current_density, field J_coupled, is separate): planar J_z out '
-    'of the drawing, axisymmetric J_phi circling the axis. May depend on x and y. It is an impressed current: '
-    'conducting material under it still carries eddy currents (use a stranded coil for a winding).')
+    'Applied current density amplitude on the selected cells, added to field J_applied_re (sources and coils add; the '
+    'coupled slot current_density, field J_coupled, is separate): planar J_z, axisymmetric J_phi, signs as in '
+    'magnetostatics. An impressed current: conducting material under it still carries eddy currents (use a stranded '
+    'coil for a winding).')
 _COIL_DESCRIPTION = (
-    "Coil or conductor carrying a time-harmonic current. conductor 'stranded': many thin insulated turns, J = turns * "
-    'I / area uniform over the selected cells (I = current at phase deg), no eddy currents in its cells (their '
-    'sigma_dc is the wire conductivity of the coil resistance, times fill_factor); always current-driven. conductor '
-    "'solid': one massive conductor (turns ignored) with J = sigma_dc (v - j omega A) / r, the applied field v uniform "
-    "over it (planar v = voltage per m of length; axisymmetric the loop voltage around the ring / (2 pi r)): drive "
-    "'current' prescribes the total current (one circuit row; the solve finds v, skin and proximity effects included), "
-    "drive 'voltage' the loop voltage [V/m planar, V axisymmetric] (the solve finds the current). Its cells need "
-    'sigma_dc > 0. Go / return pairs: two coil features with currents +I / -I (or phase 180). Result \'table\': one '
-    'row [feature, ' + ', '.join(COIL_RESULT_KEYS) + '] of the latest solve and the same extras: the complex current '
-    'and loop voltage (stranded: R_dc I + j omega flux linkage), Z = V / I: resistance Re Z, inductance Im Z / omega, '
-    'power Re(V I*) / 2; planar per m of length (A, V/m, Ohm/m, H/m, W/m), axisymmetric whole rings (A, V, Ohm, H, '
-    'W). With several conductors each Z includes the mutual terms (for series +I / -I the resistances and '
-    'inductances add to the loop values). Scalars <feature>_<key> carry the same numbers.')
-_PROBE_DESCRIPTION = ('Vector potential amplitude |A| (planar A_z, axisymmetric A_phi) [T m] of the cell containing '
-                      'the point, one sample per solve plus one at the end of the run.')
-_SLOT_DOCS = ('A/m^2', 'Coupled current density J_z (axisymmetric J_phi; field J_coupled), a real amplitude at phase 0 '
-                       'added to the current_source and coil features; each transfer replaces it.')
+    'Coil or conductor carrying a time-harmonic current (param conductor). Go / return pairs: two coils at +I / -I (or '
+    "phase 180). Result 'table': one row [feature, " + ', '.join(COIL_RESULT_KEYS) + '] of the latest solve (also '
+    'scalars <feature>_<key>): the complex current and loop voltage (stranded: R_dc I + j omega flux linkage), Z = V / '
+    'I: resistance Re Z, inductance Im Z / omega, power Re(V I*) / 2; planar per m of length (A, V/m, Ohm/m, H/m, '
+    'W/m), axisymmetric whole rings (A, V, Ohm, H, W). With several conductors each Z includes the mutual terms '
+    '(series +I / -I: the resistances and inductances add to the loop values).')
+_PROBE_DESCRIPTION = ('|A| (planar A_z, axisymmetric A_phi) [T m] of the cell containing the point, one sample per '
+                      'solve plus one at the end of the run.')
+_SLOT_DOCS = ('A/m^2', 'J_z (axisymmetric J_phi; field J_coupled), a real amplitude at phase 0 added to the '
+                       'current_source and coil features; each transfer replaces it.')
 _SCALARS_HELP = (
-    'energy: time-averaged magnetic energy (1/4) Re(A^H K A) of the free cells (J/m planar, J axisymmetric); '
-    'eddy_loss: time-averaged ohmic loss, the integral of q_eddy = sigma_dc |E|^2 / 2 over the conducting cells '
-    '(induced and solid-conductor currents; stranded coils excluded) in W/m or W; magnetic_loss: (omega / 2) Im(A^H K '
-    'A), the mu_dc_loss dissipation (W/m, W; the integral of q_magnetic only approximately at material interfaces); '
-    'per enabled coil feature <coil>_' + ', <coil>_'.join(COIL_RESULT_KEYS) + ' as its table result.')
+    'energy: time-averaged magnetic energy (1/4) Re(A^H K A) of the free cells; eddy_loss: time-averaged ohmic loss, '
+    'the integral of q_eddy = sigma_dc |E|^2 / 2 over the conducting cells (stranded coils excluded); magnetic_loss: '
+    '(omega / 2) Im(A^H K A), the mu_dc_loss dissipation (the integral of q_magnetic only approximately at material '
+    'interfaces); planar per m (J/m, W/m), axisymmetric whole rings (J, W); per enabled coil <coil>_'
+    + ', <coil>_'.join(COIL_RESULT_KEYS) + ' as its table result.')
 _PHYSICS_DESCRIPTION = (
-    '2D time-harmonic magnetic fields (eddy currents) at one frequency (setting frequency), quasi-static: curl(nu '
-    'curl A) + j omega sigma_dc A = J with nu = 1 / (mu0 (mu_dc - j mu_dc_loss)), phasors exp(+j omega t) of peak '
-    'amplitude; planar A_z of currents along z, or axisymmetric the flux function psi = r A_phi of currents J_phi on '
-    'the planar operator with coefficients nu / r (setting geometry), as magnetostatics. Solved on the host by one '
-    'complex SuperLU factorisation of the finite-volume system (scipy required; solid conductors with a prescribed '
-    'current add one bordered circuit row each); a later operator change (sigma_dc(heat_T), mu_dc) first tries GMRES '
-    'preconditioned with the old factor, refactorising only when it misses. Fields: A, B (re / im parts and '
-    'magnitudes; B from the complex face fluxes), J_conduction = sigma_dc E with E = -j omega A (+ v of solid '
-    'conductors), J_total, q_eddy, q_magnetic and w_mag (time averages), J_applied, J_coupled. Faces default to '
-    'magnetic insulation (A = 0); external_field holds the outer ring at a uniform applied field amplitude (phase '
-    '0, the phase reference of held values). No remanence (a permanent magnet is static: magnetostatics). A '
-    'time-dependent study re-solves only when a material, a source or a held value changed. Fields are '
-    'edge-extended into an EM PML ring. On a triangle mesh (MeshSpec kind triangles) complex finite elements of the '
-    'discretization setting (P2 default, P1) solve for planar A_z or axisymmetric A_phi itself (not psi) in B-space, '
-    'with the magnetostatics conditions on triangles (faces on the window edge, external_field on the window-edge '
-    'nodes, fixed_potential psi / r on the element nodes) and the same coils, circuit rows, scalars and results; state '
-    'fields are per element (A at the centroid, element means of B and the loss / energy densities; plots show A and B '
-    'on the nodes); a solid conductor touching the axis is a run error (its applied field v / r is singular there). '
-    "There the Automatic linear solver is a double cuDSS LDL^T on the gpu backend with nvmath-python (back_end 'auto' "
-    "= 'cudss'; an operator change refactorises on the kept analysis instead of GMRES; a cuDSS refusal switches to "
-    'host SuperLU with a warning), else host SuperLU. The instance is usually named magnetic.')
+    '2D quasi-static time-harmonic magnetic fields (eddy currents): curl(nu curl A) + j omega sigma_dc A = J, nu = 1 / '
+    '(mu0 (mu_dc - j mu_dc_loss)), phasors exp(+j omega t) of peak amplitude; planar A_z or axisymmetric psi = r A_phi '
+    'as in magnetostatics (setting geometry). B from the complex face fluxes; J_conduction = sigma_dc E, E = -j omega '
+    'A (+ v of solid conductors); q_eddy, q_magnetic and w_mag are time averages. Outer faces default to magnetic '
+    'insulation. No remanence (a permanent magnet is static: magnetostatics). Tensor mesh: one complex host SuperLU '
+    'factorisation (scipy required); an operator change (sigma_dc(heat_T), mu_dc) first tries GMRES preconditioned '
+    'with the old factor. A time-dependent study re-solves only when a material, a source or a held value changed. '
+    'Fields are edge-extended into an EM PML ring. Triangle mesh: complex elements (setting discretization) for planar '
+    'A_z or axisymmetric A_phi (not psi), same features, scalars and results; state fields per element (A at the '
+    'centroid, element means of B and the densities; plots show A, B on the nodes); a solid conductor touching the '
+    'axis is a run error (v / r singular). There Automatic is a double cuDSS LDL^T on the gpu backend with '
+    'nvmath-python (an operator change refactorises on the kept analysis; a cuDSS refusal falls back to host SuperLU '
+    'with a warning), else host SuperLU.')
 _PHYSICS_SUMMARY = ('Alternating magnetic fields with eddy currents, skin and proximity effects in conductors, planar '
                     'or rotationally symmetric. Gives the field, the losses and coil resistances and inductances.')
 
@@ -446,7 +424,7 @@ _FEATURES = (
     FeatureType('current_source', 'Current density', 'domain_condition', 'domain',
                 params=(Param('density', 'float', 1e6, label='Current density amplitude', unit='A/m^2',
                               field_dependent=True,
-                              help='J_z (planar) or J_phi (axisymmetric) amplitude at phase 0; may depend on x and y.',
+                              help='Phase 0.',
                               tip='Amplitude of the alternating current per area flowing out of the drawing (in '
                                   'axisymmetric models: around the axis).'),),
                 summary='Drives a given alternating current per area through the selected domains.',
@@ -454,38 +432,40 @@ _FEATURES = (
     FeatureType('coil', 'Coil or conductor', 'domain_condition', 'domain', result_kind='table',
                 params=(Param('conductor', 'choice', 'stranded', label='Conductor', choices=CONDUCTORS,
                               choice_labels=(('stranded', 'Stranded winding'), ('solid', 'Solid conductor')),
-                              help="'stranded': uniform J = turns I / area, no eddy currents in it; 'solid': one "
-                                   'massive conductor with its own skin and proximity effects (circuit row).',
+                              help="'stranded': many thin turns, uniform J = turns I / area, no eddy currents (the "
+                                   "cells' sigma_dc only sets the coil resistance); 'solid': one massive conductor "
+                                   '(cells need sigma_dc > 0), J = sigma_dc (v - j omega A) / r with the applied field '
+                                   'v uniform over it, skin and proximity effects included.',
                               tip='- Stranded winding: many thin turns, the current is spread evenly.\n'
                                   '- Solid conductor: one massive bar or ring; the current redistributes by the skin '
                                   'and proximity effects.'),
                         Param('drive', 'choice', 'current', label='Drive', choices=DRIVES,
                               choice_labels=(('current', 'Current'), ('voltage', 'Voltage')),
                               visible_if=(('conductor', ('solid',)),),
-                              help="Solid conductors: 'current' prescribes the total current, 'voltage' the loop "
-                                   'voltage (stranded coils are always current-driven).',
+                              help="'current': one circuit row, the solve finds v; 'voltage': the solve finds the "
+                                   'current. Stranded coils are current-driven.',
                               tip='Whether the current or the voltage of the conductor is given.'),
                         Param('current', 'float', 1.0, label='Current amplitude', unit='A',
                               visible_if=(('conductor', ('stranded',)), ('drive', ('current',))),
-                              help='Peak current per turn (solid: the total current), > 0 along +z (axisymmetric: '
-                                   'counter-clockwise seen from +z), at the given phase.',
+                              help='Peak, per turn (solid: total), > 0 along +z (axisymmetric: counter-clockwise seen '
+                                   'from +z).',
                               tip='Peak value of the alternating current; the sign sets the direction.'),
                         Param('voltage', 'float', 1e-3, label='Voltage amplitude', unit='V/m',
                               space_units=(('axisymmetric', 'V'),), visible_if=(('drive', ('voltage',)),),
-                              help="Solid conductor with drive 'voltage': peak loop voltage, in V per m of length "
-                                   '(planar) or V around the ring (axisymmetric).',
+                              help='Peak loop voltage: planar v (per m of length), axisymmetric around the ring '
+                                   '(v = voltage / (2 pi r)).',
                               tip='Peak voltage driving the conductor (planar models: per metre of length).'),
                         Param('phase', 'float', 0.0, label='Phase', unit='deg',
-                              help='Phase of the current (or voltage) phasor in degrees; held potentials and the '
-                                   'external field are at phase 0.',
+                              help='Of the current or voltage phasor; held potentials and the external field are at '
+                                   'phase 0.',
                               tip='Phase shift of this current in degrees; 180 reverses it.'),
                         Param('turns', 'int', 1, label='Turns', unit='1', min=1,
                               visible_if=(('conductor', ('stranded',)),),
-                              help='Number of turns spread over the selected cross-section (stranded only).',
+                              help='Spread over the selected cross-section.',
                               tip='Number of wire turns in the selected cross-section.'),
                         Param('fill_factor', 'float', 1.0, label='Copper fill factor', unit='1', min=0.0,
                               max=1.0, min_exclusive=True, visible_if=(('conductor', ('stranded',)),),
-                              help='Stranded only: conducting share of the cross-section; the coil resistance is '
+                              help='Conducting share of the cross-section; coil resistance = '
                                    'turns^2 / (fill_factor area^2) times the sum of (path length / sigma_dc) area '
                                    'over its cells (0 where sigma_dc is unset: an ideal winding).',
                               tip='Share of the winding cross-section that is wire; sets the coil resistance.')),

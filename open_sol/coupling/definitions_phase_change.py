@@ -69,17 +69,14 @@ def _validate(vctx, coupling_spec, values):
 
 
 HEAT_EM_PHASE_CHANGE_DESCRIPTION = (
-    'Phase change driven by temperature: right after every heat step it hands the heat temperature T (end of the step) '
-    'and the heat time to every phase_change_medium feature of the EM physics, which advances its crystallinity over '
-    'the elapsed heat time and rewrites eps / sigma_e on its cells (see phase_change_medium). Only in a time_dependent '
-    'study with transient heat (validation errors otherwise); leave every blank (= the heat every). It overwrites the '
-    'permittivity of those cells, so it cannot be combined with another coupling into the permittivity slots of the '
-    'same EM physics (heat_em_thermo_optic, electrostatics_em_pockels, field_transfer: validation error), nor with '
-    'a state-dependent permittivity material there. The absorbed power reaches heat through em_heat_joule as usual. '
-    'With em_fdfd_* the FDFD re-solves after every update (stroboscopic, the time scale of GST switching); with '
-    'em_fdtd_* every heat window of every * dt_EM advances it (femtoseconds: only very fast test kinetics or melting '
-    'act). The cells are rewritten on the bounding box of each medium and the EM physics is told materials_changed '
-    'once per update.')
+    'Right after every heat step it hands the end-of-step temperature and the heat time to every phase_change_medium '
+    'feature of the EM physics, which advances its crystallinity and rewrites eps / sigma_e on its cells. Only in a '
+    'time_dependent study with transient heat (validation errors otherwise); leave every blank. It overwrites those '
+    "cells' permittivity: no other coupling into the permittivity slots of the same EM physics (heat_em_thermo_optic, "
+    'electrostatics_em_pockels, field_transfer) and no state-dependent permittivity material there (validation '
+    'error). The absorbed power reaches heat through em_heat_joule. em_fdfd_*: re-solves after every update '
+    '(stroboscopic, the GST switching time scale); em_fdtd_*: each heat window of every * dt_EM advances it '
+    '(femtoseconds: only very fast test kinetics or melting act).')
 
 
 def register(registry, physics):

@@ -4,6 +4,7 @@ from ..model.definition_helpers import evaluates_to, selected_material_data
 from ..model.schema import CouplingType, Issue, Param
 from ..physics.potential.pockels import (APPLIED_FIELDS, POCKELS_ARRAYS, POCKELS_SHEAR_ROW, POCKELS_TENSOR_ROWS,
                                          make_pockels_transform, pockels_shear_shift)
+from .definitions import INDEX_SUM_TEXT
 from .definitions_acoustics import crystal_off_diagonal_issues
 from .index_terms import (has_off_diagonal_slot, index_contributor, index_slots, target_type,
                           writes_index_and_off_diagonal_slots)
@@ -91,46 +92,35 @@ def pockels_coupling_type(em_types):
         params=(
             Param('field_component', 'choice', 'x', label='Applied field direction', choices=tuple(APPLIED_FIELDS),
                   choice_labels=(('x', 'Along x'), ('y', 'Along y')),
-                  help="Component E_k of the electrostatic field (E_x or E_y of the source) that drives every "
-                       "index change dn_ii = -1/2 n0_ii^3 r_ii E_k; the other component is ignored, so align the "
-                       "material's r_ii with this direction (x-cut lithium niobate in top view: x, its optic axis). "
-                       'The crystal tensor entries pockels_r11 .. _r62 always use both components.',
+                  help='E_k (E_x or E_y of the source) driving every dn_ii = -1/2 n0_ii^3 r_ii E_k; the other '
+                       "component is ignored, so align the material's r_ii with it (x-cut lithium niobate in top "
+                       'view: x, its optic axis). Crystal tensor entries pockels_r11 .. _r62 always use both '
+                       'components.',
                   tip='Direction of the applied static field that changes the refractive index; the field '
                       'component across it is ignored.\n\n'
                       'For lithium niobate this is the direction of its optic axis.'),),
         summary='Changes the refractive index of a wave physics in proportion to the static electric field of an '
                 'electrostatics physics, as in an electro-optic modulator. It uses the electro-optic coefficients of '
                 'the materials.',
-        description='Pockels (linear electro-optic) effect: each transfer writes, for every permittivity component '
-                    'ii the EM type has (E_z types: zz through eps_r_update; H_z types: xx and yy through '
-                    'eps_xx_update / eps_yy_update; em_modes: all three), the index change dn_ii = -1/2 n0_ii^3 r_ii '
-                    'E_k with E_k = E_x or E_y of the electrostatics physics (field_component; V/m, E = -grad V) and '
-                    'r_xx / r_yy / r_zz the material Pockels coefficients [m/V] of the electrostatics vocabulary '
-                    '(isotropic r sets all three; 0 where unset). n0_ii = sqrt of the permittivity component before '
-                    'any coupling rewrites it (the E13 shared reference index; dispersive cells: sqrt of eps_r / '
-                    'eps_inf, the pole susceptibility never changes: validation warning). It is an E13 index '
-                    'contributor: with heat_em_thermo_optic on the same physics the slot gets eps = (n0 + dn_Pockels + '
-                    'dn_thermal)^2, so both couplings need the same every (validation error otherwise); an '
-                    'overwriting field_transfer on the slot, or a state-dependent permittivity property, cannot be '
-                    'combined with it. This is the diagonal of the Pockels tensor for one applied direction: x-cut '
-                    "lithium niobate in top view (crystal z along model x, electrodes either side of a waveguide "
-                    "along y, field_component x) has r_xx = r33 = 30.8e-12 (E_x of the H_z types sees n_e) and r_yy "
-                    '= r_zz = r13 = 8.6e-12 (clamped r^S, library lithium_niobate_x_cut); the sign follows E: a '
-                    'positive E_k with r > '
-                    '0 lowers n. A crystal (a {"model": "crystal"} entry: the clamped r^S rotated into model axes, '
-                    'the tensor entries pockels_r11 .. _r62) adds -1/2 n0_ii^3 (r_i1 E_x + r_i2 E_y) from both field '
-                    'components whatever field_component, so the opposite-sign r22 terms of a rotated cut are '
-                    'included; clamped because the strain of a piezoelectric elastic_waves run adds its own index '
-                    'change through acoustics_em_acousto_optic (without that coupling, a slow drive of a free crystal '
-                    'sees r^T, larger for lithium niobate). em_fdfd_hz also gets the xy row in its eps_xy_update slot '
-                    '(a sum contributor): Delta eps_xy = -n0_xx^2 n0_yy^2 (r_61 E_x + r_62 E_y) (r51 of YZ lithium '
-                    'niobate); other in-plane EM types drop it, and every type drops the anti-plane change '
-                    '(Delta(1/n^2)_yz, _xz; validation warns for crystals). The applied field is the one of the '
-                    'last electrostatics solve: a stationary study applies it each fixed-point iteration (one '
-                    'iteration behind within the loop, as the thermo-optic coupling), a frequency_domain or '
-                    'mode_analysis study once after the background solve, before the wavelengths / modes. eps_dc '
-                    'differences matter: a dielectric with a high eps_dc (lithium niobate eps_c 28) between low-eps_dc '
-                    'cladding (silica 3.9) takes only a small share of the voltage.',
+        description='Each transfer writes, per permittivity component ii of the EM type (E_z: zz via eps_r_update; '
+                    'H_z: xx and yy via eps_xx_update / eps_yy_update; em_modes: all three), dn_ii = -1/2 n0_ii^3 '
+                    'r_ii E_k (E = -grad V; r_xx / r_yy / r_zz the material Pockels coefficients of the '
+                    'electrostatics vocabulary, isotropic r sets all three, 0 where unset; dispersive cells: n0 from '
+                    'eps_inf, the poles never change: validation warning). ' + INDEX_SUM_TEXT + ' This is the '
+                    'Pockels diagonal for one applied direction: x-cut lithium niobate in top view (crystal z along '
+                    'model x, electrodes either side of a waveguide along y, field_component x) has r_xx = r33 = '
+                    '30.8e-12 (E_x of the H_z types sees n_e) and r_yy = r_zz = r13 = 8.6e-12 (clamped r^S, library '
+                    'lithium_niobate_x_cut); a positive E_k with r > 0 lowers n. A crystal (a {"model": "crystal"} '
+                    'entry: clamped r^S in model axes, pockels_r11 .. _r62) adds -1/2 n0_ii^3 (r_i1 E_x + r_i2 E_y) '
+                    "from both components, so a rotated cut's opposite-sign r22 terms are included; clamped because a "
+                    'piezoelectric elastic_waves run adds its strain index change via acoustics_em_acousto_optic (a '
+                    'slow drive of a free crystal sees the larger r^T). em_fdfd_hz also gets Delta eps_xy = -n0_xx^2 '
+                    'n0_yy^2 (r_61 E_x + r_62 E_y) in eps_xy_update (r51 of YZ lithium niobate); other in-plane types '
+                    'drop it, every type drops the anti-plane change (validation warns for crystals). The field is '
+                    'that of the last electrostatics solve: stationary per fixed-point iteration (one behind, as '
+                    'thermo-optic); frequency_domain / mode_analysis once after the background solve. eps_dc matters: '
+                    'a high-eps_dc core (lithium niobate eps_c 28) between low-eps_dc cladding (silica 3.9) takes only '
+                    'a small share of the voltage.',
         create=_create_pockels,
         validate=_validate_pockels,
         writes=writes_index_and_off_diagonal_slots)

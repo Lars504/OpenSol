@@ -34,56 +34,48 @@ _BOTH_GRIDS = ('tensor', 'triangles')   # FeatureType.grids of the features Magn
 
 # ---- settings ----
 _GEOMETRY_PARAM = geometry_param(
-    'A = A_z of currents along z, per unit z length (energy J/m, flux linkage Wb/m, inductance H/m)',
-    'currents J_phi circle the axis; the solve is for the flux function psi = r A_phi on a planar operator with '
-    'coefficients nu / r (2 pi psi = the flux through the circle of radius r), field A reports A_phi = psi / r, totals '
-    'are whole rings (energy J, flux linkage Wb, inductance H)',
+    'A_z of currents along z, totals per m of depth (J/m, Wb/m, H/m)',
+    'currents J_phi circle the axis; solved for psi = r A_phi with coefficients nu / r (2 pi psi = the flux through '
+    'the circle of radius r), field A reports A_phi, totals are whole rings (J, Wb, H)',
     'currents flow out of the drawing and results are per metre of depth.',
     'Currents circle the axis.',
-    axis_text='psi = 0 there with the exact half-cell conductance of the axis cell; any face feature selecting x_lo '
-              'is a validation error')
+    axis_text='psi = 0, exact half-cell axis conductance; a face feature on x_lo is a validation error')
 _SATURATION_TEXT = 'materials with saturation_polarization > 0 or a bh_curve'
 _NONLINEAR_SETTINGS = (   # loop of saturating materials (core.damped_iteration; plans_overview decision 7)
     Param('nonlinear_tolerance', 'float', 1e-6, label='Saturation iteration tolerance', unit='1', min=0.0,
           min_exclusive=True,
-          help=f'Stop of the saturation loop of {_SATURATION_TEXT}. Tensor mesh: converged when one proposal changes '
-               'ln of the secant reluctivity nu = H / B of every cell by at most this value (a relative change); each '
-               'iteration is one assembly and one CG solve warm-started at the previous A, so keep it above the CG '
-               'accuracy; at single precision a loop whose change stops falling ends unconverged after 20 '
-               'iterations (the float32 CG stalls, B of iron cells off by up to percents). Triangle mesh (Newton): converged when the last step changes A by at most this fraction of '
-               'max |A| and the largest free residual of the weak form is at most this fraction of the largest load '
-               'or internal force. Ignored without a saturating material.',
+          help=f'Saturation loop stop ({_SATURATION_TEXT}; ignored without one). Tensor mesh: converged when a '
+               'proposal changes ln of the secant reluctivity nu = H / B of every cell by <= this value; keep it above '
+               'the CG accuracy (one warm-started CG solve per iteration); at single precision a loop that stops '
+               'improving ends unconverged after 20 iterations (iron B off by up to percents). Triangle mesh '
+               '(Newton): converged when the step changes A by <= this fraction of max |A| and the largest free '
+               'residual is <= this fraction of the largest load or internal force.',
           tip='How accurately the saturation of magnetic materials is converged, as a relative change.\n\nKeep '
               '1e-6. Only used when a material has a saturation polarisation or a B-H curve.'),
     Param('nonlinear_max_iterations', 'int', 100, label='Saturation iteration limit', min=1,
-          help='Saturation iteration (tensor: fixed-point proposals, triangles: Newton steps) limit per solve of a '
-               'saturating model; an unconverged loop keeps the fields of its last iterate and logs a warning (study '
-               'log). Ignored without a saturating material.',
+          help='Per solve (tensor: fixed-point proposals, triangles: Newton steps); an unconverged loop keeps its last '
+               'iterate and logs a warning. Ignored without a saturating material.',
           tip='Largest number of saturation iterations; each one is a full solve.\n\n'
               'A loop that reaches the limit keeps its unfinished result and logs a warning.'),
     Param('nonlinear_method', 'choice', 'auto', label='Saturation iteration method', choices=NONLINEAR_METHODS,
           choice_labels=(('auto', 'Automatic'), ('anderson', 'Accelerated fixed point (Anderson)'),
                          ('picard', 'Damped fixed point (Picard)'), ('newton', 'Newton (triangle mesh)')),
-          help=f"Solver of {_SATURATION_TEXT}. 'auto' (default): 'anderson' on a tensor mesh, 'newton' on a triangle "
-               f"mesh. Tensor mesh: a fixed point on ln nu; 'anderson' mixes the last {ANDERSON_DEPTH} iterates "
-               '(Anderson acceleration with the fixed relaxation below), which converges also where plain Picard '
-               "oscillates (currents imposing H on iron past the knee); 'picard' applies the damped proposal with "
-               "automatic halving. Triangle mesh: 'newton' minimises the convex magnetic energy with the exact "
-               'element tangent (symmetric positive definite for any increasing B-H curve) and a backtracking line '
-               'search on the energy, globally convergent and quadratic near the solution (piecewise-linear '
-               "bh_curve tables: superlinear across their rows); one factorisation per step. 'newton' on a tensor "
-               "mesh and 'anderson' / 'picard' on a triangle mesh are validation errors.",
+          help=f"Solver of {_SATURATION_TEXT}. 'auto': 'anderson' on a tensor mesh, 'newton' on triangles; 'newton' "
+               "on tensor and 'anderson' / 'picard' on triangles are validation errors. Tensor mesh, fixed point on "
+               f"ln nu: 'anderson' mixes the last {ANDERSON_DEPTH} iterates (fixed relaxation), converging also where "
+               "plain Picard oscillates (currents imposing H on iron past the knee); 'picard' damps with automatic "
+               "halving. Triangles: 'newton' minimises the convex magnetic energy (exact tangent, energy line search), "
+               'globally convergent, quadratic near the solution (bh_curve tables: superlinear); one factorisation '
+               'per step.',
           tip='How the saturation iteration is driven.\n\nKeep Automatic: an accelerated fixed point on rectangular '
               'cells, Newton on triangles.'),
     Param('nonlinear_relaxation', 'float', 0.5, label='Saturation iteration damping', unit='1', min=1.0 / 64.0,
           max=1.0,
-          help="Fraction of each proposed change of ln nu applied, [1/64, 1] (tensor mesh only; Newton on triangles "
-               "finds its step by the energy line search). 'picard': it halves automatically (down to "
-               '1/64) while the change grows and recovers up to this value once it shrinks; Picard converges without '
-               'damping where the flux is imposed (an air gap, an applied field) but oscillates where the current '
-               'imposes H on iron past the knee of the curve: it needs a value below 2 / (1 + d ln nu / d ln B) '
-               "(about 0.5 at B ~ 0.7 J_s), lower it (0.2) deep into saturation. 'anderson': the fixed mixing factor "
-               '(0.5 - 1).',
+          help="Fraction of each proposed change of ln nu applied (tensor mesh only). 'picard': halves automatically "
+               '(down to 1/64) while the change grows, recovering up to this value; no damping is needed where the '
+               'flux is imposed (air gap, applied field), but where the current imposes H on iron past the knee it '
+               "needs < 2 / (1 + d ln nu / d ln B) (about 0.5 at B ~ 0.7 J_s; 0.2 deep in saturation). 'anderson': "
+               'the fixed mixing factor (0.5 - 1).',
           tip='Fraction of each correction that is applied, between 0 and 1.\n\nKeep 0.5; lower it if the '
               'iteration does not settle. Not used on a triangle mesh.'),
 )
@@ -105,47 +97,36 @@ def _material_property(name, label, unit, help_text, tip, positive=False, arrays
 
 
 _MU_DC_HELP = (
-    'Isotropic static relative permeability (> 0): sets mu_dc_xx and mu_dc_yy (component entries override it); unset '
-    '= 1 (vacuum), so every cell takes part in the solve. NOT the optical mu_r of the wave physics (kept 1 there). '
-    'Typical: air, copper, aluminium 1; ferrite 1e3 - 1e4; electrical steel 4e3; Metglas (amorphous Co / Fe) 1e4 - '
-    '1e5; mu-metal 5e4. A large contrast is solved exactly by the finite volumes but slows Jacobi-PCG (iterations '
-    'grow with the contrast): tighten the tolerance (1e-10). With saturation_polarization it is the initial '
-    '(small-field) permeability of the B-H curve.')
+    'Sets mu_dc_xx and mu_dc_yy (component entries override it); unset = 1 (vacuum). NOT the optical mu_r of the '
+    'wave physics. Typical: air, copper, aluminium 1; ferrite 1e3 - 1e4; electrical steel 4e3; Metglas 1e4 - 1e5; '
+    'mu-metal 5e4. A large contrast is exact but slows Jacobi-PCG: tighten the tolerance (1e-10). With '
+    'saturation_polarization: the initial permeability of the B-H curve.')
 _MU_DC_TIP = ('How strongly the material concentrates magnetic flux; empty means vacuum, 1.\n\n'
               'Typical: air and copper 1, ferrite 1000 to 10000, Metglas up to 100000.')
 _MU_COMPONENT_TIP = ("Static relative permeability along {axis} of a material that magnetises differently along x and "
                      "y. Replaces 'Static relative permeability' for this direction.")
 _REMANENCE_HELP = (
-    'Remanent flux density B_r [T] along {axis} of a permanent magnet: H = (B - B_r) / (mu0 mu_dc), entered as face '
-    'sources at the magnet boundary (exact for a uniformly magnetised region, also across its edges). Typical: '
-    'NdFeB 1.2 - 1.4 T with mu_dc 1.05, SmCo 1.0 T, ferrite 0.4 T with mu_dc 1.1. Unset = 0 (the remanence arrays '
-    'are allocated only when a material sets one).{extra}')
+    'Remanent flux density B_r along {axis} of a permanent magnet: H = (B - B_r) / (mu0 mu_dc), entered as face '
+    'sources at the magnet boundary (exact for a uniformly magnetised region). Typical: NdFeB 1.2 - 1.4 T with mu_dc '
+    '1.05, SmCo 1.0 T, ferrite 0.4 T with mu_dc 1.1. Unset = 0.{extra}')
 _SATURATION_HELP = (
-    'Saturation polarisation J_s [T] (> 0) of an anhysteretic B-H curve (magnetostatics only): the Frohlich-Kennelly '
-    'curve B = mu0 H + J_s a H / (1 + a H) with a = mu0 (mu_dc - 1) / J_s, i.e. initial permeability mu_dc, B -> mu0 '
-    'H + J_s in strong fields, no hysteresis. Tensor mesh: per axis the same curve with mu_dc_xx / mu_dc_yy and the '
-    'cell-centre |B|, solved by a fixed point on ln of the secant reluctivity nu = H(|B|) / |B|, Anderson-accelerated '
-    '(settings nonlinear_method, nonlinear_tolerance, nonlinear_max_iterations, nonlinear_relaxation); the energy '
-    'scalar and coil inductances are then secant values '
-    '((1/2) A^T K A, flux linkage / current), not the integral of H dB. Triangle mesh: H = nu(|B|) B at every '
-    'quadrature point (isotropic: mu_dc_xx must equal mu_dc_yy, validation error otherwise), solved by Newton; the '
-    'energy scalar is the integral of H dB. Unset = linear (the array is allocated only '
-    'when a material sets it); mu_dc <= 1 stays linear. Not combinable with a remanence in the same material '
-    '(validation error); ignored by magnetic_fields_ac. Typical: iron 2.15, electrical steel 2.0, Metglas 0.6 - 1.6, '
-    'Mn-Zn ferrite 0.4 - 0.5, NiFe (mu-metal) 0.8.')
+    'Saturation polarisation J_s of an anhysteretic B-H curve (magnetostatics only): Frohlich-Kennelly B = mu0 H + '
+    'J_s a H / (1 + a H), a = mu0 (mu_dc - 1) / J_s (initial permeability mu_dc, B -> mu0 H + J_s), no hysteresis. '
+    'Tensor mesh: per axis with mu_dc_xx / mu_dc_yy at the cell-centre |B|, a fixed point on ln of the secant '
+    'reluctivity nu = H(|B|) / |B| (settings nonlinear_*); energy and coil inductances are then secant values. '
+    'Triangle mesh: isotropic (mu_dc_xx must equal mu_dc_yy: validation error), H = nu(|B|) B per quadrature point, '
+    'Newton. Unset = linear; mu_dc <= 1 stays linear. Not with a remanence in the same material (validation error); '
+    'ignored by magnetic_fields_ac. Typical: iron 2.15, electrical steel 2.0, Metglas 0.6 - 1.6, Mn-Zn ferrite 0.4 - '
+    '0.5, NiFe (mu-metal) 0.8.')
 _BH_CURVE_HELP = (
-    'Tabulated anhysteretic B-H curve (magnetostatics only): rows [H, B] with H [A/m] and B [T] both strictly '
-    'increasing, H, B > 0 except an optional first row [0, 0] (the curve always starts at the origin), e.g. [[100, '
-    '0.5], [300, 1.0], [1000, 1.4], [5000, 1.7]]. H(B) is interpolated linearly between the rows; beyond the last row '
-    'B = B_n + mu0 (H - H_n) (fully saturated), so end the table well into saturation. The cells follow the secant '
-    'reluctivity nu = |H| / B(|H|) on both axes (isotropic; mu_dc / mu_dc_xx / mu_dc_yy are ignored there), solved '
-    'by the same fixed point on ln nu as saturation_polarization (settings nonlinear_*; each proposal reads the '
-    'cell-centre |H|, which stays stable also beyond the last row); the first iterate is the '
-    'first segment\'s slope B_1 / H_1. Energy and inductances are secant values on a tensor mesh. On a triangle mesh '
-    'Newton reads the curve B-indexed (H(B) linear per segment, the segment slope as tangent, the exact energy '
-    'integral). Not combinable with '
-    'saturation_polarization or a remanence in the same material (validation error); ignored by magnetic_fields_ac. '
-    'A constant table per material (no x, y or field dependence; entries may be parameter expressions).')
+    'Tabulated anhysteretic B-H curve (magnetostatics types only): H, B > 0 except an optional first row [0, 0] (the '
+    'curve starts at the origin), e.g. [[100, 0.5], [300, 1.0], [1000, 1.4], [5000, 1.7]]. H(B) is linear between '
+    'rows; beyond the last row B = B_n + mu0 (H - H_n), so end the table well into saturation. Isotropic secant '
+    'reluctivity nu = |H| / B(|H|) (the mu_dc entries are ignored there), solved like saturation_polarization '
+    "(settings nonlinear_*; first iterate the first segment's slope); tensor mesh: energy and inductances are secant "
+    'values; triangle mesh: Newton with the segment slope as tangent, exact energy. Not with saturation_polarization '
+    'or a remanence in the same material (validation error); ignored by magnetic_fields_ac. A constant table per '
+    'material (entries may be parameter expressions; no x, y or field dependence).')
 _BH_CURVE = Param(BH_CURVE_PROPERTY, 'table', None, label='B-H curve', min=0.0, optional=True, increasing=True,
                   columns=(('H', 'A/m'), ('B', 'T')), help=_BH_CURVE_HELP,
                   tip='Measured magnetisation curve of a soft magnetic material: one pair of field strength H and flux '
@@ -154,14 +135,15 @@ _BH_CURVE = Param(BH_CURVE_PROPERTY, 'table', None, label='B-H curve', min=0.0, 
 _MATERIAL_PROPERTIES = (
     _material_property('mu_dc', 'Static relative permeability', '1', _MU_DC_HELP, _MU_DC_TIP, positive=True),
     _material_property('mu_dc_xx', 'Static relative permeability along x', '1',
-                       'Static relative permeability along x (axisymmetric: r), > 0; overrides mu_dc for this axis.',
+                       'Overrides mu_dc along x (axisymmetric: r).',
                        _MU_COMPONENT_TIP.format(axis='x'), positive=True),
     _material_property('mu_dc_yy', 'Static relative permeability along y', '1',
-                       'Static relative permeability along y (axisymmetric: z), > 0; overrides mu_dc for this axis.',
+                       'Overrides mu_dc along y (axisymmetric: z).',
                        _MU_COMPONENT_TIP.format(axis='y'), positive=True),
     _material_property('remanence_x', 'Remanence along x', 'T',
-                       _REMANENCE_HELP.format(axis='x', extra=' Axisymmetric geometry: not available (validation '
-                                                              'error; magnetise along z with remanence_y).'),
+                       _REMANENCE_HELP.format(axis='x', extra=' Axisymmetric on a tensor mesh: validation error '
+                                                              '(magnetise along z with remanence_y); triangles allow '
+                                                              'it.'),
                        'Built-in magnetisation of a permanent magnet along x, as a flux density.\n\n'
                        'Typical: neodymium magnets about 1.3. Not available in axisymmetric models.'),
     _material_property('remanence_y', 'Remanence along y', 'T',
@@ -178,87 +160,63 @@ _MATERIAL_PROPERTIES = (
 
 # ---- feature texts ----
 _INSULATION_DESCRIPTION = (
-    'Magnetic insulation A = 0 on the selected outer faces (the default of every face no feature sets): the normal '
-    'flux density is 0, field lines run along the face. It is the mirror image of an ODD current distribution (J_z '
-    'changes sign across the plane, e.g. the midplane between a conductor and its return current) and stands in for a '
-    'distant boundary far from the sources. Axisymmetric: psi = r A_phi = 0, so no net flux crosses the circle of an '
-    'x_hi face (the return flux lies inside it); x_lo is the axis (psi = 0 already; selecting it is a validation '
-    'error). Anchors the solve.')
+    'A = 0 on the selected outer faces (the default of every face no feature sets): no normal flux, field lines run '
+    'along the face. The mirror of an ODD current distribution (J_z changes sign across the plane, e.g. midway between '
+    'a conductor and its return) or a distant boundary. Axisymmetric: psi = 0, so no net flux crosses an x_hi face '
+    '(the return flux lies inside it); x_lo (the axis) is a validation error. Anchors the solve.')
 _SYMMETRY_DESCRIPTION = (
-    'Symmetry dA/dn = 0 (Neumann) on the selected outer faces: the tangential flux density is 0, field lines cross the '
-    'face at right angles. It is the mirror image of an EVEN current distribution (J_z the same on both sides, e.g. '
-    'the midplane of two parallel conductors carrying the same current) and models a face next to an ideal iron yoke. '
-    'Does not anchor the solve: a model whose four faces are all symmetry needs an external_field or fixed_potential. '
-    'Axisymmetric: not allowed on x_lo (the axis).')
+    'dA/dn = 0 (Neumann) on the selected outer faces: no tangential flux, field lines cross at right angles. The '
+    'mirror of an EVEN current distribution (J_z equal on both sides) or a face next to an ideal iron yoke. Does not '
+    'anchor: with symmetry on all four faces add an external_field or fixed_potential. Axisymmetric: refused on x_lo '
+    '(the axis).')
 _EXTERNAL_FIELD_DESCRIPTION = (
-    "Uniform applied flux density (B_x, B_y) [T], selection 'all' only, at most one per physics: the outermost window "
-    'cells are held at the external potential (planar A = B_x y - B_y x evaluated at their faces toward the free '
-    'cells, so a uniform field is reproduced exactly; axisymmetric psi = B_y r^2 / 2 on the z faces and the exact '
-    'half-cell value on x_hi, B_x must be 0; exact on uniform r cells only: graded r cells add a first-order error '
-    'where the radial width changes). Inside, objects perturb the field; keep them several object sizes '
-    'away from the domain edges, since the ring holds the undisturbed field there. The ring cells leave the solve: '
-    'B and H read 0 in them, and face conditions of the outer faces have no effect (the axis stays psi = 0). '
-    'Anchors the solve. Typical: the Earth field ~5e-5 T, a Helmholtz coil 1e-4 - 1e-2 T.')
+    "Uniform applied flux density (B_x, B_y), selection 'all' only, one per physics: the outermost window cells are "
+    'held at the external potential (planar A = B_x y - B_y x, exact for a uniform field; axisymmetric psi = B_y r^2 / '
+    '2, exact on uniform r cells only: graded r cells add a first-order error). Keep objects several object sizes from '
+    'the edges (the ring holds the undisturbed field). The ring cells leave the solve: B and H read 0 there and '
+    'outer-face features do nothing. Triangle mesh: A held on the window-edge nodes, no ring (the whole window is '
+    'free). Anchors the solve. Typical: the Earth field ~5e-5 T, a Helmholtz coil 1e-4 - 1e-2 T.')
 _FIXED_POTENTIAL_DESCRIPTION = (
-    'Holds the vector potential on the selected cells for the whole run (they leave the solve; B and H read 0 in '
-    'them): planar A_z [T m], axisymmetric the flux function psi = r A_phi [T m^2] (2 pi psi = the flux through the '
-    'circle of radius r). A region held at one value excludes all flux, like a perfect diamagnet or superconductor; '
-    'two regions held at A_1 and A_2 carry the flux (A_1 - A_2) per m of depth between them (planar). Anchors the '
-    'solve.')
+    'Holds the vector potential on the selected cells for the whole run (they leave the solve; B and H read 0 there). '
+    'One held value excludes all flux (a perfect diamagnet or superconductor); regions held at A_1 and A_2 carry the '
+    'flux (A_1 - A_2) per m of depth between them (planar). Triangle mesh: held on the element nodes (axisymmetric as '
+    'psi / r). Anchors the solve.')
 _CURRENT_SOURCE_DESCRIPTION = (
-    'Applied current density J [A/m^2] on the selected cells, added to field J_applied (several sources and coils '
-    'add; the coupled slot current_density, field J_coupled, is separate): planar J_z out of the drawing (> 0 along '
-    '+z: B circles counter-clockwise), axisymmetric J_phi circling the axis (> 0 counter-clockwise seen from +z: B_z > '
-    '0 inside). May depend on x and y.')
+    'Applied current density on the selected cells, added to field J_applied (sources and coils add; the coupled slot '
+    'current_density, field J_coupled, is separate): planar J_z (> 0 along +z: B circles counter-clockwise), '
+    'axisymmetric J_phi (> 0 counter-clockwise seen from +z: B_z > 0 inside).')
 _COIL_DESCRIPTION = (
-    'Stranded coil (many thin insulated turns): J = turns * current / area spread uniformly over the selected cells '
-    '(area = their x-y, axisymmetric r-z, cross-section; skin and proximity effects need the solid conductors of '
-    'magnetic_fields_ac). current [A] > 0 along +z (axisymmetric +phi). A planar coil without a return is a net '
-    'current per m of depth that returns through the insulation faces; model a go / return pair as two coil features '
-    'with opposite currents. Result \'table\': one row [feature, current, turns, flux_linkage, inductance] of the '
-    'latest solve and the same extras: flux_linkage = turns / area * integral of A over the coil (axisymmetric '
-    '2 pi psi: the flux through each turn) in Wb/m (planar) or Wb, inductance = flux_linkage / current in H/m or H '
-    '(nan at zero current). For coils in series carrying +I and -I the inductances of the features add up to the '
-    'loop inductance 2 W / I^2 (W the energy scalar); with several independent currents a coil\'s value includes the '
-    'flux of the others (mutual terms). Scalars <feature>_flux_linkage and <feature>_inductance carry the same '
-    'numbers.')
-_PROBE_DESCRIPTION = ('Vector potential A (planar A_z, axisymmetric A_phi) [T m] of the cell containing the point, one '
-                      'sample per re-solve plus one at the end of the run (stationary: per fixed-point iteration, all '
-                      'at t = 0). On a triangle mesh: A at the mesh node of the point, once per solve.')
-_SLOT_DOCS = ('A/m^2', 'Coupled current density J_z (axisymmetric J_phi; field J_coupled), added to the '
-                       'current_source and coil features (field J_applied); each transfer replaces it.')
+    'Stranded coil: J = turns current / area uniform over the selected cells (area = their cross-section; no skin or '
+    'proximity effects: use the solid conductors of magnetic_fields_ac). A planar coil without a return is a net '
+    'current per m of depth returning through the insulation faces: model a go / return pair as two coils with '
+    "opposite currents. Result 'table': one row [feature, current, turns, flux_linkage, inductance] of the latest "
+    'solve (also scalars <feature>_flux_linkage / _inductance): flux_linkage = turns / area * integral of A over the '
+    'coil (axisymmetric 2 pi psi: the flux through each turn), Wb/m planar or Wb; inductance = flux_linkage / current, '
+    'H/m or H (nan at zero current). Series coils at +I / -I: their inductances add to the loop inductance 2 W / I^2 (W '
+    "the energy scalar); with several currents a coil's value includes the mutual flux.")
+_PROBE_DESCRIPTION = ('A (planar A_z, axisymmetric A_phi) [T m] of the cell containing the point, one sample per '
+                      're-solve plus one at the end (stationary: per fixed-point iteration, all at t = 0); triangle '
+                      'mesh: at the mesh node of the point, once per solve.')
+_SLOT_DOCS = ('A/m^2', 'J_z (axisymmetric J_phi; field J_coupled), added to the current_source and coil features '
+                       '(field J_applied); each transfer replaces it.')
 _SCALARS_HELP = (
-    "energy: magnetic field energy of the free cells, (1/2) A^T K A of the discrete solution = integral of B^2 / "
-    "(2 mu0 mu_dc) (J/m planar, J axisymmetric; with remanence the energy of B alone, not the magnet's co-energy; held "
-    "cells and the external-field ring excluded, held-free faces count their free half cell; with saturating "
-    "materials the secant value at the converged nu, not the integral of H dB; on a triangle mesh the integral of the "
-    "energy density w(B) over the window elements outside fixed_potential regions, i.e. the integral of H dB also "
-    "when saturating); "
-    "<coil>_flux_linkage (Wb/m planar, Wb axisymmetric) and <coil>_inductance (H/m, H) of every enabled coil "
-    "feature, as its table result.")
+    'energy: field energy of the free cells, (1/2) A^T K A = integral of B^2 / (2 mu0 mu_dc) (J/m planar, J '
+    'axisymmetric; with remanence the energy of B alone, not the co-energy; held cells and the external-field ring '
+    'excluded, held-free faces count their free half cell; saturating: the secant value at the converged nu; triangle '
+    'mesh: the integral of H dB over the elements outside fixed_potential regions); <coil>_flux_linkage (Wb/m, Wb) '
+    'and <coil>_inductance (H/m, H) of every enabled coil, as its table result.')
 _PHYSICS_DESCRIPTION = (
-    '2D magnetostatics on the physical window (finite volumes, Jacobi-PCG): -div(nu grad A) = J with nu = 1 / (mu0 '
-    'mu_dc) (planar A_z [T m] of currents J_z along z; c_xx = nu_yy, c_yy = nu_xx, since B_y = -dA/dx sees mu_yy), or '
-    'axisymmetric the flux function psi = r A_phi of currents J_phi on the planar operator with coefficients nu / r '
-    '(setting geometry). B = curl A (planar B_x = dA/dy, B_y = -dA/dx; axisymmetric B_r = -(1/r) dpsi/dz, B_z = (1/r) '
-    'dpsi/dr) and H = nu (B - B_r) from the face fluxes averaged to the cell centres; w_mag = (nu_xx B_x^2 + nu_yy '
-    'B_y^2) / 2. Every outer face is magnetic insulation (A = 0) unless a feature sets it; sources are current_source '
-    'and coil features, the coupled slot current_density and material remanence; external_field holds the outer '
-    'ring at a uniform applied field. mu_dc may depend on x, y and state fields (a stationary study iterates); a '
-    'material with saturation_polarization (analytic) or a bh_curve (table) follows an anhysteretic B-H curve, solved '
-    'by an Anderson-accelerated (or '
-    'damped Picard) fixed point on ln nu (settings nonlinear_*; iterations in the study summary as '
-    'nonlinear_iterations, an unconverged loop logs a '
-    'warning). A time-dependent study re-solves only when mu_dc, remanence, a source or a held value changed. Fields '
-    'are edge-extended into an EM PML ring. Scalars: energy and per coil flux linkage and inductance. On a triangle '
-    'mesh (MeshSpec kind triangles) finite elements of the discretization setting (P2 default, P1) solve for planar A_z '
-    'or axisymmetric A_phi itself (not psi) in B-space: B = curl A at quadrature points, H = diag(nu) (B - B_r) '
-    '(no xx / yy swap there), saturating materials isotropic H = nu(|B|) B by exact-tangent Newton with an energy line '
-    'search (nonlinear_method auto = newton); faces act on the window edge, external_field holds A_ext on the '
-    'window-edge nodes (the whole window is free), fixed_potential holds psi / r on the element nodes, state fields '
-    'are per element (A at the centroid, B / H / w_mag element means; plots show B and H averaged to the nodes), the '
-    'energy scalar is the integral of H dB, and an axisymmetric radial remanence is allowed. The instance is usually '
-    'named magnetic.')
+    '2D magnetostatics, finite volumes (Jacobi-PCG): -div(nu grad A) = J, nu = 1 / (mu0 mu_dc); planar A_z of '
+    'currents J_z (c_xx = nu_yy, c_yy = nu_xx: B_y = -dA/dx sees mu_yy), axisymmetric psi = r A_phi (setting '
+    'geometry). B = curl A (planar B_x = dA/dy, B_y = -dA/dx; axisymmetric B_r = -(1/r) dpsi/dz, B_z = (1/r) dpsi/dr) '
+    'and H = nu (B - B_r) from the face fluxes averaged to the cell centres; w_mag = (nu_xx B_x^2 + nu_yy B_y^2) / 2. '
+    'Outer faces default to magnetic insulation. mu_dc may depend on x, y and state fields (a stationary study '
+    'iterates); saturation_polarization or bh_curve materials follow an anhysteretic B-H curve (settings nonlinear_*; '
+    'study summary nonlinear_iterations; an unconverged loop warns). A time-dependent study re-solves only when mu_dc, '
+    'remanence, a source or a held value changed. Fields are edge-extended into an EM PML ring. Triangle mesh: '
+    'elements (setting discretization) for planar A_z or axisymmetric A_phi itself (not psi): B = curl A at quadrature '
+    'points, H = diag(nu) (B - B_r) (no xx / yy swap), saturating materials isotropic by Newton; state fields per '
+    'element (A at the centroid, B / H / w_mag element means; plots average B, H to the nodes).')
 _PHYSICS_SUMMARY = ('Static magnetic fields of coils, currents and permanent magnets in magnetic materials, planar or '
                     'rotationally symmetric. Gives the flux density, the field energy and coil inductances.')
 
@@ -752,10 +710,10 @@ _FEATURES = (
                 description=_SYMMETRY_DESCRIPTION, apply=_apply_symmetry, grids=_BOTH_GRIDS),
     FeatureType('external_field', 'External magnetic field', 'domain_condition', 'domain', max_entities=1,
                 params=(Param('B_x', 'float', 0.0, label='Applied flux density x', unit='T',
-                              help='x component of the uniform applied flux density; axisymmetric: must be 0 (B_r).',
+                              help='Axisymmetric: must be 0 (B_r).',
                               tip='Strength of the applied field along x.\n\nMust be 0 in axisymmetric models.'),
                         Param('B_y', 'float', 1e-4, label='Applied flux density y', unit='T',
-                              help='y component of the uniform applied flux density (axisymmetric: the axial B_z).',
+                              help='Axisymmetric: the axial B_z.',
                               tip='Strength of the applied field along y (along the axis in axisymmetric '
                                   'models).\n\nThe Earth field is about 0.00005.')),
                 summary='Applies a uniform magnetic field, held at the domain edges, around the objects inside.',
@@ -764,8 +722,8 @@ _FEATURES = (
     FeatureType('fixed_potential', 'Fixed vector potential', 'domain_condition', 'domain',
                 params=(Param('potential', 'float', 0.0, label='Vector potential', unit='T m',
                               space_units=(('axisymmetric', 'T m^2'),),
-                              help='Held value: planar A_z [T m]; axisymmetric the flux function psi = r A_phi '
-                                   '[T m^2]. 0 makes the region exclude all flux.',
+                              help='Planar A_z; axisymmetric the flux function psi = r A_phi (2 pi psi = the flux '
+                                   'through the circle of radius r).',
                               tip='Value the selected domains are held at; 0 keeps all magnetic flux out of them, '
                                   'like a superconductor.'),),
                 summary='Holds the magnetic potential in the selected domains, so no flux enters them.',
@@ -773,22 +731,19 @@ _FEATURES = (
     FeatureType('current_source', 'Current density', 'domain_condition', 'domain',
                 params=(Param('density', 'float', 1e6, label='Current density', unit='A/m^2', field_dependent=True,
                               follows_parameters=True,
-                              help='J_z (planar, > 0 along +z) or J_phi (axisymmetric, > 0 counter-clockwise seen '
-                                   'from +z); may depend on x and y; must be finite on the selected cells. A value of '
-                                   'parameters only is followed by a reused sweep build (sweep reuse_build) without '
-                                   'rebuilding (tensor meshes).',
+                              help='Must be finite on the selected cells; a reused sweep build (reuse_build) follows '
+                                   'a parameters-only value (tensor meshes).',
                               tip='Current per area flowing out of the drawing (in axisymmetric models: around the '
                                   'axis).'),),
                 summary='Drives a given current per area through the selected domains.',
                 description=_CURRENT_SOURCE_DESCRIPTION, apply=_apply_current_source, grids=_BOTH_GRIDS),
     FeatureType('coil', 'Coil', 'domain_condition', 'domain', result_kind='table',
                 params=(Param('current', 'float', 1.0, label='Current', unit='A', follows_parameters=True,
-                              help='Current per turn, > 0 along +z (axisymmetric: counter-clockwise seen from +z); a '
-                                   'reused sweep build (sweep reuse_build) follows it without rebuilding (tensor '
-                                   'meshes).',
+                              help='Per turn, > 0 along +z (axisymmetric: counter-clockwise seen from +z); a reused '
+                                   'sweep build (reuse_build) follows it (tensor meshes).',
                               tip='Current in each turn of the coil; the sign sets the direction.'),
                         Param('turns', 'int', 1, label='Turns', unit='1', min=1,
-                              help='Number of turns spread over the selected cross-section (stranded winding).',
+                              help='Spread over the selected cross-section.',
                               tip='Number of wire turns in the selected cross-section.')),
                 summary='A winding of many thin turns: drives the current through the selected domains and reports '
                         'its flux linkage and inductance.',

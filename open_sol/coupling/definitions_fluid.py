@@ -5,13 +5,10 @@ from ..model.schema import CouplingType, Issue
 from ..physics.fluid.convection import TARGET_SLOT, AdvectiveHeatSource
 from ..physics.fluid.definition import fluid_materials
 from .coupling_term import CouplingTerm
-from .definitions import HEAT_TYPE_NAME, writes_heat_source
+from .definitions import HEAT_SOURCE_SUM_TEXT, HEAT_TYPE_NAME, writes_heat_source
 
 CONVECTION_TYPE_NAME = 'fluid_heat_convection'   # = physics.fluid.selftests.CONVECTION_TYPE_NAME (not imported)
 FLUID_TYPE_NAME = 'laminar_flow'                 # = physics.fluid.selftests.FLUID_TYPE_NAME (not imported)
-
-_HEAT_SOURCE_WRITERS = ('em_heat_joule', 'currents_heat_joule',   # the other 'sum' contributors of volumetric_power
-                        'magnetic_heat_induction')
 
 
 def _create_convection(ctx, coupling_spec, values, every):
@@ -36,21 +33,16 @@ def _validate_convection(vctx, coupling_spec, values):
 FLUID_HEAT_CONVECTION = CouplingType(
     CONVECTION_TYPE_NAME, 'Convective heat transport (laminar flow -> heat)', FLUID_TYPE_NAME, HEAT_TYPE_NAME,
     summary='Lets the flow carry heat: the heat physics gets the heat transported by the moving fluid.',
-    description='Advection of heat by the flow: each transfer evaluates q = -rho cp u . grad T [W/m^3] on the fluid '
-                'cells (rho, cp of the material, u of the laminar flow, T the solve-precision temperature of the heat '
-                'physics) and contributes it to the heat source volumetric_power (an additive contribution: it sums '
-                f"with {', '.join(_HEAT_SOURCE_WRITERS)}); it re-transfers whenever the flow or the temperature "
-                'changed. The advective form uses face fluxes: interior faces '
-                'between fluid cells with the mean of the two cell velocities and temperatures (second-order central, '
-                'oscillation-free for a cell Peclet number rho cp u dx / k < 2), faces to solid cells carry nothing, '
-                'outer faces only where heat holds a temperature (that face value is the inflow temperature; '
-                'other outer faces carry no advective flux: an outlet with zero gradient). It vanishes for uniform T '
-                'whatever the discrete divergence of u, so it conserves energy only to the accuracy of the flow. The '
-                'advection is explicit (lagged): a stationary study iterates heat and this coupling (Picard, gain '
-                '~ the Peclet number rho cp U L / k over the heat diffusion length / pi; use the study relaxation < 1 '
-                'when it oscillates or diverges at Pe >~ 3); transient heat steps with the source of the previous '
-                'state (stable for u dt / dx < ~1). Set a Temperature condition on the inflow face of heat for the '
-                'inflow temperature.',
+    description='q = -rho cp u . grad T [W/m^3] on the fluid cells (rho, cp of the material, u of the flow, T of '
+                'heat), re-transferred whenever the flow or the temperature changed. ' + HEAT_SOURCE_SUM_TEXT + ' Face '
+                "fluxes: interior fluid faces with the mean of the two cells' velocities and temperatures (central, "
+                'oscillation-free for a cell Peclet number rho cp u dx / k < 2); faces to solid cells carry nothing; '
+                'outer faces only where heat holds a temperature (the inflow temperature: set a Temperature condition '
+                'on the inflow face), other outer faces are zero-gradient outlets. It vanishes for uniform T, so '
+                'energy is conserved only to the accuracy of the flow. Explicit (lagged): a stationary study iterates '
+                'heat and this coupling (Picard gain ~ the Peclet number rho cp U L / k over the heat diffusion length '
+                '/ pi; use a study relaxation < 1 if it oscillates or diverges at Pe >~ 3); transient heat steps with '
+                'the source of the previous state (stable for u dt / dx < ~1).',
     create=_create_convection,
     validate=_validate_convection,
     writes=writes_heat_source,
