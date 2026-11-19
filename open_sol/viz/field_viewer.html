@@ -6,7 +6,8 @@
 <title>Field viewer</title>
 <!-- open_sol field viewer: one self-contained page (no network). viz/field_viewer.py fills the data block below.
      The camera, colour maps and recording blocks follow viz/mode_player.html: keep the two in step. The Plot
-     settings (fig) repeat the keys of field_viewer.figure_settings: change both. -->
+     settings (fig) take their keys and checks from DATA.figure_rules; their defaults (FIGURE_STYLE) and the panel's
+     fs_<key> inputs are the page's own. -->
 <style>
 :root {
   --bg: #f4f5f7;
@@ -390,15 +391,12 @@ const LENGTH_SCALE = DATA.length_scale || 1;   // m per length unit of the page
 const FIGURE_STYLE = { font_size: 11, title_size: 26, title: 'top_left', colorbar: 'bottom_right', colorbar_length: null,
   horizontal_axis: 'bottom', vertical_axis: 'left', scale_bar: 'on', scale_bar_color: 'auto', legend_color: 'auto',
   background: 'theme', export_scale: 1 };
-const FIGURE_CHOICES = {
-  title: ['top_left', 'top_center', 'top_right', 'off'],
-  colorbar: ['bottom_right', 'bottom_left', 'top_right', 'top_left', 'right', 'left', 'top', 'bottom', 'off'],
-  horizontal_axis: ['bottom', 'top'], vertical_axis: ['left', 'right'], background: ['theme', 'white'],
-  scale_bar: ['off', 'on'], scale_bar_color: ['auto', 'white', 'black'], legend_color: ['auto', 'white', 'black'],
-  export_scale: [1, 2, 4] };
-const FIGURE_RANGES = { font_size: [6, 40], title_size: [8, 72], colorbar_length: [0.1, 1] };
-const LIMIT_KEYS = ['color_min', 'color_max', 'x_min', 'x_max', 'y_min', 'y_max', 'z_min', 'z_max'];
-const FILE_KEYS = [...LIMIT_KEYS, 'scale_bar_length'];   // values of this model: remembered per file, not for every page
+// the rules come from Python (viz.field_viewer FIGURE_CHOICES / _RANGES / _LIMITS / _LENGTHS), the defaults are the page's
+const FIGURE_CHOICES = DATA.figure_rules.choices;
+const FIGURE_RANGES = DATA.figure_rules.ranges;
+const FIGURE_LENGTHS = DATA.figure_rules.lengths;   // positive lengths (m)
+const LIMIT_KEYS = DATA.figure_rules.limits.flatMap((name) => [name + '_min', name + '_max']);
+const FILE_KEYS = [...LIMIT_KEYS, ...FIGURE_LENGTHS];   // values of this model: remembered per file, not for every page
 const FIGURE_DEFAULTS = Object.assign({}, FIGURE_STYLE, Object.fromEntries(FILE_KEYS.map((k) => [k, null])));
 const LIMITS_STORE = 'limits:' + location.pathname;
 const QUANTITY_KEY = Q.label + '|' + (Q.unit || '');
@@ -406,7 +404,7 @@ function validSetting(k, v) {
   if (k in FIGURE_CHOICES) return FIGURE_CHOICES[k].includes(v);
   if (v === null) return FIGURE_DEFAULTS[k] === null;
   if (typeof v !== 'number' || !isFinite(v)) return false;
-  if (k === 'scale_bar_length') return v > 0;
+  if (FIGURE_LENGTHS.includes(k)) return v > 0;
   return !(k in FIGURE_RANGES) || (v >= FIGURE_RANGES[k][0] && v <= FIGURE_RANGES[k][1]);
 }
 function storedJson(key) { try { const v = JSON.parse(store(key) || 'null'); return v && typeof v === 'object' ? v : {}; }
@@ -773,6 +771,7 @@ function setupGL() {
   if (aVal2 >= 0) gl.vertexAttrib2f(aVal2, 0, 1);   // without a buffer (box, still pages): a valued zero
   const aDisp = gl.getAttribLocation(prog, 'aDisp');
   if (aDisp >= 0) gl.vertexAttrib4f(aDisp, 0, 0, 0, 0);   // buffers without a displacement (box, no motion) stay put
+  // (aDown, the terrain walls, reads its generic 0 likewise: a new attribute of this program sets its value here)
   for (const L of LAYERS) {
     L.vao = gl.createVertexArray(); gl.bindVertexArray(L.vao);
     vertexBuffer(aPos, L.pos, 3, gl.STATIC_DRAW);
@@ -2453,7 +2452,7 @@ function updateReadout() {
 
 // ---------- Plot settings panel: every key of fig has the input 'fs_<key>' ----------
 const SETTING_KEYS = Object.keys(FIGURE_DEFAULTS);
-function shownPer(k) { return /^[xyz]_/.test(k) || k === 'scale_bar_length' ? 1 / LENGTH_SCALE : 1; }   // panel value per stored value (lengths: m -> length units)
+function shownPer(k) { return /^[xyz]_/.test(k) || FIGURE_LENGTHS.includes(k) ? 1 / LENGTH_SCALE : 1; }   // panel value per stored value (lengths: m -> length units)
 function changedSettings() { return Object.fromEntries(SETTING_KEYS.filter((k) => fig[k] !== FIGURE_DEFAULTS[k]).map((k) => [k, fig[k]])); }
 function syncSettings() {
   for (const k of SETTING_KEYS) {
@@ -3571,7 +3570,8 @@ function tick(now) {
   requestAnimationFrame(tick);
 }
 function advance(dt, now) {
-  // the page's clocks by dt seconds (now: ms, for the terrain tween)
+  // the page's clocks by dt seconds (now: ms, for the terrain tween); a recording calls advance + draw per frame
+  // instead of tick, so anything that moves with time goes here (never straight in tick) or recordings miss it
   introTurn(dt); adaptVolume(dt);
   if (state.spin) cam.az -= SPIN_RATE * dt;
   flowTick(dt);

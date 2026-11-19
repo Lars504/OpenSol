@@ -453,13 +453,17 @@ def field_data_axes(field_data) -> tuple:
 
 def _draw_timeseries(ax, result, title, ascii_text=False):
     """Timeseries result values vs time (auto unit), or vs the 1-based iteration when all samples share one time
-    (stationary iterations); a 'no samples' panel for an empty series."""
+    (stationary iterations, the rule of model.analytic.is_iteration_series); a 'no samples' panel for an empty series.
+    Returns the abscissa scale (time unit [s], 1.0 for iterations; None when empty): result_plots draws the analytic
+    curves over it, never with its own iteration test."""
     times = np.asarray(result['t'], dtype=np.float64)
     values = np.asarray(result['values'])
     line_style = '.-' if values.size <= 200 else '-'
+    t_scale = None
     if times.size == 0:
         _blank(ax, 'no samples')
-    elif times.size < 2 or np.ptp(times) == 0:
+    elif times.size == 1 or float(np.ptp(times)) == 0.0:
+        t_scale = 1.0
         ax.plot(np.arange(1, values.size + 1), values, line_style, linewidth=0.8, color='#2166AC')
         ax.set_xlabel(f'Iteration (all at t = {float(times[0]):.6g} s)')
     else:
@@ -472,6 +476,7 @@ def _draw_timeseries(ax, result, title, ascii_text=False):
         ax.grid(True, alpha=0.2)
     ax.set_ylabel(_with_unit(result.get('component', ''), result.get('unit', '')))
     ax.set_title(title)
+    return t_scale
 
 
 def _draw_flux_panel(ax, results, title, labels=None, direction='+x / +y'):
