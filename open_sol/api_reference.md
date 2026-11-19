@@ -20,85 +20,85 @@ Line ranges in api_reference.md (Read with offset / limit; Grep '^## ' lists the
 - lines 842-997: Materials
 - lines 999-1045: Mesh
 - lines 1047-1183: Solvers
-- lines 1185-1879: Shared help texts
-- lines 1881-2007: Physics type `drift_diffusion` - Semiconductor (drift-diffusion, 2D)
-- lines 2009-2219: Physics type `elastic_waves` - Elastic and Acoustic Waves, time domain (2D, in-plane)
-- lines 2221-2318: Physics type `electric_currents` - Electric Currents
-- lines 2320-2475: Physics type `electrostatics` - Electrostatics
-- lines 2477-2657: Physics type `em_eme` - Electromagnetic Waves, eigenmode expansion (2D)
-- lines 2659-2814: Physics type `em_eme_3d` - Electromagnetic Waves, eigenmode expansion (3D)
-- lines 2816-2903: Physics type `em_fdfd_3d` - Electromagnetic Waves, frequency domain (3D)
-- lines 2905-3064: Physics type `em_fdfd_bor` - Electromagnetic Waves, frequency domain (axisymmetric, azimuthal order m)
-- lines 3066-3203: Physics type `em_fdfd_conical` - Electromagnetic Waves, frequency domain (out-of-plane wave number k_z)
-- lines 3205-3456: Physics type `em_fdfd_ez` - Electromagnetic Waves, frequency domain (2D, electric field out of plane)
-- lines 3458-3729: Physics type `em_fdfd_hz` - Electromagnetic Waves, frequency domain (2D, magnetic field out of plane)
-- lines 3731-4120: Physics type `em_fdfd_nonlinear` - Nonlinear optics, frequency domain (2D, harmonic channels)
-- lines 4122-4367: Physics type `em_fdtd_3d` - Electromagnetic Waves, time domain (3D)
-- lines 4369-4557: Physics type `em_fdtd_bor` - Electromagnetic Waves, time domain (axisymmetric, azimuthal order m)
-- lines 4559-4859: Physics type `em_fdtd_ez` - Electromagnetic Waves, time domain (2D, electric field out of plane)
-- lines 4861-5169: Physics type `em_fdtd_hz` - Electromagnetic Waves, time domain (2D, magnetic field out of plane)
-- lines 5171-5313: Physics type `em_modes` - Electromagnetic Waves, cross-section modes
-- lines 5315-5566: Physics type `heat` - Heat Transfer in Solids
-- lines 5568-5693: Physics type `laminar_flow` - Laminar Flow (2D)
-- lines 5695-5834: Physics type `magnetic_fields_ac` - Magnetic Fields, AC (2D)
-- lines 5836-5955: Physics type `magnetostatics` - Magnetostatics (2D)
-- lines 5957-6076: Physics type `magnetostatics_3d` - Magnetostatics (3D)
-- lines 6078-6317: Physics type `membrane` - Membrane
-- lines 6319-6496: Physics type `pressure_acoustics` - Pressure Acoustics, frequency domain
-- lines 6498-6853: Physics type `solid_mechanics` - Solid Mechanics (2D)
-- lines 6855-7281: Physics type `solid_mechanics_3d` - Solid Mechanics (3D)
-  - lines 6863-6888: Settings (PhysicsSpec.settings)
-  - lines 6890-7010: Material properties (MaterialSpec.properties)
-  - lines 7012-7053: Fields
-  - lines 7055-7060: Source slots
-  - lines 7062-7068: Feature `solid_mechanics_3d.fixed` - Fixed
-  - lines 7070-7076: Feature `solid_mechanics_3d.roller` - Roller
-  - lines 7078-7086: Feature `solid_mechanics_3d.displacement` - Displacement
-  - lines 7088-7094: Feature `solid_mechanics_3d.fixed_domain` - Fixed (domain)
-  - lines 7096-7104: Feature `solid_mechanics_3d.prescribed_displacement_domain` - Prescribed displacement (domain)
-  - lines 7106-7118: Feature `solid_mechanics_3d.boundary_load` - Boundary load
-  - lines 7120-7132: Feature `solid_mechanics_3d.body_force` - Body force
-  - lines 7134-7142: Feature `solid_mechanics_3d.temperature_change` - Temperature change
-  - lines 7144-7152: Feature `solid_mechanics_3d.solid_probe` - Solid probe
-  - lines 7154-7160: Feature `solid_mechanics_3d.frequency_probe` - Frequency probe
-  - lines 7162-7168: Feature `solid_mechanics_3d.resonance_table` - Resonance table
-  - lines 7170-7178: Feature `solid_mechanics_3d.mode_shapes` - Mode shapes
-  - lines 7180-7199: Feature `solid_mechanics_3d.squeeze_film_damping` - Squeeze-film damping
-  - lines 7201-7209: Feature `solid_mechanics_3d.thermoelastic_damping` - Thermoelastic damping
-  - lines 7211-7224: Feature `solid_mechanics_3d.electrode` - Electrode
-  - lines 7226-7239: Feature `solid_mechanics_3d.electrode_domain` - Electrode (domain)
-  - lines 7241-7255: Feature `solid_mechanics_3d.admittance` - Admittance
-  - lines 7257-7281: Feature `solid_mechanics_3d.optomechanical_coupling` - Optomechanical coupling
-- lines 7283-7289: Coupling type `acoustics_em_acousto_optic` - Acousto-optic effect (elastic waves -> electromagnetic waves)
-- lines 7291-7297: Coupling type `currents_heat_joule` - Joule heating (electric currents -> heat)
-- lines 7299-7307: Coupling type `electrostatics_acoustics_piezo` - Piezoelectric coupling (electrostatics <-> elastic waves)
-- lines 7309-7317: Coupling type `electrostatics_em_pockels` - Pockels effect (electrostatics -> electromagnetic waves)
-- lines 7319-7325: Coupling type `em_acoustics_photoacoustic` - Photoacoustic heating (electromagnetic waves -> elastic waves)
-- lines 7327-7333: Coupling type `em_heat_joule` - Joule heating (electromagnetic waves -> heat)
-- lines 7335-7345: Coupling type `em_semiconductor_generation` - Photogeneration (electromagnetic waves -> semiconductor)
-- lines 7347-7353: Coupling type `em_solid_optical_force` - Optical force (electromagnetic waves -> solid mechanics)
-- lines 7355-7367: Coupling type `field_transfer` - Field transfer
-- lines 7369-7375: Coupling type `fluid_heat_convection` - Convective heat transport (laminar flow -> heat)
-- lines 7377-7383: Coupling type `heat_em_phase_change` - Phase change (heat -> electromagnetic waves)
-- lines 7385-7391: Coupling type `heat_em_thermo_optic` - Thermo-optic effect (heat -> electromagnetic waves)
-- lines 7393-7399: Coupling type `heat_solid_thermal_strain` - Thermal expansion (heat -> solid mechanics)
-- lines 7401-7407: Coupling type `magnetic_heat_induction` - Induction heating (magnetic fields AC -> heat)
-- lines 7409-7415: Coupling type `magnetic_solid_lorentz_force` - Lorentz force (magnetic fields -> solid mechanics)
-- lines 7417-7429: Coupling type `semiconductor_em_plasma_dispersion` - Free-carrier plasma dispersion (semiconductor -> electromagnetic waves)
-- lines 7431-7439: Coupling type `solid_em_strain_optic` - Strain-optic effect (solid mechanics -> electromagnetic waves)
-- lines 7441-7449: Coupling type `solid_membrane_tension` - Film prestress (solid mechanics -> membrane)
-- lines 7451-7477: Study type `eigenfrequency` - Eigenfrequency
-- lines 7479-7505: Study type `frequency_domain` - Frequency domain
-- lines 7507-7543: Study type `frequency_response` - Frequency response
-- lines 7545-7559: Study type `mode_analysis` - Mode analysis
-- lines 7561-7576: Study type `nonlinear_frequency_domain` - Nonlinear frequency domain
-- lines 7578-7594: Study type `optimization` - Optimization
-- lines 7596-7613: Study type `optomechanics` - Optomechanics
-- lines 7615-7632: Study type `stationary` - Stationary
-- lines 7634-7657: Study type `thermal_noise` - Thermal noise
-- lines 7659-7674: Study type `time_dependent` - Time dependent
-- lines 7676-7744: Templates
-- lines 7746-8001: Results, reports and files
+- lines 1185-1871: Shared help texts
+- lines 1873-1995: Physics type `drift_diffusion` - Semiconductor (drift-diffusion, 2D)
+- lines 1997-2191: Physics type `elastic_waves` - Elastic and Acoustic Waves, time domain (2D, in-plane)
+- lines 2193-2288: Physics type `electric_currents` - Electric Currents
+- lines 2290-2437: Physics type `electrostatics` - Electrostatics
+- lines 2439-2619: Physics type `em_eme` - Electromagnetic Waves, eigenmode expansion (2D)
+- lines 2621-2776: Physics type `em_eme_3d` - Electromagnetic Waves, eigenmode expansion (3D)
+- lines 2778-2865: Physics type `em_fdfd_3d` - Electromagnetic Waves, frequency domain (3D)
+- lines 2867-3026: Physics type `em_fdfd_bor` - Electromagnetic Waves, frequency domain (axisymmetric, azimuthal order m)
+- lines 3028-3165: Physics type `em_fdfd_conical` - Electromagnetic Waves, frequency domain (out-of-plane wave number k_z)
+- lines 3167-3418: Physics type `em_fdfd_ez` - Electromagnetic Waves, frequency domain (2D, electric field out of plane)
+- lines 3420-3691: Physics type `em_fdfd_hz` - Electromagnetic Waves, frequency domain (2D, magnetic field out of plane)
+- lines 3693-4082: Physics type `em_fdfd_nonlinear` - Nonlinear optics, frequency domain (2D, harmonic channels)
+- lines 4084-4329: Physics type `em_fdtd_3d` - Electromagnetic Waves, time domain (3D)
+- lines 4331-4519: Physics type `em_fdtd_bor` - Electromagnetic Waves, time domain (axisymmetric, azimuthal order m)
+- lines 4521-4821: Physics type `em_fdtd_ez` - Electromagnetic Waves, time domain (2D, electric field out of plane)
+- lines 4823-5131: Physics type `em_fdtd_hz` - Electromagnetic Waves, time domain (2D, magnetic field out of plane)
+- lines 5133-5275: Physics type `em_modes` - Electromagnetic Waves, cross-section modes
+- lines 5277-5524: Physics type `heat` - Heat Transfer in Solids
+- lines 5526-5651: Physics type `laminar_flow` - Laminar Flow (2D)
+- lines 5653-5792: Physics type `magnetic_fields_ac` - Magnetic Fields, AC (2D)
+- lines 5794-5913: Physics type `magnetostatics` - Magnetostatics (2D)
+- lines 5915-6029: Physics type `magnetostatics_3d` - Magnetostatics (3D)
+- lines 6031-6270: Physics type `membrane` - Membrane
+- lines 6272-6449: Physics type `pressure_acoustics` - Pressure Acoustics, frequency domain
+- lines 6451-6800: Physics type `solid_mechanics` - Solid Mechanics (2D)
+- lines 6802-7218: Physics type `solid_mechanics_3d` - Solid Mechanics (3D)
+  - lines 6810-6835: Settings (PhysicsSpec.settings)
+  - lines 6837-6947: Material properties (MaterialSpec.properties)
+  - lines 6949-6990: Fields
+  - lines 6992-6997: Source slots
+  - lines 6999-7005: Feature `solid_mechanics_3d.fixed` - Fixed
+  - lines 7007-7013: Feature `solid_mechanics_3d.roller` - Roller
+  - lines 7015-7023: Feature `solid_mechanics_3d.displacement` - Displacement
+  - lines 7025-7031: Feature `solid_mechanics_3d.fixed_domain` - Fixed (domain)
+  - lines 7033-7041: Feature `solid_mechanics_3d.prescribed_displacement_domain` - Prescribed displacement (domain)
+  - lines 7043-7055: Feature `solid_mechanics_3d.boundary_load` - Boundary load
+  - lines 7057-7069: Feature `solid_mechanics_3d.body_force` - Body force
+  - lines 7071-7079: Feature `solid_mechanics_3d.temperature_change` - Temperature change
+  - lines 7081-7089: Feature `solid_mechanics_3d.solid_probe` - Solid probe
+  - lines 7091-7097: Feature `solid_mechanics_3d.frequency_probe` - Frequency probe
+  - lines 7099-7105: Feature `solid_mechanics_3d.resonance_table` - Resonance table
+  - lines 7107-7115: Feature `solid_mechanics_3d.mode_shapes` - Mode shapes
+  - lines 7117-7136: Feature `solid_mechanics_3d.squeeze_film_damping` - Squeeze-film damping
+  - lines 7138-7146: Feature `solid_mechanics_3d.thermoelastic_damping` - Thermoelastic damping
+  - lines 7148-7161: Feature `solid_mechanics_3d.electrode` - Electrode
+  - lines 7163-7176: Feature `solid_mechanics_3d.electrode_domain` - Electrode (domain)
+  - lines 7178-7192: Feature `solid_mechanics_3d.admittance` - Admittance
+  - lines 7194-7218: Feature `solid_mechanics_3d.optomechanical_coupling` - Optomechanical coupling
+- lines 7220-7226: Coupling type `acoustics_em_acousto_optic` - Acousto-optic effect (elastic waves -> electromagnetic waves)
+- lines 7228-7234: Coupling type `currents_heat_joule` - Joule heating (electric currents -> heat)
+- lines 7236-7244: Coupling type `electrostatics_acoustics_piezo` - Piezoelectric coupling (electrostatics <-> elastic waves)
+- lines 7246-7254: Coupling type `electrostatics_em_pockels` - Pockels effect (electrostatics -> electromagnetic waves)
+- lines 7256-7262: Coupling type `em_acoustics_photoacoustic` - Photoacoustic heating (electromagnetic waves -> elastic waves)
+- lines 7264-7270: Coupling type `em_heat_joule` - Joule heating (electromagnetic waves -> heat)
+- lines 7272-7282: Coupling type `em_semiconductor_generation` - Photogeneration (electromagnetic waves -> semiconductor)
+- lines 7284-7290: Coupling type `em_solid_optical_force` - Optical force (electromagnetic waves -> solid mechanics)
+- lines 7292-7304: Coupling type `field_transfer` - Field transfer
+- lines 7306-7312: Coupling type `fluid_heat_convection` - Convective heat transport (laminar flow -> heat)
+- lines 7314-7320: Coupling type `heat_em_phase_change` - Phase change (heat -> electromagnetic waves)
+- lines 7322-7328: Coupling type `heat_em_thermo_optic` - Thermo-optic effect (heat -> electromagnetic waves)
+- lines 7330-7336: Coupling type `heat_solid_thermal_strain` - Thermal expansion (heat -> solid mechanics)
+- lines 7338-7344: Coupling type `magnetic_heat_induction` - Induction heating (magnetic fields AC -> heat)
+- lines 7346-7352: Coupling type `magnetic_solid_lorentz_force` - Lorentz force (magnetic fields -> solid mechanics)
+- lines 7354-7366: Coupling type `semiconductor_em_plasma_dispersion` - Free-carrier plasma dispersion (semiconductor -> electromagnetic waves)
+- lines 7368-7376: Coupling type `solid_em_strain_optic` - Strain-optic effect (solid mechanics -> electromagnetic waves)
+- lines 7378-7386: Coupling type `solid_membrane_tension` - Film prestress (solid mechanics -> membrane)
+- lines 7388-7414: Study type `eigenfrequency` - Eigenfrequency
+- lines 7416-7442: Study type `frequency_domain` - Frequency domain
+- lines 7444-7480: Study type `frequency_response` - Frequency response
+- lines 7482-7496: Study type `mode_analysis` - Mode analysis
+- lines 7498-7513: Study type `nonlinear_frequency_domain` - Nonlinear frequency domain
+- lines 7515-7531: Study type `optimization` - Optimization
+- lines 7533-7550: Study type `optomechanics` - Optomechanics
+- lines 7552-7569: Study type `stationary` - Stationary
+- lines 7571-7594: Study type `thermal_noise` - Thermal noise
+- lines 7596-7611: Study type `time_dependent` - Time dependent
+- lines 7613-7681: Templates
+- lines 7683-7938: Results, reports and files
 
 ## Model spec
 
@@ -1230,10 +1230,6 @@ Lagrange order on a triangles / tetrahedra mesh (ignored on tensor meshes): quad
 
 Potential (V) of the cell containing the point. time_dependent: one sample per re-solve plus one at the end (V holds in between; electrostatics with a waveform: one per step at its end time); stationary and the frequency-domain background stage: one per fixed-point iteration, all at t = 0.
 
-#### `electrostatics.pockels_r11`
-
-In-plane Pockels tensor entry r_Ik (pockels_r<I><k>) of a crystal in model axes: Delta(1/n^2)_I = r_I1 E_x + r_I2 E_y, row I = 1 xx, 2 yy, 3 zz or 6 xy (eps_xy of em_fdfd_hz: Delta eps_xy = -n0_xx^2 n0_yy^2 Delta(1/n^2)_xy; other EM types drop it, validation warns). Read only by electrostatics_em_pockels, which adds -1/2 n0_ii^3 (r_i1 E_x + r_i2 E_y) whatever its field_component, on top of r_ii E_k: set these or r / r_ii, not both. Usually from a {'model': 'crystal'} entry: the clamped r^S in model axes (a piezoelectric strain from elastic_waves adds its index change via acoustics_em_acousto_optic, no double counting); YZ lithium niobate (model x = crystal Z, y = -Y): r11 = r33, r12 = 0, r21 = r13, r22 = -r22, r31 = r13, r32 = r22, r61 = 0, r62 = r51. Unset = 0; setting one allocates all eight arrays.
-
 #### `electrostatics.voltage.waveform`
 
 V(t) = voltage s(t) (the elastic_waves source waveforms): none = constant; ricker = Ricker wavelet peaking at frequency, value 1 at t0 = 4 / frequency; gaussian = sin carrier under a gaussian envelope of relative bandwidth (t0 = 4.5 / (pi bandwidth frequency)); cw = sin(2 pi f t) ramped in by 1 - exp(-t / (3 T)), T = 1 / f, steady after ~15 periods. Exact superposition of one static solve per distinct waveform plus the constant part (redone after every operator change), written at the end time of each step, charges included. time_dependent only (stationary: s(0) ~ 0, validation warns); not with an electrolyte (validation error). A 2D interdigital transducer is two terminals with the same waveform and opposite voltages.
@@ -1718,10 +1714,6 @@ Fraction of each proposed change of ln nu applied (tensor mesh only). 'picard': 
 
 Tabulated anhysteretic B-H curve (magnetostatics types only): H, B > 0 except an optional first row [0, 0] (the curve starts at the origin), e.g. [[100, 0.5], [300, 1.0], [1000, 1.4], [5000, 1.7]]. H(B) is linear between rows; beyond the last row B = B_n + mu0 (H - H_n), so end the table well into saturation. Isotropic secant reluctivity nu = |H| / B(|H|) (the mu_dc entries are ignored there), solved like saturation_polarization (settings nonlinear_*; first iterate the first segment's slope); tensor mesh: energy and inductances are secant values; triangle mesh: Newton with the segment slope as tangent, exact energy. Not with saturation_polarization or a remanence in the same material (validation error); ignored by magnetic_fields_ac. A constant table per material (entries may be parameter expressions; no x, y or field dependence).
 
-#### `magnetostatics_3d.remanence_x`
-
-Remanent flux density B_r along the axis in its name, of a permanent magnet: B = mu0 mu_dc H + B_r, entered as face drives B_r / mu_dc (exact for a uniformly magnetised region). Typical: NdFeB 1.2 - 1.4 T with mu_dc 1.05, SmCo 1.0 T, ferrite 0.4 T with mu_dc 1.1. Unset = 0.
-
 #### `membrane.squeeze_film_damping.ambient_pressure`
 
 p_a, sets the film compressibility H / p_a; 0 = incompressible (pure damping, needs vents). From squeeze number sigma = 12 mu omega L^2 / (p_a H^2) ~ 1 (L = distance to a vent) damping falls and a gas spring appears. mean_free_path does not follow it: set both.
@@ -1903,9 +1895,7 @@ Stationary drift-diffusion per unit z length (or axisymmetric, setting geometry)
 
 - `eps_dc` [1] (>= 1; nullable; writes eps_dc_xx, eps_dc_yy) - Static relative permittivity
   Sets eps_dc_xx and eps_dc_yy (component entries override it); unset = 1. Silicon 11.7, silica 3.9.
-- `eps_dc_xx` [1] (>= 1; nullable) - Static relative permittivity along x
-  Overrides eps_dc for this axis.
-- `eps_dc_yy` [1] (>= 1; nullable) - Static relative permittivity along y
+- `eps_dc_xx`, `eps_dc_yy` [1] (>= 1; nullable) - Static relative permittivity along x / Static relative permittivity along y
   Overrides eps_dc for this axis.
 - `n_intrinsic` [1/m^3] (>= 0; nullable) - Intrinsic carrier density
   n_i: cells with n_i > 0 are semiconductor, the rest insulators (Poisson only). Silicon 1.0e16 at 300 K (1e10 cm^-3), GaAs 2.1e12, germanium 2.0e19. One band structure (no heterojunction offsets).
@@ -1915,9 +1905,7 @@ Stationary drift-diffusion per unit z length (or axisymmetric, setting geometry)
   As mobility_n. Lightly doped silicon 0.048 (480 cm^2/Vs).
 - `lifetime` [s] (> 0; nullable; writes lifetime_n, lifetime_p) - Carrier lifetime
   SRH lifetime (mid-gap trap) of both carriers: sets lifetime_n and lifetime_p; unset = 1e-6 s. Silicon 1e-9 (heavily doped) .. 1e-3 (float zone).
-- `lifetime_n` [s] (> 0; nullable) - Electron lifetime
-  Overrides lifetime for this carrier.
-- `lifetime_p` [s] (> 0; nullable) - Hole lifetime
+- `lifetime_n`, `lifetime_p` [s] (> 0; nullable) - Electron lifetime / Hole lifetime
   Overrides lifetime for this carrier.
 - `radiative_recombination` [m^3/s] (>= 0; nullable) - Radiative recombination coefficient
   B of R_rad = B (n p - n_i^2); unset = 0. Silicon 1.1e-20, GaAs 7.2e-16.
@@ -2043,9 +2031,7 @@ Params:
   In-plane plane-strain stiffnesses c11, c12, c22, c66 (Voigt x = 1, y = 2, xy = 6); set, they override the values from sound_speed / shear_speed and rho (or youngs_modulus / poisson_ratio). Isotropic: c11 = c22 = lambda + 2 mu, c12 = lambda, c66 = mu; silicon along [100] / [010]: c11 = c22 = 165.7e9, c12 = 63.9e9, c66 = 79.6e9. The effective set with c16 / c26 must be positive definite (c11, c22, c66 > 0, c12^2 < c11 c22, det [[c11, c12, c16], [c12, c22, c26], [c16, c26, c66]] > 0; a fluid: c66 = c16 = c26 = 0, c12 = c11 = c22), else validation errors.
 - `c12` [Pa] (nullable) - Stiffness c12
   Plane-strain stiffness; overrides the value from the speeds or E / nu. See c11.
-- `c22` [Pa] (>= 0; nullable) - Stiffness c22
-  Plane-strain stiffness; overrides the value from the speeds or E / nu. See c11.
-- `c66` [Pa] (>= 0; nullable) - Stiffness c66
+- `c22`, `c66` [Pa] (>= 0; nullable) - Stiffness c22 / Stiffness c66
   Plane-strain stiffness; overrides the value from the speeds or E / nu. See c11.
 - `c16` [Pa] (nullable) - Stiffness c16
   In-plane monoclinic stiffnesses c16 / c26 (Voigt: T_xx = c11 S_xx + c12 S_yy + c16 g, T_yy = c12 S_xx + c22 S_yy + c26 g, T_xy = c16 S_xx + c26 S_yy + c66 g, g = 2 S_xy); default 0 (none from the speeds or E / nu). Non-zero when the model axes are not crystal symmetry axes in the plane, e.g. YZ lithium niobate c26 = c14 (a {'model': 'crystal'} entry sets both). Energy-conserving corner / centre 4-point means; corners without shear stiffness (fluids, vacuum, slip walls) carry none. The set must stay positive definite (see c11); dt takes |c16|, |c26| as bounds (see courant). Either one allocates 8 float32 grids (both arrays, strain accumulator, rate buffers); elastic_strain_xx / _yy then show the accumulated total strain. Planar geometry and single-precision stepper only. CPML can be unstable in some strongly anisotropic media (Becache, Fauqueux and Joly 2003): check long runs for growth near the layers.
@@ -2067,29 +2053,15 @@ Params:
   Photoelastic tensor entry (see photoelastic_p16); unset = photoelastic_p11.
 - `photoelastic_p26` [1] (nullable) - Photoelastic coefficient p26
   Photoelastic tensor entry (see photoelastic_p16); unset = 0.
-- `photoelastic_p31` [1] (nullable) - Photoelastic coefficient p31
+- `photoelastic_p31`, `photoelastic_p32` [1] (nullable) - Photoelastic coefficient p31 / Photoelastic coefficient p32
   Photoelastic tensor entry (see photoelastic_p16); unset = photoelastic_p12.
-- `photoelastic_p32` [1] (nullable) - Photoelastic coefficient p32
-  Photoelastic tensor entry (see photoelastic_p16); unset = photoelastic_p12.
-- `photoelastic_p36` [1] (nullable) - Photoelastic coefficient p36
-  Photoelastic tensor entry (see photoelastic_p16); unset = 0.
-- `photoelastic_p61` [1] (nullable) - Photoelastic coefficient p61
-  Photoelastic tensor entry (see photoelastic_p16); unset = 0.
-- `photoelastic_p62` [1] (nullable) - Photoelastic coefficient p62
+- `photoelastic_p36`, `photoelastic_p61`, `photoelastic_p62` [1] (nullable) - Photoelastic coefficient p36 / Photoelastic coefficient p61 / Photoelastic coefficient p62
   Photoelastic tensor entry (see photoelastic_p16); unset = 0.
 - `photoelastic_p66` [1] (nullable) - Photoelastic coefficient p66
   Photoelastic tensor entry (see photoelastic_p16); unset = (photoelastic_p11 - photoelastic_p12) / 2.
 - `piezo_e11` [C/m^2] (nullable) - Piezoelectric e11
   Piezoelectric stress constants e_kJ (piezo_e11 .. _e26) of the in-plane block in model axes (reduced Voigt: D_k = e_kJ S_J + eps0 eps_dc E, T_J = c_JK S_K - e_kJ E_k, k = 1 x / 2 y, J = 1 xx, 2 yy, 6 xy, S_6 = 2 S_xy); default 0. Read through electrostatics_acoustics_piezo: the stress -e^T E of the electric_field_x / _y slots and, two-way (default), the bound charge -div(e S) of the accumulated strain back into the electrostatics plus the stiffened dt. Usually set by a {'model': 'crystal'} entry of the material's dispersion list (also sets c_ij, rho and the clamped eps_dc_xx / _yy / _xy); YZ lithium niobate (euler_deg 0, 90, 90; model x = crystal Z, y = -Y): piezo_e11 = e33 = 1.3, piezo_e12 = e31 = 0.2, piezo_e22 = -e22 = -2.5, piezo_e26 = e15 = 3.7. Any one set allocates all six arrays and the strain accumulator (9 float32 grids; elastic_strain_xx / _yy then show the accumulated total strain). Planar geometry only.
-- `piezo_e12` [C/m^2] (nullable) - Piezoelectric e12
-  Piezoelectric stress constant; see piezo_e11.
-- `piezo_e16` [C/m^2] (nullable) - Piezoelectric e16
-  Piezoelectric stress constant; see piezo_e11.
-- `piezo_e21` [C/m^2] (nullable) - Piezoelectric e21
-  Piezoelectric stress constant; see piezo_e11.
-- `piezo_e22` [C/m^2] (nullable) - Piezoelectric e22
-  Piezoelectric stress constant; see piezo_e11.
-- `piezo_e26` [C/m^2] (nullable) - Piezoelectric e26
+- `piezo_e12`, `piezo_e16`, `piezo_e21`, `piezo_e22`, `piezo_e26` [C/m^2] (nullable) - Piezoelectric e12 / Piezoelectric e16 / Piezoelectric e21 / Piezoelectric e22 / Piezoelectric e26
   Piezoelectric stress constant; see piezo_e11.
 
 ### Fields
@@ -2237,9 +2209,7 @@ Quasi-static -div(sigma_dc grad V) = s, s the current_source features plus the c
 
 - `sigma_dc` [S/m] (>= 0; nullable; writes sigma_dc_xx, sigma_dc_yy, sigma_dc_zz) - Static conductivity
   Sets sigma_dc_xx, _yy and _zz (component entries override it; zz read only on 3D tetrahedra); unset = 0 = insulator: no current, the cell keeps its potential, so every conducting region needs a voltage or terminal. NOT the optical sigma_e (water: sigma_e 4.22 S/m at 1.55 um, sigma_dc 5.5e-6 S/m). Gold 4.1e7, silver 6.3e7, aluminium 3.8e7, water 5.5e-6; e.g. gold 4.1e7 / (1 + 0.0034 * (heat_T - 293.15)) (a stationary study iterates).
-- `sigma_dc_xx` [S/m] (>= 0; nullable) - Static conductivity along x
-  Overrides sigma_dc for this axis.
-- `sigma_dc_yy` [S/m] (>= 0; nullable) - Static conductivity along y
+- `sigma_dc_xx`, `sigma_dc_yy` [S/m] (>= 0; nullable) - Static conductivity along x / Static conductivity along y
   Overrides sigma_dc for this axis.
 - `sigma_dc_zz` [S/m] (>= 0; nullable) - Static conductivity along z
   Overrides sigma_dc for this axis (3D tetrahedra only; 2D ignores it).
@@ -2342,9 +2312,7 @@ Quasi-static -div(eps0 eps_dc grad V) = rho_free + rho_ion, rho_free the charge_
 
 - `eps_dc` [1] (>= 1; nullable; writes eps_dc_xx, eps_dc_yy, eps_dc_zz) - Static relative permittivity
   Sets eps_dc_xx, _yy and _zz (component entries override it; zz read only on 3D tetrahedra); unset = 1 (vacuum): every cell takes part, one voltage / terminal anchors everything. NOT the optical eps_r = n^2: lithium niobate eps_dc 43 (eps_a) / 28 (eps_c) vs eps_r 4.9 / 4.6; silicon 11.7 vs 12.08; silica 3.9 vs 2.085; water 80.1 vs 1.73.
-- `eps_dc_xx` [1] (>= 1; nullable) - Static relative permittivity along x
-  Overrides eps_dc for this axis.
-- `eps_dc_yy` [1] (>= 1; nullable) - Static relative permittivity along y
+- `eps_dc_xx`, `eps_dc_yy` [1] (>= 1; nullable) - Static relative permittivity along x / Static relative permittivity along y
   Overrides eps_dc for this axis.
 - `eps_dc_zz` [1] (>= 1; nullable) - Static relative permittivity along z
   Overrides eps_dc for this axis (3D tetrahedra electrostatics, solid_mechanics_3d with piezoelectric on; 2D ignores it).
@@ -2358,14 +2326,8 @@ Quasi-static -div(eps0 eps_dc grad V) = rho_free + rho_ion, rho_free the charge_
   Overrides r for n_yy (light polarised along y).
 - `r_zz` [m/V] (nullable) - Electro-optic coefficient along z
   Overrides r for n_zz (light polarised along z).
-- `pockels_r11` [m/V] (nullable) - Electro-optic tensor r11. Help: shared `electrostatics.pockels_r11`
-- `pockels_r12` [m/V] (nullable) - Electro-optic tensor r12. Help: shared `electrostatics.pockels_r11`
-- `pockels_r21` [m/V] (nullable) - Electro-optic tensor r21. Help: shared `electrostatics.pockels_r11`
-- `pockels_r22` [m/V] (nullable) - Electro-optic tensor r22. Help: shared `electrostatics.pockels_r11`
-- `pockels_r31` [m/V] (nullable) - Electro-optic tensor r31. Help: shared `electrostatics.pockels_r11`
-- `pockels_r32` [m/V] (nullable) - Electro-optic tensor r32. Help: shared `electrostatics.pockels_r11`
-- `pockels_r61` [m/V] (nullable) - Electro-optic tensor r61. Help: shared `electrostatics.pockels_r11`
-- `pockels_r62` [m/V] (nullable) - Electro-optic tensor r62. Help: shared `electrostatics.pockels_r11`
+- `pockels_r11`, `pockels_r12`, `pockels_r21`, `pockels_r22`, `pockels_r31`, `pockels_r32`, `pockels_r61`, `pockels_r62` [m/V] (nullable) - Electro-optic tensor r11 / Electro-optic tensor r12 / Electro-optic tensor r21 / Electro-optic tensor r22 / Electro-optic tensor r31 / Electro-optic tensor r32 / Electro-optic tensor r61 / Electro-optic tensor r62
+  In-plane Pockels tensor entry r_Ik (pockels_r<I><k>) of a crystal in model axes: Delta(1/n^2)_I = r_I1 E_x + r_I2 E_y, row I = 1 xx, 2 yy, 3 zz or 6 xy (eps_xy of em_fdfd_hz: Delta eps_xy = -n0_xx^2 n0_yy^2 Delta(1/n^2)_xy; other EM types drop it, validation warns). Read only by electrostatics_em_pockels, which adds -1/2 n0_ii^3 (r_i1 E_x + r_i2 E_y) whatever its field_component, on top of r_ii E_k: set these or r / r_ii, not both. Usually from a {'model': 'crystal'} entry: the clamped r^S in model axes (a piezoelectric strain from elastic_waves adds its index change via acoustics_em_acousto_optic, no double counting); YZ lithium niobate (model x = crystal Z, y = -Y): r11 = r33, r12 = 0, r21 = r13, r22 = -r22, r31 = r13, r32 = r22, r61 = 0, r62 = r51. Unset = 0; setting one allocates all eight arrays.
 
 ### Fields
 
@@ -4022,19 +3984,19 @@ em_fdfd_ez / _hz line_source on one harmonic channel (param channel) at its freq
 Params:
 - `channel` (str; default "") - Channel. Help: shared `em_fdfd_nonlinear.point_source.channel`
 - `amplitude` [V/m] (default 1) - Amplitude
-  E_z channels: E_z radiated to each side of the line in the local medium (a plane wave of this amplitude when the line spans a periodic axis); calibrated with the complex eps_r (sigma_e, dispersion) and mu of the line cells at the solved wavelength: exact in any homogeneous medium. H_z channels: Tangential E (E_x for a horizontal line, E_y for a vertical one) radiated to each side of the line in the local medium (a plane wave of this amplitude when the line spans a periodic axis); calibrated with the complex face permittivity (sigma_e, dispersion) and mu of the line cells at the solved wavelength: exact in any homogeneous medium. Each line cell is calibrated to its own medium, so across several media (core / cladding) the current steps at the interfaces and diffracts (validation warns); keep the line in one medium. H_z channels only: Its medium is the face mean of the line cell and the cell past its hi face, so on an interface sqrt(mean eps) is not the mean index (Si / air: ~14% off). A recalibration (e.g. thermo-optic eps change in the line cells) keeps the amplitude, so the launched power ~ amplitude^2 n / (2 eta0) follows n (~0.5% for dn = 0.01 at n = 2.2).
+  E_z channels: E_z radiated to each side of the line in the local medium (a plane wave of this amplitude when the line spans a periodic axis); calibrated with the complex eps_r (sigma_e, dispersion) and mu of the line cells at the solved wavelength: H_z channels: Tangential E (E_x for a horizontal line, E_y for a vertical one) radiated to each side of the line in the local medium (a plane wave of this amplitude when the line spans a periodic axis); calibrated with the complex face permittivity (sigma_e, dispersion) and mu of the line cells at the solved wavelength: exact in any homogeneous medium. Each line cell is calibrated to its own medium, so across several media (core / cladding) the current steps at the interfaces and diffracts (validation warns); keep the line in one medium. H_z channels only: Its medium is the face mean of the line cell and the cell past its hi face, so on an interface sqrt(mean eps) is not the mean index (Si / air: ~14% off). A recalibration (e.g. thermo-optic eps change in the line cells) keeps the amplitude, so the launched power ~ amplitude^2 n / (2 eta0) follows n (~0.5% for dn = 0.01 at n = 2.2).
 - `phase` [deg] (default 0) - Phase. Help: shared `em_fdfd_ez.point_source.phase`
 
 ### Feature `em_fdfd_nonlinear.gaussian_beam` - Gaussian beam
 
-em_fdfd_ez / _hz gaussian_beam on one harmonic channel (param channel) at its frequency. E_z channels: Line source with the profile exp(-((s - center) / waist)^2) along the line: a beam of peak E_z = amplitude to each side in the local medium (vertical line: along +x and -x; horizontal: along +y and -y), waist on the line. H_z channels: Line source with the profile exp(-((s - center) / waist)^2) along the line: a beam of peak tangential E = amplitude to each side in the local medium (vertical line: E_y, along +x and -x; horizontal: E_x, along +y and -y), waist on the line, sheet on the hi face of the line cells. The line covers cells [cell(start), cell(end) + 1) (an end exactly on a cell edge adds a cell). Amplitudes are absolute: the nonlinear response scales as P ~ E^n.
+em_fdfd_ez / _hz gaussian_beam on one harmonic channel (param channel) at its frequency. Line source with the profile exp(-((s - center) / waist)^2) along the line: E_z channels: a beam of peak E_z = amplitude to each side in the local medium (vertical line: along +x and -x; horizontal: along +y and -y), waist on the line. H_z channels: a beam of peak tangential E = amplitude to each side in the local medium (vertical line: E_y, along +x and -x; horizontal: E_x, along +y and -y), waist on the line, sheet on the hi face of the line cells. The line covers cells [cell(start), cell(end) + 1) (an end exactly on a cell edge adds a cell). Amplitudes are absolute: the nonlinear response scales as P ~ E^n.
 
 - Category source; selection line entities, object kinds line, exactly 1; result none
 
 Params:
 - `channel` (str; default "") - Channel. Help: shared `em_fdfd_nonlinear.point_source.channel`
 - `amplitude` [V/m] (default 1) - Amplitude
-  E_z channels: Peak E_z at the beam centre on the waist line, radiated to each side in the local medium; calibrated with the complex eps_r (sigma_e, dispersion) and mu of the line cells at the solved wavelength: exact in any homogeneous medium. H_z channels: Peak tangential E (E_x for a horizontal line, E_y for a vertical one) at the beam centre on the waist line, radiated to each side in the local medium; calibrated with the complex face permittivity (sigma_e, dispersion) and mu of the line cells at the solved wavelength: exact in any homogeneous medium. Each line cell is calibrated to its own medium, so across several media (core / cladding) the current steps at the interfaces and diffracts (validation warns); keep the line in one medium. H_z channels only: Its medium is the face mean of the line cell and the cell past its hi face, so on an interface sqrt(mean eps) is not the mean index (Si / air: ~14% off). A recalibration (e.g. thermo-optic eps change in the line cells) keeps the amplitude, so the launched power ~ amplitude^2 n / (2 eta0) follows n (~0.5% for dn = 0.01 at n = 2.2).
+  E_z channels: Peak E_z at the beam centre on the waist line, radiated to each side in the local medium; calibrated with the complex eps_r (sigma_e, dispersion) and mu of the line cells at the solved wavelength: H_z channels: Peak tangential E (E_x for a horizontal line, E_y for a vertical one) at the beam centre on the waist line, radiated to each side in the local medium; calibrated with the complex face permittivity (sigma_e, dispersion) and mu of the line cells at the solved wavelength: exact in any homogeneous medium. Each line cell is calibrated to its own medium, so across several media (core / cladding) the current steps at the interfaces and diffracts (validation warns); keep the line in one medium. H_z channels only: Its medium is the face mean of the line cell and the cell past its hi face, so on an interface sqrt(mean eps) is not the mean index (Si / air: ~14% off). A recalibration (e.g. thermo-optic eps change in the line cells) keeps the amplitude, so the launched power ~ amplitude^2 n / (2 eta0) follows n (~0.5% for dn = 0.01 at n = 2.2).
 - `phase` [deg] (default 0) - Phase. Help: shared `em_fdfd_ez.point_source.phase`
 - `waist` [m] (default 1e-06; > 0) - Waist radius. Help: shared `em_fdfd_ez.gaussian_beam.waist`
 - `center` [m] (nullable) - Beam centre
@@ -4054,7 +4016,7 @@ Params:
 
 ### Feature `em_fdfd_nonlinear.mode_source` - Mode source
 
-em_fdfd_ez / _hz mode_source on one harmonic channel (param channel) at its frequency. Port source launching one guided mode of the cross-section under an axis-aligned line in one direction. One-sided total-field / scattered-field line: total field from the line cells downstream, only the scattered field (what comes back) upstream; the interface is the lo face of the line cells for positive, their hi face for negative. The launch is exact and one-sided at every solved wavelength of a straight guide. Mode monitors normalise by it when it is the only enabled mode source of the physics. The 1D line eigenmodes use the FDFD discretisation (Yee widths, PML stretch, complex eps and mu of the line cells with poles, sigma_e, sigma_m), re-solved at every solved wavelength and after any material change (thermo-optic coupling, state-dependent permittivity). Put the line across a straight guide with the same cross-section a few cells on either side, on a locally uniform mesh (validation warns when the cell widths along the normal change by more than 1% around the line and when its face lies inside a CPML layer, i.e. the line is in the outermost window cell). E_z channels: Span ends: an end on a cpml domain edge continues the solve through the PML (open); an end on a pec domain edge takes E_z = 0, one on a pmc or symmetric edge dE_z/dn = 0 and one on an antisymmetric edge E_z odd about the plane; an end inside the domain, or a partial span of a periodic axis, is metal (E_z = 0 in the next cell), so extend the line well into the cladding (the build warns above 1% of the mode peak at a metal end); a span over a whole periodic axis is periodic. H_z channels: Span ends: an end on a cpml domain edge continues the solve through the PML (open); an end on a pec or antisymmetric domain edge takes tangential E = 0 on the inner face of the outermost cell (dH_z/dn = 0), one on a pmc edge H_z = 0 and one on a symmetric edge H_z odd; an end inside the domain, or a partial span of a periodic axis, is metal (E along the propagation direction = 0 on the face beyond the end, so dH_z/dn = 0), so extend the line well into the cladding (the build warns above 1% of the mode peak at a metal end); a span over a whole periodic axis is periodic. The in-plane E faces use the permittivity of the operator (each face takes the width-weighted mean of its two cells), so a guide edge on a face line takes the core / cladding mean. The line covers cells [cell(start), cell(end) + 1) (an end exactly on a cell edge adds a cell). Result 'table' of the latest port solve (frequency_domain: its last wavelength), one row per mode for the first max(mode_number + 2, 4) modes: mode_number, n_eff, n_eff_imag (< 0 = loss, exp(+j omega t)), loss_db_per_cm, n_group, edge_field (largest |field| at the line ends / peak; above 1e-2 at a metal end the line cuts the mode), selected (the launched mode); extras wavelength (m), power (W/m), direction, mode_number and phase (deg). Amplitudes are absolute: the nonlinear response scales as P ~ E^n.
+em_fdfd_ez / _hz mode_source on one harmonic channel (param channel) at its frequency. Port source launching one guided mode of the cross-section under an axis-aligned line in one direction. One-sided total-field / scattered-field line: total field from the line cells downstream, only the scattered field (what comes back) upstream; the interface is the lo face of the line cells for positive, their hi face for negative. The launch is exact and one-sided at every solved wavelength of a straight guide. Mode monitors normalise by it when it is the only enabled mode source of the physics. The 1D line eigenmodes use the FDFD discretisation (Yee widths, PML stretch, complex eps and mu of the line cells with poles, sigma_e, sigma_m), re-solved at every solved wavelength and after any material change (thermo-optic coupling, state-dependent permittivity). Put the line across a straight guide with the same cross-section a few cells on either side, on a locally uniform mesh (validation warns when the cell widths along the normal change by more than 1% around the line and when its face lies inside a CPML layer, i.e. the line is in the outermost window cell). Span ends: an end on a cpml domain edge continues the solve through the PML (open); E_z channels: an end on a pec domain edge takes E_z = 0, one on a pmc or symmetric edge dE_z/dn = 0 and one on an antisymmetric edge E_z odd about the plane; an end inside the domain, or a partial span of a periodic axis, is metal (E_z = 0 in the next cell), so extend the line well into the cladding (the build warns above 1% of the mode peak at a metal end); H_z channels: an end on a pec or antisymmetric domain edge takes tangential E = 0 on the inner face of the outermost cell (dH_z/dn = 0), one on a pmc edge H_z = 0 and one on a symmetric edge H_z odd; an end inside the domain, or a partial span of a periodic axis, is metal (E along the propagation direction = 0 on the face beyond the end, so dH_z/dn = 0), so extend the line well into the cladding (the build warns above 1% of the mode peak at a metal end); a span over a whole periodic axis is periodic. H_z channels only: The in-plane E faces use the permittivity of the operator (each face takes the width-weighted mean of its two cells), so a guide edge on a face line takes the core / cladding mean. The line covers cells [cell(start), cell(end) + 1) (an end exactly on a cell edge adds a cell). Result 'table' of the latest port solve (frequency_domain: its last wavelength), one row per mode for the first max(mode_number + 2, 4) modes: mode_number, n_eff, n_eff_imag (< 0 = loss, exp(+j omega t)), loss_db_per_cm, n_group, edge_field (largest |field| at the line ends / peak; above 1e-2 at a metal end the line cuts the mode), selected (the launched mode); extras wavelength (m), power (W/m), direction, mode_number and phase (deg). Amplitudes are absolute: the nonlinear response scales as P ~ E^n.
 
 - Category source; selection line entities, object kinds line, exactly 1; result kind `table`
 
@@ -4078,7 +4040,7 @@ Params:
 
 ### Feature `em_fdfd_nonlinear.flux_monitor` - Flux monitor
 
-em_fdfd_ez / _hz flux_monitor on one harmonic channel (param channel) at its frequency. E_z channels: Time-averaged Poynting flux through an axis-aligned line per solved wavelength: S_x = -1/2 Re(E_z H_y*) (vertical line), S_y = 1/2 Re(E_z H_x*) (horizontal), E_z of the line cells, H from the curl of E_z on their hi face; > 0 toward +x / +y. H_z channels: Time-averaged Poynting flux through an axis-aligned line per solved wavelength: S_x = 1/2 Re(E_y H_z*) (vertical line), S_y = -1/2 Re(E_x H_z*) (horizontal), H_z of the line cells, E on their hi face from Ampere's law (curl of H_z plus a source current on that face); > 0 toward +x / +y. Keep it off the line cells of a line source or gaussian beam: their sheet sits on that face, where the flux jumps, and the monitor reads the line-cell side (minus the power sent toward -x / -y). Keep its measuring face (hi face of the line cells) off a mode_source interface face (the line one cell upstream of a positive source, or the line of a negative one) and entirely inside or outside a plane_wave_tfsf box: the field jumps there between total and scattered field (validation warns). Result 'flux_spectrum' in W/m (power per unit z length over the line cells, absolute: a line source of amplitude A spanning a period L in vacuum sends A^2 L / (2 eta0) to each side), one entry per solved wavelength, sorted. The discrete flux is conserved exactly through lossless cells; transmission = device power / power of a reference run with the same source. The line covers cells [cell(start), cell(end) + 1) (an end exactly on a cell edge adds a cell).
+em_fdfd_ez / _hz flux_monitor on one harmonic channel (param channel) at its frequency. Time-averaged Poynting flux through an axis-aligned line per solved wavelength: E_z channels: S_x = -1/2 Re(E_z H_y*) (vertical line), S_y = 1/2 Re(E_z H_x*) (horizontal), E_z of the line cells, H from the curl of E_z on their hi face; H_z channels: S_x = 1/2 Re(E_y H_z*) (vertical line), S_y = -1/2 Re(E_x H_z*) (horizontal), H_z of the line cells, E on their hi face from Ampere's law (curl of H_z plus a source current on that face); > 0 toward +x / +y. H_z channels only: Keep it off the line cells of a line source or gaussian beam: their sheet sits on that face, where the flux jumps, and the monitor reads the line-cell side (minus the power sent toward -x / -y). Keep its measuring face (hi face of the line cells) off a mode_source interface face (the line one cell upstream of a positive source, or the line of a negative one) and entirely inside or outside a plane_wave_tfsf box: the field jumps there between total and scattered field (validation warns). Result 'flux_spectrum' in W/m (power per unit z length over the line cells, absolute: a line source of amplitude A spanning a period L in vacuum sends A^2 L / (2 eta0) to each side), one entry per solved wavelength, sorted. The discrete flux is conserved exactly through lossless cells; transmission = device power / power of a reference run with the same source. The line covers cells [cell(start), cell(end) + 1) (an end exactly on a cell edge adds a cell).
 
 - Category monitor; selection line entities, object kinds line, exactly 1; result kind `flux_spectrum`
 
@@ -4087,7 +4049,7 @@ Params:
 
 ### Feature `em_fdfd_nonlinear.mode_monitor` - Mode monitor
 
-em_fdfd_ez / _hz mode_monitor on one harmonic channel (param channel) at its frequency. E_z channels: Port monitor splitting the field on an axis-aligned line into the forward (positive: toward +x / +y) and backward (negative) amplitudes a of one guided mode at every solved wavelength: E_z in the line cells and H_y (vertical line) / H_x (horizontal) from the curl of E_z on their hi face are projected on the mode solved there, so each direction is measured separately, unlike a flux_monitor. H_z channels: Port monitor splitting the field on an axis-aligned line into the forward (positive: toward +x / +y) and backward (negative) amplitudes a of one guided mode at every solved wavelength: H_z in the line cells and E_y (vertical line) / E_x (horizontal) from Ampere's law on their hi face are projected on the mode solved there, so each direction is measured separately, unlike a flux_monitor. The 1D line eigenmodes use the FDFD discretisation (Yee widths, PML stretch, complex eps and mu of the line cells with poles, sigma_e, sigma_m), re-solved at every solved wavelength and after any material change (thermo-optic coupling, state-dependent permittivity). Put the line across a straight guide with the same cross-section a few cells on either side, on a locally uniform mesh (validation warns when the cell widths along the normal change by more than 1% around the line and when its face lies inside a CPML layer, i.e. the line is in the outermost window cell). E_z channels: Span ends: an end on a cpml domain edge continues the solve through the PML (open); an end on a pec domain edge takes E_z = 0, one on a pmc or symmetric edge dE_z/dn = 0 and one on an antisymmetric edge E_z odd about the plane; an end inside the domain, or a partial span of a periodic axis, is metal (E_z = 0 in the next cell), so extend the line well into the cladding (the build warns above 1% of the mode peak at a metal end); a span over a whole periodic axis is periodic. H_z channels: Span ends: an end on a cpml domain edge continues the solve through the PML (open); an end on a pec or antisymmetric domain edge takes tangential E = 0 on the inner face of the outermost cell (dH_z/dn = 0), one on a pmc edge H_z = 0 and one on a symmetric edge H_z odd; an end inside the domain, or a partial span of a periodic axis, is metal (E along the propagation direction = 0 on the face beyond the end, so dH_z/dn = 0), so extend the line well into the cladding (the build warns above 1% of the mode peak at a metal end); a span over a whole periodic axis is periodic. The in-plane E faces use the permittivity of the operator (each face takes the width-weighted mean of its two cells), so a guide edge on a face line takes the core / cladding mean. Keep its measuring face (hi face of the line cells) off a mode_source interface face (the line one cell upstream of a positive source, or the line of a negative one) and entirely inside or outside a plane_wave_tfsf box: the field jumps there between total and scattered field (validation warns). The line covers cells [cell(start), cell(end) + 1) (an end exactly on a cell edge adds a cell). Result 'xy' versus vacuum wavelength (m, ascending): power_positive / power_negative = |a|^2 in W/m (modes normalised to 1 W/m); with exactly one enabled mode_source in the physics also fraction_positive / fraction_negative = |a / (sqrt(P) e^{j phase})|^2 (source power P and phase; |S|^2: transmission downstream of the source, reflection upstream) and phase_positive / phase_negative (rad), the phase of that S-parameter relative to the source's own line, not de-embedded (each mode profile phased with its largest sample real positive, the lowest-coordinate one of mirror-equal peaks); extras frequency, wavelength, n_eff, n_eff_imag (per wavelength), mode_number and normalized (True with the fractions).
+em_fdfd_ez / _hz mode_monitor on one harmonic channel (param channel) at its frequency. Port monitor splitting the field on an axis-aligned line into the forward (positive: toward +x / +y) and backward (negative) amplitudes a of one guided mode at every solved wavelength: E_z channels: E_z in the line cells and H_y (vertical line) / H_x (horizontal) from the curl of E_z on their hi face are projected on the mode solved there, so each direction is measured separately, unlike a flux_monitor. H_z channels: H_z in the line cells and E_y (vertical line) / E_x (horizontal) from Ampere's law on their hi face are projected on the mode solved there, so each direction is measured separately, unlike a flux_monitor. The 1D line eigenmodes use the FDFD discretisation (Yee widths, PML stretch, complex eps and mu of the line cells with poles, sigma_e, sigma_m), re-solved at every solved wavelength and after any material change (thermo-optic coupling, state-dependent permittivity). Put the line across a straight guide with the same cross-section a few cells on either side, on a locally uniform mesh (validation warns when the cell widths along the normal change by more than 1% around the line and when its face lies inside a CPML layer, i.e. the line is in the outermost window cell). Span ends: an end on a cpml domain edge continues the solve through the PML (open); E_z channels: an end on a pec domain edge takes E_z = 0, one on a pmc or symmetric edge dE_z/dn = 0 and one on an antisymmetric edge E_z odd about the plane; an end inside the domain, or a partial span of a periodic axis, is metal (E_z = 0 in the next cell), so extend the line well into the cladding (the build warns above 1% of the mode peak at a metal end); H_z channels: an end on a pec or antisymmetric domain edge takes tangential E = 0 on the inner face of the outermost cell (dH_z/dn = 0), one on a pmc edge H_z = 0 and one on a symmetric edge H_z odd; an end inside the domain, or a partial span of a periodic axis, is metal (E along the propagation direction = 0 on the face beyond the end, so dH_z/dn = 0), so extend the line well into the cladding (the build warns above 1% of the mode peak at a metal end); a span over a whole periodic axis is periodic. H_z channels only: The in-plane E faces use the permittivity of the operator (each face takes the width-weighted mean of its two cells), so a guide edge on a face line takes the core / cladding mean. Keep its measuring face (hi face of the line cells) off a mode_source interface face (the line one cell upstream of a positive source, or the line of a negative one) and entirely inside or outside a plane_wave_tfsf box: the field jumps there between total and scattered field (validation warns). The line covers cells [cell(start), cell(end) + 1) (an end exactly on a cell edge adds a cell). Result 'xy' versus vacuum wavelength (m, ascending): power_positive / power_negative = |a|^2 in W/m (modes normalised to 1 W/m); with exactly one enabled mode_source in the physics also fraction_positive / fraction_negative = |a / (sqrt(P) e^{j phase})|^2 (source power P and phase; |S|^2: transmission downstream of the source, reflection upstream) and phase_positive / phase_negative (rad), the phase of that S-parameter relative to the source's own line, not de-embedded (each mode profile phased with its largest sample real positive, the lowest-coordinate one of mirror-equal peaks); extras frequency, wavelength, n_eff, n_eff_imag (per wavelength), mode_number and normalized (True with the fractions).
 
 - Category monitor; selection line entities, object kinds line, exactly 1; result kind `xy`
 
@@ -5337,9 +5299,7 @@ Anisotropic heat conduction, finite volumes on the rise T - T0, 2D per unit z le
 
 - `k` [W/(m K)] (>= 0; nullable; writes k_xx, k_yy, k_zz) - Thermal conductivity
   Sets k_xx, k_yy and k_zz (component entries override it; k_zz acts only in 3D); unset (no library value) = 0: no conduction. E.g. k_300*(300/T)**1.3 (a stationary study iterates). Silica 1.38, silicon 130, aluminium 237, gold 317, silver 429, water 0.6.
-- `k_xx` [W/(m K)] (>= 0; nullable) - Thermal conductivity along x
-  Overrides k for this axis.
-- `k_yy` [W/(m K)] (>= 0; nullable) - Thermal conductivity along y
+- `k_xx`, `k_yy` [W/(m K)] (>= 0; nullable) - Thermal conductivity along x / Thermal conductivity along y
   Overrides k for this axis.
 - `k_zz` [W/(m K)] (>= 0; nullable) - Thermal conductivity along z
   Overrides k for this axis (3D only; 2D has no z conduction).
@@ -5359,9 +5319,7 @@ Anisotropic heat conduction, finite volumes on the rise T - T0, 2D per unit z le
   Overrides dndT for n_zz, the out-of-plane index E_z sees (eps_zz of em_fdtd_ez, em_fdfd_ez, em_modes). Without dndT and dndT_zz it is 0: E_z types see no change even with dndT_xx / dndT_yy set. z-cut lithium niobate (dn_e/dT) 3.3e-5.
 - `alpha` [1/K] (nullable; writes alpha_xx, alpha_yy) - Thermal expansion coefficient
   Linear expansion: sets alpha_xx and alpha_yy (and alpha_zz with a solid_mechanics / solid_mechanics_3d physics: thermal strain via heat_solid_thermal_strain). heat_em_thermo_optic scales eps by (1 + alpha_xx dT)(1 + alpha_yy dT), the in-plane growth on the fixed grid, first order per cell (dropped when solid_em_strain_optic maps the solid strain). A film clamped to a substrate grows with the substrate: override the free-crystal library value (LN on Si 2.6e-6, not 1.5e-5). Leave 0 for liquids. Silica 5.5e-7, silicon 2.6e-6, gold 1.4e-5.
-- `alpha_xx` [1/K] (nullable) - Thermal expansion along x
-  Overrides alpha for this axis.
-- `alpha_yy` [1/K] (nullable) - Thermal expansion along y
+- `alpha_xx`, `alpha_yy` [1/K] (nullable) - Thermal expansion along x / Thermal expansion along y
   Overrides alpha for this axis.
 
 ### Fields
@@ -5974,15 +5932,10 @@ Params: none
 
 - `mu_dc` [1] (> 0; nullable; writes mu_dc_xx, mu_dc_yy, mu_dc_zz) - Static relative permeability
   Sets mu_dc_xx, _yy and _zz (component entries override it); unset = 1 (vacuum). NOT the optical mu_r of the wave physics. Typical: air, copper, aluminium 1; ferrite 1e3 - 1e4; electrical steel 4e3; Metglas 1e4 - 1e5; mu-metal 5e4. A large contrast is exact; pcg multigrid needs a few hundred iterations at 1e5. With saturation_polarization: the initial permeability of the B-H curve.
-- `mu_dc_xx` [1] (> 0; nullable) - Static relative permeability along x
+- `mu_dc_xx`, `mu_dc_yy`, `mu_dc_zz` [1] (> 0; nullable) - Static relative permeability along x / Static relative permeability along y / Static relative permeability along z
   Overrides mu_dc for this axis.
-- `mu_dc_yy` [1] (> 0; nullable) - Static relative permeability along y
-  Overrides mu_dc for this axis.
-- `mu_dc_zz` [1] (> 0; nullable) - Static relative permeability along z
-  Overrides mu_dc for this axis.
-- `remanence_x` [T] (nullable) - Remanence along x. Help: shared `magnetostatics_3d.remanence_x`
-- `remanence_y` [T] (nullable) - Remanence along y. Help: shared `magnetostatics_3d.remanence_x`
-- `remanence_z` [T] (nullable) - Remanence along z. Help: shared `magnetostatics_3d.remanence_x`
+- `remanence_x`, `remanence_y`, `remanence_z` [T] (nullable) - Remanence along x / Remanence along y / Remanence along z
+  Remanent flux density B_r along the axis in its name, of a permanent magnet: B = mu0 mu_dc H + B_r, entered as face drives B_r / mu_dc (exact for a uniformly magnetised region). Typical: NdFeB 1.2 - 1.4 T with mu_dc 1.05, SmCo 1.0 T, ferrite 0.4 T with mu_dc 1.1. Unset = 0.
 - `saturation_polarization` [T] (> 0; nullable) - Saturation polarisation
   Saturation polarisation J_s of an anhysteretic B-H curve: Frohlich-Kennelly B = mu0 H + J_s a H / (1 + a H), a = mu0 (mu_dc - 1) / J_s (initial permeability mu_dc, B -> mu0 H + J_s), no hysteresis. Isotropic: mu_dc_xx, _yy, _zz must be equal (validation error). A fixed point on ln of the secant permeability mu = B(|H|) / (mu0 |H|) at the cell-centre |H| (settings nonlinear_*); energy and coil inductances are then secant values. Unset = linear; mu_dc <= 1 stays linear. Not with a remanence or a bh_curve in the same material (validation error). Typical: iron 2.15, electrical steel 2.0, Metglas 0.6 - 1.6, Mn-Zn ferrite 0.4 - 0.5, NiFe (mu-metal) 0.8.
 - `bh_curve` (table; columns H [A/m], B [T]; >= 2 rows, every column strictly increasing; >= 0; nullable; no x, y; no fields; writes no array) - B-H curve. Help: shared `magnetostatics.bh_curve`
@@ -6551,9 +6504,7 @@ Params:
 - `poisson_ratio` [1] ((-1, 0.499]; nullable) - Poisson ratio. Help: shared `elastic_waves.poisson_ratio`
 - `alpha` [1/K] (nullable; writes alpha_xx, alpha_yy, alpha_zz) - Thermal expansion coefficient
   Linear thermal expansion coefficient; also read by heat_em_thermo_optic (see the heat type).
-- `alpha_xx` [1/K] (nullable) - Thermal expansion along x
-  Overrides alpha for this axis.
-- `alpha_yy` [1/K] (nullable) - Thermal expansion along y
+- `alpha_xx`, `alpha_yy` [1/K] (nullable) - Thermal expansion along x / Thermal expansion along y
   Overrides alpha for this axis.
 - `alpha_zz` [1/K] (nullable) - Thermal expansion along z. Help: shared `solid_mechanics.alpha_zz`
 - `photoelastic_p11` [1] (nullable) - Photoelastic coefficient p11. Help: shared `elastic_waves.photoelastic_p11`
@@ -6578,9 +6529,7 @@ Params:
   Piezoelectric stress constant e_23: row y, Voigt column zz; rules: piezo_e11. 2D plane strain (S_zz = 0): it enters only stress_zz -= e_23 E_y.
 - `eps_dc` [1] (>= 1; nullable; writes eps_dc_xx, eps_dc_yy) - Static relative permittivity
   Isotropic static relative permittivity: sets eps_dc_xx and eps_dc_yy (components override); unset = 1. Same arrays as electrostatics / drift_diffusion; read only with piezoelectric on, as the clamped permittivity eps^S of every window cell (void included). Not the optical eps_r: lithium niobate eps^S 44 / 29 (along the optic axis), silica 3.9.
-- `eps_dc_xx` [1] (>= 1; nullable) - Static relative permittivity along x
-  Overrides eps_dc for this axis.
-- `eps_dc_yy` [1] (>= 1; nullable) - Static relative permittivity along y
+- `eps_dc_xx`, `eps_dc_yy` [1] (>= 1; nullable) - Static relative permittivity along x / Static relative permittivity along y
   Overrides eps_dc for this axis.
 - `eps_dc_xy` [1] (nullable) - Static relative permittivity, cross term. Help: shared `solid_mechanics.eps_dc_xy`
 - `c11` [Pa] (>= 0; nullable) - Stiffness c11. Help: shared `solid_mechanics.c11`
@@ -6611,9 +6560,7 @@ Params:
   Initial stress sigma0_xy; 2D: in-plane shear (axisymmetric: rz). Rules: initial_stress_xx.
 - `initial_stress_zz` [Pa] (nullable) - Initial stress zz. Help: shared `solid_mechanics.initial_stress_zz`
 - `k` [W/(m K)] (>= 0; nullable; writes k_xx, k_yy, k_zz) - Thermal conductivity. Help: shared `solid_mechanics.k`
-- `k_xx` [W/(m K)] (>= 0; nullable) - Thermal conductivity along x
-  Overrides k for this axis.
-- `k_yy` [W/(m K)] (>= 0; nullable) - Thermal conductivity along y
+- `k_xx`, `k_yy` [W/(m K)] (>= 0; nullable) - Thermal conductivity along x / Thermal conductivity along y
   Overrides k for this axis.
 - `k_zz` [W/(m K)] (>= 0; nullable) - Thermal conductivity along z
   Overrides k for this axis (3D only).
@@ -6893,9 +6840,7 @@ Params:
 - `poisson_ratio` [1] ((-1, 0.499]; nullable) - Poisson ratio. Help: shared `elastic_waves.poisson_ratio`
 - `alpha` [1/K] (nullable; writes alpha_xx, alpha_yy, alpha_zz) - Thermal expansion coefficient
   Linear thermal expansion coefficient; also read by heat_em_thermo_optic (see the heat type).
-- `alpha_xx` [1/K] (nullable) - Thermal expansion along x
-  Overrides alpha for this axis.
-- `alpha_yy` [1/K] (nullable) - Thermal expansion along y
+- `alpha_xx`, `alpha_yy` [1/K] (nullable) - Thermal expansion along x / Thermal expansion along y
   Overrides alpha for this axis.
 - `alpha_zz` [1/K] (nullable) - Thermal expansion along z. Help: shared `solid_mechanics.alpha_zz`
 - `photoelastic_p11` [1] (nullable) - Photoelastic coefficient p11. Help: shared `elastic_waves.photoelastic_p11`
@@ -6979,15 +6924,9 @@ Params:
   Piezoelectric stress constant e_36: row z, Voigt column xy; rules: piezo_e11.
 - `eps_dc` [1] (>= 1; nullable; writes eps_dc_xx, eps_dc_yy, eps_dc_zz) - Static relative permittivity
   Isotropic static relative permittivity: sets eps_dc_xx, eps_dc_yy and eps_dc_zz (components override); unset = 1. Read only with piezoelectric on (tetrahedra), as the clamped permittivity eps^S of every window element (void included).
-- `eps_dc_xx` [1] (>= 1; nullable) - Static relative permittivity along x
+- `eps_dc_xx`, `eps_dc_yy`, `eps_dc_zz` [1] (>= 1; nullable) - Static relative permittivity along x / Static relative permittivity along y / Static relative permittivity along z
   Overrides eps_dc for this axis.
-- `eps_dc_yy` [1] (>= 1; nullable) - Static relative permittivity along y
-  Overrides eps_dc for this axis.
-- `eps_dc_zz` [1] (>= 1; nullable) - Static relative permittivity along z
-  Overrides eps_dc for this axis.
-- `eps_dc_yz` [1] (nullable) - Static relative permittivity, cross term yz. Help: shared `solid_mechanics.eps_dc_xy`
-- `eps_dc_xz` [1] (nullable) - Static relative permittivity, cross term xz. Help: shared `solid_mechanics.eps_dc_xy`
-- `eps_dc_xy` [1] (nullable) - Static relative permittivity, cross term. Help: shared `solid_mechanics.eps_dc_xy`
+- `eps_dc_yz`, `eps_dc_xz`, `eps_dc_xy` [1] (nullable) - Static relative permittivity, cross term yz / Static relative permittivity, cross term xz / Static relative permittivity, cross term. Help: shared `solid_mechanics.eps_dc_xy`
 - `mechanical_loss_factor` [1] (>= 0; nullable) - Mechanical loss factor. Help: shared `solid_mechanics.mechanical_loss_factor`
 - `dielectric_loss_tangent` [1] (>= 0; nullable) - Dielectric loss tangent. Help: shared `solid_mechanics.dielectric_loss_tangent`
 - `initial_stress_xx` [Pa] (nullable) - Initial stress xx. Help: shared `solid_mechanics.initial_stress_xx`
@@ -7001,9 +6940,7 @@ Params:
 - `initial_stress_xy` [Pa] (nullable) - Initial stress xy
   Initial stress sigma0_xy; 2D: in-plane shear (axisymmetric: rz). Rules: initial_stress_xx.
 - `k` [W/(m K)] (>= 0; nullable; writes k_xx, k_yy, k_zz) - Thermal conductivity. Help: shared `solid_mechanics.k`
-- `k_xx` [W/(m K)] (>= 0; nullable) - Thermal conductivity along x
-  Overrides k for this axis.
-- `k_yy` [W/(m K)] (>= 0; nullable) - Thermal conductivity along y
+- `k_xx`, `k_yy` [W/(m K)] (>= 0; nullable) - Thermal conductivity along x / Thermal conductivity along y
   Overrides k for this axis.
 - `k_zz` [W/(m K)] (>= 0; nullable) - Thermal conductivity along z
   Overrides k for this axis (3D only).

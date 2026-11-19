@@ -44,7 +44,7 @@ its channel features wrap the em_fdfd_ez / _hz FeatureTypes, so a change there c
   params = 'channel' + the union of both forms (field_probe component default None = the out-of-plane field); FDFD
   apply / validate / result get a feature-spec view with only their own params and (validate) a physics view with only
   that channel's channel features, so TFSF / mode-source checks stay per channel. Single channel only (no 'all' copy).
-  Descriptions / helps differing between the forms print their shared sentences once (a sentence diff, `_merged_help`)
+  Descriptions / helps differing between the forms print their shared clauses once (a clause diff, `_merged_help`)
   and each differing run as 'E_z channels: ... H_z channels: ...' in place: keep the em_fdfd_ez / _hz texts identical
   sentence for sentence where they can be.
   pec_domain and conducting_sheet act on every channel (sigma_s per channel omega; own validate, since the FDFD one

@@ -7,6 +7,7 @@ register."""
 # (sparse_direct, one runtime shared by every channel, each channel keeping its own factor) with the FDFD checks
 # (definition_fdfd.direct_solver_issues).
 import math
+import re
 from dataclasses import dataclass, replace
 from difflib import SequenceMatcher
 
@@ -368,26 +369,29 @@ def _merged_text(ez_text, hz_text, separator=' '):
     return ez_text if ez_text == hz_text else f'E_z channels: {ez_text}{separator}H_z channels: {hz_text}'
 
 
-def _sentences(text):
-    """text split after '. ' into sentences, never inside parentheses (each keeps its own full stop)."""
-    sentences, current = [], ''
-    for part in text.split('. '):
-        current = f'{current}. {part}' if current else part
+_CLAUSE_END = re.compile(r'(?<=[.;:]) ')   # _clauses: split after a full stop, semicolon or colon
+
+
+def _clauses(text):
+    """text split after '. ', '; ' and ': ' into clauses (each keeps its punctuation), never inside parentheses."""
+    clauses, current = [], ''
+    for part in _CLAUSE_END.split(text):
+        current = f'{current} {part}' if current else part
         if current.count('(') == current.count(')'):
-            sentences.append(current)
+            clauses.append(current)
             current = ''
     if current:
-        sentences.append(current)
-    return [sentence if index == len(sentences) - 1 else f'{sentence}.' for index, sentence in enumerate(sentences)]
+        clauses.append(current)
+    return clauses
 
 
 def _merged_help(ez_text, hz_text):
-    """One help / description for both polarisations: sentences the two texts share (in order, a sentence diff) are
+    """One help / description for both polarisations: clauses the two texts share (in order, a clause diff) are
     printed once; each run that differs becomes 'E_z channels: <ez run> H_z channels: <hz run>' in place (a side
     without a run reads 'only')."""
     if ez_text == hz_text:
         return ez_text
-    ez_parts, hz_parts = _sentences(ez_text), _sentences(hz_text)
+    ez_parts, hz_parts = _clauses(ez_text), _clauses(hz_text)
     pieces = []
     for tag, ez_lo, ez_hi, hz_lo, hz_hi in SequenceMatcher(None, ez_parts, hz_parts, autojunk=False).get_opcodes():
         ez_run, hz_run = ' '.join(ez_parts[ez_lo:ez_hi]), ' '.join(hz_parts[hz_lo:hz_hi])

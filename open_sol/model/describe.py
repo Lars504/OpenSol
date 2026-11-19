@@ -2143,14 +2143,14 @@ def _shared_texts(reference):
         if text and len(text) >= _SHARED_TEXT_MIN_CHARS:
             owners.setdefault(text, []).append(path)
 
-    def add_params(owner, params):
-        for group in _param_groups(params):
+    def add_params(owner, params, material=False):
+        for group in _param_groups(params, material):
             add(f"{owner}.{group[0]['name']}", group[0]['help'])
 
     for name, entry in reference['physics_types'].items():
         add(name, entry['description'])
         add_params(name, entry['settings'])
-        add_params(name, entry['material_properties'])
+        add_params(name, entry['material_properties'], material=True)
         for feature in entry['features'].values():
             feature_path = f"{name}.{feature['name']}"
             add(feature_path, feature['description'])
@@ -2536,7 +2536,8 @@ def _params_lines(params, shared=None, material=False):
     """Lines of a param list ('none' when empty); consecutive params with help that differ only in name and label
     share one entry (e.g. the four bc_* faces); a help text in shared ({text: key}) becomes a pointer on the param
     line. material: material properties (x, y and fields implied, own-name array not printed; _PARAM_LEGEND)."""
-    return [line for group in _param_groups(params) for line in _param_lines(group, shared or {}, material)] or ['none']
+    return [line for group in _param_groups(params, material)
+            for line in _param_lines(group, shared or {}, material)] or ['none']
 
 
 def _params_block(lead, params, shared=None):
@@ -2544,20 +2545,25 @@ def _params_block(lead, params, shared=None):
     return [lead] + _params_lines(params, shared) if params else [f'{lead} none']
 
 
-def _param_groups(params):
-    """Param dicts grouped into runs of consecutive params with help that share every fact but name and label."""
+def _param_groups(params, material=False):
+    """Param dicts grouped into runs of consecutive params with help that share every fact but name and label
+    (material: an own-name array, which the line leaves unsaid, counts as the same fact)."""
     groups = []
     for entry in params:
-        if groups and entry['help'] and _shared_facts(groups[-1][0]) == _shared_facts(entry):
+        if groups and entry['help'] and _shared_facts(groups[-1][0], material) == _shared_facts(entry, material):
             groups[-1].append(entry)
         else:
             groups.append([entry])
     return groups
 
 
-def _shared_facts(entry):
-    """A param dict without its name and label (what params merged into one entry must share)."""
-    return {key: value for key, value in entry.items() if key not in ('name', 'label')}
+def _shared_facts(entry, material=False):
+    """A param dict without its name and label (what params merged into one entry must share); material: an
+    expands_to of just the own name becomes 'own'."""
+    facts = {key: value for key, value in entry.items() if key not in ('name', 'label')}
+    if material and entry['expands_to'] == [entry['name']]:
+        facts['expands_to'] = 'own'
+    return facts
 
 
 _DEPENDENCE_NAMES = (('field_dependent', 'x, y'), ('state_dependent', 'fields'), ('time_dependent', 't'))
