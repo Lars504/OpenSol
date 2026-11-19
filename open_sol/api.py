@@ -19,7 +19,7 @@ import numpy as np
 from . import __version__
 from .core import gpu_memory, host_memory
 from .core.backend import default_backend_name
-from .core.mirror import field_parity, field_plane_signs, image_sign, mirror_faces, unfold_field
+from .core.mirror import field_parity, field_plane_signs, image_sign, mirror_faces, unfold_faces, unfold_field
 from .core.renderer import primary_field_info
 from .core.time_estimate import format_seconds
 from .core.time_profile import profile_path, profile_text, run_profile
@@ -1234,8 +1234,9 @@ class Results:
         'physics.component' or a component unique among field_names() (or narrowed by physics). 3D models: plane
         (axis 'x' | 'y' | 'z', position [m]) picks the cut (live Results only; saved fields are the mid-height z
         cut). unfold: the field mirrored
-        over the model's x / y mirror faces (core.mirror.unfold_field; ValueError for a field without a parity; a
-        parity-sector run: the last sector's signs, whose state this is). Polar / spherical domains: a containing-cell
+        over the model's x / y mirror faces and the rotation axis of axisymmetric heat (core.mirror.unfold_faces /
+        unfold_field; ValueError for a field without a parity; a parity-sector run: the last sector's signs, whose
+        state this is). Polar / spherical domains: a containing-cell
         image over the sector's box, or with native (live only) the (r, angle) window cells (axes ('r', 'phi' |
         'theta'), y_centers in rad, mapped_centres the drawing-plane x / y)."""
         matches = self._field_matches(name, physics)
@@ -1258,7 +1259,7 @@ class Results:
             return field_data
         if self.spec is None:
             raise ValueError('unfold=True needs the model spec of the run (missing from this run directory)')
-        return unfold_field(field_data, mirror_faces(self._state_spec(), field_physics))
+        return unfold_field(field_data, unfold_faces(self._state_spec(), field_physics))
 
     def _state_spec(self):
         """The spec whose mirror signs the live / saved state has: a parity-sector run's last sector, else self.spec."""

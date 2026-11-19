@@ -9,7 +9,7 @@ import numpy as np
 from PySide6 import QtCore, QtWidgets
 import pyqtgraph as pg
 
-from ..core.mirror import mirror_faces, unfold_field
+from ..core.mirror import unfold_faces, unfold_field
 from ..core.renderer import FieldInfo
 from ..io.model_io import export_field, export_result, export_volume
 from ..model.analytic import (DEGREE_FIT_OPERATIONS, FFT_SERIES, RATIO_SERIES, built_parameters, derived_curve_plots, derived_curve_result,
@@ -801,7 +801,8 @@ class ResultsPanel(QtWidgets.QWidget):
         self._unfold_check = QtWidgets.QCheckBox('Unfold mirror planes')
         self._unfold_check.setToolTip(rich_tooltip(
             'Show the whole structure: the field is mirrored across every mirror boundary of the domain, with the '
-            'sign each field component takes under that mirror.\n\n'
+            'sign each field component takes under that mirror, and an axisymmetric heat field across its rotation '
+            'axis.\n\n'
             'Exports and line profiles then use the unfolded field too.'))
         self._unfold_check.toggled.connect(self._on_unfold_toggled)
         form.addRow('', self._unfold_check)
@@ -1862,7 +1863,7 @@ class ResultsPanel(QtWidgets.QWidget):
             return cached[1]
         spec = self._bridge.results_spec or self._document.spec
         try:
-            unfolded = unfold_field(field_data, mirror_faces(spec, field_data.physics))
+            unfolded = unfold_field(field_data, unfold_faces(spec, field_data.physics))
         except ValueError as exc:
             self._show_message(f'Not unfolded: {exc}')
             return field_data
