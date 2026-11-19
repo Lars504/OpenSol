@@ -1144,6 +1144,19 @@ def _held_cuts(snapshot, key):
             if key in fields and fields[key].plane is not None]
 
 
+def _same_samples(field_data, other):
+    """True when two FieldData sample the same points: same plane and display triangulation node count, or the
+    same grid shape."""
+    if field_data.plane != other.plane:
+        return False
+    mesh, other_mesh = getattr(field_data, 'triangulation', None), getattr(other, 'triangulation', None)
+    if (mesh is None) != (other_mesh is None):
+        return False
+    if mesh is not None:
+        return np.shape(mesh[0]) == np.shape(other_mesh[0])
+    return np.shape(field_data.values) == np.shape(other.values)
+
+
 def _nearest_held_cuts(snapshot, key, planes):
     """Per (axis, position [m]) of planes the held cut of key on that axis nearest the position (the GUI's snapshot
     rule, so each sweep value keeps its own positions), each once; ValueError when an axis has none."""
@@ -1673,25 +1686,36 @@ class Results:
                                  'those planes need live Results')
             if missing:   # live: the current state is there on any plane
                 stored, note = [], f", the snapshots hold no {' / '.join(missing)} cut"
+        partner, partner_sign = self._phasor_partner(key)
         if len(stored) > 1:
             frames = []
             three_d = self.spec is not None and self.spec.domain.size_z is not None
-            for snapshot in stored:
-                fields = ([snapshot.fields[key]] + [cut[key] for cut in snapshot.cuts if key in cut] if planes is None
-                          else _nearest_held_cuts(snapshot, key, planes))
+            frame_kind = 'time' if all(snapshot.label is None for snapshot in stored) else 'labelled'
+
+            def held(snapshot, name):
+                return ([snapshot.fields[name]] + [cut[name] for cut in snapshot.cuts if key in cut] if planes is None
+                        else _nearest_held_cuts(snapshot, name, planes))
+
+            held_fields = [held(snapshot, key) for snapshot in stored]
+            partner_fields = (None if partner is None or frame_kind == 'time'
+                              else self._snapshot_partners(key, stored, held_fields, partner, held))
+            for index, (snapshot, fields) in enumerate(zip(stored, held_fields)):
                 if three_d and any(field_data.plane is None for field_data in fields):
                     raise ValueError(f'the snapshots of {key!r} have no cut-plane records (an older run directory): '
                                      'their planes cannot be placed in 3D')
+                partners = [None] * len(fields) if partner_fields is None else partner_fields[index]
                 label = snapshot.label or fields[0].time_label or time_label(snapshot.time)
-                frames.append(ViewerFrame([layer_from_field(field_data) for field_data in fields], label,
+                frames.append(ViewerFrame([layer_from_field(field_data, other, partner_sign)
+                                           for field_data, other in zip(fields, partners, strict=True)], label,
                                           float(snapshot.time)))
-            frame_kind = 'time' if all(snapshot.label is None for snapshot in stored) else 'labelled'
             info = stored[0].fields[key].info
             unfolded = bool(getattr(stored[0].fields[key], 'unfolded', False))
             source = f'{len(stored)} snapshots'
         else:
             fields = self._state_fields(key, planes)
-            frames = [ViewerFrame([layer_from_field(field_data) for field_data in fields],
+            partners = [None] * len(fields) if partner is None else self._state_fields(partner, planes)
+            frames = [ViewerFrame([layer_from_field(field_data, other, partner_sign)
+                                   for field_data, other in zip(fields, partners, strict=True)],
                                   fields[0].time_label or '', float(fields[0].time))]
             frame_kind = 'labelled'
             info = fields[0].info
@@ -1707,6 +1731,40 @@ class Results:
         return write_field_viewer(path, frames, quantity, title=self._page_title(title) or info.label,
                                   subtitle=f'{key}, {source} (open_sol)', frame_kind=frame_kind, geometry=objects,
                                   mirrors=mirrors, figure=figure)
+
+    def _snapshot_partners(self, key, stored, held_fields, partner, held):
+        """Per snapshot of stored the FieldData of the phasor partner key on the planes of held_fields (the field's
+        held FieldData per snapshot): stored beside the field, else (live GUI runs) rendered from the snapshot's kept
+        solution; None unless every snapshot has it on the same samples (a page animates all its frames or none)."""
+        physics, _, component = partner.partition('.')
+        live = self.session.snapshots if self.is_live else []
+        out = []
+        for snapshot, fields in zip(stored, held_fields):
+            if partner in snapshot.fields and all(partner in cut for cut in snapshot.cuts if key in cut):
+                others = held(snapshot, partner)
+            else:
+                index = next((i for i, entry in enumerate(live) if entry is snapshot), None)
+                if index is None or physics not in live[index].solutions:
+                    return None
+                others = [self.session.snapshot_field(index, component, physics, field_data.plane)
+                          for field_data in fields]
+            if len(others) != len(fields) or any(not _same_samples(a, b) for a, b in zip(fields, others)):
+                return None
+            out.append(others)
+        return out
+
+    def _phasor_partner(self, key):
+        """(partner key, sign) of a phasor field '<physics>.<base>_re' / '_im' whose partner is a field too: the Im
+        part with sign -1, the Re part with +1 (the page animates Re / Im[(re + j im) exp(j wt)], time exp(+j wt));
+        (None, 1.0) for any other field."""
+        physics, _, component = key.partition('.')
+        base, _, part = component.rpartition('_')
+        if not base or part not in ('re', 'im'):
+            return None, 1.0
+        partner = f"{physics}.{base}_{'im' if part == 're' else 're'}"
+        if partner not in self.field_names():
+            return None, 1.0
+        return partner, (-1.0 if part == 're' else 1.0)
 
     def _viewer_mirrors(self, physics, info, spans):
         """ViewerMirrors of the model's mirror faces for a field of physics (FieldInfo info; None = an even

@@ -3,7 +3,8 @@
 `write_field_viewer` packs `ViewerFrame`s (one or more `ViewerLayer`s per frame: a grid of cell-centre samples or a
 triangulation, each a 2D map or a cut plane placed in 3D) into `field_viewer.html`, a single page with no network use
 (hand-written WebGL2, data embedded as base64, values int16-quantised per frame). Frames are time snapshots (the page
-plays them), or labelled states (wavelengths, modes, DFT frequencies: a slider, no playback). `layer_from_field`
+plays them), or labelled states (wavelengths, modes, DFT frequencies: a slider; with phasor partners the page
+animates their phase, Re[A exp(j wt)]). `layer_from_field`
 reads a FieldData duck-typed (viz never imports api or model); api.Results.export_html collects the frames. An
 optional `ViewerGeometry` adds the model objects: their outlines on every layer and, in 3D, their edges and surfaces;
 `ViewerMirror`s let the page draw the mirror images of a half / quarter model (a Mirror button). `figure_settings`
@@ -22,7 +23,8 @@ from .mode_player import _b64, length_scale
 TEMPLATE_FILE = 'field_viewer.html'
 DATA_MARKER = '/*__FIELD_DATA__*/null'
 FORMAT = 'open_sol.field_viewer'
-FORMAT_VERSION = 3                    # 2: length_scale, figure (Plot settings); 3: inward directions in line rows
+FORMAT_VERSION = 4                    # 2: length_scale, figure (Plot settings); 3: inward directions in line rows;
+#                                       4: phasor partners (frame 'quadrature', data 'phasor')
 FRAME_KINDS = ('time', 'labelled')    # time: snapshots the page can play; labelled: wavelengths, modes, frequencies
 MAX_BYTES = 24_000_000                # quantised values of every frame and layer (the page is ~4/3 of this, base64)
 MAX_FRAMES = 200
@@ -73,6 +75,8 @@ class ViewerLayer:
     plane: tuple | None = None
     triangulation: tuple | None = None   # (nodes (n, 2) float, triangles (k, 3) int)
     extent: tuple | None = None
+    quadrature: np.ndarray | None = None   # phasor partner, shaped as values: the page animates
+    #                                        values cos(wt) + quadrature sin(wt) (`layer_from_field(quadrature=)`)
 
 
 @dataclass(eq=False)
@@ -120,33 +124,52 @@ def _centres(centres, low, high, count):
     return low + (np.arange(count) + 0.5) * (high - low) / count
 
 
-def layer_from_field(field_data) -> ViewerLayer:
+def layer_from_field(field_data, quadrature=None, quadrature_sign=1.0) -> ViewerLayer:
     """ViewerLayer of a FieldData (duck-typed): its display triangulation when it has one, else its window cells
-    (uniform over extent when x_centers / y_centers are None); a 3D cut keeps its plane and in-plane axes."""
+    (uniform over extent when x_centers / y_centers are None); a 3D cut keeps its plane and in-plane axes.
+    quadrature: the FieldData of the phasor partner on the same samples (the Im part of a Re field: sign -1, the Re
+    part of an Im field: sign +1, so the page animates Re / Im[(re + j im) exp(j wt)]); ValueError when its samples
+    differ."""
     axes = tuple(getattr(field_data, 'axes', ('x', 'y')))
     plane = getattr(field_data, 'plane', None)
     plane = None if plane is None else (str(plane[0]), float(plane[1]))
     triangulation = getattr(field_data, 'triangulation', None)
     if triangulation is not None:
         nodes, triangles, node_values = triangulation
-        nodes, triangles, node_values = _clipped_triangulation(
-            np.asarray(nodes, dtype=np.float64).reshape(-1, 2), np.asarray(triangles).reshape(-1, 3),
-            np.asarray(node_values, dtype=np.float64).reshape(-1), field_data.extent)
-        return ViewerLayer(values=node_values, axes=axes, plane=plane, triangulation=(nodes, triangles),
-                           extent=tuple(float(edge) for edge in field_data.extent))
+        nodes = np.asarray(nodes, dtype=np.float64).reshape(-1, 2)
+        triangles = np.asarray(triangles).reshape(-1, 3)
+        partner = None
+        if quadrature is not None:
+            other = getattr(quadrature, 'triangulation', None)
+            if other is None or np.shape(other[0]) != np.shape(triangulation[0]):
+                raise ValueError(f'phasor partner {quadrature.component!r} is not on the display triangulation of '
+                                 f'{field_data.component!r}')
+            partner = quadrature_sign * np.asarray(other[2], dtype=np.float64).reshape(-1)
+        nodes, triangles, used = _clipped_triangulation(nodes, triangles, field_data.extent)
+        return ViewerLayer(values=np.asarray(node_values, dtype=np.float64).reshape(-1)[used], axes=axes,
+                           plane=plane, triangulation=(nodes, triangles),
+                           extent=tuple(float(edge) for edge in field_data.extent),
+                           quadrature=None if partner is None else partner[used])
     values = np.asarray(field_data.values, dtype=np.float64)
     if values.ndim != 2 or min(values.shape) < 2:
         raise ValueError(f'field {field_data.physics}.{field_data.component}: a map needs at least 2 x 2 samples, '
                          f'got shape {values.shape} (a 1D field is a curve: export a figure)')
+    partner = None
+    if quadrature is not None:
+        partner = quadrature_sign * np.asarray(quadrature.values, dtype=np.float64)
+        if partner.shape != values.shape or getattr(quadrature, 'triangulation', None) is not None:
+            raise ValueError(f'phasor partner {quadrature.component!r} has samples {partner.shape}, '
+                             f'{field_data.component!r} {values.shape}')
     u0, u1, v0, v1 = (float(edge) for edge in field_data.extent)
     return ViewerLayer(values=values, axes=axes, plane=plane, extent=(u0, u1, v0, v1),
                        u_centres=_centres(field_data.x_centers, u0, u1, values.shape[0]),
-                       v_centres=_centres(field_data.y_centers, v0, v1, values.shape[1]))
+                       v_centres=_centres(field_data.y_centers, v0, v1, values.shape[1]), quadrature=partner)
 
 
-def _clipped_triangulation(nodes, triangles, node_values, extent):
-    """The triangles whose centroid lies inside extent (u0, u1, v0, v1): the window, without the absorbing ring
-    the display triangulation also covers (as visualization._draw_triangles clips it); unused nodes dropped."""
+def _clipped_triangulation(nodes, triangles, extent):
+    """(nodes, triangles, used node indices) of the triangles whose centroid lies inside extent (u0, u1, v0, v1):
+    the window, without the absorbing ring the display triangulation also covers (as visualization._draw_triangles
+    clips it); unused nodes dropped (node values: values[used])."""
     u0, u1, v0, v1 = (float(edge) for edge in extent)
     centroids = nodes[triangles].mean(axis=1)
     inside = ((centroids[:, 0] >= u0) & (centroids[:, 0] <= u1) & (centroids[:, 1] >= v0)
@@ -157,7 +180,7 @@ def _clipped_triangulation(nodes, triangles, node_values, extent):
     used = np.unique(triangles)
     renumber = np.full(len(nodes), -1, dtype=np.int64)
     renumber[used] = np.arange(used.size)
-    return nodes[used], renumber[triangles], node_values[used]
+    return nodes[used], renumber[triangles], used
 
 
 def time_label(seconds) -> str:
@@ -181,10 +204,12 @@ def _check_layers(frames):
             raise ValueError(f'frame {index} has {len(frame.layers)} layers, frame 0 has {len(first)}')
         for layer, reference in zip(frame.layers, first):
             same = ((layer.triangulation is None) == (reference.triangulation is None)
+                    and (layer.quadrature is None) == (reference.quadrature is None)
                     and layer.plane == reference.plane and tuple(layer.axes) == tuple(reference.axes)
                     and np.shape(layer.values) == np.shape(reference.values))
             if not same:
-                raise ValueError(f'frame {index}: a layer differs from frame 0 (kind, plane, axes or sample count '
+                raise ValueError(f'frame {index}: a layer differs from frame 0 (kind, phasor partner, plane, axes or '
+                                 f'sample count '
                                  f'{np.shape(layer.values)} vs {np.shape(reference.values)}): one page shows one set '
                                  'of surfaces')
 
@@ -199,7 +224,7 @@ def _stride(layers, n_frames, max_bytes):
     for stride in range(1, MAX_STRIDE + 1):
         if any(_layer_samples(layer, stride) > MAX_LAYER_CELLS for layer in grids):
             continue
-        if 2 * sum(_layer_samples(layer, stride) for layer in layers) * n_frames <= max_bytes:
+        if 2 * sum(_layer_codes(layer, stride) for layer in layers) * n_frames <= max_bytes:
             return stride
         if max(_layer_samples(layer, stride + 1) for layer in grids) < MIN_LAYER_CELLS:
             return stride
@@ -214,6 +239,11 @@ def _layer_samples(layer, stride):
         return int(np.size(layer.values))
     nu, nv = np.shape(layer.values)
     return (-(-nu // stride)) * (-(-nv // stride))
+
+
+def _layer_codes(layer, stride):
+    """int16 codes a layer packs per frame: its samples, twice with a phasor partner."""
+    return _layer_samples(layer, stride) * (1 if layer.quadrature is None else 2)
 
 
 def _block_mean(values, stride, axes):
@@ -247,7 +277,8 @@ def _strided(layer, stride):
     return ViewerLayer(values=_block_mean(layer.values, stride, (0, 1)),
                        u_centres=_block_mean(layer.u_centres, stride, (0,)),
                        v_centres=_block_mean(layer.v_centres, stride, (0,)), axes=layer.axes, plane=layer.plane,
-                       extent=layer.extent)
+                       extent=layer.extent,
+                       quadrature=None if layer.quadrature is None else _block_mean(layer.quadrature, stride, (0, 1)))
 
 
 def _log_floor(low, high):
@@ -364,7 +395,7 @@ def plan_frames(layers, n_frames, max_bytes=MAX_BYTES, max_frames=MAX_FRAMES) ->
         raise ValueError(f'the display triangulation needs {geometry} bytes, above max_bytes {max_bytes}')
     keep = min(n_frames, max_frames)
     stride = _stride(layers, keep, max_bytes)
-    per_frame = 2 * sum(_layer_samples(layer, stride) for layer in layers)
+    per_frame = 2 * sum(_layer_codes(layer, stride) for layer in layers)
     if per_frame > max_bytes:
         raise ValueError(f'one frame needs {per_frame} bytes at stride {stride}, above max_bytes {max_bytes}: export '
                          'a coarser field')
@@ -638,14 +669,21 @@ def _plane_padded(layer, pads, phase):
     """Grid layer with a sample row on each padded mirror plane (even image: the nearest row, odd: 0, a phase keeps
     the nearest), so the map and its mirror image meet without a one-cell gap."""
     values = np.asarray(layer.values, dtype=np.float64)
+    quadrature = None if layer.quadrature is None else np.asarray(layer.quadrature, dtype=np.float64)
     centres = [np.asarray(layer.u_centres, dtype=np.float64), np.asarray(layer.v_centres, dtype=np.float64)]
-    for index, side, position, sign in pads:
-        nearest = np.take(values, [0 if side == 'lo' else -1], axis=index)
+
+    def padded(array, index, side, sign):
+        nearest = np.take(array, [0 if side == 'lo' else -1], axis=index)
         row = nearest if sign > 0 or phase else np.where(np.isfinite(nearest), 0.0, np.nan)
-        values = np.concatenate((row, values) if side == 'lo' else (values, row), axis=index)
+        return np.concatenate((row, array) if side == 'lo' else (array, row), axis=index)
+
+    for index, side, position, sign in pads:
+        values = padded(values, index, side, sign)
+        if quadrature is not None:   # the partner has the same parity
+            quadrature = padded(quadrature, index, side, sign)
         centres[index] = np.concatenate(([position], centres[index]) if side == 'lo' else (centres[index], [position]))
     return ViewerLayer(values=values, u_centres=centres[0], v_centres=centres[1], axes=layer.axes, plane=layer.plane,
-                       extent=layer.extent)
+                       extent=layer.extent, quadrature=quadrature)
 
 
 def _mirror_padded_frames(frames, mirrors, phase):
@@ -720,7 +758,9 @@ def viewer_data(frames, quantity, title='', subtitle='', frame_kind='labelled', 
     sample row on it). plan None: frames are thinned and grid layers strided here (plan_frames over max_bytes /
     max_frames); a plan: frames already follow it (picked and strided by the caller). The subtitle names any
     thinning or stride. figure: the page's Plot settings (`figure_settings` keys) it opens with, over the ones the
-    browser remembers."""
+    browser remembers. Layers with a phasor partner (`ViewerLayer.quadrature`, all or none; a signed quantity,
+    labelled frames): the page animates values cos(wt) + quadrature sin(wt), each frame quantised over -+ its largest
+    modulus."""
     if not frames:
         raise ValueError('nothing to show: no field frames')
     if frame_kind not in FRAME_KINDS:
@@ -740,16 +780,19 @@ def viewer_data(frames, quantity, title='', subtitle='', frame_kind='labelled', 
     if geometry is not None and geometry.box is not None:
         span = max(span, *(float(size) for size in geometry.box))
     scale, unit = length_scale(span or 1.0)
+    phasor = _phasor_frames(frames, quantity, frame_kind)
     packed, ranges = [], []
     for frame in frames:
-        frame_range = _finite_range(layer.values for layer in frame.layers)
+        frame_range = _phasor_range(frame.layers) if phasor else _finite_range(layer.values for layer in frame.layers)
         if frame_range is not None:
             ranges.append(frame_range)
         low, high = frame_range or (0.0, 0.0)   # no value at all: every code is _Q_NAN
-        log_low = _log_floor(low, high)
+        log_low = None if phasor else _log_floor(low, high)
         packed.append({'label': frame.label, 'time': None if frame.time is None else float(frame.time),
                        'lo': low, 'hi': high, 'empty': frame_range is None, 'log_lo': log_low,
                        'values': [_b64(_quantised(layer.values, low, high, log_low)) for layer in frame.layers]})
+        if phasor:   # the partner on the same codes: [lo, hi] = -+ the largest modulus, so every phase fits
+            packed[-1]['quadrature'] = [_b64(_quantised(layer.quadrature, low, high)) for layer in frame.layers]
     if not ranges:
         raise ValueError('the field has no finite value in any frame')
     low, high = min(lo for lo, _ in ranges), max(hi for _, hi in ranges)
@@ -767,7 +810,36 @@ def viewer_data(frames, quantity, title='', subtitle='', frame_kind='labelled', 
         'view': None if view is None else [float(view[0]), float(view[1])],
         'geometry': None if geometry is None else _geometry_data(geometry, first, scale),
         'mirrors': _mirror_data(mirrors, scale),
+        'phasor': phasor,
     }
+
+
+def _phasor_frames(frames, quantity, frame_kind):
+    """True when the layers carry phasor partners (the page animates the phase); ValueError when only some do, or
+    for a quantity or frame kind a phase animation cannot show (an unsigned or angle quantity, played time frames)."""
+    partners = [layer.quadrature is not None for layer in frames[0].layers]
+    if not any(partners):
+        return False
+    if not all(partners):
+        raise ValueError('phasor partners on some layers only: every layer of a phase-animated page needs one')
+    if not quantity.signed or quantity.phase:
+        raise ValueError(f'a phasor partner animates a signed Re / Im field; {quantity.label!r} is '
+                         + ('an angle' if quantity.phase else 'unsigned'))
+    if frame_kind == 'time':
+        raise ValueError("phasor partners on time frames: the page plays either the snapshots or the phase "
+                         "(frame_kind 'labelled')")
+    return True
+
+
+def _phasor_range(layers):
+    """(-m, m) of the largest finite modulus m of the layers' (values, quadrature) pairs, None without any."""
+    largest = -math.inf
+    for layer in layers:
+        modulus = np.hypot(np.asarray(layer.values, dtype=np.float64), np.asarray(layer.quadrature, dtype=np.float64))
+        finite = modulus[np.isfinite(modulus)]
+        if finite.size:
+            largest = max(largest, float(finite.max()))
+    return None if largest == -math.inf else (-largest, largest)
 
 
 def render_html(data):
