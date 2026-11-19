@@ -120,17 +120,19 @@ def face_conflicts(vctx, physics_spec, boundary_feature_types, path):
             for face, names in owners.items() if len(names) > 1]
 
 
-def mirror_face_issues(vctx, physics_spec, boundary_feature_types, path, consequence, severity='warning'):
-    """One issue per enabled boundary feature of physics_spec setting a face that is an EM mirror plane (core.mirror:
-    a physics' bc_<face> symmetric / antisymmetric): only the default zero-flux face there is the even mirror image
-    of the unfolded model; consequence = the type's sentence on what the feature models instead."""
-    faces = mirror_faces(vctx.spec)
+def mirror_face_issues(vctx, physics_spec, boundary_feature_types, path, consequence, severity='warning',
+                       faces=None):
+    """One issue per enabled boundary feature of physics_spec setting a face that is a model mirror plane (core.mirror
+    mirror_faces, or the given `faces`: a physics' bc_<face> symmetric / antisymmetric, a mirror feature of another
+    physics): only the default zero-flux face there is the even mirror image of the unfolded model; consequence = the
+    type's sentence on what the feature models instead."""
+    faces = mirror_faces(vctx.spec) if faces is None else faces
     issues = []
     for feature, entities in enabled_feature_entities(vctx, physics_spec, boundary_feature_types) if faces else ():
         on_plane = [face for face in faces if face in entities]
         if on_plane:
             issues.append(Issue(severity, feature_path(physics_spec, feature),
-                                f"{', '.join(on_plane)} lies on an EM mirror plane, where the mirrored (unfolded) "
+                                f"{', '.join(on_plane)} lies on a mirror plane of the model, where the mirrored (unfolded) "
                                 f'model needs this physics insulated (no boundary feature): {consequence}'))
     return issues
 

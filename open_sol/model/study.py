@@ -1713,6 +1713,10 @@ def _parity_sector_issues(vctx, values):
                                            'symmetric or antisymmetric, or give a membrane a symmetry / antisymmetry '
                                            'face (the drawn half is then solved at every parity), or switch '
                                            'parity_sectors off')]
+    try:
+        labels = list(sector_specs(vctx.spec))
+    except ValueError as exc:   # a mirror feature without the other sign (heat symmetry)
+        return [Issue('error', ('study',), str(exc))]
     issues = []
     couplings = [coupling.name for coupling in vctx.spec.couplings if coupling.enabled]
     if couplings:
@@ -1722,7 +1726,7 @@ def _parity_sector_issues(vctx, values):
                                                    "thermo-optic shift) are not the drawn source's"))
     per_value = ' per sweep value' if vctx.spec.study.sweep is not None else ''
     issues.append(Issue('info', ('study',), f"parity_sectors: {2 ** len(faces)} sector runs{per_value} over the "
-                                            f"mirror faces {', '.join(faces)} ({'; '.join(sector_specs(vctx.spec))})"))
+                                            f"mirror faces {', '.join(faces)} ({'; '.join(labels)})"))
     return issues
 
 

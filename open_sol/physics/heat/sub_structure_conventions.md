@@ -195,6 +195,12 @@ cells, metric, cut cells) is in `open_sol/core/sub_structure_conventions.md`.
   heat_flux / convection feature on an em mirror face warns (`definition_helpers.mirror_face_issues`; error in a
   thermal_noise study, whose x 2 per mirror assumes the even mirror). Unfolding treats heat fields as even (s = +1).
   An odd heat mirror needs no new code: a temperature face is exactly the antisymmetric image of T - T_face.
+- Feature `symmetry` (`core.mirror.MIRROR_FEATURES['heat']`, outer faces only, no apply: the face stays insulated)
+  makes its faces model mirror planes of heat itself (unfold, integrals x 2, max / min over images; heat-only models
+  too). Errors (`_validate_symmetry`, `_symmetry_face_conflicts`): a heat face feature on the same face (mirror_face_issues
+  then skips heat's own faces), x_lo of geometry axisymmetric (the axis, see unfold_faces), polar / spherical domains,
+  another physics with bc_<face> mirror choices not set symmetric / antisymmetric there, parity_sectors (no odd heat
+  mirror feature). The axis of axisymmetric heat unfolds for display without a feature (`core.mirror.unfold_faces`).
 - Setting `geometry` 'axisymmetric' = `HeatPhysics(axisymmetric=True)`: x = r, x_lo the axis; densities keep their
   units; `add_point_heat_source` divides by the ring volume (P = whole-ring W). Object-perimeter heat_flux / convection
   take `definition_helpers.perimeter_flux_weights` (x-faces by r_face / r_c; polar / spherical: both face kinds by
