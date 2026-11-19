@@ -49,7 +49,7 @@ slots are in `open_sol/coupling/sub_structure_conventions.md`. Current state, no
   resonance_table_study_issues,
   scipy_issues, host_matrix_back_end_issues, missing_source_issues, fem_size_issues, other_em_physics_labels,
   auto_mesh_issues, resolved_solved_wavelengths (definition_bor: azimuthal_order_list_issues, axis_wall_settings,
-  cylindrical_material_params); apply callbacks:
+  cylindrical_material_params and the help texts GEOMETRY_HELP / COMPONENT_HELPS of both (r, z) types); apply callbacks:
   apply_field_probe / _flux_monitor / _far_field, apply_resonance_table and apply_component_point_source of BOR,
   conical and fdtd_bor: never a local copy); definition_fdtd_bor shares
   memory_estimates `_fdtd_bor_members`; memory_estimates `host_factorization` is the factorization rule of the

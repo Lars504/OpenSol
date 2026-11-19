@@ -38,134 +38,112 @@ _DRIVEN_STUDIES = ('stationary', FREQUENCY_DOMAIN_STUDY)
 # ---- settings ----
 _BC_HELP = ' '.join((
     CPML_BC_HELP,
-    'In the frequency domain the CPML is the complex coordinate stretch s = kappa + sigma / (alpha + j omega eps0) '
-    'with the FDTD grading of the pml_* settings.',
+    'Frequency-domain CPML: stretch s = kappa + sigma / (alpha + j omega eps0), pml_* grading.',
     PERIODIC_BC_HELP,
-    'Walls and mirrors sit on the planes of em_modes (the same projected 3D Yee cell): a pec / pmc wall is the inner '
-    'face of the outermost domain cell (that cell is a ghost holding the mirror image), half a cell off the em_fdfd_ez '
-    'pec and em_fdfd_hz pmc walls; a symmetric (E mirror-even, a PMC plane) / antisymmetric (E mirror-odd, a PEC '
-    'plane) mirror adds its ghost cell outside the domain, so its plane is the domain edge. At k_z != 0 a mirror plane '
-    'normal to x or y stays a symmetry (k_z points along it) and halves the unknowns.',
+    'Walls and mirrors on the em_modes planes (same projected Yee cell): a pec / pmc wall is the inner face of the '
+    'outermost cell (a ghost holding the image), half a cell off the em_fdfd_ez pec and em_fdfd_hz pmc walls; a '
+    'symmetric (E even, PMC plane) / antisymmetric (E odd, PEC plane) mirror adds its ghost outside, so its plane is '
+    'the domain edge. At k_z != 0 an x or y mirror stays a symmetry and halves the unknowns.',
 ))
 _KZ_HELP = (
-    'Out-of-plane wave number k_z in rad/m of every solve: the fields vary as exp(j (omega t - k_z z)) along the '
-    'z-invariant structure (the industry-standard out-of-plane wave number), so all six components couple. k_z = 0 '
-    'gives the decoupled em_fdfd_ez (E_z, H_x, H_y) and em_fdfd_hz (H_z, E_x, E_y) problems at once (walls half a cell '
-    'apart from theirs). Uses: conical / oblique incidence on gratings and other z-invariant structures (k_z = k0 n '
-    'sin(theta) of the z share of the incident wave vector, the in-plane share from bloch_kx / bloch_ky along a '
-    'periodic axis), a waveguide cross-section driven at a given propagation constant beta = k_z (a source excites the '
-    'guided modes resonantly where omega meets the mode dispersion), and in an eigenfrequency study the dispersion '
-    'omega(k_z): the resonances at fixed k_z are the guided modes with beta = k_z (same discrete problem as em_modes, '
-    'read the other way; sweep k_z for the band / dispersion diagram). k_z stays fixed over the wavelengths of a '
-    'frequency_domain study (the incidence angle then changes with wavelength). |k_z| above k0 n in a material makes '
-    'the field evanescent in it. A real number (no leaky / complex k_z through the model).')
+    'Fields ~ exp(j (omega t - k_z z)) along the z-invariant structure, so all six components couple; k_z = 0 gives '
+    'em_fdfd_ez (E_z, H_x, H_y) and em_fdfd_hz (H_z, E_x, E_y) at once (walls half a cell off theirs). Uses: conical / '
+    'oblique incidence on gratings (k_z = k0 n sin(theta) of the z share of the wave vector, the in-plane share from '
+    'bloch_kx / bloch_ky); a guide cross-section driven at beta = k_z (sources excite guided modes resonantly where '
+    'omega meets their dispersion); eigenfrequency: the resonances at fixed k_z are the guided modes with beta = k_z '
+    '(em_modes read the other way; sweep k_z for the dispersion). Fixed over the wavelengths of a frequency_domain '
+    'study (the incidence angle changes). |k_z| > k0 n makes the field evanescent in that material. Real only (no '
+    'leaky / complex k_z).')
 _KZ_TIP = ('Wave number along the direction perpendicular to the drawing, in radians per metre: the fields vary as a '
            'wave of that wave number along that direction.\n\n'
            '0 gives the ordinary 2D problem. For light arriving with a component along that direction use 2 pi n '
            'sin(angle) / wavelength; for a waveguide whose cross-section is drawn it is the propagation constant, 2 pi '
            'n_eff / wavelength. Swept in an eigenfrequency study it gives the frequency versus wave number.')
 _BLOCH_HELP = (
-    'Bloch wave vector along {axis} in rad/m, used only when bc_{axis}_lo and bc_{axis}_hi are periodic: the solution '
-    'is the Bloch wave F(x + L) = F(x) exp(-j k{axis} L) per period L (the meshed period; exp(+j omega t)); k{axis} and '
-    'k{axis} + 2 pi / L are the same state; 0 = plain periodic. The phase sits on the wrap entries of the operator (no '
-    'extra cost). Point sources repeat in every period image with that phase (a phased array); a line source along the '
-    'periodic axis carries exp(-j k{axis} s) (s = cell centres from the grid lo corner), so with k_z it launches the '
-    'conical plane wave of wave vector (k{axis}, k_normal, k_z). Results are those of the Bloch wave at +k.')
+    'Used only when bc_{axis}_lo / _hi are periodic: Bloch wave F(x + L) = F(x) exp(-j k{axis} L) per meshed period L '
+    '(exp(+j omega t)); k{axis} and k{axis} + 2 pi / L are the same state; 0 = plain periodic. The phase sits on the '
+    'operator wrap entries (no extra cost). Point sources repeat in every period image with that phase; a line source '
+    'along the axis carries exp(-j k{axis} s) (s = cell centres from the grid lo corner), so with k_z it launches the '
+    'conical plane wave (k{axis}, k_normal, k_z). Results are those of the Bloch wave at +k.')
 _BLOCH_TIP = ('Phase step of the wave from one period to the next along {axis}, in radians per metre, for periodic '
               'edges.\n\n0 means no phase step. For light arriving at an angle use the in-plane share of its wave '
               'vector, e.g. 2 pi sin(angle) / wavelength in vacuum.')
 _SETTINGS = boundary_settings_params(_BC_HELP) + (
     Param('wavelength', 'float', DEFAULT_WAVELENGTH, label='Wavelength', unit='m', min=0.0, min_exclusive=True,
-          help='Vacuum wavelength lambda0 of the solve in a stationary study (omega = 2 pi C0 / lambda0); an '
-               'eigenfrequency study searches the resonances nearest it at the k_z setting (the target); a '
-               'frequency_domain study solves its own wavelengths and ignores it (validation info when it is not the '
-               'default). The mesh needs >= 10 (better 20) cells per lambda0 / |n| in every material and >= 2 per skin '
-               'depth in lossy ones (validation checks both). Typical 0.4e-6 to 2e-6 m.',
+          help='Vacuum wavelength of a stationary solve; eigenfrequency: the target (resonances nearest it at k_z); '
+               'frequency_domain ignores it (validation info when not the default). Mesh: >= 10 (better 20) cells per '
+               'lambda0 / |n| and >= 2 per skin depth (validation checks both). Typical 0.4e-6 to 2e-6 m.',
           tip='Vacuum wavelength at which the field is solved, in metres: 1.55e-6 for 1550 nm.\n\n'
               "An 'Eigenfrequency' study looks for the resonances closest to it; a 'Frequency domain' study solves "
               'its own list of wavelengths.'),
     Param('k_z', 'float', 0.0, label='Out-of-plane wave number', unit='rad/m', help=_KZ_HELP, tip=_KZ_TIP),
     Param('discretization', 'choice', 'quadratic', label='Discretization', choices=tuple(DISCRETIZATION_ORDERS),
           choice_labels=(('quadratic', 'Quadratic'), ('linear', 'Linear')),
-          help='Element order on a triangles mesh (MeshSpec kind triangles; tensor meshes ignore it and use the Yee '
-               'cell). Eigenfrequency study only: the em_modes mixed elements (Nedelec edge elements for E_x, E_y, '
-               'Lagrange elements for E_z of the same degree; discrete gradients are exact static solutions, so no '
-               'spurious modes), the k_z terms in the curl, elements with a curved edge mapped isoparametrically '
-               '(quadratic), so round guides follow the drawn outline instead of a staircase. quadratic (default) or '
-               'linear (Whitney / P1: cheaper, error ~h^2 instead of ~h^4 in k0^2). About 7 (quadratic) or 2 (linear) '
-               'unknowns per element, one assembly per solve, squared-Cayley shift-invert by the eigen solver: host '
-               'SuperLU, or with its factorization cudss a cuDSS LDL^T on the GPU (complex symmetric pencil), '
-               'cudss_mixed its complex64 form with float64 Rayleigh quotients. Materials are one value per element; a '
-               'cpml face gets a ring of mesh pml_layers element layers with the stretch of the pml_* settings and a '
-               'pec outer side; pec_domain removes its elements and holds tangential E = 0 on their outline; pec / pmc '
-               '/ mirror faces as em_modes. Not available on triangles (validation errors): stationary and '
-               'frequency_domain studies (driven solves) with every source / probe / flux feature, periodic and '
-               'Bloch faces (no periodic mesh); resonance_table and pec_domain work.',
+          help='Element order on a triangles mesh (tensor meshes use the Yee cell). Eigenfrequency only: the em_modes '
+               'mixed elements (Nedelec for E_x, E_y, Lagrange for E_z, same degree: no spurious modes) with the k_z '
+               'terms; quadratic maps curved edges isoparametrically, so round guides follow the outline. linear '
+               '(Whitney / P1): cheaper, error ~h^2 instead of ~h^4 in k0^2. ~7 (quadratic) or 2 (linear) unknowns '
+               'per element; squared-Cayley shift-invert by the eigen solver (host SuperLU; factorization cudss: GPU '
+               'LDL^T; cudss_mixed: complex64 + float64 Rayleigh quotients). Materials one value per element; a cpml '
+               'face gets mesh pml_layers element layers (pml_* stretch) and a pec outer side; pec_domain removes its '
+               'elements (tangential E = 0 on their outline); pec / pmc / mirror faces as em_modes. On triangles '
+               'stationary / frequency_domain, every source / probe / flux feature and periodic / Bloch faces are '
+               'validation errors; resonance_table and pec_domain work.',
           tip='Order of the finite elements when the mesh is made of triangles: quadratic is far more accurate per '
               'element, linear is cheaper.\n\nUnused on a rectangular-cell mesh.'),
 ) + bloch_params(_BLOCH_HELP, _BLOCH_TIP)
 
 # ---- material vocabulary ('modes' table: eps_r -> all three arrays; eps_zz writes eps_r) ----
-_COMPLEX_EPS = ('The solve uses the complex permittivity at the solve wavelength: this value - j sigma_e / (omega '
-                'eps0) plus the susceptibility chi(omega) of every Drude / Lorentz pole (exp(+j omega t): loss has '
-                'Im < 0).')
+_COMPLEX_EPS = ('Solved with the complex value at the solve wavelength: this - j sigma_e / (omega eps0) + chi(omega) '
+                'of every Drude / Lorentz pole (exp(+j omega t): loss Im < 0).')
 _FACE_VALUE = ('the width-weighted mean of the two cells sharing that face (solver_defaults.subpixel_smoothing '
                'averages interface faces anisotropically)')
 _MATERIAL_PROPERTIES = tuple(replace(param, label='Relative permittivity, z (out of plane)')
                              if param.name == 'eps_zz' else param for param in em_material_params('modes', {
-    'eps_r': ('Isotropic relative permittivity (>= 1): sets eps_xx, eps_yy and eps_zz unless the material sets those '
-              'components (a component wins over eps_r). n^2 of a lossless dielectric: silica ~2.085, silicon ~12.1 at '
-              '1.55 um; may depend on x, y and physics fields. E_z sees the cell value, E_x on the +x and E_y on the +y '
+    'eps_r': ('Isotropic: eps_xx, eps_yy, eps_zz unless the material sets a component (it wins). n^2 of a lossless '
+              'dielectric: silica ~2.085, silicon ~12.1 at 1.55 um. E_z sees the cell value, E_x / E_y on the +x / +y '
               f'cell faces {_FACE_VALUE}. {_COMPLEX_EPS}'),
-    'eps_zz': ('z component (out of plane, along the invariant direction) of the relative permittivity (>= 1), the one '
-               'E_z sees at the cell centres; overrides eps_r for E_z (it writes the eps_r array).'),
-    'eps_xx': (f'x component of the relative permittivity (>= 1), the one E_x sees on the +x cell faces ({_FACE_VALUE}); '
-               'overrides eps_r for E_x.'),
-    'eps_yy': (f'y component of the relative permittivity (>= 1), the one E_y sees on the +y cell faces ({_FACE_VALUE}); '
-               'overrides eps_r for E_y.'),
-    'sigma_e': ('Ohmic loss in S/m on all three E components, default 0: the permittivity at the solve wavelength gains '
-                '-j sigma_e / (omega eps0); a weak absorber of index n and extinction kappa has sigma_e = 2 n kappa '
-                'omega eps0. Model metals with a Drude pole, not their DC conductivity.'),
-    'mu_r': ('Real relative permeability (>= 1) of H_x, H_y and H_z, each taking the value of the cell it belongs to (H_x '
-             'on the +y face, H_y on the +x face, H_z at the +x+y corner of that cell); 1 for optical materials. The '
-             'solve uses mu_r - j sigma_m / (omega mu0).'),
-    'sigma_m': 'Magnetic loss on H_x, H_y, H_z in Ohm/m, default 0: mu_r gains -j sigma_m / (omega mu0).',
+    'eps_zz': 'Out-of-plane component, the one E_z sees at the cell centres; overrides eps_r for E_z (writes the eps_r '
+              'array).',
+    'eps_xx': 'The one E_x sees on the +x cell faces (face mean as eps_r); overrides eps_r for E_x.',
+    'eps_yy': 'The one E_y sees on the +y cell faces (face mean as eps_r); overrides eps_r for E_y.',
+    'sigma_e': ('All three E components gain -j sigma_e / (omega eps0); weak absorber of index n, extinction kappa: '
+                'sigma_e = 2 n kappa omega eps0. Metals: a Drude pole, not their DC conductivity.'),
+    'mu_r': ('Real, 1 for optical materials; H_x (+y face), H_y (+x face), H_z (+x+y corner) take the value of their '
+             'cell. Solved as mu_r - j sigma_m / (omega mu0).'),
+    'sigma_m': 'mu_r gains -j sigma_m / (omega mu0) on H_x, H_y, H_z.',
 }, tips={'eps_zz': ('Permittivity for the electric field perpendicular to the drawing.\n\n'
                     "When set it replaces 'Relative permittivity' for that direction.")}))
 
 # ---- features ----
 _PHASE_PARAM = Param(
     'phase', 'float', 0.0, label='Phase', unit='deg',
-    help='Phase of the source phasor in degrees (0 = cos carrier, as the em_fdfd_* sources); with a single source it '
-         'only rotates every phasor.',
+    help='Phasor phase (0 = cos carrier, as the em_fdfd_* sources); with a single source it only rotates every phasor.',
     tip='Phase of the source in degrees; it matters only with several sources.')
 _COMPONENT_PARAM = Param(
     'component', 'choice', 'z', label='Direction', choices=COMPONENTS,
     choice_labels=(('x', 'Along x'), ('y', 'Along y'), ('z', 'Perpendicular to the drawing (z)')),
-    help="Current direction: 'z' sits on the E_z point (cell centre); 'x' / 'y' are split half on each of the two "
-         'faces of the cell along that axis (the E_x / E_y points, by their dual areas; the lo face of the first cell '
-         'of a periodic axis is its wrapped last face with the Bloch phase). Every direction is modulated as exp(-j k_z '
-         'z) along the invariant direction.',
+    help="'z' on the E_z point (cell centre); 'x' / 'y' split half on each of the two cell faces along that axis (E_x / "
+         'E_y points, by dual areas; on a periodic axis the lo face of the first cell is the wrapped last face with the '
+         'Bloch phase). Every direction is modulated as exp(-j k_z z).',
     tip='Direction of the current: along x, along y, or perpendicular to the drawing.')
 _POINT_SOURCE_PARAMS = (
     _COMPONENT_PARAM,
     Param('current', 'float', 1e-3, label='Current', unit='A',
-          help='Current I [A] = the integral of the current density J over the cell cross-section: J = I / (dx dy) '
-               "for 'z' (a filament I exp(-j k_z z), at k_z = 0 the em_fdfd_ez point source), a line of x / y current "
-               'elements of moment I per unit z length otherwise. Fields scale linearly with it. '
-               f'{POINT_SOURCE_SIGN}',
+          help="Integral of J over the cell cross-section: 'z' J = I / (dx dy), a filament I exp(-j k_z z) (k_z = 0: "
+               'the em_fdfd_ez point source); x / y a line of current elements of moment I per unit z length. Fields '
+               f'are linear in it. {POINT_SOURCE_SIGN}',
           tip='Strength of the source, in amperes. Fields scale linearly with it.'),
     _PHASE_PARAM,
 )
 _LINE_SOURCE_PARAMS = (
     _COMPONENT_PARAM,
     Param('amplitude', 'float', 1.0, label='Surface current', unit='A/m',
-          help='Uniform surface current density K [A/m] of the sheet: each line cell carries a current element of K '
-               'times its length along the line (J = K / width across the line), along a periodic Bloch axis times '
-               'exp(-j k s). A sheet across a whole periodic period (or ending on cpml edges, where it continues '
-               'through the PML) launches plane waves of wave vector (k along the line, +-k_normal, k_z) on both '
-               'sides, k_normal^2 = k0^2 n^2 - k_along^2 - k_z^2 (evanescent when negative). Fields scale linearly '
-               f'with it. {POINT_SOURCE_SIGN}',
+          help='Uniform surface current density K: each line cell carries K times its length (J = K / width across '
+               'the line), along a periodic Bloch axis times exp(-j k s). A sheet across a whole period (or ending on '
+               'cpml edges: it continues through the PML) launches plane waves (k along the line, +-k_normal, k_z) on '
+               'both sides, k_normal^2 = k0^2 n^2 - k_along^2 - k_z^2 (evanescent when negative). Fields are linear '
+               f'in it. {POINT_SOURCE_SIGN}',
           tip='Strength of the sheet of current along the line, in amperes per metre. Fields scale linearly with '
               'it.\n\nAcross a whole periodic domain it launches plane waves on both sides.'),
     _PHASE_PARAM,
@@ -173,30 +151,27 @@ _LINE_SOURCE_PARAMS = (
 _PROBE_PARAMS = (
     Param('component', 'choice', 'ez', label='Field component', choices=FIELD_COMPONENTS,
           choice_labels=(('ex', 'E_x'), ('ey', 'E_y'), ('ez', 'E_z'), ('hx', 'H_x'), ('hy', 'H_y'), ('hz', 'H_z')),
-          help='Component recorded: its complex phasor at the centre of the cell containing the point (face / corner '
-               'points averaged there, Bloch phases included), per driven solve (stationary, frequency_domain), at z '
-               '= 0 of the exp(-j k_z z) dependence.',
+          help='Complex phasor at the centre of the containing cell (face / corner points averaged, Bloch phases '
+               'included) at z = 0, per driven solve.',
           tip='Field recorded at the point; electric fields in V/m, magnetic fields in A/m.'),
 )
 _FLUX_DESCRIPTION = (
-    'Time-averaged power per unit length along z [W/m] through an axis-aligned line at every driven solve, 1/2 Re (E x '
-    'H*) . n: a horizontal line gives the flux along +y, sum [dx E_z H_x* - dx_dual E_x H_z*] / 2, a vertical line the '
-    'flux along +x, sum [dy_dual E_y H_z* - dy E_z H_y*] / 2, with E of the line cells and H on their hi face (the '
-    'boundary term of the discrete Poynting theorem: through lossless cells a line across a whole period, or wall to '
-    'wall, carries the same power on every row, so the difference of two such lines is exactly the source power minus '
-    'the absorption between them); the face pairs along the line take the two end faces half. A line reaching a mirror '
-    "face counts its image (x mirror_factor, 2 per face). The z flux of the field is the output field sz. Result "
-    "'flux_spectrum' with unit 'W/m', one entry per solved wavelength sorted by wavelength. The line covers "
+    'Time-averaged power per unit z length [W/m] through an axis-aligned line per driven solve, 1/2 Re (E x H*) . n: '
+    'horizontal line along +y, sum [dx E_z H_x* - dx_dual E_x H_z*] / 2; vertical along +x, sum [dy_dual E_y H_z* - '
+    'dy E_z H_y*] / 2; E of the line cells, H on their hi face (the discrete Poynting boundary term: through lossless '
+    'cells a line across a period or wall to wall carries the same power on every row, so the difference of two '
+    'lines is exactly source power minus absorption between them); the end face pairs count half. A line reaching a '
+    "mirror face counts its image (x mirror_factor, 2 per face). The z flux is the output field sz. Result "
+    "'flux_spectrum' [W/m], one entry per wavelength, sorted. The line covers "
     f'{SPAN_CELLS}; its hi face must be inside the grid (or wrap on a periodic axis).')
 _RESONANCE_TABLE_DESCRIPTION = (
-    "Resonances of the last eigenfrequency study solve at the k_z setting, nearest the target (the wavelength setting) "
-    "first. Result 'table', one row per resonance: resonance_number, wavelength = 2 pi C0 / Re(omega) in m, frequency / "
-    'frequency_imag = Re / Im(omega) / (2 pi) in Hz (> 0 decays), q_factor = Re(omega) / (2 Im(omega)) (inf when '
-    'lossless and closed), pml_fraction (share of |E|^2 dA in PML cells; above 0.5 dropped); extras target_wavelength '
-    '(m) and selected_resonance. At k_z = beta the resonances are the guided modes of propagation constant beta: a '
-    'parameter sweep of k_z with a derived value of the frequency column gives the dispersion. Accurate only near the '
-    "target (see the eigenfrequency study). For Q versus a parameter add a derived value with source '<physics>.<this "
-    "feature>', expression q_factor, operation at and at = 0.")
+    "Resonances of the last eigenfrequency solve at the k_z setting, nearest the target (wavelength setting) first; "
+    "accurate only near it. Result 'table', one row per resonance: resonance_number, wavelength = 2 pi C0 / "
+    'Re(omega) [m], frequency / frequency_imag = Re / Im(omega) / (2 pi) [Hz] (> 0 decays), q_factor = Re(omega) / '
+    '(2 Im(omega)) (inf when lossless and closed), pml_fraction (share of |E|^2 dA in PML cells; > 0.5 dropped); '
+    'extras target_wavelength [m], selected_resonance. At k_z = beta the resonances are the guided modes of '
+    'propagation constant beta: a k_z sweep with a derived value of the frequency column gives the dispersion. Q '
+    "versus a parameter: derived value source '<physics>.<this feature>', expression q_factor, operation at, at = 0.")
 
 
 def _apply_line_source(ctx, solver, feature_spec, values, selection):
@@ -240,23 +215,23 @@ _FEATURES = (
     FeatureType('point_source', 'Point source', 'source', 'point', params=_POINT_SOURCE_PARAMS,
                 object_kinds=('point',), max_entities=1,
                 description='Current element of any direction in the cell containing the point, modulated as exp(-j '
-                            f'k_z z) along the invariant direction; see component and current. {POINT_SOURCE_SIGN}',
+                            'k_z z); see component and current.',
                 summary='A small current at one point, along x, y or perpendicular to the drawing, varying along the '
                         'invariant direction with the out-of-plane wave number.',
                 apply=apply_component_point_source, validate=validate_driven_point),
     FeatureType('line_source', 'Line source', 'source', 'line', params=_LINE_SOURCE_PARAMS, object_kinds=('line',),
                 max_entities=1,
-                description='Uniform current sheet of any direction on the cells of an axis-aligned line (see '
-                            'amplitude): across a periodic period with bloch_k along it and k_z it launches the '
-                            f'conical plane waves of that wave vector on both sides. {POINT_SOURCE_SIGN}',
+                description='Uniform current sheet of any direction on the cells of an axis-aligned line; across a '
+                            'period with bloch_k along it and k_z it launches the conical plane waves of that wave '
+                            'vector on both sides (see amplitude).',
                 summary='A sheet of current along a line: across a periodic domain it sends plane waves to both sides, '
                         'tilted by the Bloch and out-of-plane wave numbers.',
                 apply=_apply_line_source, validate=_validate_line_source),
     FeatureType('field_probe', 'Field probe', 'probe', 'point', params=_PROBE_PARAMS, object_kinds=('point',),
                 max_entities=1, result_kind='xy',
-                description="Phasor of one field component in the cell containing the point at every driven solve. "
-                            "Result 'xy' versus wavelength: series abs (unit of the component) and phase (rad); "
-                            'extras frequency, wavelength, component, unit.',
+                description="Phasor of one component in the containing cell per driven solve. Result 'xy' versus "
+                            'wavelength: abs (component unit), phase (rad); extras frequency, wavelength, component, '
+                            'unit.',
                 summary='Records the field at one point for every solved wavelength.',
                 apply=apply_field_probe, result=object_result(conical_probe_result),
                 validate=validate_driven_point),
@@ -267,9 +242,8 @@ _FEATURES = (
                 apply=apply_flux_monitor, result=object_result(conical_flux_result),
                 validate=_validate_flux_monitor),
     FeatureType('pec_domain', 'Perfect electric conductor', 'domain_condition', 'domain',
-                description='Perfect electric conductor: in every cell whose centre lies in the selected domains E_z = '
-                            '0 at the centre and E_x / E_y = 0 on the faces between two such cells, staircased to the '
-                            'mesh (as em_modes; no conformal option).',
+                description='In cells whose centre lies in the domains E_z = 0, E_x / E_y = 0 on faces between two '
+                            'such cells (staircased as em_modes; no conformal option).',
                 summary='Turns the selected domains into a perfect metal, following the mesh cells.',
                 apply=apply_pec, memory_estimate=pec_memory_estimate(0), grids=BOTH_GRIDS),
     FeatureType('resonance_table', 'Resonance table', 'monitor', None, result_kind='table',
@@ -282,47 +256,32 @@ _FEATURES = (
 
 # ---- type ----
 _DESCRIPTION = (
-    'Conical (out-of-plane wave number) finite-difference frequency-domain solver of a z-invariant structure: the '
-    'drawing is its xy cross-section, the fields vary as exp(j (omega t - k_z z)) with the k_z setting (2D '
-    'frequency domain with an out-of-plane wave number), so E_x, E_y, E_z and H_x, H_y, H_z all couple. Projected 3D '
-    'Yee cell (the em_modes layout and wall rules): E_z at the cell centres, E_x and H_y on the +x faces, E_y and H_x '
-    'on the +y faces, H_z at the +x+y corner; unknowns E (3 per cell, PML included), curl-curl operator (k0^2 eps - '
-    'curl mu^-1 curl) E = -j omega mu0 J with d/dz = -j k_z, solved on the host (solver role linear = sparse_direct: '
-    "host SuperLU, a 'cusolver_qr' node is a validation error; one factor per wavelength, k_z and material state, "
-    'reused as GMRES preconditioner after a material change at the same wavelength and k_z; back_end cudss / '
-    'cudss_mixed: a cuDSS LDL^T of the dual-area-symmetrized operator on the GPU (an LU with a Bloch phase), no host '
-    "size limit, later factorisations of the same sparsity reusing the first one's cuDSS plan). Needs "
-    'scipy; validation warns near and refuses beyond the factor size limit. Studies: stationary (one driven solve at '
-    'the wavelength setting, iterated with heat through heat_em_thermo_optic / em_heat_joule), frequency_domain (one '
-    'driven solve per wavelength at the same k_z) and eigenfrequency (role eigen = arpack_shift_invert: squared-Cayley '
-    'shift-invert resonances at k_z nearest the wavelength setting, complex omega and Q; static curl-free solutions '
-    'dropped; at k_z = beta they are the guided modes, so a k_z sweep gives the dispersion; PML and dispersion frozen '
-    'at the target; factorization auto (the default: cudss on the gpu backend with nvmath-python, falling back to '
-    'superlu if cuDSS refuses the operator; else superlu), superlu (host), cudss (GPU, no host size limit: an LDL^T of '
-    'the operator symmetrized '
-    'by the dual areas, an LU with a Bloch phase) or cudss_mixed (complex64 factor, loose solves, float64 Rayleigh '
-    'quotients; with a Bloch phase a refined LU)). '
-    'Walls / mirrors / Bloch phases / CPML as em_modes plus bloch_kx / bloch_ky; at k_z = 0 the problem splits into '
-    'the em_fdfd_ez and em_fdfd_hz ones (walls half a cell apart from theirs). Outputs at the cell centres: ex, ey, ez, '
-    'hx, hy, hz (Re of the phasors at z = 0, V/m and A/m), their moduli <component>_abs, e_abs, e_intensity (|E|^2, the '
-    'primary field), h_abs, sz = 1/2 Re(E_x H_y* - E_y H_x*) (power flow along z, W/m^2), absorbed_power (state q_abs '
-    '= 1/2 omega eps0 sum_c (-Im eps_c) |E_c|^2 in W/m^3, cell means; em_heat_joule hands it to heat) and the '
-    'permittivity arrays eps_r (eps_zz), eps_xx, eps_yy, sigma_e; scalar output source_power. A resonance is scaled to '
-    '1 real at its largest E sample (V/m). Features: point_source and line_source (currents along x, y or z), '
-    'field_probe, flux_monitor (W/m through a line), pec_domain, resonance_table. Material vocabulary of em_modes '
-    '(eps_xx, eps_yy, eps_zz diagonal). heat_em_thermo_optic writes all three permittivity arrays (slots eps_r_update, '
-    "eps_xx_update, eps_yy_update). Not yet: a conical TFSF plane wave, far field, mode ports, conformal PEC. On a "
-    'triangles mesh (MeshSpec kind triangles) the eigenfrequency study runs on mixed finite elements instead (see '
-    'discretization: curved outlines followed, materials and state fields one value per element, the same '
-    "resonance_table); driven studies, the source / probe / flux features and periodic faces stay on tensor meshes. The "
-    "instance is usually named 'em'.")
+    'Conical FDFD of a z-invariant structure: the drawing is its xy cross-section, fields ~ exp(j (omega t - k_z z)) '
+    'with the k_z setting, so E_x, E_y, E_z, H_x, H_y, H_z all couple. Projected 3D Yee cell (em_modes layout and wall '
+    'rules): E_z at cell centres, E_x, H_y on +x faces, E_y, H_x on +y faces, H_z at the +x+y corner; unknowns E (3 '
+    'per cell incl. PML), (k0^2 eps - curl mu^-1 curl) E = -j omega mu0 J with d/dz = -j k_z. Host matrix; needs '
+    "scipy; validation warns near and refuses beyond the factor size limit. Role 'linear': sparse_direct = host "
+    'SuperLU (cusolver_qr is refused), one factor per wavelength, k_z and material state, reused as GMRES '
+    'preconditioner after a material change; back_end cudss / cudss_mixed: GPU cuDSS LDL^T of the dual-area '
+    'symmetrized operator (LU with a Bloch phase), no size limit, plan reused. Studies: stationary (wavelength '
+    'setting; with heat via heat_em_thermo_optic / em_heat_joule), frequency_domain (one solve per wavelength at the '
+    "same k_z), eigenfrequency (role 'eigen' arpack_shift_invert: squared-Cayley shift-invert resonances at k_z "
+    'nearest the wavelength setting, complex omega and Q; static curl-free solutions dropped; PML and dispersion '
+    'frozen at the target; factorization auto = cudss on the gpu backend with nvmath-python (superlu if cuDSS refuses '
+    'the operator), else superlu; cudss: GPU LDL^T (LU with a Bloch phase), no size limit; cudss_mixed: complex64, '
+    'float64 Rayleigh quotients). Walls / mirrors / Bloch / CPML as em_modes plus bloch_kx / bloch_ky. Outputs at cell '
+    'centres: components Re of the z = 0 phasors; sz = 1/2 Re(E_x H_y* - E_y H_x*); absorbed_power = state q_abs = '
+    '1/2 omega eps0 sum_c (-Im eps_c) |E_c|^2 (cell means; em_heat_joule hands it to heat); eps_r = eps_zz. '
+    'Resonances are scaled to 1 real at the largest E sample (V/m). Material vocabulary of em_modes (diagonal eps_xx, '
+    'eps_yy, eps_zz); heat_em_thermo_optic writes all three permittivity arrays. Not yet: conical TFSF plane wave, far '
+    'field, mode ports, conformal PEC. Triangles mesh: eigenfrequency on mixed finite elements (see discretization); '
+    "driven studies, sources / probes / flux and periodic faces need a tensor mesh. Instance usually 'em'.")
 _SCALAR_OUTPUTS_HELP = (
-    'source_power (W/m): the time-averaged power per unit z length the enabled point / line sources deliver in the '
-    'last driven solve, 1/2 Re sum E . J* dA over their current points (the drawn part: a mirror image is not '
-    'counted). Equal to the net flux out of a closed set of lossless flux lines around the sources without a mirror '
-    'face; with one the flux results are unfolded (x mirror_factor) while this stays the drawn part. Missing (NaN plus '
-    'a run-log warning) before a driven solve, e.g. in an eigenfrequency study. Derived value expression '
-    '<physics>_source_power.')
+    'source_power (W/m): time-averaged power per unit z length the enabled point / line sources deliver in the last '
+    'driven solve, 1/2 Re sum E . J* dA over their current points (drawn part only: mirror images not counted, while '
+    'flux results are unfolded x mirror_factor). Equals the net flux out of closed lossless flux lines around the '
+    'sources without a mirror face. NaN plus a run-log warning before a driven solve (e.g. eigenfrequency). Derived '
+    'value expression <physics>_source_power.')
 
 
 def _scalar_outputs(settings_values, physics_spec):

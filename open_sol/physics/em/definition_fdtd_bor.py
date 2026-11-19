@@ -9,9 +9,9 @@ from ...model.definition_helpers import (AXISYMMETRIC, AXISYMMETRIC_SPACE_SETTIN
 from ...model.definition_resonance import resonance_monitor_feature as shared_resonance_feature
 from ...model.schema import FeatureType, Issue, Param, PhysicsType, feature_path
 from .body_of_revolution import BOR_FIELD_COMPONENTS, BOR_SOURCE_COMPONENTS
-from .definition_bor import (_COMPONENT_NAMES, _MODE_MONITOR_PARAMS, _PORT_POWER_PARAMS, _port_line, _validate_far_field,
-                             _validate_line_monitor, axis_wall_settings, azimuthal_order_list_issues,
-                             cylindrical_material_params)
+from .definition_bor import (_COMPONENT_NAMES, _MODE_MONITOR_PARAMS, _PORT_POWER_PARAMS, COMPONENT_HELPS,
+                             GEOMETRY_HELP, _port_line, _validate_far_field, _validate_line_monitor, axis_wall_settings,
+                             azimuthal_order_list_issues, cylindrical_material_params)
 from .definition_common import (BOX_CELLS, EM_FAMILY, FLUX_PARAMS, FREQUENCY_DOMAIN_STUDY, PER_CW_TEXT,
                                 POINT_SOURCE_SIGN, SPAN_CELLS, _monitor_wavelength_kwargs, _window_axes,
                                 apply_component_point_source, apply_far_field, apply_field_probe, apply_flux_monitor,
@@ -32,149 +32,120 @@ from .solvers.fdtd_bor import (H_COMPONENTS, BORFDTDPhysics, fdtd_bor_far_field_
                                fdtd_bor_mode_result)
 
 _TYPE_NAME = 'em_fdtd_bor'
-_FIELDS_NOTE = ('The fields are the real time-domain amplitudes of one azimuthal order m: the standing wave whose E_r, '
-                'E_z, H_phi vary as cos(m phi) and E_phi, H_r, H_z as sin(m phi) (m = 0: the TM fields E_r, E_z, H_phi '
-                'and the TE fields E_phi, H_r, H_z themselves). Its DFT phasors divided by the source spectrum are the '
-                'em_fdfd_bor phasors of the travelling exp(-j m phi) wave (E_phi, H_r, H_z times j), up to the '
-                'leap-frog dispersion: they solve the em_fdfd_bor system at omega_tilde = (2 / dt) sin(omega dt / 2) '
-                'exactly, so an em_fdfd_bor resonance omega rings at (2 / dt) asin(omega dt / 2).')
+_FIELDS_NOTE = ('Fields are the real time-domain amplitudes of the standing wave of order m: E_r, E_z, H_phi ~ '
+                'cos(m phi), E_phi, H_r, H_z ~ sin(m phi) (m = 0: the TM and TE fields themselves). DFT phasors / '
+                'source spectrum = the em_fdfd_bor travelling-wave phasors (E_phi, H_r, H_z times j) at omega_tilde = '
+                '(2 / dt) sin(omega dt / 2), exactly: an em_fdfd_bor resonance omega rings at (2 / dt) asin(omega dt '
+                '/ 2).')
 
 # ---- settings ----
 _BC_HELP = (
-    'Faces of the (r, z) half plane; x_lo is always the symmetry axis r = 0 (bc_x_lo = axis, no other choice). Every '
-    'wall sits on the outer grid edge, as in em_fdfd_bor: pec = tangential E 0 there, pmc = tangential H 0 there; cpml '
-    'adds pml_cells absorbing cells outside the face, ending in a pmc edge beyond them. On the z faces a convolutional '
-    'PML (kappa, sigma, alpha graded as the 2D FDTD) on the d/dz terms of the curl; on r_hi a cylindrical PML: the '
-    'complex radius stretch of em_fdfd_bor (kappa, sigma graded the same way, alpha = 0) in the radial derivatives and '
-    'in the radius of the ring metric (the 1 / r and r terms), stepped by recursive convolutions, so it absorbs as '
-    'well close to the axis and at large azimuthal order as far out (pml_alpha_max acts on the z faces only). A pec / '
-    'pmc z_lo face is the antisymmetric / symmetric mirror plane of a structure symmetric about z = 0 (pmc keeps E_r, '
-    'E_phi even about it, pec E_z). No periodic or mirror faces.')
+    'x_lo is always the axis r = 0. Walls on the outer grid edge as in em_fdfd_bor (pec = tangential E 0, pmc = '
+    'tangential H 0); cpml adds pml_cells cells ending in a pmc edge: on the z faces a convolutional PML (2D FDTD '
+    'grading), on r_hi a cylindrical PML (the em_fdfd_bor radius stretch, alpha = 0, recursive convolutions) that '
+    'absorbs as well near the axis and at large m; pml_alpha_max acts on the z faces only. A pec / pmc z_lo face is '
+    'the mirror plane of a structure symmetric about z = 0 (pmc keeps E_r, E_phi even, pec E_z). No periodic faces.')
 _SETTINGS = (
     Param(GEOMETRY_SETTING, 'choice', AXISYMMETRIC, label='Geometry', choices=(AXISYMMETRIC,),
           choice_labels=((AXISYMMETRIC, 'Axisymmetric (r, z)'),),
-          help='Always axisymmetric: the drawing is the (r, z) half plane of a body of revolution about the x_lo window '
-               'edge (x = r >= 0, y = z). The setting exists so that coupled physics with a geometry setting (heat, '
-               'electric_currents, electrostatics) recognise a consistent axisymmetric partner.',
+          help=GEOMETRY_HELP,
           tip='The drawing is half of a cut through a round object, rotated about the left edge of the domain.'),
     *axis_wall_settings(_BC_HELP),
     Param('azimuthal_order', 'int', 0, label='Azimuthal order', min=0, max=10000,
-          help='Azimuthal order m >= 0 of the fields (one (r, z) run per order; +m and -m are degenerate). m = 0: '
-               'on-axis dipoles and the radial modes of disks and pillars (TE and TM decouple); m = 1: the fields of an '
-               'on-axis focused or plane wave; larger m: whispering-gallery modes, m ~ 2 pi R n_eff / lambda. The '
-               'time step shrinks with |m|: the m / r terms near the axis set dt ~ dr / (C0 (|m| + 1)), so large m '
-               'costs steps (em_fdfd_bor eigenfrequency is cheaper for whispering-gallery resonances). For an off-axis '
-               'point source (the sum over m of its Fourier terms) list the orders in azimuthal_orders instead.',
+          help='m of the fields (+m and -m are degenerate). m = 0: on-axis dipoles, radial modes (TE and TM '
+               'decouple); m = 1: on-axis focused / plane waves; larger m: whispering-gallery modes, m ~ 2 pi R n_eff '
+               '/ lambda. dt ~ dr / (C0 (|m| + 1)) (the m / r terms near the axis), so large m costs steps '
+               '(em_fdfd_bor eigenfrequency is cheaper for whispering-gallery resonances). Off-axis point source: '
+               'azimuthal_orders.',
           tip='Number of field oscillations around the axis: 0 for fields that are the same all around, larger values '
               'for modes running around a disk or ring edge (they need more time steps).'),
     Param('azimuthal_orders', 'float_list', None, label='Azimuthal order list', unit='1', min=0.0, max=10000.0,
           optional=True,
-          help='Distinct integer orders m >= 0 of a driven order sum; a non-empty list replaces azimuthal_order (the '
-               'em_fdfd_bor order sum in the time domain). Every point_source is then a 3D point current element at '
-               'phi = 0 (see point_source) expanded into its Fourier terms exp(-j m phi); each listed m > 0 stands for '
-               '+m and -m (their sum is a cos(m phi) standing wave), stepped by one (r, z) stepper per order and source '
-               'kind (one for r / z currents, one for phi currents, a quarter period apart; m = 0 one for both), all '
-               'in lockstep at courant_factor x the limit of the largest order and summed. Shown fields, field_probe '
-               'and resonance_monitor traces and the frequency_domain phasors are the phi = 0 half plane of the summed '
-               '3D field (the source side; physical phasors, without the j of single-order runs on E_phi, H_r, H_z; '
-               'ring-weighted field integrals of them are no 3D integrals); flux_monitor and far_field add the orders '
-               'exactly and report each order too. List every order 0, 1, ..., M: powers and far field converge once '
-               'M exceeds k rho_s by a few (rho_s = source radius, k = n omega / c). Cost: up to 2 M + 1 steppers, '
-               'each at the time step of order M. Sources must exist at the build (no scripted sources added '
-               'later of a new kind); mode_source / mode_monitor need a single order. null or [] = azimuthal_order '
-               'alone.',
+          help='Distinct integer orders m >= 0 of a driven order sum (as em_fdfd_bor); a non-empty list replaces '
+               'azimuthal_order, null or [] = azimuthal_order alone. Every point_source becomes a 3D point current at '
+               'phi = 0 (see point_source) expanded in exp(-j m phi); each m > 0 stands for +m and -m (a cos(m phi) '
+               'standing wave), one stepper per order and source kind (r / z currents, phi currents; m = 0 one), all '
+               'in lockstep at courant_factor x the limit of the largest order, summed. Fields, field_probe / '
+               'resonance_monitor traces and frequency_domain phasors are the phi = 0 half plane of the 3D field '
+               '(physical phasors, without the single-order j on E_phi, H_r, H_z; their ring-weighted integrals are '
+               'not 3D integrals); flux_monitor and far_field add the orders exactly and report each. List every '
+               'order 0..M: powers and far field converge once M exceeds k rho_s by a few (rho_s = source radius, k = '
+               'n omega / c). Cost: up to 2 M + 1 steppers at the time step of order M. Sources must exist at the '
+               'build (no later scripted source of a new kind); mode_source / mode_monitor need a single order.',
           tip='Several azimuthal orders summed in one run, e.g. 0, 1, 2, ..., 8.\n\n'
               'A point source then becomes a true point source beside the axis (not a ring); the field is summed over '
               'all listed orders, so list every order from 0 up to a few more than 2 pi x source radius / wavelength. '
               'Each order adds time-stepping work.'),
     Param('courant_factor', 'float', 0.99, label='Time step factor', unit='1', min=0.0, min_exclusive=True, max=1.0,
-          help='Time step as a fraction of the exact leap-frog limit 2 / omega_max of this grid and azimuthal order '
-               '(omega_max of the vacuum operator, computed at the build by a host eigen-solve), not of the 2D CFL '
-               'rule; cells with eps >= 1 and mu_r >= 1 are then stable (the build refuses a field point below 1). '
-               'Dispersive poles need eps_inf - P >= courant_factor^2 at every field point, P = (omega_p dt)^2 / 4 per '
-               'Drude pole and delta_eps (omega_0 dt)^2 / (4 - (omega_0 dt)^2) per Lorentz pole (the build checks it '
-               'and stops otherwise: refine the mesh or lower this factor). 0.99 default.',
+          help='Fraction of the exact leap-frog limit 2 / omega_max of this grid and order (vacuum operator, host '
+               'eigen-solve at the build), not the 2D CFL rule; stable for eps >= 1, mu_r >= 1 (the build refuses a '
+               'field point below 1). Poles need eps_inf - P >= courant_factor^2 at every field point, P = (omega_p '
+               'dt)^2 / 4 per Drude and delta_eps (omega_0 dt)^2 / (4 - (omega_0 dt)^2) per Lorentz pole (else the '
+               'build stops: refine the mesh or lower this).',
           tip='Time step as a fraction of the largest stable time step. Keep 0.99.'),
 )
 
 # ---- material vocabulary ('modes' table, drawing-plane names; real values, Drude / Lorentz poles) ----
-_POINT_VALUE = ('E_phi sees the cell value, E_r and E_z (on the cell edges) the ring-volume / length weighted mean of '
-                'their non-PEC cells (no subpixel smoothing).')
-_REAL_ONLY = ('Real values only; a value below 1 at a field point stops the build (the time step assumes eps >= 1). '
-              'Dispersive materials (Drude / Lorentz poles of the material dispersion list) are stepped in time on all '
-              'three components (velocity form as the 2D FDTD; an E_r / E_z point sees the pole times the share of its '
-              'cells that carry it), this value or the first Drude eps_inf being the background; see courant_factor '
-              'for the pole time-step bound.')
+_POINT_VALUE = ('E_phi sees the cell value, E_r / E_z (cell edges) the ring-volume / length weighted mean of their '
+                'non-PEC cells (no subpixel smoothing).')
+_REAL_ONLY = ('Real values only; below 1 at a field point stops the build. Drude / Lorentz poles are stepped on all '
+              'three components (2D FDTD velocity form; an E_r / E_z point sees the pole times the share of its cells '
+              'carrying it), this value or the first Drude eps_inf the background; pole time-step bound: '
+              'courant_factor.')
 _MATERIAL_PROPERTIES = cylindrical_material_params({
-    'eps_r': ('Isotropic relative permittivity (>= 1) of all three components (eps_rr, eps_phiphi, eps_zz); n^2 of a '
-              'lossless dielectric (silicon ~12.1, silica ~2.1 at 1.55 um); may depend on r (x), z (y) and physics '
-              f'fields (rewritten coefficients at each change); a component property wins over it. {_COMPONENT_NAMES} '
-              f'{_POINT_VALUE} {_REAL_ONLY}'),
-    'eps_zz': ('eps_phiphi: the azimuthal component, the only one E_phi sees (stored in the eps_r array: it overrides '
-               f'eps_r for E_phi only). Not the axial component: that is eps_yy. {_COMPONENT_NAMES}'),
-    'eps_xx': f'eps_rr: the radial component, the only one E_r sees. {_COMPONENT_NAMES}',
-    'eps_yy': f'Axial eps_zz (along the rotation axis = the drawing y): the only component E_z sees. {_COMPONENT_NAMES}',
-    'sigma_e': ('Ohmic loss J = sigma_e E in S/m, default 0, on every component (semi-implicit update; E_r / E_z take '
-                'the mean of their cells as eps); a weak absorber of index n and extinction kappa has sigma_e = 2 n '
-                'kappa omega eps0.'),
-    'mu_r': ('Real relative permeability (>= 1), 1 for optical materials; H_r, H_phi and H_z take the mean of the cells '
-             'around their points.'),
-    'sigma_m': 'Magnetic loss in Ohm/m on H (semi-implicit), default 0 (artificial absorbers only).',
+    'eps_r': ('Isotropic, all three components; n^2 of a lossless dielectric (silicon ~12.1, silica ~2.1 at 1.55 um); '
+              'field-dependent values rewrite the coefficients at each change; a component property wins over it. '
+              f'{_COMPONENT_NAMES} {_POINT_VALUE} {_REAL_ONLY}'),
+    **COMPONENT_HELPS,
+    'sigma_e': ('J = sigma_e E on every component (semi-implicit; E_r / E_z take the mean of their cells as eps); weak '
+                'absorber of index n, extinction kappa: sigma_e = 2 n kappa omega eps0.'),
+    'mu_r': 'Real, 1 for optical materials; H_r, H_phi, H_z take the mean of the cells around their points.',
+    'sigma_m': 'Loss on H (semi-implicit; artificial absorbers only).',
 })
 
 # ---- features ----
 _POINT_SOURCE_PARAMS = waveform_params() + (
     Param('component', 'choice', 'z', label='Direction', choices=BOR_SOURCE_COMPONENTS,
           choice_labels=(('r', 'Radial'), ('phi', 'Azimuthal (around the axis)'), ('z', 'Axial (vertical)')),
-          help="Current direction, normalised as the em_fdfd_bor point source: 'phi' J_phi = I / (w h) in the cell "
-               "(m = 0: a current loop of radius r carrying I); 'z' / 'r': the current I through the ring "
-               "cross-section of the cell, split onto its two edge points (in the axis cell 'z' is an on-axis electric "
-               "dipole of moment I h). For m != 0, I is the amplitude of the cos(m phi) (z, r) / sin(m phi) (phi) "
-               "current of the standing wave; compared with em_fdfd_bor phasors a 'phi' current is that of phase +90 "
-               'deg (the same power). In a driven order sum (azimuthal_orders) the element is instead a 3D point '
-               "current at phi = 0 (in the drawing plane; 'phi' points out of it) of dipole moment I d, d = the cell "
-               "height for z, its width for r and phi, as the em_fdfd_bor order sum (in free space it radiates eta0 "
-               'k^2 (I d)^2 / (12 pi) wherever it sits).',
+          help="Normalised as the em_fdfd_bor point source ('phi': J_phi = I / (w h); 'z' / 'r': current I through "
+               "the cell's ring cross-section; axis cell 'z': on-axis dipole of moment I h). For m != 0, I is the "
+               "amplitude of the standing-wave current, cos(m phi) (z, r) / sin(m phi) (phi); a 'phi' current is "
+               'the em_fdfd_bor one at phase +90 deg (same power). In a driven order sum (azimuthal_orders) a 3D point '
+               "current at phi = 0 of moment I d as in em_fdfd_bor (free space: radiates eta0 k^2 (I d)^2 / (12 pi)).",
           tip='Direction of the current: around the axis (a loop), along the axis or radially.\n\n'
               'Along the axis in the first column of cells is a dipole antenna on the axis.'),
     Param('current', 'float', 1e-3, label='Current', unit='A',
-          help=f'Peak current I [A] of the element times the waveform; fields scale linearly with it. '
-               f'{POINT_SOURCE_SIGN}',
+          help=f'Peak current I times the waveform; fields are linear in it. {POINT_SOURCE_SIGN}',
           tip='Peak current of the source. Fields scale linearly with it.'),
 )
 _PROBE_COMPONENT = Param(
     'component', 'choice', 'ez', label='Field component', choices=BOR_FIELD_COMPONENTS,
     choice_labels=(('er', 'E_r'), ('ephi', 'E_phi'), ('ez', 'E_z'), ('hr', 'H_r'), ('hphi', 'H_phi'), ('hz', 'H_z')),
-    help='Component recorded every step on its Yee point of the cell containing the point: E_phi at the centre, E_r / '
-         'H_z on the +r edge, E_z / H_r on the +z edge, H_phi on the +r +z corner (raw samples, not averaged); H half a '
-         'time step before the recorded time.',
+    help='Raw sample every step on its Yee point of the containing cell: E_phi at the centre, E_r / H_z on the +r edge, '
+         'E_z / H_r on the +z edge, H_phi on the +r +z corner; H half a step before the recorded time.',
     tip='Field recorded at the point; electric fields in V/m, magnetic fields in A/m.')
 _RESONANCE_COMPONENT = replace(_PROBE_COMPONENT, help=f'Recorded field: {_PROBE_COMPONENT.help}')
 _FAR_FIELD_PARAMS = far_field_params('Each wavelength accumulates complex128 spectra of the E / H rows and columns '
                                      'around the box faces (little memory); 1-41 typical.',
                                      '1 to 41 is typical; each wavelength needs little memory.')
 _FLUX_DESCRIPTION = (
-    'Spectral power through an axis-aligned line, with the pairing of the em_fdfd_bor flux_monitor (E of the line '
-    'cells, H on their hi face; exactly conserved through lossless cells): a horizontal line (z = const) gives the flux '
-    'along +z through the annulus it sweeps, a vertical one (r = const) the flux along +r through the cylinder, with '
-    "the 2 pi ring weights of the travelling exp(-j m phi) wave. Result 'flux_spectrum' in monitor order: power = pi "
-    "sum Re(E H*) of the dt-weighted DFT spectra (unit 'a.u.'); power_per_cw = power / |S(omega)|^2 is the power [W] "
-    f'of the cw source of the same current (em_fdfd_bor at omega_tilde). {PER_CW_TEXT} In a driven order sum '
-    '(azimuthal_orders) both are the totals of the 3D field (the orders are orthogonal in phi, so their powers add '
-    'exactly), extras power_orders / power_orders_per_cw (n_wavelengths x n_orders: each listed m with its -m) and '
-    f'azimuthal_orders. The line covers {SPAN_CELLS}; its hi face must be inside the grid.')
+    'Spectral power through an axis-aligned line with the em_fdfd_bor flux_monitor pairing (E of the line cells, H on '
+    'their hi face; exactly conserved through lossless cells): horizontal (z = const) along +z through the swept '
+    'annulus, vertical (r = const) along +r through the cylinder, ring-weighted for the travelling exp(-j m phi) wave. '
+    "Result 'flux_spectrum' in monitor order: power = pi sum Re(E H*) of the dt-weighted DFT spectra ('a.u.'); "
+    'power_per_cw = power / |S(omega)|^2 = the power [W] of the cw source of the same current (em_fdfd_bor at '
+    f'omega_tilde). {PER_CW_TEXT} Driven order sum: totals of the 3D field (orders add exactly), extras power_orders / '
+    'power_orders_per_cw (n_wavelengths x n_orders, each m with -m) and azimuthal_orders. The line covers '
+    f'{SPAN_CELLS}; its hi face must be inside the grid.')
 _FAR_FIELD_DESCRIPTION = (
-    'Near-to-far-field transform of the DFT phasors on the closed surface of a rectangle in the (r, z) drawing, as the '
-    'em_fdfd_bor far_field (its z faces and outer cylinder, an inner cylinder when x0 > 0, a box bottom at y0 = 0 on a '
-    "pec / pmc z_lo mirror closed by the images; vacuum outside the box). Result 'far_field' in monitor order: power "
-    'per steradian r^2 |E|^2 / (2 eta0) [W/sr] of the cw source of the same current when every source shares one '
-    "waveform (NaN outside its spectrum), else of the raw dt-weighted spectra ('a.u.'), versus angle in the meridional "
-    'plane counter-clockwise from +r; extras power_theta / power_phi, angle_axes, azimuthal_order. In a driven order '
-    'sum (azimuthal_orders) power is the pattern of the summed 3D field in the meridional plane through the sources '
-    '(angles with cos >= 0 at phi = 0, the others at phi = pi), the order amplitudes added with exp(-j m phi); extras '
-    'power_azimuthal_mean (its phi average), power_orders (n_wavelengths x n_orders x n_angles: the phi average per '
-    'listed m with its -m) and azimuthal_orders instead of azimuthal_order. Needs one cell beyond x1 / y1 and below y0 '
-    f'inside the domain; the box covers {BOX_CELLS}.')
+    'Near-to-far-field transform of the DFT phasors on a rectangle as the em_fdfd_bor far_field (same surfaces and z_lo '
+    "mirror images; vacuum outside the box). Result 'far_field' in monitor order: power r^2 |E|^2 / (2 eta0) [W/sr] of "
+    'the cw source of the same current when every source shares one waveform (NaN outside its spectrum), else of the '
+    "raw dt-weighted spectra ('a.u.'), versus meridional angle counter-clockwise from +r; extras power_theta / "
+    'power_phi, angle_axes, azimuthal_order. Driven order sum: the pattern of the summed 3D field in the plane through '
+    'the sources (cos >= 0 at phi = 0, the others at phi = pi); extras power_azimuthal_mean (phi average), '
+    'power_orders (n_wavelengths x n_orders x n_angles, each m with -m), azimuthal_orders instead of azimuthal_order. '
+    f'Needs one cell beyond x1 / y1 and below y0 inside the domain; the box covers {BOX_CELLS}.')
 
 
 # ---- mode ports (fdtd_bor_ports) ----
@@ -182,42 +153,36 @@ _PORT_WAVEFORMS = ('gaussian', 'cw')
 _MODE_WAVEFORM_PARAMS = tuple(
     replace(param, choices=_PORT_WAVEFORMS,
             choice_labels=tuple(label for label in param.choice_labels if label[0] in _PORT_WAVEFORMS),
-            help=f'{param.help} A mode_source takes gaussian or cw only: the launch drives the imaginary part of the '
-                 'mode profile with the quadrature (cos) partner of the waveform (keep a gaussian bandwidth <= 0.6).')
+            help=f'{param.help} mode_source: gaussian or cw only (the launch drives the imaginary part of the profile '
+                 'with the quadrature partner of the waveform; keep a gaussian bandwidth <= 0.6).')
     if param.name == 'waveform' else param for param in waveform_params())
 _MODE_SOURCE_PARAMS = _MODE_WAVEFORM_PARAMS + _PORT_POWER_PARAMS
 _MODE_MONITOR_PARAMS_TD = FLUX_PARAMS + _MODE_MONITOR_PARAMS
-_PORT_TEXT = ('The port line must be horizontal (z = const), from the axis (x0 = 0) or annular (x0 > 0: a metal end on '
-              'that cell edge), ending on the last window cell (then continuing through the r_hi cpml, or ending on its '
-              'pec / pmc wall) or inside the domain (a metal end), as the em_fdfd_bor ports; the line row and its '
-              'neighbour rows must lie outside the z cpml layers. Its guided modes ~ exp(-j beta z) are full-vector '
-              'solutions of the stepped body-of-revolution operator on a straight guide at omega_tilde = (2 / dt) '
-              'sin(omega dt / 2) (the leap-frog frequency of omega, with the stepped poles and conductivities), solved '
-              'once on the materials at the build (later material changes are not followed); exact for a guide '
-              'invariant along z with uniform rows for a cell on each side of the line. Modes are ranked by descending '
-              'Re n_eff (mode 1 = the highest) and carry 1 W in the travelling exp(-j m phi) wave. Not in a driven '
-              'order sum (azimuthal_orders).')
+_PORT_TEXT = ('Port line as the em_fdfd_bor ports (horizontal, from the axis or annular, metal ends); the line row and '
+              'its neighbour rows must lie outside the z cpml. Modes ~ exp(-j beta z): full-vector solutions of the '
+              'stepped BOR operator at omega_tilde = (2 / dt) sin(omega dt / 2) (stepped poles and conductivities), '
+              'solved once on the build materials (later material changes not followed); exact for a guide '
+              'invariant along z over a cell on each side of the line. Ranked by descending Re n_eff (mode 1 '
+              'highest), 1 W each in the travelling exp(-j m phi) wave. Not in a driven order sum.')
 _MODE_SOURCE_DESCRIPTION = (
-    'Port source launching one guided mode of a waveguide along the axis (fibre, pillar, metal pipe, coaxial guide) '
-    'from a horizontal line in one direction: a one-sided total-field / scattered-field interface between the line row '
-    'and the row upstream in time, the mode at the carrier frequency on the two rows (Re and Im of its profile driven '
-    'by the waveform and its quadrature; as industry-standard transient ports, the mode of one frequency). At the '
-    'carrier the launch is exact and one-sided; at other frequencies of a pulse the carrier profile launches a '
-    'somewhat different power and leaks a little backward (both grow with the change of n_eff over the band, strongest '
-    'near a cutoff), so for spectra divide by the forward power of a mode_monitor between the source and the device. '
-    f'{_PORT_TEXT} Result \'table\' of the carrier solve, one row '
-    'per mode found (up to max(mode_number + 2, 4)): mode_number, n_eff, n_eff_imag, loss_db_per_cm, n_group, '
-    'edge_field, selected; extras wavelength (the carrier, m), power (W), direction, mode_number and phase (deg).')
+    'Launches one guided mode of a guide along the axis (fibre, pillar, metal pipe, coax) from a horizontal line in '
+    'one direction: a one-sided TFSF interface between the line row and the row upstream, Re and Im of the '
+    'carrier-frequency profile driven by the waveform and its quadrature (one-frequency mode, as industry transient '
+    'ports). Exact and one-sided at the carrier; elsewhere in a pulse band the power differs somewhat and a little '
+    'leaks backward (more with n_eff change over the band, near cutoff): for spectra divide by the forward power of a '
+    f"mode_monitor between source and device. {_PORT_TEXT} Result 'table' of the carrier solve, one row per mode "
+    'found (up to max(mode_number + 2, 4)): mode_number, n_eff, n_eff_imag, loss_db_per_cm, n_group, edge_field, '
+    'selected; extras wavelength (carrier) [m], power [W], direction, mode_number, phase [deg].')
 _MODE_MONITOR_DESCRIPTION = (
-    'Port monitor splitting the field on a horizontal line into the upward (positive) and downward (negative) '
-    'amplitudes of one guided mode at each monitor wavelength, from DFT spectra of the line row and the row above (the '
-    'discrete reciprocity form, so other modes drop out). The modes are solved per wavelength (mode_number at the '
-    f'centre one, followed outward by overlap). {_PORT_TEXT} Result \'xy\' versus vacuum wavelength: power_positive / '
-    'power_negative = |a|^2 of the dt-weighted DFT spectra (a.u.); with one shared source waveform power_per_cw_* = '
-    '|a / S(omega)|^2 [W] (the power of the cw source), and with exactly one enabled mode_source fraction_positive / '
-    'fraction_negative = |a / (S sqrt(P) e^{j phase})|^2 (transmission / reflection into this mode) and phase_positive '
-    f'/ phase_negative (rad, not de-embedded). {PER_CW_TEXT} Extras frequency, wavelength, n_eff (real part), '
-    'n_eff_imag, mode_number, normalized. Keep the line and the row above off the rows of a mode_source.')
+    'Splits the field on a horizontal line into the upward (positive) and downward (negative) amplitudes of one guided '
+    'mode per monitor wavelength (DFT spectra of the line row and the row above, discrete reciprocity: other modes '
+    'drop out); modes solved per wavelength (mode_number at the centre one, followed outward by overlap). '
+    f"{_PORT_TEXT} Result 'xy' versus vacuum wavelength: power_positive / power_negative = |a|^2 of the dt-weighted DFT "
+    'spectra (a.u.); with one shared source waveform power_per_cw_* = |a / S(omega)|^2 [W]; with exactly one enabled '
+    'mode_source fraction_positive / fraction_negative = |a / (S sqrt(P) e^{j phase})|^2 (transmission / reflection '
+    'into this mode) and phase_positive / phase_negative (rad, not de-embedded); per_cw rules as flux_monitor. Extras '
+    'frequency, wavelength, n_eff, n_eff_imag, mode_number, normalized. Keep the line and the row above off the rows '
+    'of a mode_source.')
 
 
 def _with_wavelength_range(validate):
@@ -274,25 +239,23 @@ def _apply_mode_monitor(ctx, solver, feature_spec, values, selection):
 _FEATURES = (
     FeatureType('point_source', 'Point source', 'source', 'point', params=_POINT_SOURCE_PARAMS,
                 object_kinds=('point',), max_entities=1,
-                description='Current element in the cell containing the point (x = r, y = z), a ring in 3D with the '
-                            f'azimuthal dependence of the order, driven by the waveform; see component. '
-                            f'{POINT_SOURCE_SIGN}',
+                description='Current element in the cell containing the point (x = r, y = z): a ring in 3D with the '
+                            'azimuthal dependence of the order, driven by the waveform; see component and current.',
                 summary='A small current at a point of the half plane, a ring around the axis in 3D; on the axis an '
                         'antenna.',
                 apply=apply_component_point_source, validate=validate_points_inside),
     FeatureType('field_probe', 'Field probe', 'probe', 'point', params=(_PROBE_COMPONENT,), object_kinds=('point',),
                 max_entities=1, result_kind='timeseries',
-                description='Time series of one field component on its Yee point of the cell containing the point, '
-                            'sampled after every time step (t in s, values in V/m or A/m); a coordinate exactly on a '
-                            'cell edge goes to the upper cell.',
+                description='Time series of one component on its Yee point of the containing cell, sampled after '
+                            'every step (t in s, V/m or A/m); a coordinate exactly on a cell edge goes to the upper '
+                            'cell.',
                 summary='Records one field component at a point after every time step, as a time trace.',
                 apply=apply_field_probe, result=probe_result_callback, validate=validate_points_inside),
     shared_resonance_feature(em_resonance_probe(_RESONANCE_COMPONENT, H_COMPONENTS, apply_field_probe),
                              RESONANCE_SUMMARY),
     FeatureType('pec_domain', 'Perfect electric conductor', 'domain_condition', 'domain',
-                description='Perfect electric conductor (rings in 3D): E_phi = 0 at the centre of every cell whose '
-                            'centre lies in the selected domains and E_r / E_z = 0 on the edges between two such '
-                            'cells, staircased to the mesh (the points leave the operator: fixed at the build).',
+                description='Rings in 3D: E_phi = 0 in cells whose centre lies in the domains, E_r / E_z = 0 on '
+                            'edges between two such cells (staircased; fixed at the build).',
                 summary='Turns the selected domains into a perfect metal, following the mesh cells.',
                 apply=apply_pec, memory_estimate=pec_memory_estimate(0)),
     FeatureType('flux_monitor', 'Flux monitor', 'monitor', 'line', params=FLUX_PARAMS, object_kinds=('line',),
@@ -328,30 +291,17 @@ _FEATURES = (
 
 # ---- type ----
 _DESCRIPTION = (
-    'Body-of-revolution (BOR) finite-difference time-domain solver: the drawing is the (r, z) half plane of a '
-    'rotationally symmetric structure about the x_lo window edge (x = r >= 0, y = z), the fields of one azimuthal '
-    f'order m stepped in time on the em_fdfd_bor finite-integration operator (same Yee layout, ring metric and axis '
-    f'rules: m = 0 H_z on the axis, |m| = 1 E_r and H_phi there recovered from cell 0, larger |m| none). '
-    f'{_FIELDS_NOTE} Leap-frog with the exact '
-    'time-step limit of the order (courant_factor), CPML faces (cylindrical on r_hi: the em_fdfd_bor radius stretch), '
-    'pec / pmc walls on the grid edge; real eps components (diagonal in cylindrical components, the em_fdfd_bor '
-    'vocabulary: eps_xx = eps_rr, eps_r = eps_phiphi, eps_yy = axial eps_zz), mu_r, sigma_e, sigma_m and Drude / '
-    'Lorentz dispersion poles (stepped in velocity form on all three components; DFT phasors then solve em_fdfd_bor at '
-    'omega_tilde with the pole evaluated at omega_tilde and damping gamma cos(omega dt / 2)). With an azimuthal_orders '
-    'list '
-    'the driven order sum of off-axis point sources (true 3D point currents, the orders stepped in lockstep and '
-    'summed; see that setting). Features: point_source (current '
-    'elements with the FDTD waveforms), field_probe (time traces), resonance_monitor (harmonic inversion of a probe: '
-    'resonances and Q of a ring-down), flux_monitor (spectral power through a disc, annulus or cylinder), far_field '
-    '(W/sr in the meridional plane), mode_source / mode_monitor (vector guided modes of a guide along the axis on a '
-    'horizontal line, one-sided TFSF launch and reciprocity decomposition; single order only), pec_domain. Outputs at '
-    'the cell centres: er, ephi, ez, hr, hphi, hz '
-    '(instantaneous, H half a step earlier), e_abs, e_intensity (primary), h_abs and the permittivity arrays; derived '
-    'values weight by the ring volume 2 pi r dr dz. Runs on the GPU or the CPU backend (operators built on the host, '
-    'sparse products per step). Cannot share a model with another EM type. heat_em_thermo_optic writes the three '
-    f"permittivity arrays (slots eps_r_update, eps_xx_update, eps_yy_update). {HARMONIC_FDTD_TEXT} Its phasor fields "
-    "are <component>_re / <component>_abs and e_abs_harmonic (em_fdfd_bor convention). The instance is usually named "
-    "'em'.")
+    'Body-of-revolution (BOR) FDTD: the (r, z) half plane of a structure rotationally symmetric about the x_lo window '
+    'edge (x = r >= 0, y = z), one azimuthal order m stepped in time on the em_fdfd_bor finite-integration operator '
+    f'(same Yee layout, ring metric and axis rules). {_FIELDS_NOTE} Leap-frog at the exact time-step limit of the '
+    'order (courant_factor); CPML faces, pec / pmc walls; real eps components (em_fdfd_bor vocabulary), mu_r, sigma_e, '
+    'sigma_m and Drude / Lorentz poles (velocity form on all three components; DFT phasors then solve em_fdfd_bor at '
+    'omega_tilde with the pole at omega_tilde and damping gamma cos(omega dt / 2)). An azimuthal_orders list: the '
+    'driven order sum of off-axis point sources (see that setting). Outputs at cell centres: components instantaneous '
+    '(H half a step earlier); derived values weight by the ring volume 2 pi r dr dz. GPU or CPU backend (operators '
+    'built on the host, sparse products per step). Cannot share a model with another EM type. heat_em_thermo_optic '
+    f'writes the three permittivity arrays. {HARMONIC_FDTD_TEXT} Its phasor fields are <component>_re / '
+    "<component>_abs and e_abs_harmonic (em_fdfd_bor convention). Instance usually 'em'.")
 
 
 def _create(ctx, physics_spec, settings_values):
