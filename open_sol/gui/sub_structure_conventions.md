@@ -401,5 +401,7 @@ Sub file of the root `structure_conventions.md`. GUI gotchas.
   `bridge.call`. Redraw debounced 400 ms after `changed` / `issues_invalidated`, only while visible (showEvent redraws a
   dirty chart), keeping the selected step by key; the first draw zooms to fit within _MIN / _MAX_READABLE_SCALE (a tall chart
   scrolls from its top; 'Fit to window' fits whole), and showEvent sets the splitter share once (the text browser's size hint
-  would take most of the width). Box texts are one elided line each (full texts in the tooltip), so a box height fits them. Box fills are light with dark text in
-  every theme; mesh / materials borders take `helpers.mesh_color`. A new step kind needs a `_KIND_COLORS` entry.
+  would take most of the width). Boxes paint their own texts (kind tag, title,
+  subtitle, estimate line: one elided line each, full texts in the tooltip) and bars in `_StepBox.paint`; the row kind
+  is the box tag (no label column). Box fills are light with dark text in every theme; mesh / materials borders take
+  `helpers.mesh_color`. A new step kind needs `_KIND_COLORS` and `_KIND_TAGS` entries.
