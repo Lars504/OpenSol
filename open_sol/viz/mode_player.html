@@ -233,10 +233,11 @@ const CMAPS = {
   rdbu: ['#2166ac', '#4393c3', '#92c5de', '#d1e5f0', '#f7f7f7', '#fddbc7', '#f4a582', '#d6604d', '#b2182b'],
   puor: ['#542788', '#8073ac', '#b2abd2', '#d8daeb', '#f7f7f7', '#fee0b6', '#fdb863', '#e08214', '#b35806'],
   icefire: ['#9be4ff', '#3fa9e6', '#2563b8', '#1b2a5e', '#141414', '#5e1b1b', '#b83a25', '#e6823f', '#ffd59b'],
+  seismic: ['#00004d', '#0000a6', '#0000ff', '#8080ff', '#ffffff', '#ff8080', '#ff0000', '#bf0000', '#800000'],   // vivid waves
 };
 const CMAP_CHOICES = {
   sequential: [['viridis', 'Viridis'], ['inferno', 'Inferno'], ['ice', 'Ice']],
-  diverging: [['coolwarm', 'Cool–warm'], ['rdbu', 'Blue–red'], ['puor', 'Purple–orange'], ['icefire', 'Ice–fire (dark middle)']],
+  diverging: [['coolwarm', 'Cool–warm'], ['rdbu', 'Blue–red'], ['puor', 'Purple–orange'], ['icefire', 'Ice–fire (dark middle)'], ['seismic', 'Seismic (vivid)']],
 };
 // What the surface can be coloured by: code = the shaders' uColor, needs = data groups (DATA.fields, 'density'),
 // signed = diverging map over [-limit, limit]; every value is drawn normalised by its largest magnitude over the

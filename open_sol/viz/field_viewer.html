@@ -318,10 +318,11 @@ const CMAPS = {
   rdbu: ['#2166ac', '#4393c3', '#92c5de', '#d1e5f0', '#f7f7f7', '#fddbc7', '#f4a582', '#d6604d', '#b2182b'],
   puor: ['#542788', '#8073ac', '#b2abd2', '#d8daeb', '#f7f7f7', '#fee0b6', '#fdb863', '#e08214', '#b35806'],
   icefire: ['#9be4ff', '#3fa9e6', '#2563b8', '#1b2a5e', '#141414', '#5e1b1b', '#b83a25', '#e6823f', '#ffd59b'],
+  seismic: ['#00004d', '#0000a6', '#0000ff', '#8080ff', '#ffffff', '#ff8080', '#ff0000', '#bf0000', '#800000'],   // vivid waves
 };
 const CMAP_CHOICES = {
   sequential: [['viridis', 'Viridis'], ['inferno', 'Inferno'], ['ice', 'Ice']],
-  diverging: [['coolwarm', 'Cool–warm'], ['rdbu', 'Blue–red'], ['puor', 'Purple–orange'], ['icefire', 'Ice–fire (dark middle)']],
+  diverging: [['coolwarm', 'Cool–warm'], ['rdbu', 'Blue–red'], ['puor', 'Purple–orange'], ['icefire', 'Ice–fire (dark middle)'], ['seismic', 'Seismic (vivid)']],
 };
 
 // ---------- data ----------
@@ -533,9 +534,16 @@ function frameValues(f) {
   if (frameCache.has(f)) return frameCache.get(f);
   // linear codes: lo + (q + 32767) (hi - lo) / 65534; log codes (frame log_lo set: non-negative fields reaching
   // down to ~0): 10^(log_lo + (q + 32767) (log10 hi - log_lo) / 65534), the lowest code = lo (at or below the floor)
-  const F = FRAMES[f], step = (F.hi - F.lo) / 65534;
+  const out = decodeCodes(FRAMES[f], FRAMES[f].values);
+  if (frameCache.size > 32) frameCache.delete(frameCache.keys().next().value);
+  frameCache.set(f, out);
+  return out;
+}
+function decodeCodes(F, texts) {
+  // per layer Float32Array (value, ok) pairs of a frame's int16 code texts (its values or phasor partner)
+  const step = (F.hi - F.lo) / 65534;
   const L0 = F.log_lo, LS = L0 != null ? (Math.log10(Math.max(F.hi, 1e-300)) - L0) / 65534 : 0;
-  const out = F.values.map((text) => {
+  return texts.map((text) => {
     const q = i16(text), a = new Float32Array(2 * q.length);
     for (let k = 0; k < q.length; k++) {
       const c = q[k];
@@ -545,9 +553,6 @@ function frameValues(f) {
     }
     return a;
   });
-  if (frameCache.size > 32) frameCache.delete(frameCache.keys().next().value);
-  frameCache.set(f, out);
-  return out;
 }
 function limits() {
   // shown colour limits [lo, hi]: the automatic ones unless the Plot settings give a colour minimum / maximum (a
@@ -562,8 +567,7 @@ function limits() {
 }
 function autoLimits() {
   // colour limits [lo, hi] of the data and the Range slider (log: hi and the decades below it)
-  const F = FRAMES[state.frame];
-  let lo = state.scale === 'frame' ? F.lo : DATA.range[0], hi = state.scale === 'frame' ? F.hi : DATA.range[1];
+  let [lo, hi] = state.scale === 'frame' ? shownFrameRange() : DATA.range;
   if (SIGNED) { const m = Math.max(Math.abs(lo), Math.abs(hi)) * state.range || 1; return [-m, m]; }
   if (state.log && LOG_OK) { const top = Math.max(hi * state.range, 1e-300); return [top * Math.pow(10, -state.decades), top]; }
   hi = lo + (hi - lo) * state.range;
@@ -579,14 +583,15 @@ if (!gl) { $('empty').hidden = false; $('empty').textContent = 'This browser has
 const VS = `#version 300 es
 precision highp float;
 precision highp int;
-in vec3 aPos; in vec2 aVal;
+in vec3 aPos; in vec2 aVal; in vec2 aVal2;   // aVal2: the phasor partner or the next frame (waves block)
 uniform mat4 uView; uniform mat4 uProj; uniform vec3 uCenter;
 uniform float uLo; uniform float uHi; uniform int uLog; uniform int uSigned;
 uniform float uRelief; uniform vec3 uNormal; uniform vec3 uStretch;
 uniform vec3 uMirA; uniform vec3 uMirB; uniform float uValSign; uniform int uPhase;   // mirror image: a x + b, value sign
+uniform float uMixA; uniform float uMixB;   // shown value = aVal uMixA + aVal2 uMixB (1, 0: aVal alone)
 out float vT; out float vOk; out vec3 vViewPos; out vec3 vPlace;
 void main() {
-  float v = aVal.x, t;
+  float v = aVal.x * uMixA + aVal2.x * uMixB, t;
   if (uValSign < 0.0) v = (uPhase == 1) ? (v > 0.0 ? v - 3.14159265 : v + 3.14159265) : -v;
   if (uLog == 1) t = (log(max(v, 1e-37)) - log(uLo)) / (log(uHi) - log(uLo));
   else t = (v - uLo) / (uHi - uLo);
@@ -594,7 +599,7 @@ void main() {
   float h = (uSigned == 1) ? 2.0 * t - 1.0 : t;
   vPlace = aPos * uMirA + uMirB;      // true coordinates of the (mirrored) point: the axis limits cut on them
   vec3 p = (vPlace - uCenter) * uStretch + uNormal * (uRelief * h);
-  vT = t; vOk = aVal.y;
+  vT = t; vOk = uMixB != 0.0 ? min(aVal.y, aVal2.y) : aVal.y;
   vec4 vp = uView * vec4(p, 1.0);
   vViewPos = vp.xyz;
   gl_Position = uProj * vp;
@@ -651,13 +656,16 @@ function setupGL() {
   if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
   for (const name of ['uView', 'uProj', 'uCenter', 'uLo', 'uHi', 'uLog', 'uSigned', 'uRelief', 'uNormal', 'uStretch',
                       'uStops', 'uLine', 'uLineColor', 'uShade', 'uMirA', 'uMirB', 'uValSign', 'uPhase',
-                      'uClipLo', 'uClipHi'])
+                      'uClipLo', 'uClipHi', 'uMixA', 'uMixB'])
     uni[name] = gl.getUniformLocation(prog, name);
   const aPos = gl.getAttribLocation(prog, 'aPos'), aVal = gl.getAttribLocation(prog, 'aVal');
+  const aVal2 = gl.getAttribLocation(prog, 'aVal2');
+  if (aVal2 >= 0) gl.vertexAttrib2f(aVal2, 0, 1);   // without a buffer (box, still pages): a valued zero
   for (const L of LAYERS) {
     L.vao = gl.createVertexArray(); gl.bindVertexArray(L.vao);
     vertexBuffer(aPos, L.pos, 3, gl.STATIC_DRAW);
     L.valBuf = vertexBuffer(aVal, new Float32Array(2 * L.n), 2, gl.DYNAMIC_DRAW);
+    L.val2Buf = WAVE_SECOND ? vertexBuffer(aVal2, new Float32Array(2 * L.n), 2, gl.DYNAMIC_DRAW) : null;
     L.triBuf = indexBuffer(L.tri);
     L.edgeBuf = L.edges ? indexBuffer(L.edges) : null;
   }
@@ -676,6 +684,7 @@ function uploadFrame() {
   const values = frameValues(state.frame);
   LAYERS.forEach((L, i) => { gl.bindBuffer(gl.ARRAY_BUFFER, L.valBuf); gl.bufferSubData(gl.ARRAY_BUFFER, 0, values[i]); });
   flowState.frame = -1;                        // flow particles: the new frame's vectors on their next draw
+  uploadSecond();
 }
 
 // ---------- camera ----------
@@ -810,6 +819,7 @@ function draw() {
   gl.disable(gl.BLEND);
   gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(1, 1);   // fills behind their mesh lines
   gl.uniform1i(uni.uLine, 0); gl.uniform1i(uni.uPhase, Q.phase ? 1 : 0);
+  gl.uniform1f(uni.uMixA, wave.mixA); gl.uniform1f(uni.uMixB, wave.mixB);
   for (const I of images()) {
     setImage(uni, I);
     for (const L of LAYERS) {
@@ -1665,7 +1675,8 @@ if (FLOW) {
 // ---------- heading (drawn by drawHeading) and the automatic values the Plot settings panel shows ----------
 function updateReadout() {
   const F = FRAMES[state.frame];
-  const label = (F.label || '').replace(/\blambda\b/g, 'λ');
+  const label = (F.label || '').replace(/\blambda\b/g, 'λ')
+    .replace(/^t = ([-+0-9.eE]+) s$/, (all, v) => 't = ' + fmtValue(+v, 's'));   // a raw session time: SI prefix
   heading.main = KIND === 'single' ? (label || Q.label) : (label || 'frame ' + (state.frame + 1));
   const parts = [];
   if (KIND !== 'single' || label) parts.push(Q.label);
@@ -1675,6 +1686,7 @@ function updateReadout() {
   if (state.stretch && CAN_STRETCH) parts.push('stretched ' + STRETCH_TEXT);
   if (state.mirror && CAN_MIRROR) parts.push('mirrored at ' + MIRRORS.map((M) => M.face).join(', '));
   if (flowShown()) parts.push('streaks: ' + FLOW.label.toLowerCase());
+  waveReadout(parts);
   heading.meta = parts.join('  ·  ');
   $('framev').textContent = NF > 1 ? (state.frame + 1) + ' / ' + NF : '';
   const [lo, hi] = autoLimits();
@@ -1800,6 +1812,7 @@ function syncControls() {
   $('present').setAttribute('aria-pressed', String(document.body.classList.contains('present')));
   $('settingsbtn').setAttribute('aria-pressed', String(!$('settings').hidden));
   for (const L of LAYERS) if (L.button) L.button.setAttribute('aria-pressed', String(L.visible));
+  syncWaveControls();
 }
 function select(f) { state.frame = ((f % NF) + NF) % NF; uploadFrame(); updateReadout(); syncControls(); }
 $('framegroup').style.display = NF > 1 ? '' : 'none';
@@ -1881,6 +1894,7 @@ $('record').onclick = () => {
   // time frames: one pass from the first frame; otherwise one full turn of the view
   let seconds;
   if (KIND === 'time') { select(0); state.playing = true; seconds = NF / state.fps; }
+  else if (PHASOR) { wave.playing = true; wave.theta = 0; seconds = 3 / wave.hz; }   // three periods of the phase
   else { state.spin = true; seconds = 2 * Math.PI / SPIN_RATE; }
   syncControls();
   recorder.start(); $('rec').classList.add('on'); $('record').textContent = 'Stop';
@@ -1966,6 +1980,103 @@ canvas.addEventListener('dblclick', (e) => {
   else resetCamera();
 });
 
+// ---- waves ----
+// Phase animation of phasor frames (DATA.phasor: each frame carries the partner of its Re / Im values, so the page
+// shows values cos(wt) + partner sin(wt) = Re / Im[A exp(j wt)], the instantaneous field over one period; Play turns
+// wt, the frame slider still steps the wavelengths / modes) and smooth playback of time frames (the next frame is
+// blended in between two snapshots). Both feed the vertex shader's second value aVal2 (uMixA / uMixB).
+const PHASOR = !!DATA.phasor;
+const SMOOTH_OK = KIND === 'time' && !Q.phase;          // an angle cannot be blended across its wrap
+const WAVE_SECOND = PHASOR || SMOOTH_OK;                // layers get an aVal2 buffer
+const wave = { theta: 0, playing: PHASOR, hz: 0.5, smooth: SMOOTH_OK && store('smooth') !== 'off', mixA: 1, mixB: 0 };
+const quadCache = new Map();
+function quadValues(f) {
+  // per layer (partner, ok) pairs of frame f's phasor partner, decoded on the frame's own codes
+  if (quadCache.has(f)) return quadCache.get(f);
+  const out = decodeCodes(FRAMES[f], FRAMES[f].quadrature);
+  if (quadCache.size > 32) quadCache.delete(quadCache.keys().next().value);
+  quadCache.set(f, out);
+  return out;
+}
+function uploadSecond() {
+  // aVal2 of every layer: the shown frame's partner (phasor) or the frame after it (time frames; the last blends
+  // into the first, as playback wraps)
+  if (!WAVE_SECOND || !gl || !ready) return;
+  const values = PHASOR ? quadValues(state.frame) : frameValues((state.frame + 1) % NF);
+  LAYERS.forEach((L, i) => { gl.bindBuffer(gl.ARRAY_BUFFER, L.val2Buf); gl.bufferSubData(gl.ARRAY_BUFFER, 0, values[i]); });
+}
+function waveTick(dt) {
+  // per animation frame: turn the phase, or blend the next time frame by the playback clock's fraction
+  if (PHASOR) {
+    if (wave.playing) wave.theta = (wave.theta + 2 * Math.PI * wave.hz * dt) % (2 * Math.PI);
+    wave.mixA = Math.cos(wave.theta); wave.mixB = Math.sin(wave.theta);
+  } else if (SMOOTH_OK) {
+    const blend = wave.smooth && state.playing && NF > 1 ? Math.min(Math.max(frameClock, 0), 1) : 0;
+    wave.mixA = 1 - blend; wave.mixB = blend;
+  }
+}
+function shownFrameRange() {
+  // [lo, hi] of the shown frame; while a time frame blends into the next, blended too (the colour scale glides
+  // instead of jumping once per snapshot)
+  const F = FRAMES[state.frame];
+  if (!(SMOOTH_OK && wave.mixB > 0)) return [F.lo, F.hi];
+  const G = FRAMES[(state.frame + 1) % NF], b = wave.mixB;
+  if (F.empty || G.empty) return [F.lo, F.hi];
+  return [F.lo + (G.lo - F.lo) * b, F.hi + (G.hi - F.hi) * b];
+}
+function waveReadout(parts) {
+  // heading: the phase a still phasor page shows (a moving page names the animation once)
+  if (!PHASOR) return;
+  const degrees = Math.round(wave.theta * 180 / Math.PI) % 360;
+  parts.push(wave.playing ? 'animated over one period' : 'ωt = ' + degrees + '°');
+}
+function syncWaveControls() {
+  if (PHASOR) {
+    $('play').textContent = wave.playing ? 'Pause' : 'Play';
+    $('speedv').textContent = wave.hz.toFixed(2) + ' Hz';
+  }
+  if (SMOOTH_OK) smoothButton.setAttribute('aria-pressed', String(wave.smooth));
+}
+function toggleWave() { wave.playing = !wave.playing; updateReadout(); syncControls(); }
+const smoothButton = document.createElement('button');
+smoothButton.id = 'smooth';
+smoothButton.textContent = 'Smooth';
+smoothButton.title = 'Blend each snapshot into the next while playing (smooth motion between the stored frames)';
+smoothButton.onclick = () => { wave.smooth = !wave.smooth; store('smooth', wave.smooth ? 'on' : 'off'); syncControls(); };
+if (SMOOTH_OK) $('speedgroup').appendChild(smoothButton);
+if (PHASOR) {
+  // Play / Speed turn the phase (one cycle in 1 / hz s, as mode_player); frames are still stepped by the slider
+  $('play').style.display = ''; $('speedgroup').style.display = ''; $('framegroup').style.display = '';
+  for (const id of ['prev', 'next', 'frame', 'framev']) $(id).style.display = NF > 1 ? '' : 'none';   // one state: Play alone
+  $('play').title = 'Animate the phase: the field over one period, Re[A exp(jωt)] (Space)';
+  const speed = $('speed');
+  speed.min = '0.05'; speed.max = '2'; speed.step = '0.05'; speed.value = String(wave.hz);
+  speed.title = 'Cycles per second of the phase animation';
+  speed.oninput = (e) => { wave.hz = +e.target.value; syncControls(); };
+  $('play').onclick = toggleWave;
+  $('prev').onclick = () => select(state.frame - 1);   // stepping keeps the animation running
+  $('next').onclick = () => select(state.frame + 1);
+  $('frame').oninput = (e) => select(+e.target.value);
+  window.addEventListener('keydown', (e) => {
+    if (e.key !== ' ' || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT' && e.target.type !== 'range') return;
+    toggleWave(); e.preventDefault();
+  });
+}
+if (KIND === 'time' && NF > 1) state.playing = true;      // time frames open playing, as the mode animation
+// a wave pulse decays and spreads: signed time frames each on their own scale (blended while playing)
+if (SMOOTH_OK && SIGNED) { state.scale = 'frame'; $('scale').value = 'frame'; }
+// waves (phasor or signed time frames): the vivid diverging map until one is chosen (remembered for signed fields)
+if ((PHASOR || SMOOTH_OK && SIGNED) && !store('cmap_signed')) { state.cmap = 'seismic'; $('cmap').value = 'seismic'; }
+{ // wave pages open with the Range at the frames' typical robust magnitude (frame 'robust', the 99.5th percentile
+  // of |value|) over their largest one, so a source cell or a field enhancement does not wash the waves out; the
+  // slider shows the saturation and 100 % brings the full range back (a still lobe, e.g. a waveguide mode, keeps 100 %)
+  const ratios = FRAMES.filter((F) => !F.empty && F.robust > 0)
+    .map((F) => F.robust / Math.max(Math.abs(F.lo), Math.abs(F.hi))).sort((a, b) => a - b);
+  const typical = ratios.length ? ratios[Math.floor(ratios.length / 2)] : 1;
+  if ((PHASOR || SMOOTH_OK && SIGNED) && typical < 0.9) { state.range = Math.max(0.3, Math.round(100 * typical) / 100); $('range').value = String(state.range); }
+}
+
 // ---------- loop ----------
 const SPIN_RATE = 2 * Math.PI / 12;          // one turn in 12 s
 let last = performance.now(), frameClock = 0;
@@ -1977,6 +2088,7 @@ function tick(now) {
     frameClock += dt * state.fps;
     if (frameClock >= 1) { const steps = Math.floor(frameClock); frameClock -= steps; select(state.frame + steps); }
   }
+  waveTick(dt);
   draw();
   if (recordCanvas) composite(recordCanvas);
   requestAnimationFrame(tick);
@@ -1987,7 +2099,7 @@ if (mq.addEventListener) mq.addEventListener('change', () => readTheme());
 window.addEventListener('resize', () => { resize(); });
 if (gl) { try { setupGL(); } catch (err) { $('empty').hidden = false; $('empty').textContent = 'WebGL error: ' + err.message; } }
 resize(); resetCamera(); syncControls(); syncSettings(); select(0);
-window.fieldViewer = { state, select, draw, cam, limits, figure: fig };
+window.fieldViewer = { state, select, draw, cam, limits, figure: fig, wave };
 requestAnimationFrame(tick);
 })();
 </script>
