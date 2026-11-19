@@ -870,7 +870,8 @@ def _depth_texts(solid, unit, scale) -> list:
 
 def _math_eval_rows(number, text) -> list:
     """.geo rows of MathEval field `number`; ValueError when the expression exceeds GEO_STRING_MAX (gmsh stops reading
-    the .geo at a longer string and meshes without every later row)."""
+    the .geo at a longer string and meshes without every later row). Shorten with Max / Min fields combining several
+    MathEvals, never a MathEval reading another field (F<n>: gmsh -3 then ran for minutes on a 15k-element cube)."""
     if len(text) > GEO_STRING_MAX:
         raise ValueError(f'mesher gmsh: MathEval field {number} has {len(text)} characters, gmsh reads at most '
                          f'{GEO_STRING_MAX} per .geo string')

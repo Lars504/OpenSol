@@ -7,7 +7,8 @@ import time
 import numpy as np
 
 from ..fem.mesh import Curve, build_triangle_mesh
-from ..fem.mesher import MERGE_TOLERANCE, SizeField, add_layer_ring, build_pslg, mesh_pslg, reflect_mesh
+from ..fem.mesher import (SizeField, add_layer_ring, build_pslg, clamp_into_window, mesh_pslg, reflect_mesh,
+                          window_inset)
 from ..fem.quality import mesh_quality
 from .geometry import (GEOMETRY_KINDS, UNION_KINDS, bounding_box, domain_entities, domain_size, is_plain,
                        material_selections, primitive_names, rasterize, resolve_geometry, rounded_corners)
@@ -121,7 +122,7 @@ def _mirrored_parts(shapes, window, sizing, periodic_axes=()) -> dict:
                       periodic_axes=tuple(axis for axis in periodic_axes if axis not in sizing.mirror_axes))
     raw = _run_mesher(pslg, size_field, sizing)
     points, triangles, pml_faces = add_layer_ring(raw.points, raw.triangles, half, widths, sizing.pml_layers)
-    tolerance = MERGE_TOLERANCE * max(window[2] - window[0], window[3] - window[1])
+    tolerance = window_inset(window)
     curves = list(pslg.curves)
     pairs = raw.constraint_edges.astype(np.int64)
     curve_of = pslg.segment_curve[raw.constraint_segment].astype(np.int64)
@@ -252,10 +253,7 @@ def mirror_mismatch(spec, shapes, sizes, axis):
 def element_masks(shapes, names, window, centroids) -> dict:
     """{name: bool per element} of domain objects at the element centroids (geometry.rasterize, the build-mask rules);
     centroids outside the window (PML ring) are clamped just inside it, like the tensor PML cells."""
-    x0, y0, x1, y1 = window
-    inset = MERGE_TOLERANCE * max(x1 - x0, y1 - y0)
-    clamped = np.column_stack([np.clip(centroids[:, 0], x0 + inset, x1 - inset),
-                               np.clip(centroids[:, 1], y0 + inset, y1 - inset)])
+    clamped = clamp_into_window(centroids, window)
     return {name: contained(name, shapes, clamped) for name in names}
 
 

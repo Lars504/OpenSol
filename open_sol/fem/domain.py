@@ -10,7 +10,7 @@ from ..core.material_grid import MaterialGrid
 from ..core.metric import CARTESIAN
 from .assembly import element_areas
 from .dofs import lagrange_dofs
-from .mesher import MERGE_TOLERANCE
+from .mesher import clamp_into_window
 from .sampling import Location, LocatedPoints, locator, quadrature_samples
 
 LOCATE_CACHE_POINTS = 2 ** 21   # located points + sampler point equivalents kept per domain (~150 MB host with P2)
@@ -75,12 +75,7 @@ class TriangleDomain:
         """Float64 (n_elements, 2) element centroids (straight); clamped: ring centroids moved just inside the window
         (the tensor PML rule: materials, masks and x / y expressions extruded into the ring)."""
         centroids = self.mesh.centroids()
-        if clamp_to_physical:
-            x0, y0, x1, y1 = self.mesh.window
-            inset = MERGE_TOLERANCE * max(x1 - x0, y1 - y0)   # as model.triangle_meshing.element_masks
-            centroids[:, 0] = np.clip(centroids[:, 0], x0 + inset, x1 - inset)
-            centroids[:, 1] = np.clip(centroids[:, 1], y0 + inset, y1 - inset)
-        return centroids
+        return clamp_into_window(centroids, self.mesh.window) if clamp_to_physical else centroids
 
     def coordinate_grids(self, clamp_to_physical: bool = True):
         """Cached float32 backend (x, y) arrays (n_elements,) of the element centroids: the per-element analogue of

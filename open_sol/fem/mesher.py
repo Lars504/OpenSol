@@ -32,6 +32,22 @@ _FRAME_DIRECTIONS = np.column_stack([np.cos(np.radians([90.0, 210.0, 330.0])),
                                      np.sin(np.radians([90.0, 210.0, 330.0]))])
 
 
+def window_inset(window) -> float:
+    """MERGE_TOLERANCE x the longest side [m] of a window (x0, y0, x1, y1): points this close to a side lie on it."""
+    x0, y0, x1, y1 = window
+    return MERGE_TOLERANCE * max(x1 - x0, y1 - y0)
+
+
+def clamp_into_window(points, window) -> np.ndarray:
+    """Float64 (n, 2) copy of points clamped window_inset inside the window: the one rule that extends window values
+    into the PML ring (element masks, ring centroids and dofs, transfer evaluation points)."""
+    x0, y0, x1, y1 = window
+    inset = window_inset(window)
+    points = np.asarray(points, dtype=np.float64)
+    return np.column_stack([np.clip(points[:, 0], x0 + inset, x1 - inset),
+                            np.clip(points[:, 1], y0 + inset, y1 - inset)])
+
+
 @dataclass(frozen=True, eq=False)
 class RawMesh:
     """Mesher output before tagging: nodes (PSLG vertices first, in PSLG order), ccw elements, constraint edges."""
@@ -520,8 +536,7 @@ def periodic_pslg(pslg, axes) -> PSLG:
     if requested - {'x', 'y'}:
         raise ValueError(f"periodic_pslg: axes must be 'x' / 'y', got {sorted(requested)}")
     axes = tuple(name for name in ('x', 'y') if name in requested)
-    x0, y0, x1, y1 = pslg.window
-    tolerance = MERGE_TOLERANCE * max(x1 - x0, y1 - y0)
+    tolerance = window_inset(pslg.window)
     vertices = np.array(pslg.vertices, dtype=np.float64)
     segments = pslg.segments.astype(np.int64)
     segment_curve, segment_piece = pslg.segment_curve.astype(np.int64), pslg.segment_piece.astype(np.int64)
@@ -1159,7 +1174,7 @@ def add_layer_ring(points, triangles, window, thickness, n_layers) -> tuple:
     thickness[face] > 0 [m], extruded from the window-edge nodes (corner blocks where two such faces meet; the x
     faces' strips hold them), each quad split into two triangles."""
     x0, y0, x1, y1 = window
-    tolerance = MERGE_TOLERANCE * max(x1 - x0, y1 - y0)
+    tolerance = window_inset(window)
     widths = {face: float(thickness.get(face) or 0.0) for face in FACE_BITS}
     pml_faces = np.zeros(len(triangles), dtype=np.uint8)
     if not any(widths.values()):

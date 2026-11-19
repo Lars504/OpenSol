@@ -76,8 +76,8 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   graph of their own); the own multigrid hierarchy launches into the capture through its `inside_capture` flag.
 - Memory: `workspace_bytes` / `mixed_extra_bytes` are what the physics' estimators count (the pcg SolverType estimate
   is empty, the solution vector is physics-owned, a matrix-free mixed caller counts its own float32 operator):
-  `core.memory_estimate.diffusion_system_estimate` and the mechanics estimators; a workspace change updates them.
-  `fem.diffusion.fem_system_estimate` books its CG vectors by hand (no mixed copies).
+  `core.memory_estimate.diffusion_system_estimate`, `fem.diffusion.fem_system_estimate` and the mechanics
+  estimators; a workspace change updates them.
 - Residual reads (`check_interval`) follow the BOUND preconditioner: a callback bound under the setting 'multigrid'
   reads every 2 (gpu) / 1 (cpu) iterations, everything else every 16 / 4 (a Jacobi bind of 'multigrid' too);
   cg_iterations and the time estimate round up to that block. magnetic `kept_preconditioner._bind_callback` relies on

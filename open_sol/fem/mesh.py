@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import numpy as np
 
 FACE_BITS = {'x_lo': 1, 'x_hi': 2, 'y_lo': 4, 'y_hi': 8}   # TriangleMesh.pml_faces bits of the PML layer ring
-PERIODIC_TOLERANCE = 1e-9   # x the longest node-extent side: nodes this close to a side lie on it (periodic pairs)
+PERIODIC_TOLERANCE = 1e-9   # x the longest node-extent side: nodes this close to a node-box side lie on it (face tags)
 FULL_TURN = 2.0 * math.pi   # Curve.span of a closed curve
 _NEWTON_STEPS = 40                                         # ellipse nearest-point iterations (quadratic convergence)
 
@@ -304,7 +304,7 @@ def periodic_node_partners(mesh, axis) -> np.ndarray:
 def _outer_face_tags(points, edges, edge_elements) -> dict:
     """{face: int32 edge indices} of the outer-boundary edges on each side of the nodes' bounding box."""
     low, high = points.min(axis=0), points.max(axis=0)
-    tolerance = 1e-9 * float((high - low).max())
+    tolerance = PERIODIC_TOLERANCE * float((high - low).max())
     outer = np.flatnonzero(edge_elements[:, 1] < 0)
     ends = points[edges[outer]]   # (k, 2 nodes, 2 coordinates)
     tags = {}

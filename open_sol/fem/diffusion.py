@@ -23,7 +23,7 @@ from .assembly import (_element_groups, _lagrange_at, _weights, assemble_edge_lo
 from .dofs import lagrange_dofs
 from .elements import element_geometry, lagrange_basis
 from .mesh import one_sided, side_members
-from .mesher import MERGE_TOLERANCE
+from .mesher import clamp_into_window, window_inset
 from .sampling import evaluate, locator
 
 FACES = ('x_lo', 'x_hi', 'y_lo', 'y_hi')
@@ -489,7 +489,7 @@ def window_face_edges(mesh, face) -> np.ndarray:
     x0, y0, x1, y1 = mesh.window
     axis = 0 if face[0] == 'x' else 1
     line = {'x_lo': x0, 'x_hi': x1, 'y_lo': y0, 'y_hi': y1}[face]
-    tolerance = MERGE_TOLERANCE * max(x1 - x0, y1 - y0)
+    tolerance = window_inset(mesh.window)
     ends = mesh.points[mesh.edges[boundary]][:, :, axis]
     return boundary[np.all(np.abs(ends - line) <= tolerance, axis=1)].astype(np.int64)
 
@@ -501,11 +501,8 @@ def ring_dof_locations(full) -> tuple:
     if (mesh.pml_faces == 0).all():
         return np.zeros(0, dtype=np.int64), None
     points = full.dof_points()
-    x0, y0, x1, y1 = mesh.window
-    inset = MERGE_TOLERANCE * max(x1 - x0, y1 - y0)
-    clamped = np.column_stack([np.clip(points[:, 0], x0 + inset, x1 - inset),
-                               np.clip(points[:, 1], y0 + inset, y1 - inset)])
-    ids = np.flatnonzero(np.any(np.abs(clamped - points) > 2.0 * inset, axis=1))
+    clamped = clamp_into_window(points, mesh.window)
+    ids = np.flatnonzero(np.any(np.abs(clamped - points) > 2.0 * window_inset(mesh.window), axis=1))
     return ids, locator(mesh, full.geometry_order).locate(clamped[ids])
 
 

@@ -154,6 +154,9 @@ CONTRACTS = (
              never=tree('model', 'physics', 'coupling', 'gui', 'io', 'viz', 'mesh_study') + ('api', 'simulation'),
              skip=SELFTEST_MODULES),
     Contract('fem_init_no_core', 'fem/__init__ never imports core', importers=('fem.__init__',), never=tree('core')),
+    Contract('fem_squeeze_film_light', 'fem.squeeze_film imports only fem.mesh at module level (fem.harmonic inside '
+             'functions): model.definition_helpers imports its constants', importers=('fem.squeeze_film',),
+             scope='module', only=('fem.mesh',)),
     Contract('model_base', 'model expressions / schema / spec / geometry import only core, each other and '
              'solvers.roles at module level', scope='module',
              importers=('model.expressions', 'model.schema', 'model.spec', 'model.geometry'),

@@ -1,303 +1,107 @@
 # open_sol/fem — conventions & gotchas
 
 FEM on triangles (solver_plan S7.5, mesh_implementation_plan.md section 2) and tetrahedra (section "Tetrahedra",
-igor3d_plan section 7). Triangle users: em_modes / em_fdfd_bor (physics/em), heat / electric_currents / electrostatics
-(`diffusion.py`), solid_mechanics (`elasticity.py`), magnetostatics / magnetic_fields_ac (`magnetostatics.py`),
-drift_diffusion (box method over assembly's `p1_*` weights); tetrahedra users: em3d FEMPhysics3D, heat /
-electric_currents / electrostatics / magnetostatics_3d (`diffusion3d.py`), solid_mechanics_3d (`elasticity3d.py`); the
-physics side lives in each physics sub file ("Triangle meshes"). A physics on triangles exposes `solver.field_dofs(name)`
-(P0 for every state field and slot): the contract the transfers build on. Error indicators (`indicators.py`) exist for
-all but drift_diffusion.
+igor3d_plan section 7). Which physics run on element meshes and their per-element state / `field_dofs` / `fem_field`
+contract: root "Meshes per physics"; the physics side lives in each physics sub file ("Triangle meshes"). Error
+indicators: section "Error indicators" (users: grep `def error_indicator`).
 
 ## Layout and imports
-- Module contents: `structure_index.md`. Beyond it:
-  - `selftests.py` (FEM_SELFTEST_CASES) is registered by model.study.register; new fem case lists append there.
-  - Private helpers used across modules (changing them touches the users): elasticity / magnetostatics / diffusion use
-    assembly's `_element_groups` (never yields an empty chunk) / `_to_csr` (diffusion `_lagrange_at`; diffusion,
-    magnetostatics and transfer `_weights`), harmonic `_coefficient_values`, elasticity3d assembly3d's `_element_list` /
-    `_rule_degree` / `_volume_weights` and elasticity's `_fixed_field`, indicators / surface_mesh elements'
-    `_inverse_2x2`.
-  - Shared helpers: `assembly.nodal_average` (nodal recovery: strain / stress, B / H); `diffusion.py`'s
-    `window_face_edges`, `ring_dof_locations`, `floating_region_count` serve every scalar triangle system
-    (FEMDiffusionSystem, MagneticFEMSystem).
-  - Box-method weights (drift_diffusion): `p1_edge_weights` = (m, 3) -K_(k+1)(k+2) of local edge k (scalar / diagonal /
-    full coefficient, x centroid r axisymmetric): summed over an edge's elements = the edge-averaged FE / SG
-    coefficient; `p1_lumped_weights` = area / 3, or area (r_k + 3 r_c) / 12.
-  - `elasticity.assemble_stress_load(weight=)`: a point weight of degree <= 1 (generalized plane strain 1, x - x_ref,
-    y - y_ref) stays exact at its rule degree 2 order - 1.
-  - `magnetostatics.curl_quadrature` caches CurlBlocks (Q, weights, points, basis) per element chunk; magnetic_fields_ac's
-    `block_mass` / `block_load` use the same rule (complex values allowed).
-  - `surface_mesh.normal_displacement` = exact P1 / P2 trace of w = -u . n_out; `lagrange_field_function` affine only.
-  - `squeeze_film.py`: numpy only at module level (fem.harmonic inside functions) so model.definition_helpers imports
-    its constants cheaply.
-- FixedPatternCsr / TangentAssembler[3D]: `full(data)` and `reduced(data)` share the cached index arrays (only data is
-  new), so the pattern is value-independent; never sort / eliminate_zeros / sum_duplicates those CSRs in place
-  (`full(copy_pattern=True)` / `tangent()` give own copies, e.g. for pencils). The reduced CSR is canonical: hand it to
-  `DiffusionDirectSolver.factorize_host_operator(symmetric_known=True)`. The per-group bincount spans the group's slot
-  range: element orderings that scatter a chunk over the whole matrix make each call O(nnz) per chunk. With numba,
-  `add` from ROW_SUM_MIN_ENTRIES block entries runs a row-parallel sum instead (next-gains N2: per group the (element,
-  local row) pairs sorted by global row once, `_row_orders`; a thread owns whole rows, so no atomics and a fixed order;
-  `add(numba=False)` forces the bincount; self-test fem_fixed_pattern_row_sum_numba). A pair's columns all lie in its
-  row: keep that if slot maps ever change. `add_elements` (no kept slots) runs the numba block scatter
-  ('fem.block_scatter': a binary search per dof pair in its scalar row, then the block x block entries; serial, no
-  slot arrays, always checked) once numba is loaded or from SCATTER_COLD_ENTRIES pattern entries, else searchsorted +
-  one bincount over the chunk's slot window (P2 numbering, nodes first and edge dofs last, makes that window most of
-  the matrix: 9.7 s of a 12.8 s stiffness assembly on 72k P2 tetrahedra); `numba=` forces one, the self-test above
-  compares them. The row sum, the block scatter, the
-  block expansion and the free restriction are `core.kernels.host_twin`s of their numpy forms (`_row_sum_host`,
-  `_scatter_host`, `_expand_host`, `_restrict_host`: change both of a pair; slot arithmetic of both scatter forms =
-  `_block_slots`); every bincount sum (scatter_add, `_sum_into`, `summed`) goes through `_add_bincount`.
-  TangentAssembler3D caches rule gradients / weights only below `TANGENT_GRADIENT_CACHE_BYTES` (P2 ~6.7 kB per element;
-  the int32 scatter map is always kept); `internal_force_and_tangent[_3d]` stays the one-off COO assembly of the full
-  (unmirrored) element products (the self-test's reference).
-- Block patterns (`FixedPatternCsr(block=3)`, interleaved vector dofs 3 d + component): group dofs are the SCALAR
-  element dofs; the scalar pattern is built and every entry expanded to a dense 3 x 3 block, slots from the scalar
-  ones. `fixed_pattern.kept_pattern(mesh, ...)` keeps the slot-free base per (mesh weakly, n, block, element dofs)
-  and the latest grouped / free-restricted copy (`with_groups`, shares the index arrays), so a sweep value on a reused
-  mesh (`element_meshes_kept`, run_study only) skips the build: `assemble_elastic_stiffness_3d` sums its chunks into
-  the base by `add_elements` (slots searched per chunk, no kept slot map; `check=False` there, since its chunks are
-  rows of the element dofs the base was built from: any other caller keeps the check) and TangentAssembler3D takes its grouped
-  copy of the same base. `assemble_geometric_stiffness_3d` sums its scalar blocks x I3 into that base when one is kept
-  for its elements (`kept_pattern_if_any`: never builds one; else COO + `component_identity_csr`), so `pattern_sum` of
-  K and K_sigma (canonical CSRs on one pattern) adds values only. `component_identity_csr` (scalar CSR x I3 by index
-  arithmetic, no COO / sort) is also the vector mass: `assemble_elastic_mass_3d` sums its scalar blocks into the SCALAR
-  pattern of that kept base when one is kept for its elements (`FixedPatternCsr.scalar_csr`, a block-1 view built per
-  call; `assemble_lagrange_mass_3d(kept=)`), else COO -> CSR, so M stays compact (no 3 x 3 blocks: 3 x fewer entries
-  than K's pattern; the pencil merges the two patterns). The PML shell's stretched mass takes the shell's own kept
-  base. `free_restriction(matrix, free)` is the free-free block of any square CSR through the same restriction loop
-  (both twins write indptr, take and indices in the index dtype of an `index_like` empty array: int32 below 2^31,
-  no int64 outputs cast afterwards; `FixedPatternCsr.reduced_take` is int32 too); the latest `KEPT_FREE_RESTRICTIONS` (pattern held weakly, mask copied)
-  are kept, so an equal pattern and mask (K_ff, then the modal pencil's K + K_sigma) takes values only. Its results
-  share the kept index arrays. Kept objects are shared: never write into their index arrays. Symmetric element products
-  (elastic stiffness, the batched tangent) go through `_symmetric_operator_blocks` (column groups on and below the diagonal
-  multiplied, the rest mirrored; `SYMMETRIC_COLUMN_GROUPS`); a non-symmetric C would need `_operator_blocks`. The scalar
-  pattern of a FixedPatternCsr comes from `scalar_pattern` (numba: node -> element lists and a prange of per-row sorts,
-  host twin 'fem.pattern_summed', once numba is loaded or from PATTERN_KERNEL_COLD_ENTRIES / 4 block entries; else
-  COO -> CSR); a real `assemble_elastic_stiffness_3d` takes its blocks from the numba element kernel of
-  tangent_kernel3d at u = 0 without S0 (`_stiffness_element_kernel`: numba loaded or ELEMENT_KERNEL_COLD_ELEMENTS
-  elements; a PML stretch keeps the batched products). Self-test fem_elastic_assembly_numba. In a cold process the
-  first numba user pays the import + cache load (~1 s): on a 3D P2 profile that sat inside the pattern build.
-- Device tangents (`TangentAssembler3D(device=True)`): the Green-Lagrange helpers take xp from their first array
-  (`elasticity3d._array_module`): keep new code in them xp-generic. S0 is uploaded once per `initial_stress` object (a
-  new S0 value needs a new StressField). `force` / `force_and_tangent` return the force on the host, the data on the
-  device; `full` / `reduced` give cupyx CSRs, `reduced_values` the values in the HOST reduced pattern order (what
-  `DiffusionDirectSolver.factorize_device_values` takes with `pattern.reduced_indptr / reduced_indices`),
-  `full_product` a host vector, `tangent()` a host CSR. Device sums are atomic scatter_add (round-off differs from the
-  host bincount). Device chunks are sized at construction (`device_tangent_chunk_elements`: temporaries
-  `tangent_chunk_element_bytes` per element within TANGENT_DEVICE_CHUNK_BYTES and TANGENT_DEVICE_CHUNK_SHARE of the
-  pool budget left), host chunks stay CHUNK_ELEMENTS; the memory estimate books the byte-cap chunk (mechanics
-  definition3d imports both helpers). The 2D TangentAssembler has no device twin.
-- Element kernel (`tangent_kernel3d`, next-gains R1; `TangentAssembler3D(element_kernel=True)`, the default): one raw
-  twin 'fem.element_tangent_3d' computes per element H, E, S, B + B_NL, the force and the full (mirrored) tangent block:
-  CUDA one block per element with the q x 6 x 3 n operator and w C (B + B_NL) in static shared memory (P2 on the
-  14-point rule 46.8 kB; `kernel_fits` <= 48 kB, a larger rule on the device takes the batched cupy formulas), numba
-  prange over the elements, numpy twin = the batched `_green_lagrange_terms_3d` / `_tangent_blocks_3d` (the reference;
-  `element_kernel=False` runs them directly). Chunk temporaries are then only forces, blocks and gathered displacements
-  (`element_bytes`, ~7.7 kB per P2 element against ~117 kB batched). A change to one formula changes the CUDA source,
-  the numba twin and the batched helpers together (fem3d_tangent_assembler / _gpu compare kernel vs batched,
-  fem3d_tangent_kernel_numba numba vs numpy). 2D twin `tangent_kernel2d` (host only: host twin
-  'fem.element_tangent_2d', numba prange per element, numpy = the batched `_green_lagrange_group` / `_tangent_blocks`):
-  planar `TangentAssembler` groups take it when `use_kernel` (numba already in sys.modules, or >= NUMBA_MIN_ELEMENTS
-  elements, so a gpu run of a small map never pays the numba start); axisymmetric groups keep the batched formulas
-  (self-test solid_fem_tangent_kernel_numba, mechanics).
-- `assembly._to_csr` / `blocks_csr` only sum duplicates and keep explicit zeros, so every assembly over one dof map
-  (same free / fixed split) has one CSR pattern whatever the coefficients: the precondition of cuDSS plan reuse for Newton tangents
-  and coefficient updates. Never `eliminate_zeros` an operator a factor will be refreshed with; sum terms with
-  `assembly.pattern_sum` (root "Solver contract"; the 2D / 3D diffusion systems do). `assembly.CsrAccumulator`
-  adds its 2e7-entry batches with `+` (bounded peak memory; its zeros are structural, so the pattern is stable).
-- Default rule degrees are clamped to the largest Dunavant rule (6): an axisymmetric P2 load (degree 7) is not exact.
-- fem <- numpy at module level (scipy inside functions); never model / physics. core only in `domain.py` / `domain3d.py`
-  (core.constants / material_grid / metric), `diffusion.py` / `diffusion3d.py` (core.backend / constants / fv_diffusion
-  BCSide / memory_estimate / monitors / solver_base; solvers.sparse_direct / multigrid inside functions), `renderer.py` /
-  `renderer3d.py` (core.renderer), `transfer.py` (core.backend inside `FEMTransfer.apply`), `fixed_pattern.py` /
-  `elasticity3d.py` (core.backend, elasticity3d also core.gpu_memory, inside functions), `tangent_kernel3d.py`
-  (core.kernels at module level: its raw twin; core.backend inside functions), `tangent_kernel2d.py` (core.kernels at
-  module level: its host twin; `elasticity` inside its numpy twin, since elasticity imports it at module level);
-  `fem/__init__` imports none of these (import by module); core
-  never imports fem. physics imports fem, never the reverse. Model side: `model/triangle_meshing.py` (the only reader
-  of geometry shape internals for the mesher; sizes from `meshing.triangle_sizing`); `meshing.make_domain` of a
-  'triangles' mesh returns `TriangleDomain(triangulate(...))`. selftests*.py follow the root selftest import rule.
+- Module contents: `structure_index.md`. Import rules: contracts fem_below_model, fem_init_no_core,
+  fem_squeeze_film_light (`model/import_contracts.py`). `selftests.py` (FEM_SELFTEST_CASES, registered by
+  model.study.register) collects every fem case list: a new one appends there.
+- Private helpers (`_name`) are imported across fem modules and by a few physics modules (grep `import .*\b_` under
+  fem / physics): changing one touches those users. Shared triangle helpers to reuse, never re-derive:
+  `assembly.nodal_average` (nodal recovery), `diffusion.window_face_edges` / `ring_dof_locations` /
+  `floating_region_count`, `mesher.window_inset` / `clamp_into_window` (window sides and the ring's edge extension).
 
 ## Mesh data
-- Coordinates in m, origin at the physical-domain corner; the PML layer ring lies outside the window (< 0 / > size).
-  `TriangleMesh` frozen (eq=False); triangles int32 counter-clockwise (build_triangle_mesh fixes orientation).
-- Local edge k = nodes (k + 1, k + 2) mod 3, opposite node k; `edges` lower node first; `edge_signs` +1 when the local
-  edge runs lower -> higher (Nedelec orientation); `edge_elements[:, 1]` -1 on the outer boundary. `connectivity` raises
-  on an edge of > 2 elements.
-- Curved edges: `edge_curve` >= 0 indexes `curves` (circle / ellipse `Curve`, t = angle of (a cos t, b sin t) in the
-  turned frame); `midside_points` = P2 midside nodes, projected onto the exact curve on curved edges, chord midpoints
-  elsewhere. Composite boundaries are pieces of their primitives' curves. Arcs (rounded_rectangle corners): `Curve(...,
-  t0, span)`; build_pslg merges arcs on one whole curve, so `PSLG.curves` / `TriangleMesh.curves` stay whole curves.
-  `mirrored_curve` maps t -> -t.
-- Tags: `region` = index into `region_names` (non-consumed domain objects, spec order) of the LAST one holding the
-  element centroid, -1 none; ring elements use the centroid clamped just inside the window (materials extruded). For
-  any object use `triangle_meshing.element_masks`, never `region` (objects overlap). `edge_tags`: outer faces =
-  boundary edges on the sides of the nodes' bounding box (the ring's outer side when ringed), object outlines = edges
-  where centroid membership changes, line entities = their constraint edges. `point_tags`: point entity -> node (exact
-  coordinates; points outside the window dropped).
-- `pml_faces` uint8 bits `FACE_BITS` (x_lo 1, x_hi 2, y_lo 4, y_hi 8); corner blocks carry two bits and sit in the x
-  strips. Ring = n_layers structured layers extruded from the window-edge nodes, quads split into right triangles (no
-  quality guarantee: MeshQuality judges interior elements only).
-- `digest` = sha256 of points + triangles; the built-in mesher is deterministic (no jitter, stable sorts): same model,
-  same machine, same digest.
+- Field meanings: `TriangleMesh` / `PSLG` field comments (fem/mesh.py). Object membership of elements comes from
+  `triangle_meshing.element_masks`, never `region` (objects overlap; region is the LAST object holding the centroid).
+- The built-in mesher is deterministic (no jitter, stable sorts): same model, same machine, same `digest`. No
+  stored-digest self-test catches a change, so a speed change to the mesher must keep every digest (compare them).
 
 ## Mesher (built-in)
-- PSLG (`build_pslg`): window edges tagged x_lo / x_hi / y_lo / y_hi; equal curves merged; every crossing inserted
-  (line-line exact, line-curve in the curve's unit-circle frame, circle-circle closed form, else chords + 2D Newton;
-  tangencies give one point); ends within MERGE_TOLERANCE (1e-9 x longest window side) snap; collinear overlaps split
-  and dedup; pieces outside the window dropped (objects reaching into the PML are clipped). Each piece is sampled by the
-  size field (curves also by curvature_factor x radius of curvature, floored at h_min) in a canonical direction, so
-  overlapping pieces give identical vertices; every count / ceil on a piece takes a round-off guard (copies with
-  ulp-different ends, e.g. a mirror image, must not round to different grids, or Qhull later drops coincident split
-  points). Input angles < 60 deg are flagged (`small_angles`, `acute_vertices`).
-- Refinement (`mesh_pslg`) runs in normalised coordinates (window corner 0, longest side 1); nodes are only appended,
-  never moved, until smoothing. Delaunay by Qhull (a dropped point raises), except rounds adding <= `_LOCAL_UPDATE_SHARE`
-  (25%) nodes: `_local_delaunay` re-triangulates only the cavity (circumcircle enlarged by 1e-7 holds a new node); the
-  patch must tile the cavity (`_tiles_cavity`: unique directed edges, same area, same boundary except along window
-  sides), else the round rebuilds. A local update returns kept rows first and `_RefineState` carries their circumcircles
-  and last round's bad / size_bad flags, so a round evaluates only new rows: any new per-triangle quantity must be
-  carried the same way or computed for all rows.
-- `_delaunay` adds a far frame triangle (`_QHULL_FRAME`, `_FRAME_RADIUS`) and drops its triangles (plain Qhull was
-  20-50x slower on inputs with thousands of collinear hull nodes, e.g. a film top); the rest must cover the convex hull
-  (area, 1e-9), else plain Qhull. Co-circular ties may differ from plain Qhull (digest changes). Cavity patches skip the
-  hull check (`cover_hull=False`). Qhull options, translation or point order flip call times between ~0.05 s and seconds
-  and flip ties; QJ is faster but drops triangles. Tried and dropped: scipy incremental `add_points` (2.4x slower),
-  seed lattices / Poisson-disk seeds (slower overall), thinning spacing 0.35 R (more nodes) or 0.7 R (no faster).
-- Edges keyed `low x 2^31 + high` (stable across rounds): the size field is evaluated only at midpoints of edges new
-  since the last quality round (`_edge_sizes`). A segment is encroached when it is no Delaunay edge or an adjacent apex
-  sees it at > 90 deg (strict; the apex test only on local edges along present segments; a segment shorter than h_min
-  is never split for an apex). Encroached segments split first (midpoint; with exactly one acute end at a power-of-two
-  distance from it: concentric shells, else acute crossings ping-pong down to coincident points; curved split points
-  projected). Bad triangles: smallest angle < MIN_ANGLE (28 deg) or an edge > h(midpoint); quality-only refinement is
-  skipped when the shortest edge < h_min or spans two pieces of an acute apex at equal distance (Shewchuk). Circumcentres
-  encroaching a segment split it instead (quality-only: segments > h_min only); accepted ones are thinned greedily
-  (largest circumradius first, spacing 0.5 R; `_spaced` vectorised, same set as plain greedy). MAX_ROUNDS (400) without
-  convergence raises RuntimeError.
-- Smoothing keeps connectivity, moves only free nodes, and keeps a move only when the smallest angle of the node's
-  elements grows (compared as sine: 2 area / two longer edges), so the global minimum angle never drops; a trial after
-  dropping nodes re-evaluates only the triangles of the dropped nodes (per-row sines: bit-identical, same digests;
-  a speed change to the mesher must keep every digest: no stored-digest self-test catches a change). PSLG vertices
-  get their exact input coordinates back; nodes within the tolerance of a window side snap onto it (the ring matches
-  window-edge nodes by exact coordinates).
-- SizeField: min(h_max, region sizes inside, h_k + (growth - 1) d over sampled sources: outlines, lines, points,
-  curvature sizes per value), floored at h_min; `meshing.triangle_size_field` is the estimate's raster twin (smallest
-  radius of curvature per ellipse).
-- RawMesh keeps the PSLG vertices first in PSLG order (vertex_tags index nodes directly).
-- Periodic sides (`TriangleSizing.periodic_axes` -> `build_pslg(periodic_axes=)`): `periodic_pslg` copies each side's
-  vertices onto the opposite side (lo wins), `mesh_pslg` splits paired segments together (`_split`), so side nodes match
-  exactly; gmsh: side lines `Transfinite Curve {...} = 2` (not `Periodic Curve`). A mirror axis matches through the
-  reflection (only the other axis paired in the half mesh). Refused: a PML ring on a periodic axis, a curve along a
-  periodic side. No periodic size field. `build_triangle_mesh` checks the partners of every declared axis.
+- Algorithm: `mesher.py` docstrings (build_pslg, mesh_pslg, _RefineState, _delaunay, smooth). Traps:
+  - every count / ceil on a PSLG piece takes a round-off guard (`_dense_count`, `_sample_counts`): overlapping copies
+    with ulp-different ends (a mirror image) must sample identical vertices, or Qhull later drops coincident points;
+  - a local Delaunay update returns kept rows first and `_RefineState` carries their circumcircles and last round's
+    bad / size_bad flags, so a round evaluates only new rows: a new per-triangle quantity is carried the same way or
+    computed for all rows;
+  - Qhull options, translation or point order flip call times between ~0.05 s and seconds and flip co-circular ties
+    (digests); QJ is faster but drops triangles. Tried and dropped: scipy incremental `add_points` (2.4x slower), seed
+    lattices / Poisson-disk seeds (slower overall), circumcentre thinning spacing 0.35 R (more nodes) or 0.7 R (no
+    faster).
+- Periodic sides (`TriangleSizing.periodic_axes`): side nodes match exactly (`periodic_pslg` + paired splits); gmsh
+  pins them by `Transfinite Curve = 2` (`write_geo`). A mirror axis pairs through the reflection (only the other axis
+  is paired in the half mesh). No periodic size field.
 
 ## gmsh (optional)
-- Never imported, linked or vendored: `find_gmsh` (OPEN_SOL_GMSH, else PATH); `mesh_with_gmsh` writes the same PSLG as
-  a .geo in normalised coordinates (gmsh tolerances are absolute), one Line per segment (tag = index + 1), the window
-  loop as surface, the rest embedded, the size field as a background view (.pos; exact, instead of Distance / Threshold
-  fields), runs `gmsh -2 -format msh41` in a temp folder; line entity tag = PSLG segment. Nodes on curved lines are
-  projected onto their curve; linear elements are requested (P2 midside nodes are open_sol's).
-- gmsh reads user option files: every .geo (2D and gmsh3d) pins `PINNED_OUTPUT_OPTIONS` (scaling 1, ASCII, no
-  parametric coordinates). gmsh can exit 0 after an error: failures quote its Error lines (`gmsh_errors`) and the node
-  extent written (normalised), so a scaled or empty mesh shows. Numbers into .geo / .pos only via `gmsh_io.geo_number`
-  (root numpy 2 repr gotcha; gmsh reads 'np.float64(...)' as an unknown option).
-- gmsh3d size fields: `SizedFace` / `face_size_texts` = per refined plane face a Max of two MathEvals (constant size,
-  unclamped ramp size + slope (distance - band); both out of the Min list); size points = radius-0 Ball fields with a
-  linear ramp; the numpy twins in `model.meshing.tetrahedron_element_density` use the same formulas (keep them equal).
-- gmsh's .geo lexer reads <= 1024 characters per quoted string: a longer MathEval silently truncates the .geo (later
-  fields and the Background Field gone, h_max mesh, exit 0). Every MathEval goes through `gmsh3d._math_eval_rows`
-  (ValueError above `GEO_STRING_MAX`), and gmsh3d fails on any 'Error' line. Shorten with Max / Min combining fields,
-  never a MathEval reading another field (`F<n>`: gmsh -3 ran for minutes on a 15k-element cube).
+- An external process (never imported, linked or vendored): rules in the `gmsh_io` / `gmsh3d` headers (pinned output
+  options against user option files, exit 0 after an error, MathEval length). Numbers into .geo / .pos only via
+  `gmsh_io.geo_number`. 3D size fields and their estimate twins: model sub file "Tetrahedron meshes".
 
 ## Elements and geometry
-- Reference triangle (0, 0), (1, 0), (0, 1); L0 = 1 - xi - eta, L1 = xi, L2 = eta. P2 local nodes: corners, then 3 + k
-  = midside of local edge k (full-mesh P2 dofs = nodes, then n_points + edge: the display numbering).
-- Nedelec first kind, orientation lower -> higher node: degree 1 = sign x W_ab of local edge k; degree 2 = per edge
-  (L_lo W, L_hi W), W = W_(lo, hi) (no signs needed between neighbours), then L_0 W_12, L_1 W_20. `nedelec_basis`
-  applies the edge signs itself: dof maps carry none. Vectors = J^-T (covariant Piola), curls = reference curl / det J.
-- Geometry order (D6): 1 = every element affine (the domain is the node polygon), 2 = elements with a curved edge
-  mapped by P2 through `midside_points`. A DofMap carries it (`lagrange_dofs` default P1 -> 1, P0 / P2 -> 2;
-  `nedelec_dofs`: the degree); P2 on order 1 is subparametric. Isoparametric P2 reproduces linear fields exactly on
-  curved elements, quadratic ones only on affine elements.
-- Quadrature degree = 2 x order (stiffness 2 x order - 2, +1 axisymmetric, loads +2), curved elements >= `CURVED_DEGREE`
-  (6). Edges: Gauss on [0, 1] from the lower to the higher node, +2 degrees on geometry order 2.
+- Local numbering and bases: `elements.py` header and `nedelec_basis` (it applies the edge signs itself: dof maps carry
+  none). Geometry order (D6): 1 = affine (the domain is the node polygon), 2 = P2 map on elements with a curved edge
+  (`lagrange_dofs` default: P1 -> 1, P0 / P2 -> 2; `nedelec_dofs`: the degree). Isoparametric P2 reproduces linear
+  fields exactly on curved elements, quadratic ones only on affine elements (P2 on order 1 is subparametric).
+- Rule degrees: `assembly._degree` (2 x order, clamped to the largest Dunavant rule 6: an axisymmetric P2 load is not
+  exact), curved elements >= `CURVED_DEGREE`, edges +2 on geometry order 2.
 
 ## Dofs and assembly
-- `DofMap.elements` = subset (bool mask or indices) or all; dofs numbered by sorted global id, so a full-mesh P1 map is
-  the node numbering. `boundary_edges()` = edges with exactly one subset element; `edge_dofs(edges)` = dofs to fix on
-  them (Lagrange nodes + P2 edge node; Nedelec tangential dofs).
-- Coefficients: numbers, per-element arrays over the WHOLE mesh ((n_elements,), (n_elements, 2) diagonal, (n_elements,
-  2, 2)), or callables f(points (m, q, 2), mesh elements (m,)) -> (m, q) / (m, q, 2, 2) (pass `degree`). Edge
-  coefficients: number, per mesh edge, or f(points (k, q, 2), edges (k,)). A constant tensor goes per element
+- Coefficient forms: `assembly` / `assembly3d` headers. A constant tensor goes per element
   (`np.broadcast_to(K, (n_elements, 2, 2))`): a bare (2, 2) array reads as per-element values.
-- Assembly over chunks of `CHUNK_ELEMENTS`, straight and curved groups with their own rules (`_element_groups_by_kind`
-  flags the curved chunks). Element blocks are batched matmuls (`_tensor_blocks`, elasticity `_material_blocks` /
-  `_basis_product_blocks`): tensors only broadcast, never materialised to (m, q, 2, 2); a shared rule broadcast, never
-  copied per element. They differ from einsum at ~1e-16. Basis values only: `elements.lagrange_values`.
-- Affine route (2D `assemble_stiffness` / `assemble_mass`, 3D Lagrange stiffness / mass and `assemble_nedelec_3d`): an
-  element-constant coefficient (number / per-element values, never a callable) on straight elements takes reference
-  matrices (2D: det J (J^-1 K J^-T)_ab against 4 gradient products, c det J x the reference mass; Nedelec: J^T nu J /
-  |det J| and |det J| J^-1 eps J^-T against 6 symmetric-pair products), lru-cached per (order, degree), equal to the
-  quadrature at that rule up to rounding. Curved elements, axisymmetric weights and callables keep the quadrature path;
-  a Nedelec callable (PML) takes the same T = P^T nu P per rule point against cached per-point pair products, one
-  (m, 6 q) @ (6 q, n n) real GEMM per chunk (`nedelec_blocks_3d`, chunks written into one preallocated stack: no
-  list + concatenated copy), never physical basis values.
-- `element_blocks_csr` (assembly3d): several block arrays over one element dof list -> CSRs from one slot map
-  (`_coo_slots`: COO -> CSR of the entry numbers with duplicates kept, a row sort, a bincount per matrix: complex
-  values as one bincount of their float64 view over interleaved slots 2 s, 2 s + 1, built once per call and shared by
-  the matrices, `_slot_sums` / `_interleaved_slots`) and an
-  optional free restriction (element dofs renumbered, then entries outside dropped); an entry may be a list of parts
-  in element order (one bincount per part, no concatenated copy: few parts only, each bincount spans every slot);
-  FEMPhysics3D sums K, M, W this way (window then PML parts, one order).
-- Square assemblies (`_assemble` with test is trial, assembly3d `_assemble_lagrange`) go through `blocks_csr`: after
-  PATTERN_REUSE_CALLS calls on one element row list of a dof map (`kept_block_pattern`, weak per map) the blocks are
-  summed into the kept FixedPatternCsr slots, else COO -> CSR. `_to_csr` converts with int32 indices below 2^31; tocsr
-  sums duplicates (canonical, explicit zeros kept), so no second sum_duplicates.
-- Edge terms: the geometry part of the rule is cached per (edge set, degree) in `DofMap.edge_quadrature` (up to
-  EDGE_QUADRATURE_ENTRIES), so repeated loads pay only the coefficient. Cached arrays are read-only: an edge coefficient
-  callable must not write into its points / edges. 3D face terms likewise keep (face-local dofs, areas) per face set in
-  `DofMap3D.face_quadrature` (FACE_QUADRATURE_ENTRIES, read-only). `eliminate_dirichlet` lifts fixed values into the rhs; eigenproblems
-  use `restrict`.
-- `assemble_gradient_coupling(nedelec, lagrange)` needs both maps on the same elements and geometry order.
+- Element blocks are batched matmuls (`_tensor_blocks`, elasticity `_material_blocks` / `_basis_product_blocks`):
+  coefficient tensors and shared rules broadcast, never materialised per (element, point); basis values alone via
+  `elements.lagrange_values`. Element-constant coefficients on straight elements take the affine reference form.
+  Mesh-constant integrals are cached read-only per dof map (`assembly._cached`, `DofMap.edge_quadrature`,
+  `DofMap3D.face_quadrature`), so repeated terms pay only the coefficient.
 - Axisymmetric weights differ by module: fem.assembly (scalar stiffness / mass / loads) integrates x r, fem.elasticity
   x 2 pi r (`RING`, whole rings). Code mixing them (thermoelastic damping: the scalar thermal operators against
-  `assemble_strain_source`, the transpose of `assemble_stress_load` on the solid's scalar map) scales the scalar ones
-  by RING, else a ratio of the two is off by 2 pi.
-- Periodic / Bloch (2D twins of mesh3d / dofs3d, Lagrange only): `mesh.periodic_node_partners`, `dofs.periodic_dof_partners`,
-  `dofs.bloch_masters(dofs, {axis: k})` -> (master, phase e^{-jkL} per crossed period; corners chain both axes),
-  `dofs.bloch_prolongation` -> (columns, P), x = P x_r (float64 when every phase is real); callers form P^H A P.
-  `bloch_master_map` takes any partners_of(axis): the 2D solid's tensor-mesh cells pair Q1 corner nodes by index with
-  it (physics/mechanics bloch2d), so a new grid kind needs no mesh object for its masters.
+  `assemble_strain_source`) scales the scalar ones by RING, else a ratio of the two is off by 2 pi.
+- Stable patterns: `_to_csr`, `blocks_csr`, `element_blocks_csr` and FixedPatternCsr keep explicit zeros, so every
+  assembly over one dof map (same free / fixed split) has one CSR pattern whatever the coefficients: the precondition
+  of cuDSS plan reuse. Never `eliminate_zeros` such an operator; sum terms per root "Solver contract"
+  (`pattern_sum`). `CsrAccumulator` adds its batches with `+` (exact-zero sums drop): not for a pattern refreshed in
+  place.
+- FixedPatternCsr (`fixed_pattern.py` header and docstrings: numba row sum / block scatter, cold thresholds, kept
+  patterns and free restrictions): kept objects share their index arrays (`kept_pattern`, `with_groups`,
+  `free_restriction`, `full()` / `reduced()` results): never sort / eliminate_zeros / sum_duplicates such a CSR in
+  place or write into its index arrays (`full(copy_pattern=True)` / `TangentAssembler3D.tangent()` give own copies,
+  e.g. for pencils). The reduced CSR is canonical: hand it to
+  `DiffusionDirectSolver.factorize_host_operator(symmetric_known=True)`. Element orderings that scatter a chunk over
+  the whole matrix make each bincount O(nnz) (root bincount rule). The numba paths are host twins compared by
+  fem_fixed_pattern_row_sum_numba / fem_elastic_assembly_numba; in a cold process the first numba user pays the import
+  + cache load (~1 s: on a 3D P2 profile it sat inside the pattern build).
+- Block patterns (`FixedPatternCsr(block=3)`, interleaved vector dofs 3 d + component): which 3D terms share the kept
+  base per mesh (stiffness, TangentAssembler3D, geometric stiffness, compact scalar mass): elasticity3d header;
+  `check=False` rule: `FixedPatternCsr.add_elements`.
+- Device tangents (`TangentAssembler3D(device=True)`, class docstring): the Green-Lagrange helpers take xp from their
+  first array (`elasticity3d._array_module`): keep new code in them xp-generic. Device sums are atomic scatter_add
+  (round-off differs from the host bincount). The memory estimate books the byte-capped device chunk (mechanics
+  definition3d calls `device_tangent_chunk_elements` / `tangent_chunk_element_bytes`). The 2D TangentAssembler has
+  no device twin.
+- Element kernels (`tangent_kernel3d`: CUDA / numba / batched numpy-cupy; `tangent_kernel2d`: numba / numpy, planar
+  groups only; module headers): a formula change edits the CUDA source, the numba twin and the batched elasticity
+  helpers together (fem3d_tangent_assembler[_gpu], fem3d_tangent_kernel_numba, solid_fem_tangent_kernel_numba compare
+  them).
+- Bloch (2D twins of mesh3d / dofs3d, Lagrange only; `dofs` header): `bloch_master_map(partners_of)` needs no mesh
+  object (mechanics bloch2d pairs tensor-grid Q1 nodes with it): reuse it for a new grid kind.
 
 ## Domain, sampling, transfers
-- TriangleDomain: `grid_kind` 'triangles', MaterialGrid (n_elements,) (D12), `coordinate_grids()` = float32 centroid
-  arrays (ring centroids clamped as `element_masks`), so `BuildContext.eval_field` works unchanged; `dx` = shortest
-  edge. No cell_widths / pos_to_cell.
-- Session contract (model sub file "Per-mesh Session"): a triangle physics' renderer gives `fem_field(component)` ->
-  (Lagrange DofMap, real coefficients, host or device); the Session rasterises (`TriangleDomain.located`), triangulates
-  (`display_triangulation`; node values by `node_values` = coefficients scattered by global id, never by locating the
-  nodes) and reduces derived values over `quadrature_samples(mesh, 4, window elements)`.
-- `TriangleDomain.located(points, order)` / `quadrature_located(degree, elements)` remember each point set (blake2b; up
-  to LOCATE_CACHE_POINTS) as a `LocatedPoints` (location + Lagrange basis per order, gradients when read); a READ-ONLY
-  points array seen before is matched by identity, no hash (the entry holds the array, so its id stays unique): keep
-  raster / window point sets read-only and reuse the object (TriangleAccess keeps them per raster shape / window
-  centres). `evaluate(location=LocatedPoints)` of a Lagrange field without gradients is one product with
-  `LocatedPoints.sampler(dofs)` (host CSR points x dofs of the basis values + outside mask, built once per dof map by
-  identity, the latest SAMPLER_ENTRIES; charged to the domain's LOCATE_CACHE_POINTS store in point equivalents), so a
-  renderer handing out a new DofMap per read rebuilds it each time: keep the map. Everything is READ-ONLY (copy first);
-  `locate` returns read-only elements. `raster_sampler` / `locator` are small module caches for scripts and self-tests;
-  Session code never keeps basis arrays at module level (root "Selftest reuse").
-- PointLocator: uniform bucket grid (~1 element per bucket) over element boxes (curved boxes include the midside node);
-  affine reference coordinates, Newton on the P2 map for curved elements (a miss = inf); deepest containing element
-  wins, ties to the lowest index (deterministic on shared edges). Locate with the dof map's geometry order. On strongly
-  graded meshes one bucket can hold ~40 % of the elements (seconds for ~10^4 points in the refined zone): locate few
-  points there or read values from the dofs.
-- Transfers (`FEMTransfer.apply(array, out=None)`, flattened C order, tensor side = full (nx, ny) grid incl. padding):
-  interpolate clamps into the source window (padding / ring get edge values). Conservative counts window elements and
-  cells only: tensor -> P0 samples each element with a subdivided degree-2 rule (<= `MAX_SUBDIVISIONS`) and, when the
-  target covers every window element, rescales each cell column to the cell's exact measure (exact window total);
-  triangles -> tensor bins degree-4 (6 axisymmetric) samples (exact total); triangles -> triangles only to quadrature
-  accuracy. `axisymmetric=True` weights by r. A conservative target on triangles must be P0. Window-side points are
-  interpolated at the transfer's inset position (MERGE_TOLERANCE x side inside). The build uses them through
-  `model.mesh_transfer.TriangleTransfer` (float32 in / out, source space by array length).
+- TriangleDomain (`domain.py`): per-element MaterialGrid (D12), `coordinate_grids()` = centroids clamped into the
+  window (`clamp_into_window`, as `element_masks`), so `BuildContext.eval_field` works unchanged.
+- Session reads: `model/field_access_triangles.TriangleAccess` (`fem_field` contract, rasters, display triangulation,
+  quadrature-sampled derived values); node values by `sampling.node_values` (global ids, never located nodes).
+- Located points (`TriangleDomain.located` / `quadrature_located`, `LocatedPoints.sampler`): a READ-ONLY points array
+  seen before is matched by identity and a sampler is kept per dof map by identity, so callers keep raster / window
+  point sets read-only and reuse them (TriangleAccess keeps them per raster shape), and a renderer keeps its DofMap (a
+  new map per read rebuilds the sampler). Session code never keeps basis arrays at module level (root "Selftest
+  reuse"); `raster_sampler` / `locator` module caches are for scripts and self-tests.
+- PointLocator: locate with the dof map's geometry order. On strongly graded meshes one bucket can hold ~40 % of the
+  elements (seconds for ~10^4 points in the refined zone): locate few points there or read values from the dofs.
+- Transfers (`transfer.py` header and docstrings): the build uses them through `model.mesh_transfer.TriangleTransfer`
+  (float32 in / out, source space by array length). Window-side points are evaluated at `clamp_into_window`.
 
 ## Scalar diffusion (`diffusion.py`, stage T4)
 - FEMDiffusionSystem: unknown u (heat: T - T0) in the full-mesh numbering (`values`), host float64. `assemble` builds
