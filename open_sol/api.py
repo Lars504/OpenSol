@@ -1724,6 +1724,10 @@ class Results:
             source = ('current state' if self.is_live else 'saved state') + note
         quantity = ViewerQuantity(label=info.label, unit=info.unit, signed=bool(info.signed),
                                   phase=str(info.parity or '').startswith('phase_'))
+        if not quantity.signed or quantity.phase:   # a '_re' / '_im' name on a field the phase cannot animate
+            for frame in frames:
+                for layer in frame.layers:
+                    layer.quadrature = None
         # parity-sector snapshots are stored unfolded already: no images of them
         mirrors = [] if unfolded else self._viewer_mirrors(
             key.partition('.')[0], info, [(layer.axes, layer.extent) for layer in frames[0].layers])
