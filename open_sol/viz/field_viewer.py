@@ -9,9 +9,10 @@ reads a FieldData duck-typed (viz never imports api or model); api.Results.expor
 optional `ViewerGeometry` adds the model objects: their outlines on every layer and, in 3D, their edges and surfaces;
 `ViewerMirror`s let the page draw the mirror images of a half / quarter model (a Mirror button); a `ViewerMotion`
 with per-layer displacements lets it draw the deformed shape (solids in plane, membranes out of plane) and animate it
-(modes oscillate). `figure_settings` checks the Plot settings a page opens with (font sizes, colour and axis limits,
-colour bar and label places). 2D maps whose layers carry `ViewerVectors` (with a `ViewerFlow` naming them) get moving
-flow particles (a Flow button).
+(modes oscillate); a `ViewerVolume` per frame puts the whole 3D field on the page (a float16 3D texture the page
+ray-marches: slices, isosurfaces, shells, a cloud). `figure_settings` checks the Plot settings a page opens with (font
+sizes, colour and axis limits, colour bar and label places). 2D maps whose layers carry `ViewerVectors` (with a
+`ViewerFlow` naming them) get moving flow particles (a Flow button).
 """
 
 import json
@@ -28,7 +29,7 @@ DATA_MARKER = '/*__FIELD_DATA__*/null'
 FORMAT = 'open_sol.field_viewer'
 FORMAT_VERSION = 4                    # 2: length_scale, figure (Plot settings); 3: inward directions in line rows;
 #                                       4: phasor partners (frame 'quadrature', data 'phasor'), flow vectors ('flow'),
-#                                          motion (displacement channels per frame)
+#                                          motion (displacement channels per frame), volume
 FRAME_KINDS = ('time', 'labelled')    # time: snapshots the page can play; labelled: wavelengths, modes, frequencies
 MAX_BYTES = 24_000_000                # quantised values of every frame and layer (the page is ~4/3 of this, base64)
 MAX_FRAMES = 200
@@ -53,6 +54,12 @@ FLOW_MAX_SIDE = 320                   # flow grid samples along a layer's longer
 FLOW_MIN_SIDE = 24
 FLOW_SPEED_PERCENTILE = 95            # magnitude the page's fastest particles move at (above: as fast): a point
                                       # source's 1/r peak would otherwise leave every other particle standing still
+MAX_VOLUME_BYTES = 16_000_000         # float16 volume samples of every frame (3D fields; the page ~4/3 of this)
+MAX_VOLUME_SAMPLES = 1_100_000        # lattice samples per frame (~103^3: a ray-march stays interactive)
+MIN_VOLUME_SAMPLES = 24_000           # many frames: the lattice is never coarser than this (~29^3)
+MAX_VOLUME_FRAMES = 60                # frames a caller reads volumes for (each one a whole 3D field read)
+MAX_VOLUME_SIDE = 256                 # lattice samples along one axis (WebGL2's guaranteed 3D texture size)
+_UNIFORM_TOLERANCE = 1e-3             # relative spread of the centre steps below which a volume axis is uniform
 _OUTER_FACES = ('x_lo', 'x_hi', 'y_lo', 'y_hi', 'z_lo', 'z_hi')
 # Plot settings of the page (its panel edits the same keys; field_viewer.html FIGURE_CHOICES / FIGURE_RANGES)
 FIGURE_CHOICES = {
@@ -125,11 +132,21 @@ class ViewerGeometry:
 
 
 @dataclass(eq=False)
+class ViewerVolume:
+    """A 3D field on a lattice of cell centres (m): values (nx, ny, nz), NaN = no value (outside an element mesh);
+    the page ray-marches it (isosurfaces, nested shells, a glowing cloud, movable slices)."""
+    values: np.ndarray
+    centres: tuple                       # (x, y, z) 1D arrays [m], ascending
+
+
+@dataclass(eq=False)
 class ViewerFrame:
-    """One state: its layers (the same surfaces in every frame) and its readout label."""
+    """One state: its layers (the same surfaces in every frame) and its readout label; volume: the whole 3D field
+    of that state (ViewerVolume, every frame or none)."""
     layers: list
     label: str = ''
     time: float | None = None
+    volume: 'ViewerVolume | None' = None
 
 
 @dataclass(eq=False)
@@ -769,7 +786,7 @@ def _mirror_padded_frames(frames, mirrors, phase, motion=None):
         return frames
     return [ViewerFrame([_plane_padded(layer, pad, phase, motion) if pad else layer
                          for layer, pad in zip(frame.layers, pads)],
-                        frame.label, frame.time) for frame in frames]
+                        frame.label, frame.time, frame.volume) for frame in frames]
 
 
 def _mirror_data(mirrors, scale):
@@ -945,6 +962,97 @@ def _displacement_codes(layers, scale):
     return largest, codes
 
 
+# ---- 3D volumes (ray-marched by the page) ----
+def _volume_strides(shape, n_frames, max_bytes):
+    """Per-axis lattice strides of a volume: one block size, the smallest keeping one frame within
+    MAX_VOLUME_SAMPLES (and MAX_VOLUME_SIDE per axis) and all frames within max_bytes (float16), never coarser than
+    MIN_VOLUME_SAMPLES allows; an axis keeps at least 2 samples (a thin slab is not averaged away)."""
+    target = min(MAX_VOLUME_SAMPLES, max(MIN_VOLUME_SAMPLES, max_bytes // (2 * max(n_frames, 1))))
+
+    def strides(block):
+        return tuple(min(block, max(1, size // 2)) for size in shape)
+
+    def counts(block):
+        return [-(-size // stride) for size, stride in zip(shape, strides(block))]
+
+    block = 1
+    while (math.prod(counts(block)) > target or max(counts(block)) > MAX_VOLUME_SIDE) and block < max(shape):
+        block += 1
+    return strides(block)
+
+
+def _axis_block_means(values, centres, strides):
+    """values and centres averaged in blocks of strides[axis] samples along each axis (NaN-aware)."""
+    centres = list(centres)
+    for axis, stride in enumerate(strides):
+        if stride > 1:
+            values = _block_mean(values, stride, (axis,))
+            centres[axis] = _block_mean(np.asarray(centres[axis], dtype=np.float64), stride, (0,))
+    return values, centres
+
+
+def reduced_volume(volume, n_frames, min_step=None) -> ViewerVolume:
+    """volume averaged in the blocks a page of n_frames volumes takes (the strides viewer_data would choose), so a
+    caller collecting many frames holds small float32 lattices, not full fields; unchanged when it already fits.
+    min_step (m): blocks at least this long along each axis (an element mesh sampled on a finer lattice: its
+    piecewise values would give stair-stepped, speckled isosurfaces; block means over the element size do not)."""
+    values = np.asarray(volume.values)
+    strides = _volume_strides(values.shape, min(n_frames, MAX_FRAMES), MAX_VOLUME_BYTES)
+    if min_step is not None:
+        steps = [float(np.min(np.diff(np.asarray(axis, dtype=np.float64)))) for axis in volume.centres]
+        strides = tuple(max(stride, min(int(min_step // step), size // 2))
+                        for stride, step, size in zip(strides, steps, values.shape))
+    if max(strides) == 1:
+        return volume
+    reduced, centres = _axis_block_means(values, volume.centres, strides)
+    return ViewerVolume(values=reduced.astype(np.float32), centres=tuple(centres))
+
+
+def _volume_lattice(volume, strides):
+    """(values (mx, my, mz) float64, centres [3 ascending arrays]) of a ViewerVolume after per-axis block means (no
+    aliasing of oscillating fields). Graded axes stay graded: the page maps a position to the texture through the
+    centres (`_graded_axes`), so a thin part on fine cells (a needle) keeps its resolution."""
+    values = np.asarray(volume.values, dtype=np.float64)
+    if values.ndim != 3 or min(values.shape) < 2:
+        raise ValueError(f'a viewer volume needs at least 2 x 2 x 2 samples, got shape {values.shape}')
+    centres = [np.asarray(axis, dtype=np.float64).reshape(-1) for axis in volume.centres]
+    if len(centres) != 3 or any(len(axis) != size for axis, size in zip(centres, values.shape)):
+        raise ValueError(f'volume centres {[len(axis) for axis in centres]} do not match its values {values.shape}')
+    if any(np.any(np.diff(axis) <= 0) for axis in centres):
+        raise ValueError('volume centres must be strictly ascending along every axis')
+    return _axis_block_means(values, centres, strides)
+
+
+def _graded_axes(centres, scale):
+    """Per axis None (uniform centres) or the base64 float32 centres in length units (a graded axis)."""
+    graded = []
+    for axis in centres:
+        steps = np.diff(axis)
+        uniform = float(np.ptp(steps)) <= _UNIFORM_TOLERANCE * float(steps.mean())
+        graded.append(None if uniform else _b64((axis / scale).astype('<f4')))
+    return graded
+
+
+def _volume_code_frame(low, high, log_low, signed):
+    """(offset, scale) of a frame's volume samples: the page reads value = offset + scale * r from the float16 r.
+    Linear frames r = (v - lo) / (hi - lo) in [0, 1]; log-coded frames r = v / hi (relative precision down to the
+    floor of the log scale); signed fields r = v / max |v| in [-1, 1]."""
+    if signed:
+        return 0.0, max(abs(low), abs(high)) or 1.0
+    if log_low is not None:
+        return 0.0, high or 1.0
+    return low, (high - low) or 1.0
+
+
+def _volume_bytes(values, offset, scale, masked):
+    """base64 float16 texels in texture order (x fastest, then y, then z): r, or (r, finite) pairs when masked."""
+    finite = np.isfinite(values)
+    codes = np.where(finite, (values - offset) / scale, 0.0).transpose(2, 1, 0)
+    if masked:
+        codes = np.stack([codes, finite.transpose(2, 1, 0).astype(np.float64)], axis=-1)
+    return _b64(codes.astype('<f2'))
+
+
 def figure_settings(figure) -> dict:
     """The checked Plot settings {key: value} of a page (FIGURE_CHOICES / _RANGES / _LIMITS / _LENGTHS keys; None
     values = automatic, dropped); ValueError for an unknown key, a value outside its choices / range or min >= max."""
@@ -993,7 +1101,9 @@ def viewer_data(frames, quantity, title='', subtitle='', frame_kind='labelled', 
     browser remembers. flow: ViewerFlow naming the ViewerVectors every layer carries (2D maps only; flow particles,
     their mirror images follow ViewerMirror.flow_sign), None without vectors. Layers with a phasor partner (`ViewerLayer.quadrature`, all or none; a signed quantity,
     labelled frames): the page animates values cos(wt) + quadrature sin(wt), each frame quantised over -+ its largest
-    modulus. motion: ViewerMotion of the layers' displacements (deformed shape, animation), None = none."""
+    modulus. motion: ViewerMotion of the layers' displacements (deformed shape, animation), None = none. Frame volumes (every frame or none; not for a phase or
+    a phasor page) go on one uniform lattice within MAX_VOLUME_BYTES (block means; graded axes keep their centres) and
+    join the frame's colour range."""
     if not frames:
         raise ValueError('nothing to show: no field frames')
     if frame_kind not in FRAME_KINDS:
@@ -1001,10 +1111,13 @@ def viewer_data(frames, quantity, title='', subtitle='', frame_kind='labelled', 
     figure = figure_settings(figure)
     _check_layers(frames)
     _check_motion(frames, motion)
+    volumes = [frame.volume for frame in frames]
+    if any(volume is not None for volume in volumes) and any(volume is None for volume in volumes):
+        raise ValueError('every frame needs a volume, or none does')
     if plan is None:
         plan = plan_frames(frames[0].layers, len(frames), max_bytes, max_frames)
         frames = [ViewerFrame([_strided(layer, plan.stride) for layer in frames[index].layers], frames[index].label,
-                              frames[index].time) for index in plan.indices]
+                              frames[index].time, frames[index].volume) for index in plan.indices]
     elif len(frames) != len(plan.indices):
         raise ValueError(f'{len(frames)} frames for a plan of {len(plan.indices)}')
     mirrors = list(mirrors or [])
@@ -1016,29 +1129,62 @@ def viewer_data(frames, quantity, title='', subtitle='', frame_kind='labelled', 
     scale, unit = length_scale(span or 1.0)
     flow_page, flow_frames = _flow_data(frames, flow, scale)
     phasor = _phasor_frames(frames, quantity, frame_kind)
+    lattices, volume_entry = [None] * len(frames), None
+    if frames[0].volume is not None:
+        if phasor:
+            raise ValueError('a phasor page has no volume view (its planes animate the phase): pass frames without '
+                             'volume or without quadrature')
+        if quantity.phase:
+            raise ValueError('a phase field has no volume view (its values wrap at +-pi): pass frames without volume')
+        shape = np.shape(frames[0].volume.values)
+        if any(np.shape(frame.volume.values) != shape for frame in frames):
+            raise ValueError('the frame volumes differ in shape: one page shows one lattice')
+        strides = _volume_strides(shape, len(frames), MAX_VOLUME_BYTES)
+        lattices = [_volume_lattice(frame.volume, strides) for frame in frames]
+        values0, centres0 = lattices[0]
+        if any(not all(np.allclose(axis, axis0, rtol=1e-9, atol=0.0) for axis, axis0 in zip(centres, centres0))
+               for _, centres in lattices[1:]):
+            raise ValueError('the frame volumes lie on different lattices: one page shows one lattice')
+        masked = any(not np.all(np.isfinite(values)) for values, _ in lattices)
+        volume_entry = {'n': [int(size) for size in values0.shape],
+                        'lo': [float(axis[0]) / scale for axis in centres0],
+                        'hi': [float(axis[-1]) / scale for axis in centres0],
+                        'axes': _graded_axes(centres0, scale), 'masked': bool(masked),
+                        'strides': [int(stride) for stride in strides]}
     packed, ranges = [], []
-    for frame, flow_frame in zip(frames, flow_frames):
-        frame_range = _phasor_range(frame.layers) if phasor else _finite_range(layer.values for layer in frame.layers)
+    for frame, flow_frame, lattice in zip(frames, flow_frames, lattices):
+        frame_range = (_phasor_range(frame.layers) if phasor else
+                       _finite_range([*(layer.values for layer in frame.layers),
+                                      *(() if lattice is None else (lattice[0],))]))
         if frame_range is not None:
             ranges.append(frame_range)
         low, high = frame_range or (0.0, 0.0)   # no value at all: every code is _Q_NAN
         log_low = None if phasor else _log_floor(low, high)
-        packed.append({'label': frame.label, 'time': None if frame.time is None else float(frame.time),
-                       'lo': low, 'hi': high, 'empty': frame_range is None, 'log_lo': log_low,
-                       'values': [_b64(_quantised(layer.values, low, high, log_low)) for layer in frame.layers],
-                       **flow_frame})
+        entry = {'label': frame.label, 'time': None if frame.time is None else float(frame.time),
+                 'lo': low, 'hi': high, 'empty': frame_range is None, 'log_lo': log_low,
+                 'values': [_b64(_quantised(layer.values, low, high, log_low)) for layer in frame.layers],
+                 **flow_frame}
         if phasor:   # the partner on the same codes: [lo, hi] = -+ the largest modulus, so every phase fits
-            packed[-1]['quadrature'] = [_b64(_quantised(layer.quadrature, low, high)) for layer in frame.layers]
+            entry['quadrature'] = [_b64(_quantised(layer.quadrature, low, high)) for layer in frame.layers]
         if quantity.signed and not quantity.phase:
-            packed[-1]['robust'] = _robust_magnitude(frame.layers, phasor)
+            entry['robust'] = _robust_magnitude(frame.layers, phasor)
         if motion is not None:
-            packed[-1]['dmax'], packed[-1]['disp'] = _displacement_codes(frame.layers, scale)
+            entry['dmax'], entry['disp'] = _displacement_codes(frame.layers, scale)
+        if lattice is not None:
+            offset, code_scale = _volume_code_frame(low, high, log_low, bool(quantity.signed))
+            entry.update(volume=_volume_bytes(lattice[0], offset, code_scale, volume_entry['masked']),
+                         volume_offset=offset, volume_scale=code_scale)
+        packed.append(entry)
     if not ranges:
         raise ValueError('the field has no finite value in any frame')
     low, high = min(lo for lo, _ in ranges), max(hi for _, hi in ranges)
     return {
         'format': FORMAT, 'version': FORMAT_VERSION,
-        'title': title, 'subtitle': ' · '.join(part for part in (subtitle, *plan.notes) if part),
+        'title': title,
+        'subtitle': ' · '.join(part for part in (
+            subtitle, *plan.notes,
+            '' if volume_entry is None or max(volume_entry['strides']) == 1
+            else f"volume cells averaged in {' x '.join(map(str, volume_entry['strides']))} blocks") if part),
         'dimensions': 3 if any(layer.plane is not None for layer in first) else 2,
         'length_unit': unit, 'length_scale': float(scale),   # m per length unit of the page
         'figure': figure or None,
@@ -1057,6 +1203,7 @@ def viewer_data(frames, quantity, title='', subtitle='', frame_kind='labelled', 
             'oscillate': bool(motion.oscillate), 'physical': bool(motion.physical),
             'max': max(frame['dmax'] for frame in packed),
             'mirror_signs': {face: int(sign) for face, sign in motion.mirror_signs.items()}},
+        'volume': volume_entry,
     }
 
 

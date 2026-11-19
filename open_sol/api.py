@@ -60,9 +60,9 @@ from .model.time_estimate import estimate_overheads, estimate_time, estimated_ru
 from .model.templates import make_template, template_entries
 from .model.validate import internal_error_text, refused_on_estimated_counts, validate
 from .viz.common import line_profile
-from .viz.field_viewer import (ViewerFlow, ViewerFrame, ViewerGeometry, ViewerLayer, ViewerMirror, ViewerMotion,
-                               ViewerQuantity, ViewerVectors,
-                               figure_settings, layer_from_field, mirror_plane, plan_frames, snap_to_mirrors,
+from .viz.field_viewer import (MAX_VOLUME_FRAMES, ViewerFlow, ViewerFrame, ViewerGeometry, ViewerLayer, ViewerMirror,
+                               ViewerMotion, ViewerQuantity, ViewerVectors, ViewerVolume, figure_settings,
+                               layer_from_field, mirror_plane, plan_frames, reduced_volume, snap_to_mirrors,
                                strided_layer, time_label, write_field_viewer)
 from .viz.mode_player import mode_player_from_results
 from .viz.result_plots import (far_field_wavelengths, save_field_figure, save_line_profile_figure,
@@ -1731,7 +1731,10 @@ class Results:
         place (live state: an x, y and z cut, each at
         a mirror plane of the field's physics (drawn on the plane), else through the middle of the material objects
         not spanning the window on that axis, else the window middle;
-        snapshots and closed / loaded runs: the mid-height z cut plus the study stored_cuts); planes [(axis,
+        snapshots and closed / loaded runs: the mid-height z cut plus the study stored_cuts; live Results of a
+        Cartesian 3D model also put the whole field on the page (viz.field_viewer.ViewerVolume: the current state,
+        or every snapshot's kept solution in GUI runs, up to MAX_VOLUME_FRAMES), drawn as movable slices, a lit
+        isosurface, nested see-through shells or a glowing cloud); planes [(axis,
         position [m])] (3D field pages; the GUI passes its shown cut) picks them instead: the live state on exactly
         those planes, a snapshot its held cut on each plane's axis nearest the position (live: the current state
         when the snapshots hold no cut on an axis, named in the subtitle). A dft_fields result
@@ -1867,6 +1870,13 @@ class Results:
                 for layer in frame.layers:
                     layer.quadrature = None
         flow, flow_infos = self._viewer_flow(key, frames, stored if len(stored) > 1 else None)
+        if not quantity.phase and not unfolded:   # a phase wraps at +-pi; unfolded sectors are no session volume
+            volumes = self._viewer_volumes(key, stored if len(stored) > 1 else None)
+            if volumes is not None:
+                for frame, volume in zip(frames, volumes):
+                    frame.volume = volume
+                    for layer in frame.layers:   # 3D: the volume views (isosurfaces, slices), not a phase animation
+                        layer.quadrature = None
         # parity-sector snapshots are stored unfolded already: no images of them
         mirrors = [] if unfolded else self._viewer_mirrors(
             key.partition('.')[0], info, [(layer.axes, layer.extent) for layer in frames[0].layers], flow_infos)
@@ -2009,6 +2019,44 @@ class Results:
         if partner not in self.field_names():
             return None, 1.0
         return partner, (-1.0 if part == 're' else 1.0)
+
+    def _viewer_volumes(self, key, snapshots=None):
+        """ViewerVolumes (reduced to the page's lattice) of the 3D field key for the page's frames: the live state
+        (snapshots None), else one per snapshot from its kept solution (GUI runs: Snapshot.solutions); None when
+        not offered (2D, closed / loaded runs, polar / cylindrical domains, snapshots without kept solutions, a
+        field above the volume size limit: RuntimeWarning)."""
+        if (not self.is_live or self.spec is None or self.spec.domain.size_z is None
+                or self.spec.domain.coordinates != 'cartesian'):
+            return None
+        physics, _, component = key.partition('.')
+        count = 1 if snapshots is None else len(snapshots)
+        try:
+            if snapshots is None:
+                return [self._reduced_volume(component, physics, count)]
+            if count > MAX_VOLUME_FRAMES:
+                warnings.warn(f'web page volume of {key}: not offered for {count} snapshots (at most '
+                              f'{MAX_VOLUME_FRAMES}: each is a whole 3D field read); the cut planes are shown',
+                              RuntimeWarning, stacklevel=4)
+                return None
+            roots = {id(snapshot): index for index, snapshot in enumerate(self.session.snapshots)}
+            if any(id(snapshot) not in roots or physics not in snapshot.solutions for snapshot in snapshots):
+                return None   # headless runs keep no snapshot solutions: the page shows the cut planes only
+            volumes = []
+            for snapshot in snapshots:
+                with self.session.restored_snapshot(roots[id(snapshot)], [physics]):
+                    volumes.append(self._reduced_volume(component, physics, count))
+            return volumes
+        except ValueError as exc:   # session.volume: above its size limit
+            warnings.warn(f'web page volume of {key}: not offered ({exc})', RuntimeWarning, stacklevel=4)
+            return None
+
+    def _reduced_volume(self, component, physics, n_frames):
+        """The session volume as the page's lattice; on an element mesh averaged over half the smallest element
+        size (its sample lattice is finer than the elements)."""
+        volume = self.session.volume(component, physics=physics)
+        record = next(record for record in self.session.mesh_records() if physics in record['physics'])
+        min_step = 0.5 * float(record['dx_min']) if record['kind'] == 'tetrahedra' else None
+        return reduced_volume(ViewerVolume(values=volume.values, centres=volume.centres), n_frames, min_step)
 
     def _viewer_mirrors(self, physics, info, spans, flow_infos=None):
         """ViewerMirrors of the model's mirror faces for a field of physics (FieldInfo info; None = an even
