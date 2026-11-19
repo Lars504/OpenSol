@@ -41,48 +41,45 @@ DISPERSION_POLE_PARAMS = {
               tip='Angular plasma frequency of the free electrons, in rad/s (not Hz); gold about 1.37e16.\n\n'
                   'In time-domain runs a large value can need smaller cells or a lower \'Time step factor\'; the '
                   'build says so.',
-              help='Plasma angular frequency of the Drude current dJ/dt + gamma J = eps0 omega_p^2 E (on every E '
-                   'component the polarisation carries: E_z, or E_x and E_y), in rad/s (not Hz); gold ~1.37e16, '
-                   'aluminium ~2.24e16 rad/s (library aluminum: 1.94e16, a 1.55 um fit). em_fdtd_ez and em_fdtd_hz both step the current with a leap-frog (J on '
-                   'the half time steps), accurate to O((omega dt)^2) but stable only where eps_inf * mu_r >= '
-                   'courant_factor^2 + mu_r (omega_p dt)^2 / 4 (square cells; the build checks every cell and names '
-                   'the largest stable courant_factor). That bites for eps_inf ~1 metals: omega_p 2.24e16 needs dx '
-                   '<= 5.4 nm at courant_factor 0.99 (courant_factor <= 0.967 at 10 nm); otherwise the mesh only has to resolve the '
-                   'skin depth of the metal (a few tens of nm for noble metals in the visible). em_fdfd_ez and em_fdfd_hz add the exact susceptibility chi(omega) of every pole at the '
-                   'solve wavelength (no time stepping).'),
+              help='Plasma angular frequency of the Drude current dJ/dt + gamma J = eps0 omega_p^2 E (every E component '
+                   'of the polarisation), rad/s not Hz: gold ~1.37e16, aluminium ~2.24e16 (library aluminum: 1.94e16, '
+                   'a 1.55 um fit). em_fdtd_ez / _hz (leap-frog J, O((omega dt)^2)) are stable only where eps_inf * '
+                   'mu_r >= courant_factor^2 + mu_r (omega_p dt)^2 / 4 (square cells; the build checks every cell and '
+                   'names the largest stable courant_factor): eps_inf ~1 at 2.24e16 needs dx <= 5.4 nm at '
+                   'courant_factor 0.99 (<= 0.967 at 10 nm); otherwise the mesh only resolves the skin depth (tens of '
+                   'nm for noble metals in the visible). em_fdfd_ez / _hz use the exact chi(omega) at the solve '
+                   'wavelength.'),
         Param('gamma', 'float', 1.02e14, label='Damping rate', unit='rad/s', min=0.0,
               tip='Collision rate of the electrons; it sets the loss of the metal.\n\n'
                   'Use optical values: gold about 1e14, silver about 2.7e13. Values measured for static fields give '
                   'too little loss.',
-              help='Collision rate of the Drude current in rad/s; it sets the metal loss. Optical (visible / near-IR) '
-                   'values: gold ~1.0e14 (the far-IR / DC value ~4e13 gives 2-3x too little near-IR loss), silver '
-                   '~2.7e13 rad/s.'),
+              help='Collision rate of the Drude current; sets the metal loss. Use optical (visible / near-IR) values: '
+                   'gold ~1.0e14 (the DC value ~4e13 gives 2-3x too little near-IR loss), silver ~2.7e13.'),
         Param('eps_inf', 'float', 1.0, label='High-frequency permittivity', unit='1', min=0.0,
               min_exclusive=True, optional=True,
               tip='Relative permittivity from everything except the free electrons; gold about 9.8, silver about '
                   '3.7. Empty means 1.\n\n'
                   'Ignored where the material sets its own relative permittivity.',
               help='Background permittivity of the Drude material, used for a permittivity array only when the '
-                   'material sets no permittivity property that owns it (an explicit eps_r or component such as '
-                   'eps_zz / eps_xx wins; only the first Drude pole counts); empty = 1. Gold ~9.8, silver ~3.7.'),
+                   'material sets no permittivity property owning it (eps_r or a component such as eps_zz wins; only '
+                   'the first Drude pole counts); empty = 1. Gold ~9.8, silver ~3.7.'),
     ),
     'lorentz': (
         Param('delta_eps', 'float', 1.0, label='Oscillator strength', unit='1', min=0.0,
               tip='How much this resonance adds to the relative permittivity at frequencies well below it.\n\n'
                   'The static permittivity is the background permittivity plus this value.',
-              help='Oscillator strength of d2P/dt2 + gamma dP/dt + omega_0^2 P = eps0 delta_eps omega_0^2 E (on '
-                   'every E component the polarisation carries): the static permittivity is the background + '
-                   'delta_eps, the background being eps_r or the component that owns the array (as eps_inf).'),
+              help='Oscillator strength of d2P/dt2 + gamma dP/dt + omega_0^2 P = eps0 delta_eps omega_0^2 E (every E '
+                   'component of the polarisation): static permittivity = background (eps_r or the component owning '
+                   'the array, as eps_inf) + delta_eps.'),
         Param('omega_0', 'float', 3e15, label='Resonance frequency', unit='rad/s', min=0.0,
               tip='Resonance as an angular frequency in rad/s (not Hz).\n\n'
                   '3e15 rad/s corresponds to a vacuum wavelength of 628 nm.',
-              help='Resonance angular frequency in rad/s (not Hz); its vacuum wavelength is 2 pi C0 / omega_0 '
-                   '(3e15 rad/s = 628 nm).'),
+              help='Resonance angular frequency (rad/s, not Hz); vacuum wavelength 2 pi C0 / omega_0 (3e15 = 628 '
+                   'nm).'),
         Param('gamma', 'float', 1e14, label='Damping rate', unit='rad/s', min=0.0,
               tip='Width of the resonance.\n\n'
                   'Smaller values give a sharper resonance with less loss.',
-              help='Damping rate of the Lorentz oscillator in rad/s, the full width of the resonance in omega; '
-                   'smaller values give a sharper, less lossy resonance.'),
+              help='Full width of the Lorentz resonance in omega; smaller = sharper, less lossy.'),
     ),
     # A7: expanded by materials.effective_material_data into drude / lorentz dicts before any pole is built
     NK_FIT_MODEL: (
@@ -91,24 +88,23 @@ DISPERSION_POLE_PARAMS = {
               tip='How many resonance terms the fit may use besides the free-electron term.\n\n'
                   '2 suits most visible or near-infrared bands; more terms fit wider bands but slow down '
                   'time-domain runs and use more memory.',
-              help=f'Lorentz poles of the fit (0-{MAX_LORENTZ_POLES}); a Drude pole is added when Re eps < 0 '
-                   'somewhere in the fit range (metals). Each pole adds 1-2 float32 arrays on its bounding box in '
-                   'the FDTD; poles whose contribution stays below 1e-6 of |eps| are dropped. 2 suits a visible / '
-                   'near-IR octave.'),
+              help='Lorentz poles of the fit; a Drude pole is added when Re eps < 0 in the fit range (metals). Each '
+                   'pole adds 1-2 float32 arrays on its bounding box in the FDTD; poles below 1e-6 of |eps| are '
+                   'dropped. 2 suits a visible / near-IR octave.'),
         Param('wavelength_start', 'float', NK_FIT_DEFAULTS['wavelength_start'], label='Fit from wavelength',
               unit='m', min=0.0, min_exclusive=True,
               tip='Shortest vacuum wavelength the fit has to match, entered in metres (4e-7 for 400 nm).\n\n'
                   'Cover every wavelength the study uses; outside the range the fitted material is extrapolated.',
-              help='Shortest vacuum wavelength of the fit range, a plain number (no parameter expressions: the '
-                   'fit runs once per material at validation and build). Set the range to the study band: the '
-                   'frequency_domain wavelengths, the FDFD / em_modes wavelength, or the FDTD source spectra and '
-                   'monitor ranges (validation warns when they leave it). It must lie inside the library table.'),
+              help='Shortest vacuum wavelength of the fit range, a plain number (no parameters: the fit runs once '
+                   'per material). Cover the study band: frequency_domain wavelengths, the FDFD / em_modes '
+                   'wavelength, or the FDTD source spectra and monitor ranges (validation warns outside). Must lie '
+                   'inside the library table.'),
         Param('wavelength_stop', 'float', NK_FIT_DEFAULTS['wavelength_stop'], label='Fit to wavelength', unit='m',
               min=0.0, min_exclusive=True,
               tip='Longest vacuum wavelength the fit has to match, entered in metres (8e-7 for 800 nm).\n\n'
                   "It must be larger than 'Fit from wavelength'.",
-              help='Longest vacuum wavelength of the fit range (> wavelength_start), a plain number. A narrower '
-                   'range fits more accurately with fewer poles.'),
+              help='Longest vacuum wavelength of the fit range (> wavelength_start), a plain number; a narrower '
+                   'range fits better with fewer poles.'),
     ),
 }
 _POLE_CLASSES = {'drude': DrudePole, 'lorentz': LorentzPole}
@@ -120,26 +116,22 @@ _POLE_MODELS = {model: (_POLE_CLASSES[model], tuple(param.name for param in para
 
 # ---- settings ----
 CPML_BC_HELP = 'cpml absorbs outgoing waves in pml_cells extra cells added outside the domain.'
-PERIODIC_BC_HELP = ('periodic must be set on both faces of the axis and wraps the field with the meshed window as '
-                    'period (uniform mesh: the size rounded up to whole cells) and no phase step (k = 0 along that '
-                    'axis, e.g. normal incidence); the em_fdtd_*, em_fdfd_* and em_modes types add a Bloch phase with '
-                    'bloch_kx / bloch_ky (em_fdfd_nonlinear per input harmonic_channel; em_eme / em_eme_3d: k = 0 '
-                    'only).')
-MIRROR_BC_HELP = ('Mirror planes, on any face: symmetric = E mirror-even (a PMC mirror plane), antisymmetric = E '
-                  'mirror-odd (a PEC mirror plane), on the domain edge itself: one ghost cell is added outside it '
-                  '(the width of the edge cell, its material copied from it) to hold the mirror image, so draw the '
-                  'structure about the edge (x = 0 for x_lo); heat, potential and the other physics of the model '
-                  'have their faces on the same plane. The same plane and parity hold for the ez and hz types, so '
-                  'one setting imposes the same symmetry on both. A source half a cell from the plane (in the '
-                  'outermost domain cell) is mirrored with it. Results count the unfolded structure: a flux line '
-                  'reaching a mirror face and a derived integral whose selection reaches one are doubled per such '
-                  'face (result extra mirror_factor; integrands assumed mirror-even, e.g. powers and losses), far '
-                  'fields add the image contour (a box touching the plane drops its face there; at most one mirror '
-                  'per axis), Results.field(unfold=True) and the GUI show the mirrored field; mode-port powers, '
-                  'source powers and the probes stay those of the drawn part. pec and pmc walls of the two '
-                  'polarisations are half a cell apart (E_z pec and H_z pmc at the centre of the outermost domain '
-                  'cell, E_z pmc and H_z pec on its inner face), so a cavity simulated in both polarisations differs '
-                  'in width by one cell.')
+PERIODIC_BC_HELP = ('periodic must be set on both faces of the axis; period = the meshed window (uniform mesh: size '
+                    'rounded up to whole cells), no phase step (k = 0, e.g. normal incidence); em_fdtd_*, em_fdfd_* '
+                    'and em_modes add a Bloch phase with bloch_kx / bloch_ky (em_fdfd_nonlinear per input '
+                    'harmonic_channel; em_eme / em_eme_3d: k = 0 only).')
+MIRROR_BC_HELP = ('Mirror planes on the domain edge itself (any face): symmetric = E mirror-even (PMC plane), '
+                  'antisymmetric = E mirror-odd (PEC plane); a ghost cell outside (edge-cell width and material) '
+                  'holds the image, so draw the structure about the edge (x = 0 for x_lo); the other physics of the '
+                  'model have their faces on the same plane, and the ez and hz types share plane and parity. A '
+                  'source in the outermost domain cell is mirrored with it. Results count the unfolded structure: a flux line or derived-integral '
+                  'selection reaching a mirror face is doubled per such face (extra mirror_factor; integrands assumed '
+                  'mirror-even), far fields add the image contour (a box touching the plane drops that face; at most '
+                  'one mirror per axis), Results.field(unfold=True) and the GUI show the mirrored field; mode-port '
+                  'powers, source powers and probes stay those of the drawn part. pec / pmc walls of the two '
+                  'polarisations are half a cell apart (E_z pec and H_z pmc at the centre of the outermost cell, E_z '
+                  'pmc and H_z pec on its inner face): a cavity is one cell wider or narrower in the other '
+                  'polarisation.')
 
 
 def settings_params(bc_help, courant_help, track_absorption_help):
@@ -183,39 +175,38 @@ def boundary_settings_params(bc_help):
               tip='Thickness of the layer added outside each absorbing edge to soak up outgoing waves, in grid '
                   'cells. The drawn domain keeps its size.\n\n'
                   '10 to 20 is typical. Use more if waves reflect from the edges.',
-              help='CPML cells added outside every cpml face, so the physical domain keeps its size and the grid '
-                   'grows. Each PML cell is dx wide on a uniform grid; on a graded one they grow by max_ratio per cell '
-                   'from the window edge cell up to the base size (a layer next to a refined edge is thinner). '
-                   '10-20 typical; thicker layers absorb grazing and long-wavelength waves better.'),
+              help='CPML cells added outside every cpml face (the domain keeps its size, the grid grows), dx wide on '
+                   'a uniform grid; on a graded one they grow by max_ratio per cell from the edge cell to the base size '
+                   '(thinner next to a refined edge). 10-20 typical; thicker absorbs grazing and long-wavelength waves '
+                   'better.'),
         Param('pml_order', 'int', 3, label='Absorbing layer grading', min=1, visible_if=_PML_VISIBLE,
               tip='How steeply the absorption rises from the inner to the outer side of the absorbing layer.\n\n'
                   '3 or 4 is typical and rarely needs changing.',
-              help='Polynomial order m of the CPML sigma / kappa grading with depth into the layer; 3-4 typical.'),
+              help='Polynomial order m of the CPML sigma / kappa grading with depth; 3-4 typical.'),
         Param('pml_sigma_factor', 'float', 1.0, label='Absorbing layer strength', unit='1', min=0.0,
               min_exclusive=True, visible_if=_PML_VISIBLE,
               tip='Absorption strength of the absorbing layer, relative to the best value for vacuum.\n\n'
                   'Keep 1. Where a dense cladding runs into the layer, 1 divided by its refractive index works '
                   'better: about 0.7 for silica, 0.3 for silicon.',
-              help='Peak CPML conductivity as a multiple of the vacuum optimum (m + 1) / (150 pi d) S/m, with m = '
-                   'pml_order and d the PML cell width; 1 is a good default, 0.5-2 when tuning reflections. A wave '
-                   'of index n attenuates n times faster, so where a cladding of index n crosses the PML the '
-                   'optimum is ~1/n (e.g. ~0.7 for silica, ~0.3 for silicon).'),
+              help='Peak CPML conductivity / the vacuum optimum (m + 1) / (150 pi d) S/m (m = pml_order, d = PML '
+                   'cell width); 0.5-2 when tuning reflections. A wave of index n attenuates n times faster, so where '
+                   'a cladding of index n crosses the PML the optimum is ~1/n (silica ~0.7, silicon ~0.3).'),
         Param('pml_kappa_max', 'float', 15.0, label='Absorbing layer stretch', unit='1', min=1.0,
               visible_if=_PML_VISIBLE,
               tip='How strongly the absorbing layer stretches space, which helps it absorb fast-decaying and grazing '
                   'waves.\n\n'
                   '1 means no stretch; 5 to 15 is typical.',
-              help='Peak real coordinate stretching of the CPML (1 = none); larger values damp evanescent and '
-                   'grazing waves better. 5-15 typical.'),
+              help='Peak real coordinate stretch of the CPML (1 = none); larger damps evanescent and grazing waves '
+                   'better. 5-15 typical.'),
         Param('pml_alpha_max', 'float', 0.0, label='Absorbing layer low-frequency damping', unit='S/m', min=0.0,
               visible_if=_PML_VISIBLE,
               tip='Extra damping of fast-decaying and long-wavelength waves in the absorbing layer.\n\n'
                   '0 switches it off and is the default. At optical wavelengths it only has an effect from about '
                   '1e4 S/m.',
               help='Peak complex-frequency shift alpha of the CPML stretch kappa + sigma / (alpha + j omega eps0), '
-                   'largest at the inner edge of the layer; 0 = plain kappa-stretched CPML. It acts only where alpha '
-                   'is comparable to omega eps0 (~1.1e4 S/m at 1550 nm, ~0.06 S/m at 1 GHz), damping evanescent '
-                   'and low-frequency waves; below ~100 S/m it does nothing in the optical range.'),
+                   'largest at the inner edge; 0 = plain CPML. Acts only where alpha ~ omega eps0 (~1.1e4 S/m at '
+                   '1550 nm, ~0.06 S/m at 1 GHz), damping evanescent and low-frequency waves; no effect below ~100 '
+                   'S/m at optical wavelengths.'),
     )
 
 
@@ -262,17 +253,14 @@ _MATERIAL_TIPS = {   # GUI tips of the material properties shared by the 2D EM t
                 'at normal incidence.'),
 }
 _COMPONENT_HELPS = {   # permittivity component helps shared by the FDTD and FDFD type of a polarisation
-    'eps_zz': ('Out-of-plane relative permittivity, the only component E_z sees; overrides eps_r for this physics (a '
-               'component wins over eps_r). Anisotropic crystals: eps_r for the in-plane components and eps_zz, e.g. '
-               'z-cut lithium niobate eps_r 4.889, eps_zz 4.571 at 1.55 um; an eps_r override then does not change '
-               'E_z (set eps_zz).'),
-    'eps_xx': (f'x component of the relative permittivity (>= 1), the only one E_x sees without an off-diagonal '
-               f'eps_xy ({FACE_MEAN}); overrides '
-               'eps_r for E_x. Anisotropic crystals, e.g. x-cut lithium niobate at 1.55 um (optic axis along x): '
-               'eps_xx 4.571 = n_e^2 with eps_r 4.889 = n_o^2 for the other components.'),
-    'eps_yy': (f'y component of the relative permittivity (>= 1), the only one E_y sees without an off-diagonal '
-               f'eps_xy ({FACE_MEAN}); overrides '
-               'eps_r for E_y. For a uniaxial crystal with its optic axis along y set eps_yy = n_e^2.'),
+    'eps_zz': ('Out-of-plane relative permittivity, the only component E_z sees; overrides eps_r here, so an eps_r '
+               'override does not change E_z. Anisotropic crystals: eps_r in-plane plus eps_zz, e.g. z-cut lithium '
+               'niobate eps_r 4.889, eps_zz 4.571 at 1.55 um.'),
+    'eps_xx': (f'x relative permittivity, the only one E_x sees without an off-diagonal eps_xy ({FACE_MEAN}); '
+               'overrides eps_r for E_x. E.g. x-cut lithium niobate at 1.55 um (optic axis x): eps_xx 4.571 = '
+               'n_e^2, eps_r 4.889 = n_o^2.'),
+    'eps_yy': (f'y relative permittivity, the only one E_y sees without an off-diagonal eps_xy ({FACE_MEAN}); '
+               'overrides eps_r for E_y; optic axis along y: eps_yy = n_e^2.'),
 }
 
 
@@ -291,20 +279,17 @@ def em_material_params(polarization, helps, tips=None):
 
 
 # ---- feature parameters ----
-SPAN_CELLS = 'cells [cell(start), cell(end) + 1), so an end exactly on a cell edge takes one extra cell'
-BOX_CELLS = 'cells [cell(lo), cell(hi) + 1) per axis, so an edge exactly on a cell edge takes one extra cell'
-POINT_SOURCE_SIGN = ('Sign: the current is added to the field update as given, i.e. it is minus the textbook '
-                     'impressed current, so absolute phases (and a source power computed from probe fields) differ '
-                     'by pi from textbook formulas such as E_z = -(omega mu0 I / 4) H0^(2)(k r); moduli and fluxes '
-                     'do not.')
-SHEET_POWER_DRIFT = ('Each recalibration (e.g. a thermo-optic eps change in the line cells) keeps the amplitude, so the '
-                     'launched power ~ amplitude^2 n / (2 eta0) follows n of the line cells (~0.5% for dn = 0.01 at '
-                     'n = 2.2).')
-MAGNETIC_CURRENT_DRIFT = ('A fixed K_m radiates power ~ n^2 of its cell, so it drifts when eps there changes (e.g. '
-                          'thermo-optic); a filament current or dipole radiates n-independent power.')
-LOCAL_MEDIUM_HELP = ('Each line cell is calibrated to its own medium, so on a line crossing several media (e.g. a '
-                     'high-index core and its cladding) the current steps at the interfaces, the steps diffract and '
-                     'the field there is not the amplitude (validation warns); keep the line in one medium.')
+SPAN_CELLS = 'cells [cell(start), cell(end) + 1) (an end exactly on a cell edge adds a cell)'
+BOX_CELLS = 'cells [cell(lo), cell(hi) + 1) per axis (an edge exactly on a cell edge adds a cell)'
+POINT_SOURCE_SIGN = ('Sign: the current enters the update as given (minus the textbook impressed current), so '
+                     'absolute phases (and source powers from probe fields) differ by pi from textbook formulas such '
+                     'as E_z = -(omega mu0 I / 4) H0^(2)(k r); moduli and fluxes do not.')
+SHEET_POWER_DRIFT = ('A recalibration (e.g. thermo-optic eps change in the line cells) keeps the amplitude, so the '
+                     'launched power ~ amplitude^2 n / (2 eta0) follows n (~0.5% for dn = 0.01 at n = 2.2).')
+MAGNETIC_CURRENT_DRIFT = ('A fixed K_m radiates power ~ n^2 of its cell, so it drifts when eps there changes; a '
+                          'filament current or dipole radiates n-independent power.')
+LOCAL_MEDIUM_HELP = ('Each line cell is calibrated to its own medium, so across several media (core / cladding) the '
+                     'current steps at the interfaces and diffracts (validation warns); keep the line in one medium.')
 _DIPOLE_VISIBLE = (('excitation', ('electric_dipole',)),)
 
 
@@ -317,9 +302,8 @@ def hz_point_source_params(time_params, time_domain):
         tip='Kind of point emitter.\n\n'
             '- Magnetic line current: an out-of-plane magnetic current that radiates equally in all directions.\n'
             '- Electric dipole: an in-plane electric current element that radiates most perpendicular to its axis.',
-        help=f'magnetic_current: z-directed magnetic line current {added}at the cell centre (radiates the same in '
-             'every direction). electric_dipole: in-plane electric current element along orientation, spread over '
-             'the four E faces of the cell (radiates most broadside, nothing along its axis).')
+        help=f'magnetic_current: z-directed magnetic line current {added}at the cell centre (isotropic). '
+             'electric_dipole: in-plane current element along orientation on the four E faces of the cell.')
     strengths = (
         Param('magnetic_current', 'float', 1.0, label='Magnetic line current', unit='V',
               visible_if=(('excitation', ('magnetic_current',)),),
@@ -327,27 +311,23 @@ def hz_point_source_params(time_params, time_domain):
                   'depend on the mesh.\n\n'
                   'Its radiated power follows the permittivity at the point: if the material there changes, for '
                   'example when heated, use an electric dipole instead.',
-              help='Peak z-directed magnetic line current K_m in V (the dual of a filament current). The radiated '
-                   f'field does not depend on the mesh: {cw}in a homogeneous medium of relative permittivity eps_r '
-                   'and wavenumber k, |H_z| = omega eps0 eps_r K_m / 4 |H0^(2)(k r)| (1 V at wavelength 1 um in '
-                   'vacuum: |H_z| ~ 1.3e3 A/m at r = 1 um). Fields are linear, so results scale with K_m. '
+              help='Peak z-directed magnetic line current K_m (dual of a filament current); mesh-independent field: '
+                   f'{cw}in a homogeneous medium of eps_r and wavenumber k, |H_z| = omega eps0 eps_r K_m / 4 '
+                   '|H0^(2)(k r)| (1 V at 1 um in vacuum: ~1.3e3 A/m at r = 1 um). '
                    f'{MAGNETIC_CURRENT_DRIFT} {POINT_SOURCE_SIGN}'),
         Param('dipole_moment', 'float', 1e-3, label='Dipole strength', unit='A', visible_if=_DIPOLE_VISIBLE,
               tip='Peak strength of the in-plane electric current element: current times its length, per metre of '
                   'depth.\n\n'
                   'Fields scale linearly with it, so the default 1e-3 is fine.',
-              help='Peak in-plane electric dipole strength M in A: the integral of the current density J over the '
-                   'cross-section, i.e. A*m of current moment per m of z, along orientation. The radiated field does '
-                   f'not depend on the mesh: {cw}in a homogeneous medium of wavenumber k, |H_z| = k M / 4 |H1^(2)(k '
-                   'r)| |sin(phi - orientation)| at the angle phi counter-clockwise from +x (1 mA at wavelength 1 um '
-                   'in vacuum: |H_z| ~ 5e2 A/m at r = 1 um broadside). Fields are linear, so results scale with M. '
-                   f'{POINT_SOURCE_SIGN}'),
+              help='Peak in-plane dipole strength M = integral of J over the cross-section (A m of current moment per '
+                   f'm of z), along orientation; mesh-independent field: {cw}in a homogeneous medium of wavenumber k, '
+                   '|H_z| = k M / 4 |H1^(2)(k r)| |sin(phi - orientation)|, phi counter-clockwise from +x (1 mA at 1 '
+                   f'um in vacuum: ~5e2 A/m at r = 1 um broadside). {POINT_SOURCE_SIGN}'),
         Param('orientation', 'float', 0.0, label='Dipole orientation', unit='deg', visible_if=_DIPOLE_VISIBLE,
               tip='Direction of the dipole current, counter-clockwise from +x: 0 is along x, 90 along y.\n\n'
                   'It radiates most perpendicular to this direction and nothing along it.',
-              help='Direction of the dipole current in degrees counter-clockwise from +x: 0 drives only the E_x '
-                   'faces, 90 only the E_y faces. It radiates most broadside (perpendicular to it) and nothing along '
-                   'it.'),
+              help='Dipole current direction counter-clockwise from +x: 0 drives only the E_x faces, 90 only E_y. '
+                   'Radiates most broadside, nothing along it.'),
     )
     if time_domain:
         return (excitation,) + tuple(time_params) + strengths
@@ -355,14 +335,13 @@ def hz_point_source_params(time_params, time_domain):
 
 
 _FIELD_SLOT_DOCS = {   # FDTD per-step field slot -> (unit, meaning)
-    'ez_source': ('V/m per EM step', 'Added to E_z once per EM step (after the sources) until the next transfer: a '
-                  'raw field increment, not a calibrated source. A constant buffer b acts like a current density of '
-                  'about -eps0 eps_r b / dt, so its effect scales with 1/dt (mesh, courant_factor); not counted in '
-                  'the DFT decimation bound.'),
-    'hz_source': ('A/m per EM step', 'Added to H_z once per EM step (after the magnetic sources) until the next '
-                  'transfer: a raw field increment, not a calibrated source. A constant buffer b acts like a magnetic '
-                  'current density of about -mu0 mu_r b / dt, so its effect scales with 1/dt (mesh, courant_factor); '
-                  'not counted in the DFT decimation bound.'),
+    'ez_source': ('V/m per EM step', 'Raw increment added to E_z every EM step (after the sources) until the next '
+                  'transfer, not a calibrated source: a constant b acts like a current density ~ -eps0 eps_r b / dt, '
+                  'so it scales with 1/dt (mesh, courant_factor); not in the DFT decimation bound.'),
+    'hz_source': ('A/m per EM step', 'Raw increment added to H_z every EM step (after the magnetic sources) until '
+                  'the next transfer, not a calibrated source: a constant b acts like a magnetic current density ~ '
+                  '-mu0 mu_r b / dt, so it scales with 1/dt (mesh, courant_factor); not in the DFT decimation '
+                  'bound.'),
 }
 
 
@@ -370,8 +349,8 @@ def source_slot_docs(slot_arrays, field_slot=None):
     """source_slots of an EM type: the FDTD field slot (if any), then one permittivity slot per slot_arrays entry."""
     docs = {} if field_slot is None else {field_slot: _FIELD_SLOT_DOCS[field_slot]}
     for slot, array in slot_arrays.items():
-        docs[slot] = ('1', f'Relative permittivity {array}: each transfer replaces the whole array, PML ring '
-                           'included; index couplings (heat_em_thermo_optic) add their dn: eps = (n0 + sum dn)^2.')
+        docs[slot] = ('1', f'Relative permittivity {array}: each transfer replaces the whole array (PML ring '
+                           'included); index couplings (heat_em_thermo_optic) add dn: eps = (n0 + sum dn)^2.')
     return docs
 
 
@@ -396,15 +375,14 @@ _SHEET_FIELDS = {'ez': 'E_z', 'hz': 'tangential E (E_x for a horizontal line, E_
 _FACE_MEDIUM_HELP = ('Its medium is the face mean of the line cell and the cell past its hi face, so on an interface '
                      'sqrt(mean eps) is not the mean index (Si / air: ~14% off).')
 _SHEET_CALIBRATIONS = {   # (solver, polarisation) -> how the sheet amplitude is calibrated
-    ('fdtd', 'ez'): 'the calibration uses |eta| of the line cells at the centre frequency (sigma_e and dispersion '
-                    'included), so other frequencies of a pulse in a dispersive medium deviate',
-    ('fdtd', 'hz'): 'the calibration uses |eta| of the line faces at the centre frequency (sigma_e and dispersion '
-                    'included), so other frequencies of a pulse in a dispersive medium deviate',
-    ('fdfd', 'ez'): 'the calibration uses the complex eps_r (sigma_e and dispersion included) and mu of the line cells '
-                    'at the solved wavelength, so it is exact in any homogeneous medium',
-    ('fdfd', 'hz'): 'the calibration uses the complex face permittivity (the mean of the line cell and the cell past '
-                    'its hi face, sigma_e and dispersion included) and mu of the line cells at the solved wavelength, '
-                    'so it is exact in any homogeneous medium',
+    ('fdtd', 'ez'): 'calibrated with |eta| of the line cells at the centre frequency (sigma_e, dispersion included), '
+                    'so other frequencies of a pulse in a dispersive medium deviate',
+    ('fdtd', 'hz'): 'calibrated with |eta| of the line faces at the centre frequency (sigma_e, dispersion included), '
+                    'so other frequencies of a pulse in a dispersive medium deviate',
+    ('fdfd', 'ez'): 'calibrated with the complex eps_r (sigma_e, dispersion) and mu of the line cells at the solved '
+                    'wavelength: exact in any homogeneous medium',
+    ('fdfd', 'hz'): 'calibrated with the complex face permittivity (sigma_e, dispersion) and mu of the line cells at '
+                    'the solved wavelength: exact in any homogeneous medium',
 }
 
 
@@ -421,8 +399,7 @@ def sheet_amplitude_param(polarization, solver, beam):
         radiated = (f'{field[0].upper()}{field[1:]} radiated to each side of the line in the local medium '
                     f'({plane_wave} of this amplitude when the line spans a periodic axis)')
     return Param('amplitude', 'float', 1.0, label='Amplitude', unit='V/m',
-                 help=f'{radiated}; {calibration}. Fields are linear, so results scale with it. {medium_help} '
-                      f'{SHEET_POWER_DRIFT} Typical 1 V/m.',
+                 help=f'{radiated}; {calibration}. {medium_help} {SHEET_POWER_DRIFT}',
                  tip=(BEAM_AMPLITUDE_TIPS if beam else LINE_AMPLITUDE_TIPS)[polarization])
 
 
@@ -446,9 +423,9 @@ HZ_PROBE_COMPONENT_TIP = ('Field recorded at the point; magnetic fields in A/m, 
 _GAUSSIAN_PULSE_TIP_LINE = '- Gaussian pulse: a short burst covering a band of wavelengths, for spectra.'
 _CW_TIP_LINE = '- Continuous wave: one wavelength, switched on smoothly and steady after about 15 periods.'
 _GAUSSIAN_WAVEFORM_HELP = ('gaussian: sin carrier of f0 = C0 / wavelength under exp(-((t - t0) / tau)^2), tau = 1 / '
-                           '(pi * bandwidth * f0), centred at t0 = 4.5 tau, so it lasts about 9 / (pi * bandwidth * '
-                           'f0) (550 nm, bandwidth 0.5: ~10 fs). The amplitude / current is the envelope peak: the '
-                           'carrier is 0 at t0, so the source peaks lower (~0.87 at bandwidth 0.5, ~0.66 at 1).')
+                           '(pi * bandwidth * f0), t0 = 4.5 tau, lasting ~2 t0 (550 nm, bandwidth 0.5: ~10 fs); the '
+                           'amplitude / current is the envelope peak, the carrier is 0 at t0, so the source peaks '
+                           'lower (~0.87 at bandwidth 0.5, ~0.66 at 1).')
 _CW_WAVEFORM_HELP = 'cw: sin(2 pi f0 t) ramped in by 1 - exp(-t / (3 T)), T = 1 / f0, steady after ~15 periods.'
 
 
@@ -465,25 +442,23 @@ def waveform_params():
               choice_labels=(('gaussian', 'Gaussian pulse'), ('cw', 'Continuous wave'), ('ricker', 'Ricker wavelet')),
               tip=f'Time shape of the source.\n\n{_GAUSSIAN_PULSE_TIP_LINE}\n{_CW_TIP_LINE}\n'
                   '- Ricker wavelet: a single, very broadband pulse.',
-              help=f'{_GAUSSIAN_WAVEFORM_HELP} {_CW_WAVEFORM_HELP} ricker: Ricker wavelet whose spectrum peaks at '
-                   'f0, delayed by 4 / f0 (broadband, up to ~2.5 f0: 3 % of the spectral peak there, 1 % at 2.76 '
-                   'f0).'),
+              help=f'{_GAUSSIAN_WAVEFORM_HELP} {_CW_WAVEFORM_HELP} ricker: Ricker wavelet with spectral peak f0, '
+                   'delayed by 4 / f0 (broadband: 3 % of the peak at 2.5 f0, 1 % at 2.76 f0).'),
         Param('wavelength', 'float', 550e-9, label='Wavelength', unit='m', min=0.0, min_exclusive=True,
               tip='Vacuum wavelength at the centre of the source spectrum, entered in metres (5.5e-7 for 550 nm).\n\n'
                   'The mesh needs at least 10, better 20, cells per wavelength inside each material.',
-              help='Vacuum wavelength lambda0 = C0 / f0 of the carrier (ricker: of the spectral peak); in a medium '
-                   'of index n the wave is lambda0 / n long. In m, not nm: typical 400e-9 to 1600e-9 m (validation '
-                   'warns below 1e-9 m or above 100 domain diagonals); the mesh needs >= 10 (better 20) cells per '
-                   'lambda0 / n at the highest source frequency.'),
+              help='Vacuum wavelength lambda0 = C0 / f0 of the carrier (ricker: spectral peak), in m, not nm: '
+                   'typical 400e-9 to 1600e-9 (validation warns below 1e-9 or above 100 domain diagonals). The mesh '
+                   'needs >= 10 (better 20) cells per lambda0 / n at the highest source frequency.'),
         Param('bandwidth', 'float', 0.5, label='Relative bandwidth', unit='1', min=0.0, min_exclusive=True,
               visible_if=(('waveform', ('gaussian',)),),
               tip='Spectral width of the pulse as a fraction of the centre frequency: 0.5 at 550 nm covers about 440 '
                   'to 730 nm.\n\n'
                   '0.2 to 1 is typical. A wider band gives a shorter pulse but needs a finer mesh.',
               help='Spectral width / f0 of the gaussian pulse, amplitude spectrum exp(-((f - f0) / (bandwidth * '
-                   'f0))^2): 0.78 of the peak at f0 * (1 +- bandwidth / 2), 1/e at f0 * (1 +- bandwidth) (power FWHM '
-                   'about 1.18 * bandwidth * f0); the mesh check and auto mesh resolve f0 * (1 + bandwidth). 0.2-1 '
-                   'typical; a wider band gives a shorter pulse but needs a finer mesh.'),
+                   'f0))^2): 0.78 of the peak at f0 (1 +- bandwidth / 2), 1/e at f0 (1 +- bandwidth) (power FWHM ~1.18 '
+                   'bandwidth f0); the mesh check and auto mesh resolve f0 (1 + bandwidth). 0.2-1 typical; wider = '
+                   'shorter pulse, finer mesh.'),
     )
 
 
@@ -494,19 +469,16 @@ def beam_params():
               tip='Half-width of the beam at its narrowest point, which lies on the line; there the field falls to '
                   '37 % of its peak.\n\n'
                   '1 to 5 wavelengths is typical. Make the line several waists long so the beam is not cut off.',
-              help='1/e half-width of the field profile exp(-((s - center) / waist)^2) along the line; the waist '
-                   'lies on the line and the beam diverges from there. Typical 1-5 wavelengths; keep the line '
-                   'several waists long so the profile is not truncated (validation warns above 1e-2 of the peak at '
-                   'an end that stops inside the domain; an end on a cpml edge continues through the PML). The '
-                   'amplitude at the waist is paraxial: on '
-                   'axis the field is about amplitude (1 + 1/(k waist)^2) for E_z and (1 - 1/(k waist)^2) for H_z '
-                   'types, k = 2 pi n / lambda0 (+-2.5% at waist = lambda0 / n).'),
+              help='1/e half-width of the field profile exp(-((s - center) / waist)^2) along the line (the waist '
+                   'lies on the line). Typical 1-5 wavelengths; keep the line several waists long (validation warns '
+                   'above 1e-2 of the peak at an end inside the domain; an end on a cpml edge continues through the '
+                   'PML). Paraxial amplitude: on axis the field is ~ amplitude (1 + 1/(k waist)^2) for E_z and (1 - '
+                   '1/(k waist)^2) for H_z types, k = 2 pi n / lambda0 (+-2.5% at waist = lambda0 / n).'),
         Param('center', 'float', None, label='Beam centre', unit='m', optional=True,
               tip='Position of the beam axis along the line: x for a horizontal line, y for a vertical one.\n\n'
                   'Leave empty for the middle of the line. It must lie on the line.',
-              help='Position of the beam axis along the line: x for a horizontal line, y for a vertical one; empty '
-                   '= the midpoint of the line. It must lie on the line (validation warns otherwise): off it only the '
-                   'tail of the profile is launched.'),
+              help='Beam axis position along the line (x for a horizontal line, y for a vertical one); empty = the '
+                   'midpoint. Off the line only the profile tail is launched (validation warns).'),
     )
 
 
@@ -520,29 +492,28 @@ def spectral_params(n_wavelengths, n_wavelengths_help, n_wavelengths_tip):
                   'Keep the range inside the source spectrum; outside it the results get noisy.',
               help='Shortest vacuum wavelength of the monitor spectrum. Keep the range inside the source spectrum '
                    '(gaussian: lambda0 / (1 + bandwidth / 2) to lambda0 / (1 - bandwidth / 2), e.g. 440e-9 to '
-                   '733e-9 m for 550 nm and bandwidth 0.5); outside it the source spectrum falls off and normalised '
-                   'results get noisy. Validation warns for wavelengths where every enabled source spectrum is below '
-                   '1e-2 of its peak (gaussian beyond f0 (1 +- 2.15 bandwidth), ricker outside 0.06-2.76 f0, cw '
-                   'anywhere but within 1 / duration of f0).'),
+                   '733e-9 m for 550 nm, bandwidth 0.5), else normalised results get noisy; validation warns where '
+                   'every enabled source spectrum is below 1e-2 of its peak (gaussian beyond f0 (1 +- 2.15 '
+                   'bandwidth), ricker outside 0.06-2.76 f0, cw beyond 1 / duration of f0).'),
         Param('wavelength_stop', 'float', 800e-9, label='Longest wavelength', unit='m', min=0.0,
               min_exclusive=True,
               tip='Longest vacuum wavelength the monitor records, entered in metres (8e-7 for 800 nm).\n\n'
                   "It must be larger than 'Shortest wavelength' unless 'Number of wavelengths' is 1.",
-              help='Longest vacuum wavelength of the monitor spectrum; it must exceed wavelength_start (equal only '
-                   'with n_wavelengths = 1).'),
+              help='Longest vacuum wavelength of the monitor spectrum; > wavelength_start (equal only with '
+                   'n_wavelengths = 1).'),
         Param('n_wavelengths', 'int', n_wavelengths, label='Number of wavelengths', min=1,
               tip="Number of wavelengths, evenly spaced between 'Shortest wavelength' and 'Longest wavelength'; 1 "
                   f'gives the centre of the range.\n\n{n_wavelengths_tip}',
-              help='Wavelengths evenly spaced in wavelength (not frequency) from wavelength_start to '
-                   f'wavelength_stop; 1 = the centre of the range. {n_wavelengths_help}'),
+              help='Wavelengths evenly spaced in wavelength (not frequency) over the range; 1 = its centre. '
+                   f'{n_wavelengths_help}'),
     )
 
 
 N_ANGLES_PARAM = Param('n_angles', 'int', 360, label='Number of angles', min=1,
                        tip='Number of directions, evenly spaced over the full circle counter-clockwise from +x.\n\n'
                            '360 gives 1-degree steps.',
-                       help='Far-field angles evenly spaced over 360 degrees, counter-clockwise from +x (0 = +x, pi/2 '
-                            '= +y); 360 gives 1-degree steps.')
+                       help='Far-field angles evenly spaced over 360 degrees counter-clockwise from +x; 360 = '
+                            '1-degree steps.')
 
 
 def far_field_params(n_wavelengths_help, n_wavelengths_tip):
@@ -550,18 +521,15 @@ def far_field_params(n_wavelengths_help, n_wavelengths_tip):
     return spectral_params(21, n_wavelengths_help, n_wavelengths_tip) + (N_ANGLES_PARAM,)
 
 
-FLUX_PARAMS = spectral_params(100, '50-200 give a smooth spectrum; the work per time step grows with the count.',
+FLUX_PARAMS = spectral_params(100, '50-200 for a smooth spectrum; the work per time step grows with it.',
                               '50 to 200 gives a smooth spectrum; more wavelengths slow down every time step.')
 
-MODE_NUMBER_HELP = ('1-based index of the mode in descending order of Re(n_eff) among the propagating modes (the '
-                    'industry-standard numbering; the ranking key is Re(k^2) of the transverse eigenvalue, so '
-                    'evanescent modes, Re(k^2) < 0, come after every propagating one whatever their Re(n_eff)): 1 = '
-                    'the fundamental, most strongly guided mode, 2 the next, ...; both parities count, so in a '
-                    'symmetric slab mode 1 is even and mode 2 odd; modes localised in the PML of a line that continues '
-                    'through it are discarded and not counted. The build fails when the line has fewer modes and '
-                    'warns when the selected one is not guided (Re(n_eff) not above the index of a span-end cell at a '
-                    'cpml or metal end: a cladding or radiation mode) or carries no forward power (an evanescent or '
-                    'backward mode).')
+MODE_NUMBER_HELP = ('Mode rank in descending Re(n_eff) (ranked by Re(k^2) of the transverse eigenvalue, so '
+                    'evanescent modes come after every propagating one): 1 = fundamental; both parities count (in a '
+                    'symmetric slab mode 1 is even, 2 odd); modes localised in the PML of a line continuing through '
+                    'it are not counted. The build fails when the line has fewer modes and warns when the selected '
+                    'one is not guided (Re(n_eff) not above the index of a span-end cell at a cpml or metal end) or '
+                    'carries no forward power.')
 
 
 def mode_number_param(selection_help, tip=''):
@@ -574,7 +542,7 @@ def mode_number_param(selection_help, tip=''):
 MODE_NUMBER_TIP_START = ('Which guided mode to {verb}: 1 is the fundamental, most strongly guided mode, 2 the next, '
                          'and so on.')
 MODE_SOURCE_NUMBER_PARAM = mode_number_param(
-    'The source result table lists the first max(mode_number + 2, 4) modes.',
+    'The result table lists the first max(mode_number + 2, 4) modes.',
     tip=(MODE_NUMBER_TIP_START.format(verb='launch')
          + '\n\nExtend the line well into the cladding on both sides of the guide.'))
 MODE_SOURCE_PARAMS = (
@@ -585,72 +553,59 @@ MODE_SOURCE_PARAMS = (
               '- Positive (+x or +y): toward +x from a vertical line, toward +y from a horizontal one.\n'
               '- Negative (-x or -y): toward -x or -y.\n\n'
               'Practically nothing is launched the other way.',
-          help='positive launches the mode toward +x for a vertical line (x = const) and toward +y for a horizontal '
-               'one, negative toward -x / -y. The total field starts at the line cells and continues downstream; '
-               'nothing is launched upstream at the source wavelength, and the backward leakage grows toward the '
-               'band edges of a gaussian pulse.'),
+          help='positive launches toward +x from a vertical line (x = const), +y from a horizontal one; negative '
+               'toward -x / -y. The total field starts at the line cells.'),
     Param('waveform', 'choice', 'gaussian', label='Waveform', choices=('gaussian', 'cw'),
           choice_labels=(('gaussian', 'Gaussian pulse'), ('cw', 'Continuous wave')),
           tip=f'Time shape of the source.\n\n{_GAUSSIAN_PULSE_TIP_LINE}\n{_CW_TIP_LINE}',
-          help=f'{_GAUSSIAN_WAVEFORM_HELP} {_CW_WAVEFORM_HELP} The complex mode profile is driven by the carrier '
-               'and its quadrature (cos) partner, so ricker is not offered.'),
+          help=f'{_GAUSSIAN_WAVEFORM_HELP} {_CW_WAVEFORM_HELP} No ricker: the complex profile needs the carrier '
+               'and its cos quadrature partner.'),
     Param('wavelength', 'float', 550e-9, label='Wavelength', unit='m', min=0.0, min_exclusive=True,
           tip='Vacuum wavelength of the source, entered in metres (1.55e-6 for 1550 nm).\n\n'
               'The mode shape is computed at this wavelength only, so the launch is exact there.',
-          help='Vacuum wavelength lambda0 = C0 / f0 of the carrier and the only wavelength at which the mode is '
-               'solved (profile, n_eff, impedance): the launch is exact and one-sided there. Typical 1.31e-6 or '
-               '1.55e-6 m in silicon photonics; the mesh needs >= 10 (better 20) cells per lambda0 / n at the '
-               'highest source frequency.'),
+          help='Vacuum wavelength lambda0 = C0 / f0 of the carrier, the only one the mode is solved at (profile, '
+               'n_eff, impedance): the launch is exact and one-sided there. Typical 1.31e-6 or 1.55e-6; the mesh '
+               'needs >= 10 (better 20) cells per lambda0 / n at the highest source frequency.'),
     Param('bandwidth', 'float', 0.3, label='Relative bandwidth', unit='1', min=0.0, min_exclusive=True,
           visible_if=(('waveform', ('gaussian',)),),
           tip='Spectral width of the pulse as a fraction of the centre frequency.\n\n'
               '0.1 to 0.3 is typical. A wider band leaks more power backwards and into radiation at its edges.',
-          help='Spectral width / f0 of the gaussian pulse, amplitude spectrum exp(-((f - f0) / (bandwidth * f0))^2): '
-               '0.78 of the peak at f0 * (1 +- bandwidth / 2), 1/e at f0 * (1 +- bandwidth); the mesh check and auto '
-               'mesh resolve f0 * (1 + bandwidth). The mode is solved at f0 only, so the backward leakage and the launch into radiation grow toward '
-               'the band edges as the guide disperses; 0.1-0.3 typical for waveguides (a narrower band lasts longer, '
-               'about 9 / (pi * bandwidth * f0)). Above 0.6 the build warns: the cos quadrature partner (not an exact '
-               'Hilbert partner) then biases fraction_* / phase_* toward the lower band edge and adds a DC part.'),
+          help='Spectral width / f0 of the gaussian pulse, amplitude spectrum exp(-((f - f0) / (bandwidth * f0))^2) '
+               '(1/e at f0 (1 +- bandwidth); the mesh check and auto mesh resolve f0 (1 + bandwidth)). The mode is '
+               'solved at f0 only, so backward leakage and radiation grow toward the band edges as the guide '
+               'disperses; 0.1-0.3 typical. Above 0.6 the build warns: the cos quadrature partner (not an exact '
+               'Hilbert partner) biases fraction_* / phase_* toward the lower band edge and adds a DC part.'),
     Param('power', 'float', 1.0, label='Mode power', unit='W/m', min=0.0, min_exclusive=True, tip=MODE_POWER_TIP,
-          help='Power per unit z length carried by the launched mode, 1/2 Re of the integral of (E x H*).n over the '
-               'line (the industry-standard 2D port input power): cw = the time-averaged power once the ramp has '
-               'settled, gaussian = the cycle-averaged power at the envelope peak. Fields scale with sqrt(power) and '
-               'are linear, so 1 W/m is the usual choice (a peak |E| of order 1e4 V/m in a 0.3 um silicon slab).'),
+          help='Power per unit z length of the launched mode, 1/2 Re integral of (E x H*).n over the line (the 2D '
+               'port input power): cw = time average after the ramp, gaussian = cycle average at the envelope peak. '
+               'Fields scale with sqrt(power) (1 W/m: peak |E| ~1e4 V/m in a 0.3 um silicon slab).'),
 )
 MODE_MONITOR_PARAMS = (
-    mode_number_param('It picks the mode at the middle monitor wavelength; at the other wavelengths the same mode is '
-                      'followed by its overlap with the neighbouring wavelength, so it keeps its identity where two '
-                      'modes cross in n_eff (a build warning lists wavelengths where that overlap stays below 0.9 or '
-                      'the followed mode is no longer guided, e.g. past a cutoff).',
+    mode_number_param('Picked at the middle monitor wavelength and followed to the others by overlap, so it keeps '
+                      'its identity where modes cross in n_eff (the build warns where the overlap stays below 0.9 or '
+                      'the mode is no longer guided, e.g. past a cutoff).',
                       tip=(MODE_NUMBER_TIP_START.format(verb='measure')
                            + '\n\nPut the line across a straight part of the guide, extending well into the '
                              'cladding.')),
-) + spectral_params(21, 'Each wavelength costs one 1D mode solve at build and two complex spectra per line cell '
-                        '(little GPU memory) plus work per time step; 11-41 typical.',
+) + spectral_params(21, 'Each wavelength costs a 1D mode solve at build, two complex spectra per line cell and '
+                        'work per step; 11-41 typical.',
                     '11 to 41 is typical; each adds a mode calculation at the start of the run.')
 
 # descriptions of the mode features (definition_fdtd adds the fields and span-end conditions)
-MODE_SOURCE_TEXT = ('The mode is injected as a one-sided total-field / scattered-field line (discrete equivalent '
-                    'currents): total field from the line cells downstream, while upstream only what comes back '
-                    '(reflections) remains. The launch is exact and one-sided at the source wavelength; toward the '
-                    'band edges of a gaussian pulse some power leaks upstream or into radiation because the profile '
-                    'and impedance of the mode change with wavelength, so keep the bandwidth modest in dispersive '
-                    'guides. Mode monitors normalise by it when it is the only enabled mode source of the physics. Its '
-                    'interface face holds scattered field, so a flux or mode monitor on the line of a negative '
-                    'source (total-field line cells, interface on their hi face) mixes both (validation warns).')
-MODE_SOLVE_TEXT = ('The 1D eigenmodes along the line are FDTD-consistent (kernel cell widths, numerical frequency and '
-                   'dispersion of the Yee scheme, PML stretch, complex permittivity and permeability of the line '
-                   'cells at that frequency with poles, sigma_e and sigma_m) and are solved at build (finalize) on '
-                   'the final materials; during the run they are re-solved, following the selected mode by overlap, '
-                   'whenever the line materials drifted by more than 1e-3 relative since the last solve '
-                   '(thermo-optic or Pockels coupling, state-dependent permittivity; one host transfer of the line '
-                   'per material update). A mode monitor then decomposes its whole-run spectra with the latest modes '
-                   '(the run log notes it), which fits only light that passed after the medium settled. Put the line '
-                   'across a straight guide with the same cross-section a few cells on either side and a locally '
-                   'uniform mesh (validation refuses a line whose face falls on the outer grid wall and warns when a '
-                   'wall boundary pins the line cell or its face every step, when its face lies inside a CPML layer '
-                   '(line in the outermost window cell) or when the cell widths along the normal change by more than '
-                   '1% around the line).')
+MODE_SOURCE_TEXT = ('One-sided total-field / scattered-field line: total field from the line cells downstream, only '
+                    'reflections upstream. Exact at the source wavelength; toward the '
+                    'band edges of a gaussian pulse some power leaks upstream or into radiation (the mode disperses), '
+                    'so keep the bandwidth modest in dispersive guides. Mode monitors normalise by it when it is the '
+                    'only enabled mode source of the physics. Its interface face holds scattered field, so a flux or '
+                    'mode monitor on the line of a negative source mixes both (validation warns).')
+MODE_SOLVE_TEXT = ('The 1D line eigenmodes are FDTD-consistent (Yee dispersion, PML stretch, complex line-cell eps '
+                   '/ mu), solved at build and re-solved during the run (following the mode by overlap) whenever the '
+                   'line materials drift by > 1e-3 relative (thermo-optic, Pockels, state-dependent eps); a mode '
+                   'monitor then decomposes its whole-run spectra with the latest modes (run log note), valid only '
+                   'for light passing after the medium settled. Put the line across a straight guide, same cross-section a few '
+                   'cells either side, locally uniform mesh (validation refuses a line whose face is on the outer '
+                   'grid wall and warns when a wall pins the line cell or its face, when its face lies in a CPML '
+                   'layer, or when the normal cell widths change by > 1% around it).')
 # polarisation -> (span-end conditions at wall faces, the metal condition of an end inside the domain)
 _MODE_END_CONDITIONS = {
     'ez': ('an end on a pec domain edge takes E_z = 0, one on a pmc or symmetric edge dE_z/dn = 0 and one on an '
@@ -666,50 +621,41 @@ def mode_end_text(polarization, solver):
     """Span-end conditions of a mode_source / mode_monitor line of em_<solver>_<polarization> (mode_ports.PortLine,
     alike for FDTD and FDFD); hz adds the face-permittivity note."""
     walls, metal = _MODE_END_CONDITIONS[polarization]
-    text = ('Span ends, as at an industry-standard port boundary: an end on a cpml domain edge continues the solve '
-            'through the PML '
-            f'cells (open: radiation is absorbed); {walls}, as those walls do; an end inside the domain, or a partial '
-            f'span of a periodic axis, is metal ({metal}), so extend the line well into the cladding (the build warns '
-            'when the mode still exceeds 1% of its peak at a metal end); a span over a whole periodic axis is '
-            'periodic.')
+    text = ('Span ends: an end on a cpml domain edge continues the solve through the PML (open); '
+            f'{walls}; an end inside the domain, or a partial span of a periodic axis, is metal ({metal}), so extend '
+            'the line well into the cladding (the build warns above 1% of the mode peak at a metal end); a span over '
+            'a whole periodic axis is periodic.')
     if polarization == 'hz':
         text += (f' The in-plane E faces use {_MODE_FACE_PERMITTIVITY[solver]} ({FACE_MEAN}), so a guide edge on a '
-                 'face line takes the mean of core and cladding there.')
+                 'face line takes the core / cladding mean.')
     return text
 
 
-MODE_TABLE_ROWS =('one row per mode for the first max(mode_number + 2, 4) modes: mode_number, n_eff (real part), '
-                   'n_eff_imag (< 0 = loss in the exp(+j omega t) convention), loss_db_per_cm, n_group, edge_field '
-                   '(largest |field| at the two ends of the solved line / its peak; above 1e-2 at a metal end the line '
-                   'cuts the mode) and selected (True for the launched mode)')   # mode-source result table rows
+MODE_TABLE_ROWS =('one row per mode for the first max(mode_number + 2, 4) modes: mode_number, n_eff, n_eff_imag '
+                   '(< 0 = loss, exp(+j omega t)), loss_db_per_cm, n_group, edge_field (largest |field| at the line '
+                   'ends / peak; above 1e-2 at a metal end the line cuts the mode), selected (the launched '
+                   'mode)')   # mode-source result table rows
 MODE_SOURCE_RESULT_TEXT = (f"Result 'table' at the source wavelength, {MODE_TABLE_ROWS}; extras wavelength, power, "
-                           'direction, mode_number and tracked_mode_number (the rank of the launched mode in the '
-                           'latest solve: mode_number until a re-solve during the run finds it at another rank; the '
-                           'selected row follows it).')
-PER_CW_TEXT = ('The per_cw values exist only when every source feature of the physics shares one waveform (type, '
-               'wavelength, bandwidth; coupling drives are not counted); S(omega) = the dt-weighted spectrum of that '
-               'waveform over the steps run; NaN where |S|^2 is below 1e-6 of its value at the source wavelength (cw: '
-               'also outside |f - f0| < 1 / (steps run x dt)). They equal the em_fdfd_* values at the same source '
-               'amplitudes, exactly only at the source wavelength (sources are calibrated there).')
+                           'direction, mode_number, tracked_mode_number (rank of the launched mode in the latest '
+                           'solve, changed by a re-solve during the run; selected follows it).')
+PER_CW_TEXT = ('per_cw values exist only when every source feature of the physics shares one waveform (type, '
+               'wavelength, bandwidth; coupling drives not counted); S(omega) = dt-weighted spectrum of that waveform '
+               'over the steps run; NaN where |S|^2 < 1e-6 of its value at the source wavelength (cw: also outside '
+               '|f - f0| < 1 / (steps run x dt)). They equal the em_fdfd_* values at the same amplitudes, exactly '
+               'only at the source wavelength.')
 MODE_MONITOR_RESULT_TEXT = ("Result 'xy' versus wavelength: power_positive / power_negative = 2 |a|^2 in a.u. "
-                            '(dt-weighted spectral power per unit z length in the flux_monitor convention, so '
-                            'comparable with its power); power_per_cw_positive / power_per_cw_negative = |a|^2 / '
-                            '|S|^2 in W/m (the cw mode power, as em_fdfd_* power_*); with exactly one enabled '
-                            'mode_source in the physics also '
-                            'fraction_positive / fraction_negative (unit 1) = mode power / source power at that '
-                            'wavelength (|S|^2: transmission into this mode downstream of the source, reflection '
-                            'upstream; NaN where |S(omega)|^2 of the source is below 1e-6 of its value at the source '
-                            'wavelength, and for a cw source outside |f - f0| < 1 / (steps run x dt)) and '
-                            'phase_positive / '
-                            'phase_negative (rad) = the phase of that S-parameter: the mode amplitude relative to the '
-                            'amplitude the source launches on its own line, not de-embedded (each mode profile is '
-                            'phased with its largest field sample real and positive, the lowest-coordinate one of '
-                            'mirror-equal peaks); extras frequency, wavelength, '
-                            'n_eff (real part), n_eff_imag (per wavelength), mode_number, tracked_mode_number (rank of the '
-                            'followed mode at the middle wavelength in the latest solve) and normalized (True when the '
-                            'fractions are present). The source spectrum covers the steps run, so run until the pulse '
-                            'has passed every monitor; the fractions inherit the off-centre leakage of the source, '
-                            f'so they are most accurate near its wavelength. {PER_CW_TEXT}')
+                            '(flux_monitor convention, comparable with its power); power_per_cw_positive / _negative '
+                            '= |a|^2 / |S|^2 in W/m (cw mode power, as em_fdfd_* power_*); with exactly one enabled '
+                            'mode_source in the physics also fraction_positive / _negative = mode power / source '
+                            'power (transmission into this mode downstream of the source, reflection upstream; NaN '
+                            'as for per_cw) and phase_positive / _negative (rad) = the phase of that S-parameter '
+                            'relative to the amplitude the source launches on its own line, not de-embedded (each '
+                            'profile phased with its largest sample real and positive, the lowest-coordinate one of '
+                            'mirror-equal peaks); extras frequency, wavelength, n_eff, n_eff_imag (per wavelength), '
+                            'mode_number, tracked_mode_number (rank of the followed mode at the middle wavelength in '
+                            'the latest solve), normalized (fractions present). Run until the pulse has passed every '
+                            'monitor; the fractions inherit the source leakage, most accurate near its wavelength. '
+                            f'{PER_CW_TEXT}')
 
 
 # ---- build: domain requirements, create ----

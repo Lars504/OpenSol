@@ -1168,11 +1168,9 @@ def geometry_param(planar_help, axisymmetric_help, planar_tip, axisymmetric_tip,
              'Do not put a boundary condition on the left edge in axisymmetric mode: it is the axis.'),
         help=(f'planar: {planar_help}. axisymmetric: a body of revolution about the x_lo window edge (x = r >= 0, y = '
               f'z): {axisymmetric_help}. x_lo is the axis (r = 0: symmetry, {axis_text}). Field derived values of the '
-              "whole model are weighted by the ring volume 2 pi r dx dy ('integral' a whole-body total, 'mean' a "
-              'volume mean; also for fields of other physics). A coupled physics that is planar (its type has no '
-              "geometry setting, e.g. EM, or it is set to planar) solves the drawing as a planar cut per unit z "
-              'length, so its fields are applied per cell as rings (validation warns); a partner with geometry '
-              'axisymmetric too is consistent.'))
+              "whole model are ring-weighted by 2 pi r dx dy ('integral' a whole-body total, 'mean' a volume mean). "
+              'A coupled planar physics (no geometry setting, e.g. EM, or set to planar) solves a planar cut per '
+              'unit z length whose fields are applied per cell as rings (validation warns).'))
 
 
 def is_axisymmetric(settings_values):
@@ -1188,10 +1186,9 @@ DISCRETIZATION_PARAM = Param(
     tip=('Order of the finite elements on a triangle or tetrahedron mesh; ignored on a rectangular-cell mesh.\n\n'
          '- Quadratic: more accurate for the same mesh, the usual choice.\n'
          '- Linear: cheaper per element, needs a finer mesh.'),
-    help=('Lagrange order of the unknown on a triangle or tetrahedron mesh (MeshSpec kind triangles / tetrahedra; '
-          'ignored on tensor meshes): quadratic (P2, the industry-standard default) or linear (P1). On triangles '
-          'elements with an edge on a circle / ellipse are mapped isoparametrically with quadratic elements (geometry '
-          'shape order = the element order), straight with linear ones; tetrahedra are always straight (affine).'))
+    help=('Lagrange order on a triangles / tetrahedra mesh (ignored on tensor meshes): quadratic (P2) or linear (P1). '
+          'Quadratic triangles with an edge on a circle / ellipse are curved (isoparametric), linear ones straight; '
+          'tetrahedra are always straight.'))
 
 
 def element_order(settings_values) -> int:
@@ -1227,21 +1224,17 @@ AZIMUTHAL_ORDER_PARAM = Param(
          'this number times the angle, for example 1 for a uniform field across the axis.\n\n'
          'With an order above 0 every value you enter and every result is the size of that cosine part, and '
          'totals over the rings take half the weight of order 0.'),
-    help=('Azimuthal order m >= 0 of an axisymmetric (r, z) solve (symmetry 2.14). 0: rotationally symmetric. m >= 1: '
-          'the order-m part u_m(r, z) cos(m phi) of a load on the body of revolution (m = 1: a uniform transverse '
-          'field, V = -E0 r cos(phi)); the operator gains c_xx m^2 / r^2 per cell volume (r_c the cell-centre radius; '
-          'the radial coefficient _xx is also taken along phi), which makes u_m vanish on the axis and anchors every '
-          'cell with c_xx > 0 (no other anchor needed). Every field, source density, boundary, held and initial value '
-          'is then the amplitude of cos(m phi) (heat: T - T0 is the amplitude, T0 drops out), field components are '
-          'the in-plane r / z amplitudes (the phi part is not output), and ring totals carry pi instead of 2 pi (the '
-          "phi integral of cos^2): held currents / charges, scalar outputs and field 'integral' derived values are "
-          'cos(m phi) moments (e.g. the integral of rho cos(m phi) dV), a point source P is the order-m part of a '
-          'point source P at phi = 0 (its Fourier sum over m: the m = 0 ring of total P plus every order with the '
-          'same P), and a dissipation density (q_joule) is twice its phi mean, so its integral is the total power. '
-          "Needs geometry 'axisymmetric' on a Cartesian domain; every physics of the model with this setting shares "
-          'one m (derived values weight rings by one angle); couplings of an order-m physics warn (products such as '
-          'Joule heating are no single order). solid_mechanics: the mode amplitudes U_r, U_z ~ cos(m phi), U_phi ~ '
-          'sin(m phi) (see its description).'))
+    help=('Azimuthal order m of an axisymmetric (r, z) solve (symmetry 2.14). 0: rotationally symmetric. m >= 1: the '
+          'order-m part u_m(r, z) cos(m phi) of a load (m = 1: a uniform transverse field, V = -E0 r cos(phi)); the '
+          'operator gains c_xx m^2 / r_c^2 per cell volume (radial coefficient also along phi), so u_m vanishes on '
+          'the axis and every cell with c_xx > 0 is anchored. Every field, source density, boundary, held and '
+          'initial value is then a cos(m phi) amplitude (heat: of T - T0), field components are the r / z '
+          'amplitudes (no phi part), and ring totals carry pi instead of 2 pi: held currents / charges, scalar '
+          "outputs and field 'integral' derived values are cos(m phi) moments, a point source P is the order-m part "
+          'of a point source P at phi = 0, and a dissipation density (q_joule) is twice its phi mean (its integral '
+          "is the total power). Needs geometry 'axisymmetric' on a Cartesian domain; every physics with this "
+          'setting shares one m; couplings of an order-m physics warn (products such as Joule heating are no '
+          'single order). solid_mechanics: U_r, U_z ~ cos(m phi), U_phi ~ sin(m phi) (see its description).'))
 
 
 def azimuthal_order_of(settings_values):
@@ -1384,33 +1377,31 @@ def mapped_domain_issues(vctx, physics_spec, perimeter_flux_types, cross_prefix)
 # ---- gas Params of the squeeze_film_damping features (fem.squeeze_film; solid_mechanics_3d, membrane) ----
 FILM_GAP_PARAM = Param(
     'gap', 'float', 2e-6, label='Gap height', unit='m', min=0.0, min_exclusive=True,
-    help='Height H of the gas gap between the vibrating surface and the fixed wall facing it [m], uniform; the film '
-         'equation assumes H much smaller than the footprint (typical MEMS 0.5-10 um). The damping scales as 1 / H^3.',
+    help='Uniform height H of the gas gap between the vibrating surface and the fixed wall facing it, << the '
+         'footprint (typical MEMS 0.5-10 um); damping ~ 1 / H^3.',
     tip='Thickness of the thin gas layer between the vibrating surface and the fixed wall below or above it.\n\n'
         'Typical 1 to 10 micrometres.')
 GAS_VISCOSITY_PARAM = Param(
     'viscosity', 'float', 1.81e-5, label='Gas viscosity', unit='Pa s', min=0.0, min_exclusive=True,
-    help='Dynamic viscosity mu of the gas [Pa s] (air at 20 C: 1.81e-5), independent of pressure; slip reduces it to '
-         'mu_eff in the gap.',
+    help='Dynamic viscosity mu of the gas (air at 20 C: 1.81e-5), pressure-independent; slip reduces it to mu_eff.',
     tip='How viscous the gas is. Air at room temperature: 1.81e-5 Pa s.')
 AMBIENT_PRESSURE_PARAM = Param(
     'ambient_pressure', 'float', 101325.0, label='Ambient pressure', unit='Pa', min=0.0,
-    help='Ambient gas pressure p_a [Pa] (1 atm = 101325): sets the gas compressibility H / p_a of the film; 0 = an '
-         'incompressible film (pure damping, no gas stiffness; needs vents). Compressibility matters at squeeze numbers '
-         'sigma = 12 mu omega L^2 / (p_a H^2) of order 1 and above (L the distance to a vent): the damping falls and a '
-         'gas spring appears. The mean free path is not rescaled with it: set both.',
+    help='Ambient gas pressure p_a, sets the film compressibility H / p_a; 0 = incompressible (pure damping, needs '
+         'vents). Compressibility matters from squeeze numbers sigma = 12 mu omega L^2 / (p_a H^2) ~ 1 (L the '
+         'distance to a vent): damping falls, a gas spring appears. mean_free_path is not rescaled with it: set '
+         'both.',
     tip='Pressure of the surrounding gas.\n\n0 treats the gas as incompressible (damping only, no spring).')
 GAS_SLIP_PARAM = Param(
     'slip', 'choice', 'veijola', label='Gas slip', choices=SLIP_MODELS,
     choice_labels=(('veijola', 'Rarefied gas (Veijola slip)'), ('none', 'No slip')),
-    help='veijola: the slip-flow viscosity mu_eff = mu / (1 + 9.638 Kn^1.159), Kn = mean_free_path / gap (Veijola et '
-         'al. 1995, 0 <= Kn <= 880, about 5 %); none: mu_eff = mu (continuum, Kn << 0.01).',
+    help='veijola: mu_eff = mu / (1 + 9.638 Kn^1.159), Kn = mean_free_path / gap (Veijola et al. 1995, 0 <= Kn <= '
+         '880, ~5 %); none: mu_eff = mu (continuum, Kn << 0.01).',
     tip='Rarefied gas: the gas slips on the walls of a narrow gap or at low pressure, which lowers the damping.\n\n'
         'No slip: the continuum gas of a wide gap.')
 MEAN_FREE_PATH_PARAM = Param(
     'mean_free_path', 'float', 68e-9, label='Mean free path', unit='m', min=0.0, visible_if=(('slip', ('veijola',)),),
-    help='Molecular mean free path of the gas at the ambient pressure [m] (air: 68e-9 at 101325 Pa, scaling as 1 / p_a: '
-         '6.8e-6 at 1013 Pa); used by slip veijola.',
+    help='Molecular mean free path at the ambient pressure (air: 68e-9 at 101325 Pa, ~1 / p_a: 6.8e-6 at 1013 Pa).',
     tip='Average distance a gas molecule travels between collisions; about 68 nanometres for air at 1 atm, longer at '
         'lower pressure.')
 SQUEEZE_FILM_GAS_PARAMS = (FILM_GAP_PARAM, GAS_VISCOSITY_PARAM, AMBIENT_PRESSURE_PARAM, GAS_SLIP_PARAM,
