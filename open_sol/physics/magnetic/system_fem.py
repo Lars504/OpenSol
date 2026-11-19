@@ -17,7 +17,7 @@ from ...fem.fixed_pattern import FixedPatternCsr
 from ...fem.magnetostatics import (assemble_curl_tangent, curl_quadrature, curl_tangent_blocks, curl_vector,
                                    element_integrals, local_flux_density, quadrature_flux_density, quadrature_integral,
                                    quadrature_values)
-from ...fem.mesher import MERGE_TOLERANCE
+from ...fem.mesher import window_inset
 from ...fem.sampling import evaluate
 
 FACES = ('x_lo', 'x_hi', 'y_lo', 'y_hi')
@@ -70,8 +70,7 @@ class MagneticFEMSystem:
             array.flags.writeable = False
         self.values = np.zeros(self.full.n_dofs)
         self.started = False          # values hold a solution (or a seeded one): Newton starts from them
-        x0, y0, x1, y1 = mesh.window
-        self._tolerance = MERGE_TOLERANCE * max(x1 - x0, y1 - y0)
+        self._tolerance = window_inset(mesh.window)   # points this close to the axis lie on it
         # conditions (later ones win shared dofs: faces < external field < held elements < the axis)
         self.face_kinds = dict.fromkeys(FACES, 'dirichlet')   # 'dirichlet' (A = 0) or 'natural' (symmetry)
         self.external_field = None    # (B_x, B_y) [T]

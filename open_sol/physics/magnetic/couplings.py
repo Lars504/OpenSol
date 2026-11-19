@@ -38,7 +38,7 @@ class LorentzForceDensity:
         revision = magnetic.n_solves
         if self.force_x is not None and revision == self._revision:
             return
-        if magnetic.axisymmetric:
+        if magnetic.axisymmetric:   # would be f = (J B_z, -J B_r): (r, z, phi) is left-handed
             raise ValueError(f"magnetic physics '{magnetic.name}' is axisymmetric: the Lorentz force has no plane-strain "
                              'image (solid_mechanics is planar)')
         fields = magnetic.fields

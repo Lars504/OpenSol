@@ -82,8 +82,9 @@ class _HostSystem:
 
 
 class MagneticACPhysics(MagneticPhysics):
-    """curl(nu curl A) + j omega sigma A = J at one frequency (magnetic_fields_ac): host SuperLU of the eliminated window
-    system, refactorised only when a recycled-factor GMRES misses (operator change); fields copied to the run backend."""
+    """curl(nu curl A) + j omega sigma A = J at one frequency (magnetic_fields_ac): one complex factor of the eliminated
+    window system by the 'linear' role (host SuperLU / MUMPS / PARDISO or cuDSS, circuit.RecycledFactor), refactorised
+    only when a recycled-factor GMRES misses (operator change); fields copied to the run backend."""
 
     type_label = 'magnetic_fields_ac'
     _base_material_schema = MAGNETIC_AC_SCHEMA

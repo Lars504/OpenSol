@@ -9,7 +9,7 @@ from ...model.definition_helpers import (conducting_fraction, eigen_search, eval
                                          optional_material_param, reports_model_checks)
 from ...model.expressions import ExpressionError, evaluate_scalar
 from ...model.geometry import expand_entities
-from ...model.schema import FREE_MESH_KINDS, FeatureType, Issue, Param, feature_path, resolve_values
+from ...model.schema import EIGENFREQUENCY_STUDY, FREE_MESH_KINDS, FeatureType, Issue, Param, feature_path, resolve_values
 from ...solvers.pcg import resolve_max_iterations
 from .material_params import (PHOTOELASTIC_P11_PARAM, PHOTOELASTIC_P12_PARAM, POISSON_RATIO_PARAM,
                               YOUNGS_MODULUS_PARAM)
@@ -21,7 +21,6 @@ from .tangent_update import SLOW_RESIDUAL_RATIO, TANGENT_UPDATES
 LOCKING_POISSON_RATIO = 0.45   # bilinear / trilinear elements grow too stiff (volumetric locking) above about this
 SUPPORT_FEATURES = frozenset({'fixed', 'roller', 'displacement', 'fixed_domain', 'prescribed_displacement_domain'})
 LOAD_FEATURES = frozenset({'boundary_load', 'body_force', 'temperature_change'})
-EIGENFREQUENCY_STUDY = 'eigenfrequency'   # = model.study_eigenfrequency.STUDY_NAME
 OPTOMECHANICS_STUDY = 'optomechanics'     # = model.study_optomechanics.STUDY_NAME
 FREQUENCY_RESPONSE_STUDY_NAME = 'frequency_response'   # = model.study_frequency_response.STUDY_NAME
 BACKGROUND_STUDY = 'stationary'           # the background study of the modal / response studies

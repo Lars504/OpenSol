@@ -18,7 +18,7 @@ from ..solvers.roles import SolverRole, resolved_precision
 from .expressions import TIME_NAMES, Expression, ExpressionError, evaluate_scalar, referenced_names
 from .geometry import (bounding_box, domain_size_z, expand_entities, perimeter_weights, point_z,
                        preview_pixel_centers)
-from .schema import FREE_MESH_KINDS, Issue, Param, feature_path, known_physics, state_field_names
+from .schema import EIGENFREQUENCY_STUDY, FREE_MESH_KINDS, Issue, Param, feature_path, known_physics, state_field_names
 
 
 def evaluates_to(value, parameters, predicate):
@@ -549,7 +549,7 @@ def eigen_factorization(solvers):
 def eigen_search(spec) -> str:
     """The eigenfrequency study's search setting of a ModelSpec ('nearest' unset, or in any other study)."""
     study = spec.study
-    if study.type != 'eigenfrequency':
+    if study.type != EIGENFREQUENCY_STUDY:
         return 'nearest'
     search = (study.settings if isinstance(study.settings, dict) else {}).get('search', 'nearest')
     return search if isinstance(search, str) else 'nearest'

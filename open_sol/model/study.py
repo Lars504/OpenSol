@@ -26,8 +26,8 @@ from .builder import build as build_model, external_memory_record, run_memory_re
 from .meshing import element_meshes_kept
 from .definition_helpers import wavelength_range_issues
 from .expressions import evaluate_parameters, evaluate_scalar
-from .schema import (FREQUENCY_DOMAIN_STUDY, RESULT_KINDS, Issue, Param, StudyType, get_registry, known_physics,
-                     resolve_values)
+from .schema import (FREQUENCY_DOMAIN_STUDY, RESULT_KINDS, TIME_DEPENDENT_STUDY, Issue, Param, StudyType, get_registry,
+                     known_physics, resolve_values)
 from ..core import host_memory
 from .session import (LIVE_SOLUTION, SelectedSolution, Snapshot, StoredSolution, earlier_derived_names,
                       live_snapshot_index, snapshot_solution_names, solution_bytes)
@@ -1967,7 +1967,7 @@ def register(registry):
     (study_thermal_noise), 'nonlinear_frequency_domain' (study_nonlinear), 'optomechanics' (study_optomechanics) and
     'frequency_response' (study_frequency_response), then the model-layer selftest loader."""
     registry.register_study(StudyType(
-        'time_dependent', 'Time dependent',
+        TIME_DEPENDENT_STUDY, 'Time dependent',
         summary='Steps every physics forward in time and stores field snapshots along the way. Needs at least one '
                 'physics that changes in time, such as time-domain light or transient heat.',
         description='Advances every physics in ticks of dt_sync, the smallest dt_limit of the physics (EM: its '

@@ -18,8 +18,9 @@ from ...solvers.arpack_shift_invert import CUDSS_FACTORIZATIONS
 from ...solvers.host_direct import HOST_DIRECT_BACK_ENDS
 from ...solvers.sparse_direct import LINEAR_SOLVER_CHOICES
 from ...solvers.explicit_kernels import stepper_precision
-# FREQUENCY_DOMAIN_STUDY: the study whose wavelengths replace the wavelength setting (re-exported to the EM definitions)
-from ...model.schema import (FREQUENCY_DOMAIN_STUDY, GYRATION_PROPERTY_NAMES, PERMITTIVITY_PROPERTY_NAMES,
+# FREQUENCY_DOMAIN_STUDY (the study whose wavelengths replace the wavelength setting) and EIGENFREQUENCY_STUDY are
+# re-exported to the EM definitions
+from ...model.schema import (EIGENFREQUENCY_STUDY, FREQUENCY_DOMAIN_STUDY, GYRATION_PROPERTY_NAMES, PERMITTIVITY_PROPERTY_NAMES,
                              DomainRequirements, Issue, Param,
                              array_owner, coupling_writes, feature_path, known_physics, output_field_names, permittivity_arrays,
                              resolve_values, state_field_names)
@@ -729,7 +730,6 @@ def unused_wavelength_issues(vctx, settings_values, path):
 
 
 # ---- eigen-solved FDFD physics: an eigenfrequency study or the optical side of an optomechanics study ----
-EIGENFREQUENCY_STUDY = 'eigenfrequency'   # = model.study_eigenfrequency.STUDY_NAME
 OPTOMECHANICS_STUDY = 'optomechanics'     # = model.study_optomechanics.STUDY_NAME
 _OPTOMECHANICAL_FEATURE = 'optomechanical_coupling'   # solid_mechanics feature naming its optical physics
 BOTH_GRIDS = ('tensor', 'triangles')   # PhysicsType / FeatureType.grids of host-solved types running on triangles too

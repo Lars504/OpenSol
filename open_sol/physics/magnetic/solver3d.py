@@ -457,17 +457,22 @@ class MagneticPhysics3D(DiffusionPhysicsBase):
     def _saturating_flux_magnitude(self):
         """float64 centre |B| (k,) of the saturating cells from the latest solve: operator flux plus the drive face
         terms, as _update_fields computes B there."""
-        system = self.system
         flat = self._nonlinear_flat
-        flux = system.flux_at_centres()   # -c grad u per axis [T]
-        if self._face_drives is not None:
-            drive = face_terms_at_centres_3d(self._face_drives, system.geometry_3d, ~system.fixed_user)
-            flux = tuple(operator_part + drive_part for operator_part, drive_part in zip(flux, drive))
         magnitude_squared = 0.0
-        for flux_density in flux:
+        for flux_density in self._flux_density_at_centres(~self.system.fixed_user):
             component = flux_density.ravel()[flat].astype(np.float64)
             magnitude_squared = magnitude_squared + component * component
         return self.xp.sqrt(magnitude_squared)
+
+    def _flux_density_at_centres(self, free):
+        """Window (B_x, B_y, B_z) = operator face flux + drive face terms averaged to the centres (held cells 0): the
+        one B of _update_fields and _saturating_flux_magnitude (never T - grad u)."""
+        system = self.system
+        flux = system.flux_at_centres()   # -c grad u per axis [T]
+        if self._face_drives is not None:
+            drive = face_terms_at_centres_3d(self._face_drives, system.geometry_3d, free)
+            flux = tuple(operator_part + drive_part for operator_part, drive_part in zip(flux, drive))
+        return flux
 
     def _saturated_log_permeability(self, field_magnitude):
         """ln of the secant mu_r (float64 (k,)) of the curves on the saturating cells at their float64 centre |H| =
@@ -616,10 +621,7 @@ class MagneticPhysics3D(DiffusionPhysicsBase):
         fields = self.fields
         self._write_potential_field()
         free = ~system.fixed_user
-        flux = system.flux_at_centres()   # -c grad u per axis [T]
-        if self._face_drives is not None:
-            drive = face_terms_at_centres_3d(self._face_drives, system.geometry_3d, free)
-            flux = tuple(operator_part + drive_part for operator_part, drive_part in zip(flux, drive))
+        flux = self._flux_density_at_centres(free)
         names = self.domain.materials.property_names()
         coefficients = (system.assembled_c_xx, system.assembled_c_yy, system.assembled_c_zz)
         magnitude_squared = 0.0

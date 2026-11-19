@@ -314,10 +314,8 @@ def _validate_external_field(vctx, physics_spec, feature_spec, values):
     """Selection 'all' only; axisymmetric: B_x = 0."""
     path = feature_path(physics_spec, feature_spec)
     issues = _validate_whole_window(vctx, physics_spec, feature_spec, values)
-    try:   # magnetostatics or magnetic_fields_ac (they share this feature)
-        settings = vctx.registry.physics_type(physics_spec.type).settings
-    except KeyError:
-        settings = _SETTINGS
+    # magnetostatics or magnetic_fields_ac (they share this feature): read the physics' own type settings
+    settings = vctx.registry.physics_type(physics_spec.type).settings
     if is_axisymmetric(vctx.values(settings, physics_spec.settings)) and values.get('B_x', 0.0) != 0.0:
         issues.append(Issue('error', path, 'an axisymmetric external field is axial only: set B_x (= B_r) to 0 and '
                                            'the axial field in B_y'))

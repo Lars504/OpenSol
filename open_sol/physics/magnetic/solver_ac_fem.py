@@ -14,7 +14,7 @@ from ...fem.elements import lagrange_basis
 from ...fem.indicators import lagrange_at
 from ...fem.magnetostatics import (assemble_curl_tangent, block_load, block_mass, element_integrals,
                                    quadrature_flux_density, quadrature_integral, quadrature_values)
-from ...fem.mesher import MERGE_TOLERANCE
+from ...fem.mesher import window_inset
 from ...fem.renderer import FEMFieldRenderer
 from ...solvers.sparse_direct import CUDSS_BACK_ENDS, SparseDirectSolver
 from .circuit import (COIL_RESULT_KEYS, ConductorRow, RecycledFactor, bordered_system,
@@ -105,8 +105,7 @@ class MagneticACFEMPhysics(TriangleMagneticBase):
                                         backend=domain.backend.name, anchor_text=_ANCHOR_TEXT)
         self._measure = self.system.element_measure   # int dV per element (per radian when axisymmetric)
         self._area = self.system.element_area         # plain x-y / r-z area
-        x0, y0, x1, y1 = mesh.window
-        self._axis_tolerance = MERGE_TOLERANCE * max(x1 - x0, y1 - y0)
+        self._axis_tolerance = window_inset(mesh.window)
         self.fields = ElementFields(AC_FIELD_NAMES, mesh.n_elements, self.xp)
         self.coils = []
         self.probes = []             # (FieldProbe, node)

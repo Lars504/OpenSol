@@ -4,13 +4,13 @@ snapshot per
 resonance number."""
 import math
 
-from .schema import Issue, Param, StudyType
+from .schema import EIGENFREQUENCY_STUDY, Issue, Param, StudyType
 from .solver_hooks import EigenfrequencySolver, MultiShiftEigenSolver
 from .study import (_PARITY_SECTORS_PARAM, _background_fixed_point_params, _background_stage, _log_eigen_solve,
                     _numbered_snapshots, _reselect_first_resonance, _scipy_issues, _selected_physics,
                     _solve_static_states, _solver_roles, _study_solved_types, _with_parity_sectors)
 
-STUDY_NAME = 'eigenfrequency'
+STUDY_NAME = EIGENFREQUENCY_STUDY
 _RESONANCE_STAGE = 'Resonance solve'
 # the eigen-solved types (missing-physics remedy and texts)
 _SOLVED_TYPES_TEXT = ('em_fdfd_ez, em_fdfd_hz, em_fdfd_bor, em_fdfd_conical, em_fdfd_3d, solid_mechanics, '

@@ -10,7 +10,7 @@ from ...core.memory_estimate import (BOOL_BYTES, COMPLEX64_BYTES, COMPLEX128_BYT
 from ...model.definition_helpers import (eigen_factorization, eigen_subspace_size, host_direct_back_end,
                                          linear_solver_cudss, resolved_back_end, resolved_stepper_precision)
 from ...model.definition_resonance import point_trace_items
-from ...model.schema import resolve_values, solver_backend
+from ...model.schema import EIGENFREQUENCY_STUDY, resolve_values, solver_backend
 from ...solvers.arpack_shift_invert import (CUDSS_FACTORIZATIONS, MIXED_EIGEN_MIN_UNKNOWNS, arnoldi_basis_bytes,
                                             arnoldi_basis_size, device_arnoldi_fits)
 from ...solvers.cudss_factor import (CUDSS_SOLVE_PHASE, FactorFill, factor_device_bytes, index_map_bytes,
@@ -48,7 +48,6 @@ ADJOINT_PHASE = 'adjoint solve'             # one eps_sensitivity: transposed-so
 # temporary; + D v with a row scale)
 _FILTER_BLOCKS = 5
 _DFT_SPECTRA = {'ez': 1, 'hz': 3}   # complex64 (n_wavelengths, mx, my) spectra of a DFTMonitor (monitors.py)
-_EIGENFREQUENCY_STUDY = 'eigenfrequency'   # = model.study_eigenfrequency.STUDY_NAME
 # FieldProbe users (core.monitors: growable float32 device trace + float64 host times); counted by the FDTD physics
 # estimator because a FeatureType estimator does not see the study duration
 _POINT_TRACE_FEATURES = ('field_probe', 'resonance_monitor')
@@ -845,7 +844,7 @@ def bor_memory_estimate(settings_values, mesh, context):
     n_cells = int(mesh.n_cells)
     unknowns = 3 * n_cells
     study_type = context.spec.study.type
-    eigen = study_type == _EIGENFREQUENCY_STUDY
+    eigen = study_type == EIGENFREQUENCY_STUDY
     shifted = (context.solvers or {}).get('shifted')
     line_block = shifted is not None and shifted.solver_type.name == 'line_block'
     factorization = host_factorization(context.solvers, eigen)

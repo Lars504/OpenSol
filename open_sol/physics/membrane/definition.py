@@ -26,7 +26,7 @@ from ...model.definition_helpers import (DIFFUSION_DIRECT_BACK_ENDS, DISCRETIZAT
                                          reduced_sweep_memory_items, reports_model_checks, resolved_back_end,
                                          selected_material_data, squeeze_film_gas_issues, validate_points_inside)
 from ...model.geometry import expand_entities
-from ...model.schema import (DomainRequirements, FeatureType, Issue, Param, PhysicsType, SolverRole, feature_path,
+from ...model.schema import (EIGENFREQUENCY_STUDY, DomainRequirements, FeatureType, Issue, Param, PhysicsType, SolverRole, feature_path,
                              resolve_values, solver_backend)
 from ...solvers.arpack_shift_invert import (CUDSS_FACTORIZATIONS, DEVICE_PENCIL_MIN_ENTRIES, MIXED_EIGEN_MIN_UNKNOWNS,
                                             arnoldi_basis_bytes, arnoldi_basis_size)
@@ -45,7 +45,6 @@ from .solver_common import DISCRETIZATIONS, ResonanceTableMonitor
 from .squeeze_film import MEMBRANE_VENT_CHOICES
 
 MEMBRANE_TYPE_NAME = 'membrane'   # = selftests._MEMBRANE_TYPE (selftests never import this)
-EIGENFREQUENCY_STUDY = 'eigenfrequency'
 FREQUENCY_RESPONSE_STUDY = 'frequency_response'
 _GRIDS = ('tensor', 'triangles')   # tensor = 1D models only (validation refuses a 2D tensor mesh)
 DEFAULT_PML_CELLS = 8

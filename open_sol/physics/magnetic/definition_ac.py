@@ -521,7 +521,7 @@ MAGNETIC_FIELDS_AC = PhysicsType(
     scalar_outputs_help=_SCALARS_HELP,
     dimensions=(2,),
     solver_roles={'linear': MAGNETIC_AC_LINEAR_ROLE},
-    backends=('gpu', 'cpu'),   # host SuperLU either way; fields and the real window system on the Domain's xp
+    backends=('gpu', 'cpu'),   # host-assembled complex system; fields and the real window system on the Domain's xp
     grids=('tensor', 'triangles'),   # triangles: MagneticACFEMPhysics (solver_ac_fem.py)
     mesh_method=_mesh_method,
 )
