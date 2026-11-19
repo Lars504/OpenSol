@@ -183,6 +183,6 @@ def register(registry):
                 'shifts the light frequency (vacuum optomechanical coupling rate). Heat or current physics are first '
                 'solved to a steady state.',
         description=_DESCRIPTION, params=_PARAMS, background_study='stationary', run=_run_optomechanics,
-        validate=_validate_optomechanics,
+        validate=_validate_optomechanics, supports_solved_physics=True,
         feedback_alternative='the optical and mechanical modes are only tabulated, not fed back',
         time_counts=_time_counts, solver_protocols=(ModeSolver, EigenfrequencySolver)))

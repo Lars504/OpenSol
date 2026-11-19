@@ -59,8 +59,6 @@ _ENTITY_LISTINGS = {'domain': domain_entities, 'boundary': boundary_entities, 'p
                     'line': line_entities, 'interface': interface_entities}   # selection kind -> entity listing
 # studies whose physics share one mesh (S7.2 1.2: they combine the physics' solutions on one grid)
 _ONE_MESH_STUDIES = ('thermal_noise', 'optomechanics', 'nonlinear_frequency_domain')
-# studies whose run picks its solved physics by StudySpec.solved_physics (study._solver_roles / the optomechanics roles)
-_SOLVED_PHYSICS_STUDIES = ('frequency_domain', 'mode_analysis', 'eigenfrequency', 'frequency_response', 'optomechanics')
 _GMSH_ENVIRONMENT = 'OPEN_SOL_GMSH'   # path of the gmsh program (MeshSpec.mesher 'gmsh'), else the PATH
 
 
@@ -1776,17 +1774,18 @@ class _Validator:
                                   values)
 
     def _check_solved_physics(self, path, solved_physics, study_type):
-        """StudySpec.solved_physics: a list of distinct physics names, only in a study of _SOLVED_PHYSICS_STUDIES, each
-        physics supporting the study itself; every physics left out must support its background study."""
+        """StudySpec.solved_physics: a list of distinct physics names, only in a study with supports_solved_physics,
+        each physics supporting the study itself; every physics left out must support its background study."""
         if isinstance(solved_physics, list) and not solved_physics:
             return
         if not isinstance(solved_physics, list) or not all(isinstance(name, str) for name in solved_physics):
             self.error(path, f'solved_physics must be a list of physics names, got {short_repr(solved_physics)}')
             return
-        if study_type.name not in _SOLVED_PHYSICS_STUDIES or not study_type.background_study:
-            self.error(path, f'solved_physics applies to the {", ".join(_SOLVED_PHYSICS_STUDIES)} studies (the physics '
-                             f'it leaves out run as stationary background physics); the {study_type.label} study solves '
-                             'every physics itself: clear solved_physics')
+        if not study_type.supports_solved_physics:
+            supported = _name_list(other.name for other in self.registry.study_types() if other.supports_solved_physics)
+            self.error(path, f'solved_physics applies to the {supported} studies (the physics it leaves out run as '
+                             f'stationary background physics); the {study_type.label} study solves every physics '
+                             'itself: clear solved_physics')
             return
         duplicates = sorted(name for name, count in Counter(solved_physics).items() if count > 1)
         if duplicates:

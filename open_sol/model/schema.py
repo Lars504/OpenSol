@@ -595,6 +595,11 @@ def coupling_role_text(coupling_type, role) -> str:
     return 'any' if accepted is None else ' or '.join(f"'{name}'" for name in accepted)
 
 
+# the wavelength-based harmonic study (model.study registers it); physics compare study names against this, never the
+# literal (FieldInfo.requires_study of harmonic fields, wavelength settings it overrides)
+FREQUENCY_DOMAIN_STUDY = 'frequency_domain'
+
+
 @dataclass(frozen=True)
 class StudyType:
     """A study (time dependent, stationary, ...); its param values live in StudySpec.settings."""
@@ -621,6 +626,9 @@ class StudyType:
     default_stored_fields: Callable | None = None
     # StudySpec.adaptation allowed (S7.7: mesh refinement levels, model.study_adaptation); validate refuses it else
     supports_adaptation: bool = False
+    # StudySpec.solved_physics allowed (the physics it leaves out run as background_study physics, so one is needed);
+    # validate refuses it else
+    supports_solved_physics: bool = False
     # time_counts(values) -> {name: number} the run-time recipes read (model.time_estimate.StudyCounts: duration,
     # harmonic_points, max_duration, eigenpairs, iterations, fixed_point_limit); None = no counts (recipes assume one
     # solve)
@@ -637,6 +645,8 @@ class StudyType:
         unknown = sorted(set(self.final_state_settings) - {param.name for param in self.params})
         if unknown:
             raise ValueError(f"StudyType '{self.name}': final_state_settings names no param {unknown}")
+        if self.supports_solved_physics and not self.background_study:
+            raise ValueError(f"StudyType '{self.name}': supports_solved_physics needs a background_study")
         if not (isinstance(self.solver_protocols, tuple) and all(
                 getattr(protocol, '_is_runtime_protocol', False) for protocol in self.solver_protocols)):
             raise TypeError(f"StudyType '{self.name}': solver_protocols must be a tuple of runtime-checkable "

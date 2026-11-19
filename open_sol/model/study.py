@@ -26,7 +26,8 @@ from .builder import build as build_model, external_memory_record, run_memory_re
 from .meshing import element_meshes_kept
 from .definition_helpers import wavelength_range_issues
 from .expressions import evaluate_parameters, evaluate_scalar
-from .schema import RESULT_KINDS, Issue, Param, StudyType, get_registry, known_physics, resolve_values
+from .schema import (FREQUENCY_DOMAIN_STUDY, RESULT_KINDS, Issue, Param, StudyType, get_registry, known_physics,
+                     resolve_values)
 from ..core import host_memory
 from .session import (LIVE_SOLUTION, SelectedSolution, Snapshot, StoredSolution, earlier_derived_names,
                       live_snapshot_index, snapshot_solution_names, solution_bytes)
@@ -1277,11 +1278,11 @@ class _BackgroundStage:
 
 def _background_stage(session, background, solved, values, emit, control, service, refused, intro, stage_names,
                       feedback=()):
-    """Shared start of the studies with a stationary background (frequency_domain, mode_analysis, eigenfrequency,
-    thermal_noise): refuse couplings reading the solved physics (refused = (kind, reason); `feedback` couplings
-    excepted, which then apply in the background solve with the solved physics as inputs), runner.prepare, recorder,
-    live feed, the intro log line, stages ([_BACKGROUND_STAGE] with a background + stage_names), the background fixed
-    point, then (completed) the background couplings once."""
+    """Shared start of every study with a stationary background (StudyType.background_study): refuse couplings
+    reading the solved physics (refused = (kind, reason); `feedback` couplings excepted, which then apply in the
+    background solve with the solved physics as inputs), runner.prepare, recorder, live feed, the intro log line,
+    stages ([_BACKGROUND_STAGE] with a background + stage_names), the background fixed point, then (completed) the
+    background couplings once."""
     runner = session.runner
     _refuse_solution_readers(runner.couplings, solved, *refused, allowed=feedback)
     runner.prepare()
@@ -1690,7 +1691,7 @@ _PARITY_SECTORS_PARAM = Param(
 def _parity_sector_issues(vctx, values):
     """parity_sectors: an error without a mirror face, a warning with enabled couplings (the combination assumes a
     linear model), else an info naming the sector runs (per sweep value with a sweep)."""
-    if not values.get('parity_sectors'):
+    if not values['parity_sectors']:
         return []
     faces = sorted(mirror_faces(vctx.spec))
     if not faces:
@@ -1980,7 +1981,7 @@ def register(registry):
         params=_STATIONARY_PARAMS, run=_run_stationary, validate=_with_parity_sectors(), supports_adaptation=True,
         time_counts=_fixed_point_counts))
     registry.register_study(StudyType(
-        'frequency_domain', 'Frequency domain',
+        FREQUENCY_DOMAIN_STUDY, 'Frequency domain',
         summary='Solves the frequency-domain wave physics at a list of wavelengths. Any heat or current physics is '
                 'first solved to a steady state, which every wavelength then shares; when the absorbed light heats '
                 'the model back, each wavelength is solved together with the heat instead, continuing from the '
@@ -2014,6 +2015,7 @@ def register(registry):
                     'snapshot labels keep the solve order).',
         params=_FREQUENCY_DOMAIN_PARAMS, background_study='stationary', run=_run_frequency_domain,
         validate=_with_parity_sectors(_validate_frequency_domain), coupled_points=True, supports_adaptation=True,
+        supports_solved_physics=True,
         feedback_alternative='use a stationary study for one wavelength, a parameter sweep over the wavelength for '
                              'several', time_counts=_frequency_domain_counts,
         solver_protocols=(HarmonicSolver, PulsedHarmonicSolver)))
@@ -2031,8 +2033,8 @@ def register(registry):
                     'mode_number mode; ticks = the mode snapshots. n_eff versus a parameter: a sweep with a derived '
                     'value of mode_table; versus wavelength: frequency_domain.',
         params=_MODE_ANALYSIS_PARAMS, background_study='stationary', run=_run_mode_analysis,
-        validate=_with_parity_sectors(), supports_adaptation=True, time_counts=_fixed_point_counts,
-        solver_protocols=(ModeSolver,)))
+        validate=_with_parity_sectors(), supports_adaptation=True, supports_solved_physics=True,
+        time_counts=_fixed_point_counts, solver_protocols=(ModeSolver,)))
     from . import (study_eigenfrequency, study_frequency_response, study_nonlinear, study_optimization,
                    study_optomechanics, study_thermal_noise)   # they import this module's helpers
     for module in (study_eigenfrequency, study_optimization, study_thermal_noise, study_nonlinear, study_optomechanics,
@@ -2060,7 +2062,7 @@ class _SnapshotRecorder:
         targets = [_coupling_targets(coupling) for coupling in session.runner.couplings]
         self.changing_materials = (frozenset(session.runner.physics) if any(not names for names in targets)
                                    else frozenset().union(*targets))
-        self._keep_solutions = bool(getattr(session, 'keep_solutions', False))
+        self._keep_solutions = session.keep_solutions
         available = host_memory.available_bytes() if self._keep_solutions else None
         self._solution_budget = (_SOLUTION_FALLBACK_BYTES if available is None
                                  else int(_SOLUTION_HOST_FRACTION * available))
@@ -2632,7 +2634,7 @@ def _stored_field_keys(session):
     requested = list(session.spec.study.stored_fields)
     if requested:
         return requested
-    frequency_domain = session.spec.study.type == 'frequency_domain'
+    frequency_domain = session.spec.study.type == FREQUENCY_DOMAIN_STUDY
     keys = []
     for physics, component in _primary_fields(session):
         harmonic_primary = getattr(session.renderer(physics), 'harmonic_primary', '') if frequency_domain else ''

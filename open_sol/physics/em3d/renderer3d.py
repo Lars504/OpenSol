@@ -5,10 +5,10 @@ import numpy as np
 
 from ...core.constants import DTYPE
 from ...core.renderer import FieldInfo, PhysicsRenderer
+from ...model.schema import FREQUENCY_DOMAIN_STUDY
 from ..em.renderer import _MODULUS_FIELD_INFOS
 from .harmonic3d import COMPONENTS
 
-_HARMONIC_STUDY = 'frequency_domain'
 _AXES = ('x', 'y', 'z')
 RAW_LABELS = {'ex': 'E_x (+x face)', 'ey': 'E_y (+y face)', 'ez': 'E_z (+z face)',
               'hx': 'H_x (+y +z edge)', 'hy': 'H_y (+x +z edge)', 'hz': 'H_z (+x +y edge)'}
@@ -18,11 +18,11 @@ CENTRE_AXES = {'ex': (0,), 'ey': (1,), 'ez': (2,), 'hx': (1, 2), 'hy': (0, 2), '
 
 def _harmonic_infos():
     infos = {'e_abs_harmonic': FieldInfo('e_abs_harmonic', '|E| (phasor)', unit='V/m', cmap='inferno',
-                                         requires_study=_HARMONIC_STUDY),
+                                         requires_study=FREQUENCY_DOMAIN_STUDY),
              'e_intensity_harmonic': FieldInfo('e_intensity_harmonic', '|E|^2 (phasor)', unit='V^2/m^2',
-                                               cmap='inferno', requires_study=_HARMONIC_STUDY),
+                                               cmap='inferno', requires_study=FREQUENCY_DOMAIN_STUDY),
              'absorbed_power_harmonic': FieldInfo('absorbed_power_harmonic', 'Absorbed power density (time average)',
-                                                  unit='W/m^3', cmap='magma', requires_study=_HARMONIC_STUDY)}
+                                                  unit='W/m^3', cmap='magma', requires_study=FREQUENCY_DOMAIN_STUDY)}
     for component in COMPONENTS:
         label = f'E_{component[1]}'
         parity = f'polar_{component[1]}'
@@ -33,7 +33,7 @@ def _harmonic_infos():
                 ('phase', f'arg {label}', 'rad', True, 'twilight', f'phase_{parity}')):
             name = f'{component}_{part}'
             infos[name] = FieldInfo(name, f'{text} (phasor, centre)', unit=unit, signed=signed, cmap=cmap,
-                                    requires_study=_HARMONIC_STUDY, parity=part_parity)
+                                    requires_study=FREQUENCY_DOMAIN_STUDY, parity=part_parity)
     return infos
 
 

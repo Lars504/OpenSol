@@ -243,11 +243,10 @@ _DESCRIPTION = (
 def _time_counts(values):
     """Run-time estimate counts (StudyType.time_counts): frequencies, driven factorisations (a reduced sweep: at most
     rom_max_points + 1 / two), the background iteration limit."""
-    frequencies = values.get('frequencies') or []
+    frequencies = values['frequencies'] or []
     points = len(frequencies) if frequencies else int(values['n_frequencies'])
-    method = values.get('sweep_method', 'direct')
-    factorizations = {'direct': points, 'adaptive': min(points, int(values.get('rom_max_points', 40))) + 1,
-                      'modal': 2}.get(method, points)
+    factorizations = {'direct': points, 'adaptive': min(points, int(values['rom_max_points'])) + 1,
+                      'modal': 2}[values['sweep_method']]
     return {'harmonic_points': points, 'harmonic_factorizations': factorizations,
             'fixed_point_limit': int(values['max_iterations'])}
 
@@ -260,6 +259,6 @@ def register(registry):
                 'electrical admittance of a piezoelectric resonator. Any heat or current physics is first solved to a '
                 'steady state.',
         description=_DESCRIPTION, params=_PARAMS, background_study='stationary', run=_run_frequency_response,
-        validate=_with_parity_sectors(_validate_frequency_response),
+        validate=_with_parity_sectors(_validate_frequency_response), supports_solved_physics=True,
         feedback_alternative='the frequency response study feeds no harmonic solution back into other physics',
         time_counts=_time_counts, solver_protocols=(FrequencyResponseSolver,)))

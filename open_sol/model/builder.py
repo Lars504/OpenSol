@@ -876,14 +876,15 @@ def _apply_static_materials(ctx, present_types):
                                                                        bounds_param=param))
                 for array in owned_arrays:
                     materials.assign(array, region.mask, value)
-                _follow_material(ctx, region, name, owned_arrays, raw_value)
+                _follow_material(ctx, region, name, param, owned_arrays, raw_value)
     return deferred
 
 
-def _follow_material(ctx, region, name, owned_arrays, raw_value):
+def _follow_material(ctx, region, name, param, owned_arrays, raw_value):
     """Reused sweep build (sweep_reuse._material_follows): a uniform material value of a live parameter repaints its
     owned arrays under the region mask (regions never overlap) and calls materials_changed of every solver on this
-    mesh; it keeps its own reference to the bool mask (as a dynamic material update; release_caches drops the
+    mesh, after checking the value against param's range as the build does (ExpressionError: that sweep value
+    fails); it keeps its own reference to the bool mask (as a dynamic material update; release_caches drops the
     region's)."""
     live = ctx._shared.live_parameters
     names = value_names(raw_value)
@@ -893,6 +894,7 @@ def _follow_material(ctx, region, name, owned_arrays, raw_value):
     changed = frozenset(owned_arrays)
 
     def repaint(value):
+        _check_range(f"material '{region.name}' {name} {raw_value!r}", param, value, value)
         for array in owned_arrays:
             materials.assign(array, mask, value)
         sim = shared.sim

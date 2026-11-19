@@ -9,15 +9,18 @@ from ...core import time_estimate as te
 from ...core.constants import C0, EPS0, FACE_LABELS, FACES, MU0
 from ...core.sources import GaussianPulse, RickerWavelet
 from ...core.wavelengths import resolved_wavelengths, wavelength_range
-from ...model.definition_helpers import eigen_factorization, evaluates_to, study_duration, validate_points_inside
-from ...model.expressions import (FIELD_COORDINATE_NAMES, TIME_NAMES, ExpressionError, evaluate_scalar,
+from ...model.definition_helpers import (dynamic_material_values, eigen_factorization, evaluates_to, study_duration,
+                                         validate_points_inside)
+from ...model.expressions import (FIELD_COORDINATE_NAMES, ExpressionError, evaluate_scalar,
                                   referenced_names)
 from ...model.geometry import line_orientation, preview_pixel_centers
 from ...solvers.arpack_shift_invert import CUDSS_FACTORIZATIONS
 from ...solvers.host_direct import HOST_DIRECT_BACK_ENDS
 from ...solvers.sparse_direct import LINEAR_SOLVER_CHOICES
 from ...solvers.explicit_kernels import stepper_precision
-from ...model.schema import (GYRATION_PROPERTY_NAMES, PERMITTIVITY_PROPERTY_NAMES, DomainRequirements, Issue, Param,
+# FREQUENCY_DOMAIN_STUDY: the study whose wavelengths replace the wavelength setting (re-exported to the EM definitions)
+from ...model.schema import (FREQUENCY_DOMAIN_STUDY, GYRATION_PROPERTY_NAMES, PERMITTIVITY_PROPERTY_NAMES,
+                             DomainRequirements, Issue, Param,
                              array_owner, coupling_writes, feature_path, known_physics, output_field_names, permittivity_arrays,
                              resolve_values, state_field_names)
 from . import EMPhysics
@@ -679,7 +682,6 @@ def steps_in_time(settings_values):
 
 
 # ---- solved wavelengths of the quasi-static EM types (FDFD, em_modes): the setting, or a frequency_domain list ----
-FREQUENCY_DOMAIN_STUDY = 'frequency_domain'   # study whose wavelengths replace the wavelength setting
 DEFAULT_WAVELENGTH = 1.55e-6                  # [m] wavelength setting default (no unused-setting info at it)
 
 
@@ -1381,28 +1383,28 @@ def _permittivity_writer_issues(vctx, physics_spec, slot_arrays, material_proper
         if coupling.enabled and coupling.target == physics_spec.name:
             for slot in _written_permittivity_slots(vctx, coupling, slot_arrays):
                 writers_by_slot[slot].append(coupling.name)
-    state_names = frozenset(vctx.state_names) | TIME_NAMES   # both make the property a DynamicMaterialUpdate
     issues, collisions = [], {}   # (material, property) -> (coupling, slot) of its first collision
     if not any(writers_by_slot.values()):
         return issues
-    merged = {}   # material name -> its effective properties, merged once (not per slot)
-    for material in vctx.spec.materials:
+    # library values are floats, so only a spec property can be dynamic (the builder's DynamicMaterialUpdate rule)
+    dynamic = {}   # selected material -> {its dynamic property names}
+    for material, name in dynamic_material_values(vctx.spec, vctx.registry):
         if material.selection:
-            try:
-                merged[material.name] = _effective_material(material)[0]
-            except ValueError:   # unknown library / malformed properties: reported by the generic material checks
-                continue
+            dynamic.setdefault(material.name, (material, set()))[1].add(name)
+    merged = {}   # material name -> its effective properties, merged once (not per slot)
+    for material_name, (material, _) in dynamic.items():
+        try:
+            merged[material_name] = _effective_material(material)[0]
+        except ValueError:   # unknown library / malformed properties: reported by the generic material checks
+            continue
     for slot, writers in writers_by_slot.items():
         if not writers:
             continue
-        for material in vctx.spec.materials:
-            properties = merged.get(material.name) if material.selection else None
-            if properties is None:
-                continue
+        for material_name, properties in merged.items():
             # only the owner writes the array (a static component beside a state-dependent eps_r is no second writer)
             owner = array_owner(slot_arrays[slot], material_property_params, properties)
-            if owner is not None and _references_any(properties[owner], state_names):
-                collisions.setdefault((material.name, owner), (writers[0], slot))
+            if owner is not None and owner in dynamic[material_name][1]:
+                collisions.setdefault((material_name, owner), (writers[0], slot))
     for (material_name, property_name), (writer, slot) in collisions.items():
         issues.append(Issue('error', ('material', material_name),
                             f"{property_name} depends on physics fields or t while coupling '{writer}' rewrites slot "

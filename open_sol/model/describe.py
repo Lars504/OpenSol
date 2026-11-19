@@ -438,7 +438,8 @@ _SPEC_FIELD_HELP = {
                              'materials, dispersion, physics / solver / coupling settings, stored cuts), '
                              'time_dependent, optimization and parity_sectors are validation errors. Each value reruns '
                              'from the previous state (nonlinear solids start Newton from it; summary sweep builds = '
-                             '1); followed values are not range-checked. A physics that cannot rerun rebuilds per '
+                             '1); followed material values are range-checked per value, followed feature values and '
+                             'settings only where their setter checks them. A physics that cannot rerun rebuilds per '
                              'value (info). false (default): one build per value.',
     'DerivedValueSpec.name': 'Identifier, unique among derived values; its key in summary.json derived.',
     'DerivedValueSpec.expression': 'source null: expression of parameters, x, y (3D: z), t and output fields '
