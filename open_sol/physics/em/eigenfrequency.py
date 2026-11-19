@@ -721,7 +721,10 @@ def squared_cayley_roots(theta, operator_products, mass_products, target_squared
     # The map A^-1 M k_t^2 (I + A^-1 M k_t^2) with A = K - k_t^2 M (K = the curl-curl part): theta = k_t^2 k^2 / (k^2 -
     # k_t^2)^2 sends the gradient null space (k = 0) and massless rows (k = inf) to 0, and |theta| is equal at k and
     # k_t^2 / k, so the 'LM' slots go to the resonances nearest the target in |ln(k / k_t)| on both sides. The quotient
-    # is invariant under negating A and M together (the FDFD A = L + k_t^2 M, B = -M of solve_resonances).
+    # is invariant under negating A and M together (the FDFD A = L + k_t^2 M, B = -M of solve_resonances). Why not the
+    # simpler maps (BOR): plain shift-invert let the static cluster take a rounding-dependent number of ARPACK slots
+    # (non-reproducible resonances above sqrt(2) k_t); the plain Cayley map ranked every k > k_t ahead of k < k_t /
+    # sqrt(2) (it lost a cavity's TM010).
     theta = np.asarray(theta, dtype=np.complex128)
     mass_products = np.asarray(mass_products, dtype=np.complex128)
     roots = np.zeros(theta.shape, dtype=np.complex128)

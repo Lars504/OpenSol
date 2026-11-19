@@ -17,7 +17,8 @@ _TABLE = 'table'
 _DISPERSION = 'dispersion'
 _TABLE_COLUMNS = {'n_eff': 1, 'n_group': 4, 'te_fraction': 5}   # column index in the mode_table rows
 
-# ---- PEC rectangular waveguide (vacuum): every wall plane sits on the inner face of the outermost cell, so the guide
+# ---- PEC rectangular waveguide (vacuum; the example analytic_modes_pec_rectangular_waveguide is its model run, this
+# spec stays for em_modes_line_block): every wall plane sits on the inner face of the outermost cell, so the guide
 # spans the cells 1 .. n-2 of each axis: a = (42 - 2) * 50 nm = 2.0 um, b = (20 - 2) * 50 nm = 0.9 um. The discrete TE_mn
 # modes of a homogeneous Yee cross-section obey beta^2 = k0^2 - K_x(m)^2 - K_y(n)^2 with K(m) = (2 / h) sin(m pi h /
 # (2 a)) exactly (the 3-point eigenvectors sin(m pi (i - 1/2) / (n - 2)) meet the odd ghost rows), so the eigen-solve

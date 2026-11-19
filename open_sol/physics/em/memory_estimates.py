@@ -73,7 +73,9 @@ def _bor_factor_entries(nr, nz, coupled) -> int:
     """Factor entries of one triangle of the tensor BOR operator on an (nr, nz) grid (the full unknown set): the
     fem.dissection count on its cliques, one per curl point (body_of_revolution a_phi: 2 E_r + 2 E_z, a_r: 2 u + E_z,
     a_z: 2 u + E_r; C^T W C couples exactly the unknowns one point differences); coupled False (m = 0): the u block
-    and the E_r / E_z block apart, added."""
+    and the E_r / E_z block apart, added. Cached per grid (seconds above ~1e6 cells). The n log2 n growth law it
+    replaced has no per-row part and read 27 % low (em_bor_cpu_gpu ports, 19,200 unknowns: 13.0 MB of 25.6 MB
+    permanent were factor entries); the conical, modes and 2D FDFD cuDSS estimators still use that law."""
     import numpy as np
     from ...fem.dissection import element_dissection_pairs
     n_radial, n_cells = (nr + 1) * nz, nr * nz

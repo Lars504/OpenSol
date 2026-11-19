@@ -1,6 +1,7 @@
 """Self-tests of em_modes on triangle meshes (mesh plan stage T3: fem_modes, solvers/modes_fem): CPU cases on fem_modes
 directly against closed forms (walled slab, PML leaky slab) and cpu-backend model runs (PEC circular pipe, the S7.8
-TFLN rib as the S7.5 gain measurement, a heated strip with heat on a tensor mesh and em_modes on triangles)."""
+TFLN rib as the S7.5 gain measurement, a heated strip with heat on a tensor mesh and em_modes on triangles). _report,
+_sizing and the slab helpers are shared: the other triangle EM self-tests and model/selftests_adaptation import them."""
 import math
 
 import numpy as np

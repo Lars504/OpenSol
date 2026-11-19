@@ -45,6 +45,11 @@ _DB_PER_NEPER = 20.0 / math.log(10.0)   # power loss in dB of a field decaying b
 HOST_DIRECT_KINDS = tuple(dict.fromkeys(factor_label(name) for name in HOST_DIRECT_FACTORIZATIONS))
 
 
+def bend_reference(reference_x, size_x):
+    """x [m] where the bend factor is 1: the bend_reference_x setting, None = size_x / 2 (ModePhysics, validation)."""
+    return 0.5 * float(size_x) if reference_x is None else float(reference_x)
+
+
 def bend_factor_message(x_edges, radius, reference_x):
     """Problem text when the bend scale factor 1 + (x - reference_x) / radius is <= 0 at a grid edge x, else None."""
     if radius == 0.0:
@@ -97,7 +102,8 @@ class _ModeStudyMixin:
 
     def reset_records(self):
         """RerunSolver (reused sweep build): omega back to the build's wavelength setting (a frequency_domain run left
-        its last one) and the per-wavelength records dropped; every study hook solves afresh anyway."""
+        its last one) and the per-wavelength records dropped (every monitor's clear(): an accumulating monitor needs
+        one); every study hook solves afresh anyway. No em_modes setting has follows_parameters."""
         self.omega = self._setting_omega
         for monitor in self.monitors:
             clear = getattr(monitor, 'clear', None)
@@ -202,7 +208,9 @@ class ModePhysics(_ModeStudyMixin, PhysicsSolver):
         self._line_block = shifted_solver if isinstance(shifted_solver, LineBlockSolver) else None
         self._planned_omegas = ()
         self._plan_serial = None
-        self._material_serial = 0     # bumped by every material / geometry change (inject_source, materials_changed)
+        # bumped by every change of the solved system (inject_source, materials_changed, add_pec_region, add_dispersive,
+        # set_subpixel_smoothing; a new one bumps it too): a kept line-block batch of an older serial is stale
+        self._material_serial = 0
         self._batch = {}              # omega -> line_block.LineBlockFactorization of the kept batch
         self._batch_problems = {}     # omega -> its unsolved cross_section_modes.CrossSectionProblem
         self._batch_serial = None
@@ -214,7 +222,7 @@ class ModePhysics(_ModeStudyMixin, PhysicsSolver):
         self._init_mode_study(wavelength, n_modes, mode_index, n_eff_guess, group_index)
         bend_radius = float(bend_radius)
         x_edges = domain.cell_edges()[0]
-        reference_x = 0.5 * float(domain.size_x) if bend_reference_x is None else float(bend_reference_x)
+        reference_x = bend_reference(bend_reference_x, domain.size_x)
         message = bend_factor_message(x_edges, bend_radius, reference_x)
         if message is not None:
             raise ValueError(f'ModePhysics: {message}')

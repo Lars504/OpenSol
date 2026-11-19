@@ -434,319 +434,67 @@ type's vocabulary and refusals are in its help texts and validation.
 - Self-tests: selftests_conical_fem.
 
 ## em_modes model layer (solvers/modes_2d, definition_modes)
-- `ModePhysics` has the FDFDPhysics attribute set (polarization 'modes' = the `EM_MATERIAL_SCHEMAS` key with eps_r,
-  eps_xx, eps_yy; `placement` helpers refuse it: no sources). Every `solve_modes()` / `solve_harmonic(omega)` re-solves
-  from the MaterialGrid, so `materials_changed` only bumps `_material_serial`, which stales a kept line-block batch (so
-  do inject_source, add_pec_region, add_dispersive, set_subpixel_smoothing: a new way to change the solved system must
-  bump it too). After each solve it selects `mode_index` (= setting mode_number, clamped, warning when fewer modes) and
-  calls `record(physics)` on its monitors. `select_mode(k)` fills the float32 `mode_fields` in place (`[...] =`):
-  `ModeRenderer` and `state()` read them, so keys stay live arrays. Solve and group-index warnings go to
-  `runtime_warnings` (the size warning once, via finalize_warnings).
-- Roles: 'eigen' (arpack_shift_invert) and 'shifted' (Automatic = the eigen role's host SuperLU). A line_block shifted
-  node (`ModePhysics(shifted_solver=)`): every operator comes from a kept `factorize_operators` batch
-  (`_batched_problem`, `_problem_sequence`: this solve's omegas incl. group-index ones via
-  `mode_group_indices(solve_at=)`, plus later wavelengths `plan_harmonic_frequencies` planned at the current serial), up to
-  fdfd_line_block.MAX_BATCH_WAVELENGTHS, kept until solved, stale or re-bound. A RejectedLineBlockSolve redoes that
-  problem on SuperLU (warning, counter line_block_fallbacks). `solve_detached` (shg_overlap, bend_overlap) uses the
-  eigen solver's own factor. Two periodic axes: ValueError at finalize, validation error. Estimator:
-  `cross_section_modes.line_block_bytes`, no SuperLU item. Selftest em_modes_line_block.
-- Eigen factorization (`eigen_role(mixed_factorization=True)`): superlu, cudss and the host direct doubles (both
-  meshes), the MIXED_FACTORIZATIONS (triangles
-  only: `_solver_issues` refuses it on tensor meshes because A_xx mixes eps^-1 on both sides (ezz^-1 and eyy^-1 terms):
-  no diagonal D makes D A symmetric, so no LDL^T / polish, and 2D factors are cheap anyway). A symmetric Yee form (the
-  mixed [E_t; E_z] pencil): not done. With a cudss node (`ModePhysics._on_device`) every solve prepares with
-  `check_size=False`, finalize / validation skip `size_issue_for`, the memory estimate counts the device CSR copy;
-  mode_group_indices always gets `solve_at=ModePhysics._solve_at`.
-- Bloch k (symmetry 2.2): settings bloch_kx / bloch_ky (`definition_bloch.bloch_params`); `ModePhysics.wrap_factors` =
-  `cross_section_modes.bloch_wrap_factors` enter `centre_fields(wrap_factors=)`. Code reading the centre fields without
-  the factors refuses k != 0: shg_overlap (its 2 omega modes would need 2 k), thermal_noise `mode_pair_weighting`,
-  optomechanics `_cross_section_mode` (validation errors). Self-test em_modes_bloch_plate.
-- solver_defaults.conformal_boundaries: pec_domain (definition_common.apply_pec, duck-typed on `conformal_locator`) ->
-  `add_conformal_pec_region(mask, inside)`; `_dual_cuts()` builds the cuts once (host, full grid incl. PML) and every
-  `_cross_section_materials` passes them, so detached / group-index / thermal-noise solves see the same operator.
-- Backends ('gpu', 'cpu'): the solve is host code on both; mode_fields, masks (`_check_cell_array(xp=)`), inject_source
-  and subpixel smoothing follow `domain.xp`. Self-test em_modes_cpu_gpu (selftests_modes_backend).
-- Scalar outputs (E5) `n_eff_1 .. n_eff_<n_modes>` = Re n_eff; `scalars()` lists found modes only, so a missing mode's
-  derived value is NaN + warning. thermo_optic_phase_shifter reads `modes_n_eff_1`, the strip template the mode_table
-  (both paths stay covered).
-- `shg_overlap` (nonlinear_overlap.py, host numpy): monitor whose `record` runs a second eigen-solve at 2 omega
-  (`ModePhysics.solve_detached`: nothing selected or recorded), pump / harmonic paired by rank (no tracking): kappa =
-  sum A conj(e_2w) . (d : e_w e_w) over the selected cells (`point_materials()` areas, `centre_fields`), efficiency
-  (omega eps0 / 2)^2 |kappa|^2. d is a model-axis Voigt d_il (physics.em never imports nlfd's crystal tensors). Bend
-  (`bend_overlap_factors`): per arc length at x_ref, exact dV = s dA dz with E_phi = E_z / s, conformal s^2 dA; d in
-  the local frame (ring_crystal 'local') or 'fixed' in the chip (bend only: `ring_harmonics` from RING_SAMPLES,
-  `ring_row` appends RING_SERIES per `monitor.series`; signed R, phi = z / R, order m at delta_beta R + m = 0; self-test
-  em_shg_overlap_ring). Mirror faces refused (constructor + validation): the integrand has no single parity.
-  `bend_overlap` (BendOverlapMonitor): a straight `solve_detached(..., straight=True)`, each bent mode matched to the
-  straight mode of largest `mode_overlap` (junction loss in dB; bend required; mirrors fine);
-  self-test em_modes_bend_overlap. Self-test em_modes_shg_overlap (periodic-grid TEM modes: closed form to round-off).
-- Non-reciprocal phase shift (`cross_section_modes.nonreciprocal_shift`, `ModePhysics._nonreciprocal_shifts` after
-  every solve -> `delta_betas`, scalar outputs delta_beta_<k>, mode_table / mode_dispersion column delta_beta): first
-  order in the material gyration_x / gyration_y (they never enter the operator; FEMModePhysics gives 0, validation
-  refuses them on triangles, with a bend and with a mirror face normal to the other transverse axis). The normal E_x /
-  E_y reach the centres as (face eps x E) / cell eps (a plain E mean is first order at interfaces); with
-  solver_defaults.subpixel_smoothing the shift converges at second order, without it at first. gyration is never
-  smoothed (cell-centre staircase): keep magneto-optic interfaces on cell edges. Frame map to em_fdfd_hz: (x, y, z)_modes
-  = (z, y, -x)_plane, so gyration_x = -gyration_z of the in-plane guide (self-test em_modes_nrps_first_order vs the
-  exact slab; example analytic_modes_nrps_ce_yig_slab).
-- No absorbed power: no `take_absorbed_power`, `state()['q_accum']` None, no 'absorbed_power' output, which keeps
-  em_modes out of em_heat_joule's sources (coupling/definitions). Thermo-optic writes all three arrays.
-- `definition_modes.register` (called last from definition.register) registers the type, templates,
-  `CROSS_SECTION_CPU_SELFTESTS` + `EM_MODES_SELFTEST_CASES`. Validation adds: another family-'em' type in the model
-  (error), scipy missing (error; finalize raises too), mode_number > n_modes, `size_issue_for`, bend (periodic x error,
-  `modes_2d.bend_factor_message`, warning without cpml on the outer side); bend reference defaults to size_x / 2 in both
-  validation and ModePhysics; setting bend_model ('exact', 'conformal'). mode_table / mode_dispersion: selection_kind
-  None.
-- Vacuum pec box = example analytic_modes_pec_rectangular_waveguide.json; its spec / check stay in selftests_em_modes
-  for em_modes_line_block. Templates strip_waveguide_modes, thermo_optic_phase_shifter (10 nm in the gold heater so
-  the skin-depth check passes).
-- Carriers (C2 stage 1, `selftests_carriers`, no solver code): N, P [m^-3] enter only as eps_r / sigma_e expressions
-  (`plasma_dispersion_expressions`, Soref-Bennett 1.55 um; `plasma_dispersion` is its numpy twin, keep both in step;
-  alpha stays at its 1.55 um value at other wavelengths). Carriers from electrostatics V are state-dependent materials
-  (DMUs reading `electrostatics_V`) applied by the mode_analysis / frequency_domain background solve, never
-  `_apply_background_couplings`. Depletion charge prescribed (closed-form W(V_R)); self-consistent needs Newton: Picard
-  on exp(V / V_T) diverges. Example analytic_modes_soref_bennett_guide.json; self-test carriers_depletion_junction.
+- ModePhysics has the FDFDPhysics attribute set (class comment; polarization 'modes', no sources). Every solve re-reads
+  the MaterialGrid; `_material_serial` only stales a kept line-block batch, so a new way to change the solved system
+  bumps it (`__init__` comment). `select_mode` writes `mode_fields` in place: ModeRenderer and `state()` hold those
+  arrays. Line-block 'shifted' batches and the detached solves (shg_overlap, bend_overlap): the class comment.
+- A cudss eigen node skips the host SuperLU size rule in `_solve_at` / `solve_detached` (check_size), `finalize` and
+  `_solver_issues`: change them together. Not done: a symmetric Yee form (the mixed [E_t; E_z] pencil), which would
+  allow LDL^T and the _mixed factorizations on tensor meshes (`_solver_issues` says why they are refused).
+- Bloch k != 0: every reader of `centre_fields` passes `ModePhysics.wrap_factors` or refuses k != 0 (shg_overlap,
+  heat thermal_noise `mode_pair_weighting`, optomechanics `_cross_section_mode`); a new consumer does the same.
 
-## em_modes on triangles (fem_modes, solvers/modes_fem; mesh plan 2.6, stage T3)
-- One type, two solvers: `definition_modes._create` builds `FEMModePhysics` when `ctx.domain.grid_kind` is 'triangles'
-  (walls from `fdfd_domain_requirements(settings)`: TriangleDomain has no BoundaryConfig), else ModePhysics. Setting
-  `discretization` (quadratic default, linear). shg_overlap / bend_overlap stay tensor; `_triangle_issues` refuses
-  periodic faces, bends and the thermal_noise / optomechanics studies, and applies the FEM size rule.
-- Formulation: `fem_modes` module header (Lee-Sun-Cendes, A x = -beta^2 B x, x = [e_t; e_z], E_t = e_t / beta, E_z =
-  -j e_z; ranking, PML drop, 1 W, peak phase as cross_section_modes). Stored FEMMode coefficients are physical
-  ([E_t; E_z]); raw vectors (ARPACK v0) divide the z part by -j beta.
-- PML ring: `pml_ring` raises when mesh.pml_faces widths disagree with the cpml faces; the stretch is the tensor CPML
-  grading as a continuous function of depth (`boundaries._grading_values`, pml_dx = width / cpml_npml = max element
-  size); ring outer side pec. pml_kappa_max 1 for leaky modes (kappa > 1 compresses radiating waves).
-- Walls: essential = boundary edges of the non-PEC element set except outer edges tagged pmc / symmetric, plus Lagrange
-  nodes of PEC elements; mirror factor 2 per mirror face.
-- FEMMode duck-types the cross_section_modes.mode_overlap attributes (ex, ey, hx, hy, x_face_area, y_face_area at window
-  quadrature samples): mode_overlap, ModeTableMonitor / ModeDispersionMonitor serve it unchanged; a change of those
-  attributes must keep both solvers working. group_index on triangles: `fem_modes.fem_group_indices`, the
-  Hellmann-Feynman form of the complex symmetric pencil A + beta^2 B (x its own left vector; A', B' central differences
-  of two assemblies, no eigen-solve, no tracking); the Yee em_modes keeps the tracked `mode_group_indices`.
-  ModePhysics and FEMModePhysics share `modes_2d._ModeStudyMixin` (study hooks, post-solve bookkeeping, labels,
-  scalars, table / dispersion monitors): a solver gives `_solve_once(omega) -> (modes, info, warnings)` and
-  select_mode. Both are RerunSolvers (sweep reuse_build): `reset_records` sets omega back to the wavelength setting's
-  and calls `clear()` of every monitor that has one (ModeDispersionMonitor, ShgOverlapMonitor keep one row per solved
-  omega; a new accumulating monitor adds `clear`); no em_modes value follows (its `wavelength` Param is not flagged).
-- State: materials, state fields and eps slots are one value per element; `field_dofs(name)` = the P0 DofMap (contract
-  of model/mesh_transfer). `fem_field`: materials P0, mode fields P1 / P2 nodal (`fem_modes.nodal_fields`: mean over
-  the node's non-PEC elements, 0 at nodes of PEC elements only), cached per selected mode.
-- Subpixel smoothing / conformal boundaries accepted and ignored (mesh follows outlines); `conformal_locator` None.
-- Sizes: `estimated_unknowns`, FEM_LU_FILL_FACTOR (4, uncalibrated: compare summary 'solvers' factor_host_bytes) in the
-  size rule, `_modes_fem_memory_estimate`, `_triangle_time_estimate` (FEM_MODE_ASSEMBLY_BYTES_PER_ENTRY / _CALLS
-  uncalibrated). `size_issue_for_unknowns(n, factorization)` is None for cudss / cudss_mixed (memory estimate counts
-  `cudss_operator_bytes`); work_counters add the last solve's unknowns / elements (the rib self-test reads them).
-- `error_indicator()` (plan A3): `fem_modes.mode_error_indicator` on the solved layout / materials
-  (`_solved_materials`): jumps of H . t, H_z and normal D across interior non-PEC window edges; ring, PEC and outer edges none, no element
-  residual. The model self-test `adaptation_triangle_parts` imports this file's slab helpers.
-- Shift offset: `prepare_fem_modes` takes cross_section_modes' `_SHIFT_RELATIVE_OFFSET` (1e-6) and recovers beta^2 with
-  that same shift; otherwise the default guess sits exactly on a TEM mode (em_modes_fem_tem_on_guess). A shift that
-  close to a mode makes its theta ~1e6 x the far wanted ones: ARPACK at tolerance 0 (eps) may then not converge them
-  (rounding noise, 300 restarts, a warning); that self-test runs ARPACK at 1e-8.
-- Factor: `solve_fem_modes` calls `factorize_host(operator, symmetric=True, row_scale=problem.row_scale)`: the pencil is
-  complex symmetric (D = I), so cudss factors an LDL^T (LU if the symmetry check fails); row_scale replaces
-  |diag A|^-1/2, which nearly cancels. SuperLU ignores both. A change that breaks the symmetry (conjugated tests, full
-  anisotropic tensors with a non-diagonal stretch) loses the LDL^T and the cudss_mixed polish. cudss_mixed (LDL^T
-  only): ARPACK on solves with MIXED_EIGS_REFINEMENTS (1) to MIXED_ARPACK_TOLERANCE (1e-6), then
-  `_rayleigh_beta_squared` per vector (left = right eigenvector; info rayleigh_change, single_residual); mode vectors
-  stay ~1e-6. A mixed LU refines every solve to 1e-12 instead. Selftests em_modes_fem_cudss (gpu: compares the leaky
-  mode only; the other listed modes sit far from the shift and change with factor rounding) and
-  em_modes_fem_cudss_model. cuDSS gain in 2D is device memory / host relief at the largest P2 meshes, not flops.
-- Missing on triangles vs Yee (refused by validation): periodic / Bloch faces, bend_radius (would need nu_t / nu_zz from
-  mu tensors, s continued into an x PML ring, the overlaps' metric), shg_overlap / bend_overlap, line_block shifted
-  solver, thermal_noise / optomechanics (Yee overlaps), subpixel / conformal (moot).
-- Self-tests (selftests_modes_fem): em_modes_fem_slab, em_modes_fem_tem_on_guess, em_modes_fem_leaky (CPU; leaky
-  reference = the exact leaky root, not a tensor run), em_modes_fem_pipe / _rib (heavy) / _heated_strip (model runs).
+## em_modes on triangles (fem_modes, solvers/modes_fem)
+- `definition_modes._create` builds FEMModePhysics on a 'triangles' mesh (walls from `fdfd_domain_requirements`); what
+  triangles refuse: `_triangle_issues`, `_gyration_issues` and the tensor-only features' `grids`. Formulation, walls,
+  PML ring, factor and Rayleigh polish: `fem_modes` module header. FEMMode stores physical [E_t; E_z]; `_eigenvector`
+  gives the raw ARPACK vector.
+- ModePhysics and FEMModePhysics share `modes_2d._ModeStudyMixin`, and FEMMode duck-types the `mode_overlap`
+  attributes, so mode_overlap and the table / dispersion monitors serve both: a change there keeps both solvers
+  working. n_group: `fem_group_indices` (Hellmann-Feynman, no tracking) here, the tracked `mode_group_indices` on Yee.
+- The pencil is complex symmetric (unconjugated tests, diagonal stretch), as are fem_conical's and fem_bor's:
+  conjugated tests or full anisotropic tensors with a non-diagonal stretch lose the LDL^T and the _mixed polish.
+  cuDSS in 2D buys device memory / host relief at the largest P2 meshes, not flops.
+- The size and time figures (`estimated_unknowns`, FEM_LU_FILL_FACTOR, FEM_MODE_ASSEMBLY_*) are uncalibrated; the
+  triangle em_fdfd_bor / em_fdfd_conical estimates reuse them.
+- bend_radius on triangles (refused) would need nu_t / nu_zz from the mu tensors, s continued into an x PML ring and
+  the overlaps' metric.
+- Self-tests: selftests_modes_fem.
 
-## Body of revolution (em_fdfd_bor; body_of_revolution, bor_ports, solvers/fdfd_bor, renderer_bor, definition_bor; symmetry 2.3)
-- BORPhysics and ConicalPhysics share `solvers/host_fdfd.HostFDFDBase` (solver setup and cusolver_qr refusal, omega,
-  state / slots / finalize / loss protocol / labels / counters, the kept driven factor: `_operator_replaced`,
-  `_factorize_operator`, `_solve_kept_factor`, cuDSS plan keep / release, the solve_summary factor texts, the float32
-  display writer, poles / PEC, `_add_source`, `add_field_probe`: `fdfd_monitors.CentrePhasorProbe` of the class'
-  field_components); their display fields are `harmonic.shown_phasor_fields`.
-  `bor_boundary_config`, `bor_flux_line`, `bor_far_field_box` (solvers/fdfd_bor) serve BOR FDFD and FDTD alike.
-  Wavelength batches keep their later members' (materials, assembly) for their own solve (`_batch_assemblies`).
-- Host only (numpy / scipy; module header = the formulation). x = r from the x_lo grid edge (the axis: never a PML
-  side; `bc_x_lo` has the single choice 'axis', mapped to a pmc face for the PML padding only), y = z, fields ~
-  exp(-j m phi). Unknowns E_r (+r edges), u = -j E_phi (centres), E_z (+z edges): every curl entry is real, so the
-  operator is complex symmetric and a lossless resonance is real up to one phase (E_phi ~ sin(m phi)); recovery
-  E_phi = j u. Ring areas / volumes per radian are exact (rbar L = integral r dr), so discrete gradients are exact
-  statics (k = 0) and the scheme is second order (em_bor_pec_cylinder).
-- Resonances: `solve_bor_resonances` = `eigenfrequency.solve_resonances(spectral_map='squared_cayley')` (statics and
-  massless rows map to 0; root nearer the Rayleigh quotient, `eigenfrequency.squared_cayley_roots`; round-off statics
-  below 1e-6 k_t^2 dropped; statics need Re omega > 1e-6 omega_t). Why: plain shift-invert lets the static cluster take a rounding-dependent number of ARPACK
-  slots (non-reproducible resonances above sqrt(2) k_t); the plain Cayley map ranks every k > k_t ahead of
-  k < k_t / sqrt(2) (lost TM010). Host operator A = system.operator = K - k_t^2 M, mass -M; an own factor is of K - s M
-  at s = k_t^2 (1 + `eigenfrequency.SHIFT_RELATIVE_OFFSET`) (a lossless target on a resonance made A singular), a
-  passed line-block factor of system.operator fits as is. `order_eigen_solve` adds the info keys merge_order_solves
-  reads (the triangle path shares it). `solve_conical_resonances` and fem_conical use the same map.
-- cuDSS (agent_help batch): C^T diag(V_a / mu) C - k0^2 diag(V_E eps) with real C (the u choice) is complex symmetric
-  itself, PML and loss included (C^T W C is a transpose product, no conjugate): D = I, no symmetrizer. Eigen:
-  `solve_bor_resonances` passes symmetric=True and equilibration (|diag K| + k_t^2 |M|)^-1/2, so cudss factors an
-  LDL^T; cudss_mixed (`eigen_role(mixed_factorization=True)`) runs loose solves + the float64 Rayleigh quotient (info
-  rayleigh_change). No SuperLU size rule for an own cuDSS factor
-  (solve_bor_resonances, BORPhysics.finalize, `_solver_issues`). Driven: `CUDSS_LINEAR_ROLE` offers cudss /
-  cudss_mixed; `BORPhysics._factorize_host` factors an LDL^T (row scale `body_of_revolution.bor_row_scale`, also the
-  eigen-solve's), not recyclable:
-  `_retire_factorization` keeps a replaced factor as `_cudss_previous` and the next factorisation (wavelength,
-  material, azimuthal_order, each order-sum term) refactorises it in place; the plan is reused within an axis class
-  (m = 0 / |m| >= 1: an order sum 0..3 = 2 plans). Released before an eigen-solve; the time recipe drops GMRES
-  recycling. Selftest em_bor_cudss_driven (selftests_bor_orders). A line_block 'shifted' node factorises the
-  shift-invert operators instead (validation warning: cudss unused unless an order is rejected). 2D fill is mild
-  (SuperLU copes to ~1e6 unknowns): the gain (unmeasured) is host relief at the largest many-order grids.
-- Axis: E_r, H_z, H_phi sit on it, E_phi / E_z / H_r half a cell off. The axis E_r dual face and H_phi dual edge have
-  zero measure, so neither is ever an unknown: m = 0 keeps the H_z disc face, |m| >= 1 drops all three (`axis_class`
-  0 / 1). At |m| = 1 the massless E_r row is the regularity slaving E_r(0) = -u_0 / m = j E_phi(r_0) / m and
-  H_phi(0) = -j m H_r(r_0): `yee_fields` fills them (`_regular_axis`), the FDTD twin writes them into x / h after each
-  update (they feed no update), and an 'r' source half on the axis edge moves to u of cell 0 as -b / m
-  (point_current_rhs, BORTimeStepper.add_current); at m = 0 and |m| >= 2 that half is lost. Never give the axis E_r a
-  ring volume (r0^2 / 2 made cell 0's Gauss row non-divergence-free and distorted the near-axis field at every
-  resolution; example analytic_bor_transverse_dipole_m1 pins it). Recovered axis values carry no flux weight
-  (line_flux / box_flux) but do enter the far-field samples.
-- Walls all on the outer grid edge (unlike the 2D FDFD, whose pec / pmc planes are half a cell apart): pec = the centre
-  value beyond reads 0, normal E on the edge free with half a dual volume; pmc and the natural end beyond a cpml layer
-  drop the edge E and edge H rows. pec / pmc on z_lo = the antisymmetric / symmetric mirror; no periodic faces, no
-  mirror choices (BORPhysics raises for a scripted symmetric / antisymmetric face: its padded ghost cell would move the
-  plane off the window edge).
-- PML: the cpml_axis_profiles centre-row stretch integrated into complex coordinates; the complex r enters every metric
-  factor (cylindrical PML; em_bor_radiation). Never a separate kappa grading.
-- Cell geometry from `Domain.cell_widths()` (float64), not `grid_cell_widths`: em_fdtd_bor steps the same operator on
-  the same widths, Session's ring weights use the same edges. Materials: the 'modes' schema in drawing-plane names,
-  diagonal in cylindrical components: eps_xx = eps_rr (E_r), eps_r = eps_phiphi (E_phi; the eps_zz property writes
-  it), eps_yy = the axial eps_zz (E_z); `BORMaterials(eps, mu, pec, eps_rr, eps_zz)`, a None component = eps. E_r /
-  E_z / mu points take ring-volume / length weighted means of their non-PEC cells (`_point_mean`: a conductor's surface
-  E_r / H see the dielectric beside it); PEC points = every touching cell PEC. q_abs sums (-Im eps_c) |E_c|^2 per
-  component.
-- Orders: `BORAssembly` (one omega and material state) keeps C = C0 + m C1 and the active sets / curl columns per
-  `axis_class`; `system(m)` is one product C(m)^T W C(m) (`_curl_gram`; 3 x fewer host products than K0 + m K1 +
-  m^2 K2 for the usual one order per assembly), so an m sweep reads materials and assembles once. `assemble_bor` =
-  BORAssembly(...).system(m); `order_family(class)` = (K0 - k0^2 M, (K1, K2), unknown_index), the line-block shift
-  family (built per call, equal to system(m) up to rounding). Setting `azimuthal_orders`: the eigenfrequency study runs `solve_bor_resonances` per order on the one
-  assembly and `merge_order_solves` concatenates order by order; `BORResonance.azimuthal_order` (text
-  'm = <m>, lambda = ...'); resonance numbers are global, so `select_resonance` rebuilds the order's system from
-  `_eigen_assembly` when it changes; `bor_resonance_table_result` appends column azimuthal_order last (column positions
-  stay). In stationary / frequency_domain it is passed as `driven_orders`. Scripts set `BORPhysics.azimuthal_order`
-  (keeps the assembly, drops the factor, ports re-solve).
-- Driven order sum (`driven_orders`, m >= 0 distinct; body_of_revolution header): every point source is a 3D element at
-  phi = 0 of moment I d: `BORPointCurrent.term_rhs` = the ring current I (r, z) or I d / (2 pi r) (phi) at every order,
-  except the axis-cell 'r' at |m| = 1, whose moved half -b / m flips with m (term_rhs(order=-m)). Per order one factor
-  of A(m) (SuperLU or the line-block batch per axis class; nothing kept, no recycling) and
-  `order_pair_fields(minus_rhs=b(-m))` (x_-m = P A(m)^-1 P b(-m): one solve when P b(-m) = +-b(m), two for mixed
-  r / z + phi sources; -m fields = +m ones with E_phi, H_r, H_z negated). Monitors take `record_order(physics, system,
-  terms)` per order, then `record(physics)` (a new monitor type needs both; mode ports are refused at solve and by
-  validation): flux = sum of the term fluxes, `power_orders` per |m|; `order_sum_far_field` adds amplitudes with
-  exp(-j m phi) at phi = 0 (cos(angle) >= 0) or pi; probes / shown fields = the phi = 0 sum (`yee()`; field integrals
-  of it are no 3D integrals), q_abs the phi mean (so em_heat_joule stays right). The -m partner relies on rotational
-  invariance and on building b(-m) itself (point currents: term_rhs(order=-m); ports: refused).
-- Line block (bor_line_block, role 'shifted', every study; Automatic stays SuperLU): lines = z rows or r columns,
-  whichever is cheaper. `order_factorizations`: one set_operator per axis class, one kept LineBlockFactor per chunk of
-  orders, released before the next. `solvers.line_block.LineBlockFactorization` raises `RejectedLineBlockSolve` above the accept tolerance: the eigen path redoes that order with SuperLU, the
-  driven path marks the system rejected (SuperLU until it changes); both warn. The host SuperLU size rule applies only
-  to those fallbacks (finalize, `_solve`, validation and `solve_bor_resonances` with a passed factor skip it;
-  `_factorize_host` raises). No GMRES recycling on line-block factors. The role solver is shared between driven and eigen use (`owner=self`; `_line_factor.valid` turns False once
-  re-bound). Wavelength batches (single-order driven; an order sum keeps per-order batches):
-  `plan_harmonic_frequencies` as FDFDPhysics; an omega not in the kept batch assembles the next up to
-  fdfd_line_block.MAX_BATCH_WAVELENGTHS planned omegas (stopping at a differing active set) into one
-  `wavelength_factorizations` batch keyed by (`_material_serial`, order): every `_mark_assembly_dirty` but `omega_only`
-  bumps the serial, so a change of the assembled system must go through it; `_drop_line_factor` keeps the batch, the
-  eigen / order-sum paths release it. The estimate counts one wavelength. Selftest em_bor_line_block_wavelengths.
-- BORPhysics: FDFDPhysics attribute set, polarization 'bor' (sheet placement helpers refuse it; flux_line_cells /
-  box_cells / port_cells serve it), `axisymmetric` True (2 pi r ring weights of the travelling wave; a standing wave
-  integrates to half). Roles: 'linear' = sparse_direct (only `factorize_host` / `solve_recycled_host`: host SuperLU
-  whatever the back_end; 'cusolver_qr' is a validation error and refused by the constructor), 'eigen' =
-  arpack_shift_invert (superlu / cudss / cudss_mixed; `solve_bor_resonances(..., eigen_solver=)`); scripts get private
-  ones reported in `work_counters`. A material / omega change re-reads the MaterialGrid into a new assembly. The driven
-  SuperLU factor is kept while omega, m and materials stay; after a material change at the same omega, m and active
-  set (thermo-optic Picard) GMRES on the old factor runs first (sparse_direct RECYCLE_*). `centre_phasors` (host) feeds
-  the probes, `yee()` (cached per driven solve) the flux / far-field monitors. Point currents (`point_current_rhs`)
-  use the FDTD sign as the 2D FDFD. Estimator `memory_estimates.bor_memory_estimate` (host factor
-  2 x host_lu_bytes(3 n); cudss: operator copies (eigen: EIGEN_PHASE) and an external factor item; line_block by
-  the path the study takes: eigen and driven order sums bind the order family, `bor_line_block.line_block_bytes`
-  run items (K0 / K1 / K2 caches, min(orders, MAX_CHUNK_SHIFTS) factors); single-order driven solves hold whole
-  operators, `driven_line_block_bytes` (one operator and factor, or the batch of min(study wavelengths,
-  MAX_BATCH_WAVELENGTHS) operators with a factor each; no K1 / K2 caches)); its time recipe leaves a cudss eigen
-  node "not estimated". The tensor cuDSS factor is counted, not grown by n log2 n: `_bor_factor_entries` runs the
-  fem.dissection count on the operator's cliques (one per curl point: its a_phi / a_r / a_z members; m = 0: the u
-  and E_r / E_z blocks apart) -> `cudss_factor.FactorFill` (values + kept matrix + per-row part; cached per grid,
-  seconds above ~1e6 cells). The growth law held no per-row part (em_bor_cpu_gpu ports, 19,200 unknowns: 812,107
-  entries x 16 B = 13.0 MB of 25.6 MB permanent, the rest the kept matrix and ~540 B / row; it booked 1.5x the
-  entries and still read 27 % low). The other tensor cuDSS estimators (conical, modes, 2D FDFD) still use it.
-- Flux (module header): `box_flux` (closed cell box) equals `source_power` = pi / (omega mu0) Im(x^H b) to solver
-  precision when its faces lie in lossless PML-free cells. r-face weights: inner cell centre r for E_phi H_z, edge
-  rbar for E_z H_phi. `line_flux` (flux_monitor): share-weighted span ends (axis edge weight 0); exact for a line from
-  the axis across the whole field.
-- Far field: `far_field_samples` (a box bottom on a pec / pmc z_lo wall at grid edge 0 adds mirror images) +
-  `far_field_power` (Jacobi-Anger, observer at phi = 0). Bessel calls dominate: keep new far-field paths on
-  `_RadiationKernel` (J_|n| once per sample geometry). The result angle runs from +r toward +z (theta =
-  arccos(sin angle)); cos < 0 is the phi = pi side.
-- Ports (bor_ports header: exact discrete modes of a 3-row strip, quadratic pencil in psi = exp(-j beta h), one-sided
-  TFSF source). Lines horizontal only (validation error otherwise), from the axis or annular (`start` > 0: strip cells
-  below are PEC); an end on the last window cell continues through the r_hi cpml or ends on its wall, an end inside is
-  pec. A metal end is exact when the model's cells beyond it are PEC (metal radius = start - 1/2 cells); an inner end
-  without model PEC counts in edge_field and warns. A flux_monitor line across a conductor surface should start on the
-  axis (the surface E_r's dual is half in the PEC cell, which an annular line's span end drops). n_group: mass term
-  only (no material dispersion, PML frozen). Ports on identical lines (span, row width, line materials, mode count)
-  share one PortModes per (omega, order, assembly_count) (`BORPhysics.port_mode_solves`): PortModes / PortMode are
-  read-only, each port tracks and phase-aligns its own copy (`aligned_mode`), never mutate a shared one. A new solve
-  of a port line starts ARPACK from its last PortModes at the same order ([X; psi X] summed + the guarded random share,
-  E5; `solve_port_modes(previous=)`, only when the slice keys are equal), else from the seeded random vector.
-- `BORAssembly` builds C0 / C1 as one COO per matrix (`_block_csc`, the canonical CSC scipy's bmat of the kron blocks
-  gives: same pattern, same values); a new curl block goes in there as (offsets, sign) + `_identity_kron` /
-  `_kron_identity` entries, never as a scipy kron / bmat (their overhead was ~70 % of the assembly on small grids).
-- Backends ('gpu', 'cpu'): every solve, factor and port is host; only BORPhysics.fields, pec_cells / pole masks and the
-  MaterialGrid live on `domain.xp` (material reads by `to_host`, masks checked with `xp=`). A line_block shifted node
-  runs on the model's backend. Keep new paths xp-generic (em_bor_cpu_gpu).
-- Not yet (plan 2.3): the 2.16 metric layer, ports on vertical lines (the metric breaks the psi^s ansatz), a measured
-  line-block vs SuperLU crossover, line-block port mode solves.
-- `BORAssembly(..., omega=None)` is em_fdtd_bor's real (unstretched) metric: `system()` / `order_family()` refuse it;
-  `curl_parts(m)`, `e_point_means` / `a_point_means` and `yee_centres` serve both types: a change to the point or axis
-  rules changes both.
-- Self-tests (selftests_bor; CPU unless noted): em_bor_pec_cylinder (m = 1 re-solved with the target on its discrete
-  resonance), em_bor_uniaxial_cavity, em_bor_radiation, em_bor_order_sweep, em_bor_coax_ports, em_bor_cudss (gpu);
-  template microdisk_bor_eigenmodes; examples analytic_bor_dipole_radiation.json, analytic_bor_pipe_te11_section.json.
-  selftests_bor_orders: em_bor_line_block_family, em_bor_line_block_resonances, em_bor_order_list_model,
-  em_bor_offaxis_dipole (mirrored -m vs direct A(-m)), em_bor_offaxis_dipole_model. Multi-quantity CPU checks return
-  normalised errors (error / tolerance). selftests_bor_backend: em_bor_cpu_gpu (heavy). SuperLU-only analytic model
-  runs use the cpu backend; line_block runs keep the default (the cupy line block is its own implementation). Backend
-  comparisons scale a component by a common peak (er / ez by the |E| peak): a symmetry-zero component is roundoff and
-  differs between numpy and cupy.
+## Body of revolution (em_fdfd_bor; body_of_revolution, bor_ports, solvers/fdfd_bor, renderer_bor, definition_bor)
+- Formulation (unknowns, axis rules, walls, PML, orders, materials, sources, flux, far field, driven order sum):
+  `body_of_revolution` module header; solve levels, factor reuse, wavelength batches, line block and cuDSS: the
+  BORPhysics class comment; ports: `bor_ports` header. BORPhysics and ConicalPhysics share
+  `solvers/host_fdfd.HostFDFDBase` (a member both need goes there); `bor_boundary_config`, `bor_flux_line` and
+  `bor_far_field_box` serve BOR FDFD and FDTD alike.
+- em_fdtd_bor steps the same operator: `BORAssembly(..., omega=None)` is its real metric, and `curl_parts`,
+  `e_point_means` / `a_point_means` and `yee_centres` serve both types, so a change to the point or axis rules changes
+  both (example analytic_bor_transverse_dipole_m1 pins the axis rule).
+- `_material_serial` keys the line-block wavelength batch: every `_mark_assembly_dirty` but `omega_only` bumps it, so a
+  change of the assembled system goes through it.
+- The host SuperLU size rule binds only an own SuperLU / MUMPS / PARDISO factor: a cuDSS factor or a line_block node
+  skips it in `_solve`, `HostFDFDBase.finalize`, `_solver_issues` and `solve_bor_resonances` (passed factor); a rejected
+  line-block solve checks it in `_factorize_host` before the SuperLU fallback. Change them together.
+- Driven order sum: a new source type builds its own b(-m) (`term_rhs(system, order=)`, never a mirrored b(m)), a new
+  monitor type needs `record_order` and `record`; mode ports are refused.
+- 2D fill is mild (SuperLU copes to ~1e6 unknowns): cuDSS (unmeasured) buys host relief at the largest many-order
+  grids. Not yet: the 2.16 metric layer, a measured line-block vs SuperLU crossover, line-block port mode solves.
+- Self-tests: selftests_bor, selftests_bor_orders, selftests_bor_backend; examples em/analytic_bor_*. SuperLU-only
+  analytic model runs use the cpu backend, line_block runs the default (the cupy line block is its own
+  implementation). Backend comparisons scale a component by a common peak (er / ez by the |E| peak): a symmetry-zero
+  component is round-off and differs between numpy and cupy.
 
-## em_fdfd_bor on triangles (fem_bor, solvers/fdfd_bor_fem; agent_help batch)
-- One type, two solvers: `definition_bor._create` builds `FEMBORPhysics` when `ctx.domain.grid_kind` is 'triangles'
-  (walls from `_domain_requirements(settings)`: the axis x_lo as pmc, no ring there), else BORPhysics. Setting
-  `discretization` (quadratic default, linear; ignored on tensor meshes). PhysicsType / resonance_table / pec_domain
-  `grids` hold 'triangles'; every source / monitor / port stays tensor; `_triangle_issues` refuses every study that does
-  not eigen-solve it (`definition_common.eigen_solved`; `fem_bor.electric_field_at` serves the optomechanics overlap)
-  and applies the FEM size rule (fem_modes `size_issue_for_unknowns` with `FEM_BOR_SIZE_REMEDY`; none for cudss).
-  Unknown / fill / cuDSS byte estimates are em_modes' (`fem_modes.estimated_unknowns` etc.), uncalibrated.
-- Formulation: `fem_bor` module header. e = (E_r, E_z) Nedelec, w = r u = -j r E_phi Lagrange of the same degree;
-  K(m) = K0 + m K1 + m^2 K2 (`FEMBORAssembly` once per omega / material state, `system(m)` restricts to the order's
-  free set) and discrete gradients (grad p, -m p) are exact statics. Never change w to u: the kernel would leave the
-  discrete space (spurious modes for m != 0).
-- Axis: w fixed on the axis at every order, E_z for |m| >= 1 (`free_by_class`). The 1 / r integrands are log-singular
-  on axis elements unless G_r -> 0; interior Dunavant points make that a penalty: linear elements lock w / rot e in the
-  axis layer (m = 0, |m| = 1 converge slowly), quadratic do not. Every assembly uses `FEM_BOR_DEGREE` (6). Axis edges
-  are found geometrically (outer edges with both nodes on x = window x0), not by edge_tags; a mesh below r = 0 is
-  refused. Display samples axis nodes `AXIS_NODE_SHRINK` toward the centroid (divisions by r), so axis values are
-  approximate.
-- PML: fem_modes `pml_ring` (r_hi and z rings, pec outer side), stretched radius `stretched_radius` in every metric
-  factor (complex symmetric). The Yee path ends a cpml in a pmc edge instead: compare far from the PML only.
-- Solve: `solve_fem_bor_resonances` = eigenfrequency.solve_resonances (squared Cayley, host K - k_t^2 M, mass -M,
-  unstretched energy matrix, symmetric=True, equilibration as the Yee path) + `order_eigen_solve`; cudss / cudss_mixed
-  as the Yee path (LDL^T, D = I).
-- FEMBORPhysics: BORPhysics' eigen attribute set (conformal_locator None, so apply_pec calls add_pec_region), no driven
-  pieces. e_intensity / q_abs = ring-weighted element means (`element_means`); `fem_field`: materials and
-  absorbed_power P0, other fields nodal (`nodal_fields`, means over a node's non-PEC elements). Layout rebuilt only when
-  the PEC elements change; every solve re-reads the MaterialGrid.
-- Missing on triangles (refused): driven solves (flux / far-field / port need FEM equivalents), line block (no line
-  structure), subpixel / conformal (moot). Wanted next: driven solves on a 'linear' cuDSS back end for wavelength
+## em_fdfd_bor on triangles (fem_bor, solvers/fdfd_bor_fem)
+- Eigenfrequency only: `definition_bor._create` builds FEMBORPhysics on a 'triangles' mesh (walls from
+  `_domain_requirements(settings)`: the axis x_lo as pmc, no ring there); `_triangle_issues` refuses every study that
+  does not eigen-solve it, the feature `grids` every source / monitor / port. Formulation, axis, walls, PML: `fem_bor`
+  module header.
+- Compare with the Yee path far from the PML only (its cpml ends in a pmc edge, the ring in a pec side). Linear
+  elements lock w / rot e in the axis layer (m = 0, |m| = 1 converge slowly): keep quadratic. Axis display values are
+  approximate (`AXIS_NODE_SHRINK`).
+- Wanted next: driven solves (FEM flux / far-field / port equivalents) on a 'linear' cuDSS back end for wavelength
   sweeps.
-- Self-tests (selftests_bor_fem, registered by definition_bor; not yet run, tolerances first estimates; CPU unless
-  noted): em_bor_fem_pec_cylinder (no spurious), em_bor_fem_uniaxial_cavity (eps_rr / eps_phiphi / eps_zz mapping),
-  em_bor_fem_mie_sphere (curved interface + PML vs Mie poles), em_bor_fem_cudss (gpu), em_bor_fem_sphere_model. The Mie
-  pole helpers copy physics/em3d/selftests_fdfd3d's (physics/em may not import em3d): flagged duplication.
+- Self-tests: selftests_bor_fem (not yet run; tolerances first estimates).
 
 ## Body-of-revolution FDTD (em_fdtd_bor; fdtd_bor, solvers/fdtd_bor, renderer_fdtd_bor, definition_fdtd_bor; 2.3)
 - Triangles / cuDSS decision: Yee only, grids ('tensor',): the leap-frog stepper has no linear solve; a DGTD / FETD on
