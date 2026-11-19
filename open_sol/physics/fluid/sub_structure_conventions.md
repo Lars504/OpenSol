@@ -44,15 +44,32 @@ Sub file of the root `structure_conventions.md` (read that first). Laminar flow 
   POP_LOAD / POP_STORE, everything else float32. Transient only (raises, validate errors). Host code writing
   populations goes through `_store_populations`; masking multiplies the uint16 bits (`stored = half_bits(array);
   stored *= keep`), since cupy's float16 kernels do not compile on every CUDA / cupy pair.
-- Face codes (lattice.FACE_*, FACES order): wall (moving bounce-back), slip (specular mirror: the mirrored population of
-  the upstream cell along the face, n - c_t; cell n itself for the normal link or where n - c_t is outside / solid),
+- Face codes (lattice.FACE_*, FACES order): wall (moving bounce-back), slip (specular mirror, the exact even mirror of
+  the lattice: the mirrored population of the upstream cell along the face, n - c_t, i.e. cell n itself for the normal
+  link; halfway bounce-back where n - c_t is solid, since the ghost then mirrors a solid cell),
   velocity (moving bounce-back, rho0 = 1), pressure (anti-bounce-back with the previous velocity; face value =
   deviation 3 p / (rho U^2); plus the TRT second-order term from the previous step's velocity gradient, read from the
   neighbours' post-collision populations since velocity arrays are rewritten in place: without it a sheared face
   injects transverse momentum (fluid_poiseuille_pressure ~0.15); the gradient must be at the link midpoint r - c_q/2,
   half a cell along the face for diagonals (at the cell: ~0.013 left)), periodic (both faces of an axis, else
   `_update_face_values` raises). Unreferenced faces are fixed walls. Corner diagonals take the y face's rule when it is
-  wall / slip, else the x face's.
+  a wall or the x face is slip, else the x face's: beside a slip face the ghost mirrors into the other face's ghost (so
+  the other face's rule is the mirror's), two slip faces give the double mirror (the slip rule's bounce-back).
+- Symmetry feature (`core.mirror.MIRROR_FEATURES`, sign +1): the slip face (`_apply_slip`, kind 'slip' in
+  `_FACE_FEATURE_KINDS`) made a model mirror plane; renderer parities u / forces polar, pressure even, vorticity
+  axial_z. A parabolic inlet run ending on any slip face takes the unfolded run's shape (`_parabolic_shape` mirror
+  ends: half parabola, uniform between two). Not mirror-exact (documented, small): a pressure face's TRT shear term
+  in the cell next to the plane reads a one-sided tangential gradient at the cell (the mirror would give du_t/dn = 0
+  at the link midpoint; ~(tau - 1/2) / 6 x 4 (dx / H)^2 of u_max in one population, `face_velocity_gradient` knows no
+  face kinds); with conformal_boundaries a solid touching the plane keeps halfway links into the ghost (no Bouzidi
+  fraction there); a moving wall whose velocity is normal to the plane (a y-moving x wall at a y plane) is not even.
+  Validation (`_validate_flow`): own_mirror_face_conflicts (another face feature, a periodic pair through it: error),
+  `_mirror_plane_issues` (a mirror plane of another physics where the flow face is not slip: warning, periodic:
+  error), `_normal_force_issues` (body_force component / coupled body_force slot along a mirror plane's normal:
+  warning, its image is the opposite force); the feature itself: `mirror_feature_issues`. The flow has no feature
+  totals (no forces / flow-rate results); Session integrals double by touch_factor (u_y integrals over a y plane are
+  odd: their unfolded value is 0, the doubled half is not). fluid_heat_convection is exact across the plane (u_n
+  averages to 0 with the image; heat insulated there, heat validation warns otherwise).
 - Units: U = dx / dt, p = (rho_lat - 1) / 3 rho_SI U^2 (gauge), lattice force = f dt^2 / (rho_SI dx). dt_lbm =
   (relaxation_time - 1/2) dx^2 / (3 nu_max); other fluids tau = 1/2 + 3 nu dt / dx^2 (raises below 1/2 + 1e-3, warns
   below 1/2 + 0.02). A changed lattice dt (viscosity change when steady, or a runner step != dt_lbm) re-equilibrates
@@ -109,7 +126,9 @@ Sub file of the root `structure_conventions.md` (read that first). Laminar flow 
 ## Self-tests (`selftests.py`)
 - `FLUID_CASES` holds fluid_poiseuille_force, fluid_poiseuille_pressure, fluid_heat_convection_plug (starts at u = U by
   initial_velocity: from rest ~280k steps) and fluid_poiseuille_startup_half_storage; `SELFTEST_CASES` registers only
-  the half_storage start-up, the others run inside the parity cases (`_COVERED_BY_EXAMPLES`). Template
+  the half_storage start-up, the others run inside the parity cases (`_COVERED_BY_EXAMPLES`). The symmetry feature is
+  covered by examples/fluid/poiseuille_channel_pressure (a half channel: Q_sim doubled by the plane, the pressure
+  faces' corner links with it); the full two-wall pressure channel only by fluid_cpu_gpu. Template
   heated_microchannel uses library water.
 - `selftests_backend` (heavy): fluid_cpu_gpu (incl. fluid_bouzidi_channel, measured = max u_x so the parity is on a flow
   value), fluid_heat_convection_cpu_gpu, fluid_step_numba (`.cpu` vs `kernel(None, None, args)` shares the numba compile

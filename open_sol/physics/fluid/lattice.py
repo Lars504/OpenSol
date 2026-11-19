@@ -27,7 +27,11 @@ WEIGHTS = np.array([4 / 9] + [1 / 9] * 4 + [1 / 36] * 4)
 # halfway bounce-back off solid neighbours and the face rules, then collide and write g* of this step plus the
 # macroscopic lattice velocity (j + F/2, rho0 = 1) and density deviation rho - 1. Face values (face, component,
 # position): component 0 / 1 = lattice velocity x / y of a wall or velocity face, 2 = density deviation of a pressure
-# face. A corner diagonal takes the y face's rule when that face is a wall or slip face, else the x face's.
+# face. Slip faces are the exact even mirror (specular: the mirrored population of the ghost's image, the upstream
+# cell along the face; halfway bounce-back where that image is solid, since the ghost then mirrors a solid cell). A
+# corner diagonal takes the y face's rule when that face is a wall or the x face is slip, else the x face's: beside a
+# slip face the ghost mirrors into the other face's ghost (its rule is the mirror's), and two slip faces give the
+# double mirror, the opposite population of the cell (the slip rule's bounce-back).
 # Pressure faces: anti-bounce-back f_q = -f*_qbar + 2 e+_q(rho_w, u_b) - 2 Lambda+ (c_q . grad)(3 w_q c_q . u); the last
 # (TRT second-order) term uses the previous step's velocity gradient at the link midpoint r - c_q / 2 (half a cell
 # along the face for a diagonal), read from the neighbours' post-collision populations (velocity arrays are rewritten
@@ -153,7 +157,8 @@ __device__ __noinline__ float face_link(const pop_t* __restrict__ g_in, const fl
     int face;
     if (out_x && out_y) {
         const int face_y = sj < 0 ? 2 : 3;
-        face = face_kind[face_y] <= 1 ? face_y : (si < 0 ? 0 : 1);
+        const int face_x = si < 0 ? 0 : 1;
+        face = (face_kind[face_y] == 0 || face_kind[face_x] == 1) ? face_y : face_x;
     } else if (out_x) {
         face = si < 0 ? 0 : 1;
     } else {
@@ -167,12 +172,14 @@ __device__ __noinline__ float face_link(const pop_t* __restrict__ g_in, const fl
     const float weight = LINK_WEIGHT[q];
     if (kind == 1) {
         // specular: the mirrored population of the ghost cell's mirror image, the upstream cell along the face
-        // (cell n itself for the normal link; n where that cell is outside the window or solid)
+        // (cell n itself for the normal link); halfway bounce-back where that image is solid or outside the window
+        // (the ghost is the image of a solid cell, or of the ghost of a second slip face at a corner)
         const int mi = face < 2 ? i : si;
         const int mj = face < 2 ? sj : j;
         const bool upstream = mi >= 0 && mi < wx && mj >= 0 && mj < wy && fluid[mi * wy + mj];
         const int mirrored = face < 2 ? LINK_MIRROR_X[q] : LINK_MIRROR_Y[q];
-        return POP_LOAD(g_in[mirrored * n_cells + (upstream ? mi * wy + mj : n)]);
+        return upstream ? POP_LOAD(g_in[mirrored * n_cells + mi * wy + mj])
+                        : POP_LOAD(g_in[LINK_OPPOSITE[q] * n_cells + n]);
     }
     if (kind == 3) {
         // gradient at the link midpoint r - c_q / 2 (tangential offset -c_t / 2), du_x/dx, du_y/dx, du_x/dy, du_y/dy;
@@ -420,21 +427,22 @@ def _face_link_values(q, populations, fluid, lattice_velocity, kinds, face_value
     out_x = (source_i < 0) | (source_i >= wx)
     out_y = (source_j < 0) | (source_j >= wy)
     face_x, face_y = np.where(source_i < 0, 0, 1), np.where(source_j < 0, 2, 3)
-    face = np.where(out_x & out_y, np.where(kinds[face_y] <= FACE_SLIP, face_y, face_x),
-                    np.where(out_x, face_x, face_y))
+    corner_y = (kinds[face_y] == FACE_WALL) | (kinds[face_x] == FACE_SLIP)
+    face = np.where(out_x & out_y, np.where(corner_y, face_y, face_x), np.where(out_x, face_x, face_y))
     kind = kinds[face]
     x_face = face < 2
     position = np.where(x_face, j, i)
     bounce = populations[opposite, i, j]
     # wall / velocity faces: moving bounce-back with the face velocity
     values = bounce + 6.0 * weight * (cx * face_values[face, 0, position] + cy * face_values[face, 1, position])
-    # slip: the mirrored population of the upstream cell along the face (own cell where that is outside / solid)
+    # slip: the mirrored population of the upstream cell along the face (halfway bounce-back where that is outside /
+    # solid)
     mirror_i, mirror_j = np.where(x_face, i, source_i), np.where(x_face, source_j, j)
     upstream = (mirror_i >= 0) & (mirror_i < wx) & (mirror_j >= 0) & (mirror_j < wy)
     upstream &= fluid[np.clip(mirror_i, 0, wx - 1), np.clip(mirror_j, 0, wy - 1)]
     mirrored = np.where(x_face, _MIRROR_X[q], _MIRROR_Y[q])
-    values = np.where(kind == FACE_SLIP, populations[mirrored, np.where(upstream, mirror_i, i),
-                                                     np.where(upstream, mirror_j, j)], values)
+    specular = populations[mirrored, np.where(upstream, mirror_i, i), np.where(upstream, mirror_j, j)]
+    values = np.where(kind == FACE_SLIP, np.where(upstream, specular, bounce), values)
     pressure = np.nonzero(kind == FACE_PRESSURE)[0]
     if pressure.size:
         cell_i, cell_j, pressure_face = i[pressure], j[pressure], face[pressure]
@@ -707,7 +715,9 @@ def _step_numba(bouzidi):
                             continue
                         if out_x and out_y:
                             face_y = 2 if sj < 0 else 3
-                            face = face_y if face_kind[face_y] <= FACE_SLIP else (0 if si < 0 else 1)
+                            face_x = 0 if si < 0 else 1
+                            corner_y = face_kind[face_y] == FACE_WALL or face_kind[face_x] == FACE_SLIP
+                            face = face_y if corner_y else face_x
                         elif out_x:
                             face = 0 if si < 0 else 1
                         else:
@@ -721,7 +731,7 @@ def _step_numba(bouzidi):
                             if mi >= 0 and mi < wx and mj >= 0 and mj < wy and fluid[mi, mj]:
                                 g[q] = g_in[mirrored, mi, mj]
                             else:
-                                g[q] = g_in[mirrored, i, j]
+                                g[q] = g_in[opposite, i, j]   # halfway bounce-back
                         elif kind == FACE_PRESSURE:
                             side = -cy_int[q] if face < 2 else -cx_int[q]
                             gradient_0, gradient_1, gradient_2, gradient_3 = _numba_face_velocity_gradient(
