@@ -45,7 +45,6 @@ POLARIZATIONS = ('ez', 'hz')
 # faces whose condition holds the out-of-plane unknown at 0 (a cpml face: the ring's pec outer side); others natural
 _ESSENTIAL_FACES = {'ez': frozenset({BCType.PEC, BCType.ANTISYMMETRIC, BCType.CPML}),
                     'hz': frozenset({BCType.PMC, BCType.SYMMETRIC})}
-_PERIODIC_TYPES = frozenset({BCType.PERIODIC, BCType.BLOCH})
 FEM_FDFD_DEGREE = TRIANGLE_DEGREES[-1]   # rule of every assembly: the PML stretch is no polynomial
 SAMPLE_DEGREE = 4                        # rule of the element means (state fields, q_abs)
 _CENTROID = np.array([[1.0 / 3.0, 1.0 / 3.0]])
@@ -122,9 +121,9 @@ def fem_fdfd_layout(mesh, order, boundary_config, polarization, pec=None) -> FEM
         raise ValueError(f'fem_fdfd_layout: order must be 1 or 2, got {order!r}')
     if polarization not in POLARIZATIONS:
         raise ValueError(f"fem_fdfd_layout: polarization must be 'ez' or 'hz', got {polarization!r}")
-    faces = {face: getattr(boundary_config, face) for face in FACE_BITS}
-    if any(kind in _PERIODIC_TYPES for kind in faces.values()):
+    if boundary_config.periodic_x or boundary_config.periodic_y:
         raise ValueError(f'em_fdfd_{polarization} on triangles: {PERIODIC_TEXT}')
+    faces = {face: getattr(boundary_config, face) for face in FACE_BITS}
     ring = pml_ring(mesh, boundary_config)
     pec = np.zeros(mesh.n_elements, dtype=bool) if pec is None else np.asarray(pec, dtype=bool)
     if pec.shape != (mesh.n_elements,):

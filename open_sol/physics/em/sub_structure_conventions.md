@@ -384,177 +384,54 @@ type's vocabulary and refusals are in its help texts and validation.
 
 ## em_fdfd_ez / _hz on triangles (fem_fdfd, solvers/fdfd_2d_fem)
 - The four triangle EM physics (FEMFDFDPhysics, FEMModePhysics, FEMBORPhysics, FEMConicalPhysics) subclass
-  `solvers/fem_em_base.TriangleEMPhysics` (checks, per-element `element_fields`, state / field_dofs / fem_field
-  skeleton and nodal cache, slots, finalize size rule, renderer, take_absorbed_power, PEC-keyed layout cache,
-  `_element_materials`, poles / PEC masks): a new one sets the class attributes and the hooks `_build_layout`,
-  `_has_shown_field`, `_shown_nodal_fields`, `_last_unknowns` (`_system_changed` when it caches an assembly), never
-  copies. FDFDPhysics and FEMFDFDPhysics share `solvers/harmonic_shell.HarmonicEMShell` (omega, state, slots incl. hz
-  eps_xy_update, materials_changed, loss protocol, step / solve_harmonic, eps_xy). Point sources / probes are located
-  once per layout (`fem_fdfd._basis_at`, `FEMFDFDLayout.point_bases`).
-- One type, two solvers: create builds `FEMFDFDPhysics` when `ctx.domain.grid_kind` is 'triangles' (walls from
-  `fdfd_domain_requirements(settings)`: no BoundaryConfig), else FDFDPhysics; setting `discretization` (Lagrange 2 /
-  1; tensor meshes ignore it; nlfd omits it). point_source / field_probe / pec_domain / resonance_table `grids` hold
-  'triangles'; point_source / field_probe validate per mesh kind (`_per_mesh_kind`); `_triangle_issues` refuses the
-  optimization / optomechanics / thermal_noise studies and periodic faces, notes a cusolver_qr node (host SuperLU
-  used) and applies `fem_fdfd_size_issue`; `direct_solver_issues` skips its grid size rule on non-tensor estimates.
-- Formulation, signs, walls, PML: `fem_fdfd` header. ez essential on pec / antisymmetric / cpml faces and the PEC
-  closure, hz essential only on pmc / symmetric (PEC outlines natural: no staircase). hz stiffness eps_t / det(eps_t)
-  with eps_xy keeps the operator complex symmetric. The operator is -(Yee operator), so loads keep the Yee source
-  amplitudes.
-- `_solve`: `factorize_host(symmetric=True, row_scale=system.equilibration, previous=)` (host SuperLU, or cuDSS LDL^T
-  refactorising `_cudss_previous`, which also keeps a MUMPS / PARDISO factor for its analysis); no GMRES recycling (a
-  Picard step refactorises). Eigenfrequency
-  `solve_fem_fdfd_resonances` (A = K - k_t^2 M, mass -M, symmetric, equilibration). State = centroid values, q_abs =
-  element means. Renderer: FEMFieldRenderer with `_TRIANGLE_FIELDS`; `nodal_fields` averages over non-PEC elements.
-  Subpixel smoothing / conformal boundaries accepted and ignored. `error_indicator` = Kelly jumps, as em_modes.
-- Sizes (uncalibrated): FEM_FDFD_ENTRIES_PER_ROW, FEM_FDFD_LU_FILL, FEM_FDFD_ASSEMBLY_BYTES_PER_ENTRY / _CALLS;
-  `memory_estimates._fdfd_fem_memory_estimate`. Self-tests selftests_fdfd_fem (em_fdfd_fem_pec_box, _point_sources,
-  _disk_model, _driven_model, _cudss).
+  `solvers/fem_em_base.TriangleEMPhysics` (contract in its class comment); FDFDPhysics and FEMFDFDPhysics share
+  `solvers/harmonic_shell.HarmonicEMShell`. A new triangle EM physics, or a member both 2D FDFD physics need, goes
+  there, never into a copy.
+- One type, two solvers: create builds FEMFDFDPhysics on a 'triangles' mesh (walls from
+  `fdfd_domain_requirements(settings)`: a TriangleDomain carries no BoundaryConfig). A feature running there lists
+  'triangles' in its `grids` and validates per mesh kind (`definition_fdfd._per_mesh_kind`); what triangles refuse is
+  `_triangle_issues`.
+- Formulation, walls, PML, signs: `fem_fdfd` module header. The operator is -(Yee operator) of the same continuum
+  problem, so loads keep the Yee source amplitudes. Driven solves refactorise on every system change (no GMRES
+  recycling as on the Yee grid; cuDSS / MUMPS / PARDISO keep their analysis in `_cudss_previous`).
+- Self-tests: selftests_fdfd_fem.
 
-## Cross-section modes (cross_section_modes, A5 numerics)
-- Host only (numpy / scipy; never cupy arrays; a line-block factor keeps its own device state). xy = cross-section,
-  fields ~ exp(j omega t - j beta z), Im n_eff < 0 lossy. `solve_cross_section_modes` = `prepare_cross_section_modes`
-  (CrossSectionProblem, operator A - sigma B) + `solve_prepared_modes(problem, ..., factorization=None)` (SuperLU or
-  any solve_host factor). `line_block_layout`: lines = rows j (block_axis 0) or columns i (1), the periodic axis inside
-  the blocks; two periodic axes refused (A couples h_x(i, j) to h_y(i - 1 .. i, j .. j + 1)). Yee cell projected,
-  material at E_z (cell centre): H_x / E_y hi-y face, H_y / E_x hi-x face, H_z corner; eps_zz and mu cell values,
-  eps_xx / eps_yy arithmetic `face_average` (normal component first order at interfaces; subpixel there a follow-up).
-  Unknowns h = eta0 [H_x; H_y], A h = beta^2 B h. PEC = eps^-1 0 on cells and on faces between two PEC cells (B
-  singular: infinite-beta rows, never selected). Never `face_pec` here: E_x / E_y sit on faces normal to them, and its
-  either-cell rule zeroes the normal E at a conductor (a parallel plate of N gap cells gives n_eff^2 ~ eps (N+1)/(N-1)).
-  TE slab = slab_modes 'ez' to round-off; TM slab vs 'hz' only to discretisation order (dual point set).
-- Walls, all types on one plane: the inner face of the outermost grid cell (a mirror's padded ghost outside the window,
-  a wall's outermost window cell); ghost material = inner neighbour's (`_ghost_filled`); centre quantities = s x
-  neighbour (s -1 pec / antisymmetric, +1 pmc / symmetric) via a column map folded into Dx^h / Dy^h; plane-face
-  unknowns free (s -1) or dropped (s +1); faces beyond dropped. Half a cell off the FDTD / FDFD ez pec and hz pmc walls
-  (a cavity differs by one cell). cpml / natural ends drop the last face. Power, te_fraction and areas weight only
-  points inside the walls (plane faces half) and count a mirrored mode whole (`mirror_factor` 2 per mirror face).
-- Conformal PEC (`CrossSectionMaterials.pec_cuts` = `core.cut_cells.dual_cell_cuts`; module header): Faraday split into
-  `dx_h_centres` / `dy_h_centres` (on E_z) and `dx_h` / `dy_h` (A^-1 Dx^h diag(t_y) ..., A the dual free area) so Qx
-  Pz_y = Qy Pz_x and the div B = 0 elimination / h_z recovery (`_System.dx_h`) stay exact; eps^-1 masks, B, D^e and
-  power areas stay staircase. `_wall_neutral_cuts`: links / dual cells crossing a wall plane or the periodic seam are 1,
-  ghost links copy the inner neighbour (column maps commute with diag(t)). Fractions >= DUAL_CUT_FLOOR (conditioning,
-  no dt). Self-test conformal_pec_modes (model/selftests_conformal_cuts).
-- `mode_point_materials` / `ModePhysics.point_materials()`: ghost-filled, face-averaged, bend-mapped eps of the E points
-  (`_point_materials`, the eps half of `_assemble`: one writer); the em_eme_3d adjoint transposes it (physics/eme sub
-  file). Bend factors are per component: a consumer weighting E_z uses the z factors.
-- Mirror exactness needs mu uniform across the plane: H_y / H_z take mu of their lower cell (not mirror symmetric).
-- Solve: sigma = (k0 n_guess)^2 (1 + 1e-6) (keeps a TEM mode off the shift), n_guess default max Re sqrt(eps mu) of
-  the straight structure; ARPACK on (A - sigma B)^-1 B (`eigen_solver=`: em_modes passes its 'eigen' role runtime), k =
-  `mode_eigen_count`: min(2 n + 10, unknowns - 2), but n + `ABOVE_SPECTRUM_EXTRA_EIGENPAIRS` (4) when
-  `CrossSectionProblem.default_shift_above_spectrum` (operator eps^-1 / mu real and positive, no bend, default guess)
-  and PML modes are dropped; n + `KEPT_PML_EXTRA_EIGENPAIRS` (6) when they are kept (EME, S3). Without PML every
-  beta^2 is real below sigma, so the k nearest are the k highest-ranked for any k >= n (exact); on CPML the nearest
-  non-PML modes are those of highest Re beta^2 up to strongly leaky ones, and a solve whose dropped PML modes leave
-  fewer than n candidates is redone at 2 n + 10 (same factor, applications summed); a solve keeping them is redone
-  there when the n-th ranked mode lies near the converged disk edge (`_kept_pml_near_cut`: sigma - Re beta^2 >
-  KEPT_PML_CUT_FRACTION 0.5 x the largest |beta^2 - sigma| returned; a PML mode beyond the disk outranks it only with
-  |Im beta^2| > 0.87 x the radius). 2 n + 10 made ARPACK converge the PML / cladding cluster it then dropped
-  (em_modes_cpu_gpu: 1782 -> 411 applications). A new way to put an eigenvalue above the default shift (gain, negative
-  eps, a mapped metric) must clear that flag. Estimators take the wide `mode_eigen_count(n, unknowns)` (upper figure;
-  they cannot see the materials). An own factor of an operator without imaginary part (walls, lossless, no PML / Bloch
-  phase) is float64 (`factorize_host(real=True)`) and host ARPACK then runs real (E1: `eigs(real=True)`, dnaupd, real
-  v0: start modes turned real by `_real_aligned`; the device Krylov-Schur stays complex, two real solves per vector).
-  Estimators test `memory_estimates.real_cross_section_operator(settings, context)` (no cpml, no Bloch phase, no
-  sigma_e / sigma_m / poles): the em_modes memory books the float64 SuperLU factor and host basis, the time recipe
-  value_bytes 8 (unless cuDSS, line_block or the device Krylov-Schur of a gpu run). Ranked by descending Re
-  beta^2 (ties by Im), as slab_modes (Re n_eff would let evanescent
-  modes outrank weakly guided ones); PML modes (> half |h|^2 dA on stretched points) dropped unless
-  `drop_pml_modes=False` (physics/eme), so fewer than asked may return. `size_issue_for` =
-  `sparse_direct.size_issue(..., unknowns_per_cell=2)`. Non-convergence keeps converged pairs and warns in
-  `info['warnings']`. Tolerance machine precision, `PML_ARPACK_TOLERANCE_FLOOR` (1e-12) when dropping PML modes on CPML,
-  then also a `PML_ARNOLDI_BASIS_PER_WANTED` (5) x n_wanted basis (`mode_default_basis`; the em_modes memory and time
-  estimates take it via `cpml_cross_section(settings)`; scipy's 2 k + 1 hit the 300-restart cap in em_modes_cpu_gpu,
-  2479 applications). `solve_prepared_modes(tolerance_floor=)` raises it: ModePhysics' own solves pass
-  `MODE_ARPACK_TOLERANCE_FLOOR` (1e-10, E3), its group-index solves (the +- 1e-3 difference amplifies the error 500x),
-  detached solves, ports, EME and the CPU cases keep machine precision. EME (drop_pml_modes False) keeps scipy's basis.
-  `warm_guard=True` adds `arpack_shift_invert.guarded_start_vector`'s random share to a start from earlier modes (E5:
-  ModePhysics starts each solve from the last solve's modes, the em3d port source re-solve from its last modes).
+## Cross-section modes (cross_section_modes)
+- Host only. Formulation, Yee point layout, walls / mirrors, Bloch phases, bends and conformal PEC: module header. The
+  wall plane is half a cell off the FDTD / FDFD ez pec and hz pmc walls (a cavity between them differs by one cell).
+- One writer of the E-point eps: `_point_materials` (ghost fill, face means, subpixel deltas, bend factors), used by
+  the assembly and by `mode_point_materials` / `ModePhysics.point_materials()`; the em_eme_3d adjoint transposes it
+  (physics/eme sub file). Bend factors are per component: a consumer weighting E_z uses the z factors.
+- Solve rules (shift, eigenpair counts, PML drop and ranking, tolerance floors, Arnoldi basis, the real float64 path):
+  the constant comments and `solve_prepared_modes`. The estimators cannot see the materials and follow them through
+  `mode_eigen_count` (wide), `mode_default_basis(..., cpml_cross_section(settings))` and
+  `memory_estimates.real_cross_section_operator`: a change to the solve's count, basis or real test changes those too.
 - Degenerate pairs (fibre HE11) come back as arbitrary non-orthogonal combinations; separate them with mirrors.
-  `mode_overlap` = |c_ab c_ba| / |c_aa c_bb|; `mode_group_indices` re-solves at omega (1 +- 1e-3) with the modes as
-  ARPACK v0, tracks by overlap (NaN + warning below 0.9): pass the solve's n_eff_guess.
-- Bend `(R, x_ref, full-grid x edges, model)`, s = 1 + (x - x_ref)/R at each Yee point's own x (`_bend_factors`, one
-  writer for operator and `ModePointMaterials`); ValueError where s <= 0. 'exact' (default): eps and mu x diag(s, s,
-  1/s) (diagonal mu in the operator); fields are the mapped components (E_z, H_z = s x physical E_phi, H_phi); power /
-  `mode_overlap` keep the straight sums, only volume integrals carry the metric (via the mapped eps). 'conformal': eps x
-  s^2 (second order in w / R). Inside x CPML s is taken at the complex stretched x~ = x + integral (s_pml - 1) dx
-  (`_stretched_x_edges`, each layer from its inner edge) to keep the layer matched; leaky bend modes want pml_kappa_max
-  1 (default 15 reflects grazing radiation). `mode_point_materials` keeps the real factors. Self-tests (CPU):
-  em_cross_section_bend (selftests_bend: bent slab vs slab_modes lines and the exact transform u = x_ref + R ln(r / R));
-  em_shg_overlap_bend (that transform as a straight cross-section; mu_yy = s^2 given at the hi-u face cell since H_y
-  takes its lower cell's mu); em_modes_bend_loss (model run, leaky E_y mode vs a 1D finite-volume solve in the check).
-- Self-tests `CROSS_SECTION_CPU_SELFTESTS` (selftests_cross_section.py): slabs vs slab_modes, walled guides vs exact
-  discrete spectrum, mirror halves vs full domain, quarter fibre vs Bessel roots at the area-matched staircase radius.
+  `mode_group_indices` re-solves with the modes as ARPACK v0 and tracks by overlap: pass the solve's n_eff_guess.
+- Leaky bend modes want pml_kappa_max 1 (the default 15 reflects grazing radiation).
+- Self-tests: `CROSS_SECTION_CPU_SELFTESTS` (selftests_cross_section: a TE slab matches slab_modes 'ez' to round-off,
+  TM matches 'hz' only to discretisation order, dual point set), selftests_bend, model/selftests_conformal_cuts.
 
-## Conical / out-of-plane k_z (em_fdfd_conical; conical, solvers/fdfd_conical, renderer_conical, definition_conical; 2.9)
-- Host only; module header = the formulation. E unknowns (E_x, E_y, E_z) on the cross_section_modes layout (same
-  walls, mirrors, Bloch phases, CPML, point eps / lower-cell mu), fields ~ exp(-j k_z z): a change to that layout /
-  point rules changes both. `assemble_conical` (complex k_z allowed); `solve_conical_driven` (J_F, FDTD sign; at k_z = 0
-  the E_z block is the em_fdfd_ez operator but with the cross-section wall planes, half a cell off the FDFD ez pec / hz
-  pmc walls); `solve_conical_resonances` (C_H mu^-1 C_E = k0^2 eps at fixed k_z via
-  `eigenfrequency.solve_resonances(spectral_map='squared_cayley')` as BOR; static and > 0.5 PML-share resonances
-  dropped, ranked by |omega - omega_guess|, cpml stretched at omega_guess only). ARPACK floor 1e-10
-  (`_ARPACK_TOLERANCE_FLOOR`), shift offset eigenfrequency.SHIFT_RELATIVE_OFFSET (1e-4); cross_section_modes keeps 1e-6
-  and machine precision (its tests need round-off). Why: with the target on a resonance (k_z = beta of a mode) 1e-6
-  amplified rounding past the tolerance and one uninterruptible ARPACK call ran for minutes. Squared Cayley replaced
-  (A - sigma B)^-1 A / sigma, which ranked resonances with k0^2 < ~sigma / 2 behind every one above. Refused: pec_cuts,
-  bends.
-- cuDSS / symmetrizer (module header "Symmetry"): the Yee conical operator is NOT complex symmetric as assembled, but D
-  A is for D = (A_x, A_y, -A_z) (layout face / centre lengths x CPML stretch, E_z block negated; `_symmetrizer`). Kept
-  by PML, loss, complex k_z, walls / mirrors, PEC, subpixel eps; a Bloch phase breaks it (`ConicalSystem.symmetrizer`
-  None: cudss an LU, cudss_mixed a complex64 LU refined to 1e-12 per solve). The eigen solve passes symmetrizer=D and
-  equilibration (|D| (|diag curl-curl| + k0^2 |eps|))^-1/2 (diag A nearly cancels): cudss LDL^T of D A, cudss_mixed
-  (`eigen_role(mixed_factorization=True)`) loose solves + float64 Rayleigh polish. Eigen 'auto' = cudss on the gpu with
-  nvmath (host SuperLU fill grows ~n^3 here). Driven 'linear': `CUDSS_LINEAR_ROLE` (definition_helpers);
-  `ConicalPhysics._solve_linear` (HostFDFDBase._factorize_operator) factors D A (`factorize_host(symmetric=True,
-  symmetrizer=D, row_scale=conical_row_scale, previous=)`), no
-  GMRES recycling: a system change moves the factor to `_cudss_previous` for refactorisation on the kept plan; released
-  before an eigen-solve. A cuDSS factor skips the SuperLU size rule (assemble_conical(check_size=False), finalize,
-  `_solver_issues`); memory estimate counts the device operator copy and the factor as an external item. Selftest
-  em_fdfd_conical_cudss (selftests_conical). Verdict: 3 unknowns per cell, SuperLU fill limits near ~1e6 unknowns, so
-  cuDSS pays for large cross-sections and long k_z sweeps; single_residual gate 1e-3 (above it use cudss).
-- Sources (`point_current_terms`): integrated cell current I; 'z' on the centre, 'x' / 'y' half on each of the cell's
-  two faces by dual area (`placement.dipole_faces`; the wrapped lo face of cell 0 on a periodic axis carries
-  e^{-j k L}). Line source = sum of its cells (exp(-j k s) along a Bloch axis, s from the grid lo corner; cpml edges
-  continue through the PML). `source_power` = 1/2 Re E . J_F* dA (J_F is minus the textbook current).
-- Flux (`line_flux`): line-cell E with H on their hi face; centre pairs by centre lengths, face pairs by face lengths
-  with the two end faces half (periodic: both ends add to the wrap face; a wall / mirror end face keeps its layout
-  share). Exact discrete Poynting only for full-period / wall-to-wall line pairs (source power minus absorption between
-  them); shorter lines and closed boxes are second order. Mirror factor `placement.line_mirror_factor`.
-- ConicalPhysics: FDFDPhysics attribute set, polarization 'conical' (sheet placement helpers refuse it), material
-  schema 'modes' (eps_r = eps_zz on E_z), `grid_cell_widths` as em_modes; a material / omega / k_z change builds a new
-  ConicalSystem; the driven SuperLU factor ('cusolver_qr' refused) is kept per system and recycled by GMRES after a
-  material change at the same omega, k_z and active set. Subpixel smoothing as em_modes; no conformal PEC. Not yet: a
-  conical TFSF plane wave (a phased line source across a Bloch period stands in), far field, mode ports, line-block.
-- Self-tests (selftests_conical): `CONICAL_CPU_SELFTESTS` em_conical_empty_lattice, em_conical_current_sheets;
-  `CONICAL_MODEL_SELFTESTS` em_fdfd_conical_sheet (flux identity vs source_power), em_fdfd_conical_lattice (exact Yee
-  dispersion). Walled guide = example em/analytic_conical_walled_guide. selftests_conical_fem holds
-  em_conical_symmetrizer (D A symmetric to 1e-12, Bloch -> None) and em_conical_yee_cudss (gpu, LDL^T and polish).
+## Conical / out-of-plane k_z (em_fdfd_conical; conical, solvers/fdfd_conical, renderer_conical, definition_conical)
+- Host only. Formulation, symmetrizer D, source and flux conventions (J_F is minus the textbook current): `conical`
+  module header and docstrings; factor reuse (GMRES recycling, cuDSS refactorisation): the ConicalPhysics class comment.
+- Built on the cross_section_modes layout and `assemble_cross_section` parts (walls, mirrors, Bloch phases, CPML, point
+  eps, lower-cell mu): a change there changes both types. At k_z = 0 the E_z block is the em_fdfd_ez operator but with
+  the cross-section wall planes.
+- A cuDSS factor skips the host SuperLU size rule (`_refresh_system` / `_solve` of ConicalPhysics, definition
+  `_solver_issues`, `solve_conical_resonances`): a change of that rule touches every caller of `conical.size_issue_for`.
+- Verdict: 3 unknowns per cell and host SuperLU fill limit it near ~1e6 unknowns, so cuDSS pays for large
+  cross-sections and long k_z sweeps; cudss_mixed only while its single_residual stays below 1e-3 (above it use cudss).
+- Self-tests: selftests_conical (CPU numerics, model runs), selftests_conical_fem (also the Yee symmetrizer and cuDSS
+  checks); walled guide = example em/analytic_conical_walled_guide.
 
-## em_fdfd_conical on triangles (fem_conical, solvers/fdfd_conical_fem; agent_help batch)
-- One type, two solvers: `definition_conical._create` builds `FEMConicalPhysics` when `ctx.domain.grid_kind` is
-  'triangles' (walls from `fdfd_domain_requirements(settings)`), else ConicalPhysics. Setting `discretization`
-  (quadratic default, linear). Sources / probes / flux monitors stay tensor; `_triangle_issues` refuses every study but
-  eigenfrequency and periodic / Bloch faces (no periodic mesh), and applies the FEM size rule (fem_modes
-  `size_issue_for_unknowns`, `FEM_CONICAL_SIZE_REMEDY`; none for cudss). Sizes are em_modes' (same spaces);
-  FEM_CONICAL_ASSEMBLY_BYTES_PER_ENTRY / _CALLS uncalibrated.
-- Formulation (`fem_conical` module header): the planar fem_bor pencil (r -> 1, m -> k_z) on fem_modes' parts (e = E_t
-  Nedelec, w = -j E_z Lagrange); complex symmetric (D = I) with loss and PML, exact discrete statics. It is exactly the
-  em_modes Lee-Sun-Cendes pencil at fixed k_z (pinned by em_conical_fem_modes_equivalence): a change of fem_modes'
-  `_coefficients` / walls changes both types.
-- Reuse: walls / PEC / mirrors / PML ring = `fem_mode_layout` (via `fem_conical_layout`); fields = fem_modes' Faraday at
-  beta = k_z through `FEMConicalField` (duck-types the FEMMode attributes), H at the target omega. Solve:
-  `solve_fem_conical_resonances` = solve_resonances (squared Cayley, symmetric=True, equilibration (|diag K| + k_t^2
-  |diag M|)^-1/2): cudss LDL^T / cudss_mixed + polish as fem_bor.
-- FEMConicalPhysics: ConicalPhysics' eigen attribute set (conformal_locator None so apply_pec calls add_pec_region,
-  set_subpixel_smoothing ignored), no driven pieces; state / materials per element, `field_dofs` P0; `error_indicator`
-  = fem_modes.mode_error_indicator of the shown resonance. Layout rebuilt only when the PEC elements change.
-- Missing on triangles (refused): driven solves, line block, subpixel / conformal (moot), complex k_z. Driven deferred:
-  conical grating incidence needs periodic faces; once periodic meshes (as em3d's builtin Kuhn tets) or em_fdfd_ez /
-  _hz triangle sources exist, share their FEM source / probe / flux pieces instead of a conical copy.
-- Self-tests (selftests_conical_fem; tolerances first estimates): em_conical_fem_pec_box (TE^z / TM^z closed forms, no
-  spurious), em_conical_fem_modes_equivalence (1e-8), em_conical_fem_cudss (gpu, 1e-8: unpolished
-  double cudss on the device Krylov-Schur ~5e-9), em_fdfd_conical_fem_pipe (model run).
+## em_fdfd_conical on triangles (fem_conical, solvers/fdfd_conical_fem)
+- Formulation and the reused fem_modes spaces, walls, PML ring and Faraday recovery: `fem_conical` module header. It is
+  exactly the em_modes Lee-Sun-Cendes pencil at fixed k_z (pinned by em_conical_fem_modes_equivalence): a change of
+  fem_modes' `_coefficients`, walls or layout changes both types.
+- Eigenfrequency only (`definition_conical._triangle_issues`). Driven triangle solves (conical grating incidence also
+  needs periodic meshes) should share fem_fdfd's point loads and probes (`point_load`, `_basis_at`), not copy them.
+- Self-tests: selftests_conical_fem.
 
 ## em_modes model layer (solvers/modes_2d, definition_modes)
 - `ModePhysics` has the FDFDPhysics attribute set (polarization 'modes' = the `EM_MATERIAL_SCHEMAS` key with eps_r,
