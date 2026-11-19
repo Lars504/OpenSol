@@ -75,7 +75,7 @@ Line ranges in api_templates.md (Read with offset / limit; Grep '^## ' lists the
 
 ## Templates
 
-Worked examples: every template validates without errors (selftest templates_validate), and modifying the closest one is the most reliable way to write a valid model. api.template(key) returns one as a ModelSpec, python -m open_sol template KEY FILE writes its model file.
+Worked examples that validate without errors (selftest templates_validate): modifying the closest one is the most reliable way to write a valid model. api.template(key) returns one as a ModelSpec, python -m open_sol template KEY FILE writes its model file.
 
 ### `dielectric_cylinder` - Dielectric cylinder
 
