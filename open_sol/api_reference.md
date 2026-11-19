@@ -100,88 +100,88 @@ Line ranges in api_reference.md (Read with offset / limit; Grep '^## ' lists the
   - lines 6364-6380: Feature `em_fdtd_hz.dft_monitor` - Field map monitor
   - lines 6382-6398: Feature `em_fdtd_hz.far_field` - Far-field pattern
 - lines 6400-6609: Physics type `em_modes` - Electromagnetic Waves, cross-section modes
-- lines 6611-6911: Physics type `heat` - Heat Transfer in Solids
-- lines 6913-7071: Physics type `laminar_flow` - Laminar Flow (2D)
-- lines 7073-7267: Physics type `magnetic_fields_ac` - Magnetic Fields, AC (2D)
-- lines 7269-7437: Physics type `magnetostatics` - Magnetostatics (2D)
-- lines 7439-7611: Physics type `magnetostatics_3d` - Magnetostatics (3D)
-- lines 7613-7920: Physics type `membrane` - Membrane
-- lines 7922-8155: Physics type `pressure_acoustics` - Pressure Acoustics, frequency domain
-- lines 8157-8643: Physics type `solid_mechanics` - Solid Mechanics (2D)
-  - lines 8169-8226: Settings (PhysicsSpec.settings)
-  - lines 8228-8315: Material properties (MaterialSpec.properties)
-  - lines 8317-8374: Fields
-  - lines 8376-8380: Source slots
-  - lines 8382-8392: Feature `solid_mechanics.fixed` - Fixed
-  - lines 8394-8404: Feature `solid_mechanics.roller` - Roller
-  - lines 8406-8419: Feature `solid_mechanics.displacement` - Displacement
-  - lines 8421-8431: Feature `solid_mechanics.fixed_domain` - Fixed (domain)
-  - lines 8433-8446: Feature `solid_mechanics.prescribed_displacement_domain` - Prescribed displacement (domain)
-  - lines 8448-8461: Feature `solid_mechanics.boundary_load` - Boundary load
-  - lines 8463-8476: Feature `solid_mechanics.segment_load` - Boundary load (segment)
-  - lines 8478-8491: Feature `solid_mechanics.body_force` - Body force
-  - lines 8493-8504: Feature `solid_mechanics.temperature_change` - Temperature change
-  - lines 8506-8517: Feature `solid_mechanics.solid_probe` - Solid probe
-  - lines 8519-8529: Feature `solid_mechanics.frequency_probe` - Frequency probe
-  - lines 8531-8541: Feature `solid_mechanics.resonance_table` - Resonance table
-  - lines 8543-8554: Feature `solid_mechanics.thermoelastic_damping` - Thermoelastic damping
-  - lines 8556-8593: Feature `solid_mechanics.optomechanical_coupling` - Optomechanical coupling
-  - lines 8595-8609: Feature `solid_mechanics.electrode` - Electrode
-  - lines 8611-8625: Feature `solid_mechanics.electrode_domain` - Electrode (domain)
-  - lines 8627-8643: Feature `solid_mechanics.admittance` - Admittance
-- lines 8645-9225: Physics type `solid_mechanics_3d` - Solid Mechanics (3D)
-  - lines 8657-8706: Settings (PhysicsSpec.settings)
-  - lines 8708-8845: Material properties (MaterialSpec.properties)
-  - lines 8847-8917: Fields
-  - lines 8919-8924: Source slots
-  - lines 8926-8936: Feature `solid_mechanics_3d.fixed` - Fixed
-  - lines 8938-8948: Feature `solid_mechanics_3d.roller` - Roller
-  - lines 8950-8965: Feature `solid_mechanics_3d.displacement` - Displacement
-  - lines 8967-8977: Feature `solid_mechanics_3d.fixed_domain` - Fixed (domain)
-  - lines 8979-8994: Feature `solid_mechanics_3d.prescribed_displacement_domain` - Prescribed displacement (domain)
-  - lines 8996-9011: Feature `solid_mechanics_3d.boundary_load` - Boundary load
-  - lines 9013-9028: Feature `solid_mechanics_3d.body_force` - Body force
-  - lines 9030-9041: Feature `solid_mechanics_3d.temperature_change` - Temperature change
-  - lines 9043-9054: Feature `solid_mechanics_3d.solid_probe` - Solid probe
-  - lines 9056-9066: Feature `solid_mechanics_3d.frequency_probe` - Frequency probe
-  - lines 9068-9078: Feature `solid_mechanics_3d.resonance_table` - Resonance table
-  - lines 9080-9091: Feature `solid_mechanics_3d.mode_shapes` - Mode shapes
-  - lines 9093-9116: Feature `solid_mechanics_3d.squeeze_film_damping` - Squeeze-film damping
-  - lines 9118-9129: Feature `solid_mechanics_3d.thermoelastic_damping` - Thermoelastic damping
-  - lines 9131-9148: Feature `solid_mechanics_3d.electrode` - Electrode
-  - lines 9150-9167: Feature `solid_mechanics_3d.electrode_domain` - Electrode (domain)
-  - lines 9169-9186: Feature `solid_mechanics_3d.admittance` - Admittance
-  - lines 9188-9225: Feature `solid_mechanics_3d.optomechanical_coupling` - Optomechanical coupling
-- lines 9227-9235: Coupling type `acoustics_em_acousto_optic` - Acousto-optic effect (elastic waves -> electromagnetic waves)
-- lines 9237-9245: Coupling type `currents_heat_joule` - Joule heating (electric currents -> heat)
-- lines 9247-9256: Coupling type `electrostatics_acoustics_piezo` - Piezoelectric coupling (electrostatics <-> elastic waves)
-- lines 9258-9267: Coupling type `electrostatics_em_pockels` - Pockels effect (electrostatics -> electromagnetic waves)
-- lines 9269-9277: Coupling type `em_acoustics_photoacoustic` - Photoacoustic heating (electromagnetic waves -> elastic waves)
-- lines 9279-9287: Coupling type `em_heat_joule` - Joule heating (electromagnetic waves -> heat)
-- lines 9289-9300: Coupling type `em_semiconductor_generation` - Photogeneration (electromagnetic waves -> semiconductor)
-- lines 9302-9310: Coupling type `em_solid_optical_force` - Optical force (electromagnetic waves -> solid mechanics)
-- lines 9312-9325: Coupling type `field_transfer` - Field transfer
-- lines 9327-9335: Coupling type `fluid_heat_convection` - Convective heat transport (laminar flow -> heat)
-- lines 9337-9345: Coupling type `heat_em_phase_change` - Phase change (heat -> electromagnetic waves)
-- lines 9347-9355: Coupling type `heat_em_thermo_optic` - Thermo-optic effect (heat -> electromagnetic waves)
-- lines 9357-9365: Coupling type `heat_solid_thermal_strain` - Thermal expansion (heat -> solid mechanics)
-- lines 9367-9375: Coupling type `magnetic_heat_induction` - Induction heating (magnetic fields AC -> heat)
-- lines 9377-9385: Coupling type `magnetic_solid_lorentz_force` - Lorentz force (magnetic fields -> solid mechanics)
-- lines 9387-9400: Coupling type `semiconductor_em_plasma_dispersion` - Free-carrier plasma dispersion (semiconductor -> electromagnetic waves)
-- lines 9402-9411: Coupling type `solid_em_strain_optic` - Strain-optic effect (solid mechanics -> electromagnetic waves)
-- lines 9413-9422: Coupling type `solid_membrane_tension` - Film prestress (solid mechanics -> membrane)
-- lines 9424-9458: Study type `eigenfrequency` - Eigenfrequency
-- lines 9460-9495: Study type `frequency_domain` - Frequency domain
-- lines 9497-9540: Study type `frequency_response` - Frequency response
-- lines 9542-9564: Study type `mode_analysis` - Mode analysis
-- lines 9566-9588: Study type `nonlinear_frequency_domain` - Nonlinear frequency domain
-- lines 9590-9606: Study type `optimization` - Optimization
-- lines 9608-9631: Study type `optomechanics` - Optomechanics
-- lines 9633-9654: Study type `stationary` - Stationary
-- lines 9656-9685: Study type `thermal_noise` - Thermal noise
-- lines 9687-9703: Study type `time_dependent` - Time dependent
-- lines 9705-9773: Templates
-- lines 9775-10020: Results, reports and files
+- lines 6611-6923: Physics type `heat` - Heat Transfer in Solids
+- lines 6925-7083: Physics type `laminar_flow` - Laminar Flow (2D)
+- lines 7085-7279: Physics type `magnetic_fields_ac` - Magnetic Fields, AC (2D)
+- lines 7281-7449: Physics type `magnetostatics` - Magnetostatics (2D)
+- lines 7451-7623: Physics type `magnetostatics_3d` - Magnetostatics (3D)
+- lines 7625-7932: Physics type `membrane` - Membrane
+- lines 7934-8167: Physics type `pressure_acoustics` - Pressure Acoustics, frequency domain
+- lines 8169-8655: Physics type `solid_mechanics` - Solid Mechanics (2D)
+  - lines 8181-8238: Settings (PhysicsSpec.settings)
+  - lines 8240-8327: Material properties (MaterialSpec.properties)
+  - lines 8329-8386: Fields
+  - lines 8388-8392: Source slots
+  - lines 8394-8404: Feature `solid_mechanics.fixed` - Fixed
+  - lines 8406-8416: Feature `solid_mechanics.roller` - Roller
+  - lines 8418-8431: Feature `solid_mechanics.displacement` - Displacement
+  - lines 8433-8443: Feature `solid_mechanics.fixed_domain` - Fixed (domain)
+  - lines 8445-8458: Feature `solid_mechanics.prescribed_displacement_domain` - Prescribed displacement (domain)
+  - lines 8460-8473: Feature `solid_mechanics.boundary_load` - Boundary load
+  - lines 8475-8488: Feature `solid_mechanics.segment_load` - Boundary load (segment)
+  - lines 8490-8503: Feature `solid_mechanics.body_force` - Body force
+  - lines 8505-8516: Feature `solid_mechanics.temperature_change` - Temperature change
+  - lines 8518-8529: Feature `solid_mechanics.solid_probe` - Solid probe
+  - lines 8531-8541: Feature `solid_mechanics.frequency_probe` - Frequency probe
+  - lines 8543-8553: Feature `solid_mechanics.resonance_table` - Resonance table
+  - lines 8555-8566: Feature `solid_mechanics.thermoelastic_damping` - Thermoelastic damping
+  - lines 8568-8605: Feature `solid_mechanics.optomechanical_coupling` - Optomechanical coupling
+  - lines 8607-8621: Feature `solid_mechanics.electrode` - Electrode
+  - lines 8623-8637: Feature `solid_mechanics.electrode_domain` - Electrode (domain)
+  - lines 8639-8655: Feature `solid_mechanics.admittance` - Admittance
+- lines 8657-9237: Physics type `solid_mechanics_3d` - Solid Mechanics (3D)
+  - lines 8669-8718: Settings (PhysicsSpec.settings)
+  - lines 8720-8857: Material properties (MaterialSpec.properties)
+  - lines 8859-8929: Fields
+  - lines 8931-8936: Source slots
+  - lines 8938-8948: Feature `solid_mechanics_3d.fixed` - Fixed
+  - lines 8950-8960: Feature `solid_mechanics_3d.roller` - Roller
+  - lines 8962-8977: Feature `solid_mechanics_3d.displacement` - Displacement
+  - lines 8979-8989: Feature `solid_mechanics_3d.fixed_domain` - Fixed (domain)
+  - lines 8991-9006: Feature `solid_mechanics_3d.prescribed_displacement_domain` - Prescribed displacement (domain)
+  - lines 9008-9023: Feature `solid_mechanics_3d.boundary_load` - Boundary load
+  - lines 9025-9040: Feature `solid_mechanics_3d.body_force` - Body force
+  - lines 9042-9053: Feature `solid_mechanics_3d.temperature_change` - Temperature change
+  - lines 9055-9066: Feature `solid_mechanics_3d.solid_probe` - Solid probe
+  - lines 9068-9078: Feature `solid_mechanics_3d.frequency_probe` - Frequency probe
+  - lines 9080-9090: Feature `solid_mechanics_3d.resonance_table` - Resonance table
+  - lines 9092-9103: Feature `solid_mechanics_3d.mode_shapes` - Mode shapes
+  - lines 9105-9128: Feature `solid_mechanics_3d.squeeze_film_damping` - Squeeze-film damping
+  - lines 9130-9141: Feature `solid_mechanics_3d.thermoelastic_damping` - Thermoelastic damping
+  - lines 9143-9160: Feature `solid_mechanics_3d.electrode` - Electrode
+  - lines 9162-9179: Feature `solid_mechanics_3d.electrode_domain` - Electrode (domain)
+  - lines 9181-9198: Feature `solid_mechanics_3d.admittance` - Admittance
+  - lines 9200-9237: Feature `solid_mechanics_3d.optomechanical_coupling` - Optomechanical coupling
+- lines 9239-9247: Coupling type `acoustics_em_acousto_optic` - Acousto-optic effect (elastic waves -> electromagnetic waves)
+- lines 9249-9257: Coupling type `currents_heat_joule` - Joule heating (electric currents -> heat)
+- lines 9259-9268: Coupling type `electrostatics_acoustics_piezo` - Piezoelectric coupling (electrostatics <-> elastic waves)
+- lines 9270-9279: Coupling type `electrostatics_em_pockels` - Pockels effect (electrostatics -> electromagnetic waves)
+- lines 9281-9289: Coupling type `em_acoustics_photoacoustic` - Photoacoustic heating (electromagnetic waves -> elastic waves)
+- lines 9291-9299: Coupling type `em_heat_joule` - Joule heating (electromagnetic waves -> heat)
+- lines 9301-9312: Coupling type `em_semiconductor_generation` - Photogeneration (electromagnetic waves -> semiconductor)
+- lines 9314-9322: Coupling type `em_solid_optical_force` - Optical force (electromagnetic waves -> solid mechanics)
+- lines 9324-9337: Coupling type `field_transfer` - Field transfer
+- lines 9339-9347: Coupling type `fluid_heat_convection` - Convective heat transport (laminar flow -> heat)
+- lines 9349-9357: Coupling type `heat_em_phase_change` - Phase change (heat -> electromagnetic waves)
+- lines 9359-9367: Coupling type `heat_em_thermo_optic` - Thermo-optic effect (heat -> electromagnetic waves)
+- lines 9369-9377: Coupling type `heat_solid_thermal_strain` - Thermal expansion (heat -> solid mechanics)
+- lines 9379-9387: Coupling type `magnetic_heat_induction` - Induction heating (magnetic fields AC -> heat)
+- lines 9389-9397: Coupling type `magnetic_solid_lorentz_force` - Lorentz force (magnetic fields -> solid mechanics)
+- lines 9399-9412: Coupling type `semiconductor_em_plasma_dispersion` - Free-carrier plasma dispersion (semiconductor -> electromagnetic waves)
+- lines 9414-9423: Coupling type `solid_em_strain_optic` - Strain-optic effect (solid mechanics -> electromagnetic waves)
+- lines 9425-9434: Coupling type `solid_membrane_tension` - Film prestress (solid mechanics -> membrane)
+- lines 9436-9470: Study type `eigenfrequency` - Eigenfrequency
+- lines 9472-9507: Study type `frequency_domain` - Frequency domain
+- lines 9509-9552: Study type `frequency_response` - Frequency response
+- lines 9554-9576: Study type `mode_analysis` - Mode analysis
+- lines 9578-9600: Study type `nonlinear_frequency_domain` - Nonlinear frequency domain
+- lines 9602-9618: Study type `optimization` - Optimization
+- lines 9620-9643: Study type `optomechanics` - Optomechanics
+- lines 9645-9666: Study type `stationary` - Stationary
+- lines 9668-9697: Study type `thermal_noise` - Thermal noise
+- lines 9699-9715: Study type `time_dependent` - Time dependent
+- lines 9717-9785: Templates
+- lines 9787-10032: Results, reports and files
 
 ## Model spec
 
@@ -6618,7 +6618,7 @@ Anisotropic heat conduction (finite volumes on the rise T - T0; Automatic linear
 - Backends (SolverDefaultsSpec.backend): gpu, cpu
 - Mesh kinds (MeshSpec.kind): tensor, triangles, tetrahedra; refinement indicator fields (when its solver has no error indicator of its own): T
 - Dispersion poles (MaterialSpec.dispersion): not used
-- Features (topics `heat.<feature>`): temperature, heat_flux, convection, radiation, heat_source, point_heat_source, fixed_temperature_domain, out_of_plane_convection, initial_temperature, temperature_probe, thermorefractive_noise, particle_noise
+- Features (topics `heat.<feature>`): temperature, heat_flux, convection, radiation, symmetry, heat_source, point_heat_source, fixed_temperature_domain, out_of_plane_convection, initial_temperature, temperature_probe, thermorefractive_noise, particle_noise
 
 ### Settings (PhysicsSpec.settings)
 
@@ -6742,6 +6742,18 @@ Params (FeatureSpec.params):
   Hemispherical emissivity eps of the surface (grey body): oxidised metals and most dielectrics 0.8-0.95, silicon ~0.6, polished metals 0.02-0.1.
 - `T_amb` (float; unit K; default 293.15; range (0, inf)) - Ambient temperature
   Temperature of the surroundings the surface exchanges radiation with (a large enclosure, e.g. the vacuum chamber walls).
+
+### Feature `heat.symmetry` - Symmetry
+
+Even mirror plane on outer faces (x_lo ... z_hi): the face is insulated (zero normal flux, as an unreferenced face, so the solve is unchanged) and becomes a model mirror plane (core.mirror): fields unfold T even across it (Unfold mirror planes, Results.field(unfold=True)), field derived integrals reaching it count twice (the unfolded structure, e.g. the power of a heat source on the plane), max / min include the image. A heat source on the plane is half the source of the unfolded model, a plane held at T_face is a temperature face instead (the odd mirror of T - T_face). Errors: another heat face feature on the same face, the x_lo axis of geometry axisymmetric (its r < 0 side unfolds without a feature; the ring weights already count the revolution), a polar / spherical domain, another physics with mirror bc settings (EM) that does not set the face symmetric / antisymmetric, parity_sectors (heat has no odd mirror feature).
+
+- FeatureSpec.type `symmetry`; category boundary_condition
+- Selection (FeatureSpec.selection): boundary entities; count at least 1; outer faces allowed; object perimeters not allowed
+- Mesh kinds (MeshSpec.kind): tensor, triangles, tetrahedra
+- Result: none
+
+Params (FeatureSpec.params):
+none
 
 ### Feature `heat.heat_source` - Heat source
 
