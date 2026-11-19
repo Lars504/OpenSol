@@ -1,6 +1,6 @@
 """Examples menu catalog: one entry per <repo>/examples subfolder (a physics area, 2D / 3D / axisymmetric together);
 model files read only for title, description, domain and physics types (no load, no validation); GUI-thread safe.
-Entries group by physics type label(s) plus the model dimension where the labels name none (ExampleModel)."""
+Each entry carries its space (EXAMPLE_SPACES) and its physics type group, the menu's two levels below the folder."""
 import json
 import os
 import textwrap
@@ -8,10 +8,19 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..model.expressions import error_message
+from ..model.schema import instance_spaces, type_spaces
 
 EXAMPLES_DIR = Path(__file__).resolve().parents[2] / 'examples'   # beside the package (examples/README.md)
 _RUN_DIR_SUFFIX = '_out'          # CLI default run directory '<model stem>_out' (holds a model.json copy)
 MULTIPHYSICS_FOLDER = 'multiphysics'   # listed last, after a separator
+MULTIPHYSICS_LABEL = 'Multiphysics'   # an area folder's submenu of its models with several physics types
+AXISYMMETRIC_LABEL = 'Axisymmetric'
+# ExampleModel.space values, in menu order -> submenu tooltip
+EXAMPLE_SPACES = {'1D': 'One-dimensional models (a line along x).',
+                  '2D': 'Planar and cross-section models (the drawing is a plane of the 3D object).',
+                  '3D': 'Three-dimensional models.',
+                  AXISYMMETRIC_LABEL: 'Cylinder symmetry: the drawing is the (r, z) half-plane, rotated about its '
+                                      'left edge.'}
 _FOLDER_LABELS = {'acoustics': 'Acoustics', 'em': 'Electromagnetics',
                   'fluid': 'Fluid flow', 'heat': 'Heat transfer', 'magnetic': 'Magnetic fields',
                   'mechanics': 'Solid mechanics', 'multiphysics': 'Multiphysics', 'potential': 'Electric potential',
@@ -36,14 +45,13 @@ def _model_dimension(domain):
 
 @dataclass(frozen=True)
 class ExampleModel:
-    """One listed example; group = its distinct physics type labels joined by ' + ', then ' (2D)' / ' (3D)' / ' (1D)'
-    when every one of its types runs in several dimensions (heat, potential: the label names none; a type fixed to one
-    dimension names it, 'Solid Mechanics (3D)', or is a space of its own, the axisymmetric EM types)."""
+    """One listed example; group = its distinct physics type labels joined by ' + '; space = an EXAMPLE_SPACES key."""
     path: Path
     relative_path: str        # POSIX path below the examples directory
     title: str
     group: str
     n_physics_types: int
+    space: str
     description: str = ''     # the file's description (stripped)
 
     def tooltip(self, width=80):
@@ -69,8 +77,9 @@ class ExampleCatalog:
         return sorted(labelled, key=lambda item: (item[0] == MULTIPHYSICS_FOLDER, item[1].casefold()))
 
     def scan(self, folder_name):
-        """(ExampleModels below one subfolder: single-physics groups first, then by group and title; [(relative path,
-        reason)] of its files found unreadable in this scan, i.e. new or changed since the previous one)."""
+        """(ExampleModels below one subfolder: single-physics groups first, then by space (EXAMPLE_SPACES order), group
+        and title; [(relative path, reason)] of its files found unreadable in this scan, i.e. new or changed since the
+        previous one)."""
         listed, newly_unreadable = [], []
         for path in self._model_files(self.directory / folder_name):
             try:
@@ -88,7 +97,9 @@ class ExampleCatalog:
             self._read[path] = (version, example)
             if example is not None:
                 listed.append(example)
-        listed.sort(key=lambda example: (example.n_physics_types, example.group.casefold(), example.title.casefold(),
+        space_rank = {space: rank for rank, space in enumerate(EXAMPLE_SPACES)}
+        listed.sort(key=lambda example: (example.n_physics_types > 1, space_rank[example.space],
+                                         example.n_physics_types, example.group.casefold(), example.title.casefold(),
                                          example.relative_path))
         return listed, newly_unreadable
 
@@ -113,12 +124,31 @@ class ExampleCatalog:
         except (KeyError, ValueError):
             return type_name
 
-    def _dimension_open(self, type_name):
-        """True for a registered type that runs in more than one model dimension (its label names none)."""
-        try:
-            return len(set(self.registry.physics_type(type_name).dimensions)) > 1
-        except (KeyError, ValueError):
-            return False
+    def _model_space(self, domain, physics_list):
+        """EXAMPLE_SPACES key of a raw model, None when its domain is no object: 3D / 1D from the domain sizes, else
+        Axisymmetric when every registered physics instance runs only axisymmetric (settings over the type defaults,
+        model.schema.instance_spaces: heat 'geometry', the BOR types) or the grid is spherical, else 2D."""
+        dimension = _model_dimension(domain)
+        if dimension is None:
+            return None
+        if dimension != 2:
+            return f'{dimension}D'
+        if isinstance(domain, dict) and domain.get('coordinates') == 'spherical':   # schema.COORDINATE_SPACES
+            return AXISYMMETRIC_LABEL
+        shared = None
+        for physics in physics_list:
+            if not isinstance(physics, dict):
+                continue
+            try:
+                physics_type = self.registry.physics_type(str(physics.get('type', '')))
+            except (KeyError, ValueError):
+                continue                  # unknown type: the model check on open reports it
+            settings = physics.get('settings')
+            values = ({param.name: param.default for param in physics_type.settings}
+                      | (settings if isinstance(settings, dict) else {}))
+            spaces = set(instance_spaces(physics_type, values) or type_spaces(physics_type)) - {'3d'}
+            shared = spaces if shared is None else shared & spaces
+        return AXISYMMETRIC_LABEL if shared == {'axisymmetric'} else '2D'
 
     def _read_header(self, path):
         """(ExampleModel, '') from the raw JSON's title / description / domain / physics types, else (None, reason)."""
@@ -132,11 +162,9 @@ class ExampleCatalog:
         type_names = sorted({str(physics.get('type', '')) for physics in physics_list
                              if isinstance(physics, dict) and physics.get('type')})
         group = ' + '.join(self._physics_label(name) for name in type_names)
-        if type_names and all(self._dimension_open(name) for name in type_names):
-            dimension = _model_dimension(model_dict.get('domain'))
-            if dimension is None:
-                return None, "not a model file ('domain' is not an object)"
-            group = f'{group} ({dimension}D)'
+        space = self._model_space(model_dict.get('domain'), physics_list)
+        if space is None:
+            return None, "not a model file ('domain' is not an object)"
         title = str(model_dict.get('title') or '').strip() or path.stem
         description = str(model_dict.get('description') or '').strip()
-        return ExampleModel(path, self._relative(path), title, group, len(type_names), description), ''
+        return ExampleModel(path, self._relative(path), title, group, len(type_names), space, description), ''

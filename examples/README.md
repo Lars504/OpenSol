@@ -70,11 +70,11 @@ validate.
 
 Naming: this file lists examples by file stem, the GUI by `title`. Menu path: Examples -> folder label (one folder
 per physics area, 2D, 3D and axisymmetric models together: `em` = Electromagnetics, `mechanics` = Solid mechanics, ...)
--> physics type label (only when the folder holds several, e.g. 'Electromagnetic Waves, frequency domain (2D, electric
-field out of plane)' for em_fdfd_ez, 'Solid Mechanics (3D)'; a type that runs in several dimensions gets the model's
-appended, 'Heat Transfer in Solids (3D)'; models with several types follow under 'label + label') -> title, sorted
-alphabetically. So 2D and 3D models of an area sit side by side, and the axisymmetric EM types
-('... (axisymmetric, azimuthal order m)') beside them. Titles: analytic benchmarks start with
+-> space (2D, 3D, Axisymmetric: cylinder symmetry, from the domain and the physics settings; the models with several
+physics types follow after a separator under Multiphysics -> space; the `multiphysics` folder opens on the spaces
+directly) -> physics type label (only when the space holds several, e.g. 'Electromagnetic Waves, frequency domain
+(2D, electric field out of plane)' for em_fdfd_ez; models with several types under 'label + label') -> title, sorted
+alphabetically. Titles: analytic benchmarks start with
 'Analytic: ', then what the model shows, then the method / study in parentheses, e.g. `analytic_fdfd_eigen_slab_q` =
 'Analytic: leaky Fabry-Perot slab resonance and Q (FDFD eigenfrequency)'; models without a reference drop the prefix.
 The tooltip ends with the relative file path, so hovering a title gives the stem.
