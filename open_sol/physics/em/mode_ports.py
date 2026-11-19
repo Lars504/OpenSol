@@ -140,7 +140,11 @@ def mode_table_rows(port, modes, omega, mode_number, dt, normal_spacing, selecte
 
 class PortLine:
     """Geometry of a port line (solve range, end conditions, spacings and CPML profile along it, normal spacings);
-    read_materials caches the host material rows, slab_line(omega) then builds SlabLines without device access."""
+    read_materials caches the host material rows, slab_line(omega) then builds SlabLines without device access.
+    Span ends as an industry-standard port boundary: at a CPML window edge the line continues through the PML; at a
+    grid-edge wall or mirror the pinned outermost cell is dropped (end condition from the face type); a full periodic
+    span is periodic; any other end is artificial metal (mode_warnings above 1e-2 of the peak there). eps_t is the line
+    cell's value: the guide is assumed invariant along the normal."""
 
     def __init__(self, physics, axis, line_cell, span_cells, label):
         if axis not in ('x', 'y'):

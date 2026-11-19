@@ -16,6 +16,7 @@ from ....solvers.sparse_direct import (CUDSS_BACK_ENDS, SYMMETRIC_OPTION_BACK_EN
 from ..fdfd_monitors import CentrePhasorProbe
 from ..harmonic import write_float32
 from ..materials import DrudePole, LorentzPole, material_solution_state, restore_material_solution
+from ..placement import window_cell
 from .fdtd_2d_base import _check_cell_array, add_pec_cells, record_dispersive_region
 
 SUPERLU_TEXT = 'host SuperLU'
@@ -358,8 +359,7 @@ class HostFDFDBase:
         """Complex centre phasor of one component (field_components) in the cell containing (x, y) per driven solve."""
         if field_component not in self.field_components:
             raise ValueError(f'field probe component must be one of {self.field_components}, got {field_component!r}')
-        self.domain.validate_physical_pos(x, y, 'Field probe')
-        ix, iy = self.domain.pos_to_cell(x, y)
+        ix, iy = window_cell(self.domain, x, y, 'Field probe')
         return self._add_monitor(CentrePhasorProbe(ix, iy, field_component, self.component_units[field_component]))
 
     def add_dispersive(self, pole, mask):

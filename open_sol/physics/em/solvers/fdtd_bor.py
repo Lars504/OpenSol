@@ -20,7 +20,7 @@ from ..fdtd_bor_ports import (BORFDTDModeMonitor, BORFDTDModeSource, fdtd_bor_mo
 from ..harmonic_fdtd import _shared_pulse
 from ..materials import (DrudePole, LorentzPole, material_solution_state, register_em_arrays,
                          restore_material_solution)
-from ..placement import port_cells
+from ..placement import port_cells, window_cell
 from ..renderer_fdtd_bor import BORFDTDRenderer
 from ..sources import _carrier_angular_frequency
 from ..yee_grid import cpml_grading_cell_size
@@ -278,8 +278,7 @@ class BORFDTDPhysics(PhysicsSolver):
         order sum a 3D point current at phi = 0 of moment I d, added before finalize)."""
         if component not in BOR_SOURCE_COMPONENTS:
             raise ValueError(f'point source component must be one of {BOR_SOURCE_COMPONENTS}, got {component!r}')
-        self.domain.validate_physical_pos(x, y, 'Point source')
-        ix, iy = self.domain.pos_to_cell(x, y)
+        ix, iy = window_cell(self.domain, x, y, 'Point source')
         temporal = _make_temporal(waveform, _resolve_frequency(wavelength, frequency), bandwidth)
         return self._add_source(BORCurrentSource(ix, iy, component, float(current), temporal))
 
@@ -288,8 +287,7 @@ class BORFDTDPhysics(PhysicsSolver):
         (PROBE_OFFSETS; H half a step before the recorded time)."""
         if field_component not in BOR_FIELD_COMPONENTS:
             raise ValueError(f'field probe component must be one of {BOR_FIELD_COMPONENTS}, got {field_component!r}')
-        self.domain.validate_physical_pos(x, y, 'Field probe')
-        ix, iy = self.domain.pos_to_cell(x, y)
+        ix, iy = window_cell(self.domain, x, y, 'Field probe')
         offset_r, offset_z = PROBE_OFFSETS[field_component]
         probe = FieldProbe(ix + offset_r, iy + offset_z, field_component)
         self.probes.append(probe)

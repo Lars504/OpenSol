@@ -94,145 +94,67 @@ type's vocabulary and refusals are in its help texts and validation.
 - Poles (em3d too): the velocity-form ADE, the cb factor of the E correction and the two time-centred loss halves are
   derived in the `fdtd_ez_2d_kernels` / `fdtd_hz_2d_kernels` comments; a new pole path follows them (never J from the
   predictor E^{n+1}, never a1 P^n + a2 P^{n-1} in float32).
-- BoundaryConfig PML cells must equal `Domain.npml_sides`; value equality, unhashable. `_validate` runs at
-  construction and again in `solver_boundary_config`. BoundaryManager / CPMLSided are per polarisation (the engine
-  refuses the other one: psi signs differ, it would amplify).
-- CPML layout only in `boundaries.cpml_side_rows` / `cpml_axis_profiles` (ValueError below n_layers*npml + 2 cells). E rows at centres
-  (lo 1..npml, hi n-npml-1..n-2), H rows at hi faces (lo 0..npml-1, hi n-npml-1..n-2); E rows 0 / n-1 and H row n-1
-  never stretched, so the layout mirrors exactly (E j <-> n-1-j, H j <-> n-2-j): mirror half models need that (em3d
-  `cpml_slabs` takes the same rows). sigma_max is the vacuum optimum (users tune `pml_sigma_factor` in claddings).
-  The psi term takes the engine's live Yee coefficient (ez db / cb, hz db / cb_x / cb_y), never dt / eps: else a
-  lossy / magnetic cell crossing the PML reflects. psi runs fused after the Yee kernel (valid only because a Yee
-  kernel never writes its own curl inputs).
-- Bloch (A6 FDTD; EME refuses k != 0 via `operators.check_zero_bloch`; `cross_section_modes` handles it for em_modes,
-  conical and em_fdtd_3d ports, other callers check themselves): F(x + L) = F(x) e^{-j k L}, L = sum of grid widths.
-  `has_bloch_phase` builds a second, imaginary `_FieldSet` (`fields.imag`, own psi via `BoundaryManager.partner()`;
-  else None); only the wraps mix the sets (a real engine passes partner = itself, bit-identical). Pole buffers are
-  lists by `_FieldSet.index`. Sources drive the real set only, except `BlochLineSource` /
-  `BlochTangentialSheetCurrentSource` (-sin(k.r) into the imaginary set at the electric source time); `update`
-  monitors add j F_im, so +omega is the +k response; probes, renderers, state, couplings read the real set.
-  enable_q_accum raises. Known gaps: hz face-to-centre collocation of cell 0 lacks the Bloch phase; mode ports solve k
-  = 0 (validation warns). New wrap kernels must take partner + wrap arguments; C5 media refuse k != 0.
-- Walls: E_z pec = 0 at the outermost centre, pmc = copied from the neighbour; H_z pec = tangential E 0 on the inner
-  face, pmc = H_z 0 at the outermost centre: ez and hz walls are half a cell apart. Mirrors (symmetry 2.5; symmetric
-  = E even = PMC, antisymmetric = PEC): `npml_sides` pads `MIRROR_GHOST_CELLS` (1) ghost cell (`ghost_faces`: edge
-  cell's width and material) so the plane is the inner face of the outermost cell, as for walls (PHY-3). H_z:
-  symmetric hz[0] = -hz[1], antisymmetric hz[0] = hz[1] + tangential E 0; E_z: ez[0] = +/- ez[1] (hi faces alike,
-  rows -1 / -2); `apply_h_walls` zeroes the pmc faces 0 / n-2. A mirror
-  face's padding is no CPML: code sizing CPML reads the bc type, never npml_sides alone (`_cpml_psi_bytes`).
+- Boundaries (`boundaries.py`; config checks, CPML row layout, psi coefficient rule and wall / mirror rows are stated
+  there): CPML rows only from `cpml_side_rows` / `cpml_axis_profiles` (em3d `cpml_slabs` too), never re-derived. ez
+  and hz walls are half a cell apart. A mirror face's `npml_sides` padding is one ghost cell, not CPML: code sizing
+  CPML reads the bc type, never npml_sides alone (`_cpml_psi_bytes`).
+- Bloch k != 0 (FDTD mechanism: `fdtd_2d_base` engine init and `_FieldSet`): EME refuses it
+  (`operators.check_zero_bloch`), `cross_section_modes` handles it for em_modes, conical and em_fdtd_3d ports; any
+  other caller checks k itself. Probes, renderers, state() and couplings read the real set only; enable_q_accum and
+  C5 media raise. New wrap kernels take the partner fields + wrap sines of `_FieldSet`. Known gaps: FDTD hz
+  face-to-centre collocation of cell 0 lacks the Bloch phase; mode ports solve k = 0 (validation warns).
 - Unfolded results (symmetry 2.5, `core.mirror`): flux multiplies by `placement.line_mirror_factor` (extra
   'mirror_factor'; monitor objects stay raw; flux adjoint objectives carry it), Session 'integral' likewise; far
-  fields add the image contour (`NearToFarGeometry.images`, `core.mirror.image_sign`; mirrors on both faces of an
-  axis raise). Not unfolded: 2D mode-port powers, source 'power', probes, DFT monitors. Every signed renderer
-  FieldInfo declares `parity` and `staggered`: a new signed field must too, else unfolding raises.
-- TFSF: FDTD and FDFD on uniform or graded grids (`_PlaneWaveBox(cell_widths=)`; FDFD Bloch ky needs uniform y); +x;
-  FDTD vacuum incident field, FDFD the background's (box edges in one uniform medium: `tfsf_outline_warnings`,
-  `validate_tfsf`); one scattered-field cell inside the window (FDFD: or a full periodic y axis), except a y mirror
-  face of the wave's parity (ez symmetric, hz antisymmetric; `placement.tfsf_open_faces`; other mirrors raise), where
-  the box opens (selftest em_tfsf_mirror). Amplitude = incident E_z (hz: E_y). NF2FF: closed contour through the
-  centres of columns / rows x0, x1 = cell(hi)+1, y0, y1 (x0, y0 >= 1), hi-face field averaged onto centres (any
-  width: graded meshes fine). `monitors.near_to_far_pattern` is the one far-field formula (2D prefactor included);
-  FDTD re-times H spectra by e^{+j omega dt/2} first. far_field 'power': FDTD |pattern|^2 / eta0 'a.u.' (no 1/2),
-  FDFD / (2 eta0) 'W/(m rad)'; amplitude_re / _im give power = |amplitude|^2
-  (`core.mirror.combine_sector_far_fields`).
+  fields add the image contour (`NearToFarGeometry.images`). Not unfolded: 2D mode-port powers, source 'power',
+  probes, DFT monitors.
+- TFSF (FDTD and FDFD, uniform or graded; `placement.tfsf_box_cells`): +x only; FDTD injects the vacuum incident
+  field, FDFD the background's (`materials.tfsf_outline_warnings`); amplitude = incident E_z (hz: E_y).
+  `monitors.near_to_far_pattern` is the one far-field formula (FDTD re-times H spectra by e^{+j omega dt/2} first);
+  far_field 'power' is FDTD |pattern|^2 / eta0 'a.u.' (no 1/2) but FDFD / (2 eta0) 'W/(m rad)': compare the two
+  only with that factor.
 - Every scripting line feature takes `(axis, position, span)`, axis 'x' = line along x at y = position; only the
   internal `FluxMonitor / HarmonicFluxMonitor.axis` is the normal. `flux()` = Yee discrete Re(E x H*) (no 1/2)
   through the line cell's hi face, > 0 toward +x/+y. DFT phases use the actual sample time (hz H_z: t - dt/2). hz
   DFT / renderer E collocate to centres, hz `state()` omits staggered ex / ey; probes stay raw (H dt/2 older); ez
   renderer hx / hy stay raw face samples.
-- Every EM renderer exposes e_abs, e_intensity and h_abs at centres (`renderer._MODULUS_FIELD_INFOS`): keep them on any
-  new EM renderer. Renderers of centre-field dicts (ModeRenderer, BORRenderer, ConicalRenderer) subclass
-  `renderer.CentreFieldRenderer`; the FDTD pair's dispatch is `_FDTDRendererBase._fdtd_field` (`material_names`,
-  `_polarization_field`). FDFD hz also exposes ex_re / ex_im / ey_re / ey_im (`_IN_PLANE_E_PART_INFOS`); EME omits them.
-- Snapshot solutions (`solution_state` / `restore_solution`; harmonic FDTD phasors, modes, resonances are selected,
-  never copied): em_fdtd_ez / _hz the real field set as stored (float64 under 'double'), clock, both q_accum windows,
-  C5 media boxes (`_rendered_media_arrays`); em_fdtd_bor the lockstep x / h + n_step (`solution_serial` keys the
-  renderer cache); FDFD the phasor with its face fields and q_abs (the system is not kept, so face fields are copied),
-  design densities / beta and the adjoint gradient only when computed for that solve (else `eps_sensitivity` raises on
-  the restored snapshot); FEMFDFDPhysics element + nodal fields; BOR / conical the display fields. `materials` adds the
-  renderer's material arrays, crystallinity (`materials.material_solution_state`) and the hz eps_xy change. Restores
-  never call materials_changed or reassemble; a new renderer input a study changes joins these states.
-- Monitors take `polarization` ('ez' default); dft_fields / far_field carry 'quantity' (plots, GUI read it); hz
-  dft_fields with freq_index adds 'hz_intensity' (not in loaded Results). flux_spectrum 'unit': FDTD 'a.u.'
-  (dt-weighted), FDFD 'W/m'. When all sources share one waveform (coupling drives not counted), results add
-  cw-equivalents (`results._shared_waveform_spectrum`: 'power_per_cw', 'power_per_cw_*', 'intensity_per_cw_factor').
-- DFT spectra are dt-weighted (flux ~1e-40): products in float64 on the host (float32 flushes to 0), relative
-  thresholds only. Line monitors share `monitors._LineSpectra` and accumulate in complex128 (float32 loses
-  near-cancelling fluxes); DFT boxes complex64. DFTMonitor / `_LineSpectra` build their kernel argument views once per
-  field object (`_launch_list`): field and spectrum arrays are rewritten in place, never reassigned. DFTMonitor `downsample`: point samples (`dft_sample_slice`, no block
-  average), `x_slice / y_slice` stay the whole box. Result maps use `viz.visualization.dft_map_edges`, never
-  `viz.common.edges_from_centers`.
-- DFT decimation: `update` monitors sample every m = `sample_interval` steps, weighted m dt; `EMPhysics.finalize`
-  (only at n_step 0) sets m = `monitors.dft_sample_interval` (largest m with 1 / (m dt) >= max monitor frequency +
-  max source `temporal.spectral_limit()`, times NONLINEAR_HARMONIC_ORDER 3 with a nonlinear medium: its SHG / THG
-  would fold into the monitor bands; cw -> 1). Coupling drives are not in the bound; monitors added after
-  finalize keep m = 1. Any S(omega) compared with a monitor must use its grid (`waveform_spectrum(..., m)`).
+- Every physics/em renderer exposes e_abs, e_intensity and h_abs at centres (`renderer._MODULUS_FIELD_INFOS`).
+  Renderers of centre-field dicts subclass `renderer.CentreFieldRenderer`; the FDTD pair dispatches in
+  `_FDTDRendererBase._fdtd_field`.
+- Snapshot solutions (root rule; contents per solver: its `solution_state` docstring): harmonic FDTD phasors, modes
+  and resonances are selected, never copied; restores never call materials_changed or reassemble; FDFD keeps the
+  adjoint gradient only when computed for that solve, else `eps_sensitivity` raises on the restored snapshot.
+- Monitor results: dft_fields / far_field carry 'quantity' (plots, GUI read it); flux_spectrum 'unit' FDTD 'a.u.'
+  (dt-weighted), FDFD 'W/m'; hz dft_fields with freq_index adds 'hz_intensity' (absent from loaded Results). One
+  shared source waveform (coupling drives not counted) adds cw-equivalents (`results._shared_waveform_spectrum`).
+- DFT spectra are dt-weighted (flux ~1e-40): form products in float64 on the host (float32 flushes to 0) and use
+  relative thresholds only. Result maps take `viz.visualization.dft_map_edges`, never `viz.common.edges_from_centers`
+  (downsampled maps).
+- DFT decimation (`monitors.dft_sample_interval`): `EMPhysics.finalize` sets m only at n_step 0; coupling drives are
+  not in the bound; monitors added after finalize keep m = 1. Any S(omega) compared with a monitor must use its grid
+  (`waveform_spectrum(..., m)`).
 - Convention (E7): exp(+j omega t); DFT accumulates exp(-i omega t) dt; lossy Im < 0; PML s = kappa + sigma/(alpha +
   j omega eps0). `susceptibility(omega)` is the continuous chi (FDTD differs at O((omega dt)^2)).
   `dispersion.complex_permittivity` takes one component; H_z callers face_average first.
-- nk_fit (A7, `material_fit`, host only): eps = (n - j k)^2, bounded least squares with a closed-form Jacobian
-  (`fit_drude_lorentz.jacobian`: a pole formula or residual scaling change must update it); eps_inf >= 1, poles >= 0,
-  omega_0 <= 5 x band max (Courant), Drude only when Re eps < 0; errors scored after float32 rounding.
-  `DISPERSION_POLE_PARAMS['nk_fit']` has no pole class: every path sees the expanded drude / lorentz dicts.
-  Validation (`nk_fit_issues`) warns when `model_band` leaves the fit range. Selftest em_nk_fit.
-- A1 operators: flat index i*ny + j; `dx_e / dy_e` hi-face -> centre, `dx_h / dy_h` centre -> hi face; non-periodic
-  `*_h` row n-1 zero, `*_e` row 0 = +w_0 (as the kernels; complex symmetric up to row scaling). omega None = real
-  kappa stretch as FDTD (selftest em_operators_consistency). pec / pmc / mirror faces are plain edges (caller sets
-  outer rows); Bloch phases the wrap entries (`bloch_wrap_phases`; then not complex symmetric, nothing relies on it).
-  `yee_operators(xp=cupy)` assembles with scipy on the host and uploads each CSR once (the cupyx coo / kron chain was
-  ~50 ms of launches per call); without scipy it assembles on the device (same canonical CSR, same values).
-  FDFDPhysics on a Cartesian grid takes them from `KeptYeeOperators` (kron patterns and entry maps kept per grid, a
-  new omega rebuilds only the four host 1D differences and gathers them; same pattern and values, the ops of every
-  omega share the kept index arrays: never modify ops in place); polar grids call `yee_operators` per omega.
-  `KeptYeeOperators.helmholtz` (FDFDPhysics._helmholtz) builds the Helmholtz sum on a kept term plan (`_HelmholtzPlan`:
-  per output entry its product terms, gathered and summed level by level, no SpGEMM / geam): one fixed canonical
-  pattern for every omega and weight set (zero weights stay explicit zeros, unlike `helmholtz_operator`, which drops
-  them), so a wavelength scan refreshes cuDSS on one plan; the operators share its indices / indptr: never
-  eliminate_zeros / sort them in place. eps_xy couplings are added after it; ops it did not make fall back (it knows
-  its own by the YeeOperators2D object: scipy's csr constructor re-slices `indices`, so an `is` test on scipy index
-  arrays never holds; compare buffers with `np.shares_memory`).
-  `helmholtz_operator`, `pin_cells` = D A D + (I - D), `pin_image_cells` (pinned image folded into its neighbour's
-  diagonal). Never multiply by a sparse diagonal (`diags(...) @ A`): a cuSPARSE SpGEMM whose workspace grows with the
-  rows (5e6 rows asked 6.5 GB); scale stored entries (`_column_scaled`, `_kept_entries`, `_entry_rows`) keeping the
-  old product order so values stay identical.
-- Slab modes (`slab_modes`, A3): `SlabLine` = one frequency, m cells + m+1 faces (face k = lo face of cell k); ez q =
-  eps mu_r, hz eps_t / 1/eps_l (`face_average`); PEC cells inactive. Branch: Re k_t > 0 if Re k_t^2 > 0, else Im
-  k_t < 0. Never force Im k_t <= 0: a guided mode touching a PML gets a tiny Im k_t^2 of either sign and would flip
-  to backward. `dt` / `normal_spacing` give the FDTD's discrete omega / k. PML-localised modes dropped
-  (`drop_pml_modes`; eme passes False), the rest by descending Re k_t^2 then Im k_t^2; fewer than n_modes may return.
-  Normalised to +-1 W/m of discrete Yee flux (incl. cos(omega dt/2)), largest |u| real > 0 at `peak_cell` (lo-most
-  within 1e-6, so mirror peaks tie deterministically; compare asymmetric lines only after `align_phase`); every mode
-  of a solve is normalised in one pass (`_normalised_modes`: one row per mode, line arrays once; the profiles are row
-  views of one block), `_normalised_mode` is its 1-mode call (track_slab_mode).
-  `mode_overlap` is unconjugated (0 between modes of one line); degenerate complex pairs are bilinear-orthogonalised
-  (`_orthogonalise_degenerate`; selftest em_slab_degenerate_orthogonal). Complex lines > 600 cells shift-invert at
-  (omega_t/C0)^2 max Re q (can miss modes far above). Plasmonic hz: selftest em_slab_spp_discrete.
-- Mode ports (`mode_ports`): `PortLine` maps a line to a SlabLine like an industry-standard port boundary: a span end at
-  a CPML window edge continues through the PML; at a grid-edge wall or mirror the pinned outermost cell is dropped (end
-  condition from the wall type); a full periodic span is periodic; other ends are artificial metal (warned when the mode
-  exceeds 1e-2 of its peak there). eps_t is the line cell's value (guide assumed invariant along the normal). PortLine
-  serves FDTD and FDFD ports and never reads `physics.engine`.
-- ModeSource = one-sided TFSF line (interface face f = c-1 positive / c negative): magnetic correction uses the
-  E-type incident at t, electric the H-type at t+dt/2; sign = sign_n x direction (ez x -1, y +1; hz x +1, y -1);
-  incident(t) = Re(P) s(t) + Im(P) `temporal.quadrature(t)` (gaussian / cw only). After the first step the modes are
-  re-solved when the line's materials drift above `_RESOLVE_DRIFT` (1e-3), tracked by overlap
-  (`tracked_mode_number`; `mode_number` stays the request). `EMPhysics.runtime_warnings` (append-only) gets a
-  monitor's first re-solve, new mode warnings, and a failed re-solve (keeps the old modes, stops following). Before
-  the solve nothing is injected and results raise. `finalize_warnings` holds port warnings incl.
-  `PortLine.placement_warnings` (a face on a stretched CPML H row is ignored by the correction; warned, not refused).
-  Gaussian env cos is no Hilbert partner of env sin, so ModeSource warns above bandwidth 0.6. Exact at f0 only:
-  fraction_* report off-f0 leakage as reflection / transmission loss (help texts say so).
-- ModeMonitor: DFT of u and t at the E time, H-type spectrum re-timed by e^{+j omega dt/2}; the mode is solved at the
-  middle frequency and followed outward by `slab_modes.track_slab_mode` (full solve + `track_mode` below overlap
-  0.9; finalize warns). power_* = 2 |a|^2; fraction_* / phase_* only with exactly one ModeSource, from its sampled
-  S(omega) on the monitor's grid (`core.sources.sampled_waveform_spectrum`); NaN where |S|^2 < 1e-6 |S(f0)|^2 (the
-  source's carrier, never the band max) or, cw, |f - f0| n_step dt >= 1.
-- resonance_monitor (A6; shared row in `model.definition_resonance`, numerics `core.resonance`):
-  `definition_resonance.em_resonance_probe` is the EM ResonanceProbe for em_fdtd_ez / _hz and em_fdtd_3d (H
-  components 0.5 step delayed); apply adds a plain FieldProbe. Amplitude / phase refer to start_time (H: record
-  time - dt/2).
+- nk_fit (`material_fit`, host only): `fit_drude_lorentz.jacobian` is closed-form, so a change of a pole formula
+  (dispersion) or of the residual scaling updates it. `DISPERSION_POLE_PARAMS['nk_fit']` has no pole class: every
+  solver path sees the expanded drude / lorentz dicts.
+- A1 operators (`operators.py`; layout, stretch, edges and Bloch wraps in its header; selftest
+  em_operators_consistency): `KeptYeeOperators` / its Helmholtz plan share their index arrays with every op they
+  issue (all omegas): never modify ops in place, eliminate_zeros or sort them (the plan keeps zero weights explicit so
+  a wavelength scan refreshes cuDSS on one pattern). eps_xy couplings are added after the Helmholtz sum. On the device
+  never multiply by a sparse diagonal (`diags(...) @ A`: a cuSPARSE SpGEMM whose workspace grows with the rows, 5e6
+  rows asked 6.5 GB); scale stored entries (`_column_scaled`, `_kept_entries`, `_entry_rows`).
+- Slab modes (`slab_modes`, A3; branch, normalisation, overlap and degenerate pairs: its header and docstrings): never
+  force Im k_t <= 0 (header); compare asymmetric lines only after `align_phase`; complex lines above
+  `DENSE_COMPLEX_MAX_CELLS` shift-invert near max Re q and can miss modes far above it.
+- Mode ports (`mode_ports`; span ends: `PortLine`): PortLine serves FDTD and FDFD ports and never reads
+  `physics.engine`. ModeSource is a one-sided TFSF line exact at f0 only: fraction_* report off-f0 leakage as
+  reflection / transmission loss (help texts say so); it warns above bandwidth 0.6 (env cos is no Hilbert partner of
+  env sin). After the first step ports re-solve on material drift (`ModePortSetup`, warnings into the append-only
+  `runtime_warnings`). ModeMonitor fraction_* / phase_* need exactly one ModeSource (its sampled S(omega) on the
+  monitor's grid).
 
-## em_fdtd_ez / _hz on triangles / cuDSS: decision (agent_help batch, 2026-10-23; nothing implemented)
+## em_fdtd_ez / _hz on triangles / cuDSS: decision (nothing implemented)
 - Decision: tensor Yee only, as em_fdtd_3d (em3d sub file "em_fdtd_3d on tetrahedra / cuDSS"); `grids =
   ('tensor',)` refuses a 'triangles' mesh. The 2D steppers hide no linear solve worth cuDSS (ports / TFSF are 1D
   tridiagonal lines). 2D DGTD only if a reference case misses its target with the cheaper local fixes (conformal
@@ -240,48 +162,34 @@ type's vocabulary and refusals are in its help texts and validation.
   frequency-domain answers belong in em_fdfd on triangles.
 
 ## Nonlinear and gain media (C5; solvers/fdtd_nonlinear, solvers/fdtd_gain, definition_nonlinear)
-- FDTD only, domain features `nonlinear_medium` (chi2 d_eff + poling, Kerr n2, TPA beta, TPA free carriers) and
-  `gain_medium` (four-level two-electron, Chang-Taflove) of em_fdtd_ez / _hz, not material properties (they allocate
-  only on their selection's bounding box). FD types: unknown-feature error; validation errors for a frequency_domain
-  study and for Bloch k != 0 (`add_nonlinear` / `add_gain` raise too: E^2 of the real set is not |E|^2).
-- `self.nonlinear` is rebuilt per add (one box per cluster of touching regions, `_region_clusters`, across a periodic
-  wrap; later regions win; carrier densities reset); `self.gain_media` one GainRegion per feature (overlaps add).
-  `_update_e_set` order: nonlinear `store_previous`, poles, gain `update_polarization`, Yee + BC post, Drude / Lorentz
-  / gain corrections, nonlinear `correct` (must stay the last correction: it subtracts the linear update x_lin), gain
-  `update_populations`; sources, walls, PEC after. Cached box views of `_nonlinear_components()` (hz eps absolute,
-  `eps_scale` 1 / EPS0) assume those arrays are only rewritten in place.
+- Domain features `nonlinear_medium` / `gain_medium` of em_fdtd_ez / _hz only, not material properties (allocated on
+  their selection's bounding box); frequency_domain studies, Bloch k != 0 and the double stepper are refused. Kernel
+  physics: the module headers and `_correction_kernel`; step order: `_update_e_set` (nonlinear `correct` stays the
+  last correction: it subtracts the linear update). Cached box views of `_nonlinear_components()` assume those
+  arrays are rewritten in place only.
 - chi2 = 2 d_eff x per-cell poling sign, NOT scaled by n0; one scalar per component, no tensor / cross terms (crystal
-  tensors: physics/nlfd). n0^2 is the live permittivity array (dispersive: eps_inf); chi3 / TPA / FCA / FCD scale
-  with n0^2 / n0 in the kernel. Carrier density and populations are float64 (dt / tau and kappa dt^2 vanish in
-  float32). hz: per in-plane component on its own faces (E_i^2, not |E|^2): exact for a field along one axis only; an
-  interface face of weight w carries w x the response but the bulk carriers / populations (`_PER_MATERIAL_POWERS`;
-  fdtd_gain divides by its weight).
-- The TPA conductivity must be time-centred, g = c_tpa ((E^n + E^{n+1}) / 2)^2 inside the implicit solve: a lagged
-  (E^n)^2 gives a Kerr phase error (-6 % at beta / (2 k0 n2) = 2) that loss-only checks miss. A dispersion-free slab
-  phase-matches the third harmonic, which with TPA cascades back as extra phase loss (analytic_nonlinear_tpa_kerr_slab).
-- Loss: TPA + FCA work (time-centred): ez into q_accum, hz into the face pole power totals (`_pole_cell` /
-  `_pole_power_boxes`: a pole face next to a nonlinear-only cell splits its pole power with it). Gain work is not
-  counted; gain / nonlinear media are outside the build Courant check, sheet calibrations and port mode solves.
-- Self-tests selftests_nonlinear (ez and hz; n0 = 2 pins the n0 factors): Kerr, TPA, carriers, small-signal gain,
-  chi2 SHG vs the lattice Green's sum. Template `nonlinear_silicon_slab`; threshold example
-  analytic_gain_threshold_cavity.json: a tight threshold reference must use the leap-frog line (W = (2 / dt)
-  sin(omega dt / 2), gamma sin(omega dt) / dt, sigma cos(omega dt / 2)); the continuous line is 7 % off at omega dt
-  0.22. Not done: lasing above threshold (resonance fit drops growing poles), hz cross-component Kerr / TPA terms.
+  tensors: physics/nlfd). hz acts per in-plane component on its own faces (E_i^2, not |E|^2): exact for a field along
+  one axis only.
+- The TPA conductivity must be time-centred (`_correction_kernel`): a lagged (E^n)^2 gives a Kerr phase error that
+  loss-only checks miss. A dispersion-free slab phase-matches the third harmonic, which with TPA cascades back as
+  extra phase loss (analytic_nonlinear_tpa_kerr_slab).
+- Loss: TPA + FCA work goes into q_accum (ez) / the face pole power totals (hz; a pole face next to a nonlinear-only
+  cell splits its pole power with it). Gain work is not counted; both media are outside the build Courant check,
+  sheet calibrations and port mode solves.
+- A tight gain-threshold reference must use the leap-frog line (W = (2 / dt) sin(omega dt / 2), gamma sin(omega dt) /
+  dt, sigma cos(omega dt / 2)): the continuous line is 7 % off at omega dt 0.22 (analytic_gain_threshold_cavity).
+  Not done: lasing above threshold (the resonance fit drops growing poles), hz cross-component Kerr / TPA terms.
 
 ## Phase-change medium (C5; phase_change, definition_phase_change, coupling/definitions_phase_change)
-- Feature `phase_change_medium` of all four in-plane types (linear at optical time scales: no superposition breaker);
-  `PhaseChangeMedium` in `solver.phase_change_media` (EMPhysics and FDFDPhysics). It OWNS eps / sigma_e of its cells:
-  each update rewrites Re eps into every permittivity array and -Im eps omega0 eps0 into sigma_e, then one
+- Feature `phase_change_medium` of all four in-plane types (`PhaseChangeMedium` in `solver.phase_change_media`)
+  OWNS eps / sigma_e of its cells: each update rewrites every permittivity array and sigma_e, then one
   `materials_changed`.
-- Driven only by coupling `heat_em_phase_change`, whose transform calls `update_phase_change(em, T, heat.time)` and
-  returns None (a slot array cannot carry the heat time). It declares '' writes of every permittivity slot, so the
+- Driven only by coupling `heat_em_phase_change` (its transform calls `update_phase_change(em, T, heat.time)` and
+  returns None: a slot array cannot carry the heat time). It declares '' writes of every permittivity slot, so the
   writer rule refuses thermo-optic / Pockels / field_transfer / state-dependent eps on that physics. A repeated time
   (end-of-run flush) is a no-op.
-- `Kinetics` (xp-agnostic): theta += k(T_end) dt (JMAK: exact for isothermal steps of any split), k capped at 1 /
-  tau_min above T_fast (plain Arrhenius would recrystallise every melt-quench), T >= T_melt sets theta = 0. GST-225
-  numbers live once in `phase_change.GST_225`. Switching needs em_fdfd_* + transient heat; FDTD validation warns for
-  runs far shorter than tau_min. Self-tests phase_change_kinetics, em_hz_phase_change_anneal; example
-  analytic_phase_change_jmak_anneal.json; template `phase_change_gst_switch`.
+- GST-225 numbers live once in `phase_change.GST_225` (library materials read it too). Kinetics: `Kinetics`
+  docstring (the rate cap above T_fast keeps a melt-quench amorphous).
 
 ## Harmonic FDTD (em_fdtd_* in a frequency_domain study; harmonic_fdtd.py)
 - `model.study._run_harmonic_pulse` calls `EMPhysics.attach_harmonic(frequencies)` after finalize, before the first
