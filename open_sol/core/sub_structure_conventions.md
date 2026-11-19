@@ -208,7 +208,8 @@ coordinate rules stay in the root file.
 
 ## Mirror planes (`mirror`, numpy only; symmetry 2.5)
 - `mirror_faces(spec, physics=None)` = {face: sign}: EM bc_<face> 'symmetric' +1 / 'antisymmetric' -1 and the outer
-  faces of the enabled `MIRROR_FEATURES` (membrane symmetry +1 / antisymmetry -1, heat symmetry +1; `feature_mirror_faces`;
+  faces of the enabled `MIRROR_FEATURES` (membrane symmetry +1 / antisymmetry -1, the `symmetry` feature of every
+  other non-EM type +1 = its natural even face, magnetostatics_3d symmetry -1; `feature_mirror_faces`;
   `physics_mirror_faces` = both of one physics, also used by `parity_tag`). With a physics name, faces it does not set
   itself get +1 (non-EM fields unfold even: their face on the plane must be insulated,
   `definition_helpers.mirror_face_issues` warns otherwise), except the `FACE_FEATURE_SIGNS` types, signed by their own
@@ -216,13 +217,18 @@ coordinate rules stay in the root file.
   -1), magnetostatics_3d (the opposite: insulation or unset +1 = phi_m even, symmetry -1), membrane (symmetry or unset
   +1, antisymmetry / clamped / simply_supported -1); the last enabled one wins; selections expanded by
   `model.geometry.expand_entities` (core's one lazy model import). The model's mirror planes are the EM ones and the
-  MIRROR_FEATURES faces: a magnetic-only model has none, a membrane half model has its symmetry face.
-- `unfold_faces(spec, physics)` = mirror_faces(spec, physics) plus x_lo +1 for an `AXIS_UNFOLD_TYPES` physics (heat)
-  of geometry 'axisymmetric' in 2D: the (r, z) axis is no mirror plane (ring weights already count the revolution, so
-  touch_factor / Session never see it) but a display unfolds across it (GUI Unfold mirror planes, Results.field
-  unfold=True); ValueError at an azimuthal_order other than a literal 0 ((-1)^m image). Display callers of unfold_field
-  take unfold_faces, totals keep mirror_faces. A new axis type needs every field even under the axis image (E_r /
-  A_phi flip).
+  MIRROR_FEATURES faces: a magnetic model has its symmetry faces (not magnetic_insulation, also the far boundary).
+  A new mirror feature validates through `definition_helpers.mirror_feature_issues` (Cartesian domain, not the
+  axisymmetric axis, EM partners mirror the face) and `own_mirror_face_conflicts` (no other face feature of the type
+  there); the type's mirror_face_issues then skips its own feature faces.
+- `unfold_faces(spec, physics)` = mirror_faces(spec, physics) plus x_lo with the `AXIS_UNFOLD_TYPES` sign of a
+  physics of geometry 'axisymmetric' in 2D: the (r, z) axis is no mirror plane (ring weights already count the
+  revolution, so touch_factor / Session never see it) but a display unfolds across it (GUI Unfold mirror planes,
+  Results.field unfold=True); ValueError at an azimuthal_order other than a literal 0 ((-1)^m image). Display callers
+  of unfold_field take unfold_faces, totals keep mirror_faces. The true image at phi = pi is a rotation by pi about
+  the axis: a mirror of sign s reproduces it only when no field mixes in-plane and azimuthal vector parts: +1 for
+  scalar / (r, z) vector types (heat, potential, drift_diffusion, solids, acoustics), -1 for the A_phi magnetic types
+  (A_phi / J_phi polar_z and B_r flip, B_z keeps); never the BOR EM types (E_phi beside E_r / E_z).
 - Image rule (`image_sign`): polar (E-like) tangential s / normal -s, axial (H-like) the opposite, 'scalar' s, 'even'
   +1. `FieldInfo.parity` names it per renderer field ('' = even when unsigned, else unknown: `unfold_field` raises);
   `FieldInfo.staggered` = axes of hi-face samples (plane value 0 when odd, else the nearest sample: exact only for odd
@@ -245,7 +251,7 @@ coordinate rules stay in the root file.
   propagation); None = it may (2D `placement.tfsf_open_faces`, em3d `add_plane_wave`, both validations).
 - Parity sectors (2.6): `sector_specs(spec, faces=None)` = 2^k spec copies over the mirror faces (each sign
   combination on every physics setting the face; MIRROR_FEATURES swapped by `_swap_mirror_features`, split per face
-  when a feature selects several sector faces or other entities; a type without features of both signs (heat) raises
+  when a feature selects several sector faces or other entities; a type without features of both signs (heat and the other symmetry-only types) raises
   ValueError, which study validation `_parity_sector_issues` reports as an error; `SECTOR_FEATURE_PARAMS` set on every copy, e.g.
   membrane port sector_drive; label in the title). A source without definite parity runs every sector:
   `combine_sector_fields` = mean of the unfolded fields (linear signed components only: unsigned / phase fields

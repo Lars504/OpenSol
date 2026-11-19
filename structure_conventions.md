@@ -166,10 +166,12 @@ curves -> selftest_report_analytic.json); the CLI wraps them (`selftest --exampl
 - `npml_sides` is padding, not only PML: an EM mirror face (symmetric / antisymmetric) pads one ghost cell of the
   window edge cell's width (`BoundaryConfig.ghost_faces`), so the mirror plane is the window edge for every physics
   of the model (heat / potential faces, drawn geometry). Code sizing CPML layers reads the bc type, not the count.
-  em_fdtd_3d mirrors likewise (em3d sub file). Membrane symmetry / antisymmetry and heat symmetry faces are model
-  mirror planes too (`core.mirror.MIRROR_FEATURES`): code listing mirror faces calls `mirror_faces(spec)`, never reads
-  bc settings; a field display unfolds over `unfold_faces(spec, physics)` (also the (r, z) axis of
-  `AXIS_UNFOLD_TYPES`: display only, the axis never doubles a total).
+  em_fdtd_3d mirrors likewise (em3d sub file). The `symmetry` (membrane also `antisymmetry`) face features of the
+  non-EM types are model mirror planes too (`core.mirror.MIRROR_FEATURES`; validate through
+  `definition_helpers.mirror_feature_issues` / `own_mirror_face_conflicts`): code listing mirror faces calls
+  `mirror_faces(spec)`, never reads bc settings or feature types; a field display unfolds over
+  `unfold_faces(spec, physics)` (also the (r, z) axis of `AXIS_UNFOLD_TYPES` with its per-type sign: display only,
+  the axis never doubles a total).
   Results count the unfolded structure (core sub file "Mirror planes"):
   integrals / fluxes / held currents reaching a mirror face x 2 per face, derived max / min over the images too, 2D / 3D far fields with the image currents
   (results also carry the complex amplitude_re / _im), unfolded fields; a new signed renderer field declares
