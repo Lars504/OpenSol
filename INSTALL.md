@@ -149,7 +149,7 @@ NVIDIA's cuDSS sparse direct solver factorises on the GPU (solver back ends / fa
 `cudss_mixed`: heat, electric, magnetic and solid models, the FEM eigensolvers). It comes with nvmath-python. With it
 installed, Automatic direct solvers on the GPU pick cuDSS where the role allows it; without it they fall back to
 SuperLU on the host, explicit cuDSS settings are validation errors and their self-tests pass as skipped. Some examples
-need it (e.g. the 3D eigenfrequency examples `em3d/fdfd_mie_sphere_resonance_3d`, `nanobeam_cavity_eighth_3d`,
+need it (e.g. the 3D eigenfrequency examples `em/fdfd_mie_sphere_resonance_3d`, `nanobeam_cavity_eighth_3d`,
 `fem_mie_sphere_resonance_3d`). Pick the CUDA line of your driver (`[cu13]` for CUDA 13):
 
 ```bash

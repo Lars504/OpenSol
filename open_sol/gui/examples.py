@@ -1,5 +1,6 @@
-"""Examples menu catalog: one entry per <repo>/examples subfolder; a folder's model files read only for title,
-description and physics types (no model load, no validation), grouped by their physics types; GUI-thread safe."""
+"""Examples menu catalog: one entry per <repo>/examples subfolder (a physics area, 2D / 3D / axisymmetric together);
+model files read only for title, description, domain and physics types (no load, no validation); GUI-thread safe.
+Entries group by physics type label(s) plus the model dimension where the labels name none (ExampleModel)."""
 import json
 import os
 import textwrap
@@ -11,7 +12,7 @@ from ..model.expressions import error_message
 EXAMPLES_DIR = Path(__file__).resolve().parents[2] / 'examples'   # beside the package (examples/README.md)
 _RUN_DIR_SUFFIX = '_out'          # CLI default run directory '<model stem>_out' (holds a model.json copy)
 MULTIPHYSICS_FOLDER = 'multiphysics'   # listed last, after a separator
-_FOLDER_LABELS = {'acoustics': 'Acoustics', 'em': 'Electromagnetics 2D', 'em3d': 'Electromagnetics 3D',
+_FOLDER_LABELS = {'acoustics': 'Acoustics', 'em': 'Electromagnetics',
                   'fluid': 'Fluid flow', 'heat': 'Heat transfer', 'magnetic': 'Magnetic fields',
                   'mechanics': 'Solid mechanics', 'multiphysics': 'Multiphysics', 'potential': 'Electric potential',
                   'semiconductor': 'Semiconductor'}
@@ -22,9 +23,22 @@ def _listed_folder(name):
     return not (name.endswith(_RUN_DIR_SUFFIX) or name.startswith('.'))
 
 
+def _model_dimension(domain):
+    """ModelSpec.dimensions of a raw JSON domain (absent: the DomainSpec default, 2D), None when it is no object."""
+    if domain is None:
+        return 2
+    if not isinstance(domain, dict):
+        return None
+    if 'size_y' in domain and domain['size_y'] is None:
+        return 1
+    return 3 if domain.get('size_z') is not None else 2
+
+
 @dataclass(frozen=True)
 class ExampleModel:
-    """One listed example; group = its distinct physics type labels joined by ' + '."""
+    """One listed example; group = its distinct physics type labels joined by ' + ', then ' (2D)' / ' (3D)' / ' (1D)'
+    when every one of its types runs in several dimensions (heat, potential: the label names none; a type fixed to one
+    dimension names it, 'Solid Mechanics (3D)', or is a space of its own, the axisymmetric EM types)."""
     path: Path
     relative_path: str        # POSIX path below the examples directory
     title: str
@@ -99,8 +113,15 @@ class ExampleCatalog:
         except (KeyError, ValueError):
             return type_name
 
+    def _dimension_open(self, type_name):
+        """True for a registered type that runs in more than one model dimension (its label names none)."""
+        try:
+            return len(set(self.registry.physics_type(type_name).dimensions)) > 1
+        except (KeyError, ValueError):
+            return False
+
     def _read_header(self, path):
-        """(ExampleModel, '') from the raw JSON's title / description / physics types, else (None, reason)."""
+        """(ExampleModel, '') from the raw JSON's title / description / domain / physics types, else (None, reason)."""
         try:
             model_dict = json.loads(path.read_text(encoding='utf-8-sig'))
         except (OSError, ValueError) as exc:     # JSONDecodeError and UnicodeDecodeError are ValueErrors
@@ -111,6 +132,11 @@ class ExampleCatalog:
         type_names = sorted({str(physics.get('type', '')) for physics in physics_list
                              if isinstance(physics, dict) and physics.get('type')})
         group = ' + '.join(self._physics_label(name) for name in type_names)
+        if type_names and all(self._dimension_open(name) for name in type_names):
+            dimension = _model_dimension(model_dict.get('domain'))
+            if dimension is None:
+                return None, "not a model file ('domain' is not an object)"
+            group = f'{group} ({dimension}D)'
         title = str(model_dict.get('title') or '').strip() or path.stem
         description = str(model_dict.get('description') or '').strip()
         return ExampleModel(path, self._relative(path), title, group, len(type_names), description), ''

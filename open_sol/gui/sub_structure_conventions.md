@@ -105,8 +105,12 @@ Sub file of the root `structure_conventions.md`. GUI gotchas.
 - WorkerBridge keeps `device` / `last_memory_status` and re-emits them; the gauge shows pool_used / budget, on kind
   'cpu' (no usable GPU) host RAM. The build-memory table is filled from Built (`BuildSummary.gpu_*`) and BuildFailed
   (`build_memory`). Examples menu: one submenu per `<repo>/examples` subfolder (`ExampleCatalog.folders()`, no file
-  read; json directly in examples/ is not listed); aboutToShow runs `ExampleCatalog.scan(folder)` (skips `*_out`,
-  hidden folders; raw JSON title / description / physics types only, cached per file version), listing every readable
+  read; json directly in examples/ is not listed); one folder per physics area, its 2D / 3D / axisymmetric models
+  together (no `em3d` folder): the 2D / 3D split is the physics type group, a type running in several dimensions
+  (`PhysicsType.dimensions`, heat / potential) getting ' (2D)' / ' (3D)' from the raw domain (`size_z`, `size_y` null =
+  1D) only when every type of the group does (a fixed-dimension type's label names it: 'Solid Mechanics (3D)'; keep
+  that for new types); aboutToShow runs `ExampleCatalog.scan(folder)` (skips `*_out`,
+  hidden folders; raw JSON title / description / domain / physics types only, cached per file version), listing every readable
   file: never load_model / validate there (on a CPU-only machine validation probes cuDSS / gmsh per file and stalls the
   hover); a model is checked only when opened, like any file; menus are rebuilt
   on every aboutToShow and old submenus deleteLater'd (`clear()` keeps them). An example opens as an untitled copy.

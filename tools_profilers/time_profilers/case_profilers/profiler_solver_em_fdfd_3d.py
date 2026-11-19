@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from profiler_em_bor_fdtd_common import methods  # noqa: E402
 from profiler_harness import REPOSITORY, SOLVER_ROLE_PARTS, STUDY_PARTS, case_specs, main  # noqa: E402
 
-EXAMPLE = REPOSITORY / 'examples' / 'em3d' / 'fdfd_mie_sphere_resonance_3d.json'
+EXAMPLE = REPOSITORY / 'examples' / 'em' / 'fdfd_mie_sphere_resonance_3d.json'
 
 
 def double_factor(spec):
