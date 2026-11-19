@@ -5,6 +5,7 @@ import copy
 import itertools
 import math
 import os
+import re
 import shutil
 import sys
 import time
@@ -59,7 +60,8 @@ from .model.time_estimate import estimate_overheads, estimate_time, estimated_ru
 from .model.templates import make_template, template_entries
 from .model.validate import internal_error_text, refused_on_estimated_counts, validate
 from .viz.common import line_profile
-from .viz.field_viewer import (ViewerFrame, ViewerGeometry, ViewerLayer, ViewerMirror, ViewerQuantity,
+from .viz.field_viewer import (ViewerFlow, ViewerFrame, ViewerGeometry, ViewerLayer, ViewerMirror, ViewerQuantity,
+                               ViewerVectors,
                                figure_settings, layer_from_field, mirror_plane, plan_frames, snap_to_mirrors,
                                strided_layer, time_label, write_field_viewer)
 from .viz.mode_player import mode_player_from_results
@@ -94,6 +96,17 @@ _DERIVED_SERIES_QUANTITY = 'derived_series:'   # Results.sweep_figure quantity p
 # study summary keys copied into summary.json when the study set them (optimization, thermal_noise, mode_analysis,
 # eigenfrequency / optomechanics, nonlinear_frequency_domain, frequency_response; convergence: StudySpec.adaptation,
 # also written as convergence.json; estimation: StudySpec.estimation)
+# web page flow particles (2D Cartesian field pages of these physics types; their vectors are steady flows, not waves or
+# displacements): the vector a field's page animates, by base name: a field '<base>_abs' / '<base>_x' / '<base>_y' its
+# own base, else _FLOW_BASES (tried in order); components '<base>_x' / '<base>_y' (or '<base>x' / '<base>y'). heat has
+# no flux components: -grad T scaled to heat_flux_abs (_FLOW_GRADIENTS: type -> (potential, magnitude) names)
+_FLOW_TYPES = ('laminar_flow', 'electric_currents', 'electrostatics', 'drift_diffusion', 'magnetostatics', 'heat')
+_FLOW_BASES = {'V': ('J', 'E', 'D'), 'q_joule': ('J',), 'current_source': ('J',), 'current_source_ext': ('J',),
+               'rho_free': ('E',), 'rho_free_ext': ('E',), 'rho_ion': ('E',), 'A': ('B',), 'w_mag': ('B',),
+               'J_coupled': ('B',), 'J_applied': ('B',), 'pressure': ('u',), 'vorticity': ('u',), 'viscosity': ('u',),
+               'N': ('Jn', 'J'), 'P': ('Jp', 'J'), 'phi_n': ('Jn',), 'phi_p': ('Jp',), 'recombination': ('J',),
+               'generation': ('J',), 'net_doping': ('J', 'E'), 'space_charge': ('E',)}
+_FLOW_GRADIENTS = {'heat': ('T', 'heat_flux_abs')}
 _STUDY_SUMMARY_KEYS = ('optimization', 'noise_frequencies', 'n_modes', 'n_resonances', 'n_channels', 'nonlinear_solve',
                        'feedback', 'response_frequencies', 'frequency_sweep', 'convergence', 'estimation')
 
@@ -1138,6 +1151,36 @@ def _stored_cut_index(snapshot, plane):
     return min(on_axis, key=lambda index: abs(planes[index][1] - float(plane[1])))
 
 
+def _raster_centres(field_data, axis):
+    """float64 cell centres of a FieldData raster along axis 0 (x_centers) / 1 (y_centers); uniform cells over its
+    extent when they are None."""
+    given = field_data.x_centers if axis == 0 else field_data.y_centers
+    if given is not None:
+        return np.asarray(given, dtype=np.float64).reshape(-1)
+    low, high = (float(edge) for edge in field_data.extent[2 * axis:2 * axis + 2])
+    count = np.shape(field_data.values)[axis]
+    return low + (np.arange(count) + 0.5) * (high - low) / count
+
+
+def _gradient_flow(potential, magnitude):
+    """ViewerVectors along -grad of the potential FieldData's raster (heat flows down the temperature), with length
+    the magnitude FieldData's (heat_flux_abs: q = -k grad T in an isotropic material) when given, else |grad|."""
+    values = np.asarray(potential.values, dtype=np.float64)
+    u_centres, v_centres = _raster_centres(potential, 0), _raster_centres(potential, 1)
+    if values.ndim != 2 or min(values.shape) < 2:
+        raise ValueError(f'a flow from the gradient needs a 2D raster of at least 2 x 2, got {values.shape}')
+    grad_x, grad_y = np.gradient(values, u_centres, v_centres)
+    if magnitude is not None:
+        size = np.asarray(magnitude.values, dtype=np.float64)
+        if size.shape != values.shape:
+            raise ValueError(f'flow magnitude raster {size.shape} differs from the potential raster {values.shape}')
+        length = np.hypot(grad_x, grad_y)
+        with np.errstate(invalid='ignore', divide='ignore'):
+            factor = np.where(length > 0, size / length, 0.0)
+        grad_x, grad_y = grad_x * factor, grad_y * factor
+    return ViewerVectors(x=-grad_x, y=-grad_y, u_centres=u_centres, v_centres=v_centres)
+
+
 def _held_cuts(snapshot, key):
     """FieldData of key that a 3D snapshot holds on a placed plane: its mid-height z cut and its stored cuts."""
     return [fields[key] for fields in (snapshot.fields, *snapshot.cuts)
@@ -1585,7 +1628,9 @@ class Results:
         in a browser; returns the written path (.html added when missing). what: a field ('physics.component' or a
         component unique among field_names(), narrowed by physics) -> viz.field_viewer: every stored snapshot holding
         it is a frame (time snapshots play, labelled ones such as wavelengths or modes get a slider), else the current
-        (live) or saved state; a 3D field is shown on its cut planes in place (live state: an x, y and z cut, each at
+        (live) or saved state; a 2D Cartesian page of a steady-flow physics (_FLOW_TYPES) carries the in-plane vector
+        of its field (_viewer_flow, from the same snapshot / state) for moving flow particles; a 3D field is shown
+        on its cut planes in place (live state: an x, y and z cut, each at
         a mirror plane of the field's physics (drawn on the plane), else through the middle of the material objects
         not spanning the window on that axis, else the window middle;
         snapshots and closed / loaded runs: the mid-height z cut plus the study stored_cuts); planes [(axis,
@@ -1699,21 +1744,76 @@ class Results:
             source = ('current state' if self.is_live else 'saved state') + note
         quantity = ViewerQuantity(label=info.label, unit=info.unit, signed=bool(info.signed),
                                   phase=str(info.parity or '').startswith('phase_'))
+        flow, flow_infos = self._viewer_flow(key, frames, stored if len(stored) > 1 else None)
         # parity-sector snapshots are stored unfolded already: no images of them
         mirrors = [] if unfolded else self._viewer_mirrors(
-            key.partition('.')[0], info, [(layer.axes, layer.extent) for layer in frames[0].layers])
+            key.partition('.')[0], info, [(layer.axes, layer.extent) for layer in frames[0].layers], flow_infos)
         snap_to_mirrors(frames, mirrors)   # before the outlines: a cut next to a mirror plane is drawn on it
         objects = self._viewer_geometry([layer.plane for layer in frames[0].layers]) if geometry else None
         return write_field_viewer(path, frames, quantity, title=self._page_title(title) or info.label,
                                   subtitle=f'{key}, {source} (open_sol)', frame_kind=frame_kind, geometry=objects,
-                                  mirrors=mirrors, figure=figure)
+                                  mirrors=mirrors, figure=figure, flow=flow)
 
-    def _viewer_mirrors(self, physics, info, spans):
+    def _viewer_flow(self, key, frames, snapshots):
+        """(ViewerFlow, (x info, y info) whose parities mirror the flow) after putting the in-plane vector the page of
+        field key animates (_FLOW_TYPES / _FLOW_BASES / _FLOW_GRADIENTS) on every frame's layer as ViewerVectors, read
+        from each frame's snapshot (snapshots, else the current / saved state); (None, None) for 3D, polar /
+        spherical models, other types and when a frame lacks the components."""
+        spec = self.spec
+        if spec is None or spec.domain.size_z is not None or spec.domain.coordinates != 'cartesian' \
+                or spec.dimensions == 1:
+            return None, None
+        physics, _, name = key.partition('.')
+        kind = next((entry.type for entry in spec.physics if entry.name == physics), None)
+        if kind not in _FLOW_TYPES or any(len(frame.layers) != 1 for frame in frames):
+            return None, None
+        if snapshots is not None:
+            getters = [snapshot.fields.get for snapshot in snapshots]
+            available = set.intersection(*(set(snapshot.fields) for snapshot in snapshots))
+        else:
+            available = set(self.field_names())
+            getters = [lambda field_key: self.field(field_key) if field_key in available else None]
+        if len(getters) != len(frames):
+            raise RuntimeError(f'{len(frames)} page frames but {len(getters)} flow sources')
+        if kind in _FLOW_GRADIENTS:
+            potential, magnitude = (f'{physics}.{part}' for part in _FLOW_GRADIENTS[kind])
+            if potential not in available:
+                return None, None
+            magnitude = magnitude if magnitude in available else None
+            for frame, get in zip(frames, getters):
+                frame.layers[0].vectors = _gradient_flow(get(potential), None if magnitude is None else get(magnitude))
+            info = getters[0](potential).info
+            label = 'Heat flux' if magnitude else f'-grad {info.label}'
+            unit = getters[0](magnitude).info.unit if magnitude else f'{info.unit}/m'
+            return ViewerFlow(label=label, unit=unit), (info, info)
+        bases = [*_FLOW_BASES.get(name, ())]
+        for suffix in ('_abs', '_x', '_y'):
+            if name.endswith(suffix):
+                bases.insert(0, name[:-len(suffix)])
+        pair = next(((f'{physics}.{base}{sep}x', f'{physics}.{base}{sep}y') for base in bases for sep in ('_', '')
+                     if f'{physics}.{base}{sep}x' in available and f'{physics}.{base}{sep}y' in available), None)
+        if pair is None:
+            return None, None
+        for frame, get in zip(frames, getters):
+            x_field, y_field = get(pair[0]), get(pair[1])
+            if np.shape(x_field.values) != np.shape(y_field.values):
+                raise ValueError(f'{pair[0]} and {pair[1]} have different sample grids')
+            frame.layers[0].vectors = ViewerVectors(x=x_field.values, y=y_field.values,
+                                                    u_centres=_raster_centres(x_field, 0),
+                                                    v_centres=_raster_centres(x_field, 1))
+        x_info, y_info = getters[0](pair[0]).info, getters[0](pair[1]).info
+        label = re.sub(r' (x|r)( \(.*\))?$', '', x_info.label)   # 'Magnetic flux density x (axisymmetric: r)'
+        return ViewerFlow(label=label, unit=x_info.unit), (x_info, y_info)
+
+    def _viewer_mirrors(self, physics, info, spans, flow_infos=None):
         """ViewerMirrors of the model's mirror faces for a field of physics (FieldInfo info; None = an even
-        intensity), placed on the window edges of spans [(axes, extent)]; RuntimeWarning for what is not offered."""
+        intensity), placed on the window edges of spans [(axes, extent)]; RuntimeWarning for what is not offered.
+        flow_infos (x, y FieldInfos of the page's flow vectors): each image's flow_sign = the image sign of the
+        component along the plane (+1: the reflected paths, -1: run backwards)."""
         if self.spec is None:
             return []
-        faces = mirror_faces(self._state_spec(), physics)
+        all_faces = mirror_faces(self._state_spec(), physics)
+        faces = all_faces
         if info is not None:
             faces = field_plane_signs(faces, info)
         if not faces:
@@ -1733,8 +1833,12 @@ class Results:
             if position is None:
                 unplaced.append(face)
                 continue
+            flow_sign = 1
+            if flow_infos is not None:   # the tangential component: y along an x plane, x along a y plane
+                along = flow_infos[1] if face[0] == 'x' else flow_infos[0]
+                flow_sign = image_sign(field_parity(along), face[0], field_plane_signs(all_faces, along)[face])
             mirrors.append(ViewerMirror(face=face, position=position,
-                                        value_sign=image_sign(parity, face[0], plane_sign)))
+                                        value_sign=image_sign(parity, face[0], plane_sign), flow_sign=flow_sign))
         if unplaced:
             warnings.warn(f"web page mirror images: not across {', '.join(unplaced)} (no shown plane spans that axis)",
                           RuntimeWarning, stacklevel=4)

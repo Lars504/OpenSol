@@ -1333,7 +1333,11 @@ _RESULTS_NOTES = (
         'page (no network, WebGL2) to turn, zoom and colour in a browser (colour maps, log scale, colour range; PNG '
         "and video export, the PNG as shown with its heading, axes and colour bar); what = a field ('physics.component' or a unique component; physics narrows it): every "
         'stored snapshot holding it is a frame (time snapshots play, labelled ones such as wavelengths or modes get '
-        'a slider), else the current / saved state, a 2D map (optional relief) or a 3D field on its cut planes in '
+        'a slider), else the current / saved state, a 2D map (optional relief; with flow particles moving along the '
+        'in-plane vector of 2D Cartesian laminar_flow, electric_currents, electrostatics, drift_diffusion, '
+        'magnetostatics and heat pages: the field\'s own components, the velocity of pressure / vorticity, the current '
+        'density of V / q_joule, B of A, -grad T scaled to heat_flux_abs when stored; a Flow button) or a 3D field on '
+        'its cut planes in '
         'place (live state: an x, y and z cut, each at a mirror plane of the field\'s physics (the window cell next '
         'to it, drawn on the plane), else through the middle of the material objects that do not span the window on '
         'that axis, else the window middle; snapshots and closed / loaded runs: the mid-height z cut and '
