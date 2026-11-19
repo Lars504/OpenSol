@@ -624,7 +624,9 @@ curves -> selftest_report_analytic.json); the CLI wraps them (`selftest --exampl
 - `open_sol/gui/`: GUI (thread rule, result plot views, progress, documents and node paths, canvas, 3D views, forms).
 - `open_sol/viz/`: Visualizer, common, result_plots, curve_figure, scene_figure, mode_player and field_viewer (the
   self-contained HTML pages of Results.export_html: animated mode shapes; field maps / 3D cut planes / ray-marched
-  3D volumes / DFT intensities, with the Plot settings of an exported picture).
+  3D volumes / DFT intensities, with the Plot settings of an exported picture; per field kind: contours and 3D
+  terrain, flow particles, phasor animation, deformed 2D solids, how the page's feature blocks share layers and
+  start-up).
 - `experiments/`: paper experiments (`<paper><year>/`, run_all), link to `build_experiments_guide.md` (layout, time
   estimates, cuDSS, model gotchas).
 - `tools_profilers/time_profilers/`: solver_profiler (parent / child layout, imports, solver enumeration rule and its

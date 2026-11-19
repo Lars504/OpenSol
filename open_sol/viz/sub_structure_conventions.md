@@ -294,3 +294,19 @@ Sub file of the root `structure_conventions.md` (read that first). Visualizer an
   (full on PNG / recording / `fieldViewer3d.fullQuality()`). Non-planar 3D views fit the projected box corners into
   the area the heading, colour bar and labels leave (`fitBoxCorners`) and open with a short eased turn
   (`introTurn`; reduced-motion respected); mode_player keeps its own fit.
+- field_viewer feature blocks (the page's `// ---- waves / scalars / vectors / solid2d / fields3d ----` blocks and their
+  Python data): each is optional per page and they combine, so
+  - every per-sample array a `ViewerLayer` carries (`quadrature`, `vectors`, `displacement`; `ViewerFrame.volume`)
+    follows the layer through every rebuild: `_strided`, `_plane_padded`, `_mirror_padded_frames`, the plan's frame
+    rebuild in `viewer_data`, api `_hide_void`; `_check_layers` / `_layer_codes` count it. A new array joins all of them.
+  - one page shows one animation clock per thing: api drops the phasor partner when the deformed shape oscillates
+    (`ViewerMotion.oscillate`) or a volume is attached (3D: volume views win), and `viewer_data` refuses a phasor page
+    with volumes; the page's terrain does not open on phasor, motion or volume pages.
+  - the field program's vertex attributes are aPos, aVal, aVal2 (waves), aDown (terrain walls), aDisp (motion): a VAO
+    without one reads the generic value set in setupGL (aVal2 (0, 1), aDisp 0, aDown 0), so a new attribute sets one.
+  - start-up runs top to bottom: a block's top-level code may call shared functions (limits, syncControls,
+    updateReadout) that read another block's state, so state those shared functions read is declared with the page
+    constants near the top (the waves `PHASOR` / `SMOOTH_OK` / `wave`), never inside a later block (a `const` read
+    before its line throws and the page stays blank).
+  - key bindings: V = Flow (2D flow pages) and View cycling (3D volume pages; never on the same page), C contours,
+    R terrain, D deform animation, G objects, M mirror.

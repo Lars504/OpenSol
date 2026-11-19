@@ -353,6 +353,11 @@ const FRAMES = DATA.frames;
 const NF = FRAMES.length;
 const KIND = DATA.frame_kind;              // 'time' | 'labelled' | 'single'
 const is2d = DATA.dimensions === 2;
+// waves block state (`// ---- waves ----`), here because limits() / shownFrameRange() run during start-up
+const PHASOR = !!DATA.phasor;
+const SMOOTH_OK = KIND === 'time' && !Q.phase;          // an angle cannot be blended across its wrap
+const WAVE_SECOND = PHASOR || SMOOTH_OK;                // layers get an aVal2 buffer
+const wave = { theta: 0, playing: PHASOR, hz: 0.5, smooth: SMOOTH_OK && store('smooth') !== 'off', mixA: 1, mixB: 0 };
 const lengthUnit = niceUnit(DATA.length_unit || 'm');
 const AX = { x: 0, y: 1, z: 2 };
 // ---- scalars: quantity defaults ----
@@ -2812,10 +2817,7 @@ canvas.addEventListener('dblclick', (e) => {
 // shows values cos(wt) + partner sin(wt) = Re / Im[A exp(j wt)], the instantaneous field over one period; Play turns
 // wt, the frame slider still steps the wavelengths / modes) and smooth playback of time frames (the next frame is
 // blended in between two snapshots). Both feed the vertex shader's second value aVal2 (uMixA / uMixB).
-const PHASOR = !!DATA.phasor;
-const SMOOTH_OK = KIND === 'time' && !Q.phase;          // an angle cannot be blended across its wrap
-const WAVE_SECOND = PHASOR || SMOOTH_OK;                // layers get an aVal2 buffer
-const wave = { theta: 0, playing: PHASOR, hz: 0.5, smooth: SMOOTH_OK && store('smooth') !== 'off', mixA: 1, mixB: 0 };
+// (PHASOR, SMOOTH_OK, WAVE_SECOND and wave are defined with the page constants: limits() reads them early)
 const quadCache = new Map();
 function quadValues(f) {
   // per layer (partner, ok) pairs of frame f's phasor partner, decoded on the frame's own codes
