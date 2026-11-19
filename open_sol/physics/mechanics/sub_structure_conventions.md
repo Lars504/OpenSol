@@ -4,283 +4,106 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
 `solid_mechanics_3d_plan.md`, `piezo_3d_plan.md`.
 
 ## Layout (2D and 3D)
-- `solver_common.py`: SolidMechanicsBase (PhysicsSolver contract, dirty logic of `step`, reactions, warm start,
-  `_element_lame`), SupportRegion, ElasticSystemBase (precision / tolerance, one `solvers.pcg.PCGSolver`). Subclasses
-  SolidMechanicsPhysics (`solver.py`, 2D) / SolidMechanics3DPhysics (`solver3d.py`) supply `_new_fields`,
-  `_pml_copy_pairs`, `_assemble`, `_build_rhs`, `_write_outputs` (no PML copy: the base step does it after), renderer,
-  support / load / probe methods; `_solve_system` (default PCG) is overridden only by the 2D piezoelectric solid.
-- Fields carry `shape` (re-allocated on a grid-shape change); `fields.py` / `fields3d.py` hold the output / input /
-  slot names (`kernels3d.OUTPUT_ARRAYS_3D` = 3D output order).
+- Tensor meshes: `solver_common.SolidMechanicsBase` (subclass contract in its docstring) under `solver.py` (2D) /
+  `solver3d.py`; element meshes: `FEMSolidCommon` under `solver_fem.py` / `solver_fem3d.py`. A tensor solver writes
+  outputs only through `_show_outputs` (or `_extend_into_pml` after its own extra writes): a bare `_write_outputs`
+  leaves the PML ring stale.
+- Definitions: `definition_common.py` (pieces both types share), `definition.py` (2D type, every solid coupling,
+  registers definition3d), `definition3d.py`. A solid that `StudySpec.solved_physics` leaves out is a stationary
+  background: validate / estimators rebind their context by `definition_common.background_context`, create reads
+  `solid_study`; a new study check goes through them, never `spec.study.type` of an unbound context.
+- Type catalogue: `solid_mechanics` (default 'solid'; shares alpha / alpha_xx / alpha_yy and their arrays with heat,
+  adds alpha_zz; rho read only by the modal and frequency_response studies; youngs_modulus / poisson_ratio /
+  photoelastic_p11 / _p12 are elastic_waves' Param objects, `material_params.py`; optional c_ij, piezoelectric,
+  axial_wavenumber = 2.5D guided modes, frequency_response study, periodic_x / _y + bloch_kx / _ky Bloch cells on both
+  mesh kinds: section "Bloch cells, 2D"). `solid_mechanics_3d` (3D only, separate type like em_fdtd_3d; default
+  'solid'; same material Params incl. rho; tensor meshes: lowest modes only; tetrahedra: target_frequency / search
+  targets / band, 21 c_IJ, piezoelectric (charges in C, static on 'linear' sparse_direct, short / open modes on
+  'eigen'), frequency_response on 'linear').
+- Exact self-test cases (1e-8 .. 1e-9) need float32-exact material constants (`selftest_helpers.float32_value`); an
+  isotropic E / nu pair is not exact even then (its float32 storage shifts frequencies ~7e-9), so exact roller boxes
+  use orthotropic c_ij.
 
 ## Backends (gpu and cpu; solver_plan S8 E)
-- Both types ('gpu', 'cpu'). Every array comes from the system's `xp` / `sparse` / `ndimage` (backend =
-  `domain.backend.name`); host copies via `core.backend.to_host`, never `cp.asnumpy` / `.get()`. `prepare` raises on a
-  domain of another backend; a build-injected PCGSolver must match (ValueError).
-- 2D: `_block_precondition` is a twin ('mechanics.elastic_block_jacobi'); `stiffness_stencil` / `mass_stencil`
-  default xp = module of their first array, `ElasticPattern` defaults to numpy (the device assembly passes xp). Modal,
-  guided and piezo solves are host.
-- 3D: every kernels3d RawKernel is a twin ('mechanics3d.<kernel>', core.kernels.real_raw_twin: GPU side compiled per real type of args[0]; multigrid3d alike). numpy
-  twins = 2-point Gauss per axis (equal to the CUDA Walsh-basis forms up to rounding), temporaries per call: a cpu CG
-  iteration is far slower (estimator books the twin temporaries as cpu build extra). numba twins (`_NUMBA_TWINS`,
-  cache=True) of the per-iteration kernels: elastic_product and elastic_mass_product (closed-form per-node gathers),
-  block_precondition3 and the fused CG pair; CPU case solid_3d_product_numba compares each with its numpy twin. A numba
-  twin that needs another kernel calls its registered twin (`_TWINS[name]`), never its factory, so each kernel is
-  compiled / cache-loaded once per process.
-- Parity cases (`selftests_backend.py`, `solid_parity_case`: solid_mechanics_cpu, solid_mechanics_3d_cpu,
-  solid_mechanics_3d_block_eigen_cpu, solid_optics_cpu_gpu) wrap exact cases: the case's own check grades the cpu runs; named fields must match the gpu
-  runs within FIELD_TOLERANCE relative to the max of the gpu fields of the same kind (u / strain / stress + von_mises),
-  so name a NONZERO field of each kind (a zero u_x under rollers would be graded by its own round-off); a field only
-  the parity reads needs a closed-form item in the case's check; every cpu run must record the solid 'linear' role on
-  'cpu'. solid_3d_rigid_mode_check runs on both backends itself.
-- Definitions: `definition_common.py` (build's linear solver, MATERIAL_PROPERTIES = one Param per name for both
-  types, support / material / state helpers, the apply / result callbacks both types share: body force, temperature
-  change, support and electrode tables), `definition.py` (2D type + every solid coupling, registers definition3d),
-  `definition3d.py` (solver imported in create, SupportRegion / probe_result inside callbacks). A solid
-  that StudySpec.solved_physics leaves out is a stationary background: validate / estimators rebind their context by
-  `definition_common.background_context`, create reads `solid_study`; a new study check goes through them, never
-  spec.study.type. No CG settings on the physics; estimator dtype names map to PCGSolver names by
-  `materials.SOLVER_PRECISIONS`.
-- Type catalogue: `solid_mechanics` (default 'solid'; shares alpha / alpha_xx / alpha_yy and their arrays with heat,
-  adds alpha_zz; rho read only by eigenfrequency / frequency_response; youngs_modulus / poisson_ratio /
-  photoelastic_p11 / _p12 are elastic_waves' Param objects, `material_params.py`; optional c_ij, piezoelectric,
-  axial_wavenumber = 2.5D guided modes (u_z nonzero only there), frequency_response study, periodic_x / _y + bloch_kx /
-  _ky Bloch cells on both mesh kinds: section "Bloch cells, 2D"). `solid_mechanics_3d` (3D
-  only, separate type like em_fdtd_3d; default 'solid'; same material Params incl. rho; tensor meshes: lowest modes
-  only; tetrahedra: target_frequency / search targets / band, 21 c_IJ, piezoelectric (18 piezo_e*, six eps_dc*,
-  charges in C, static on 'linear' sparse_direct, short / open modes on 'eigen'), frequency_response on 'linear').
+- Both types run on 'gpu' and 'cpu'; modal, guided and piezo solves are host on both.
+- 3D: every kernels3d / multigrid3d RawKernel is a twin. The numpy twins allocate per call, so a cpu CG iteration is
+  far slower (the estimator books their temporaries as cpu build extra); the per-iteration kernels have numba twins. A
+  numba twin that needs another kernel calls its registered twin (`_TWINS[name]`), never its factory, so each kernel
+  is compiled / cache-loaded once per process.
+- Parity cases (`selftests_backend.solid_parity_case`) grade the cpu runs by the wrapped case's own check and the named
+  fields against the gpu runs relative to the max of the gpu fields of the same kind (u / strain / stress + von_mises):
+  name a NONZERO field of each kind (a zero u_x under rollers would be graded by its own round-off); a field only the
+  parity reads needs a closed-form item in the case's check.
 
 ## SolidMechanicsPhysics / ElasticSystem
-- Static, small strain; cells isotropic (E / nu -> `materials.lame_coefficients`) or c_ij: every coefficient goes
-  through `stiffness.ElementStiffness`, never lambda / mu directly. sigma = C (eps - alpha dT), dT =
-  fields.temperature_rise (slot) + temperature_rise_ext (features); thermal stress per kelvin `_thermal_coefficients`
-  = C : alpha. Rules are written for plane strain unless they say otherwise.
-- out_of_plane (planar only): plane_strain eps_zz = 0; plane_stress = static condensation of sigma_zz = 0
-  (`stiffness.operator_coefficients(plane_stress=True)`, c33 = 1 in void cells; eps_zz output per cell, stress_zz 0);
-  generalized_plane_strain eps_zz = e0 + e1 x + e2 y (the industry-standard form, setting bending picks the free terms)
-  by superposition (`generalized_plane_strain.py`, `_solve_generalized`): the e = 0 solve + one
-  `ElasticSystem.solve_homogeneous` per free term (f_k = -int B^T (c13, c23, c36) h_k dA, h about the window centre,
-  kept in `_unit_axial_solve` until the next `_assemble`); the 3 x 3 Schur matrix S_mk = int c33 h_k h_m - u_k . f_m is
-  exact for bilinear u. Moments about the drawing origin (M_x = int y sigma_zz, M_y = -int x sigma_zz). `load_full`
-  gains sum e_k f_k so reactions stay K u - f (triangles: section "Triangle meshes").
-- Only the planar plane-strain solid has piezoelectric, guided modes and the planar optomechanics study (constructor
-  ValueError + validation; an axisymmetric triangle solid runs optomechanics with em_fdfd_bor optics, section "FEM /
-  axisymmetric overlaps"); eigenfrequency refuses generalized plane strain (no mass on e). Setting thickness (planar)
-  only scales `reaction` (N, `force_unit`): the system stays per m of depth.
-- Axisymmetric (setting geometry, `ElasticSystem.axisymmetric` set before prepare): x = r from the x_lo window edge
-  (padding ignored), y = z; `gauss_stiffness_stencil` (2 x 2 Gauss, weight 2 pi r, hoop N / r) and
-  `axisymmetric_mass_stencil` (exact). Loads go through `add_stress_load` / `add_volume_load` / `face_node_lengths`
-  (ring weights): a new load must use them, never `element_area` products. prepare holds u_r = 0 on x_lo (axis rule);
-  rigid-mode check and validation need a held u_y only. Forces / reactions whole ring in N; the _zz outputs are hoop
-  components (renderer relabels).
-- Discretisation: bilinear Q1 elements = window cells, nodal (u_x, u_y) on cell corners, dof = 2 node + component, node
-  = i ny_nodes + j; exact closed-form element integrals; dense per-node stencil compacted to CSR by
-  `ElasticPattern.stencil_positions`. Q1 locks toward nu = 0.5 (validation warns above 0.45) and is stiff in pure
-  bending: mesh thin films with >= 4 cells over the thickness. Plane-strain bending stiffness is high by ~c / n^2 (n
-  cells over the depth, square cells), c = (1 - nu) / 2 + nu^2 / (1 - 2 nu): 3.5 % at nu = 0.3, n = 4
-  (examples/mechanics/simply_supported_beam_gravity.json matches it to ~1e-3).
-- A fixed_domain pin cell holds all four corners at 0, suppressing that cell's free strain: the far field gets a rigid
-  kink (translation + rotation ~ strain x dx^2 / depth), so far-field displacements carry an offset (stresses fine).
-  No single-node / single-component point support.
-- Void cells (effective c11 <= 0: no youngs_modulus and no c11): nodes touching only void are pinned at 0 (empty
-  rows), outputs 0, body forces dropped. Outputs (u = mean of 4 corners, strain / stress from centre gradients,
-  strain_xy = half the engineering shear) are float32 full-grid, edge-extended into the PML.
-- Supports hold dofs (`ElasticSystem.hold`; later holds win the value, mask = union), eliminated as in
-  DiffusionSystem. Supports act on outer-face nodes (corners included) or on corner nodes of selected cells
-  (fixed_domain); no object-perimeter supports or loads.
-- segment_load (2D only; not in solid_mechanics_3d: a partial face there needs a rectangle on the face): an
-  axis-parallel line on its nearest node line, nodal forces t x `segment_node_lengths` (exact 1D shape-function
-  integrals over the clipped segment, axisymmetric ring-weighted), so the total is exactly t L with ends inside cells.
-- Rigid-mode check (`_check_rigid_modes`, each assembly whose solid / held sets changed): 8-connected solid regions
-  (hinge contacts count as joined, so a mechanism through a corner contact shows as an unconverged CG instead); each
-  needs a held u_x, a held u_y, and held u_x at > 1 row j or held u_y at > 1 column i (exact rank condition;
-  axisymmetric: a held u_y only). Validation checks only that both directions are held somewhere.
-- Block-Jacobi PCG (stop reference 'rhs'): `assemble` factorizes it with the A_solve CSR and the 2x2 node-block
-  inverse (diagonal fallback when det <= 0). max_iterations 0 = twice `solvers.pcg.resolve_max_iterations` (set by
-  `definition_common.solid_linear_solver`; elastic conditioning ~2-4x worse than diffusion). The role is
-  `definition.SOLID_LINEAR_ROLE` (local, not definition_helpers'). gpu check blocks are CUDA graphs (capture_blocks;
-  every `assemble` factorizes again, which starts new graphs: anything replacing A_solve / the inverse blocks without
-  `_bind_linear_solver` must call `release_block_graphs`). 'mixed' (Automatic on the gpu outside the study defaults):
-  float32 copies of A_solve and the inverse blocks per assembly, products through `system._CsrApply` (pcg's CSR
-  RawKernel: a cupyx SpMV cannot be captured), the float64 A_solve refreshes the outer residual.
-- sparse_direct (Automatic in stationary / time_dependent on both backends, `study_defaults`; back_end 'auto' = cudss
-  on the gpu with nvmath, else host SuperLU; its size rule and the fit guard count 2 unknowns per node,
-  `direct_components=2`): `ElasticSystemBase` wraps the SparseDirectSolver in `DiffusionDirectSolver` (3D refuses
-  it, `accepts_direct`); `_bind_linear_solver` only marks `_factor_stale`, and the next `solve` / `solve_homogeneous`
-  factorises A_solve (cuDSS: `factorize_device_csr`, the kept factor refreshed on its plan), so piezoelectric and modal
-  solves never factorise it. Over the GPU budget (host factor: the available RAM or 2e6 unknowns) the fit guard falls
-  back to pcg (gpu: mixed; estimator: no PCG workspace,
-  `fem.diffusion.cudss_diffusion_estimate`; time recipe at `_Q1_FILL_SCALE`). A pcg node with no precision still takes
-  'mixed' (`schema.with_node_precision`).
-- Reactions: `ElasticSystem.reaction(dof_mask)` = sum of K u - f (float64) over the held dofs (N/m); needs
-  `load_full` of the last build_rhs, so loads must not change between solve and read (they change only through
-  features / inject_source, which mark dirty).
-- `step` re-solves when operator dirty (`materials.STIFFNESS_ARRAYS` changed, supports), loads dirty (alpha, slots,
-  features) or first call; n_solves = coupling revision counter. A re-assembly allocates the new operator before the
-  old is freed: the estimator books it as a run item when a stiffness references a state field
-  (`_stiffness_follows_state`).
+- Static, small strain; every coefficient goes through `stiffness.ElementStiffness` (E / nu or c_ij), never lambda /
+  mu directly. Rules are written for plane strain unless they say otherwise; out_of_plane plane_stress /
+  generalized_plane_strain: `solver.py` header, `stiffness.operator_coefficients`, `generalized_plane_strain.py`.
+  Setting thickness (planar) only scales reactions (N): the system stays per m of depth.
+- Axisymmetric: x = r from the x_lo window edge (padding ignored), y = z. A new load goes through `add_stress_load` /
+  `add_volume_load` / `face_node_lengths` / `segment_node_lengths` (ring weights), never `element_area` products.
+- Q1 accuracy (not in the help texts): stiff in pure bending, so mesh thin films with >= 4 cells over the thickness;
+  plane-strain bending stiffness is high by ~c / n^2 (n cells over the depth, square cells), c = (1 - nu) / 2 + nu^2 /
+  (1 - 2 nu): 3.5 % at nu = 0.3, n = 4 (examples/mechanics/simply_supported_beam_gravity.json matches it to ~1e-3). A
+  fixed_domain cell holds all four corners, suppressing its free strain: the far field gets a rigid kink (translation
+  + rotation ~ strain x dx^2 / depth), so far-field displacements carry an offset (stresses fine).
+- Rigid-mode check (`ElasticSystem._check_rigid_modes`): hinge (corner) contacts count as joined, so a mechanism
+  through a corner contact shows as an unconverged CG, not as a refusal; validation only checks that both directions
+  are held somewhere.
+- Linear solver: `definition.SOLID_LINEAR_ROLE` (its comment holds the choices and their measurements: block-Jacobi
+  pcg, 'mixed' on the gpu, sparse_direct as the stationary / time_dependent default); the 2D binding (CUDA-graph check
+  blocks, float32 copies of 'mixed', the factor deferred to the next `solve` so modal and piezo solves never factorise
+  it): `ElasticSystem._bind_linear_solver`.
+- Reactions are K u - f of the last solve (`load_full` of the last `_build_rhs`): every load change sets
+  `_loads_dirty` (it also drops the frequency response's kept `_harmonic_drive`), so loads never change between a solve
+  and a read. n_solves doubles as the couplings' revision counter.
 
 ## Anisotropic stiffness (`stiffness.py`, c_ij entries; piezoelectric plan stage 5)
-- Industry-standard plane strain: the full law in Voigt model axes (1 xx, 2 yy, 3 zz, 6 xy, engineering shear) with
-  out-of-plane strains held (anti-plane u_z clamped, no c_4J / c_5J). Arrays c11, c12, c13, c22, c23, c33, c16, c26,
-  c36, c66 (`materials.OPTIONAL_STIFFNESS_SCHEMA`): any entry allocates the eight besides c16 / c26; those only by
-  themselves (an allocated pair switches elastic_waves' monoclinic kernel on in a shared model). c11 / c12 / c22 /
-  c66 / c16 / c26 are elastic_waves' arrays (its kind / unit / bounds); NaN or unallocated = unset. 2D type;
-  solid_mechanics_3d reads the 21 c_IJ on tetrahedra only (bricks refuse them, `_tensor_issues`).
-- `element_stiffness` = per component the finite entry, else the Lame value (c11 = c22 = c33 = lambda + 2 mu, c12 =
-  c13 = c23 = lambda, c66 = mu, c16 = c26 = c36 = 0); solid = c11 > 0, so a c_ij-only cell is solid and must set every
-  entry its formulation reads (a crystal entry expands to all: no youngs_modulus needed). Monoclinic c16 / c26 enter
-  `stiffness_stencil` and the shear thermal load (`add_stress_load(stress_xy=)`, planar only);
-  `check_positive_definite` raises per formulation. Axisymmetric: orthotropic only (c16 / c26 / c36 raise). Guided
-  modes refuse any c_ij (the real form u_z -> -i u_z needs isotropy). stress_zz = T_3 (- e_k3 E_k with piezo).
-- Self-tests `selftests_anisotropy.py`: solid_anisotropic_operator (CPU), solid_anisotropic_uniform_strain (exact Q1);
-  orthotropic roller-box modes: solid_eigenfrequency_roller_box.
+- Voigt conventions, the Lame fallback per component and the formulations: `stiffness.py` header; which entry
+  allocates which arrays: `materials.OPTIONAL_STIFFNESS_SCHEMA`. c11 / c12 / c22 / c66 / c16 / c26 are elastic_waves'
+  arrays (its kind / unit / bounds; an allocated c16 / c26 switches its monoclinic kernel on in a shared model).
+- solid = c11 > 0, so a c_ij-only cell is solid and must set every entry its formulation reads (a crystal entry expands
+  to all: no youngs_modulus needed).
 
 ## Eigenfrequency study, 2D (`modal.py`)
-- `solve_eigenfrequencies(n)` re-assembles if dirty and uses the host float64 K and consistent Q1 mass
-  (`_build_harmonic_operators`, cached `_harmonic_operators`; a solid cell with rho <= 0 raises), never the
-  solve-precision device CSR (a single-precision 'linear' node must not perturb the pencil), with the free-dof mask
-  of the last assembly, through the 'eigen' runtime's `eigsh_shifted` (SuperLU, or cudss / cudss_mixed real LDL^T,
-  also for guided and indefinite piezo pencils; a float32 factor missing 1e-12 in 6 refinement steps raises; scripts
-  get a private ArpackShiftInvertSolver reported in `work_counters`) for n + 4 eigenvalues, ranked by |omega -
-  omega_t| (target_frequency, 0 = lowest). Held dofs are 0 (Displacement values, loads, thermal strain, slots
-  ignored; no stress stiffening on the tensor mesh: section "Prestress"). The rigid-mode check keeps K positive
-  definite (no free-free plane-strain modal analysis on the tensor mesh); a nonzero target is factored at omega_t^2 (1
-  + 1e-4), so a target on a resonance is not singular.
-- `select_resonance(k)` writes the peak-normalised mode (peak node |u| = 1 m, largest component positive) into
-  `system.unknown`, `_write_outputs(thermal=False)`; n_solves stays 0, so support reactions raise (results left out
-  with a warning). rho is in both material schemas (3D: one more float32 full-grid array in every study).
-- Shared definition pieces (`definition_common`): `resonance_table_feature(order_text)` (callbacks read
-  `physics.eigen_solve`), `thermoelastic_damping_feature(grids, where_text)`, `modal_study_issues`,
-  `modal_resonance_count`.
-- `ModalPencil` (2D and 3D): free-dof reduction (or P^H K P) once; kind 'symmetric' / 'damped' (loss, PML) /
-  'loaded' (resistive electrode); one factor kept across shifts (`previous=`, cuDSS plan reuse); K, M, load matrix as
-  host CSR, plus the eigen runtime's `ShiftPencil` (`_pencil()`) that count_below / eigsh_shifted / eigs_shifted all
-  take, so every shift and count refreshes one factor on one pattern (one cuDSS plan per pencil). Eigen factorization
-  'auto' resolves on the gpu with nvmath to cudss (triangles and tetrahedra: ARPACK's 37-63 applications favour the
-  double factor over mixed + GMRES refinement), else superlu; on a cuDSS
-  refusal the runtime falls back to SuperLU for good (that shift is redone); Hermitian (Bloch) pencils are counted by
-  a counting SuperLU so band searches stay verified (solvers sub file arpack_shift_invert). From
-  `DEVICE_PENCIL_MIN_ENTRIES` stored entries on cuDSS it holds a DevicePencil (pool memory ~2-3 value arrays + refresh
-  transients; E5 200 nm: ~1 GiB pool high-water; estimators: section "Memory estimates"). ModalPencil vouches its terms are
-  symmetric (`symmetric_known`, no check; a complex Bloch prolongation keeps the check): a new term that breaks
-  symmetry must drop the vouch. `solve_modes` = `ModalPencil(...).solve_at` + `release()`: a caller holding a pencil must release it (cuDSS factor lives outside the cupy pool).
-- Multi-shift: `solve_modes_at_shifts(pencil, omega_targets, n_per_shift)` (union of 'nearest' solves),
-  `solve_band_modes(pencil, f_lo, f_hi, n_per_slice, max_modes)` (inertia-counted for 'symmetric', 50 % overlap +
-  warning otherwise); both release and return frequency order with info target_frequency NaN, 'targets' / 'band',
-  'expected_count', 'shifts'. Merge clusters within MERGE_TOLERANCE (loaded 1e-5) keep independent vectors only,
-  M-orthonormalised for 'symmetric' (a degenerate pair stays two modes). Band rigid floor = RIGID_EIGENVALUE_FRACTION
-  x upper edge; a pencil needing a shift > 0 starts at BAND_FIRST_SHIFT_FRACTION x omega_hi.
-- Study search 'targets' / 'band' (`modal.MultiShiftModes` mixin of solver.py, solver_fem.py, solver_fem3d.py; not
-  the matrix-free solver3d): every solver builds its pencil in `_modal_pencil(lowest_target)` -> (ModalPencil,
-  finish), also used by solve_eigenfrequencies, so a new pencil variant goes there once; finish = piezo expansion and,
-  on tetrahedra, squeeze films (on the merged list). Rebuilt per study call. Piezoelectric bands are refused (solver
-  and `eigen_search_issues`); estimators read `modal_kept_count` and `definition_helpers.eigen_search_counts`.
-- MUMPS / PARDISO eigen factorizations (opt-in, `eigen_role(mixed_factorization=True)` offers mumps / pardiso and
-  their _mixed variants): host LDL^T of K - sigma M through the same ModalPencil (`previous=`: analysis reused across
-  shifts), host route (`on_device` stays cuDSS-only). Band counts from the library inertia (perturbed pivots, Hermitian
-  pencils: a counting SuperLU, arpack_shift_invert); a mixed factor's counts are inexact (the float32 / complex64
-  warning of `solve_band_modes`). `_failure_text` words a HostDirectAccuracyError (probe missed) by its library
-  (`host_direct.factor_label`), a singular one as for SuperLU; `_check_size` keeps the SPLU limits and names the
-  library. Self-test solid_eigenfrequency_band_host_direct (`selftests_eigen_search.py`, cpu; skipped without
-  python-mumps / pydiso): the rectangle band on mumps / pardiso.
-- Exact roller-box cases need float32-exact material constants: an isotropic E / nu storage alone shifts the
-  frequencies ~7e-9 (0.73 of the 1e-8 tolerance in the 3D and guided roller boxes); solid_eigenfrequency_roller_box
-  uses orthotropic c_ij only (`selftests_eigenfrequency.py`).
+- Pencil, ranking, rigid modes, several shifts, band search and merge: `modal.py` header. Every solver (tensor 2D,
+  triangles, tetrahedra; not the matrix-free solver3d) builds its pencil in `_modal_pencil(lowest_target)` ->
+  (ModalPencil, finish), shared by `solve_eigenfrequencies` and `modal.MultiShiftModes`: a new pencil variant goes
+  there once (finish = piezo expansion, on tetrahedra squeeze films). Estimators read `modal_kept_count` and
+  `definition_helpers.eigen_search_counts`.
+- Modal (and frequency-response) operators are host float64 rebuilt from the ElementStiffness
+  (`_build_harmonic_operators`), never the solve-precision device CSR: a single-precision 'linear' node must not
+  perturb the pencil.
+- `select_resonance(k)` shows the mode without a static solve: n_solves stays 0, so support reactions raise (results
+  left out with a warning).
+- ModalPencil vouches its terms symmetric (`symmetric_known`, no check; see `_pencil`): a new term that breaks symmetry
+  must drop the vouch. Hermitian (Bloch) counts on cuDSS / MUMPS / PARDISO: `arpack_shift_invert.count_below`.
 
 ## Piezoelectric plane strain (`piezo.py`, setting piezoelectric; piezoelectric plan stage 5)
-- Unknowns (u_x, u_y, phi) per node, dof = 3 node + component, host float64: `coupled_operator` = symmetric
-  indefinite [[K_uu, K_uphi], [K_phiu, -K_phiphi]] (e on solid cells only, eps0 eps_dc on every window cell: void is
-  dielectric), `coupled_mass` = u mass only. Signs: phi rows are int grad N . D = -q, so an electrode's charge is
-  -sum of its phi rows of A x; a reaction is the u rows of A x - f (`reaction` overrides the PCG one: K_uu u misses the
-  coupling).
-- Electrodes (`piezo.Electrode`; electrode on outer faces, electrode_domain on cell corners): 'voltage' holds phi
-  (modal: 0 = short), 'floating' ties nodes to a master through the column map G (x = G x_r) carrying `charge`
-  (modal: 0 = open). A node in two electrodes raises; at least one voltage electrode required. G also scales phi by s =
-  sqrt(max K_uu diag / max K_phiphi diag) (SuperLU threshold pivoting needs balanced blocks). Every G^T X G goes
-  through `fem.assembly.congruence` (voltage-only G is diagonal: a row / column scaling, not two sparse products).
-- `PiezoSystem` / `_electrode_map` / `Electrode.dofs` work on explicit dof indices (2D `interleaved_layout`, 3D
-  `piezo_fem3d.block_layout`); `potential_active` fixes phi dofs no element carries (3D PML shell). `runtime` = a
-  'linear' SparseDirectSolver (3D) or None (2D: private SuperLU counted as piezo_*).
-- Static: `_solve_system` = one host SuperLU of G^T A G on the free dofs (factor kept until the next `_assemble`), not
-  the 'linear' pcg (still assembled, unused); counted as piezo_factorizations / _solves / _factor_host_bytes outside
-  any role, and `system.direct_solves` (part of n_solves).
-- Modal: (G^T A G, G^T M G) to `modal.solve_modes` with `displacement_dofs` (peak normalisation on u only; vectors
-  come back as G x_r with tied phi filled); massless phi makes M semi-definite (ARPACK mode 3 accepts it); the
-  factor of A - sigma M is indefinite but non-singular. `select_resonance` splits (u_x, u_y, phi). modal_overlap_data
-  raises (no optomechanics), no guided modes.
-- Outputs: electric_potential / electric_field_x / _y (every window cell, 0 without piezo), stress_* -= e^T E,
-  stress_zz with piezo_e13 / _e23 (read nowhere else). Validation warns when a piezo material has neither
-  youngs_modulus nor c11.
-- Materials: piezo_e* (elastic_waves' names + solid-only piezo_e13 / _e23; one entry allocates all eleven) and
-  eps_dc_* (electrostatics' names, three) are `OPTIONAL_PIEZO_SCHEMA`; prepare adds missing ones (estimator books
-  them); `materials_changed` of them re-assembles.
-- Harmonic: `PiezoSystem.solve_harmonic` = a `HarmonicSystem` of (A, L, M) with the same G and free set, kept while
-  mass and loss are the same objects (callers cache them: a new object = a new reduction).
-- Exact cases at 1e-8 .. 1e-9 need float32-exact constants (`selftest_helpers.float32_value`): the MaterialGrid stores
-  float32 (e = 1.36 reads 1.05e-8 off). Self-tests `selftests_piezo.py` (20 x 2 bar, exact Q1): solid_piezo_bar_static,
-  solid_piezo_bar_modes.
+- Unknowns, signs, electrodes, the column map G and its scaling: `piezo.py` header; every G^T X G goes through
+  `fem.assembly.congruence`.
+- The 2D static solve (`_solve_system`) is a private host SuperLU of G^T A G (counted as piezo_*, outside any role):
+  the 'linear' pcg is still assembled, unused. The harmonic system is kept while mass and loss are the same objects
+  (`PiezoSystem.harmonic_system`): callers cache them, a new object is a new reduction.
 
 ## Frequency response (`frequency_response.py`, `bvd.py`; study frequency_response, model/study_frequency_response.py)
-- In Hz (the EM frequency_domain study stays wavelength-based): `solve_frequency_response(f)` (after
-  `reset_frequency_response()`) = one complex factor of (K + j L - omega^2 M) x = f (exp(+j omega t)) on the free dofs
-  of the last assembly. `HarmonicSystem` reduces K, L, M once and sums per frequency by `fem.assembly.pattern_sum`
-  (value-independent pattern, so a cuDSS plan holds); on a cuDSS runtime the terms stay on the device (DevicePencil),
-  on MUMPS / PARDISO they are a HostPencil of its own term arrays (`runtime.pencil`; never modify them in place),
-  and each frequency calls `factorize_pencil(row_scale=(|diag K| + omega^2 |diag M|)^-1/2, previous=)`; else
-  `factorize_host` (SuperLU); without a runtime a private SuperLU. A host direct refresh defers its probe to the
-  solve (double): a HostDirectAccuracyError can come from `solve_host`, as a cuDSS one does. 2D tensor solids: private SuperLU outside the roles
-  (counters harmonic_* / piezo_harmonic_*; the 'linear' pcg assembled, unused); triangles and tetrahedra: their
-  'linear' sparse_direct runtime (3D operator class 'spd' is nominal there). Loads, held values, electrode voltages and
-  floating charges are phase-0 amplitudes (dead loads only: the thermal and initial-stress loads are static, never a
-  drive; tensor: `_total_load(thermal=False)`, kept as host copies in `_harmonic_drive` until `_loads_dirty` is set or
-  an assembly, so a new load mutation must set `_loads_dirty`; FEM: `_external_load()`). Planar and axisymmetric; generalized plane
-  strain and guided modes raise.
-- Losses (`OPTIONAL_LOSS_SCHEMA`, read only here): mechanical_loss_factor (c -> c (1 + j eta), L = eta K of solid
-  cells), piezo dielectric_loss_tangent (eps -> eps (1 - j tan delta)): loss operator `coupled_operator(eta c, 0, -tan
-  delta eps)`. Host K / L / M are rebuilt in float64 from the ElementStiffness, never copied from the device CSR; kept
-  in `_harmonic_operators` until the next assembly or a loss / rho change.
-- Outputs (`_show_harmonic`; tetrahedra `_write_complex_outputs`): real parts of the harmonic amplitude alone (stress,
-  elastic strain and energy densities with dT = 0 and no sigma0, as a mode: `_write_outputs(thermal=False)` on every
-  mesh kind), u_abs = |u| of the complex centre displacement; on the tensor mesh support
-  reactions and electrode tables raise and probes record nothing (FEM meshes: section "Prestress, damped modes,
-  complex records"). Each solve appends a `FrequencyPoint`. solid_frequency_response_bar's 'heated' run (the elastic
-  bar with a uniform temperature_change) pins this on the tensor mesh: its u_x and stresses equal the unheated run's.
-- Reduced sweeps (sweep_method adaptive / modal; fem sub file "Reduced sweeps"): `HarmonicSystem.plan_reduced(omegas,
-  method, fixed, load, extra_rhs)`; `solve` raises when fixed / load / extra_rhs differ from the planned ones.
-  `set_output_rows(rows)`: `solve(fields=False)` returns vectors exact ONLY at registered rows, so a solver's records
-  must read only rows it registered (3D: element nodes of each frequency probe + held support rows; 2D triangles:
-  probe + support rows; electrodes: `PiezoSystem.electrode_rows`). Modal = `solve_harmonic_resonances` (private host
-  shift-invert; the 'eigen' role is modal studies only), refused with a column map / resistive load. 2D tensor solids
-  plan a private `_reduced_harmonic`; triangles, 3D and piezo plan the HarmonicSystem they keep.
-  `reset_frequency_response` clears every plan. Fields only where `wants_fields` (direct sweeps too, R6), the rest via
-  `publish_frequency_response`. Elastic direct solves of a skipped frequency return x and A x at the registered rows
-  only; the free solution stays where the factor solved it (cuDSS: device) until `last_solution()` at publish. A
-  piezoelectric direct solve stays full (charges read every phi row), kept in `_unpublished_solution`.
-- admittance feature (`definition_frequency_response.py`): Y = j omega Q / V of the named (or only driven) voltage
-  electrode x thickness; extras `bvd.bvd_fit` (NaN + fit_warning below 6 points or without a dip above the peak; one
-  resonance per fit band), kappa_e / omega_C0_Z (`bvd.external_coupling`, load_impedance) need C0 / L1 in F / H:
-  depth factor = the 2D thickness (None = per m: NaN + kappa_e_warning) or 1.0 for solid_mechanics_3d
-  (`getattr(solver, 'thickness', 1.0)`).
-- Self-tests `selftests_frequency_response.py` (solid_bvd_fit_round_trip, solid_bvd_kappa_e,
-  solid_frequency_response_bar), `selftests_reduced_sweep.py`. Example
-  examples/mechanics/yz_ln_thickness_resonator_admittance.json.
+- In Hz (the EM frequency_domain study stays wavelength-based); convention, losses and the factor routes:
+  `frequency_response.py` header and `HarmonicSystem`. 2D tensor solids use a private SuperLU outside the roles
+  (counters harmonic_* / piezo_harmonic_*; the 'linear' pcg assembled, unused); triangles and tetrahedra their
+  'linear' sparse_direct runtime (3D operator class 'spd' is nominal there).
+- Shown fields are the real parts with dT = 0 and no sigma0 (`_write_outputs(thermal=False)` on every mesh kind;
+  solid_frequency_response_bar's 'heated' run pins it on the tensor mesh). On the tensor mesh support reactions and
+  electrode tables raise and probes record nothing (FEM meshes: section "Prestress, damped modes, complex records").
+- Reduced sweeps (fem sub file "Reduced sweeps") and rows-only direct solves: after `HarmonicSystem.set_output_rows`
+  `solve(fields=False)` is exact ONLY at the registered rows, so a solver's records read only rows it registered
+  (supports, probes, `PiezoSystem.electrode_rows`). Fields only at `wants_fields` frequencies; a skipped last one is
+  shown by `publish_frequency_response`.
 
 ## Guided (2.5D) modes (`guided_modes.py`, setting axial_wavenumber)
-- Eigenfrequency study only (info elsewhere, error in optomechanics). The optomechanics study instead creates the
-  solid `guided_by_study` when an enabled optomechanical_coupling has scattering 'backward'
-  (`definition_optomechanics.backward_scattering`, read by create, validate, estimator) and calls
-  `set_axial_wavenumber(2 Re beta)` after the optical solve; until then `axial_wavenumber` is None and `_guided_pencil`
-  raises.
-- u ~ exp(i (k_z z - omega t)), unknowns (u_x, u_y, w), u_z = -i w: real symmetric only for isotropic cells (normal-
-  shear coupling needs the complex form). Physical u = (u_x cos, u_y cos, w sin); strains / stresses are phi = 0 values
-  (xz / yz shear not output).
-- Host numpy assembly (`guided_operators`, 3-component `ElasticPattern(xp=np)`), no device / plane-strain assembly.
-  u_z is held by Fixed and Fixed (domain) only; Roller / Displacement leave it free. Rigid modes: none for k_z > 0
-  (supports optional); at k_z = 0 the plane-strain check + `check_antiplane_supports`.
-- `select_resonance` splits into `system.unknown` and `_axial_nodes` (read only with thermal False);
-  `modal_overlap_data` carries `axial_wavenumber` (None = plane strain), 3 dofs per node then.
-- Self-tests `selftests_guided_modes.py`; solid_guided_modes_roller_box pins the sign of the k terms by the mode-1
-  shape.
+- Formulation (u_z = -i w, isotropic cells only): `guided_modes.py` header. The optomechanics study creates the solid
+  `guided_by_study` for backward scattering (`definition_optomechanics.backward_scattering`, read by create, validate
+  and the estimator) and calls `set_axial_wavenumber(2 Re beta)` after the optical solve; `modal_overlap_data` then
+  carries 3 dofs per node.
 
 ## Bloch cells, 2D (`bloch2d.py`, `definition_bloch2d.py`; settings periodic_x / _y, bloch_kx / _ky)
 - Same phase convention and reduction as the tetrahedra cells (`bloch3d`, section "Tetrahedron meshes"): the 2D

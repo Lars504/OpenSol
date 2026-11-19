@@ -78,9 +78,7 @@ class SolidMechanics3DPhysics(SolidMechanicsBase):
         system = self.system
         xp = system.xp
         xp.copyto(system.unknown, xp.asarray(resonance.displacement, dtype=system.dtype))
-        self._write_outputs(thermal=False)
-        for destination, source in self._pml_copies:
-            xp.copyto(destination, source)
+        self._show_outputs(thermal=False)
         self._shows_mode = True
         self.selected_resonance = number
 

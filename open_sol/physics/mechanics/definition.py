@@ -28,8 +28,8 @@ from ...model.definition_helpers import (AXISYMMETRIC_SPACE_SETTINGS, AZIMUTHAL_
                                          reduced_sweep_memory_items,
                                          reduced_sweep_time_items, validate_points_inside)
 from ...model.geometry import expand_entities, line_orientation
-from ...model.schema import (CouplingType, DomainRequirements, FeatureType, Issue, Param, PhysicsType, SolverRole,
-                             feature_path, solver_backend)
+from ...model.schema import (TIME_DEPENDENT_STUDY, CouplingType, DomainRequirements, FeatureType, Issue, Param,
+                             PhysicsType, SolverRole, feature_path, solver_backend)
 from ...solvers.arpack_shift_invert import CUDSS_FACTORIZATIONS, LANCZOS_APPLICATIONS_PER_BASIS, arnoldi_basis_size
 from ...solvers.host_direct import factor_label
 from ...solvers.pcg import workspace_bytes
@@ -90,7 +90,7 @@ _PLANE_DISPLACEMENTS = ('u_x', 'u_y')   # load / held value names (follow_load /
 _PLANE_TRACTIONS = ('t_x', 't_y')
 _PLANE_BODY_FORCES = ('f_x', 'f_y')
 _BOTH_GRIDS = ('tensor', _TRIANGLES)   # features the triangle solid (solver_fem) runs too
-_FEM_STUDIES = ('stationary', 'time_dependent', EIGENFREQUENCY_STUDY,   # studies of the solid on a triangle mesh
+_FEM_STUDIES = ('stationary', TIME_DEPENDENT_STUDY, EIGENFREQUENCY_STUDY,   # studies of the solid on a triangle mesh
                 FREQUENCY_RESPONSE_STUDY, OPTOMECHANICS_STUDY)
 
 # The 'linear' SolverRole of solid_mechanics (local: no other type uses it): tensor
@@ -111,7 +111,7 @@ SOLID_LINEAR_ROLE = SolverRole('spd', 'pcg', precisions=('single', 'double', 'mi
                                backend_defaults={'gpu': ('pcg', {'precision': 'mixed'})},
                                grid_defaults={_TRIANGLES: ('sparse_direct', {})},
                                study_defaults={('stationary', 'tensor'): ('sparse_direct', {}),
-                                               ('time_dependent', 'tensor'): ('sparse_direct', {})},
+                                               (TIME_DEPENDENT_STUDY, 'tensor'): ('sparse_direct', {})},
                                auto_back_ends={'tensor': 'cudss', _TRIANGLES: 'cudss'}, direct_components=2)
 
 _DISCRETIZATION_PARAM = Param(
@@ -1966,7 +1966,7 @@ SOLID_MECHANICS = PhysicsType(
     state_fields=_STATE_FIELD_INFOS,
     output_fields=_FIELD_INFOS,
     source_slots=_SLOT_DOCS,
-    supported_studies=('stationary', 'time_dependent', EIGENFREQUENCY_STUDY, OPTOMECHANICS_STUDY,
+    supported_studies=('stationary', TIME_DEPENDENT_STUDY, EIGENFREQUENCY_STUDY, OPTOMECHANICS_STUDY,
                        FREQUENCY_RESPONSE_STUDY),
     default_study={'type': 'stationary'},
     # eigen: the real symmetric eigsh_shifted pencil (piezo: indefinite), cudss_mixed refined to full accuracy per solve

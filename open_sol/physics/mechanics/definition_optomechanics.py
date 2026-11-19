@@ -4,6 +4,7 @@ at module level."""
 import numpy as np
 
 from ...core.constants import FACES
+from ...core.mirror import MIRROR_SIGNS
 from ...model.definition_helpers import evaluates_to
 from ...model.geometry import expand_entities
 from ...model.schema import FeatureType, Issue, Param, feature_path, subpixel_smoothing_physics
@@ -20,7 +21,6 @@ _FDFD_HZ_TYPE = 'em_fdfd_hz'
 _BOR_TYPE = 'em_fdfd_bor'
 _SOLID_3D_TYPE = 'solid_mechanics_3d'   # = definition.SOLID_3D_TYPE_NAME
 _TRIANGLES, _TETRAHEDRA = 'triangles', 'tetrahedra'
-_MIRROR_TYPES = ('symmetric', 'antisymmetric')
 _BOR_WALL_TYPES = ('pec', 'pmc')        # em_fdfd_bor z faces that may be mirror planes
 
 _PARAMS = (
@@ -482,7 +482,7 @@ def _validate(vctx, physics_spec, feature_spec, values):
                                           'operator (first order in the cell size, as without smoothing)'))
     rollers = _roller_faces(vctx, physics_spec)
     for face in FACES:
-        if settings.get(f'bc_{face}') in _MIRROR_TYPES and face not in rollers:
+        if settings.get(f'bc_{face}') in MIRROR_SIGNS and face not in rollers:
             issues.append(Issue('warning', path, f"optical face {face} of '{name}' is a mirror, but no solid roller "
                                                  'holds that face: the mirrored vibration modes are not the even ones '
                                                  'the optical mirror implies'))

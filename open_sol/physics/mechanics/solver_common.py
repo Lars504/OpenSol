@@ -342,7 +342,8 @@ class SupportRegion:
 
 class SolidMechanicsBase(PhysicsSolver):
     """Static elasticity on the physical window, one system solve per change. Subclasses set output_arrays /
-    input_arrays / source_slots and supply _new_fields, _pml_copy_pairs, _assemble, _build_rhs, _write_outputs, renderer."""
+    input_arrays / source_slots and supply _new_fields, _pml_copy_pairs, _assemble, _build_rhs, _write_outputs (window
+    only: callers go through _show_outputs / _extend_into_pml), renderer."""
 
     name = 'solid'
     material_schema = MECHANICAL_SCHEMA
@@ -396,9 +397,7 @@ class SolidMechanicsBase(PhysicsSolver):
                 self._assemble()
             self._build_rhs()
             self._solve_system()
-            self._write_outputs()
-            for destination, source in self._pml_copies:   # in order: later 3D axes span the extended earlier ones
-                self.system.xp.copyto(destination, source)
+            self._show_outputs()
             self._loads_dirty = False
         if re_solve or dt is None or not math.isfinite(dt):
             for probe in self.probes:
@@ -516,6 +515,16 @@ class SolidMechanicsBase(PhysicsSolver):
                                    stiffness_scale)
 
     # --- shared internals -----------------------------------------------------
+
+    def _show_outputs(self, thermal=True) -> None:
+        """_write_outputs (window only), then _extend_into_pml."""
+        self._write_outputs(thermal=thermal)
+        self._extend_into_pml()
+
+    def _extend_into_pml(self) -> None:
+        """Edge-extend the window outputs into the PML ring (after every output write)."""
+        for destination, source in self._pml_copies:   # in order: later 3D axes span the extended earlier ones
+            self.system.xp.copyto(destination, source)
 
     def _solve_system(self):
         """The static solve of step (the system's PCG; the 2D piezoelectric solid overrides it)."""

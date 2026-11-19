@@ -14,6 +14,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from ...core.backend import array_module_of, to_host
 from ...fem.assembly import congruence, pattern_sum
 from .bvd import bvd_admittance, bvd_fit, external_coupling
 
@@ -184,11 +185,8 @@ class HarmonicSystem:
         positions = self._free_position[columns]
         free = positions >= 0
         values = fixed[columns].copy()   # x = fixed + the free solution scattered (as _full)
-        if on_device:
-            import cupy as cp
-            values[free] += cp.asnumpy(free_solution[cp.asarray(positions[free])])
-        else:
-            values[free] += free_solution[positions[free]]
+        xp = array_module_of(free_solution)
+        values[free] += to_host(free_solution[xp.asarray(positions[free])])
         solution = np.zeros(self._n_reduced(), dtype=np.complex128)
         solution[rows] = values[np.searchsorted(columns, rows)]
         return solution, self._rows_product(omega, values)
@@ -203,7 +201,6 @@ class HarmonicSystem:
         cuDSS solve, R6), None when the last solve was another kind."""
         if self._kept is None:
             return None
-        from ...core.backend import to_host
         free_solution, fixed = self._kept
         return self._full(np.asarray(to_host(free_solution)), fixed)
 

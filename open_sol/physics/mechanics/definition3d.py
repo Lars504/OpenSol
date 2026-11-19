@@ -26,7 +26,7 @@ from ...model.definition_helpers import (CG_ELASTIC_3D_LINEAR_ROLE, DISCRETIZATI
                                          linear_solver_precision, on_tetrahedra,
                                          point_cells, reduced_sweep_memory_items, validate_points_inside,
                                          validated_linear_precision)
-from ...model.schema import DomainRequirements, FeatureType, Issue, Param, PhysicsType, feature_path
+from ...model.schema import TIME_DEPENDENT_STUDY, DomainRequirements, FeatureType, Issue, Param, PhysicsType, feature_path
 from ...solvers.arpack_shift_invert import APPLICATIONS_PER_BASIS_GUESS, CUDSS_FACTORIZATIONS, arnoldi_basis_size
 from ...solvers.host_direct import (HOST_DIRECT_BACK_ENDS, double_of, factor_label, host_direct_precision,
                                     solver_host_bytes, superlu_bytes_scale)
@@ -2056,7 +2056,7 @@ SOLID_MECHANICS_3D = PhysicsType(
     state_fields=_STATE_FIELD_INFOS,
     output_fields=_FIELD_INFOS,
     source_slots=_SLOT_DOCS,
-    supported_studies=('stationary', 'time_dependent', EIGENFREQUENCY_STUDY, FREQUENCY_RESPONSE_STUDY,
+    supported_studies=('stationary', TIME_DEPENDENT_STUDY, EIGENFREQUENCY_STUDY, FREQUENCY_RESPONSE_STUDY,
                        OPTOMECHANICS_STUDY),
     default_study={'type': 'stationary'},
     # eigen: the factor-free eigsh_inverse on tensor meshes; on tetrahedra eigsh_shifted (SuperLU or cuDSS LDL^T of the

@@ -563,9 +563,7 @@ class SolidMechanicsPhysics(MultiShiftModes, SolidMechanicsBase):
             self._potential_nodes = xp.array(nodes[..., DISPLACEMENT_COMPONENTS], dtype=system.dtype)
         else:
             xp.copyto(system.unknown, xp.asarray(resonance.displacement, dtype=system.dtype))
-        self._write_outputs(thermal=False)
-        for destination, source in self._pml_copies:
-            xp.copyto(destination, source)
+        self._show_outputs(thermal=False)
         self.selected_resonance = number
 
     def _show_complex_mode(self, displacement):
@@ -769,8 +767,7 @@ class SolidMechanicsPhysics(MultiShiftModes, SolidMechanicsBase):
         centre = 0.25 * (displacement[:-1, :-1] + displacement[1:, :-1] + displacement[:-1, 1:] + displacement[1:, 1:])
         amplitude = xp.asarray(np.sqrt(np.sum(np.abs(centre) ** 2, axis=-1)), dtype=DTYPE)
         self.fields.u_abs[system.window] = xp.where(self._solid, amplitude, 0.0)
-        for destination, source in self._pml_copies:
-            xp.copyto(destination, source)
+        self._extend_into_pml()
         self.selected_resonance = None
 
     # --- base-class hooks -----------------------------------------------------

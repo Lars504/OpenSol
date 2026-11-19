@@ -89,7 +89,7 @@ class ElasticPattern:
 
     __slots__ = ('node_shape', 'components', 'stencil_positions', 'indices', 'indptr', 'entry_rows', 'block_positions')
 
-    def __init__(self, nx_nodes, ny_nodes, components=2, xp=np):
+    def __init__(self, nx_nodes, ny_nodes, components=2, *, xp):
         self.node_shape = (nx_nodes, ny_nodes)
         self.components = components
         layout = (nx_nodes, ny_nodes, components, 3, 3, components)
