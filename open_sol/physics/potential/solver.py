@@ -166,7 +166,7 @@ class ElectrolyteRegion:
 class IonicMedium:
     """Ion species of one add_electrolyte call on its window cells (model 'linear': rho_ion = -coefficient (V -
     bulk_potential); 'nonlinear': the Boltzmann sum of electrolyte.boltzmann_terms)."""
-    mask_window: object        # cupy bool window mask
+    mask_window: object        # cupy bool window mask (triangles: host bool per element)
     model: str
     concentrations: tuple      # bulk c_i [mol/L]
     densities: tuple           # n_i [1/m^3]
@@ -174,6 +174,35 @@ class IonicMedium:
     temperature: float         # K
     bulk_potential: float      # V
     coefficient: float         # linearised screening k [F/m^3]
+
+
+def ionic_medium(mask_window, model, concentrations, valences, temperature, bulk_potential) -> IonicMedium:
+    """IonicMedium of add_electrolyte arguments (both mesh kinds); ValueError unless every concentration is finite
+    >= 0 with one non-zero valence and temperature > 0 (the caller checks the model)."""
+    concentrations = tuple(float(value) for value in concentrations)
+    valences = tuple(float(value) for value in valences)
+    if (not concentrations or len(concentrations) != len(valences) or 0.0 in valences
+            or not all(math.isfinite(value) and value >= 0.0 for value in concentrations)):
+        raise ValueError(f"electrolyte needs one non-zero valence per finite concentration >= 0, got "
+                         f"{concentrations} and {valences}")
+    if not float(temperature) > 0.0:
+        raise ValueError(f"electrolyte temperature must be > 0 K, got {temperature}")
+    return IonicMedium(mask_window, model, concentrations, number_densities(concentrations), valences,
+                       float(temperature), float(bulk_potential),
+                       screening_coefficient(concentrations, valences, temperature))
+
+
+def electrolyte_scalars(regions) -> dict:
+    """ionic_strength_<feature> [mol/L] / debye_length_<feature> [m] of ElectrolyteRegions (both mesh kinds)."""
+    return {f'{name_prefix}{region.name}': getattr(region, attribute)
+            for region in regions for name_prefix, attribute in ELECTROLYTE_SCALAR_PREFIXES.items()}
+
+
+def faces_touch_mirror(mirror, faces) -> bool:
+    """True when a held outer face of `faces` lies on the mirror plane `mirror` or meets it (any face but the
+    opposite one); mirror_factor of both mesh kinds."""
+    opposite = mirror[0] + ('_hi' if mirror.endswith('lo') else '_lo')
+    return any(face != opposite for face in faces)
 
 
 class PotentialPhysics(DiffusionPhysicsBase):
@@ -222,9 +251,9 @@ class PotentialPhysics(DiffusionPhysicsBase):
         self.ionic_media = []    # IonicMedium of every add_electrolyte: the assembly writes the ionic diagonal from them
         self._ion_mask = None    # union of their window masks
         self.runtime_warnings = []   # append-only (unconverged nonlinear electrolyte solves); the studies log new ones
-        # driven terminals (decision 4 of the piezoelectric plan): every held potential in order (waveform or None,
-        # window mask, values), the driven outer faces {face: (waveform, its BCSide)}, the basis solutions
-        # {waveform or None: (5, window) float32 V, E_x, E_y, flux_x, flux_y} and their held-region charges
+        # driven terminals: every held potential in order (waveform or None, window mask, values), the driven outer
+        # faces {face: (waveform, its BCSide)}, the basis solutions {waveform or None: (5, window) float32 V, E_x,
+        # E_y, flux_x, flux_y} and their held-region charges
         self._cell_holds = []
         self._driven_faces = {}
         self._bases = None
@@ -420,18 +449,8 @@ class PotentialPhysics(DiffusionPhysicsBase):
         if model == 'nonlinear' and self.azimuthal_order:
             raise ValueError(f"{self.spec.label} '{self.name}': a nonlinear electrolyte needs azimuthal_order 0 (the "
                              f"Boltzmann charge of an order-{self.azimuthal_order} potential is no single order)")
-        concentrations = tuple(float(value) for value in concentrations)
-        valences = tuple(float(value) for value in valences)
-        if (not concentrations or len(concentrations) != len(valences) or 0.0 in valences
-                or not all(math.isfinite(value) and value >= 0.0 for value in concentrations)):
-            raise ValueError(f"electrolyte needs one non-zero valence per finite concentration >= 0, got "
-                             f"{concentrations} and {valences}")
-        if not float(temperature) > 0.0:
-            raise ValueError(f"electrolyte temperature must be > 0 K, got {temperature}")
         mask_window = self.system.window_mask(mask, 'electrolyte').copy()
-        medium = IonicMedium(mask_window, model, concentrations, number_densities(concentrations), valences,
-                             float(temperature), float(bulk_potential),
-                             screening_coefficient(concentrations, valences, temperature))
+        medium = ionic_medium(mask_window, model, concentrations, valences, temperature, bulk_potential)
         self.ionic_media.append(medium)
         self._ion_mask = mask_window.copy() if self._ion_mask is None else self._ion_mask | mask_window
         self.system.operator_dirty = True
@@ -449,7 +468,9 @@ class PotentialPhysics(DiffusionPhysicsBase):
 
     def ion_concentration(self, species_index: int):
         """Window float32 concentration [mol/L] of species `species_index` (0-based list entry) of every electrolyte at
-        the current V (electrolyte.species_concentration; overlapping media add), 0 on held cells and without ions."""
+        the current V (electrolyte.species_concentration; overlapping media add), 0 on held cells and without ions.
+        Renderer only (c_ion_k are output fields, not state): computed on demand, its float64 temporaries stay below
+        the electrolyte's ionic-diagonal memory item."""
         xp = self.xp
         potential = self._V_window.astype(np.float64)
         total = xp.zeros(potential.shape, dtype=np.float64)
@@ -547,15 +568,13 @@ class PotentialPhysics(DiffusionPhysicsBase):
             return {}
         prefix = HELD_SCALAR_PREFIXES[self.kind]
         scalars = {f'{prefix}{region.name}': self.held_flux(region) for region in self.held_regions}
-        for region in self.electrolytes:
-            scalars.update({f'{name_prefix}{region.name}': getattr(region, attribute)
-                            for name_prefix, attribute in ELECTROLYTE_SCALAR_PREFIXES.items()})
-        return scalars
+        return {**scalars, **electrolyte_scalars(self.electrolytes)}
 
     def held_flux(self, region: HeldRegion) -> float:
         """Flux [flux_unit: A/m, C/m; axisymmetric A, C] leaving the held faces / cells of `region` (> 0 out);
         faces a later feature re-set (no longer dirichlet at region.voltage) are skipped; held cells: sum of A V - b;
-        x mirror_factor(region) (its images under the model's mirror planes)."""
+        x mirror_factor(region) (its images under the model's mirror planes), applied here once: _region_flux and the
+        driven basis fluxes stay drawn-half values."""
         if self.system.n_solves == 0:
             raise RuntimeError(f"{self.spec.label} '{self.name}': the flux of '{region.name}' needs a solve first")
         if self._bases is not None:   # driven: the basis fluxes superposed at the time of the current fields
@@ -574,8 +593,7 @@ class PotentialPhysics(DiffusionPhysicsBase):
         (any face but the opposite one), held cells reaching the window edge layer there."""
         touched = set()
         for mirror in self.mirror_faces:
-            opposite = mirror[0] + ('_hi' if mirror.endswith('lo') else '_lo')
-            if any(face != opposite for face in region.faces):
+            if faces_touch_mirror(mirror, region.faces):
                 touched.add(mirror)
             elif region.mask_window is not None:
                 axis = 'xy'.index(mirror[0])
@@ -642,7 +660,8 @@ class PotentialPhysics(DiffusionPhysicsBase):
 
     def _write_ionic_diagonal(self, potential):
         """Replace the diagonal on the electrolyte cells by the tangent of rho_ion at `potential`: rho_ion(V) ~
-        -k0 (V - V_ext), k0 the screening, V_ext = V0 + rho_ion(V0) / k0 (linear: the k-weighted bulk potential)."""
+        -k0 (V - V_ext), k0 the screening, V_ext = V0 + rho_ion(V0) / k0 (linear: the k-weighted bulk potential).
+        set_diagonal_loss, never add_diagonal_loss: every assembly / Newton iteration rewrites the whole ionic term."""
         xp = self.xp
         potential = potential.astype(np.float64, copy=False)
         charge, screening = self._ionic_terms(potential)
@@ -692,7 +711,8 @@ class PotentialPhysics(DiffusionPhysicsBase):
 
     def _solve_bases(self):
         """One solve per distinct waveform (its holds at their voltage, every other hold, BC value and source 0), then
-        the DC solve (undriven holds, BCs and sources; driven holds 0), which stays the live assembly."""
+        the DC solve (undriven holds, BCs and sources; driven holds 0), which stays the live assembly. The basis BCs
+        are swapped on self.bcs directly and restored (set_face_bc would dirty the operator)."""
         if self.ionic_media:
             raise ValueError(f"{self.spec.label} '{self.name}': driven terminals (waveform) cannot be combined with an "
                              'electrolyte (the superposition needs a source-free linear operator)')

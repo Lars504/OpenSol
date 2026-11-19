@@ -446,8 +446,9 @@ def _nonlinear_precision_issues(vctx, physics_spec, settings_values, path):
 
 def _electrolyte_memory_estimate(values, n_selected_cells, mesh):
     """Two bool window masks (the IonicMedium's, the union) and the temporaries of the ionic diagonal write (model
-    nonlinear: of a Newton iteration) as a transient item; triangles (linear only): the medium's element mask and the
-    per-element ionic loss / charge temporaries; tetrahedra (refused by FeatureType.grids): nothing."""
+    nonlinear: of a Newton iteration) as a transient item, taken as not overlapping the physics' own refactorisation
+    phase; triangles (linear only): the medium's element mask and the per-element ionic loss / charge temporaries;
+    tetrahedra (refused by FeatureType.grids): nothing."""
     if mesh.kind == 'tetrahedra':
         return MemoryEstimate()
     if mesh.kind == 'triangles':
@@ -469,7 +470,7 @@ def _voltage_param(help_text, tip):
                  help=f'{help_text} Follows reuse_build.', tip=tip)
 
 
-# ---- driven terminals (electrostatics, piezoelectric plan decision 4) ----
+# ---- driven terminals (electrostatics) ----
 _DRIVEN = (('waveform', TERMINAL_WAVEFORMS[1:]),)
 _WAVEFORM_PARAMS = (
     Param('waveform', 'choice', 'none', label='Voltage waveform', choices=TERMINAL_WAVEFORMS,
@@ -495,7 +496,7 @@ _WAVEFORM_PARAMS = (
 )
 
 
-# ---- Stern layer of voltage faces (electrostatics, igor 1.6) ----
+# ---- Stern layer of voltage faces (electrostatics) ----
 _STERN_PARAMS = (
     Param('stern_thickness', 'float', 0.0, label='Stern layer thickness', unit='m', min=0.0,
           help='Thickness d_S of a compact (Stern / Helmholtz) layer between the electrode and the first cells; 0 = '
@@ -794,7 +795,7 @@ def _make_validate(kind):
 
 
 def _triangle_issues(vctx, physics_spec, order, path):
-    """Rules on a triangle mesh (FEMPotentialPhysics, mesh plan T4): azimuthal_order 0, no voltage waveforms, linear
+    """Rules on a triangle mesh (FEMPotentialPhysics): azimuthal_order 0, no voltage waveforms, linear
     electrolytes only."""
     issues = []
     if order:
@@ -811,7 +812,7 @@ def _triangle_issues(vctx, physics_spec, order, path):
 
 
 def _three_d_issues(vctx, physics_spec, settings_values, names, path):
-    """Rules of a 3D model (FEMPotentialPhysics3D, piezo_3d_plan stage 6): a tetrahedron mesh, planar geometry and
+    """Rules of a 3D model (FEMPotentialPhysics3D): a tetrahedron mesh, planar geometry and
     azimuthal_order 0, no mirror planes, no voltage waveforms, no xy coefficient materials (Stern layers:
     _validate_electrostatic_voltage; electrolytes: their FeatureType grids)."""
     issues = []
@@ -842,7 +843,7 @@ def _three_d_issues(vctx, physics_spec, settings_values, names, path):
 def _make_create(kind):
     def create(ctx, physics_spec, values):
         linear_solver = ctx.solvers(physics_spec.name)['linear']
-        if ctx.domain.grid_kind == 'triangles':   # FEM (mesh plan T4): discretization order
+        if ctx.domain.grid_kind == 'triangles':   # FEM: discretization order
             physics = FEMPotentialPhysics(ctx.domain, kind, order=element_order(values),
                                           axisymmetric=is_axisymmetric(values), linear_solver=linear_solver)
             physics.set_mirror_faces(mirror_faces(ctx.spec))
@@ -1178,7 +1179,7 @@ def _potential_physics_type(kind):
         summary=_PHYSICS_SUMMARIES[kind],
         settings=_SETTINGS[kind],
         features=features,
-        # triangles: FEMPotentialPhysics (solver_fem.py, mesh plan T4); tetrahedra: FEMPotentialPhysics3D (3D models)
+        # triangles: FEMPotentialPhysics (solver_fem.py); tetrahedra: FEMPotentialPhysics3D (3D models)
         grids=('tensor', 'triangles', 'tetrahedra'),
         mesh_method=_make_mesh_method(kind),
         material_properties=_MATERIAL_PROPERTIES[kind],
@@ -1191,7 +1192,7 @@ def _potential_physics_type(kind):
         default_study={'type': 'stationary'},
         uses_dispersion=False,
         solver_roles={'linear': CG_DIFFUSION_LINEAR_ROLE},
-        backends=('gpu', 'cpu'),   # numpy twins of the system / field kernels (solver_plan S6 stage 2)
+        backends=('gpu', 'cpu'),   # numpy twins of the system / field kernels
         conformal_boundaries=True,   # cut cells (held edges, insulated walls, perimeter fluxes; 2D)
         conformal_coordinates=('cartesian', 'polar', 'spherical'),   # cut cells on the logical (r, angle) cells too
         create=_make_create(kind),
