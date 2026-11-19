@@ -113,6 +113,15 @@ Sub file of the root `structure_conventions.md`. GUI gotchas.
   Entries show `ModelSpec.title`, never the file stem (examples/README.md indexes stems: its "Naming" paragraph has the
   menu path folder label (`examples._FOLDER_LABELS`) -> physics type label(s) -> title, and the title convention
   'Analytic: ...' for benchmarks); the tooltip ends with the relative path. A folder without a `_FOLDER_LABELS` entry shows its name capitalised.
+- More windows = more processes, never more documents in one MainWindow: one window owns one document, one
+  WorkerBridge and one worker session, and gpu_memory.set_budget / the element-mesh and cuDSS ordering caches are per
+  process. File > New window / Open in new window / Duplicate in new window call `main_window.launch_window`
+  (detached `python -m open_sol.gui ... --cascade`, package root first on PYTHONPATH). Duplicate writes the spec
+  (unsaved edits included) into `window_copy_directory()`; the new process reads it with `--copy` as untitled
+  (Save asks for a name), deletes it once read (kept when reading fails) and refuses a `--copy` file elsewhere. Windows
+  share QSettings (recent files, dock state); a `--cascade` window is offset by `_CASCADE_OFFSET_PX` and never saves
+  its geometry. Each window budgets the GPU memory free when its job starts: computing in two windows at once can run
+  the later one out of memory.
 - PySide6 is imported before pyqtgraph (`gui/__init__`). `app.main` sets `imageAxisOrder='col-major'` (images are
   `[i, j]`) and the QSettings names ('open_sol', 'open_sol') that results.py relies on.
 - Views: defer rebuilds with `QTimer.singleShot(0)` and a pending flag; block an editor's signals before deleting it;
