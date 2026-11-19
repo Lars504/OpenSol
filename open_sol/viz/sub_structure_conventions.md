@@ -300,6 +300,13 @@ Sub file of the root `structure_conventions.md` (read that first). Visualizer an
   (full on PNG / recording / `fieldViewer3d.fullQuality()`). Non-planar 3D views fit the projected box corners into
   the area the heading, colour bar and labels leave (`fitBoxCorners`) and open with a short eased turn
   (`introTurn`; reduced-motion respected); mode_player keeps its own fit.
+- Recording (both pages, the `// ---------- video` block is one copy: change both): with WebCodecs H.264 the page
+  renders frames itself on a fixed clock (VIDEO_FPS) and writes a plain MP4 with its own muxer (`mp4Blob`: one avc1
+  track, constant frame duration, moov before mdat, no B frames: `recordVideo` raises if the encoder reorders), so
+  PowerPoint takes it by drag and drop; else MediaRecorder in real time (`recordRealtime`, WebM in Firefox). While
+  `video` is set the rAF loop only reschedules itself and the recorder calls `advance(dt)` + `draw()` per frame:
+  anything that moves with time goes in `advance` (never straight in `tick` / `frame`), or recordings miss it. A
+  recording spans exactly its seconds (a whole number of periods loops seamlessly); size capped at 4K, even sides.
 - field_viewer feature blocks (the page's `// ---- waves / scalars / vectors / solid2d / fields3d ----` blocks and their
   Python data): each is optional per page and they combine, so
   - every per-sample array a `ViewerLayer` carries (`quadrature`, `vectors`, `displacement`; `ViewerFrame.volume`)
