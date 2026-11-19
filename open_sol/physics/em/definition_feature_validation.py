@@ -1010,7 +1010,7 @@ def validate_far_field(vctx, physics_spec, feature_spec, values, time_domain=Tru
                                                  f"the structure in vacuum"))
     settings = raw_settings(physics_spec)
     for axis in 'xy':
-        if all(settings.get(f'bc_{axis}_{side}') in ('symmetric', 'antisymmetric') for side in ('lo', 'hi')):
+        if all(settings.get(f'bc_{axis}_{side}') in MIRROR_SIGNS for side in ('lo', 'hi')):
             issues.append(Issue('error', path, f'mirror faces on both {axis} sides make an infinite array of images, '
                                                'which the far field cannot unfold: keep a mirror on one side at most'))
     if time_domain:

@@ -742,7 +742,7 @@ def _mode_pair_issues(vctx, path, values):
             issues.append(Issue('error', path, f"{role}_mode {values[f'{role}_mode']} exceeds n_modes "
                                                f"{mode_values['n_modes']} of '{name}'"))
     mirrors = [face for face in ('x_lo', 'x_hi', 'y_lo', 'y_hi')
-               if mode_values.get(f'bc_{face}') in ('symmetric', 'antisymmetric')]
+               if mode_values.get(f'bc_{face}') in MIRROR_SIGNS]
     if mirrors and values['collected_selection'] == 'te_and_tm':
         issues.append(Issue('warning', path, f"collected_selection te_and_tm with the mirror face(s) "
                                              f"{', '.join(mirrors)} of '{name}': a mirror keeps one mode family "
@@ -780,7 +780,7 @@ def _illumination_issues(vctx, path, values):
         issues.append(Issue('error', path, f"illumination_physics '{name}' solves at {wavelength:.6g} m, mode_physics "
                                            f"'{mode_spec.name}' at {mode_wavelength:.6g} m: set equal wavelengths"))
     mirrors = [face for face in ('x_lo', 'x_hi', 'y_lo', 'y_hi')
-               if mode_values.get(f'bc_{face}') in ('symmetric', 'antisymmetric')]
+               if mode_values.get(f'bc_{face}') in MIRROR_SIGNS]
     if mirrors:
         issues.append(Issue('info', path, f"mirror face(s) {', '.join(mirrors)}: the illumination is mirrored with the "
                                           'parity of the collected mode, so only illumination of that parity is '

@@ -2,6 +2,7 @@
 dispersion features) on definition_common, with its templates and self-tests; definition.register calls register."""
 from ...core import time_estimate as te
 from ...core.memory_estimate import COMPLEX128_BYTES, FLOAT64_BYTES, MemoryEstimate
+from ...core.mirror import MIRROR_SIGNS
 from ...model.definition_helpers import eigen_factorization, eigen_role, selected_material_sets
 from ...model.schema import FeatureType, Issue, Param, PhysicsType, SolverRole, feature_path
 from ...solvers.arpack_shift_invert import CUDSS_FACTORIZATIONS, MIXED_FACTORIZATIONS
@@ -317,7 +318,7 @@ def _validate_shg_overlap(vctx, physics_spec, feature_spec, values):
     settings = vctx.values(EM_MODES.settings, raw_settings(physics_spec))
     if settings is not None:
         mirrors = [face for face in ('x_lo', 'x_hi', 'y_lo', 'y_hi')
-                   if settings.get(f'bc_{face}') in ('symmetric', 'antisymmetric')]
+                   if settings.get(f'bc_{face}') in MIRROR_SIGNS]
         if mirrors:
             issues.append(Issue('error', path, f"shg_overlap needs the whole cross-section, but {', '.join(mirrors)} "
                                                'is a mirror (the overlap integrand has no single parity); use pec, '
@@ -608,7 +609,7 @@ def _gyration_issues(vctx, settings_values, path):
     set_names = [name for name in GYRATION_ARRAYS[MODE_POLARIZATION] if selected_material_sets(vctx, (name,))]
     for name, axis in (('gyration_x', 'y'), ('gyration_y', 'x')):
         faces = [face for face in (f'{axis}_lo', f'{axis}_hi')
-                 if name in set_names and settings_values[f'bc_{face}'] in ('symmetric', 'antisymmetric')]
+                 if name in set_names and settings_values[f'bc_{face}'] in MIRROR_SIGNS]
         if faces:
             issues.append(Issue('error', path, f"a material sets {name} while {' / '.join(faces)} is a mirror face: "
                                                f'the mirror image of a magnetisation along {name[-1]} is reversed, so '

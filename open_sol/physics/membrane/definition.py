@@ -10,7 +10,7 @@ import numpy as np
 
 from ...core import time_estimate as te
 from ...core.constants import FACES
-from ...core.harmonic_probe import harmonic_probe_result
+from ...core.harmonic_probe import harmonic_probe_result, phasor_series
 from ...core.mirror import mirror_faces
 from ...core.memory_estimate import (COMPLEX128_BYTES, COMPLEX128_CSR_ENTRY_BYTES, FLOAT32_BYTES, MemoryEstimate,
                                      host_lu_bytes, window_cell_count)
@@ -400,10 +400,7 @@ def _projection_series(projection) -> tuple:
     """({mode_<n>_re / _im / _abs / _phase: real array}, units) of complex projections (mode_count, ...) [m]."""
     series, units = {}, {}
     for number, values in enumerate(projection, start=1):
-        for part, data in (('re', values.real), ('im', values.imag), ('abs', np.abs(values)),
-                           ('phase', np.angle(values))):
-            series[f'mode_{number}_{part}'] = np.ascontiguousarray(data)
-            units[f'mode_{number}_{part}'] = 'rad' if part == 'phase' else 'm'
+        phasor_series(f'mode_{number}', values, 'm', series, units)
     return series, units
 
 

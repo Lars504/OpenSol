@@ -7,7 +7,7 @@ import math
 
 import numpy as np
 
-from ..core.constants import FACES_3D
+from ..core.constants import AXISYMMETRIC, AZIMUTHAL_ORDER_SETTING, FACES_3D, GEOMETRY_SETTING
 from ..core.fv_diffusion import BCSide
 from ..core.mirror import mirror_faces
 from ..core.monitors import probe_result
@@ -1153,9 +1153,7 @@ def cross_term_materials(vctx, prefix):
             if evaluates_to(properties.get(f'{prefix}_xy'), vctx.parameters, lambda value: value != 0.0)]
 
 
-# ---- 'geometry' setting: planar or axisymmetric (r, z) (heat, potential, magnetic) ----
-GEOMETRY_SETTING = 'geometry'
-AXISYMMETRIC = 'axisymmetric'
+# ---- 'geometry' setting: planar or axisymmetric (r, z) (heat, potential, magnetic; names in core.constants) ----
 AXISYMMETRIC_SPACE_SETTINGS = {AXISYMMETRIC: {GEOMETRY_SETTING: AXISYMMETRIC}}   # PhysicsType.space_settings
 _AXIS_CONSEQUENCE = 'it has no area, so this feature does nothing there'
 
@@ -1216,7 +1214,6 @@ def on_tetrahedra(vctx, physics_spec) -> bool:
 
 
 # ---- 'azimuthal_order' setting of the axisymmetric DiffusionSystem types (symmetry 2.14; heat, potential) ----
-AZIMUTHAL_ORDER_SETTING = 'azimuthal_order'
 # one Param object shared by every type that has it (azimuthal_order_issues finds the partners by identity)
 AZIMUTHAL_ORDER_PARAM = Param(
     AZIMUTHAL_ORDER_SETTING, 'int', 0, label='Azimuthal order', min=0,

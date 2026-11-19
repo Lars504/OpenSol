@@ -136,213 +136,106 @@ A new accepted sync joins this list.
 - `MaterialGrid(n)` (ny None) is the 1D per-element grid of a triangle mesh: code taking `materials.nx / ny` as a cell
   grid checks the domain's `grid_kind`.
 
-## Mirror planes (`mirror`, numpy only; symmetry 2.5)
-- `mirror_faces(spec, physics=None)` = {face: sign}: EM bc_<face> 'symmetric' +1 / 'antisymmetric' -1 and the outer
-  faces of the enabled `MIRROR_FEATURES` (membrane symmetry +1 / antisymmetry -1, heat symmetry +1; `feature_mirror_faces`;
-  `physics_mirror_faces` = both of one physics, also used by `parity_tag`). With a physics name, faces it does not set
-  itself get +1 (non-EM fields unfold even: their face on the plane must be insulated,
-  `definition_helpers.mirror_face_issues` warns otherwise), except the `FACE_FEATURE_SIGNS` types, signed by their own
-  face feature on the plane: magnetostatics / magnetic_fields_ac (symmetry +1 = A even, magnetic_insulation or unset
-  -1), magnetostatics_3d (the opposite: insulation or unset +1 = phi_m even, symmetry -1), membrane (symmetry or unset
-  +1, antisymmetry / clamped / simply_supported -1); the last enabled one wins; selections expanded by
-  `model.geometry.expand_entities` (core's one lazy model import). The model's mirror planes are the EM ones and the
-  MIRROR_FEATURES faces: a magnetic-only model has none, a membrane half model has its symmetry face.
-- `unfold_faces(spec, physics)` = mirror_faces(spec, physics) plus x_lo +1 for an `AXIS_UNFOLD_TYPES` physics (heat)
-  of geometry 'axisymmetric' in 2D: the (r, z) axis is no mirror plane (ring weights already count the revolution, so
-  touch_factor / Session never see it) but a display unfolds across it (GUI Unfold mirror planes, Results.field
-  unfold=True); ValueError at an azimuthal_order other than a literal 0 ((-1)^m image). Display callers of unfold_field
-  take unfold_faces, totals keep mirror_faces. A new axis type needs every field even under the axis image (E_r /
-  A_phi flip).
-- Image rule (`image_sign`): polar (E-like) tangential s / normal -s, axial (H-like) the opposite, 'scalar' s, 'even'
-  +1. `FieldInfo.parity` names it per renderer field ('' = even when unsigned, else unknown: `unfold_field` raises);
-  `FieldInfo.staggered` = axes of hi-face samples (plane value 0 when odd, else the nearest sample: exact only for odd
-  staggered components). Non-EM parities (s = +1, plane on the window edge): potential, laminar_flow, solid_mechanics
-  (2D / 3D: shear ij = axial of the third axis), drift_diffusion, elastic_waves (v polar staggered, sxy axial_z on
-  corners, normal stresses even; its 'rigid' face pins the window face where another physics pads, so the slip wall is
-  on the EM plane; any other face there warns); magnetic types A / J polar_z, B / H axial_x / _y with their own face
-  sign. `FieldInfo.plane_signs` ('x_lo:1 ...', `plane_signs_text`) replaces the face signs for one field
-  (`field_plane_signs`, read by unfold_field): the nlfd channels (nlfd sub file).
-- `unfold_field(field_data, faces)` (host, GUI-thread safe): x / y faces only (a z cut shows no z image); marks its
-  result `FieldData.unfolded` and returns such a field unchanged (parity-sector snapshots are stored unfolded: never
-  mirror twice; results_io saves the flag).
-- `touch_factor(faces, touched)` = 2 per touched mirror face: Session 'integral' (selection reaching the window edge
-  layer), 2D flux lines (`placement.line_mirror_factor`), 3D flux planes / boxes (`monitors3d.mirror_factor`), held
-  currents / charges (`PotentialPhysics.mirror_factor`: a held face on or meeting the plane, held cells reaching its
-  edge layer; faces from `set_mirror_faces` at create). The integrand is assumed mirror-even. heat reports no feature
-  totals.
-- `plane_wave_mirror_issue(face, sign, propagation, polarization)`: a TFSF box may open onto a mirror plane only when
-  the incident wave is even about it (E_p tangential: symmetric; E_p normal: antisymmetric; never normal to the
-  propagation); None = it may (2D `placement.tfsf_open_faces`, em3d `add_plane_wave`, both validations).
-- Parity sectors (2.6): `sector_specs(spec, faces=None)` = 2^k spec copies over the mirror faces (each sign
-  combination on every physics setting the face; MIRROR_FEATURES swapped by `_swap_mirror_features`, split per face
-  when a feature selects several sector faces or other entities; a type without features of both signs (heat) raises
-  ValueError, which study validation `_parity_sector_issues` reports as an error; `SECTOR_FEATURE_PARAMS` set on every copy, e.g.
-  membrane port sector_drive; label in the title). A source without definite parity runs every sector:
-  `combine_sector_fields` = mean of the unfolded fields (linear signed components only: unsigned / phase fields
-  raise); `combine_sector_totals` = mean / 2^k of quadratic totals over regions / surfaces symmetric about every plane
-  (not a line off the plane); `combine_sector_far_fields` = per angle the mean of the complex amplitudes (amplitude_re /
-  _im, power = |amplitude|^2, 3D summed over a trailing x, y, z axis; power_per_cw rescaled).
-  `combine_sector_result(results, n_faces)` = the rule stored per feature result: far_field the far-field mean;
-  flux_spectrum with mirror_factor 2^k in every sector: power / power_per_cw as totals (entry combined_sectors); 'xy'
-  with extras sector_rule 'linear' (`combine_sector_linear`: mean of each <name>_re / _im pair, _abs / _phase
-  recomputed); 'xy' with sector_modes (`combine_sector_modes`: guide modes renumbered to the unfolded guide, signed mean
-  of mode_<k>_re / _im, frequency_series / averaged_series alike; port powers = |combined amplitude|^2 x the sector's
-  power per |amplitude|^2, port_incident_power = mean / sector_drive_scale, then `combine_sector_port_totals` sums the
-  ports of one physics into incident_power / power_fraction_<n>: exact also for k > 1, unlike mean / 2^k); None
-  otherwise (a flux line off a plane, tables, other probes). Study loop: `model.study_sectors` (model sub file).
-  `parity_tag(spec, names)` = label text of the named physics' own mirror faces in sector_specs order (eigen snapshot
-  labels); `own_mirror_faces(physics_spec)` the faces one physics sets itself. Self-tests em_fdfd_parity_sectors
-  (scripted and study setting), em_fdfd_parity_sectors_eigen / _sweep, em_fdtd_parity_sectors_time (last two: per-angle
-  far fields), membrane_parity_sectors_driven / _port / _eigen.
+## Mirror planes (`mirror`, numpy only)
+- Model mirror planes = the EM bc_<face> 'symmetric' / 'antisymmetric' faces plus the faces of the enabled
+  `MIRROR_FEATURES` (a magnetic-only model has none, a membrane half model has its symmetry face). Per physics
+  (`mirror_faces(spec, physics)`) a face the physics does not set itself unfolds even, so its own face there must be
+  insulated (`definition_helpers.mirror_face_issues` warns), except the `FACE_FEATURE_SIGNS` types, signed by their own
+  face feature on the plane.
+- Totals take `mirror_faces`, displays (`unfold_field` callers) `unfold_faces`: it adds the x_lo rotation axis of an
+  axisymmetric `AXIS_UNFOLD_TYPES` physics, which ring weights already count, so it never doubles a total. A new axis
+  type needs every field even under the axis image (E_r / A_phi flip).
+- `FieldInfo.parity` names a renderer field's image rule (`image_sign`; '' = even when unsigned, else unknown:
+  `unfold_field` raises); `staggered` = axes of hi-face samples (plane value 0 when odd, else the nearest sample: exact
+  only for odd staggered components); `plane_signs` (`plane_signs_text`) replaces the face signs for one field (the
+  nlfd channels, nlfd sub file). Fields are never mirrored twice: `FieldData.unfolded` (parity-sector snapshots are
+  stored unfolded; results_io saves it).
+- Every total over a selection, line, plane or box touching a plane goes through `touch_factor` (2 per touched face;
+  mirror-even integrands; callers: grep `touch_factor`). heat reports no feature totals.
+- Parity sectors: `sector_specs` = 2^k spec copies (MIRROR_FEATURES swapped and split per face by
+  `_swap_mirror_features`; a type without features of both signs, heat, raises, reported by study validation
+  `_parity_sector_issues`). The drawn source alone = the mean of the unfolded sector fields (linear signed components
+  only) and mean / 2^k of quadratic totals over regions / surfaces symmetric about every plane (never a line off a
+  plane); `combine_sector_result` holds the rule per feature result kind (None = not combined). Study loop:
+  `model.study_sectors` (model sub file "Parity sectors").
 
-## Cut geometry (`cut_cells`, host numpy; solver_plan S7.6)
-- Everything works on a membership test inside(x, y) -> bool of float64 host arrays (model.boundary_locator builds it
-  from the drawn shapes): `crossing_fractions` bisects BISECTION_STEPS times (needs differing end memberships),
-  `free_fractions` (outside share of segments) searches EDGE_SAMPLES sub-intervals with one crossing each (thinner
-  features vanish), `free_areas` integrates AREA_ROWS midpoint rows along the axis the caller picks (pick by the face
-  fractions, as physics/em/conformal_pec does; exact for straight edges away from kinks). Callers locate only links
-  between cells whose centre tests differ: a cut no centre sees stays staircased. The 2D names wrap
-  `segment_crossings` / `segment_free_fractions` / `rectangle_free_areas` (coordinate tuples of any dimension;
-  em_fdtd_3d's conformal PEC passes 3D points); `union_test` takes any number of coordinates.
-- `outline_pieces(region, x_edges, y_edges, inside)` (perimeter fluxes): every candidate cell (8-neighbours of a centre
-  change) is tested on its faces inset by EDGE_INSET (1e-9 of a width), so an outline lying ON a cell face is a face
-  piece (inside-length difference of the two inset faces: aligned rectangles exact, the window edge never an outline)
-  and a cut through a cell a cell piece: -sum of outward face normals x inside lengths (the chord; exact for straight
-  edges), its length refined by OUTLINE_REFINEMENT_LEVELS rounds of perpendicular-bisector points when it has two
-  boundary transitions (several transitions keep the chord). Owner: the cell when its centre is in region, else the
-  region 4-neighbour across the most inside face (the sliver-merge rule of the insulated walls), a diagonal one last;
-  offset = owner centre -> piece along the normal.
-- Polar / spherical windows: every function takes the logical coordinates (x = r - radius_min, y an angle); the
-  caller's inside(x, y) maps them (boundary_locator with a DomainMap). Fractions are shares of the logical link / face /
-  cell (exact along r and arcs; areas O(dr / r) off the metric weighting inside a cut cell). `outline_pieces(...,
-  radius_min=)` turns lengths, normals and offsets into the local frame (dr, r d_angle) at each piece's radius, so arcs
-  about the origin are exact. Links / faces across an angle_wrap seam are never cut (staircased).
-- `near_centre_changes(region)` = the candidate cut cells (shared with outline_pieces); `rectangle_inside_fractions` =
-  inside area share with the rows picked from the side fractions (2D FDTD conformal pole weights,
-  physics/em/conformal_poles).
-- `dual_cell_cuts(x_centres, y_centres, solid, inside)` (em_modes conformal PEC): free fractions of centre links whose
-  ends differ and free areas of the mixed squares between four centres, floored at DUAL_CUT_FLOOR (0.02), 1 elsewhere;
-  physics/em/cross_section_modes neutralises the entries crossing a wall plane (em sub file).
-- Honouring types of `solver_defaults.conformal_boundaries` (`schema.conformal_boundaries_physics`: the type's
-  `conformal_dimensions`, default (2,), and in 2D its `conformal_coordinates`, default cartesian; heat /
-  electric_currents / electrostatics also polar / spherical; em_fdtd_3d (3,)): em_fdtd_3d (pec_domain Dey-Mittra H
-  faces, em3d sub file), em_fdtd_ez / _hz (also cut-cell pole shares of dispersive materials, em sub file "Conformal
-  poles"), em_fdfd_ez / _hz and em_modes (pec_domain; FDFD weights keep the operator symmetric, its
-  `HarmonicSystem.pec_cells` = the fixed cells only), laminar_flow (Bouzidi, fluid sub file), heat / electric_currents
-  / electrostatics (DiffusionSystem below). The locator (`model.boundary_locator.GeometryLocator`, host numpy:
-  `inside(entities)`, `material_index(*coordinates)`, `material_test(index)`; 3D `geometry.contains_points_3d`) applies the build-mask
-  rules; model sub file "Conformal boundaries".
+## Cut geometry (`cut_cells`, host numpy)
+- Everything works on a membership test inside(x, y) -> bool of float64 host arrays (2D names wrap the
+  any-dimension `segment_*` / `rectangle_free_areas`: em_fdtd_3d's conformal PEC passes 3D points). Callers locate only
+  links between cells whose centre tests differ: a cut no centre sees stays staircased; features thinner than
+  1 / EDGE_SAMPLES of a segment vanish. `free_areas` takes the row axis from the caller: pick it by the face fractions
+  (rows across the steeper boundary), as `rectangle_inside_fractions` and physics/em/conformal_pec do.
+- Polar / spherical windows: callers pass logical coordinates (x = r - radius_min, y an angle) and map them in
+  inside(x, y) (boundary_locator with a DomainMap); fractions are shares of the logical link / face / cell (areas
+  O(dr / r) off the metric weighting inside a cut cell); `outline_pieces(..., radius_min=)` returns the local physical
+  frame. Links / faces across an angle_wrap seam are never cut (staircased).
+- Honouring types of `solver_defaults.conformal_boundaries`: grep `conformal_boundaries=True` in the definitions
+  (`schema.conformal_boundaries_physics` adds `conformal_dimensions` / `conformal_coordinates`); per type: em3d sub file
+  (Dey-Mittra H faces), em sub file "Conformal poles" and FDFD / em_modes pec_domain (the FDFD weights keep the operator
+  symmetric; `HarmonicSystem.pec_cells` = the fixed cells only), fluid sub file (Bouzidi), DiffusionSystem below. The
+  locator: model sub file "Conformal boundaries".
 
-## Coordinate metric (`metric`, numpy only; symmetry 2.16)
-- `Domain(coordinates=Coordinates(...))` (default `CARTESIAN`) is 'cartesian' or 'polar' (x = r - radius_min [m], y =
-  angle - angle_min [rad]). Widths, edges, centres, masks and `pos_to_cell` stay logical on a polar Domain;
-  `Domain.dx` / `grid.dt` mix units there and mean nothing (2D). The space stays the physics' own flag: polar +
-  axisymmetric = spherical (r, theta), theta from the rotation axis, 0..pi. The y_lo / y_hi faces of a polar window (at
-  most 2 pi) are ordinary outer faces (insulated = mirror) unless `Coordinates.angle_wrap` (`ANGLE_WRAPS`: 'periodic' /
-  'antiperiodic', planar (r, phi) only, `wrap_sign` +1 / -1; spherical raises in `window_metric`) joins them: u beyond
-  y_hi = wrap_sign x u at y_lo, the real angular Bloch phases 0 / pi (DiffusionSystem is real). EM physics (polar FDFD,
-  em_fdtd_3d sectors) read angle_wrap only as "faces joined": their phase is bloch_ky = the azimuthal order m [1/rad],
-  F(phi + span) = F(phi) e^{-j m span} (antiperiodic C_N sector: m = N / 2).
-- `Coordinates.line` (1D models): the window is one cell across (Cartesian 1 m: totals per m^2; polar one 2 pi cell:
-  per m of cylinder; polar + axisymmetric one 0..pi cell: whole spheres) with the ordinary exact metric, so
-  DiffusionSystem needs nothing (line order, tridiagonal: solvers.banded). Consumers read `line` only for units /
-  labels (`label()`, potential `flux_unit` per m^2 on a slab).
-- `window_metric(dx_window, dy_window, coordinates, axisymmetric)` -> `WindowMetric` of `Separable` products (along_x[i]
-  x along_y[j], host float64): x / y face areas, physical widths (y = r_c d_angle on polar), volumes; exact for (x, y),
-  (r, z), (r, phi) and (r, theta) (faces within `AXIS_ANGLE_SNAP` of 0 / pi get sin 0: float32 widths). Curvature
-  enters only through areas and volumes (the arithmetic r_f / dr form): uniform sources are exact (parabolas),
-  source-free radial profiles second order. Kernels gain 1D arrays, never per-cell metrics. `azimuthal_order=m` ((r, z)
-  only, raises elsewhere): m != 0 weighs rings by `ring_angle(m)` = pi (the cos^2 integral) instead of 2 pi; code
-  weighting (r, z) rings itself takes `ring_angle`, never 2 pi.
-- Physics opt in by `PhysicsSolver.coordinate_grids` (default ('cartesian',); DiffusionPhysicsBase both;
-  MagneticPhysics Cartesian: B / coils read Cartesian widths); `Simulation.add_physics` refuses a physics whose list
-  misses the domain's grid. Keep it in step with `PhysicsType.coordinate_grids`; deliberate exceptions: FDFDPhysics and
-  EMPhysics3D are polar in scripts only (em sub file FDFD "Polar", em3d sub file "Cylindrical sectors").
-  `to_cartesian` / `from_cartesian` map logical positions to the drawing plane and back (planar phi wrapped about the
-  sector centre); `Domain.from_widths` builds the padding-free polar Domain of the model path. Object-perimeter fluxes
-  on 2D polar / spherical windows weight each exposed face by `WindowMetric.x_face_volume_ratios` /
-  `y_face_volume_ratios` with the normal estimate on the physical widths (`definition_helpers.perimeter_flux_weights`).
-  Not polar yet: thermal noise (heat refuses), drift_diffusion (Cartesian metric only), perimeter fluxes in 3D sectors
-  and 1D models (validation refuses).
-- 3D (symmetry 2.21): `Domain3D(coordinates=)` / `from_widths(..., coordinates=, backend=)` with polar Coordinates = a
-  cylindrical (r, phi, z) sector (angle_wrap allowed, line refused); `window_metric_3d` -> `WindowMetric3D` of
-  `Separable3` products (face_area[a] with n_a + 1 entries along a, length[a], volume). The 3D DiffusionSystem reads it
-  (heat scripts and model path); em_fdtd_3d (scripts) reads `yee_radii` (r_c, r_f, link = mean of adjacent centres);
-  every other 3D physics stays ('cartesian',), refused there by `Simulation.add_physics`. A polar Domain3D, unlike 2D,
-  sets a meaningful `grid.dt` (`Grid3D.use_polar_time_step`: innermost arc r_c[0] dphi_min as the phi width; r at grid
-  x edge 0 = radius_min minus the x_lo padding; a first cell centre at r <= 0 raises ValueError).
-- Components are in the grid frame: `renderer.polar_field_infos(field_infos, axisymmetric)` relabels names ending _x /
-  _y / _xx / _yy whose labels end ' x' / ' y' / ' xx' / ' yy' as radial / angular; a polar-ready renderer with such
-  components sets it as its instance field_infos (potential does; heat has none).
+## Coordinate metric (`metric`, numpy only)
+- On a polar Domain (`Coordinates`) widths, edges, centres, masks and `pos_to_cell` stay logical (x = r - radius_min
+  [m], y = angle - angle_min [rad]); `Domain.dx` / `grid.dt` mix units and mean nothing in 2D. Polar + the physics'
+  axisymmetric flag = spherical (r, theta).
+- `angle_wrap` (planar (r, phi) only): DiffusionSystem (real) reads `wrap_sign` (u beyond y_hi = wrap_sign x u at
+  y_lo); EM physics (polar FDFD, em_fdtd_3d sectors) read it only as "faces joined": their phase is bloch_ky = the
+  azimuthal order m [1/rad], F(phi + span) = F(phi) e^{-j m span} (antiperiodic C_N sector: m = N / 2).
+- `Coordinates.line` (1D models) keeps the ordinary metric on a one-cell-wide window, so operators need nothing;
+  consumers read `line` only for units / labels (`label()`, potential `flux_unit` per m^2 on a slab).
+- `window_metric` / `window_metric_3d` is the one FV geometry: curvature enters only through areas and volumes
+  (uniform sources exact, source-free radial profiles second order). Kernels gain 1D `Separable` factors, never
+  per-cell metrics.
+- `PhysicsSolver.coordinate_grids` (checked by `Simulation.add_physics`) agrees with `PhysicsType.coordinate_grids`
+  except FDFDPhysics and EMPhysics3D, polar in scripts only (em sub file "Polar (r, phi) grids", em3d sub file
+  "Cylindrical sectors"). `to_cartesian` / `from_cartesian` map logical positions to the drawing plane and back.
+  Object-perimeter fluxes on 2D polar windows weight faces by `x_face_volume_ratios` / `y_face_volume_ratios`
+  (`definition_helpers.perimeter_flux_weights`).
+- 3D: a polar Domain3D is a cylindrical (r, phi, z) sector (`WindowMetric3D`; the 3D DiffusionSystem, em_fdtd_3d
+  through `yee_radii`). Unlike 2D its `grid.dt` is meaningful (innermost arc as the phi width); a first cell face at
+  r < 0 (radius_min below the x_lo padding) raises.
+- Components stay in the grid frame: `renderer.polar_field_infos` relabels _x / _y / _xx / _yy as radial / angular;
+  a polar-ready renderer with such components sets it as its instance field_infos (potential does).
 
-## 3D contracts (B1: `grid3d`, `domain3d`, MaterialGrid; for 3D physics such as B2 FDTD / B3 heat)
-- `Domain3D`: `grid` = `Grid3D` (float32 `dx_arr / dy_arr / dz_arr` incl. PML, `nx, ny, nz`, `shape`, `n_cells`, `dx /
-  dy / dz` minima, `dt` = courant x 3D CFL limit), `materials` = `MaterialGrid(nx, ny, nz)`, `npml_sides` over
-  `FACES_3D`, `ox / oy / oz`, `size_x / y / z` (requested), `uniform_dx` (None whenever any axis is graded) /
-  `non_uniform`. Per-axis accessors return 3-tuples: `physical_window()`, `window_shape()`, `cell_widths / cell_edges /
-  cell_centers` (float64 read-only), `host_centres(clamp)` (float32 1D build-mask centres, PML clamped),
-  `coordinate_grids` (zero-stride X, Y, Z); `physical_extent()` is 6 values, `plane_extent(axis='z')` the 4 of a cut
-  normal to axis; `pos_to_cell(x, y, z)`, `pos_to_cell_z`, `validate_physical_pos(x, y, z)`. No rect_mask /
-  circle_mask (scripting is 2D).
-- Flat index `(i * ny + j) * nz + k` (C-order): kernels get k-stride 1, j-stride nz, i-stride ny nz.
-- z cells (`meshing._z_cells`): uniform dz = dx on uniform grids; on graded grids `MeshConfig(size_z=)` marches z like
-  x / y (`add_refinement_band('z', ...)` = each refinement's object z_extent + margin, unset point / line z = the
-  whole height; prism z0 / z1 = z snap nodes; `z_cell_spacings` pads the z PML). z bands never touch the xy profiles
-  and vice versa (a band refines whole z layers). z PML counts come from `boundary_config.npml_sides['z_lo' /
-  'z_hi']` (missing = 0, so the 2D EM BoundaryConfig gives no z PML: a 3D boundary config must add them and keep
-  `differences()`). Consumers read per-axis widths (em3d `engine.widths`, fv_diffusion_3d, ElasticSystem3D), never
-  `grid.dz`.
-- Materials: `MaterialGrid.assign_window(name, window, mask, value)` writes a scalar or window-broadcastable array under
-  a window-broadcastable bool mask (prefer it over full-grid `assign` in 3D). The builder paints an int16
-  `ctx.material_index` (1 + region index) per z-slab run, one 2D raster per distinct cross-section
-  (`geometry.cross_section_runs`), then writes each region's properties under its window mask; x, y dependent values
-  are (wx, wy, 1) arrays, z-dependent ones are written one z plane at a time (range check accumulated on the device).
-  `BoxValues`: a z-dependent `eval_field` value on the mask's bounding box (undefined outside). Accumulating consumers
-  add it on the box only (`add_masked_to` / `copy_masked_to`; `DiffusionSystem.add_masked` / `copy_masked`: heat
-  sources and initial T, potential sources, solid_mechanics_3d loads); consumers handing window arrays to a system call
-  take `DiffusionSystem.window_values` = `window_array(window)` (zeros outside the box). `MaterialRegion.mask` is None
-  in 3D (a full-grid mask only for regions with state-dependent properties, for their DynamicMaterialUpdate).
-- BuildContext in 3D (valid until `release_caches`): `ctx.dimensions`, `object_box_mask(name)` (cached ((sx, sy, sz),
-  cropped bool), read-only; `object_window_mask` raises), `domain_mask(entities)` (full-grid bool),
-  `region_window_mask(region)` (window + fresh cropped mask: pole / dispersive boxes), `region_mask(region)` (full-grid
-  bool), `height(name)` (z of a point / line, mid-height when unset), `point / line / rect` (xy). `eval_field` with x, y
-  returns an (nx, ny, 1) layer, with z a BoxValues. `perimeter_mask / perimeter_weights` are 2D only.
-- Geometry: `rasterize_box(name, resolved, x, y, z centres, xp)` / `box_window`, `rasterize_window(..., z=)` (cross
-  section), `z_extent`, `point_z`; prism z intervals half-open with float32 compares, spheres closed.
-- Renderers of 3D physics: `device_field(component)` returns the (wx, wy, wz) window array (a view where possible); an
-  optional `device_plane(component, axis, index_window)` ('x' -> (wy, wz), 'y' -> (wx, wz), 'z' -> (wx, wy)) avoids
-  materialising derived 3D fields; `Session.field / display_field(..., plane=(axis, position))` use it, else slice
-  `device_field`. `Session.evaluate` is volume-weighted in 3D ('integral' = true volume integral) with
-  `rasterize_box` selections.
+## 3D contracts (`grid3d`, `domain3d`, MaterialGrid)
+- `Domain3D` has the 2D Domain's accessors per axis (3-tuples), `plane_extent(axis)` for a cut, no rect_mask /
+  circle_mask (scripting is 2D). Flat index `(i * ny + j) * nz + k`: kernels get k-stride 1, j-stride nz, i-stride
+  ny nz.
+- z cells (`meshing._z_cells`): graded meshes march z like x / y (`add_refinement_band('z', ...)` per object
+  z_extent + margin; a band refines whole z layers, never the xy profiles). z PML counts come from
+  `boundary_config.npml_sides['z_lo' / 'z_hi']` (missing = 0: the 2D EM BoundaryConfig gives none, so a 3D boundary
+  config adds them and keeps `differences()`).
+- Materials: `MaterialGrid.assign_window` (prefer it over full-grid `assign` in 3D); x, y dependent values are
+  (wx, wy, 1) arrays, z-dependent ones are written one z plane at a time. A `BoxValues` is undefined outside its box:
+  accumulating consumers add it on the box only (`add_masked_to` / `copy_masked_to`; `DiffusionSystem.add_masked` /
+  `copy_masked`), consumers handing window arrays to a system take `DiffusionSystem.window_values`.
+  `MaterialRegion.mask` is None in 3D unless a state-dependent property needs it (its DynamicMaterialUpdate).
+- BuildContext 3D: `object_box_mask` (cached, read-only), never `object_window_mask` (raises); `region_window_mask`
+  over `region_mask`; `perimeter_mask / perimeter_weights` are 2D only. Prism z intervals are half-open with float32
+  compares, spheres closed.
+- Renderers of 3D physics: `device_field(component)` = the (wx, wy, wz) window array (a view where possible); an
+  optional `device_plane(component, axis, index_window)` avoids materialising derived 3D fields (reads: model sub file
+  "3D field access"). `Session.evaluate` 'integral' is a true volume integral in 3D.
 
-## Harmonic probe record (`harmonic_probe`, numpy + core.backend; plan P0)
-- FEM frequency_response solvers (solid, membrane, pressure acoustics) record complex phasors per Hz through
-  `HarmonicProbeRecord(components, unit, label).record(frequency_hz, values)` (cupy 0-d values kept unsynced until
-  `recorded()`) and `harmonic_probe_result(record)` ('xy' vs Frequency [Hz], series `<c>_re/_im/_abs/_phase`, phase in
-  rad). `two_wave_fit` and `pole_fit` rely on the `_re` / `_im` names. The FDFD HarmonicProbe stays separate. Check in
-  selftests_harmonic_probe, case registered in model/selftests_analytic.
+## Harmonic probe record (`harmonic_probe`, numpy + core.backend)
+- Frequency-domain FEM solvers record point phasors through `HarmonicProbeRecord` / `harmonic_probe_result` (series
+  `<c>_re/_im/_abs/_phase` vs Frequency [Hz]), so `two_wave_fit` / `pole_fit` read them all alike; series built
+  elsewhere use `phasor_series`. The FDFD HarmonicProbe (wavelength abscissa) stays separate.
 
 ## Resonance finder (`resonance`, host numpy; the shared row is `model.definition_resonance`)
-- `ResonanceMonitor(probes, band_min, band_max, band, start_time, sample_delay_steps, point_names)` wraps probes of one
-  component with `get_data() -> (times, values)` and `field_component` (same steps; traces cut to the shortest);
-  several probes = one joint fit (`harmonic_inversion` of a 2D signal: per-channel Hankel matrices scaled to unit peak,
-  stacked for the shared poles; amplitudes / phases per channel, the row's amplitude / phase from the channel where it
-  is largest, the amplitude floor per channel). The analysis runs only in `result(waveforms, unit, dt)` (cached per
-  (sample count, start, dt)): dt is passed at result time since a physics may fix its step only at finalize
-  (elastic_waves). Reference time = recorded time - sample_delay_steps x dt (EM H: 0.5; probes stamping their own times,
-  AcousticProbe velocities, declare 0). `pulse_end_time(waveforms)` = the latest `duration` of any waveform (gaussian /
-  ricker 2 t0, acoustic HeatingPulse delay + 4.5 width).
-- Its decimation is NOT the DFT `sample_interval`: the trace is mixed to the band centre, Kaiser-filtered (100 dB; pass
-  |f| <= W, stop |f| >= rate - W) and decimated on the host; the FIR gain is divided out exactly per pole (polyval(taps,
-  zeta)), and the first n_taps samples after the start are spent on the filter (low-Q modes decay there). Poles are
-  kept only when two pencil sizes (N/3, N/2) agree within 1e-2 |s| / omega (each pencil: QR (R only) of the stacked
-  Hankel, then the SVD of R: the same values and right vectors, no tall U). The result must never raise for a short
-  run (the study end computes every table result, `_feature_results`): failures go to the 'note' extra with empty
-  rows. Band 'wavelength' adds the 'wavelength' column (vacuum C0 / f); 'frequency' has none.
-- Memory: `analysis_host_bytes(n_steps, n_channels)` (host temporaries of one analysis); the growable probe traces are
-  counted by the physics estimator through `model.definition_resonance.point_trace_items` (a FeatureType estimator does
-  not see the study duration). The shared row's apply hands each point to the physics' `add_probe` as a one-object
-  selection (`dataclasses.replace` of the ResolvedSelection), so add_probe keeps its single-object rule.
+- The analysis runs only in `ResonanceMonitor.result(waveforms, unit, dt)` (cached per (samples, start, dt)): dt is
+  passed then because a physics may fix its step only at finalize (elastic_waves). `sample_delay_steps` per component
+  (EM H: 0.5; probes stamping their own times, AcousticProbe velocities: 0).
+- Its decimation is NOT the DFT `sample_interval`: the trace is mixed to the band centre, anti-alias filtered and
+  decimated on the host (module docstring); the first n_taps samples after the start go to the filter, so low-Q modes
+  decay there.
+- `result` never raises for a short run (the study end computes every table result, `_feature_results`): failures go
+  to the 'note' extra with empty rows.
+- Memory: `analysis_host_bytes` (host temporaries of one analysis); the growable probe traces are counted by the
+  physics estimator through `model.definition_resonance.point_trace_items` (a FeatureType estimator does not see the
+  study duration). The row's apply hands each point to the physics' `add_probe` as a one-object selection, so
+  add_probe keeps its single-object rule.
 
 ## Run-time estimate (`time_estimate` pure Python, `time_profile`; time_estimation_plan)
 - Ops carry sizes only (bytes, rows / nnz, unknowns, flops, calls); `price` maps each to one profile curve:

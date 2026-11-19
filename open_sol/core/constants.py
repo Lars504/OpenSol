@@ -1,5 +1,5 @@
 """Physical constants (C0, EPS0, MU0, ETA0, PLANCK, HBAR, K_B, ELEMENTARY_CHARGE, N_A, STEFAN_BOLTZMANN), the
-float32 DTYPE and the domain face names FACES / FACES_3D with their GUI labels."""
+float32 DTYPE, the domain face names FACES / FACES_3D with their GUI labels and the setting names core reads."""
 import numpy as np
 
 DTYPE = np.float32
@@ -24,3 +24,7 @@ FACE_LABELS.update(zip(Z_FACES, ('Lower z face', 'Upper z face')))
 # element (finite element) mesh kinds: MeshSpec.kind and grid_kind of fem TriangleDomain / TetrahedronDomain (else
 # 'tensor'); code testing "not tensor" tests membership here, never == 'triangles'
 FREE_MESH_KINDS = ('triangles', 'tetrahedra')
+# physics setting names core reads from a PhysicsSpec (core.mirror); model.definition_helpers builds their Params
+GEOMETRY_SETTING = 'geometry'                 # 'planar' or AXISYMMETRIC (r, z)
+AXISYMMETRIC = 'axisymmetric'
+AZIMUTHAL_ORDER_SETTING = 'azimuthal_order'   # cos(m phi) order of an axisymmetric DiffusionSystem type
