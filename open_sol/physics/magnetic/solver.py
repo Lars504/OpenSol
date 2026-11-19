@@ -19,7 +19,7 @@ from .saturation import (ANDERSON_DEPTH, TENSOR_NONLINEAR_METHODS, bh_curve, ref
                          Float32StallWatch, saturation_reluctivity, tabulated_reluctivity)
 
 _ANCHOR_TEXT = 'magnetic insulation face, held potential or external-field ring'
-_REMEDY_TEXT = 'Keep magnetic insulation (the default) on at least one face, or add an external field.'
+REMEDY_TEXT = 'Keep magnetic insulation (the default) on at least one face, or add an external field.'
 _DERIVED_FIELDS = ('B_x', 'B_y', 'B_abs', 'H_x', 'H_y', 'w_mag')
 
 
@@ -92,7 +92,7 @@ class MagneticPhysics(DiffusionPhysicsBase):
         # saturation loop (kept_preconditioner)
         system = DiffusionSystem(
             domain, precision, tol, max_iter, label=lambda: f"{self.type_label} '{self.name}'",
-            unknown_name='vector potential', anchor_text=_ANCHOR_TEXT, remedy_text=_REMEDY_TEXT,
+            unknown_name='vector potential', anchor_text=_ANCHOR_TEXT, remedy_text=REMEDY_TEXT,
             compute_residual=compute_residual, axisymmetric=False,
             linear_solver=kept_preconditioner_solver(linear_solver))
         insulation = ScalarBoundaryConfig(**{face: BCSide('dirichlet', value=0.0) for face in FACES})

@@ -46,25 +46,25 @@ contracts"). em_fdtd_3d (B2) and the eigensolver em_fdfd_3d (tensor Yee and tetr
   converts with `engine.field_scale(component)`, a new writer in physical units refuses (`_require_single`); psi,
   poles, q_accum and DFT stay float32 / complex.
 
-## Cylindrical sectors (symmetry 2.21; engine3d, kernels3d, selftests_cylindrical3d)
+## Cylindrical sectors (engine3d, kernels3d, selftests_cylindrical3d)
 - Polar `Domain3D` (scripts only; mechanics, faces and the r_hi CPML approximation: `engine3d` header,
   `_check_cylindrical`). A new curl kernel takes the radial factor arrays (`engine._radial_h` / `_radial_e`; ones on
   Cartesian grids), never a Cartesian-only shortcut; a feature placed by Cartesian widths calls `_require_cartesian`
   (grep it for the refused list). Self-test em3d_cylindrical_sector_cavity (heavy).
 
-## Subpixel smoothing (igor 1.5; subpixel_smoothing3d, geometry in model/subpixel_geometry)
+## Subpixel smoothing (subpixel_smoothing3d, geometry in model/subpixel_geometry)
 - Refreshed by every `rebuild_materials` from the current tables; E consumers take it through `_face_args` (Engine
   bullet on E coefficients); mode ports through `mode_ports3d._smoothing_deltas`. Not smoothed: TFSF background, the
   stability check, sigma_e / mu / pole membership. Self-test: em3d part of `subpixel_smoothing_cpu_gpu`.
 
-## Conformal PEC (solver_plan S7.6; conformal_pec3d, kernels3d conformal_h_3d)
+## Conformal PEC (conformal_pec3d, kernels3d conformal_h_3d)
 - Method and stability floor: `conformal_pec3d` header; wiring: `physics3d.add_conformal_pec_region` (staircase
   cells at once) and `_apply_conformal_pec` (once at finalize). The floor's eigenvalue check ignores mixed staircase /
   conformal contacts and dielectrics. At the default courant 0.99 ~70 % of cut faces are floored (TM101 9.5e-3 vs
   staircase 5.2e-2): full accuracy needs a smaller courant (`_conformal_pec_note`). numpy twin, no numba; memory:
   `boundary_locator.conformal_memory_estimate`. Self-test em3d_conformal_pec_cavity (heavy).
 
-## Frequency-domain eigensolver em_fdfd_3d (operators3d, fdfd3d, fem3d, definition_fdfd3d; igor3d_plan)
+## Frequency-domain eigensolver em_fdfd_3d (operators3d, fdfd3d, fem3d, definition_fdfd3d)
 - em_fdfd_3d reuses em_fdtd_3d's grid, faces, mirrors, PEC face rule and material vocabulary (fdfd3d /
   definition_fdfd3d import them from kernels3d / definition): a change of an FDTD rule changes the eigensolver too;
   ring-down and FDFD eigenvalues agree through asin(dt omega / 2) / (pi dt) (em3d_fdfd_vs_fdtd). Any 3D host

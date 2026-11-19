@@ -1,6 +1,6 @@
 # open_sol/mesh_study — conventions & gotchas
 
-Sub file of the root `structure_conventions.md` (read that first). The solver_plan S7.8 mesh study (CLI mesh-study);
+Sub file of the root `structure_conventions.md` (read that first). The mesh study (CLI mesh-study);
 the gates and their rules are `analysis.gates`. Current state, no changelog.
 
 - Parts (`PARTS`, run order) each expose `run(options: StudyOptions)`; a part that raises is printed and the others

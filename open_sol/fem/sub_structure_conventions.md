@@ -1,9 +1,8 @@
 # open_sol/fem — conventions & gotchas
 
-FEM on triangles (solver_plan S7.5, mesh_implementation_plan.md section 2) and tetrahedra (section "Tetrahedra",
-igor3d_plan section 7). Which physics run on element meshes and their per-element state / `field_dofs` / `fem_field`
-contract: root "Meshes per physics"; the physics side lives in each physics sub file ("Triangle meshes"). Error
-indicators: section "Error indicators" (users: grep `def error_indicator`).
+FEM on triangles and tetrahedra (section "Tetrahedra"). Which physics run on element meshes and their per-element
+state / `field_dofs` / `fem_field` contract: root "Meshes per physics"; the physics side lives in each physics sub
+file ("Triangle meshes"). Error indicators: section "Error indicators" (users: grep `def error_indicator`).
 
 ## Layout and imports
 - Module contents: `structure_index.md`. Import rules: contracts fem_below_model, fem_init_no_core,

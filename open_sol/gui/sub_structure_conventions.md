@@ -74,7 +74,7 @@ Sub file of the root `structure_conventions.md`. GUI gotchas.
   reach the estimates through `document.set_element_counts` (mesh_preview); its `issues_invalidated` (also a > 5 %
   budget change) is what SettingsPanel refreshes on. Compute stays refused on an over-budget error until the override
   is ticked or the built counts fit.
-- Meshes (S7.2; it must always be clear which mesh a physics uses): `MESHES_NODE` between Couplings and Solvers, one
+- Meshes (it must always be clear which mesh a physics uses): `MESHES_NODE` between Couplings and Solvers, one
   ('mesh', name) child per ModelSpec.meshes entry (rename / delete / move are 'all' edits; meshes[0] is the default, so
   `set_physics_mesh` stores '' for it and a move names the default mesh in the physics on it). Every view names and
   colours meshes through the mesh helpers of gui/helpers (`mesh_color`: by index in spec.meshes), never its own text.

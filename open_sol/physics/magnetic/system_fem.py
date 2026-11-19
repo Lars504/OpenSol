@@ -289,7 +289,7 @@ class MagneticFEMSystem:
                     for block in self.blocks]
         matrix = assemble_curl_tangent(self.blocks, tangents, self.dofs.n_dofs).tocsr()
         reduced = matrix[self._free][:, self._free].tocsr()
-        self._check_anchors(reduced)
+        self.check_anchors(reduced)
         self._factorize(reduced)
         return matrix
 
@@ -324,7 +324,7 @@ class MagneticFEMSystem:
         while iterations < max_iterations:
             reduced = self._reduced_tangent(state[1])
             if iterations == 0 and not anchors_checked:
-                self._check_anchors(reduced)
+                self.check_anchors(reduced)
             self._factorize(reduced)
             step_free = self._solve_factorized(-residual[free], np.zeros(free.size))
             direction = np.zeros_like(potential)
@@ -413,7 +413,7 @@ class MagneticFEMSystem:
                 in zip(self.blocks, flux)]
         return flux, None, [law[0] for law in laws], [law[2] for law in laws]
 
-    def _check_anchors(self, reduced) -> None:
+    def check_anchors(self, reduced) -> None:
         """Planar only (the axisymmetric A / r term anchors every region): a free region of row sums ~0 is singular."""
         if self.axisymmetric:
             return

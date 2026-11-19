@@ -161,12 +161,12 @@ templates, describe. Current state, no changelog.
   failed'; an axis without band ends or custom edges is one segment whose whole-axis rescale moves a band by up to half
   an outer cell. Auto wavelength rule: the index is taken at wavelength_min only (`_material_index`), so metals mesh by
   skin depth (gold ~11 at 1.55 um).
-- Triangle meshes (triangulate): `triangle_meshing.triangulate` (module header; mesh data and mesher rules: fem sub
-  file). `mesher_size_field` is the mesher's form of `meshing.triangle_size_field` (the estimate's raster; size
-  points also `_size_point_density`'s sub-pixel samples): a size rule changes in all of them. Element tags use the
-  build-mask rule (`element_masks` -> `contained`, bit-identical to rasterize), never a second point test. `mirror_x`
-  / `mirror_y` mesh the half window and reflect it (`_mirrored_parts`); the estimate takes the denser of each pixel
-  and its image; asymmetric material objects only warn (`mirror_mismatch`).
+- Triangle mesher (`triangle_meshing.triangulate`; module header; mesh data and mesher rules: fem sub file):
+  `mesher_size_field` is the mesher's form of `meshing.triangle_size_field` (the estimate's raster; size points also
+  `_size_point_density`'s sub-pixel samples): a size rule changes in all of them. Element tags use the build-mask
+  rule (`element_masks` -> `contained`, bit-identical to rasterize), never a second point test. `mirror_x` /
+  `mirror_y` mesh the half window and reflect it (`_mirrored_parts`); the estimate takes the denser of each pixel and
+  its image; asymmetric material objects only warn (`mirror_mismatch`).
 - Tetrahedron meshes (MeshSpec kind 'tetrahedra'): sizes `meshing.tetrahedron_sizing` (the triangle rules through
   `_element_sizing`), mesher `tetrahedral_meshing.tetrahedralize` (gmsh solids, sized regions / surfaces, Kuhn split:
   its module header), estimate `_tetrahedron_estimate`. Every gmsh size field has its twin in

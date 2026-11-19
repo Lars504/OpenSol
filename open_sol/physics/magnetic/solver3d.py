@@ -28,7 +28,7 @@ from .saturation import (ANDERSON_DEPTH, TENSOR_NONLINEAR_METHODS, bh_curve, ref
                          Float32StallWatch, saturation_permeability, tabulated_reluctivity)
 
 _ANCHOR_TEXT = 'symmetry face, ideal iron region, external-field ring or the corner anchor'
-_REMEDY_TEXT = 'Give every window cell mu_dc > 0.'
+REMEDY_TEXT_3D = 'Give every window {item} mu_dc > 0.'   # item: cell / element (solver_fem3d)
 _PERMEABILITY_NAMES = ('mu_dc_xx', 'mu_dc_yy', 'mu_dc_zz')
 _AXES = 'xyz'
 
@@ -64,7 +64,8 @@ class MagneticPhysics3D(DiffusionPhysicsBase):
             raise ValueError(f'{self.type_label} needs a 3D domain (2D models: magnetostatics)')
         system = DiffusionSystem(
             domain, precision, tol, max_iter, label=lambda: f"{self.type_label} '{self.name}'",
-            unknown_name='magnetic scalar potential', anchor_text=_ANCHOR_TEXT, remedy_text=_REMEDY_TEXT,
+            unknown_name='magnetic scalar potential', anchor_text=_ANCHOR_TEXT,
+            remedy_text=REMEDY_TEXT_3D.format(item='cell'),
             compute_residual=compute_residual,
             linear_solver=kept_preconditioner_solver(linear_solver))   # kept across the saturation loop
         self._init_diffusion(domain, ScalarBoundaryConfig(), system)   # every face insulated (Neumann, decision 4)

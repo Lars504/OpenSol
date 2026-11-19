@@ -1,6 +1,6 @@
 # open_sol/solvers — conventions & gotchas
 
-Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver roles".
+Root rules: structure_conventions.md "Solver roles".
 
 ## Layout and imports
 - `roles.py` (SolverRole, SolverType, SolverRequest, ResolvedSolver, the one fit rule `solver_misfit`) is pure Python
@@ -29,7 +29,7 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   grid_defaults win over backend_defaults, so a backend default (the solids' gpu pcg 'mixed') holds on tensor meshes
   only. Role data and the measurements behind each choice sit at the roles (shared ones in model.definition_helpers,
   solid_mechanics' own in physics.mechanics.definition), not here.
-- Precision (S9): `solver_defaults.precision` also replaces a precision in a role's Automatic settings (e.g.
+- Precision: `solver_defaults.precision` also replaces a precision in a role's Automatic settings (e.g.
   solid_mechanics_3d gpu 'mixed'), and a node of the Automatic type that sets no precision takes the Automatic one
   (`with_node_precision`: a node added only for a tolerance keeps mixed). GUI-added nodes get the default written in at
   creation (a later solver_defaults change does not reach them); JSON nodes without one follow it.
@@ -50,7 +50,7 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
 - Estimators and physics validate callbacks read the resolution through the definition_helpers readers
   (`linear_solver_precision`, `resolved_back_end`, `resolved_stepper_precision`, ...; `vctx.solvers` is None when it
   does not resolve), a create reads its runtimes (`explicit_kernels.stepper_precision(ctx.solvers(name))`).
-- Feature precisions (S3.3): `solver_misfit` cannot see features, so a feature refusing a stepper precision declares
+- Feature precisions: `solver_misfit` cannot see features, so a feature refusing a stepper precision declares
   `FeatureType.precisions` (validate errors at the feature; describe and GUI show it through
   `schema.restricted_feature_precisions`, no edit there); a refusal depending on physics settings stays in the physics
   validate.
@@ -204,7 +204,7 @@ PARDISO: section "host_direct". Rules across files:
 - Validation: the SolverType validate reports scipy / nvmath availability at a node; for Automatic the physics checks
   report it (`definition_fdfd.direct_solver_issues`, also nlfd's) plus the size rule.
 
-## banded (`BandedSolver`; role 'linear' of 1D models, symmetry 2.20)
+## banded (`BandedSolver`; role 'linear' of 1D models)
 - The runtime is the PCGSolver protocol: `factorize` copies the CSR to the host and raises ValueError above
   `max_bandwidth` (8, before allocating bands), for an unsymmetric operator (`SYMMETRY_TOLERANCE`) or a non-SPD one.
   Double only; host O(n) memory, not estimated. Not yet: per-order (m / l / q) batching, complex operators.

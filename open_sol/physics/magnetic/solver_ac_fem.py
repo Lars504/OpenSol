@@ -9,7 +9,6 @@ import numpy as np
 
 from ...core.backend import to_host
 from ...core.constants import DTYPE, MU0
-from ...fem.diffusion import floating_region_count
 from ...fem.elements import lagrange_basis
 from ...fem.indicators import lagrange_at
 from ...fem.magnetostatics import (assemble_curl_tangent, block_load, block_mass, element_integrals,
@@ -22,11 +21,11 @@ from .circuit import (COIL_RESULT_KEYS, ConductorRow, RecycledFactor, bordered_s
 from .fields import AC_FIELD_NAMES
 from .materials import CONDUCTIVITY_ARRAYS, MAGNETIC_AC_SCHEMA, PERMEABILITY_ARRAYS
 from .renderer import MAGNETIC_AC_FIELD_INFOS
+from .solver import REMEDY_TEXT
 from .solver_fem import DISCRETIZATIONS, ElementFields, TriangleMagneticBase, _host
 from .system_fem import CENTROID, MagneticFEMSystem
 
 NODAL_FIELDS = ('A_re', 'A_im', 'A_abs', 'B_x_re', 'B_x_im', 'B_y_re', 'B_y_im', 'B_abs')   # fem_field: nodal values
-_ANCHOR_TEXT = 'magnetic insulation face, held potential or external field'
 
 
 @dataclass(frozen=True, eq=False)
@@ -102,7 +101,7 @@ class MagneticACFEMPhysics(TriangleMagneticBase):
         mesh = domain.mesh
         # constraints and curl quadrature only: its real 'linear' wrapper is never factorised
         self.system = MagneticFEMSystem(mesh, self.order, self._axisymmetric, self._label, self.host_solver,
-                                        backend=domain.backend.name, anchor_text=_ANCHOR_TEXT)
+                                        backend=domain.backend.name, remedy_text=REMEDY_TEXT)
         self._measure = self.system.element_measure   # int dV per element (per radian when axisymmetric)
         self._area = self.system.element_area         # plain x-y / r-z area
         self._axis_tolerance = window_inset(mesh.window)
@@ -423,11 +422,7 @@ class MagneticACFEMPhysics(TriangleMagneticBase):
                 tangents.append(tangent)
             curl = assemble_curl_tangent(system.blocks, tangents, n_dofs).tocsr()
             if not self._axisymmetric:   # the A / r term anchors every axisymmetric region
-                floating = floating_region_count(curl.real[free][:, free].tocsr())
-                if floating:
-                    raise ValueError(f'{self._label()}: {floating} connected region(s) of the vector potential touch '
-                                     f'no {_ANCHOR_TEXT}, so the system is singular. Keep magnetic insulation (the '
-                                     'default) on at least one face, or add an external field.')
+                system.check_anchors(curl.real[free][:, free].tocsr())
             self._kept_curl = (np.array(nu_xx), np.array(nu_yy), np.array(free), curl)
         operator = (curl + 1j * self.omega * block_mass(system.blocks, sigma_eddy, n_dofs)).tocsr()
         rows = operator[free]

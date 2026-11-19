@@ -42,7 +42,7 @@ type's vocabulary and refusals are in its help texts and validation.
 - Backends: every FDTD-path kernel is a `core.kernels` twin (core sub file "Kernel twins"): a new kernel gets its numpy
   twin in the same edit, host reads via `to_host`; sources and monitors take `xp=` (None = the default backend: EM
   solvers pass `domain.xp`). Selftests `em_fdtd_cpu_gpu` / `em_fdtd_cpu_gpu_media` (heavy).
-- Stepper precision ('single' | 'double', STEPPER_ROLE; solver_plan S5): `EMPhysics(precision=)` builds fields /
+- Stepper precision ('single' | 'double', STEPPER_ROLE): `EMPhysics(precision=)` builds fields /
   BoundaryManager / CPMLSided / TFSF with `dtype=`; every field-side array (coefficients, spacings, CPML, pole buffers,
   jz_total, TFSF aux) is in the fields' dtype and kernel scalars are numpy scalars of it (`engine._real(...)`,
   `_dt_real`, `_inv_dt_real`), never DTYPE(...). float32 also under double: MaterialGrid arrays, coupling slots,
@@ -56,7 +56,7 @@ type's vocabulary and refusals are in its help texts and validation.
   behind E (`monitors.py` re-times them). Step order: each engine's `advance` docstring.
 - PEC: ca = cb = 0 is folded in at the end of every E-coefficient rebuild (`_fold_pec_keep`: a new coefficient path
   ends with it); the per-step keep re-zeroes only `_pec_box` after injection and wall re-pin.
-- Conformal PEC (solver_defaults.conformal_boundaries, S7.6; method: `conformal_pec.py` header): `pec_cells` stays the
+- Conformal PEC (solver_defaults.conformal_boundaries; method: `conformal_pec.py` header): `pec_cells` stays the
   staircase mask (ports, poles, calibrations, FDFD read it); the engine gets the conformal data once in `finalize`.
   The stability floors bite at courant 0.99 (disk-cavity errors ~ 1 / R), courant_factor 0.7 relaxes them (selftest
   conformal_pec_operator). Not conformal: BOR, the Courant check, calibrations.
@@ -103,7 +103,7 @@ type's vocabulary and refusals are in its help texts and validation.
   other caller checks k itself. Probes, renderers, state() and couplings read the real set only; enable_q_accum and
   C5 media raise. New wrap kernels take the partner fields + wrap sines of `_FieldSet`. Known gaps: FDTD hz
   face-to-centre collocation of cell 0 lacks the Bloch phase; mode ports solve k = 0 (validation warns).
-- Unfolded results (symmetry 2.5, `core.mirror`): flux multiplies by `placement.line_mirror_factor` (extra
+- Unfolded results (`core.mirror`): flux multiplies by `placement.line_mirror_factor` (extra
   'mirror_factor'; monitor objects stay raw; flux adjoint objectives carry it), Session 'integral' likewise; far
   fields add the image contour (`NearToFarGeometry.images`). Not unfolded: 2D mode-port powers, source 'power',
   probes, DFT monitors.
@@ -215,7 +215,9 @@ type's vocabulary and refusals are in its help texts and validation.
   keeps the FDTD amplitude meanings: phase 0 = FDTD DFT / S(omega)); u at cell centres on the A1 flat index, assembly /
   solve / `solution` complex128; FDTD sin carrier = phase -90, `phase` [deg] 0 = cos. A line current gives E_z =
   +(omega mu0 I / 4) H0^(2)(k r), H_z = +(omega eps0 K_m / 4) H0^(2)(k r) (em_fdfd_line_current_hankel).
-- Conformal PEC (S7.6): `ConformalFDFD` built once on the host, reset by any new PEC region; pec_cells = the staircase
+- hz face eps (`yee_grid.face_average`, arithmetic with subpixel off): a change of it breaks the EME identity
+  self-test eme_vs_fdfd_step_hz (eme sub file).
+- Conformal PEC: `ConformalFDFD` built once on the host, reset by any new PEC region; pec_cells = the staircase
   (ports, sources, TFSF / eps_xy checks read it). ez: face weights into the metal x 1 / max(t, CONDITIONING_FLOOR).
   hz (Dey-Mittra): `face_fractions` / `cell_area_fractions`, area-scaled operator (complex symmetric, so reciprocal),
   while `weight_hi_*_faces` stay physical for face_fields; face_current_rhs, q_abs, adjoint dA and eigen mass take
@@ -290,12 +292,12 @@ type's vocabulary and refusals are in its help texts and validation.
   each wavelength's own `_assemble` must give the identical operator, guarded by `_material_serial` (bumped by every
   `_mark_system_dirty` but `omega_only`), so any change of the assembled system must go through `_mark_system_dirty`.
   Self-tests em_fdfd_line_block, _line_block_wavelengths, em_fdfd_eigenfrequency_line_block.
-- Bloch k != 0 (symmetry 2.2): only the wrap entries change. `lower_wrap_factors` = e^{+j k L} per axis: every
+- Bloch k != 0: only the wrap entries change. `lower_wrap_factors` = e^{+j k L} per axis: every
   face-to-centre mean across the wrap takes it (`face_mean_at_centres(wrap_factor=)`; q_abs needs none; NF2FF boxes
   never wrap), as do a dipole on the last face and a mode source's upstream cell. Sheets carry e^{-j k.r}
   (`bloch_line_phase`); TFSF with Bloch ky = the oblique discrete wave. Port lines spanning a whole Bloch period are
   refused (`_check_bloch_line`, `bloch_period_line_issues`). nlfd takes each channel's factor in its C / C*.
-- Polar (r, phi) grids (symmetry 2.16 / 2.18; scripts only, `coordinate_grids` lists 'polar'; PhysicsTypes stay
+- Polar (r, phi) grids (scripts only, `coordinate_grids` lists 'polar'; PhysicsTypes stay
   Cartesian until the model path exists): the metric lives only in the A1 ops (`polar_radius_min=`, complex r~ in
   the x_hi CPML); `FDFDPhysics.metric` gives point-source areas, arc flux weights and eigen PML shares. Faces:
   `_check_polar_boundaries`; bloch_ky = azimuthal order m [1/rad]. Every Cartesian-only feature calls
@@ -378,7 +380,7 @@ type's vocabulary and refusals are in its help texts and validation.
 - NLFD-chi (physics/nlfd): one FDFDPhysics per harmonic channel; nonlinear terms are sources whose `add_to_rhs` /
   `face_currents` read other channels' solutions (nothing assumes the rhs constant beyond `_solution_dirty`). Its
   channel features wrap the FDFD FeatureTypes: renaming an FDFD feature param, or a validate resolving FDFD params
-  from the raw feature params, reaches it too.
+  from the raw feature params, reaches it too; keep the ez / hz help texts parallel (nlfd `_merged_help`).
 - `yee_grid.cell_row` is the shared outer-row view, so adjoint.py needs no fdfd_2d import. `solve_summary` keys its
   factor text on `linear.back_end`, never on host_factor_bytes being None.
 
