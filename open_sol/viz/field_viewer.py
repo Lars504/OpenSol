@@ -709,7 +709,8 @@ def _mirror_data(mirrors, scale):
 # ---- flow particles (in-plane vectors of 2D maps) ----
 def _flow_shape(extent, n_frames, n_layers, source_shape):
     """(gu, gv) samples of a layer's uniform flow grid: FLOW_MAX_SIDE along the longer side of extent, fewer when every
-    frame and layer would pass FLOW_MAX_BYTES (int16 x, y), never finer than the source raster, at least FLOW_MIN_SIDE."""
+    frame and layer would pass FLOW_MAX_BYTES (int16 x, y), never finer than the source raster, at least
+    FLOW_MIN_SIDE."""
     u0, u1, v0, v1 = extent
     width, height = u1 - u0, v1 - v0
     if not (width > 0 and height > 0):
@@ -730,7 +731,8 @@ def _uniform_flow(vectors, extent, shape):
     x = np.asarray(vectors.x, dtype=np.float64)
     y = np.asarray(vectors.y, dtype=np.float64)
     if x.ndim != 2 or x.shape != y.shape or min(x.shape) < 2:
-        raise ValueError(f'flow vectors need two (nu, nv) component arrays of at least 2 x 2, got {x.shape} / {y.shape}')
+        raise ValueError(f'flow vectors need two (nu, nv) component arrays of at least 2 x 2, got {x.shape} / '
+                         f'{y.shape}')
     nu, nv = x.shape
     centres = []
     for given, low, high, count in ((vectors.u_centres, u0, u1, nu), (vectors.v_centres, v0, v1, nv)):
@@ -784,7 +786,8 @@ def _flow_data(frames, flow, scale):
               for extent, layer in zip(extents, first)]
     packed, peak, magnitudes_seen = [], 0.0, []
     for frame in frames:
-        grids = [_uniform_flow(layer.vectors, extent, shape) for layer, extent, shape in zip(frame.layers, extents, shapes)]
+        grids = [_uniform_flow(layer.vectors, extent, shape)
+                 for layer, extent, shape in zip(frame.layers, extents, shapes)]
         magnitudes = [np.hypot(grid[..., 0], grid[..., 1]) for grid in grids]
         frame_max = max((float(np.nanmax(m)) for m in magnitudes if np.isfinite(m).any()), default=0.0)
         peak = max(peak, frame_max)
