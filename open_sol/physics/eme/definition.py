@@ -26,9 +26,11 @@ from .solver import (LENGTH_SWEEP_LIVE_BLOCKS, MODE_CACHE_BYTES, EME_PERMITTIVIT
                      section_table_result)
 
 TYPE_NAME = 'em_eme'
-_STATIONARY_STUDY = 'stationary'
+STATIONARY_STUDY = 'stationary'   # no model.schema constant yet (definition3d imports this one)
 PORTS_FEATURE = 'eme_ports'
 _DEFAULT_PORT_MODES = 4
+_DEFAULT_STRETCH_FACTORS = (0.5, 1.0, 1.5, 2.0)   # eme_length_sweep default (estimates of an unset value)
+_DEFAULT_PERIODS = 10                            # eme_periodic n_periods default (likewise)
 
 # ---- settings (help texts shared with definition3d) ----
 TRUNCATED_BASIS_HELP = ('A truncated basis leaves a projection error, reported as the section table reciprocity_defect '
@@ -170,8 +172,8 @@ def length_sweep_params(axis_text):
         Param('stop', 'float', 1e-6, label='Range stop', unit='m',
               help=f'Upper end of the stretched range along {axis_text}; > start.',
               tip='Where the part of the device whose length is varied ends.'),
-        Param('stretch_factors', 'float_list', [0.5, 1.0, 1.5, 2.0], label='Stretch factors', unit='1', min=0.0,
-              min_exclusive=True,
+        Param('stretch_factors', 'float_list', list(_DEFAULT_STRETCH_FACTORS), label='Stretch factors', unit='1',
+              min=0.0, min_exclusive=True,
               help='One re-cascade per factor (modes and interfaces reused), e.g. 0.5 .. 4 for a taper length scan.',
               tip='How much the part is stretched for each point of the curve: 2 makes it twice as long.'),
     )
@@ -230,7 +232,7 @@ def periodic_params(axis_text):
     """eme_periodic Params; axis_text names the propagation axis in the help texts."""
     return _range_params(axis_text, 'unit cell', 'Where the drawn period of the grating begins along the propagation '
                                                  'direction.', 'Where the drawn period ends.') + (
-        Param('n_periods', 'int', 10, label='Number of periods', min=1,
+        Param('n_periods', 'int', _DEFAULT_PERIODS, label='Number of periods', min=1,
               help='The drawn unit cell stands for n_periods copies in a row (cost ~log2(n_periods) star products); '
                    'the sections after the range follow the last period, so the hi port plane lies (n_periods - 1) '
                    'periods beyond the window face. 1 = Bloch analysis only.',
@@ -582,7 +584,7 @@ _SENSITIVITY_TEMPORARIES = 3
 def length_sweep_host_items(features, n_modes):
     """Host item of the stacked length-sweep re-cascade (one chunk of stretch factors; the monitors record one after
     another), () without an enabled eme_length_sweep (2D and 3D)."""
-    counts = [len(values) if isinstance(values, (list, tuple)) else _DEFAULT_STRETCH_FACTORS
+    counts = [len(values) if isinstance(values, (list, tuple)) else len(_DEFAULT_STRETCH_FACTORS)
               for values in (feature.params.get('stretch_factors') for feature in features
                              if feature.type == 'eme_length_sweep' and isinstance(feature.params, dict))]
     if not counts:
@@ -599,13 +601,12 @@ def _memory_estimate(settings_values, mesh, context):
     n_modes = min(settings_values['n_modes'] or line_cells, line_cells)
     n_cells = int(mesh.n_cells)
     mode_set_bytes = COMPLEX128_BYTES * (3 * n_modes * line_cells + line_cells + 2 * n_modes)
-    n_rows = 7   # read arrays (hz 5), pole regions, PEC: a typical count
     # host: mode-set cache (capped), per section 4 N^2 partial cascades + 4 N^2 interfaces (every slice taken as a
     # section: an upper figure), the material stack, the reconstructed field and the q_abs inputs
     host_items = (
         ('mode-set cache (capped)', min(slices * mode_set_bytes, MODE_CACHE_BYTES)),
         ('partial cascades and interfaces (8 N^2 per section)', 8 * COMPLEX128_BYTES * n_modes ** 2 * slices),
-        ('host material stack', n_rows * FLOAT64_BYTES * n_cells),
+        ('host material stack', _MATERIAL_ROWS * FLOAT64_BYTES * n_cells),
         ('reconstructed field (complex u, in-plane |field|^2)', (COMPLEX128_BYTES + FLOAT64_BYTES) * n_cells),
         ('absorbed power inputs (Gauss mean |E|^2, loss)', 2 * FLOAT64_BYTES * n_cells),
     )
@@ -623,7 +624,7 @@ def _memory_estimate(settings_values, mesh, context):
                                 f'({_SENSITIVITY_TEMPORARIES} x float64)',
                                 _SENSITIVITY_TEMPORARIES * FLOAT64_BYTES * n_cells))
         host_items += ((f'host adjoint gradients ({n_gradients} x float64)', n_gradients * FLOAT64_BYTES * n_cells),)
-    periods = [feature.params.get('n_periods', 10) for feature in features
+    periods = [feature.params.get('n_periods', _DEFAULT_PERIODS) for feature in features
                if feature.type == 'eme_periodic' and isinstance(feature.params, dict)]
     if adjoint and periods and isinstance(periods[0], int) and periods[0] > 1:
         host_items += (('periodic adjoint: partial cascades between the periods (2 N^2 each)',
@@ -645,8 +646,7 @@ REAL_LINE_EIG_FLOPS = 10.0
 TRIDIAGONAL_EIG_FLOPS = 100.0
 # complex multiply-adds / N^3 of one Redheffer star: 2 LUs (2/3 each) with 2 N right-hand columns (2 per N), 8 products
 STAR_COMPLEX_PRODUCTS = 2.0 * (2.0 / 3.0 + 4.0) + 8.0
-_MATERIAL_ROWS = 7             # read arrays, pole regions, PEC: as the memory estimate
-_DEFAULT_STRETCH_FACTORS = 4   # eme_length_sweep stretch_factors default length
+_MATERIAL_ROWS = 7   # read arrays (hz 5), pole regions, PEC: a typical count (memory and time estimates)
 
 
 def physics_counter(context, name):
@@ -718,8 +718,10 @@ def shared_time_estimate(context, slices, n_modes, transverse_points, solve_ops,
     features = [feature for feature in context.physics_spec.features
                 if feature.enabled and isinstance(feature.params, dict)]
     sweeps = [feature.params.get('stretch_factors') for feature in features if feature.type == 'eme_length_sweep']
-    factors = sum(len(values) if isinstance(values, (list, tuple)) else _DEFAULT_STRETCH_FACTORS for values in sweeps)
-    periods = [feature.params.get('n_periods', 10) for feature in features if feature.type == 'eme_periodic']
+    factors = sum(len(values) if isinstance(values, (list, tuple)) else len(_DEFAULT_STRETCH_FACTORS)
+                  for values in sweeps)
+    periods = [feature.params.get('n_periods', _DEFAULT_PERIODS) for feature in features
+               if feature.type == 'eme_periodic']
     periodic = bool(periods) and isinstance(periods[0], int)
     # unit cell, star powers by squaring, link (assemble_total rebuilds it for every stretch factor too)
     link_stars = 2 * math.ceil(math.log2(max(periods[0], 2))) + 2 if periodic else 0
@@ -831,8 +833,8 @@ EM_EME = PhysicsType(
                                                            *EME_PERMITTIVITY_ARRAYS, 'sigma_e')),
     output_fields=tuple(EME_FIELD_INFOS.values()),
     source_slots=source_slot_docs(EME_PERMITTIVITY_SLOTS),
-    supported_studies=(_STATIONARY_STUDY, FREQUENCY_DOMAIN_STUDY, OPTIMIZATION_STUDY),
-    default_study={'type': _STATIONARY_STUDY},
+    supported_studies=(STATIONARY_STUDY, FREQUENCY_DOMAIN_STUDY, OPTIMIZATION_STUDY),
+    default_study={'type': STATIONARY_STUDY},
     uses_dispersion=True,
     create=_create,
     domain_requirements=quasi_static_domain_requirements,
