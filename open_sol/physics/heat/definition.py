@@ -25,7 +25,8 @@ from ...model.definition_helpers import (
     reports_model_checks, selected_material_data, time_following_values, uses_time, validate_points_inside,
 )
 from ...model.geometry import expand_entities
-from ...model.schema import FeatureType, Issue, Param, PhysicsType, SolverRole, feature_path, known_physics
+from ...model.schema import (STATIONARY_STUDY, TIME_DEPENDENT_STUDY, FeatureType, Issue, Param, PhysicsType, SolverRole,
+                              feature_path, known_physics)
 from ...model.spec import RESERVED_ENTITY_NAMES
 from ...solvers.host_direct import HOST_DIRECT_BACK_ENDS
 from ...solvers.line_block import (MAX_CHUNK_SHIFTS, operator_bytes as line_block_operator_bytes,
@@ -500,7 +501,7 @@ def _time_mode(vctx, physics_spec, settings_values=None):
 
 def _is_steady(study_type, time_mode):
     """True when heat is solved as a steady state (any study but time_dependent, or stationary time_mode)."""
-    return study_type != 'time_dependent' or time_mode != 'transient'
+    return study_type != TIME_DEPENDENT_STUDY or time_mode != 'transient'
 
 
 def _study_text(vctx):
@@ -632,7 +633,7 @@ def _cadence_issues(vctx, physics_spec, settings, steady, path):
             return [Issue('error', path, f'transient heat with every = {every} advances {every} * {dt_sync:.4g} s '
                                          f'per step, more than its time_step {time_step:.4g} s; {remedy}')]
     em_dt = getattr(vctx.mesh, 'dt', None)
-    if vctx.study_type == 'time_dependent' and em_dt and every < MIN_EM_STEPS_PER_SOLVE:
+    if vctx.study_type == TIME_DEPENDENT_STUDY and em_dt and every < MIN_EM_STEPS_PER_SOLVE:
         return [Issue('warning', path,
                       f'heat is solved every {every} EM step(s) ({every * em_dt:.3g} s), and one CG solve costs far '
                       'more than an EM step: set every to a few hundred (one heat solve per Joule averaging window)')]
@@ -880,7 +881,7 @@ def _validate_heat(vctx, physics_spec, settings_values):
     issues = []
     time_mode = _time_mode(vctx, physics_spec, settings_values)
     steady = _is_steady(vctx.study_type, time_mode)
-    if time_mode == 'transient' and vctx.study_type != 'time_dependent':
+    if time_mode == 'transient' and vctx.study_type != TIME_DEPENDENT_STUDY:
         issues.append(Issue('info', path, f"time_mode 'transient' is ignored in a {_study_text(vctx)} study: heat "
                                           'is solved as a steady state (only a time-dependent study runs it '
                                           'transient)'))
@@ -923,7 +924,7 @@ def _create_heat(ctx, physics_spec, values):
     """HeatPhysics on ctx.domain (insulated faces until features apply) with the build's linear (pcg) and, in a
     thermal_noise study, shifted solvers; every study but time_dependent forces steady mode; thermal_noise needs no
     anchor (never CG-solved). Triangles: FEMHeatPhysics; tetrahedra: FEMHeatPhysics3D."""
-    time_mode = values['time_mode'] if ctx.study_type == 'time_dependent' else 'stationary'
+    time_mode = values['time_mode'] if ctx.study_type == TIME_DEPENDENT_STUDY else 'stationary'
     solvers = ctx.solvers(physics_spec.name)
     time_step = values['time_step'] if time_mode == 'transient' else math.inf
     if ctx.domain.grid_kind == 'triangles':   # FEM (mesh plan T4): discretization order, no azimuthal order / noise
@@ -972,7 +973,7 @@ def _memory_estimate(settings_values, mesh, context):
     the window voxels, 9 slots with a cylindrical sector's phi wrap) at the linear solver's precision with its flux
     post-processing (transient phase), a cuDSS 'linear' factor (fem.diffusion.cudss_diffusion_estimate) and the
     line_block noise solver's run items; element meshes: the FEM system on the active elements."""
-    transient = context.spec.study.type == 'time_dependent' and settings_values['time_mode'] == 'transient'
+    transient = context.spec.study.type == TIME_DEPENDENT_STUDY and settings_values['time_mode'] == 'transient'
     cudss = cudss_back_end(context.solvers)
     refactorizes = _operator_follows_state(context, transient)
     if mesh.kind in FREE_MESH_KINDS:   # FEMHeatPhysics[3D]: T, Q, Q_ext, |q| per element + the FEM system
@@ -1428,9 +1429,11 @@ _FEATURES = (
                               help='Planar 2D: a line source along z, Q_ext += P / cell area in the cell containing '
                                    'the point; its temperature grows as the cell shrinks (logarithmic singularity). '
                                    "Axisymmetric: the ring's total power (on the axis cell a point source); 3D: a "
-                                   'point source. Follows reuse_build.',
+                                   'point source. 1D: per the 1D total (slab W/m^2 although the unit reads W/m; '
+                                   'cylinder W/m; sphere W). Follows reuse_build.',
                               tip='Power per metre of depth, deposited in the cell that contains the point. In an '
-                                  'axisymmetric or 3D model it is the total power in watts instead.\n\n'
+                                  'axisymmetric or 3D model it is the total power in watts instead; in a 1D slab '
+                                  'model it is watts per square metre of the plane.\n\n'
                                   'The temperature at the point keeps rising as the mesh is refined, as for any ideal '
                                   'line source.'),),
                 object_kinds=('point',),
@@ -1535,8 +1538,8 @@ HEAT_PHYSICS = PhysicsType(
     source_slots={'volumetric_power': ('W/m^3', 'Field Q: each transfer replaces it (PML ring ignored) with the sum '
                                                 'of the heating couplings (em_heat_joule, currents_heat_joule, '
                                                 'fluid_heat_convection).')},
-    supported_studies=('stationary', 'time_dependent', THERMAL_NOISE_STUDY),
-    default_study={'type': 'stationary'},
+    supported_studies=(STATIONARY_STUDY, TIME_DEPENDENT_STUDY, THERMAL_NOISE_STUDY),
+    default_study={'type': STATIONARY_STUDY},
     # linear: the CG solves; shifted: (j omega C + q^2 k_zz A + K) u = w of the noise spectra (sparse_direct =
     # host SuperLU per shift, the reference, or an opt-in MUMPS / PARDISO host factor through the same factorize_host /
     # solve_host; line_block = batched GPU solves, mixed or double)

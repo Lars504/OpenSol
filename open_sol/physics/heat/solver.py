@@ -59,8 +59,9 @@ _temperature_to_rise = twin('heat.temperature_to_rise', cp.ElementwiseKernel(
 class HeatPhysics(DiffusionPhysicsBase):
     """Anisotropic heat conduction on the physical window (2D planar, axisymmetric (r, z) with x = r, polar (r, phi) /
     spherical (r, theta) on a polar Domain, or 3D on a Domain3D): steady or implicit-Euler transient, a DiffusionSystem
-    (`system`) solving the rise T - T0 by its linear_solver (None: Jacobi-PCG; model Automatic: multigrid-PCG on the gpu,
-    host SuperLU on the cpu) (T float32); (r, z) azimuthal_order m != 0: the rise is the amplitude of (T - T0) cos(m phi)."""
+    (`system`) solving the rise T - T0 by its linear_solver (None: Jacobi-PCG; models: the 'linear' role,
+    model.definition_helpers.CG_DIFFUSION_LINEAR_ROLE) (T float32, edge-extended into the PML after each solve); (r, z)
+    azimuthal_order m != 0: the rise is the amplitude of (T - T0) cos(m phi)."""
 
     name = "heat"
     material_schema = THERMAL_SCHEMA
@@ -141,6 +142,8 @@ class HeatPhysics(DiffusionPhysicsBase):
         self.rebuild_operator()
 
     def materials_changed(self, names) -> None:
+        """Call after writing k_* / rho / cp arrays directly (else the next step solves with the old operator): k marks
+        the operator for re-assembly, rho / cp only the transient capacity C/dt (rebuild_operator re-assembles now)."""
         names = set(names)
         if _OPERATOR_MATERIALS & names:
             # values only (k(T)): the re-assembly tests the c > 0 pattern instead of the full anchor check

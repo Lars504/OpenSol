@@ -602,6 +602,7 @@ def coupling_role_text(coupling_type, role) -> str:
 FREQUENCY_DOMAIN_STUDY = 'frequency_domain'   # the wavelength-based harmonic study
 EIGENFREQUENCY_STUDY = 'eigenfrequency'
 TIME_DEPENDENT_STUDY = 'time_dependent'
+STATIONARY_STUDY = 'stationary'
 
 
 @dataclass(frozen=True)
