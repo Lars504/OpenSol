@@ -39,8 +39,9 @@ from .coupling import make_temperature_rise_transform
 from .definition_bloch2d import (BAND_TEMPLATE_2D, bloch_issues_2d, complex_bloch_pencil_2d, periodic_axes_2d,
                                 periodic_params_2d, solver_periodic_arguments, static_periodic_cell,
                                 trivial_bloch_phase_2d)
-from .definition_common import (DENSITY_PARAM, EIGENFREQUENCY_STUDY, GEOMETRIC_NONLINEARITY_PARAMS,
-                                INITIAL_STRESS_PROPERTIES, LOSS_PROPERTIES, MATERIAL_PROPERTIES, MODAL_STUDIES,
+from .definition_common import (DENSITY_PARAM, EIGENFREQUENCY_STUDY, ELECTRODE_CONNECTION_HELP,
+                                ELECTRODE_VOLTAGE_HELP, GEOMETRIC_NONLINEARITY_PARAMS, INITIAL_STRESS_PROPERTIES,
+                                LOSS_PROPERTIES, MATERIAL_PROPERTIES, MODAL_STUDIES,
                                 PHOTOELASTIC_P44_PARAM, PIEZO_MATERIAL_PROPERTIES, STIFFNESS_TENSOR_PROPERTIES,
                                 STRESS_STIFFENING_PARAM, SUPPORT_FEATURES, TED_MATERIAL_PROPERTIES, apply_body_force,
                                 apply_temperature_change,
@@ -116,80 +117,62 @@ SOLID_LINEAR_ROLE = SolverRole('spd', 'pcg', precisions=('single', 'double', 'mi
 _DISCRETIZATION_PARAM = Param(
     'discretization', 'choice', 'quadratic', label='Discretization', choices=tuple(DISCRETIZATIONS),
     choice_labels=(('quadratic', 'Quadratic (P2)'), ('linear', 'Linear (P1)')),
-    help="Triangle meshes only (mesh kind 'triangles'; a tensor mesh ignores it: bilinear cells): the displacement "
-         "elements. quadratic (default, the industry standard): P2 Lagrange, isoparametric on curved boundaries "
-         '(circle / ellipse edges follow the drawn curve), strain and stress linear per element; linear: P1, constant '
-         'strain per element (stiff in bending, locks toward poisson_ratio 0.5). Unknowns per element and component: '
-         '~2 (quadratic) or ~0.5 (linear); one host SuperLU per assembly (sparse_direct). Displayed strain / stress '
-         'are averaged at the nodes over the solid elements around them (a material interface is smeared over one '
-         'element; displacements and the state() element values are not).',
+    help='Triangle meshes only (a tensor mesh ignores it: bilinear cells). quadratic: P2, isoparametric on curved '
+         'boundaries, linear strain per element; linear: P1, constant strain (stiff in bending, locks toward '
+         'poisson_ratio 0.5). ~2 (quadratic) or ~0.5 (linear) unknowns per element and component. Displayed strain / '
+         'stress are node averages over the solid elements (an interface smears over one element; displacements and '
+         'state() element values do not).',
     tip='How the displacement varies inside each triangle: quadratic is far more accurate per element, linear is '
         'cheaper.\n\nOnly used on a triangle mesh.')
 
 _TARGET_FREQUENCY_PARAM = Param(
     'target_frequency', 'float', 0.0, label='Eigenfrequency target', unit='Hz', min=0.0,
-    help='Eigenfrequency study only: the vibration modes nearest this frequency are searched (shift-invert about '
-         '(2 pi target_frequency)^2, moved 1e-4 above it so a target on a resonance still factors); 0 = the lowest '
-         'modes (a body that moves without strain then fails: check the supports). On a triangle mesh a target > 0 '
-         'also allows a free body (no supports; axisymmetric: no held u_z): its rigid-body modes (f below 1e-4 x the '
-         'target) are dropped; likewise the free translations of a periodic cell with every bloch_k 0 (either mesh '
-         'kind). Ignored by the other studies.',
+    help='Eigenfrequency study: the modes nearest this frequency (shift-invert about (2 pi f)^2, moved 1e-4 above so a '
+         'target on a resonance factors); 0 = the lowest (a strain-free motion then fails: check the supports). A '
+         'target > 0 also allows a free body on triangles (no supports; axisymmetric: no held u_z) and a free periodic '
+         'cell with every bloch_k 0 (both meshes): their rigid-body modes (f < 1e-4 x target) are dropped.',
     tip="Used only by an 'Eigenfrequency' study: the vibration modes closest to this frequency are found.\n\n"
         '0 finds the lowest modes.')
 _AXIAL_WAVENUMBER_PARAM = Param(
     'axial_wavenumber', 'float', None, label='Axial wavenumber', unit='rad/m', min=0.0, optional=True,
-    help='Eigenfrequency study only. Empty (default): the in-plane plane-strain vibration modes (u_x, u_y). A value '
-         'k_z: the guided (2.5D) modes of the structure long along z, u ~ exp(i (k_z z - omega t)) with all three '
-         'components coupled (Q1 elements, exact element integrals; the complex Hermitian operator is solved in the '
-         'equivalent real symmetric form u_z -> -i u_z, exact for isotropic cells): the physical displacement is (u_x '
-         'cos phi, u_y cos phi, u_z sin phi), phi = k_z z - omega t, so field u_z is the amplitude of the quadrature '
-         'part and the strains / stresses are the phi = 0 values (elastic_strain_zz = k_z u_z enters stress_* and '
-         'von_mises; the shear strains xz / yz peak at phi = pi / 2 and are not output). k_z > 0 leaves no rigid motion: '
-         'supports are optional (a free suspended wire). k_z = 0 gives the plane-strain modes plus the antiplane (pure '
-         'u_z) modes; these need u_z held on every solid region: Fixed and Fixed (domain) hold u_z, Roller and '
-         'Displacement leave it free. Typical: backward Brillouin scattering needs k_z = 2 beta = 4 pi n_eff / lambda '
-         '(~2.5e7 rad/m for a silicon wire at 1550 nm). For a dispersion relation f(k_z) sweep a parameter used here. '
-         'Ignored by the other studies; the optomechanics study refuses it (an optomechanical_coupling with scattering '
-         'backward makes that study set k_z = 2 Re beta itself).',
+    help='Eigenfrequency study, tensor mesh. Empty: in-plane plane-strain modes (u_x, u_y). k_z: guided (2.5D) modes '
+         'of a structure long along z, u ~ exp(i (k_z z - omega t)), all three components coupled (isotropic cells '
+         'only: solved in the real form u_z -> -i u_z). Physical displacement (u_x cos phi, u_y cos phi, u_z sin '
+         'phi), phi = k_z z - omega t: field u_z is the quadrature amplitude, strains / stresses the phi = 0 values '
+         '(elastic_strain_zz = k_z u_z enters stress_* and von_mises; shears xz / yz not output). k_z > 0: no rigid '
+         'motion, supports optional. k_z = 0: plane-strain plus antiplane (pure u_z) modes, which need u_z held on '
+         'every solid region (Fixed and Fixed (domain) hold it, Roller and Displacement do not). Backward Brillouin: '
+         'k_z = 2 beta = 4 pi n_eff / lambda (~2.5e7 rad/m, silicon wire at 1550 nm). Sweep it for a dispersion '
+         'f(k_z). The optomechanics study refuses it (scattering backward sets k_z itself).',
     tip="Used only by an 'Eigenfrequency' study. Empty finds the vibrations within the cross-section. A value finds "
         'the vibrations travelling along the structure with this wavenumber (2 pi divided by their wavelength), '
         'including motion along the structure.\n\nWith a value, the structure may be left without supports.')
 _PIEZOELECTRIC_PARAM = Param(
     'piezoelectric', 'bool', False, label='Piezoelectric',
-    help='On: piezoelectric plane strain. A nodal electric potential phi (the same bilinear elements, every window '
-         'node, void cells included as dielectric) couples to the displacement through the piezo_e* material arrays '
-         '(solid cells) with the clamped permittivity eps0 eps_dc_xx / _yy / _xy (every window cell, unset = 1): T = c S '
-         '- e^T E, D = e S + eps E, E = -grad phi, div D = 0 (no free volume charge). Electrode / Electrode (domain) '
-         'features fix phi (connection voltage; at least one, the ground, is required, except in a Bloch cell with a '
-         'bloch_k != 0, which excludes a constant phi) or make an isolated '
-         'equipotential carrying a net charge (floating); every other outer face is insulating (D . n = 0). The '
-         'coupled operator [[K_uu, K_uphi], [K_phiu, -K_phiphi]] is symmetric but indefinite, so the static solve is '
-         'one host SuperLU factorisation (float64, kept while the operator is unchanged; counters piezo_* in the '
-         'summary) instead of the pcg linear solver; the eigenfrequency study solves the coupled pencil (no mass on '
-         'phi) with the eigen solver: voltage electrodes held at 0 give the short-circuit (resonance) frequencies, '
-         'floating ones with charge 0 the open-circuit (antiresonance) frequencies; k_eff^2 = (f_a^2 - f_r^2) / '
-         'f_a^2 from two runs. The frequency_response study drives the electrodes harmonically (voltages and charges '
-         'as amplitudes, losses mechanical_loss_factor / dielectric_loss_tangent) and its admittance feature gives Y(f) '
-         'with a Butterworth-Van Dyke fit (f_s, f_p, k_eff^2, C0, R1, L1, C1). Outputs electric_potential / '
-         'electric_field_x / _y and the stress with its -e^T E part (stress_zz with piezo_e13 / _e23). Stiffness: '
-         "youngs_modulus / poisson_ratio or the c_ij entries (a {'model': 'crystal'} entry sets c_ij, piezo_e* and "
-         'eps_dc*). Not with axial_wavenumber or the optomechanics study; the host factor limits it to ~10^6 dofs (3 '
-         'per node).',
+    help='Tensor mesh, plane strain: a nodal potential phi (bilinear, every window node; void cells are dielectric) '
+         'coupled through the piezo_e* arrays (solid cells), clamped permittivity eps0 eps_dc (every window cell, unset '
+         '= 1): T = c S - e^T E, D = e S + eps E, E = -grad phi, div D = 0. Electrode features hold phi (connection '
+         'voltage; at least one, the ground, except in a Bloch cell with bloch_k != 0) or float with a net charge; '
+         'other outer faces are insulating (D . n = 0). The symmetric indefinite coupled operator takes one host '
+         'SuperLU (float64, counters piezo_*), not the pcg: ~10^6 dofs at most (3 per node). Eigenfrequency: the '
+         'coupled pencil, voltage electrodes at 0 = short circuit (resonances f_r), floating at charge 0 = open circuit '
+         '(antiresonances f_a); k_eff^2 = (f_a^2 - f_r^2) / f_a^2 from two runs. frequency_response: electrode values '
+         'as amplitudes (losses mechanical_loss_factor, dielectric_loss_tangent), the admittance feature fits Y(f). '
+         'Outputs electric_potential, electric_field_x / _y; stress includes -e^T E (stress_zz with piezo_e13 / _e23). '
+         "A {'model': 'crystal'} entry sets c_ij, piezo_e*, eps_dc*. Not with axial_wavenumber or the optomechanics "
+         'study.',
     tip='Turns on the piezoelectric effect: the electric potential is solved together with the deformation, and '
         'electrodes apply voltages or measure charges.\n\nNeeds at least one Electrode with a fixed voltage (the '
         'ground). In an eigenfrequency study, fixed-voltage electrodes are shorted and floating ones open.')
 _GEOMETRY_PARAM = geometry_param(
-    'the cross-section of a structure (out_of_plane decides eps_zz / sigma_zz), forces and reactions per m of depth '
-    '(N/m)',
-    '(r, z) deformation without torsion (u_phi = 0): unknowns u_r = u_x, u_z = u_y on the cell corners, hoop strain '
-    'u_r / r, element integrals weighted by 2 pi r (2 x 2 Gauss), so the operator, loads and reactions are whole rings: '
-    'tractions and body forces keep their units (Pa, N/m^3), nodal forces and support reactions are in N (F_y of a '
-    'support = the axial force on its ring area, F_x = the integral of its radial traction, not a net vector force). '
-    'The _zz outputs are the hoop components (stress_zz = sigma_theta theta, elastic_strain_zz = u_r / r - alpha_zz dT, '
-    'alpha_zz = the hoop expansion), _yy the axial ones; u_r = 0 is held on the x_lo nodes automatically. Only u_z needs '
-    'a support per solid region (a z translation is the one rigid motion). out_of_plane is not used; not with '
-    'piezoelectric, axial_wavenumber or the optomechanics study; an eigenfrequency study finds the axisymmetric '
-    '(torsion-free) modes with the whole-ring mass',
+    'a cross-section (out_of_plane sets the z condition), forces per m of depth (N/m)',
+    '(r, z) deformation without torsion: u_r = u_x, u_z = u_y, hoop strain u_r / r, integrals weighted by 2 pi r, so '
+    'operator, loads and reactions are whole rings: tractions and body forces keep their units (Pa, N/m^3), nodal '
+    "forces and reactions are in N (a support's F_y = the axial force on its ring area, F_x = the integral of its "
+    'radial traction, not a net force). _zz outputs are hoop components (stress_zz = sigma_theta theta, '
+    'elastic_strain_zz = u_r / r - alpha_zz dT), _yy axial. Only u_z needs a support per solid region (the one rigid '
+    'motion). out_of_plane unused; not with piezoelectric or axial_wavenumber; optomechanics only on triangles with '
+    'em_fdfd_bor optics; eigenfrequency gives the torsion-free modes (m >= 1: azimuthal_order)',
     'forces are per metre of depth.',
     'Forces and support reactions are those of the whole ring, in newtons.',
     axis_text='u_r = 0 is held there automatically; a support or load selecting x_lo acts on a line without area: '
@@ -199,22 +182,16 @@ _OUT_OF_PLANE_PARAM = Param(
     choice_labels=((PLANE_STRAIN, 'Plane strain (long structure)'), (PLANE_STRESS, 'Plane stress (thin plate)'),
                    (GENERALIZED_PLANE_STRAIN, 'Generalized plane strain (long, free ends)')),
     visible_if=(('geometry', ('planar',)),),
-    help='Planar geometry only (axisymmetric ignores it): what the drawing assumes along z. plane_strain (default): eps_zz '
-         '= 0, a cross-section of a structure long along z with clamped ends; stress_zz = lambda (eps_xx + eps_yy) - '
-         'beta_z dT is the stress that holds eps_zz at 0 (it overestimates the thermal stress of a waveguide whose ends '
-         'are free). plane_stress: sigma_zz = 0, a thin plate in the drawing plane (top view of a film or membrane): the '
-         'reduced stiffness lambda -> 2 mu lambda / (lambda + 2 mu) and thermal stress beta - lambda beta_z / (lambda + 2 '
-         'mu); outputs elastic_strain_zz = eps_zz - alpha_zz dT with eps_zz = (beta_z dT - lambda (eps_xx + eps_yy)) / '
-         '(lambda + 2 mu) per cell, stress_zz = 0; forces per m of thickness (N/m). generalized_plane_strain '
-         '(industry-standard form): eps_zz = e0 + e1 x + e2 y over the whole drawn cross-section (x, y of the '
-         'drawing), e0 set by the net axial force (setting axial_force; 0 = free ends) and the bending terms e1 / e2 '
-         '(setting bending, default both free) by the bending moments (bending_moment_x / _y; 0 = an unloaded, freely '
-         'bending long body): the right model of thermal stress in a long waveguide or fibre; solved by superposition '
-         '(one pcg solve of the eps_zz = 0 problem plus, per assembly, one per free term; on a triangle mesh back '
-         'substitutions on the K factor), the force and moment conditions hold exactly in the elements; outputs '
-         'stress_zz and elastic_strain_zz = eps_zz - alpha_zz dT. Piezoelectric, '
-         'axial_wavenumber and the optomechanics study need plane_strain; the eigenfrequency study needs plane_strain '
-         'or plane_stress.',
+    help='Planar geometry only. plane_strain: eps_zz = 0, a cross-section of a long structure with clamped ends; '
+         'stress_zz = lambda (eps_xx + eps_yy) - beta_z dT holds eps_zz at 0 (overestimates the thermal stress of a '
+         'waveguide with free ends). plane_stress: sigma_zz = 0, a thin plate in the drawing plane (top view of a '
+         'film): reduced stiffness lambda -> 2 mu lambda / (lambda + 2 mu); eps_zz = (beta_z dT - lambda (eps_xx + '
+         'eps_yy)) / (lambda + 2 mu) enters elastic_strain_zz = eps_zz - alpha_zz dT, stress_zz = 0; forces per m of '
+         'thickness. generalized_plane_strain: eps_zz = e0 + e1 x + e2 y over the drawn cross-section, e0 set by '
+         'axial_force (0 = free ends), e1 / e2 (setting bending) by bending_moment_x / _y: thermal stress of a long '
+         'waveguide or fibre with free ends; superposition (one extra solve per free term and assembly), force and '
+         'moment conditions exact; outputs stress_zz, elastic_strain_zz = eps_zz - alpha_zz dT. Piezoelectric, '
+         'axial_wavenumber and optomechanics need plane_strain; eigenfrequency plane_strain or plane_stress.',
     tip='What happens along the depth of the drawing.\n\n'
         '- Plane strain: a long structure held at its ends (a waveguide cross-section).\n'
         '- Plane stress: a thin plate lying in the drawing (seen from the top).\n'
@@ -223,20 +200,17 @@ _OUT_OF_PLANE_PARAM = Param(
 _THICKNESS_PARAM = Param(
     'thickness', 'float', None, label='Thickness', unit='m', min=0.0, optional=True,
     visible_if=(('geometry', ('planar',)),),
-    help='Planar geometry only: the out-of-plane thickness d of the structure (a plate, or the length of a long '
-         'part). Empty '
-         '(default): everything per m of depth, support reactions in N/m. A value: the support reaction tables are '
-         'for that thickness in N (the per-m forces times d); the solution, tractions (Pa) and body forces (N/m^3) do '
-         'not change, nor do axial_force (always the total on the cross-section), electrode charges (C/m) and the '
-         'optomechanical length. Typical for plane stress: the film thickness.',
+    help='Planar only: out-of-plane thickness d (a plate, or the length of a long part). Empty: everything per m of '
+         'depth (reactions N/m). Set: support reactions in N and admittance Y in S for thickness d; the solution, '
+         'tractions, body forces, axial_force (always the cross-section total), electrode charges (C/m) and the '
+         'optomechanical length do not change. Plane stress: the film thickness.',
     tip='Thickness of the structure perpendicular to the drawing. Leave empty to get forces per metre of depth; with '
         'a value, support forces are given in newtons for that thickness.')
 _AXIAL_FORCE_PARAM = Param(
     'axial_force', 'float', 0.0, label='Axial force', unit='N',
     visible_if=(('out_of_plane', (GENERALIZED_PLANE_STRAIN,)),),
-    help='Generalized plane strain only: the net force along +z on the drawn cross-section (integral of stress_zz over '
-         'the solid cells; a mirrored model: of the drawn part only). 0 = free ends (no net axial load); a positive '
-         'value pulls. Ignored by the other conditions.',
+    help='Generalized plane strain: net force along +z on the drawn cross-section (integral of stress_zz over the '
+         'solid cells; a mirrored model: of the drawn part). 0 = free ends; > 0 pulls.',
     tip='Total pulling force along the length of the structure, on the drawn cross-section. 0 means the ends are '
         'free.')
 _BENDING_PARAM = Param(
@@ -244,28 +218,24 @@ _BENDING_PARAM = Param(
     choice_labels=(('xy', 'Free about both axes'), ('x', 'Only varying along x'), ('y', 'Only varying along y'),
                    ('none', 'None (uniform out-of-plane strain)')),
     visible_if=(('out_of_plane', (GENERALIZED_PLANE_STRAIN,)),),
-    help="Generalized plane strain only: which linear terms of eps_zz = e0 + e1 x + e2 y are solved. 'xy' (default): "
-         "e1 and e2, set by bending_moment_y and bending_moment_x; 'x': e1 only (e2 = 0), 'y': e2 only (e1 = 0); "
-         "'none': uniform eps_zz = e0. A mirrored model draws half the section and the moments and force are those of "
-         'the drawn part: hold the term across a mirror plane at 0 (a mirror on an x face: bending y; on a y face: '
-         "bending x; on both: none), since the whole body's eps_zz is even there. Each free term adds one pcg solve per "
-         'assembly.',
+    help='Generalized plane strain: free terms of eps_zz = e0 + e1 x + e2 y. xy: e1 and e2 (set by bending_moment_y / '
+         '_x); x: e1 only; y: e2 only; none: uniform e0. A mirrored model (moments and force of the drawn part) holds '
+         'the term across a mirror plane at 0: mirror on an x face: y; on a y face: x; on both: none. Each free term '
+         'adds one solve per assembly.',
     tip='Whether the long structure may bend out of the drawing. Free bending suits a long body with free ends; with '
         'a mirror plane, keep the strain from varying across that plane.')
 _BENDING_MOMENT_X_PARAM = Param(
     'bending_moment_x', 'float', 0.0, label='Bending moment about x', unit='N m',
     visible_if=(('out_of_plane', (GENERALIZED_PLANE_STRAIN,)),),
-    help='Generalized plane strain with bending xy or y: M_x = integral of y stress_zz dA over the solid cells of the '
-         'drawn cross-section, about the drawing origin (x = y = 0, the lower left domain corner); an axial force F '
-         'through the point (x_F, y_F) gives M_x = y_F F. 0 (default) = no applied moment. Ignored otherwise.',
+    help='Generalized plane strain, bending xy or y: M_x = integral of y stress_zz dA over the drawn solid cells, '
+         'about the drawing origin (x = y = 0); an axial force F through (x_F, y_F) gives M_x = y_F F.',
     tip='Moment about the x axis through the origin of the drawing applied at the ends of the long structure. 0 '
         'means no bending load.')
 _BENDING_MOMENT_Y_PARAM = Param(
     'bending_moment_y', 'float', 0.0, label='Bending moment about y', unit='N m',
     visible_if=(('out_of_plane', (GENERALIZED_PLANE_STRAIN,)),),
-    help='Generalized plane strain with bending xy or x: M_y = -(integral of x stress_zz dA) over the solid cells of '
-         'the drawn cross-section, about the drawing origin (right-hand rule: an axial force F through (x_F, y_F) gives '
-         'M_y = -x_F F). 0 (default) = no applied moment. Ignored otherwise.',
+    help='Generalized plane strain, bending xy or x: M_y = -(integral of x stress_zz dA) over the drawn solid cells, '
+         'about the drawing origin (right-hand rule: a force F through (x_F, y_F) gives M_y = -x_F F).',
     tip='Moment about the y axis through the origin of the drawing applied at the ends of the long structure. 0 '
         'means no bending load.')
 
@@ -274,34 +244,28 @@ def _pml_params():
     """pml_<face> per outer face, pml_cells and pml_reflection (elastic PML ring: triangles, eigenfrequency)."""
     faces = tuple(Param(
         f'pml_{face}', 'bool', False, label=f'PML on {face}',
-        help=(f'Triangle mesh, eigenfrequency study only: an elastic perfectly matched layer beyond {face}. The mesh grows '
-              'a ring of pml_cells x the mesh dx there (the MeshSpec pml_layers element layers across), its material '
-              'continued from the window edge, with the complex coordinate stretch s = 1 - j beta (d / w)^2 (fem.pml; d '
-              'the depth, w the thickness; axisymmetric: the stretched radius r~ beyond x_hi), beta set by '
-              'pml_reflection at the target frequency for the fastest wave sqrt(c_II / rho) of the ring; its outer side '
-              'is clamped. Waves leaving the window through that face are absorbed, so the modes are complex: '
-              'frequency_imag > 0 and the radiation Q = f / (2 frequency_imag) in the Resonance table (mode shapes '
-              'shown as their real part and |u|); modes with more than half of their |u|^2 in the ring are PML modes '
-              'and dropped. The pencil stays linear in omega^2 (beta is frequency independent); absorption weakens for '
-              'modes far below the target. With stress_stiffening the static prestress state treats the ring as an '
-              'ordinary (unstretched) elastic continuation clamped at its outer side, and its K_sigma is stretched '
-              f'like K. Supports and loads must stay off {face} (the inner side of the ring); not on x_lo of an '
-              'axisymmetric solid (the axis). Needs target_frequency > 0.'),
+        help=('Triangle mesh, eigenfrequency study, target_frequency > 0: an elastic PML ring beyond this face, '
+              'pml_cells x the mesh dx thick, material continued from the window edge, stretch s = 1 - j beta (d / '
+              'w)^2 (d depth, w thickness; axisymmetric: the stretched radius beyond x_hi), beta from pml_reflection '
+              'at the target for the fastest wave sqrt(c_II / rho); outer side clamped. Modes become complex: '
+              'frequency_imag > 0, radiation Q = f / (2 frequency_imag) in the Resonance table, shapes shown as real '
+              'part and |u|; modes with over half their |u|^2 in the ring are dropped. beta is frequency independent, '
+              'so absorption weakens far below the target. stress_stiffening treats the ring as an unstretched elastic '
+              'continuation, clamped outside (its K_sigma stretched like K). Supports and loads stay off this face; '
+              'not on x_lo of an axisymmetric solid (the axis).'),
         tip=(f'Absorbs vibrations leaving through {face}, as if the solid continued forever there.\n\nGives each '
              'resonance a radiation quality factor. Only for an eigenfrequency study on a triangle mesh.'))
         for face in FACES)
     cells = Param('pml_cells', 'int', DEFAULT_PML_CELLS, label='PML thickness (elements)', unit='1', min=1, max=100,
-                  help='Thickness of the elastic PML ring in multiples of the mesh dx (h_max) on every pml_<face> '
-                       'face (the MeshSpec pml_layers sets the element layers across it); the profile needs about 6-10 '
-                       'layers, and the ring should span a fair part of the longest wavelength (c / f at the target) '
-                       'for a low reflection.',
+                  help='PML ring thickness in mesh dx (h_max) on every pml_<face> face (MeshSpec pml_layers sets the '
+                       'element layers across it); the profile needs ~6-10 layers and the ring a fair part of the '
+                       'longest wavelength (c / f at the target).',
                   tip='How thick the absorbing layer is, in element sizes.\n\n8 is typical.')
     reflection = Param('pml_reflection', 'float', DEFAULT_PML_REFLECTION, label='PML reflection', unit='1', min=0.0,
                        min_exclusive=True, max=1.0,
-                       help='Theoretical round-trip reflection of the elastic PML for the fastest wave at the target '
-                            'frequency (sets beta = 3 ln(1 / R) c / (2 omega_t w)); slower waves are absorbed more. A '
-                            'very small value makes the profile steep, which the discretisation reflects instead: '
-                            '1e-4 to 1e-8 typical.',
+                       help='Round-trip reflection of the elastic PML for the fastest wave at the target frequency '
+                            '(beta = 3 ln(1 / R) c / (2 omega_t w)); slower waves are absorbed more. Too small a value '
+                            'steepens the profile, which the discretisation reflects: 1e-4 to 1e-8 typical.',
                        tip='How strongly the absorbing layer damps a wave crossing it and back.\n\n1e-6 is typical.')
     return faces + (cells, reflection)
 
@@ -329,14 +293,13 @@ def _domain_requirements(settings_values):
 
 # ---- feature texts ----
 _SUPPORT_RESULT_TEXT = (
-    "Result 'table' of the latest solve with one row [feature, F_x, F_y] (units '', N/m, N/m; with the thickness "
-    'setting N, N for that thickness; geometry axisymmetric: N, N of the whole ring) and the extras F_x and F_y: the '
-    'force per m of depth the support exerts on the solid (sum '
-    'of K u - f over its held dofs, so components it does not hold read 0); a dof held by two supports counts in both '
-    '(the later value holds it). After a frequency_response study on a triangle mesh: a table of the complex reaction '
-    'per solved frequency instead, columns frequency, F_x_re, F_x_im, F_y_re, F_y_im (Hz and the force unit above).')
-_FACE_ONLY_TEXT = ('Outer faces only (a support on an object boundary: Fixed (domain) on the object). Holds every '
-                   'node of the face, corners included.')
+    "Result 'table' of the latest solve, row [feature, F_x, F_y], extras F_x, F_y: the force the support exerts on the "
+    'solid, sum of K u - f over its held dofs (0 for unheld components; a dof held by two supports counts in both, the '
+    'later value holds it); N/m per m of depth, N with the thickness setting or axisymmetric (whole ring). After a '
+    'frequency_response on triangles: the complex reaction per frequency instead (columns frequency, F_x_re, F_x_im, '
+    'F_y_re, F_y_im).')
+_SUPPORT_RESULT_REF = 'Result: the reaction table, as fixed.'
+_FACE_ONLY_TEXT = 'Outer faces only (on an object boundary use Fixed (domain)); every node of the face, corners included.'
 
 
 # ---- feature apply / result callbacks (worker thread, GPU) ----
@@ -1771,186 +1734,154 @@ def _linear_type(context) -> str:
 _ELECTRODE_PARAMS = (
     Param('connection', 'choice', 'voltage', label='Connection', choices=ELECTRODE_CONNECTIONS,
           choice_labels=(('voltage', 'Fixed voltage'), ('floating', 'Floating (isolated)')),
-          help='voltage: phi = voltage on every node of the electrode (0 = ground; the eigenfrequency study holds it at '
-               '0: short circuit, the resonance frequencies). floating: one shared, unknown potential carrying the net '
-               'free charge of the charge setting (0 = an isolated electrode; the eigenfrequency study uses 0: open circuit, the '
-               'antiresonance frequencies). At least one voltage electrode is required (the reference of phi).',
+          help=ELECTRODE_CONNECTION_HELP,
           tip='Fixed voltage: the electrode is held at the voltage (or shorted to ground in an eigenfrequency study).'
               '\n\nFloating: the electrode is isolated, its voltage follows from the charge on it (open circuit in an '
               'eigenfrequency study).'),
     Param('voltage', 'float', 0.0, label='Voltage', unit='V',
-          help='Potential of a voltage electrode in a static (stationary or time-dependent) solve; ignored by floating '
-               'electrodes and by the eigenfrequency study (0 there).',
+          help=ELECTRODE_VOLTAGE_HELP,
           tip='Voltage applied to the electrode; 0 is ground.'),
     Param('charge', 'float', 0.0, label='Charge', unit='C/m',
-          help='Net free charge per m of depth on a floating electrode in a static solve (its voltage follows); '
-               'ignored by voltage electrodes and by the eigenfrequency study (0 there).',
+          help='Net free charge per m of depth on a floating electrode in a static solve (its voltage follows); ignored '
+               'otherwise (eigenfrequency: 0).',
           tip='Electric charge put on an isolated electrode, per metre of depth.'),
 )
 _ELECTRODE_RESULT_TEXT = (
-    "Result 'table' of the latest static solve with one row [feature, V, Q] (units '', V, C/m) and the extras V and Q: "
-    'the electrode potential and the net free charge on it per m of depth (Q = -sum of the phi rows of A x over its '
-    'nodes, the discrete Gauss law; a voltage electrode: the charge its source delivered, so Q / V of a single driven '
-    'electrode against ground is the capacitance per m of depth). Not available after an eigenfrequency solve.')
+    "Result 'table' of the latest static solve, row [feature, V, Q] (V, C/m), extras V, Q: the potential and the net "
+    'free charge per m of depth (Q = -sum of the phi rows of A x over its nodes, the discrete Gauss law; a driven '
+    'electrode against ground: Q / V = capacitance per m). Not after an eigenfrequency solve.')
 _ELECTRODE_TEXT = (
-    'piezoelectric only (ignored with a validation warning otherwise): an equipotential electrode, connection voltage '
-    '(held phi) or floating (one shared phi with a net charge). Two electrodes must not share a node (adjacent outer '
-    'faces share their corner node: a build error; select both faces in one feature instead). Its nodes keep their '
-    'mechanical supports and loads (a thin metal film without stiffness).')
+    'Piezoelectric only (else ignored, validation warning): one equipotential, connection voltage or floating. Two '
+    'electrodes must not share a node (adjacent faces share a corner: build error; select both in one feature). Its '
+    'nodes keep their supports and loads (a thin film without stiffness).')
 
 
 # ---- type ----
 _FEATURES = (
     FeatureType('fixed', 'Fixed', 'boundary_condition', 'boundary', allow_interior=False, result_kind='table',
                 summary='Clamps the selected domain edges: they cannot move in any direction.',
-                description=f'Clamped support: u_x = u_y = 0 (and u_z = 0 for guided modes, axial_wavenumber). '
-                            f'{_FACE_ONLY_TEXT} {_SUPPORT_RESULT_TEXT}',
+                description=f'u_x = u_y = 0 (and u_z of guided modes). {_FACE_ONLY_TEXT} {_SUPPORT_RESULT_TEXT}',
                 apply=_apply_fixed, result=_support_result, grids=_BOTH_GRIDS),
     FeatureType('roller', 'Roller', 'boundary_condition', 'boundary', allow_interior=False, result_kind='table',
                 summary='Lets the selected domain edges slide along themselves but not move away from or into the '
                         'domain. Also the symmetry condition of a mirror-symmetric model.',
-                description='Roller (symmetry) support: the normal displacement is 0 (u_x on x_lo / x_hi, u_y on '
-                            'y_lo / y_hi), the tangential one free (zero shear traction; u_z of guided modes free '
-                            'too). Rollers on one x face and one y face hold a solid completely. '
-                            f'{_FACE_ONLY_TEXT} {_SUPPORT_RESULT_TEXT}',
+                description='Normal displacement 0 (u_x on x faces, u_y on y faces), tangential free (zero shear '
+                            'traction; u_z of guided modes free); a mirror plane. Rollers on one x and one y face hold '
+                            f'a solid. {_FACE_ONLY_TEXT} {_SUPPORT_RESULT_REF}',
                 apply=_apply_roller, result=_support_result, grids=_BOTH_GRIDS),
     FeatureType('displacement', 'Displacement', 'boundary_condition', 'boundary', allow_interior=False,
                 params=following((displacement_param('u_x', 'x'), displacement_param('u_y', 'y'))),
                 result_kind='table',
                 summary='Moves the selected domain edges by a given displacement, for example to stretch a sample.',
-                description='Prescribed displacement: u_x and / or u_y [m] on every node of the selected faces; an '
-                            'empty component stays free (validation error when both are empty; u_z of guided modes '
-                            'stays free). A later support on '
-                            f'the same face component sets its value (warning). {_FACE_ONLY_TEXT} '
-                            f'{_SUPPORT_RESULT_TEXT}',
+                description='Prescribed u_x and / or u_y; an empty component stays free (both empty: validation '
+                            'error; u_z of guided modes free). A later support on the same component sets its value '
+                            f'(warning). {_FACE_ONLY_TEXT} {_SUPPORT_RESULT_REF}',
                 apply=_apply_displacement, result=_support_result, validate=_validate_displacement,
                 grids=_BOTH_GRIDS),
     FeatureType('fixed_domain', 'Fixed (domain)', 'domain_condition', 'domain', result_kind='table',
                 summary='Holds the selected domains rigidly in place, like a substrate or a rigid clamp.',
-                description='Holds u_x = u_y = 0 (and u_z = 0 for guided modes, axial_wavenumber) on every corner node '
-                            'of the selected cells (a rigid region whose '
-                            "boundary is clamped to the solid around it, whatever the cells' own stiffness). "
-                            f'{_SUPPORT_RESULT_TEXT}',
+                description='u_x = u_y = 0 (and u_z of guided modes) on every corner node of the selected cells '
+                            '(triangles: every node of the selected elements): a rigid region clamped to the solid '
+                            f'around it, whatever its own stiffness. {_SUPPORT_RESULT_REF}',
                 apply=_apply_fixed_domain, result=_support_result, grids=_BOTH_GRIDS),
     FeatureType('prescribed_displacement_domain', 'Prescribed displacement (domain)', 'domain_condition', 'domain',
                 params=following(tuple(replace(displacement_param(f'u_{axis}', axis),
-                                               help=f'Prescribed u_{axis} [m] on every node of the selected domains; '
-                                                    f'empty (null) leaves u_{axis} free.',
                                                tip=f'Displacement along {axis} the selected domains are held at; empty '
                                                    'leaves this direction free.')
                                        for axis in _COMPONENT_NAMES)),
                 result_kind='table',
                 summary='Holds chosen displacement components of the selected domains, for example the axial motion '
                         'of a strip while it may still deflect.',
-                description='Triangle meshes: prescribed displacement per component on every node of the selected '
-                            'elements: u_x and / or u_y [m], an empty component stays free (validation error when '
-                            'both are empty), e.g. u_x = 0 with u_y free on a thin strip that may deflect but not '
-                            'slide (with geometric nonlinearity a no-slip string). Holding u_x on every node across '
-                            'a member also locks the rotation of its cross-sections (bending becomes shear). A later '
-                            f'support on the same node component sets its value. {_SUPPORT_RESULT_TEXT}',
+                description='Prescribed u_x and / or u_y on every node of the selected elements; an empty component '
+                            'stays free (both empty: validation error), e.g. u_x = 0, u_y free on a strip that may '
+                            'deflect but not slide (with geometric nonlinearity a no-slip string). Holding u_x across a '
+                            'member locks the rotation of its cross-sections (bending becomes shear). A later support '
+                            f'on the same component sets its value. {_SUPPORT_RESULT_REF}',
                 apply=_apply_prescribed_displacement_domain, result=_support_result, validate=_validate_displacement,
                 grids=(_TRIANGLES,)),
     FeatureType('boundary_load', 'Boundary load', 'boundary_condition', 'boundary', allow_interior=False,
                 params=following((Param('t_x', 'float', 0.0, label='Traction x', unit='Pa',
-                              help='Force per area along +x on the selected outer faces (a pressure p pushing into the '
-                                   'x_hi face is t_x = -p).',
+                              help='Along +x (a pressure p pushing into x_hi: t_x = -p).',
                               tip='Force per area along x on the face; on the right edge a negative value pushes '
                                   'into the domain.'),
                         Param('t_y', 'float', -1e6, label='Traction y', unit='Pa',
-                              help='Force per area along +y on the selected outer faces (a pressure p on y_hi is t_y = '
-                                   '-p). Typical 1e5-1e8.',
+                              help='Along +y (a pressure p on y_hi: t_y = -p). Typical 1e5-1e8.',
                               tip='Force per area along y on the face; on the top edge a negative value presses down.'
                                   '\n\nTypical 0.1 to 100 MPa.'))),
                 summary='Applies a force per area on the selected domain edges.',
-                description='Surface traction (t_x, t_y) [Pa] on outer faces, in the model axes (not the face normal): '
-                            'consistent nodal forces t * half of each adjacent face segment, per m of depth (geometry '
-                            'axisymmetric: t times the tributary ring area, N; on x_hi the cylinder r = R, on a y face '
-                            'the annulus). Several loads add; on a held component it only enters the reaction.',
+                description='Traction (t_x, t_y) in model axes (not the face normal) on outer faces as consistent nodal '
+                            'forces, per m of depth (axisymmetric: whole rings in N; x_hi the cylinder r = R, a y face '
+                            'the annulus). Several add; on a held component it only enters the reaction.',
                 apply=_apply_boundary_load, grids=_BOTH_GRIDS),
     FeatureType('segment_load', 'Boundary load (segment)', 'boundary_condition', 'line', object_kinds=('line',),
                 params=following((Param('t_x', 'float', 0.0, label='Traction x', unit='Pa',
-                              help='Force per area along +x on the selected line segments (model axes).',
+                              help='Along +x (model axes).',
                               tip='Force per area along x on the segment.'),
                         Param('t_y', 'float', -1e6, label='Traction y', unit='Pa',
-                              help='Force per area along +y on the selected line segments (a pressure p pressing down '
-                                   'on a top face is t_y = -p). Typical 1e5-1e8.',
+                              help='Along +y (a pressure p pressing down on a top face: t_y = -p). Typical 1e5-1e8.',
                               tip='Force per area along y on the segment; a negative value presses down.\n\n'
                                   'Typical 0.1 to 100 MPa.'))),
                 summary='Applies a force per area on part of a domain edge, or along a line inside the solid, drawn '
                         'as a horizontal or vertical line.',
-                description='Surface traction (t_x, t_y) [Pa] on a part of a boundary or along an interior line: '
-                            'each selected line must be horizontal or vertical (validation error '
-                            'otherwise) and acts on the node line (cell edge) nearest to it (validation warns beyond '
-                            'a hundredth of a cell): a line on an outer face loads that part of the face, an interior '
-                            'line a line force inside the solid (a traction jump across it). Consistent nodal forces: '
-                            't times the integral of each node shape function over the segment, clipped to the window, '
-                            'so the total force is t times the segment length per m of depth, also when its ends lie '
-                            'inside cells (geometry axisymmetric: whole rings in N, a horizontal segment the annulus '
-                            'pi (r_1^2 - r_0^2), a vertical one the cylinder 2 pi r h). Several loads add. On a '
-                            'triangle mesh the line may run in any direction: the mesher puts element edges on it and '
-                            'the traction acts on them exactly (int t N ds per node).',
+                description='Traction (t_x, t_y) on part of a boundary or along an interior line (a line force: a '
+                            'traction jump). Tensor mesh: each line horizontal or vertical (validation error '
+                            'otherwise), acting on the nearest node line (validation warns beyond 1/100 cell); consistent '
+                            'nodal forces of the segment clipped to the window, so the total is exactly t x length per '
+                            'm of depth, ends inside cells too (axisymmetric: whole rings in N, a horizontal segment the '
+                            'annulus pi (r_1^2 - r_0^2), a vertical one 2 pi r h). Triangle mesh: any direction, element '
+                            'edges lie on it (int t N ds). Several add.',
                 apply=_apply_segment_load, validate=_validate_segment_load, grids=_BOTH_GRIDS),
     FeatureType('body_force', 'Body force', 'domain_condition', 'domain',
                 params=following((Param('f_x', 'float', 0.0, label='Body force x', unit='N/m^3', field_dependent=True,
-                              help='Force per volume along +x; may depend on x and y.',
+                              help='Along +x.',
                               tip='Force per volume along x, for example from an acceleration.'),
                         Param('f_y', 'float', -2.16e4, label='Body force y', unit='N/m^3', field_dependent=True,
-                              help='Force per volume along +y; gravity along -y is -rho g (silica -2.16e4). May depend '
-                                   'on x and y.',
+                              help='Along +y; gravity along -y is -rho g (silica -2.16e4).',
                               tip='Force per volume along y; gravity is minus density times 9.81.'))),
                 summary='Applies a force per volume throughout the selected domains, such as gravity.',
-                description='Applied body force density [N/m^3], consistent nodal forces f * cell area / 4 to the four '
-                            'corners of each selected cell (geometry axisymmetric: f times the integral of the shape '
-                            'function over the ring volume, with x = r; f_x is radial); void cells (no youngs_modulus '
-                            'or c11 > 0) drop it. Several body forces '
-                            'add; the coupled slots body_force_x / body_force_y are separate.',
+                description='Body force density on the selected cells as consistent nodal forces (axisymmetric: '
+                            'ring-weighted, f_x radial); void cells drop it. Several add; the coupled slots '
+                            'body_force_x / _y are separate.',
                 apply=partial(apply_body_force, names=_PLANE_BODY_FORCES), grids=_BOTH_GRIDS),
     FeatureType('temperature_change', 'Temperature change', 'domain_condition', 'domain',
                 params=(Param('delta_T', 'float', 10.0, label='Temperature change', unit='K', field_dependent=True,
-                              help='Temperature above the stress-free state on the selected cells (added to '
-                                   'temperature_rise_ext; several add); the thermal strain is alpha * delta_T. May '
-                                   'depend on x and y.',
+                              help='Temperature above the stress-free state (several add); thermal strain alpha '
+                                   'delta_T.',
                               tip='How much warmer the selected domains are than when they were stress free.'),),
                 summary='Heats the selected domains by a given amount without a heat physics, so that they expand.',
-                description='Applied temperature change [K] for thermal strain, without a heat physics: added to '
-                            'temperature_rise_ext, which adds to the coupled temperature_rise of '
-                            f'{THERMAL_STRAIN_COUPLING}.',
+                description='Temperature change for thermal strain without a heat physics (field temperature_rise_ext, '
+                            f'added to the coupled temperature_rise of {THERMAL_STRAIN_COUPLING}).',
                 apply=apply_temperature_change, grids=_BOTH_GRIDS),
     FeatureType('solid_probe', 'Solid probe', 'probe', 'point',
                 params=(Param('component', 'choice', 'u_abs', label='Quantity',
                               choices=OUTPUT_ARRAYS + ENERGY_DENSITY_FIELDS,
                               choice_labels=tuple((name, SolidRenderer.field_infos[name].label)
                                                   for name in OUTPUT_ARRAYS + ENERGY_DENSITY_FIELDS),
-                              help='Output field sampled at the point (unit of that field); the energy densities on '
-                                   'a triangle mesh only.',
+                              help='Sampled field (its unit); the energy densities on triangle meshes only.',
                               tip='Quantity recorded at the point.'),),
                 object_kinds=('point',), max_entities=1, result_kind='timeseries',
                 summary='Records a displacement, strain or stress at a point after every solve.',
-                description='Samples one output field in the cell containing the point (one sample per re-solve and '
-                            'one per stationary iteration or end-of-run flush, all at t = 0 in a stationary study); on '
-                            'a triangle mesh the nodal value at the point (the mesher puts a node there; strain and '
-                            'stress there are the node-averaged display values).',
+                description='Samples one output field at the point per re-solve, stationary iteration or end-of-run '
+                            'flush (t = 0 in a stationary study): the containing cell on a tensor mesh, the node there '
+                            'on triangles (strain / stress node-averaged).',
                 apply=_apply_probe, result=_probe_result, validate=validate_points_inside, grids=_BOTH_GRIDS),
     frequency_probe_feature(_apply_frequency_probe, ('u_x', 'u_y'), (_TRIANGLES,)),
-    replace(resonance_table_feature('nearest the target (the target_frequency setting) first, ranked by |omega - '
-                                    'omega_target|'), grids=_BOTH_GRIDS),
-    thermoelastic_damping_feature(_BOTH_GRIDS, 'on tensor (rectangular-cell) and triangle meshes (planar plane '
-                                               'strain / plane stress, axisymmetric)'),
+    replace(resonance_table_feature('nearest target_frequency first'), grids=_BOTH_GRIDS),
+    thermoelastic_damping_feature(_BOTH_GRIDS, 'plane strain, plane stress or axisymmetric'),
     OPTOMECHANICAL_COUPLING_FEATURE,
     FeatureType('electrode', 'Electrode', 'boundary_condition', 'boundary', allow_interior=False,
                 params=_ELECTRODE_PARAMS, result_kind='table',
                 summary='Puts an electrode on the selected domain edges of a piezoelectric solid: a fixed voltage, '
                         'ground, or an isolated electrode.',
-                description=f'Electrode on outer faces (every node of the face, corners included). {_ELECTRODE_TEXT} '
+                description=f'Electrode on outer faces (every node, corners included). {_ELECTRODE_TEXT} '
                             f'{_ELECTRODE_RESULT_TEXT}',
                 apply=_apply_electrode, result=partial(electrode_result, charge_unit='C/m')),
     FeatureType('electrode_domain', 'Electrode (domain)', 'domain_condition', 'domain', params=_ELECTRODE_PARAMS,
                 result_kind='table',
                 summary='Makes the selected domains (for example a drawn metal film) one electrode of a piezoelectric '
                         'solid.',
-                description='Electrode on every corner node of the selected cells (a drawn metal electrode; give it '
-                            'its own stiffness and density, or none). '
-                            f'{_ELECTRODE_TEXT} {_ELECTRODE_RESULT_TEXT}',
+                description='Electrode on every corner node of the selected cells (a drawn metal electrode: give it '
+                            'stiffness and density, or none). Rules and result as electrode.',
                 apply=_apply_electrode_domain, result=partial(electrode_result, charge_unit='C/m')),
     ADMITTANCE_FEATURE,
 )
@@ -1963,9 +1894,8 @@ _SLOT_DOCS = {
     'temperature_rise': ('K', f'Coupled temperature above the stress-free state ({THERMAL_STRAIN_COUPLING}: heat T - '
                               'T0), added to the temperature_change features (field temperature_rise_ext); each '
                               'transfer replaces it.'),
-    'body_force_x': ('N/m^3', 'Coupled body force density along x (an optical or Lorentz force; several such '
-                              "couplings add), added to the body_force features; each transfer replaces it; void "
-                              'cells drop it.'),
+    'body_force_x': ('N/m^3', 'Coupled body force density along x (optical or Lorentz force; such couplings add), '
+                              'added to the body_force features; each transfer replaces it; void cells drop it.'),
     'body_force_y': ('N/m^3', 'Coupled body force density along y, as body_force_x.'),
 }
 
@@ -1979,99 +1909,51 @@ SOLID_MECHANICS = PhysicsType(
     space_settings=AXISYMMETRIC_SPACE_SETTINGS,
     summary='Static deformation and stress of solids under supports, loads and thermal expansion: the cross-section '
             'of a long structure, a thin plate seen from the top, or a body of revolution.',
-    description='2D static linear elasticity; setting out_of_plane: plane strain (default; eps_zz = 0: the '
-                'cross-section of a structure long along z, e.g. a waveguide), plane stress (sigma_zz = 0: a thin '
-                'plate) or generalized plane strain (uniform eps_zz set by the net axial force); setting geometry '
-                'axisymmetric: an (r, z) body of revolution with the hoop strain (whole-ring forces in N). The rest '
-                'is written for plane strain. Small strain, isotropic cells (youngs_modulus, poisson_ratio) or the '
-                'anisotropic c_ij entries (c11 .. c66 in Voigt model axes, NaN = the isotropic value; a crystal entry '
-                'sets them) with anisotropic '
-                'thermal expansion alpha_xx / alpha_yy / alpha_zz: sigma = C (eps - alpha dT), dT = temperature_rise '
-                f'(coupled, {THERMAL_STRAIN_COUPLING}) + temperature_rise_ext (temperature_change features). '
-                'Discretisation: bilinear elements on the cells of the physical window, displacement on the cell '
-                'corners, block-Jacobi PCG (Automatic on the gpu backend: precision mixed, a float32 inner CG with '
-                'float64 residual refreshes to the same tolerance; GPUs with slow float64 arithmetic); outputs at the '
-                'cell centres (u = mean of the 4 corners; strain, stress '
-                'and von Mises from the centre gradients), 0 in void cells (no youngs_modulus or c11 > 0: not '
-                'solved, carry nothing), copied edge-extended into an EM PML ring. Units per unit z length: forces and reactions '
-                'N/m. strain_xy is the tensor shear strain (half the engineering strain); stress_zz = nu (sigma_xx + '
-                'sigma_yy) - E alpha_zz dT is the out-of-plane stress plane strain implies; von_mises includes it. '
-                'Faces without a support or load are traction free. Every solid region (cells with stiffness joined '
-                'through edges or corners) needs supports that hold u_x and u_y and stop rotation, e.g. rollers on '
-                'one x and one y face (validation checks the directions, the build each region). A stationary study '
-                'solves it after the physics it reads; in a time-dependent study it re-solves only when a material, '
-                'support, load or coupled input changed (quasi-static, no inertia). An eigenfrequency study finds the '
-                'undamped in-plane vibration modes (plane strain) nearest target_frequency instead: K u = omega^2 M u '
-                'with the consistent mass of rho (needed in every solid cell) on the host (eigen solver role '
-                'arpack_shift_invert: symmetric shift-invert Lanczos on a real SuperLU factor), supports held at 0, '
-                'loads / thermal strain ignored (no prestress: setting stress_stiffening on a triangle mesh adds '
-                'it); with the axial_wavenumber setting k_z the guided '
-                '(2.5D) modes u ~ exp(i (k_z z - omega t)) instead, u_z coupled (dispersion f(k_z) of a waveguide: '
-                'flexural, torsional, longitudinal branches; supports optional for k_z > 0); one snapshot '
-                'per mode labelled "resonance k: f = <Hz> Hz" with the mode shape scaled to a peak node |u| of 1 m '
-                '(strain and stress per that shape, no thermal part; support reactions are not available), the '
-                'resonance_table feature lists the frequencies; an optomechanics study solves the same modes after '
-                f"an optical mode ({', '.join(OPTICAL_TYPES)}) and its optomechanical_coupling feature tabulates "
-                'g0. Output u_x, u_y (u_z) are the displacement [m] and u_abs its magnitude (u is the flow velocity '
-                'in laminar_flow, elastic_waves names its velocity vx / vy). elastic_strain_* = strain - alpha '
-                'dT (elastic_strain_zz = -alpha_zz dT), the stress-producing part. Optics: '
-                f'{STRAIN_OPTIC_COUPLING} (strain -> EM index) and {OPTICAL_FORCE_COUPLING} (em_fdfd_ez -> the '
-                f'body_force_x / body_force_y slots). Setting piezoelectric: a nodal potential on the same elements '
-                'with the piezo_e* / eps_dc_* material arrays and electrode features, static and modal (short / open '
-                'circuit) coupled solves on the host. A frequency_response study solves the driven harmonic response '
-                '(K (1 + j mechanical_loss_factor) - omega^2 M) u = f per frequency (host complex SuperLU; loads, '
-                'prescribed displacements and electrode voltages are amplitudes at phase 0; a temperature change or '
-                'coupled temperature is static, never a drive: with stress_stiffening its thermal stress joins the '
-                'prestress), one snapshot per '
-                'frequency with the real parts and u_abs = |u|; with piezoelectric the admittance feature gives Y(f) '
-                'and a Butterworth-Van Dyke fit. A 3D model (size_z set) uses '
-                f'{SOLID_3D_TYPE_NAME}. The instance is usually named solid. On a triangle mesh (mesh kind '
-                "'triangles', mesh plan S7.5): Lagrange elements of the discretization setting (quadratic P2 "
-                'default, isoparametric on curved boundaries) on the window elements with stiffness, one host '
-                'SuperLU of K per assembly at its first static solve (linear solver sparse_direct, Automatic there), '
-                'plane strain / plane stress / generalized plane strain (the same superposition, conditions exact by '
-                'the same quadrature) / axisymmetric, c_ij, thermal strain, every support and load feature (Fixed '
-                '(domain) holds every node of the selected elements; segment loads in any direction), probes at point '
-                'nodes, the eigenfrequency study and the elastic frequency_response study (stationary, '
-                'time_dependent, eigenfrequency and frequency_response; there also: initial_stress_* material entries '
-                '(total stress sigma0 + C eps - beta dT, relaxed by static solves), setting stress_stiffening (K + '
-                'K_sigma of the static state in the eigenfrequency / frequency_response pencils), damped modes with '
-                'a mechanical_loss_factor, free bodies about a target_frequency > 0 and in frequency responses, the '
-                'frequency_probe feature and complex support reactions per frequency; not yet: piezoelectric (so no '
-                'admittance), '
-                f'guided modes, {STRAIN_OPTIC_COUPLING}; the optomechanics study with geometry axisymmetric and '
-                'em_fdfd_bor optics only); state() and coupled slots are one '
-                'value per element (centroid), displayed fields nodal (displacement exact, strain / stress averaged '
-                'over the solid elements at each node), the PML ring void unless an elastic PML. Triangle meshes, '
-                'eigenfrequency study only: settings pml_<face> make the ring an elastic PML (fixed complex stretch '
-                'set at target_frequency, outer side clamped, complex modes with a radiation Q, PML modes dropped; '
-                'stress_stiffening sees the ring as a clamped elastic continuation in its static state), and '
-                'azimuthal_order m >= 1 (geometry axisymmetric, isotropic materials) solves the modes u_r = U_r '
-                'cos(m phi), u_z = U_z cos(m phi), u_phi = U_phi sin(m phi) with three amplitudes per node (fields '
-                'u_x, u_y and u_z = U_phi; strain / stress outputs the cos parts at phi = 0; rings weighted by pi; the '
-                'axis holds u_z = 0 and ties u_phi = -u_r at m = 1, holds all three at m >= 2; m = 1 has the sideways '
-                'translation and tilt as rigid motions, m >= 2 none, so supports are optional there; stress_stiffening '
-                'takes the initial stress alone). Triangle meshes, planar plane strain / plane stress or axisymmetric '
-                '(azimuthal order 0), no PML: setting geometric_nonlinearity makes every static solve total-Lagrangian '
-                '(Green-Lagrange strain, second Piola-Kirchhoff stress outputs, Newton over load_steps, support '
-                'reactions the nominal forces of the internal force, not K u - f) and linearises the eigenfrequency '
-                '/ frequency_response pencils about that state (tangent K_T); the Prescribed displacement (domain) '
-                'feature holds chosen components of whole domains. Display fields strain_energy_density / '
-                'kinetic_energy_density '
-                '(triangle meshes; J/m^3; not in state()): a static solve 1/2 sigma : eps_el (no initial stress) and 0, '
-                'a shown mode or response the time averages 1/4 Re(sigma : eps_el*) and 1/4 rho omega^2 |u|^2 at the '
-                'mode / drive frequency (azimuthal order: twice the phi mean, so ring integrals give the totals); in a '
-                'PML ring they use the unstretched gradients (not physical there). Settings periodic_x / periodic_y '
-                'with bloch_kx / bloch_ky (eigenfrequency study, both mesh kinds, planar plane strain or plane '
-                'stress): a Bloch / Floquet unit cell, u on the hi side = u on the lo side times exp(-j k L), the '
-                'modes of the reduced pencil P^H K P, P^H M P (complex: shown as the real part and u_abs = |u|); one '
-                'study per k gives the band diagram of a phononic crystal (template solid_bloch_band_diagram), a '
-                'cell with a free top and a Fixed bottom or (triangles) an elastic PML on the other axis the '
-                'surface or plate waves (Rayleigh, Lamb) of one period; on the rectangular-cell mesh also with '
-                'piezoelectric (u and phi share the phase; no ground electrode needed at k != 0; an electrode grating '
-                'of one IDT period gives the SAW stopband edges at the zone edge) and with axial_wavenumber (the '
-                'guided k_z of the cell); a plain periodic triangle cell (every bloch_k 0) also solves stationary / '
-                'time_dependent (K_r = P^T K P: one cell of an infinite array).',
+    description='2D static linear elasticity, small strain: sigma = C (eps - alpha dT), C isotropic (youngs_modulus, '
+                'poisson_ratio) or the c_ij entries (see c11), alpha per axis (alpha_xx / _yy / _zz), dT = '
+                f'temperature_rise (coupled, {THERMAL_STRAIN_COUPLING}) + temperature_rise_ext (temperature_change '
+                'features). Setting geometry: planar (setting out_of_plane: plane strain, plane stress, generalized '
+                'plane strain) or axisymmetric (r, z); texts are written for plane strain. Forces and reactions per m '
+                'of depth (N/m; see thickness). u_x, u_y (u_z) are the displacement [m], u_abs its magnitude; '
+                'strain_xy the tensor shear strain (half the engineering strain); elastic_strain_* = strain - alpha dT '
+                '(elastic_strain_zz = -alpha_zz dT); stress_zz the out-of-plane stress plane strain implies (nu '
+                '(sigma_xx + sigma_yy) - E alpha_zz dT, in von_mises). Void cells (no youngs_modulus or c11 > 0) are '
+                'not solved and output 0. Faces without a support or load are traction free; every solid region '
+                '(cells joined through edges or corners) needs supports holding u_x, u_y and rotation, e.g. rollers on '
+                'one x and one y face (validation checks the directions, the build each region). Tensor mesh: '
+                'bilinear elements on the window cells, nodal displacement, outputs at the cell centres (u = mean of '
+                'the 4 corners), edge-extended into an EM PML ring. Triangle mesh: Lagrange elements (setting '
+                'discretization) on the elements with stiffness, sparse_direct; state() and coupled slots one value '
+                'per element (centroid), displayed fields nodal (strain / stress node-averaged), the PML ring void '
+                'unless an elastic PML. Only there: initial_stress_*, stress_stiffening, geometric_nonlinearity, '
+                'Prescribed displacement (domain), damped modes (mechanical_loss_factor), free bodies at '
+                'target_frequency > 0 and in frequency responses, frequency_probe, complex support reactions, '
+                'pml_<face>, azimuthal_order, the energy densities; not there: piezoelectric (and admittance), guided '
+                f'modes, {STRAIN_OPTIC_COUPLING}, optomechanics except axisymmetric with em_fdfd_bor optics. Studies: '
+                'stationary (after the physics it reads); time_dependent quasi-static (re-solves when a material, '
+                'support, load or coupled input changed; no inertia); eigenfrequency: undamped modes K u = omega^2 M u '
+                'nearest target_frequency (consistent mass of rho, needed in every solid cell; supports held at 0, '
+                'loads and thermal strain ignored without stress_stiffening), one snapshot per mode labelled '
+                '"resonance k: f = <Hz> Hz", shape scaled to a peak node |u| of 1 m (no thermal part, no support '
+                'reactions), listed by resonance_table; axial_wavenumber gives guided (2.5D) modes (dispersion '
+                'branches of a waveguide); optomechanics: the same modes after an optical mode '
+                f"({', '.join(OPTICAL_TYPES)}) for optomechanical_coupling; frequency_response: (K (1 + j "
+                'mechanical_loss_factor) - omega^2 M) u = f per frequency (loads, prescribed displacements and '
+                'electrode voltages are phase-0 amplitudes; a temperature change or coupled temperature is static, '
+                'never a drive, with stress_stiffening part of the prestress), one snapshot per frequency (real parts, '
+                'u_abs = |u|). azimuthal_order m >= 1 (triangles, axisymmetric, isotropic, eigenfrequency): u_r = U_r '
+                'cos(m phi), u_z = U_z cos(m phi), u_phi = U_phi sin(m phi), field u_z = U_phi, strain / stress the '
+                'cos parts at phi = 0; the axis holds u_z = 0 and ties u_phi = -u_r at m = 1, holds all three at m >= '
+                '2; m = 1 keeps the sideways translation and tilt as rigid motions, m >= 2 none (supports optional); '
+                'stress_stiffening takes the initial stress alone. strain_energy_density / kinetic_energy_density '
+                '(triangles, J/m^3, not in state()): a static solve 1/2 sigma : eps_el (no initial stress) and 0, a '
+                'shown mode or response the time averages 1/4 Re(sigma : eps_el*) and 1/4 rho omega^2 |u|^2 (azimuthal '
+                'order: twice the phi mean, so ring integrals give totals); not physical in a PML ring. Bloch cells: '
+                f'periodic_x / _y with bloch_kx / _ky (band diagrams, template {BAND_TEMPLATE_2D}; a free top over a '
+                'Fixed bottom or an elastic PML gives the surface / plate waves of one period; tensor mesh also '
+                'piezoelectric: an electrode grating of one IDT period gives the SAW stopband edges at the zone edge). '
+                f'Optics: {STRAIN_OPTIC_COUPLING} (strain -> EM index), {OPTICAL_FORCE_COUPLING} (em_fdfd_ez -> '
+                f'body_force_x / _y). A 3D model (size_z set) uses {SOLID_3D_TYPE_NAME}.',
     settings=(_GEOMETRY_PARAM, AZIMUTHAL_ORDER_PARAM, _OUT_OF_PLANE_PARAM, _THICKNESS_PARAM, _AXIAL_FORCE_PARAM,
               _BENDING_PARAM, _BENDING_MOMENT_X_PARAM, _BENDING_MOMENT_Y_PARAM, _TARGET_FREQUENCY_PARAM,
               STRESS_STIFFENING_PARAM, *GEOMETRIC_NONLINEARITY_PARAMS, _AXIAL_WAVENUMBER_PARAM, _PIEZOELECTRIC_PARAM,
@@ -2145,16 +2027,14 @@ HEAT_SOLID_THERMAL_STRAIN = CouplingType(
     (SOLID_TYPE_NAME, SOLID_3D_TYPE_NAME),
     summary='Lets the solid expand with the temperature of the heat physics, causing thermal strain and stress. The '
             "heat physics' reference temperature is the stress-free temperature.",
-    description='Thermal strain: each transfer writes dT = T - T0 of the heat physics (its rise in solve precision, '
-                'not the float32 T; T0 = the stress-free temperature) into the temperature_rise slot of a '
-                f'{SOLID_TYPE_NAME} (2D, with a 2D heat) or {SOLID_3D_TYPE_NAME} (3D, with a 3D heat) physics, which '
-                're-solves with the thermal load C alpha dT (alpha_xx / alpha_yy / alpha_zz; 2D plane strain turns '
-                'alpha_zz dT into out-of-plane stress, in 3D it is an ordinary expansion along z). Window only (the '
-                'PML ring of the slot reads 0). Stationary study: applied after the heat solve; time-dependent study: '
-                'right after each heat step. One writer of the slot (a second one, or a field_transfer to '
-                'temperature_rise, is a validation error); temperature_change features add to it. For the optics (2D '
-                f'only) add {STRAIN_OPTIC_COUPLING} (solid -> EM): with its deformation on, heat_em_thermo_optic on the '
-                'same EM physics drops its (1 + alpha dT) factor, as the solid strain then supplies the deformation.',
+    description='Thermal strain: each transfer writes dT = T - T0 of the heat physics (T0 = the stress-free '
+                'temperature; the rise in solve precision) into the temperature_rise slot of a '
+                f'{SOLID_TYPE_NAME} (2D heat) or {SOLID_3D_TYPE_NAME} (3D heat), which re-solves with the thermal load '
+                'C alpha dT (alpha_zz: see that property). Window only (the PML ring of the slot reads 0). Stationary: '
+                'after the heat solve; time_dependent: after each heat step. One writer of the slot (a second, or a '
+                'field_transfer to temperature_rise, is a validation error); temperature_change features add to it. '
+                f'2D optics: with {STRAIN_OPTIC_COUPLING} deformation on, heat_em_thermo_optic on the same EM physics '
+                'drops its (1 + alpha dT) factor (the strain supplies the deformation).',
     create=_create_thermal_strain,
     validate=_validate_thermal_strain,
     writes=_writes_thermal_strain,
@@ -2220,34 +2100,28 @@ def _strain_optic_coupling_type(em_types):
         STRAIN_OPTIC_COUPLING, 'Strain-optic effect (solid mechanics -> electromagnetic waves)', SOLID_TYPE_NAME,
         em_types,
         params=(Param('deformation', 'bool', True, label='Include deformation',
-                      help='Also map the deformation of the structure onto the fixed grid: n times sqrt(1 + strain_xx '
-                           '+ strain_yy) (total strain, the eps_zz det F image of the in-plane stretch, the phase-index '
-                           'convention of heat_em_thermo_optic). On, heat_em_thermo_optic on the same EM physics drops '
-                           'its (1 + alpha dT) factor (the solid strain replaces it); off, only the photoelastic part. '
-                           'Exact for isotropic in-plane strain (thermal) only: the full image of a stretch e_xx != '
-                           'e_yy is anisotropic (E_z: mu_xx, mu_yy times 1 -/+ (e_xx - e_yy); H_z: eps_xx, eps_yy '
-                           'likewise), which no index slot holds, so the phase along a stretched axis (a strip under '
-                           'uniaxial tension, the hoop strain of a ring) is off to first order in e_xx - e_yy.',
+                      help='Also map the deformation onto the fixed grid: n x sqrt(1 + strain_xx + strain_yy) (total '
+                           'strain; the phase-index convention of heat_em_thermo_optic, which then drops its (1 + alpha '
+                           'dT) factor on the same EM physics). Off: the photoelastic part only. Exact for isotropic '
+                           'in-plane strain only: a stretch e_xx != e_yy has an anisotropic image (E_z: mu_xx, mu_yy x '
+                           '(1 -/+ (e_xx - e_yy)); H_z: eps_xx, eps_yy alike) no index slot holds, so the phase along a '
+                           "stretched axis (a strip under uniaxial tension, a ring's hoop strain) is off to first order "
+                           'in e_xx - e_yy.',
                       tip='Also account for the structure growing or shrinking, not only for the stress-induced '
                           'index change.'),),
         summary='Changes the refractive index of a wave physics from the strain of the solid mechanics: stress-induced '
                 'birefringence and the stretching of the structure.',
-        description='Strain-optic effect: each transfer writes, for every permittivity component ii of the EM type '
-                    '(E_z types: zz; H_z types: xx, yy; em_modes: all three), the index change dn_ii = (n0_ii + '
-                    'dn_pe) sqrt(1 + w (strain_xx + strain_yy)) - n0_ii with the photoelastic part dn_pe = -1/2 '
-                    'n0_ii^3 (photoelastic_p11 e_ii + photoelastic_p12 (e_jj + e_kk)) of the elastic strain e = '
-                    'elastic_strain_* (strain - alpha dT, e_zz = -alpha_zz dT: the measured dndT of a free material '
-                    'already contains its free thermal expansion) and w = 1 with deformation (total strain, void cells '
-                    'none: a first-order local image like the alpha factor of heat_em_thermo_optic; exact only for '
-                    'isotropic in-plane strain, see the deformation setting). Isotropic (or '
-                    'cubic, crystal axes along x, y, z) photoelastic coefficients p11 / p12; the shear term p44 '
-                    'strain_xy (an off-diagonal eps) is not modelled. It is an E13 index contributor: with '
-                    'heat_em_thermo_optic / electrostatics_em_pockels on the same physics the slot gets eps = (n0 + '
-                    'the sum of dn)^2, all with one every. Plane strain is exact for a cross-section (em_modes); an '
-                    'in-plane (top-view) EM target gets a validation info. Stationary study: after the solid solve; '
-                    'frequency_domain / mode_analysis: once after the background solve. Source solid_mechanics only: '
-                    f'from a {SOLID_3D_TYPE_NAME} physics it is not modelled yet (the em_fdtd_3d material index cannot '
-                    'hold three continuous permittivity components, and the 3D deformation image is open).',
+        description='Strain-optic effect: each transfer writes, per permittivity component ii of the EM type (E_z '
+                    'types: zz; H_z types: xx, yy; em_modes: all three), dn_ii = (n0_ii + dn_pe) sqrt(1 + w (strain_xx '
+                    '+ strain_yy)) - n0_ii, dn_pe = -1/2 n0_ii^3 (photoelastic_p11 e_ii + photoelastic_p12 (e_jj + '
+                    'e_kk)) of the elastic strain e = elastic_strain_* (strain - alpha dT, e_zz = -alpha_zz dT: a '
+                    'measured dn/dT already contains the free thermal expansion), w = 1 with deformation (void cells: '
+                    '0). Isotropic or cubic (axes along x, y, z) p11 / p12; the shear term p44 strain_xy is not '
+                    'modelled. An E13 index contributor: with heat_em_thermo_optic / electrostatics_em_pockels on the '
+                    'same physics the slot gets eps = (n0 + sum of dn)^2, all with one every. Plane strain is exact for '
+                    'a cross-section (em_modes); an in-plane EM target gets a validation info. Stationary: after the '
+                    'solid solve; frequency_domain / mode_analysis: once after the background solve. Source '
+                    f'solid_mechanics only ({SOLID_3D_TYPE_NAME}: not modelled).',
         create=_create_strain_optic,
         validate=_validate_strain_optic,
         writes=writes_index_slots)
@@ -2273,17 +2147,14 @@ OPTICAL_FORCE_TYPE = CouplingType(
     SOLID_TYPE_NAME,
     summary='Applies the force light exerts on material boundaries (radiation pressure, gradient force) to the solid '
             'mechanics. Needs a frequency-domain wave physics with the electric field out of the plane.',
-    description='Optical (Maxwell-stress) force: the time-averaged force density f = -(eps0 / 4) |E_z|^2 grad eps_r '
-                '(peak phasor E_z of the last em_fdfd_ez solve; non-magnetic, no electrostriction, the absorption '
-                'force of lossy cells and the sigma_e / pole part of eps ignored) as a face jump: each cell face '
-                'carries -(eps0 / 4) |E_z|^2 (eps_r jump across it) times its length, split between its solid cells '
-                '(c11 > 0, else youngs_modulus > 0, as the solver) and divided by their area, so the force on a dielectric boundary lands in the '
-                'solid next to it in full (E_z is tangential to every in-plane boundary, so |E_z|^2 is continuous '
-                'there); into body_force_x / body_force_y as an additive contribution (it sums with '
-                'magnetic_solid_lorentz_force, all with one every; a field_transfer into those slots cannot be '
-                'combined with it). Only em_fdfd_ez: the in-plane '
-                'E of em_fdfd_hz has a discontinuous normal component that this face form does not handle. Use a '
-                'stationary study (a frequency_domain study does not feed harmonic solutions back).',
+    description='Optical (Maxwell-stress) force density f = -(eps0 / 4) |E_z|^2 grad eps_r, time-averaged (peak '
+                'phasor E_z of the last em_fdfd_ez solve; non-magnetic; electrostriction, the absorption force and the '
+                'sigma_e / pole part of eps ignored), as a face jump: each cell face carries -(eps0 / 4) |E_z|^2 (eps_r '
+                'jump) x its length, split between its solid cells (c11 > 0, else youngs_modulus > 0) per area, so a '
+                "dielectric boundary's force lands in full in the solid beside it (|E_z|^2 is continuous there). Adds "
+                'into body_force_x / _y (sums with magnetic_solid_lorentz_force, one every; no field_transfer into '
+                "those slots). em_fdfd_ez only (em_fdfd_hz's in-plane E has a discontinuous normal part). Use a "
+                'stationary study (frequency_domain does not feed harmonic solutions back).',
     create=_create_optical_force,
     writes=_writes_optical_force,
     # across meshes: computed on the EM mesh (the solid's stiffness painted there too), N/m^3 moved conservatively

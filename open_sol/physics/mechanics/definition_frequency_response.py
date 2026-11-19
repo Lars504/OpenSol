@@ -33,43 +33,38 @@ def _admittance_result(session, solver, monitor, feature_spec, options):
 ADMITTANCE_FEATURE = FeatureType(
     'admittance', 'Admittance', 'monitor', None, result_kind='xy',
     params=(Param('electrode', 'str', '', label='Electrode',
-                  help='Name of the driven Electrode / Electrode (domain) feature (connection voltage, voltage != 0) '
-                       'whose admittance Y = I / V is reported; empty = the only voltage electrode with a non-zero '
-                       'voltage (an error when there are several).',
+                  help='Driven electrode feature (connection voltage, voltage != 0) whose Y is reported; empty = the '
+                       'only such electrode (error when several).',
                   tip='Name of the electrode feature that drives the resonator. Empty takes the only electrode with a '
                       'voltage other than 0.'),
             Param('fit_frequency_min', 'float', None, label='Fit band start', unit='Hz', min=0.0, optional=True,
-                  help='Lowest frequency of the Butterworth-Van Dyke fit; empty = the lowest solved frequency. Choose '
-                       'a band around one resonance / antiresonance pair (other modes in the band bias the fit).',
+                  help='Fit band start; empty = the lowest solved frequency. Bracket one resonance / antiresonance pair '
+                       '(other modes bias the fit).',
                   tip='Lowest frequency used to fit the equivalent circuit; empty uses the whole sweep.'),
             Param('fit_frequency_max', 'float', None, label='Fit band stop', unit='Hz', min=0.0, optional=True,
-                  help='Highest frequency of the Butterworth-Van Dyke fit; empty = the highest solved frequency.',
+                  help='Fit band stop; empty = the highest solved frequency.',
                   tip='Highest frequency used to fit the equivalent circuit; empty uses the whole sweep.'),
             Param('load_impedance', 'float', 50.0, label='Load impedance', unit='Ohm', min=0.0, min_exclusive=True,
-                  help='Resistive load Z of the external circuit for the extra kappa_e = Z / L1 [rad/s], the energy '
-                       'decay rate the load adds to the fitted motional branch (valid while the extra omega_C0_Z = '
-                       'omega_s C0 Z << 1). Needs C0 / L1 in F / H: a 3D model, or the thickness setting in 2D (per m '
-                       'of depth kappa_e is NaN). Default 50 Ohm.',
+                  help='Resistive load Z of the external circuit for the extras kappa_e and omega_C0_Z; needs 3D or '
+                       'the 2D thickness setting (else NaN).',
                   tip='Resistance of the circuit the resonator is connected to, for the external coupling rate. '
                       'Usually 50 ohm.')),
     summary='Electrical admittance of a piezoelectric resonator versus frequency, with its equivalent circuit '
             '(Butterworth-Van Dyke) fitted. Needs a frequency response study.',
     description="frequency_response study, piezoelectric only. Result 'xy' versus frequency [Hz] of Y = I / V = j "
-                'omega Q / V of the electrode (Q = the complex charge, the discrete Gauss law of D including the '
-                f"dielectric loss): series {', '.join(ADMITTANCE_SERIES)} (|Y|, Re Y, Im Y in S/m per m of depth, or S "
-                'with the thickness setting and in solid_mechanics_3d; phase in deg; bvd_abs = |Y| of the fitted '
-                'model, NaN without a fit). '
-                'Extras (derived values read them with operation last): the Butterworth-Van Dyke fit Y = j omega C0 (1 '
-                '- j tan_delta_0) + 1 / (R1 + j omega L1 + 1 / (j omega C1)) over the fit band (least squares on the '
-                'relative complex residual from a closed-form start: f_s = the sample of max |Y|, f_p = the sample of '
-                f"min |Y| above it): {', '.join(FIT_KEYS)} (f_s = 1 / (2 pi sqrt(L1 C1)), f_p = f_s sqrt(1 + C1 / C0) "
-                'the lossless antiresonance, k_eff2 = (f_p^2 - f_s^2) / f_p^2 = C1 / (C0 + C1), Q_s = 2 pi f_s L1 / '
-                'R1, f_peak / f_dip the sampled max / min of |Y|, fit_error the rms relative residual), kappa_e = '
-                'load_impedance / L1 [rad/s] (the external coupling rate into a resistive load in series with the '
-                'motional branch, internal R1 / L1 = 2 pi f_s / Q_s) and omega_C0_Z = 2 pi f_s C0 load_impedance (kappa_e '
-                'holds while it is << 1; both NaN per m of depth, kappa_e_warning), load_impedance, bvd_units, '
-                'electrode; when the band holds fewer than 6 points or no peak with a dip above it, the fit values are '
-                'NaN and fit_warning says why. One resonance per band: resolve it with a step well below f_s / Q_s.',
+                'omega Q / V of the driven electrode (Q from the discrete Gauss law of D, dielectric loss included): '
+                f"series {', '.join(ADMITTANCE_SERIES)} (|Y|, Re Y, Im Y in S/m per m of depth, S with the 2D "
+                'thickness setting or in 3D; phase deg; bvd_abs = |Y| of the fit, NaN without one). Extras (derived '
+                'values: operation last): the Butterworth-Van Dyke fit Y = j omega C0 (1 - j tan_delta_0) + 1 / (R1 + j '
+                'omega L1 + 1 / (j omega C1)) over the fit band (least squares on the relative complex residual, '
+                f"started at f_s = the max-|Y| sample, f_p = the min-|Y| sample above it): {', '.join(FIT_KEYS)} (f_s "
+                '= 1 / (2 pi sqrt(L1 C1)), f_p = f_s sqrt(1 + C1 / C0) the lossless antiresonance, k_eff2 = (f_p^2 - '
+                'f_s^2) / f_p^2 = C1 / (C0 + C1), Q_s = 2 pi f_s L1 / R1, f_peak / f_dip the sampled max / min of |Y|, '
+                'fit_error the rms relative residual), kappa_e = load_impedance / L1 [rad/s] (the coupling rate into a '
+                'resistive load in series with the motional branch; internal R1 / L1 = 2 pi f_s / Q_s), omega_C0_Z = 2 '
+                'pi f_s C0 load_impedance (kappa_e valid while it is << 1; both NaN per m of depth, kappa_e_warning), '
+                'load_impedance, bvd_units, electrode. Under 6 band points or no peak with a dip above it: fit values '
+                'NaN, fit_warning says why. One resonance per band, resolved with a step well below f_s / Q_s.',
     apply=_apply_admittance, result=_admittance_result)
 
 

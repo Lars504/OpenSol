@@ -15,33 +15,28 @@ def periodic_params_2d():
     """periodic_x / _y and bloch_kx / _ky (Bloch / Floquet unit cells: both mesh kinds, eigenfrequency)."""
     periodic = tuple(Param(
         f'periodic_{axis}', 'bool', False, label=f'Periodic {axis}',
-        help=(f'Eigenfrequency study (a plain periodic cell, every bloch_k 0, on a triangle mesh also stationary / '
-              f'time_dependent): {axis}_lo and {axis}_hi are one Bloch-periodic pair, u (and phi with '
-              f'piezoelectric, the u_z amplitude with axial_wavenumber) on {axis}_hi equal those on {axis}_lo times '
-              f'exp(-j bloch_k{axis} L) (L = the window size along {axis}, exp(+j omega t)). Both mesh kinds: the '
-              'rectangular-cell mesh pairs its corner nodes by index (plane strain or plane stress, also with '
-              'piezoelectric or axial_wavenumber), a triangle mesh is built with matching nodes on the two sides '
-              '(planar; no PML ring on them, an elastic PML on the other faces is allowed: a surface-wave cell). The '
-              'modes come from the reduced pencil P^H K P, P^H M P (complex Hermitian; real when every k L is a '
-              'multiple of pi) and are complex: shown as their real part (phase 0) with u_abs = |u|. Supports and '
-              f'electrodes must stay off {axis}_lo / {axis}_hi (a support or voltage electrode on a face of the other '
-              'axis may reach their corners); floating electrodes must not touch them. With every periodic bloch_k 0 '
-              'a cell without supports keeps its rigid translations: set target_frequency > 0, which drops them, or '
-              'hold the cell; a piezoelectric cell then also needs a ground electrode, while k != 0 needs none. A '
-              'static solve of a plain periodic triangle cell takes K_r = P^T K P (forces on a hi-side node join its '
-              'lo-side partner; the mean strain along the periodic axis is 0, the cell of an infinite array: hold '
-              'it, e.g. Fixed on the other axis). Not with geometry axisymmetric, generalized plane strain, '
-              'stress_stiffening, geometric_nonlinearity or the frequency_response study.'),
+        help=('Eigenfrequency study (a plain periodic cell, every bloch_k 0, on triangles also stationary / '
+              'time_dependent): the lo and hi faces of this axis are one Bloch-periodic pair, u (with phi when '
+              'piezoelectric, the u_z amplitude with axial_wavenumber) on hi = on lo times exp(-j k L) (k its bloch_k, '
+              'L the window size along it, exp(+j omega t)). Tensor mesh: corner nodes paired by index (plane strain or '
+              'plane stress, also piezoelectric or axial_wavenumber); triangles: matching side nodes (planar; no PML '
+              'ring on these faces, an elastic PML on the other axis makes a surface-wave cell). Modes of P^H K P, P^H '
+              'M P (complex Hermitian; real when every k L is a multiple of pi), shown as real part (phase 0) and u_abs '
+              '= |u|. Supports and electrodes stay off these faces (one on the other axis may reach their corners); '
+              'floating electrodes must not touch them. Every bloch_k 0: a cell without supports keeps its rigid '
+              'translations: set target_frequency > 0 (drops them) or hold it; piezoelectric then needs a ground '
+              'electrode (k != 0: none). A static triangle cell solves K_r = P^T K P (zero mean strain along the axis: '
+              'one cell of an infinite array; hold it, e.g. Fixed on the other axis). Not with axisymmetric, '
+              'generalized plane strain, stress_stiffening, geometric_nonlinearity or frequency_response.'),
         tip=(f'Makes the {axis} faces periodic: the model is one cell of an infinite periodic structure, such as a '
              'phononic crystal or one period of a surface acoustic wave device.\n\nFor an eigenfrequency study; '
              'on a triangle mesh without a phase step also for a stationary study.')) for axis in AXES_2D)
     bloch = tuple(Param(
         f'bloch_k{axis}', 'float', 0.0, label=f'Bloch wave vector {axis}', unit='rad/m',
         visible_if=((f'periodic_{axis}', (True,)),),
-        help=(f'Bloch wave vector along {axis} in rad/m, used only when periodic_{axis} is on: the phase step exp(-j '
-              f'k{axis} L) per period L; k{axis} and k{axis} + 2 pi / L are the same state; 0 = plain periodic. Swept '
-              'through a parameter, one eigenfrequency study per k gives the band diagram (template '
-              f'{BAND_TEMPLATE_2D}). Typical: pi / L at the zone edge.'),
+        help=('Bloch wave vector of this axis (its periodic setting on): phase step exp(-j k L) per period L; k and k '
+              '+ 2 pi / L are the same state; 0 = plain periodic, pi / L the zone edge. One eigenfrequency study per k '
+              f'gives a band diagram (template {BAND_TEMPLATE_2D}).'),
         tip=('Phase step of the vibration from one period to the next along this axis, in radians per metre.\n\n0 '
              'means no phase step. Swept, it gives the bands of a phononic crystal.')) for axis in AXES_2D)
     return periodic + bloch
