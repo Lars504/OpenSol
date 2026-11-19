@@ -122,11 +122,12 @@ button.icon { padding: 5px 8px; min-width: 32px; }
 button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
 input[type="range"] { width: 110px; accent-color: var(--accent); }
 input#frame { width: 180px; }
+input[type="range"].short { width: 70px; }
 .val { min-width: 42px; color: var(--ink); }
 .spacer { flex: 1; }
 .empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--ink-3); text-align: center;
          padding: 24px; }
-.empty[hidden] { display: none; }   /* the author display above would beat [hidden]: the empty overlay must not
+.empty[hidden], .group[hidden] { display: none; }   /* the author display above would beat [hidden]: the empty overlay must not
                                       cover the canvas and take its pointer input */
 body.present .controls, body.present header p, body.present .hint, body.present .settings, body.present .grip { display: none; }
 body.present .app { padding: 10px; gap: 10px; }
@@ -229,14 +230,36 @@ body.present .app { padding: 10px; gap: 10px; }
         <option value="all">All frames</option><option value="frame">This frame</option></select>
       <button id="log" aria-pressed="false" title="Logarithmic colour scale (non-negative fields)">Log</button>
       <select id="decades" title="Decades shown on the log scale">
-        <option value="2">2 dec</option><option value="3" selected>3 dec</option><option value="4">4 dec</option></select>
+        <option value="2">2 dec</option><option value="3" selected>3 dec</option><option value="4">4 dec</option>
+        <option value="6">6 dec</option><option value="9">9 dec</option></select>
     </div>
     <div class="group"><label for="range">Range</label>
       <input type="range" id="range" min="0.02" max="1" step="0.01" value="1" title="Colour limit as a fraction of the largest value (saturates hot spots)">
       <span class="val num" id="rangev"></span></div>
-    <div class="group" id="reliefgroup"><label for="relief">Relief</label>
+    <div class="group" id="reliefgroup"><button id="terrain" aria-pressed="false" title="Raise the map into a lit 3D terrain with its walls, and turn the view to it; again: back to the flat map seen face-on (R)">3D</button>
+      <label for="relief">Relief</label>
       <input type="range" id="relief" min="0" max="1" step="0.01" value="0" title="Raise the map by its value">
       <span class="val num" id="reliefv"></span></div>
+    <div class="group" id="flowgroup"><button id="flow" aria-pressed="false">Flow</button>
+      <select id="flowstyle" title="Flow drawn as moving particles or as arrows on a regular lattice (length in proportion to the magnitude) (Shift+V)">
+        <option value="particles">Particles</option><option value="arrows">Arrows</option></select>
+      <input type="range" id="flowdensity" class="short" min="0.2" max="4" step="0.1" value="1" title="Number of flow particles">
+      <input type="range" id="flowspeed" class="short" min="0" max="3" step="0.05" value="1" title="Speed of the flow particles (0: still)">
+      <input type="range" id="arrowlength" class="short" min="0.2" max="3" step="0.05" value="1" title="Arrow length (1: an arrow at the reference magnitude, a high percentile, spans 0.9 of the lattice spacing; larger ones are not longer)"></div>
+    <div class="group" id="contourgroup"><button id="contours" aria-pressed="false" title="Contour lines at round values, the bolder ones at the colour bar's ticks (decades on a log scale) (C)">Contours</button>
+      <select id="contourn" title="Number of contour levels over the colour range">
+        <option value="coarse">Coarse</option><option value="normal" selected>Normal</option><option value="fine">Fine</option></select></div>
+    <div class="group" id="deformgroup">
+      <button id="animate" aria-pressed="false">Animate</button>
+      <label for="deform">Deform</label>
+      <input type="range" id="deform" min="0" max="1" step="0.01" value="0.4" title="Magnification of the displacement: 0 = the rest shape, full = a quarter of the body size (D: animate)">
+      <span class="val num" id="deformv"></span></div>
+    <div class="group" id="volgroup" hidden><label for="volmode">View</label>
+      <select id="volmode" title="How the whole 3D field is drawn: its cut planes, movable slices through it, a lit isosurface, nested see-through shells or a glowing cloud (V)"></select>
+      <label for="vollevel" id="vollevellabel">Level</label>
+      <input type="range" id="vollevel" min="0.02" max="0.98" step="0.01" value="0.5">
+      <span class="val num" id="vollevelv"></span>
+      <span class="group" id="slicegroup"></span></div>
     <div class="group" id="layergroup"></div>
     <div class="group" id="geomgroup"><label for="geom">Objects</label>
       <select id="geom" title="Model objects drawn with the field (G)"></select>
@@ -309,15 +332,17 @@ function barScale(lo, hi, unit) {
 const CMAPS = {
   viridis: ['#440154', '#472d7b', '#3b528b', '#2c728e', '#21918c', '#28ae80', '#5ec962', '#addc30', '#fde725'],
   inferno: ['#000004', '#1f0c48', '#550f6d', '#88226a', '#ba3655', '#e35933', '#f98e09', '#f8c931', '#fcffa4'],
+  plasma: ['#0d0887', '#4c02a1', '#7e03a8', '#a92395', '#cc4778', '#e56b5d', '#f89441', '#fdc328', '#f0f921'],
   ice: ['#04051a', '#151a4b', '#1d3a7a', '#1f5f9e', '#2a86b5', '#4fabc4', '#86ccd3', '#c2e7e6', '#f4fbfb'],
   coolwarm: ['#3b4cc0', '#6282ea', '#8db0fe', '#b8d0f9', '#dddcdc', '#f5c4ad', '#f49a7b', '#de604d', '#b40426'],
   rdbu: ['#2166ac', '#4393c3', '#92c5de', '#d1e5f0', '#f7f7f7', '#fddbc7', '#f4a582', '#d6604d', '#b2182b'],
   puor: ['#542788', '#8073ac', '#b2abd2', '#d8daeb', '#f7f7f7', '#fee0b6', '#fdb863', '#e08214', '#b35806'],
   icefire: ['#9be4ff', '#3fa9e6', '#2563b8', '#1b2a5e', '#141414', '#5e1b1b', '#b83a25', '#e6823f', '#ffd59b'],
+  seismic: ['#00004d', '#0000a6', '#0000ff', '#8080ff', '#ffffff', '#ff8080', '#ff0000', '#bf0000', '#800000'],   // vivid waves
 };
 const CMAP_CHOICES = {
-  sequential: [['viridis', 'Viridis'], ['inferno', 'Inferno'], ['ice', 'Ice']],
-  diverging: [['coolwarm', 'Cool–warm'], ['rdbu', 'Blue–red'], ['puor', 'Purple–orange'], ['icefire', 'Ice–fire (dark middle)']],
+  sequential: [['viridis', 'Viridis'], ['inferno', 'Inferno'], ['plasma', 'Plasma'], ['ice', 'Ice']],
+  diverging: [['coolwarm', 'Cool–warm'], ['rdbu', 'Blue–red'], ['puor', 'Purple–orange'], ['icefire', 'Ice–fire (dark middle)'], ['seismic', 'Seismic (vivid)']],
 };
 
 // ---------- data ----------
@@ -331,9 +356,31 @@ const FRAMES = DATA.frames;
 const NF = FRAMES.length;
 const KIND = DATA.frame_kind;              // 'time' | 'labelled' | 'single'
 const is2d = DATA.dimensions === 2;
+// waves block state (`// ---- waves ----`), here because limits() / shownFrameRange() run during start-up
+const PHASOR = !!DATA.phasor;
+const SMOOTH_OK = KIND === 'time' && !Q.phase;          // an angle cannot be blended across its wrap
+const WAVE_SECOND = PHASOR || SMOOTH_OK;                // layers get an aVal2 buffer
+const wave = { theta: 0, playing: PHASOR, hz: 0.5, smooth: SMOOTH_OK && store('smooth') !== 'off', mixA: 1, mixB: 0 };
 const lengthUnit = niceUnit(DATA.length_unit || 'm');
 const AX = { x: 0, y: 1, z: 2 };
-const LOG_OK = !SIGNED && DATA.range[1] > 0 && DATA.range[0] >= 0;
+// ---- scalars: quantity defaults ----
+// DIVERGING: a signed field whose values cross zero (or whose mirror images flip its sign): diverging maps, limits
+// symmetric about 0. A signed field of one sign throughout (a potential of 0 .. 5 V, a temperature rise) is coloured
+// like a magnitude, over its own range: symmetric limits would leave half the map unused
+const DIVERGING = SIGNED && (Math.min(DATA.range[0], -DATA.range[1]) < -0.02 * Math.max(Math.abs(DATA.range[0]), Math.abs(DATA.range[1]))
+  || (DATA.mirrors || []).some((M) => M.sign < 0));
+const LOG_OK = !DIVERGING && DATA.range[1] > 0 && DATA.range[0] >= 0;
+// the kind of quantity picks the opening colour map (each kind remembers the user's own choice) and, for densities
+// spanning decades, the log scale
+const SCALAR_KIND = (() => {
+  const label = (Q.label || '').toLowerCase(), unit = Q.unit || '';
+  if (/temperature/.test(label) || unit === 'K') return 'temperature';
+  if (/densit|concentration/.test(label) && /m\^-?3|m³|cm/.test(unit)) return 'density';
+  if (/potential/.test(label) || unit === 'V') return 'potential';
+  return 'other';
+})();
+const KIND_CMAP = { temperature: 'inferno', potential: 'plasma', density: 'viridis', other: 'viridis' };
+function cmapStoreKey() { return DIVERGING ? 'cmap_signed' : SCALAR_KIND === 'other' ? 'cmap' : 'cmap:' + SCALAR_KIND; }
 
 // ---------- plot settings (the Plot settings panel; keys and values as viz.field_viewer.figure_settings) ----------
 // fig: lengths in m, colour limits in the field's unit, null = automatic. Start: the defaults, then what this browser
@@ -374,7 +421,7 @@ const fig = (() => {
     out[k] = v; rememberedLimits.delete(k); }
   return out;
 })();
-function scaleBarOffered() { return PLANAR && fig.scale_bar === 'on'; }   // one plane (a 3D view keeps its axes); drawn when seen face-on
+function scaleBarOffered() { return PLANAR && fig.scale_bar === 'on'; }   // one plane (a 3D view keeps its axes); face-on or tilted
 function saveFigure() {
   // only what differs from the defaults, so a page with new defaults is not held to the old ones
   store('style', JSON.stringify(Object.fromEntries(Object.keys(FIGURE_STYLE).filter((k) => fig[k] !== FIGURE_STYLE[k]).map((k) => [k, fig[k]]))));
@@ -424,7 +471,8 @@ const AXIS_NAMES = ['x', 'y', 'z'];
 
 // planar: a 2D map, or 3D cut planes all in one plane (a single cut): shown face-on as the GUI canvas shows it (u to
 // the right, v up), with relief; NORMAL = the axis it faces, PLANE_AXES = its (u, v)
-const PLANAR = is2d || DATA.layers.every((L) => L.normal === DATA.layers[0].normal && L.position === DATA.layers[0].position);
+// (a page with the whole 3D field, DATA.volume, is never planar: its one cut is then a plane in the volume's box)
+const PLANAR = !DATA.volume && (is2d || DATA.layers.every((L) => L.normal === DATA.layers[0].normal && L.position === DATA.layers[0].position));
 const NORMAL = is2d ? 2 : AX[DATA.layers[0].normal];
 const PLANE_AXES = [AX[DATA.layers[0].axes[0]], AX[DATA.layers[0].axes[1]]];
 const FACE_ON = { 0: [Math.PI, 0], 1: [Math.PI / 2, 0], 2: [Math.PI / 2, 89.4 * Math.PI / 180] };   // (az, el)
@@ -450,6 +498,38 @@ const CAN_MIRROR = MIRROR_IMAGES.length > 1;
 const hmin = [Infinity, Infinity, Infinity], hmax = [-Infinity, -Infinity, -Infinity];
 for (const L of LAYERS) for (let k = 0; k < L.n; k++) for (let c = 0; c < 3; c++) {
   const v = L.pos[3 * k + c]; if (v < hmin[c]) hmin[c] = v; if (v > hmax[c]) hmax[c] = v; }
+function volumeBoxOf(V) {
+  // fields3d: [lo, hi] texel edges of a volume (length units): half a step beyond the end centres (graded axes:
+  // their end steps)
+  const lo = [], hi = [];
+  for (const c of [0, 1, 2]) {
+    const C = V.axes && V.axes[c] ? f32(V.axes[c]) : null, n = V.n[c];
+    const first = C ? C[1] - C[0] : (V.hi[c] - V.lo[c]) / Math.max(n - 1, 1);
+    const last = C ? C[n - 1] - C[n - 2] : first;
+    lo.push(V.lo[c] - 0.5 * first); hi.push(V.hi[c] + 0.5 * last);
+  }
+  return [lo, hi];
+}
+if (DATA.volume) {   // fields3d: the volume's box is shown too
+  const [lo, hi] = volumeBoxOf(DATA.volume);
+  for (const c of [0, 1, 2]) { hmin[c] = Math.min(hmin[c], lo[c]); hmax[c] = Math.max(hmax[c], hi[c]); }
+}
+
+// ---- solid2d ---- (deformed shapes, part 1: data; part 2 follows the controls)
+// DATA.motion: every frame holds per layer the displacement channels (components 'u' / 'v' along the layer's axes,
+// 'n' along its normal; real parts, then imaginary ones) as int16 over [-dmax, dmax] (length units); the page moves
+// the samples by them, magnified so the largest shows as a fraction of the body size (Deform), and animates them:
+// modes oscillate (Re[d exp(j theta)]), static states ramp the load 0 -> 1 -> 0
+const MOTION = DATA.motion || null;
+const MOTION_COMPONENTS = MOTION ? MOTION.components : [];
+const MOTION_CHANNELS = MOTION ? MOTION_COMPONENTS.length * (MOTION.complex ? 2 : 1) : 0;
+const MOTION_INPLANE = MOTION_COMPONENTS.some((c) => c !== 'n');
+const MOTION_NORMAL = PLANAR && MOTION_COMPONENTS.includes('n');
+const DEFORM_FULL = 0.25;                     // Deform at full: the largest displacement shows as this x the body size
+const DEFORM_START = MOTION_INPLANE ? 0.4 : 0.8;
+const REST_SPAN = Math.max(...PLANE_AXES.map((c) => hmax[c] - hmin[c])) || 1;   // body size (simulated part, at rest)
+// (the bounds stay those of the rest shape, room for the deformation would change the Stretch of thin bodies: a
+// face-on fit leaves the room around the map instead, motionInplaneReach)
 
 // thin geometries: the GUI canvas gives them unequal scales (and its side views a Stretch z); here an axis whose span is
 // below 1 / MAX_ASPECT of the largest is stretched by a 1-2-5 factor, named on its axis title and in the readout
@@ -503,9 +583,9 @@ const state = {
   // colour limits: shared over time frames; per frame for labelled ones (modes, wavelengths: independent states)
   frame: 0, playing: false, fps: 8, scale: KIND === 'time' ? 'all' : 'frame', log: false, decades: 3, range: 1, relief: 0,
   lines: false, box: !PLANAR, spin: false, axes: !scaleBarOffered(), stretch: true, mirror: CAN_MIRROR,   // a scale bar stands in for the axes
-  cmap: (SIGNED ? store('cmap_signed') : store('cmap')) || (SIGNED ? 'coolwarm' : 'viridis'),
+  cmap: store(cmapStoreKey()) || (DIVERGING ? 'coolwarm' : KIND_CMAP[SCALAR_KIND]),
 };
-const choices = CMAP_CHOICES[SIGNED ? 'diverging' : 'sequential'];
+const choices = CMAP_CHOICES[DIVERGING ? 'diverging' : 'sequential'];
 if (!choices.some(([key]) => key === state.cmap)) state.cmap = choices[0][0];
 $('cmap').replaceChildren(...choices.map(([key, label]) => new Option(label, key)));
 $('cmap').value = state.cmap;
@@ -529,9 +609,16 @@ function frameValues(f) {
   if (frameCache.has(f)) return frameCache.get(f);
   // linear codes: lo + (q + 32767) (hi - lo) / 65534; log codes (frame log_lo set: non-negative fields reaching
   // down to ~0): 10^(log_lo + (q + 32767) (log10 hi - log_lo) / 65534), the lowest code = lo (at or below the floor)
-  const F = FRAMES[f], step = (F.hi - F.lo) / 65534;
+  const out = decodeCodes(FRAMES[f], FRAMES[f].values);
+  if (frameCache.size > 32) frameCache.delete(frameCache.keys().next().value);
+  frameCache.set(f, out);
+  return out;
+}
+function decodeCodes(F, texts) {
+  // per layer Float32Array (value, ok) pairs of a frame's int16 code texts (its values or phasor partner)
+  const step = (F.hi - F.lo) / 65534;
   const L0 = F.log_lo, LS = L0 != null ? (Math.log10(Math.max(F.hi, 1e-300)) - L0) / 65534 : 0;
-  const out = F.values.map((text) => {
+  return texts.map((text) => {
     const q = i16(text), a = new Float32Array(2 * q.length);
     for (let k = 0; k < q.length; k++) {
       const c = q[k];
@@ -541,9 +628,6 @@ function frameValues(f) {
     }
     return a;
   });
-  if (frameCache.size > 32) frameCache.delete(frameCache.keys().next().value);
-  frameCache.set(f, out);
-  return out;
 }
 function limits() {
   // shown colour limits [lo, hi]: the automatic ones unless the Plot settings give a colour minimum / maximum (a
@@ -551,16 +635,15 @@ function limits() {
   const auto = autoLimits(), lo = fig.color_min, hi = fig.color_max;
   if (lo === null && hi === null) return auto;
   let out;
-  if (SIGNED && (lo === null || hi === null)) { const m = Math.abs(lo === null ? hi : lo); out = [-m, m]; }
+  if (DIVERGING && (lo === null || hi === null)) { const m = Math.abs(lo === null ? hi : lo); out = [-m, m]; }
   else out = [lo === null ? auto[0] : lo, hi === null ? auto[1] : hi];
   if (state.log && LOG_OK && !(lo > 0)) out[0] = out[1] * Math.pow(10, -state.decades);
   return out[1] > out[0] ? out : auto;
 }
 function autoLimits() {
   // colour limits [lo, hi] of the data and the Range slider (log: hi and the decades below it)
-  const F = FRAMES[state.frame];
-  let lo = state.scale === 'frame' ? F.lo : DATA.range[0], hi = state.scale === 'frame' ? F.hi : DATA.range[1];
-  if (SIGNED) { const m = Math.max(Math.abs(lo), Math.abs(hi)) * state.range || 1; return [-m, m]; }
+  let [lo, hi] = state.scale === 'frame' ? shownFrameRange() : DATA.range;
+  if (DIVERGING) { const m = Math.max(Math.abs(lo), Math.abs(hi)) * state.range || 1; return [-m, m]; }
   if (state.log && LOG_OK) { const top = Math.max(hi * state.range, 1e-300); return [top * Math.pow(10, -state.decades), top]; }
   hi = lo + (hi - lo) * state.range;
   if (!(hi > lo)) hi = lo + (Math.abs(lo) || 1);
@@ -575,22 +658,29 @@ if (!gl) { $('empty').hidden = false; $('empty').textContent = 'This browser has
 const VS = `#version 300 es
 precision highp float;
 precision highp int;
-in vec3 aPos; in vec2 aVal;
+in vec3 aPos; in vec2 aVal; in vec2 aVal2;   // aVal2: the phasor partner or the next frame (waves block)
+in float aDown;                     // 1 = a terrain wall's bottom vertex (scalars block), else 0
+in vec4 aDisp;                      // displacement channels (solid2d block)
 uniform mat4 uView; uniform mat4 uProj; uniform vec3 uCenter;
+uniform vec3 uDispDir[4]; uniform vec4 uDispW; uniform float uAmp;   // deformed shape: aPos + sum aDisp[c] uDispW[c] uDispDir[c]
 uniform float uLo; uniform float uHi; uniform int uLog; uniform int uSigned;
-uniform float uRelief; uniform vec3 uNormal; uniform vec3 uStretch;
+uniform float uRelief; uniform vec3 uNormal; uniform vec3 uStretch; uniform float uBase;
 uniform vec3 uMirA; uniform vec3 uMirB; uniform float uValSign; uniform int uPhase;   // mirror image: a x + b, value sign
-out float vT; out float vOk; out vec3 vViewPos; out vec3 vPlace;
+uniform float uMixA; uniform float uMixB;   // shown value = aVal uMixA + aVal2 uMixB (1, 0: aVal alone)
+out float vT; out float vOk; out vec3 vViewPos; out vec3 vPlace; out float vVal; out vec3 vSrc;
 void main() {
-  float v = aVal.x, t;
+  float v = (aVal.x * uMixA + aVal2.x * uMixB) * uAmp, t;   // uAmp: cos(theta) of an oscillating mode (solid2d), else 1
   if (uValSign < 0.0) v = (uPhase == 1) ? (v > 0.0 ? v - 3.14159265 : v + 3.14159265) : -v;
-  if (uLog == 1) t = (log(max(v, 1e-37)) - log(uLo)) / (log(uHi) - log(uLo));
-  else t = (v - uLo) / (uHi - uLo);
+  if (uLog == 1) { t = (log(max(v, 1e-37)) - log(uLo)) / (log(uHi) - log(uLo)); vVal = log(max(v, 1e-37)) * 0.4342944819; }
+  else { t = (v - uLo) / (uHi - uLo); vVal = v; }   // vVal: the value the contour levels count (log10 on a log scale)
   t = clamp(t, 0.0, 1.0);
   float h = (uSigned == 1) ? 2.0 * t - 1.0 : t;
-  vPlace = aPos * uMirA + uMirB;      // true coordinates of the (mirrored) point: the axis limits cut on them
-  vec3 p = (vPlace - uCenter) * uStretch + uNormal * (uRelief * h);
-  vT = t; vOk = aVal.y;
+  vec3 d = aDisp.x * uDispW.x * uDispDir[0] + aDisp.y * uDispW.y * uDispDir[1] + aDisp.z * uDispW.z * uDispDir[2]
+         + aDisp.w * uDispW.w * uDispDir[3];
+  vPlace = (aPos + d) * uMirA + uMirB;   // true coordinates of the (deformed, mirrored) point: the axis limits cut on them
+  vSrc = aPos;                        // of the simulated point: where an image reads the outline decal
+  vec3 p = (vPlace - uCenter) * uStretch + uNormal * mix(uRelief * h, -uBase, aDown);
+  vT = t; vOk = uMixB != 0.0 ? min(aVal.y, aVal2.y) : aVal.y;
   vec4 vp = uView * vec4(p, 1.0);
   vViewPos = vp.xyz;
   gl_Position = uProj * vp;
@@ -598,9 +688,12 @@ void main() {
 const FS = `#version 300 es
 precision highp float;
 precision highp int;
-in float vT; in float vOk; in vec3 vViewPos; in vec3 vPlace;
+in float vT; in float vOk; in vec3 vViewPos; in vec3 vPlace; in float vVal; in vec3 vSrc;
 uniform vec3 uStops[9]; uniform int uLine; uniform vec4 uLineColor; uniform float uShade;
 uniform vec3 uClipLo; uniform vec3 uClipHi;
+uniform int uContour; uniform float uC0; uniform float uCStep; uniform float uCMajor; uniform float uCWidth;
+uniform float uWall;                  // terrain walls (scalars block): darker, no contours
+uniform int uDecal; uniform int uDecalAuto; uniform sampler2D uDecalTex; uniform vec3 uDecalU; uniform vec3 uDecalV; uniform vec4 uDecalBox;   // outlines on a raised map
 out vec4 outColor;
 vec3 cmap(float t) {
   t = clamp(t, 0.0, 1.0) * 8.0;
@@ -612,18 +705,42 @@ void main() {
   if (any(lessThan(vPlace, uClipLo)) || any(greaterThan(vPlace, uClipHi))) discard;   // outside the axis limits
   if (uLine == 1) { outColor = uLineColor; return; }
   vec3 base = cmap(vT);
+  if (uContour == 1 && uWall < 0.5) {
+    // isolines at uC0 + k uCStep (every uCMajor-th one bolder, as the colour bar ticks), anti-aliased over the
+    // screen-space change of k; none where the field is flat (a level the whole region sits on) or where the levels
+    // crowd closer than ~2 px (a moire otherwise)
+    float k = (vVal - uC0) / uCStep, w = fwidth(k);
+    if (w > 1e-6 && vT > 0.0 && vT < 1.0) {
+      float d = abs(fract(k + 0.5) - 0.5) / w;   // px to the nearest level
+      bool major = abs(mod(floor(k + 0.5), uCMajor)) < 0.5;
+      float hw = (major ? 0.85 : 0.5) * uCWidth;
+      float a = (1.0 - smoothstep(hw - 0.5, hw + 0.5, d)) * (1.0 - smoothstep(0.25, 0.5, w)) * (major ? 0.9 : 0.6);
+      float lum = dot(base, vec3(0.2126, 0.7152, 0.0722));
+      vec3 ink = lum > 0.42 ? base * 0.28 : mix(base, vec3(1.0), 0.75);   // darker over light colours, lighter over dark
+      base = mix(base, ink, a);
+    }
+  }
   vec3 col = base;
-  if (uShade > 0.0) {                 // relief: light the raised surface; flat maps keep the legend colours
+  if (uShade > 0.0) {                 // relief: light the raised surface (key, fill, rim as mode_player); flat maps keep the legend colours
     vec3 n = normalize(cross(dFdx(vViewPos), dFdy(vViewPos)));
     vec3 v = normalize(-vViewPos);
-    vec3 key = normalize(vec3(0.45, 0.75, 0.55));
-    float dk = abs(dot(n, key));
-    float sp = pow(max(dot(n, normalize(key + v)), 0.0), 40.0);
-    col = mix(base, base * (0.45 + 0.65 * dk) + vec3(0.16) * sp, uShade);
+    if (dot(n, v) < 0.0) n = -n;
+    vec3 key = normalize(vec3(0.45, 0.75, 0.55)), fill = normalize(vec3(-0.6, -0.25, 0.5));
+    float dk = max(dot(n, key), 0.0), df = max(dot(n, fill), 0.0);
+    float sp = pow(max(dot(n, normalize(key + v)), 0.0), 48.0);
+    float rim = pow(1.0 - max(dot(n, v), 0.0), 3.0);
+    vec3 lit = base * (0.42 + 0.55 * dk + 0.18 * df) + vec3(0.18) * sp + vec3(0.05) * rim;
+    col = mix(base, lit, uShade);
+    if (uWall > 0.5) col *= 0.62;
+  }
+  if (uDecal == 1 && uWall < 0.5) {   // the model outlines drawn into a texture over the plane: they follow the relief
+    vec4 d = texture(uDecalTex, (vec2(dot(vSrc, uDecalU), dot(vSrc, uDecalV)) - uDecalBox.xy) / uDecalBox.zw);
+    vec3 ink = d.rgb / max(d.a, 1e-4);
+    if (uDecalAuto == 1) ink = dot(col, vec3(0.2126, 0.7152, 0.0722)) > 0.45 ? vec3(0.05, 0.06, 0.08) : vec3(1.0);   // Contrast: per pixel
+    col = mix(col, ink, d.a);
   }
   outColor = vec4(col, 1.0);
 }`;
-
 let prog = null, uni = {}, ready = false, boxVao = null, boxBuf = null, boxCount = 0;
 function boxLines() {
   const c = [[bmin[0], bmin[1], bmin[2]], [bmax[0], bmin[1], bmin[2]], [bmax[0], bmax[1], bmin[2]], [bmin[0], bmax[1], bmin[2]],
@@ -647,15 +764,23 @@ function setupGL() {
   if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
   for (const name of ['uView', 'uProj', 'uCenter', 'uLo', 'uHi', 'uLog', 'uSigned', 'uRelief', 'uNormal', 'uStretch',
                       'uStops', 'uLine', 'uLineColor', 'uShade', 'uMirA', 'uMirB', 'uValSign', 'uPhase',
-                      'uClipLo', 'uClipHi'])
+                      'uClipLo', 'uClipHi', 'uMixA', 'uMixB', 'uBase', 'uContour', 'uC0', 'uCStep', 'uCMajor', 'uCWidth',
+                      'uWall', 'uDecal', 'uDecalAuto', 'uDecalTex', 'uDecalU', 'uDecalV', 'uDecalBox',
+                      'uDispDir', 'uDispW', 'uAmp'])
     uni[name] = gl.getUniformLocation(prog, name);
   const aPos = gl.getAttribLocation(prog, 'aPos'), aVal = gl.getAttribLocation(prog, 'aVal');
+  const aVal2 = gl.getAttribLocation(prog, 'aVal2');
+  if (aVal2 >= 0) gl.vertexAttrib2f(aVal2, 0, 1);   // without a buffer (box, still pages): a valued zero
+  const aDisp = gl.getAttribLocation(prog, 'aDisp');
+  if (aDisp >= 0) gl.vertexAttrib4f(aDisp, 0, 0, 0, 0);   // buffers without a displacement (box, no motion) stay put
   for (const L of LAYERS) {
     L.vao = gl.createVertexArray(); gl.bindVertexArray(L.vao);
     vertexBuffer(aPos, L.pos, 3, gl.STATIC_DRAW);
     L.valBuf = vertexBuffer(aVal, new Float32Array(2 * L.n), 2, gl.DYNAMIC_DRAW);
+    L.val2Buf = WAVE_SECOND ? vertexBuffer(aVal2, new Float32Array(2 * L.n), 2, gl.DYNAMIC_DRAW) : null;
     L.triBuf = indexBuffer(L.tri);
     L.edgeBuf = L.edges ? indexBuffer(L.edges) : null;
+    if (MOTION && aDisp >= 0) L.dispBuf = vertexBuffer(aDisp, new Float32Array(4 * L.n), 4, gl.DYNAMIC_DRAW);
   }
   // outline of the shown box: 12 edges, every vertex valued (aVal = (0, 1)); rewritten when the bounds change
   const box = boxLines(); boxCount = box.length / 3;
@@ -671,6 +796,10 @@ function uploadFrame() {
   if (!gl || !ready) return;
   const values = frameValues(state.frame);
   LAYERS.forEach((L, i) => { gl.bindBuffer(gl.ARRAY_BUFFER, L.valBuf); gl.bufferSubData(gl.ARRAY_BUFFER, 0, values[i]); });
+  flowState.frame = -1;                        // flow particles: the new frame's vectors on their next draw
+  uploadSecond();
+  uploadMotion();
+  uploadVolume();
 }
 
 // ---------- camera ----------
@@ -688,8 +817,9 @@ let plotScale = (() => { const v = Number(store(PLOT_SCALE_STORE));
   return isFinite(v) && v >= PLOT_SCALE_MIN && v <= 1 ? v : 1; })();
 function setPlotScale(v) { plotScale = Math.max(PLOT_SCALE_MIN, Math.min(1, v)); store(PLOT_SCALE_STORE, String(plotScale)); }
 function resetCamera() {
-  if (PLANAR) [cam.az, cam.el] = FACE_ON[NORMAL];
+  if (PLANAR) [cam.az, cam.el] = state.relief > 0 ? terrainPose() : FACE_ON[NORMAL];   // a raised map: its terrain angle
   else { cam.az = 2.2; cam.el = 0.42; }        // eye at +x, -y, +z: x to the right, y into the view
+  if (PLANAR && MOTION_NORMAL) { cam.az += 0.45; cam.el = 0.62; }   // an out-of-plane deformation: an oblique view
   if (DATA.view) { cam.az = DATA.view[0] * Math.PI / 180; cam.el = DATA.view[1] * Math.PI / 180; }
   cam.target = [0, 0, 0]; cam.moved = false;
   fitDistance();
@@ -734,17 +864,19 @@ function fitDistance() { const fov = 30 * Math.PI / 180, tan = Math.tan(fov / 2)
     const ins = viewInsets(), [iu, iv] = PLANE_AXES;
     const freeW = Math.max(plotScale * (canvas.width - ins.left - ins.right), 1);
     const freeH = Math.max(plotScale * (canvas.height - ins.top - ins.bottom), 1);
-    cam.dist = Math.max(span[iu] / freeW, span[iv] / freeH) * canvas.height / (2 * tan) || 1;
+    const reach = motionInplaneReach(), f = stretch();   // room around the map for a deformed shape
+    cam.dist = Math.max((span[iu] + 2 * reach * f[iu]) / freeW, (span[iv] + 2 * reach * f[iv]) / freeH) * canvas.height / (2 * tan) || 1;
     const perPixel = 2 * cam.dist * tan / Math.max(canvas.height, 1), { s, u } = cameraAxes();
     const right = 0.5 * (ins.left - ins.right), up = 0.5 * (ins.bottom - ins.top);   // map centre from the canvas centre, px
     cam.target = [0, 1, 2].map((i) => -(s[i] * right + u[i] * up) * perPixel);
     return;
   }
   const aspect = canvas.width / Math.max(canvas.height, 1);
-  if (PLANAR) span[NORMAL] += reliefHeight();
+  if (PLANAR) span[NORMAL] += reliefHeight() + 2 * motionNormalReach();
   const r = 0.5 * Math.hypot(span[0], span[1], span[2]) || 1;
   const h = r / tan, w = r / (tan * Math.min(aspect, 1.0));
-  cam.dist = Math.max(h, w) * (PLANAR ? 0.92 : 0.86); }
+  cam.dist = Math.max(h, w) * (PLANAR ? 0.92 : 0.86);
+  if (!PLANAR) fitBoxCorners(); }
 function eyeDir() { const c = Math.cos(cam.el); return [0, 1, 2].map((i) => c * (Math.cos(cam.az) * E1[i] + Math.sin(cam.az) * E2[i]) + Math.sin(cam.el) * UP[i]); }
 function cameraAxes() { const f = norm(eyeDir().map((v) => -v)); let s = norm(cross(f, UP)); if (!isFinite(s[0])) s = E1;
   return { f, s, u: cross(s, f) }; }
@@ -787,9 +919,11 @@ function resize() {
 function draw() {
   if (!gl || !ready) return;
   resize();
+  try { prepareDecal(); } catch (err) { decalFailed = true; decalActive = false; console.error('outline decal:', err); }
   gl.viewport(0, 0, canvas.width, canvas.height);
   const bg = themeColors.clear;
   gl.clearColor(bg[0], bg[1], bg[2], 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  drawBackdrop();
   gl.useProgram(prog);
   gl.uniform3fv(uni.uClipLo, clipLo); gl.uniform3fv(uni.uClipHi, clipHi);
   const [lo, hi] = limits();
@@ -798,22 +932,27 @@ function draw() {
   gl.uniformMatrix4fv(uni.uView, false, view); gl.uniformMatrix4fv(uni.uProj, false, proj);
   gl.uniform3fv(uni.uCenter, center); gl.uniform3fv(uni.uStretch, stretch());
   gl.uniform1f(uni.uLo, lo); gl.uniform1f(uni.uHi, hi);
-  gl.uniform1i(uni.uLog, logScale ? 1 : 0); gl.uniform1i(uni.uSigned, SIGNED ? 1 : 0);
+  gl.uniform1i(uni.uLog, logScale ? 1 : 0); gl.uniform1i(uni.uSigned, DIVERGING ? 1 : 0);
+  setContourUniforms(lo, hi, logScale); setDecalUniforms();
   gl.uniform3fv(uni.uStops, new Float32Array(CMAPS[state.cmap].map(hexRgb).flat()));
   const relief = PLANAR ? reliefHeight() : 0;
-  gl.uniform1f(uni.uShade, relief > 0 ? 1 : 0);
+  gl.uniform1f(uni.uShade, relief > 0 || motionLit() ? 1 : 0);
+  setMotionUniforms();
+  drawMotionOutlines(view, proj, relief, 'rest'); gl.useProgram(prog);   // the rest shape under the body
   gl.disable(gl.BLEND);
   gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(1, 1);   // fills behind their mesh lines
   gl.uniform1i(uni.uLine, 0); gl.uniform1i(uni.uPhase, Q.phase ? 1 : 0);
+  gl.uniform1f(uni.uMixA, wave.mixA); gl.uniform1f(uni.uMixB, wave.mixB);
   for (const I of images()) {
     setImage(uni, I);
     for (const L of LAYERS) {
       if (!L.visible || selfImage(L, I)) continue;
-      gl.uniform3fv(uni.uNormal, L.normal); gl.uniform1f(uni.uRelief, relief);
+      gl.uniform3fv(uni.uNormal, L.normal); gl.uniform1f(uni.uRelief, relief); setMotionLayer(uni, L, I);
       gl.bindVertexArray(L.vao); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, L.triBuf);
       gl.drawElements(gl.TRIANGLES, L.tri.length, gl.UNSIGNED_INT, 0);
     }
   }
+  drawWalls(relief);
   gl.disable(gl.POLYGON_OFFSET_FILL);
   gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
   gl.uniform1i(uni.uLine, 1);
@@ -823,13 +962,13 @@ function draw() {
       setImage(uni, I);
       for (const L of LAYERS) {
         if (!L.visible || !L.edgeBuf || selfImage(L, I)) continue;
-        gl.uniform3fv(uni.uNormal, L.normal); gl.uniform1f(uni.uRelief, relief);
+        gl.uniform3fv(uni.uNormal, L.normal); gl.uniform1f(uni.uRelief, relief); setMotionLayer(uni, L, I);
         gl.bindVertexArray(L.vao); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, L.edgeBuf);
         gl.drawElements(gl.LINES, L.edges.length, gl.UNSIGNED_INT, 0);
       }
     }
   }
-  setImage(uni, IDENTITY_IMAGE);
+  setImage(uni, IDENTITY_IMAGE); gl.uniform4f(uni.uDispW, 0, 0, 0, 0); gl.uniform1f(uni.uAmp, 1);
   if (state.box && !PLANAR) {
     // the box lies on the axis limits themselves: drawn uncut
     gl.uniform3fv(uni.uClipLo, NO_CLIP_LO); gl.uniform3fv(uni.uClipHi, NO_CLIP_HI);
@@ -838,6 +977,9 @@ function draw() {
   }
   gl.disable(gl.BLEND);
   gl.bindVertexArray(null);
+  drawFlow(view, proj);
+  drawMotionOutlines(view, proj, relief, 'moved');
+  drawVolume(view, proj, lo, hi, logScale);   // fields3d: the whole 3D field, before the objects (they depth-test)
   drawGeometry(view, proj);
   drawAxes(view, proj);
   drawOverlay(view, proj);
@@ -1027,7 +1169,8 @@ function barTicks(lo, hi, logScale, factor, count) {
   if (logScale) {
     const decades = [];
     for (let k = Math.ceil(l0 - 1e-9); k <= l1 + 1e-9; k++)
-      decades.push({ t: place(Math.pow(10, k)), text: Number((Math.pow(10, k) / factor).toPrecision(3)).toString() });
+      decades.push({ t: place(Math.pow(10, k)), text: factor === 1 && Math.abs(k) >= 3 ? '10' + superscript(k)
+                                                  : Number((Math.pow(10, k) / factor).toPrecision(3)).toString() });
     if (decades.length >= 2) return decades;
   }
   let out = [];
@@ -1053,7 +1196,9 @@ function drawColorbar(c) {
   MOVABLE.colorbar.box = null;
   if (where === 'off') return;
   const px = pixelRatio, W = canvas.width, H = canvas.height, pad = PAD * px, B = barMetrics(), F = B.F, gap = 0.6 * F;
-  const [lo, hi] = limits(), logScale = state.log && LOG_OK, S = barScale(lo, hi, Q.unit);
+  const [lo, hi] = limits(), logScale = state.log && LOG_OK;
+  const decadeTicks = logScale && Math.floor(Math.log10(hi) + 1e-9) - Math.ceil(Math.log10(lo) - 1e-9) >= 1;
+  const S = decadeTicks ? { factor: 1, unit: Q.unit || '' } : barScale(lo, hi, Q.unit);   // decades: labelled 10ⁿ
   const name = Q.label + (S.unit ? ' (' + S.unit + ')' : '') + (logScale ? ', log scale' : '');
   const upright = where === 'left' || where === 'right', centred = where === 'top' || where === 'bottom';
   const length = Math.min(fig.colorbar_length !== null ? fig.colorbar_length * (upright ? H : W)
@@ -1164,10 +1309,12 @@ function lengthText(metres) {
 function niceDown(x) { const p = Math.pow(10, Math.floor(Math.log10(x)));
   for (const m of [5, 2, 1]) if (m * p <= x * (1 + 1e-9)) return m * p; return p; }
 function drawScaleBar(c, view, proj) {
-  // Plot settings scale bar: a bar of a round (or the given) true length with that length above it. Only on a plane
-  // seen face-on, where the screen has one scale; home: the lower right corner inside the plot frame (mapFrame)
+  // Plot settings scale bar: a bar of a round (or the given) true length with that length above it, on any planar view;
+  // tilted (relief, out-of-plane motion, turned by hand) it is the screen-horizontal scale at the map centre's depth
+  // (the narrow perspective changes it a little across the map); home: the lower right corner inside the plot frame
+  // (mapFrame; off face-on the free area inside viewInsets)
   MOVABLE.scaleBar.box = null;
-  if (!scaleBarOffered() || !faceOn()) return;
+  if (!scaleBarOffered()) return;
   const px = pixelRatio, F = fig.font_size * px, f = stretch(), right = cameraAxes().s;
   // device px per length unit along the screen's horizontal: a step along the camera's right axis, which is
   // step / stretch in true coordinates (so the bar is right on a stretched axis and in a turned map too)
@@ -1182,7 +1329,14 @@ function drawScaleBar(c, view, proj) {
   const width = Math.max(bar, c.measureText(text).width), height = 1.3 * F + thick;
   const ins = viewInsets(), frame = mapFrame(view, proj) || [ins.left, ins.top, canvas.width - ins.right, canvas.height - ins.bottom];
   const [left, top] = placePart(MOVABLE.scaleBar, frame[2] - 1.2 * F - width, frame[3] - 1.2 * F - height, width, height);
-  c.fillStyle = overlayColor(fig.scale_bar_color, themeColors.headText); c.textAlign = 'center'; c.textBaseline = 'top';
+  const ink = overlayColor(fig.scale_bar_color, themeColors.headText);
+  c.textAlign = 'center'; c.textBaseline = 'top';
+  // a soft halo of the opposite tone keeps the bar readable over any colour of the map under it
+  const light = ink.startsWith('#') && hexRgb(ink.length === 4 ? '#' + [...ink.slice(1)].map((h) => h + h).join('') : ink)
+    .reduce((sum, v, i) => sum + v * [0.2126, 0.7152, 0.0722][i], 0) > 0.5;
+  c.save(); c.lineJoin = 'round'; c.lineWidth = 2.5 * px; c.strokeStyle = light ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.6)';
+  c.strokeText(text, left + 0.5 * width, top); c.strokeRect(left + 0.5 * (width - bar), top + 1.3 * F, bar, thick); c.restore();
+  c.fillStyle = ink;
   c.fillText(text, left + 0.5 * width, top);
   c.fillRect(left + 0.5 * (width - bar), top + 1.3 * F, bar, thick);
 }
@@ -1346,6 +1500,7 @@ function drawGeometry(view, proj) {
     for (const G of GEOM_LINES) {
       if (G.kind === 'outline' && (!LAYERS[G.layer].visible || selfImage(LAYERS[G.layer], I))) continue;
       if (G.kind !== 'outline' && state.geom === 'outline' && !is2d) continue;   // 3D edges and points: Edges / Glass
+      if (decalActive && decalKind(G)) continue;   // on a raised map they are drawn into the map (outlineDecal)
       // material-coloured outlines lie inside their own object (two objects meeting on a line: both colours show,
       // each on its side) and are a little wider; one-colour outlines stay centred on the true boundary
       const inset = G.kind === 'outline' && state.geomColor === 'material';
@@ -1376,23 +1531,924 @@ window.addEventListener('keydown', (e) => {
 });
 syncGeometry();
 
+// ---- vectors ----
+// Flow particles (DATA.flow: per 2D map layer an in-plane vector on a uniform grid over the layer's extent, int16 x, y
+// per frame over +-flow_max). Stateless pathlines: particle i lives generations of FLOW_LIFE s of flow clock, each
+// starting at a hashed seed inside the window shown (the visible part of the layer, per mirror image) and moving along
+// the field in RK2 steps of the vector normalised by the page's speed_reference (FLOW_TRAVEL of the shown span per
+// life at that magnitude or more: slow regions crawl, fast ones stream; the reference, a high percentile rather than
+// the largest, keeps a singular peak from freezing the rest). A transform-feedback pass writes FLOW_TAIL + 1 points
+// of every particle's latest path, each recomputed from its seed, so nothing is kept between draws (PNG, recordings,
+// frame changes and zoom need no reset); the draw pass strokes them as screen-space quads fading to the tail, a light
+// core over a dark halo (the reverse over a light colour-map middle), so they read over any colour. Mirror images: the
+// paths are reflected, and run backwards where the product of the images' flow_sign is -1 (a vector odd along the
+// plane). No particles on a raised map (relief would hide them under its surface).
+// Arrows (style 'arrows'): one arrow per point of a lattice anchored at the layer grid's origin, square on screen
+// (spacing from the density, as the particle count), pivot in the middle; direction = the projected data direction
+// (so arrows follow the particles' paths, also on a stretched axis), screen length = |vector| / speed_reference
+// (clamped to 1, like the particles' speed) x the lattice spacing x Arrow length; short arrows shrink as a whole and
+// fade below a few px. Same textures, mirror images (reflected, flow_sign reversed) and colours as the particles;
+// two passes, the halo (each arrow inflated by its outline) under the core.
+const FLOW = DATA.flow || null;
+const FLOW_STEPS = 48, FLOW_TAIL = 16, FLOW_LIFE = 3.2, FLOW_TRAVEL = 0.32, FLOW_PIXELS = 120, FLOW_MAX_PARTICLES = 30000;
+// FLOW_PIXELS: CSS px^2 of the plot frame per particle at density 1 (so a small view is not crowded)
+const ARROW_PIXELS = 1150, ARROW_MAX = 40000, ARROW_WIDTH = 1.8, ARROW_HALO = 1.3;
+// ARROW_PIXELS: CSS px^2 per arrow at density 1 (~34 px spacing); ARROW_WIDTH / ARROW_HALO: shaft width / outline, CSS px
+const FLOW_STYLES = ['particles', 'arrows'];
+const flowState = (() => {
+  const out = { on: !!FLOW, style: 'particles', density: 1, speed: 1, arrowLength: 1, clock: 0, gl: null, frame: -1 };
+  const kept = storedJson('flow');
+  if (typeof kept.on === 'boolean') out.on = out.on && kept.on;
+  if (FLOW_STYLES.includes(kept.style)) out.style = kept.style;
+  if (typeof kept.density === 'number' && kept.density >= 0.2 && kept.density <= 4) out.density = kept.density;
+  if (typeof kept.speed === 'number' && kept.speed >= 0 && kept.speed <= 3) out.speed = kept.speed;
+  if (typeof kept.arrowLength === 'number' && kept.arrowLength >= 0.2 && kept.arrowLength <= 3) out.arrowLength = kept.arrowLength;
+  return out;
+})();
+function saveFlow() {
+  store('flow', JSON.stringify({ on: flowState.on, style: flowState.style, density: flowState.density, speed: flowState.speed,
+                                 arrowLength: flowState.arrowLength }));
+}
+const FLOW_TF_VS = `#version 300 es
+precision highp float;
+precision highp int;
+uniform sampler2D uVec;
+uniform vec4 uExtent;        // u0, v0, width, height of the layer's flow grid (length units)
+uniform vec4 uSeed;          // window the seeds fill: u0, v0, width, height
+uniform float uClock;        // flow clock in lives
+uniform float uStep;         // length units per step at the page's speed reference (and above)
+uniform float uDir;          // +1, -1: an image whose flow runs backwards
+uniform float uScale;        // this frame's largest magnitude / the page's speed reference
+uniform uint uSalt;          // per image and layer: their particles differ
+out vec4 vPoint;             // u, v, alpha, index along the tail (0 = its end)
+uint hashU(uint x) { x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16; return x; }
+float rnd(uint x) { return float(hashU(x) >> 8) / 16777216.0; }
+const float STILL = 0.004;    // below this fraction of the speed reference a particle has stopped: gone
+vec3 flowAt(vec2 p) {         // (vector / speed reference, at most 1 long; 1 where it flows); zero outside the grid
+  vec2 t = (p - uExtent.xy) / uExtent.zw;
+  if (any(lessThan(t, vec2(0.0))) || any(greaterThan(t, vec2(1.0)))) return vec3(0.0);
+  vec4 s = texture(uVec, t);
+  vec2 v = s.xy * (uScale * uDir);
+  float len = length(v);
+  if (len > 1.0) v /= len;
+  // holes and the outside (no value), and still regions (solids, insulators: a zero vector) stop particles, which
+  // would otherwise crawl ever slower into them and pile up as dots
+  return vec3(v, s.z > 0.5 && dot(v, v) > STILL * STILL ? 1.0 : 0.0);
+}
+void main() {
+  int i = gl_VertexID / ${FLOW_TAIL + 1}, k = gl_VertexID - i * ${FLOW_TAIL + 1};
+  uint ui = uint(i);
+  float life = uClock + rnd(ui * 7919u + uSalt);
+  float gen = floor(life), age = life - gen;
+  vec2 p = uSeed.xy; float inside = 0.0;
+  for (int t = 0; t < 4; t++) {      // a seed where something flows (not in holes, solids or the outside)
+    uint h = hashU(ui * 0x9e3779b9u ^ hashU(uint(gen) * 0x85ebca6bu + uint(t) * 0x27d4eb2fu + uSalt));
+    vec2 q = uSeed.xy + vec2(rnd(h), rnd(h ^ 0x68e31da4u)) * uSeed.zw;
+    if (flowAt(q).z > 0.5) { p = q; inside = 1.0; break; }
+  }
+  float steps = max(age * float(${FLOW_STEPS}) - float(${FLOW_TAIL} - k), 0.0);
+  int n = int(steps);
+  float frac = steps - float(n);
+  for (int s = 0; s <= ${FLOW_STEPS}; s++) {
+    if (s > n || inside < 0.5) break;
+    float h = (s == n ? frac : 1.0) * uStep;   // the last step fractional: smooth motion between draws
+    vec3 a = flowAt(p);
+    vec3 b = flowAt(p + 0.5 * h * a.xy);
+    if (a.z < 0.5 || b.z < 0.5) { inside = 0.0; break; }   // left the flow (an edge, a hole): gone
+    p += h * b.xy;
+  }
+  if (flowAt(p).z < 0.5) inside = 0.0;
+  float fade = smoothstep(0.0, 0.12, age) * (1.0 - smoothstep(0.78, 1.0, age));
+  float slow = smoothstep(STILL, 0.1, length(flowAt(p).xy));   // slow particles fade out before they stop
+  vPoint = vec4(p, inside * fade * slow, float(k));
+}`;
+const FLOW_TF_FS = `#version 300 es
+precision mediump float;
+out vec4 outColor;
+void main() { outColor = vec4(0.0); }`;
+const FLOW_VS = `#version 300 es
+precision highp float;
+in vec4 aA; in vec4 aB; in vec2 aCorner;
+uniform mat4 uView; uniform mat4 uProj; uniform vec3 uCenter; uniform vec3 uStretch;
+uniform vec2 uViewport; uniform float uWidth; uniform vec3 uMirA; uniform vec3 uMirB;
+uniform vec3 uAxU; uniform vec3 uAxV; uniform vec3 uAxW;   // the layer's u, v unit axes, its plane offset
+out float vAlpha; out vec3 vPlace; out float vAcross;
+void main() {
+  vAcross = aCorner.y;
+  if (aB.w < 0.5) {                  // the step from one particle's head to the next one's tail: not drawn
+    vAlpha = 0.0; vPlace = vec3(0.0); gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+  vec3 A = (uAxU * aA.x + uAxV * aA.y + uAxW) * uMirA + uMirB;
+  vec3 B = (uAxU * aB.x + uAxV * aB.y + uAxW) * uMirA + uMirB;
+  vec4 ca = uProj * uView * vec4((A - uCenter) * uStretch, 1.0);
+  vec4 cb = uProj * uView * vec4((B - uCenter) * uStretch, 1.0);
+  vec2 d = (cb.xy / max(cb.w, 1e-6) - ca.xy / max(ca.w, 1e-6)) * uViewport;
+  float len = length(d);
+  vec2 dir = len > 1e-6 ? d / len : vec2(1.0, 0.0), across = vec2(-dir.y, dir.x);
+  float along = mix(aA.w, aB.w, aCorner.x) / ${FLOW_TAIL}.0;   // 0 tail end .. 1 head
+  float w = uWidth * (0.35 + 0.65 * along);
+  vec4 c = mix(ca, cb, aCorner.x);
+  // segments meet end to end (an overlap would show as a brighter joint); the head gets a round-ish cap
+  float cap = aB.w > ${FLOW_TAIL - 0.5} ? 0.5 * aCorner.x : 0.0;
+  c.xy += (across * aCorner.y + dir * cap) * w * c.w / uViewport;
+  vAlpha = min(aA.z, aB.z) * pow(along, 1.3);          // a step into the edge or a hole (dead end) not drawn
+  vPlace = mix(A, B, aCorner.x);
+  gl_Position = c;
+}`;
+const FLOW_FS = `#version 300 es
+precision highp float;
+in float vAlpha; in vec3 vPlace; in float vAcross;
+uniform vec4 uColor; uniform vec4 uHalo; uniform vec3 uClipLo; uniform vec3 uClipHi;
+out vec4 outColor;
+void main() {
+  if (any(lessThan(vPlace, uClipLo)) || any(greaterThan(vPlace, uClipHi))) discard;   // outside the axis limits
+  // one pass: the core across the middle ~45 % of the quad, a soft halo to its edges (two passes would brighten
+  // every joint and crossing twice)
+  float t = abs(vAcross), core = 1.0 - smoothstep(0.32, 0.5, t), halo = 1.0 - smoothstep(0.45, 1.0, t);
+  float a = vAlpha * max(core * uColor.a, halo * uHalo.a);
+  if (a < 0.004) discard;
+  outColor = vec4(mix(uHalo.rgb, uColor.rgb, core), a);
+}`;
+const ARROW_VS = `#version 300 es
+precision highp float;
+in vec3 aShape;              // part (0 shaft, 1 head), along (0 back .. 1 front of the part), across (-1 .. 1)
+uniform sampler2D uVec; uniform vec4 uExtent;   // as the particles' feedback pass
+uniform vec4 uLattice;       // first lattice point u, v and the spacing du, dv (length units)
+uniform int uCountU;         // lattice points along u
+uniform float uDir; uniform float uScale;
+uniform mat4 uView; uniform mat4 uProj; uniform vec3 uCenter; uniform vec3 uStretch;
+uniform vec2 uViewport; uniform vec3 uMirA; uniform vec3 uMirB;
+uniform vec3 uAxU; uniform vec3 uAxV; uniform vec3 uAxW;
+uniform vec3 uClipLo; uniform vec3 uClipHi;
+uniform float uMaxLen;       // device px of an arrow at the speed reference
+uniform float uWidth;        // shaft width, device px
+uniform float uGrow;         // outline added on every side (the halo pass), device px
+out float vAlpha;
+const float STILL = 0.004;
+vec3 placeOf(vec2 p) { return (uAxU * p.x + uAxV * p.y + uAxW) * uMirA + uMirB; }
+void main() {
+  int ku = gl_InstanceID % uCountU, kv = gl_InstanceID / uCountU;
+  vec2 p = uLattice.xy + vec2(float(ku), float(kv)) * uLattice.zw;
+  vec2 t = (p - uExtent.xy) / uExtent.zw;
+  vec4 s = texture(uVec, t);
+  vec2 v = s.xy * (uScale * uDir);
+  float m = length(v);
+  vec3 A = placeOf(p);
+  bool inside = all(greaterThanEqual(t, vec2(0.0))) && all(lessThanEqual(t, vec2(1.0)))
+    && !any(lessThan(A, uClipLo)) && !any(greaterThan(A, uClipHi));
+  if (!inside || s.z < 0.5 || m < STILL) {           // no value, still (solids, holes) or outside the limits
+    vAlpha = 0.0; gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+  vec2 unit = v / m;
+  m = min(m, 1.0);
+  // the screen direction of the data direction (a short step, mirrored and stretched as the field)
+  vec3 B = placeOf(p + unit * 0.25 * min(uLattice.z, uLattice.w));
+  vec4 ca = uProj * uView * vec4((A - uCenter) * uStretch, 1.0);
+  vec4 cb = uProj * uView * vec4((B - uCenter) * uStretch, 1.0);
+  vec2 d = (cb.xy / max(cb.w, 1e-6) - ca.xy / max(ca.w, 1e-6)) * uViewport;
+  float dl = length(d);
+  vec2 dir = dl > 1e-6 ? d / dl : vec2(1.0, 0.0), across = vec2(-dir.y, dir.x);
+  // shape in px, pivot in the middle: a shaft and a head; short arrows shrink as a whole (shaft at most 0.16 L wide)
+  float L = m * uMaxLen, w = min(uWidth, 0.16 * L), H = min(0.38 * L, 4.2 * w), Hw = max(0.62 * H, 1.2 * w);
+  float g = uGrow, sinT = Hw / sqrt(Hw * Hw + H * H);
+  vec2 q;                    // (along, across) px
+  if (aShape.x < 0.5) {      // shaft: from the back to the head's (grown) base, so the halo has no doubled seam
+    q = vec2(mix(-0.5 * L - g, 0.5 * L - H - g, aShape.y), aShape.z * (0.5 * w + g));
+  } else {                   // head: the triangle grown by g on every side (similar, its tip g / sin of the half angle out)
+    float Hg = H + g + g / sinT, tip = 0.5 * L + g / sinT;
+    q = vec2(tip - Hg * (1.0 - aShape.y), aShape.z * Hg * Hw / H);
+  }
+  vAlpha = smoothstep(0.6 * uWidth, 2.0 * uWidth, L);
+  vec4 c = ca;
+  c.xy += (dir * q.x + across * q.y) * 2.0 * c.w / uViewport;
+  gl_Position = c;
+}`;
+const ARROW_FS = `#version 300 es
+precision mediump float;
+in float vAlpha;
+uniform vec4 uColor;
+out vec4 outColor;
+void main() { if (vAlpha < 0.004) discard; outColor = vec4(uColor.rgb, uColor.a * vAlpha); }`;
+function flowSetup() {
+  if (!FLOW) return false;
+  const tfProg = gl.createProgram();
+  gl.attachShader(tfProg, compile(gl.VERTEX_SHADER, FLOW_TF_VS)); gl.attachShader(tfProg, compile(gl.FRAGMENT_SHADER, FLOW_TF_FS));
+  gl.transformFeedbackVaryings(tfProg, ['vPoint'], gl.INTERLEAVED_ATTRIBS);
+  gl.linkProgram(tfProg);
+  if (!gl.getProgramParameter(tfProg, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(tfProg));
+  const tfUni = {};
+  for (const name of ['uVec', 'uExtent', 'uSeed', 'uClock', 'uStep', 'uDir', 'uScale', 'uSalt']) tfUni[name] = gl.getUniformLocation(tfProg, name);
+  const drawUni = {};
+  const drawProg = linkProgram(FLOW_VS, FLOW_FS, ['uView', 'uProj', 'uCenter', 'uStretch', 'uViewport', 'uWidth', 'uMirA', 'uMirB',
+                                                  'uAxU', 'uAxV', 'uAxW', 'uColor', 'uHalo', 'uClipLo', 'uClipHi'], drawUni);
+  const textures = FLOW.layers.map((FL) => {
+    const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, FL.nu, FL.nv, 0, gl.RGBA, gl.FLOAT, null);
+    return { texture: t, scratch: new Float32Array(4 * FL.nu * FL.nv) };
+  });
+  gl.bindTexture(gl.TEXTURE_2D, null);
+  // one points buffer, rewritten by the feedback pass of each image and layer, then read by its draw: record i and
+  // i + 1 are the two ends of instance i
+  const points = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, points);
+  gl.bufferData(gl.ARRAY_BUFFER, FLOW_MAX_PARTICLES * (FLOW_TAIL + 1) * 16, gl.DYNAMIC_COPY);
+  const emptyVao = gl.createVertexArray();
+  const drawVao = gl.createVertexArray(); gl.bindVertexArray(drawVao);
+  vertexBuffer(gl.getAttribLocation(drawProg, 'aCorner'), new Float32Array([0, -1, 1, -1, 1, 1, 0, -1, 1, 1, 0, 1]), 2, gl.STATIC_DRAW);
+  gl.bindBuffer(gl.ARRAY_BUFFER, points);
+  for (const [name, offset] of [['aA', 0], ['aB', 16]]) {
+    const loc = gl.getAttribLocation(drawProg, name);
+    gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 4, gl.FLOAT, false, 16, offset); gl.vertexAttribDivisor(loc, 1);
+  }
+  gl.bindVertexArray(null); gl.bindBuffer(gl.ARRAY_BUFFER, null);
+  // arrows: one instance per lattice point, 9 vertices (shaft quad, head triangle) shaped in the vertex shader
+  const arrowUni = {};
+  const arrowProg = linkProgram(ARROW_VS, ARROW_FS, ['uVec', 'uExtent', 'uLattice', 'uCountU', 'uDir', 'uScale', 'uView', 'uProj',
+                                                    'uCenter', 'uStretch', 'uViewport', 'uMirA', 'uMirB', 'uAxU', 'uAxV', 'uAxW',
+                                                    'uClipLo', 'uClipHi', 'uMaxLen', 'uWidth', 'uGrow', 'uColor'], arrowUni);
+  const arrowVao = gl.createVertexArray(); gl.bindVertexArray(arrowVao);
+  vertexBuffer(gl.getAttribLocation(arrowProg, 'aShape'), new Float32Array([
+    0, 0, -1, 0, 1, -1, 0, 1, 1, 0, 0, -1, 0, 1, 1, 0, 0, 1,     // shaft
+    1, 0, -1, 1, 1, 0, 1, 0, 1]), 3, gl.STATIC_DRAW);          // head
+  gl.bindVertexArray(null); gl.bindBuffer(gl.ARRAY_BUFFER, null);
+  return { tfProg, tfUni, drawProg, drawUni, textures, points, emptyVao, drawVao, feedback: gl.createTransformFeedback(),
+           arrowProg, arrowUni, arrowVao };
+}
+function flowUpload() {
+  // the shown frame's vectors into the layers' RGBA16F textures (x, y / frame largest, 1 = flow here)
+  const G = flowState.gl, F = FRAMES[state.frame];
+  flowState.frame = state.frame;
+  FLOW.layers.forEach((FL, li) => {
+    const q = i16(F.flow[li]), out = G.textures[li].scratch;
+    for (let k = 0, n = FL.nu * FL.nv; k < n; k++) {
+      const x = q[2 * k], y = q[2 * k + 1], o = 4 * k;
+      if (x === -32768) { out[o] = 0; out[o + 1] = 0; out[o + 2] = 0; out[o + 3] = 0; continue; }
+      out[o] = x / 32767; out[o + 1] = y / 32767; out[o + 2] = 1; out[o + 3] = 0;
+    }
+    gl.bindTexture(gl.TEXTURE_2D, G.textures[li].texture);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, FL.nu, FL.nv, gl.RGBA, gl.FLOAT, out);
+  });
+  gl.bindTexture(gl.TEXTURE_2D, null);
+}
+function flowDir(I) {
+  // +1 / -1: the image's flow along its reflected paths or backwards (product of its mirrors' flow_sign)
+  let d = 1;
+  for (const c of [0, 1, 2]) if (I.a[c] < 0) {
+    const M = MIRRORS.find((m) => AX[m.axis] === c && Math.abs(2 * m.position - I.b[c]) <= 1e-6 * (Math.abs(I.b[c]) + LARGEST));
+    if (!M) throw new Error('flow: no mirror plane for an image along ' + AXIS_NAMES[c]);
+    d *= M.flow_sign === -1 ? -1 : 1;
+  }
+  return d;
+}
+function flowColors() {
+  // a light core over a dark halo, or the reverse over a colour map whose middle is light (diverging maps)
+  const [r, g, b] = hexRgb(CMAPS[state.cmap][4]);
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.5 ? { core: [0.04, 0.05, 0.07, 0.78], halo: [1, 1, 1, 0.45] }
+                                                   : { core: [1, 1, 1, 0.95], halo: [0.02, 0.03, 0.06, 0.42] };
+}
+function flowShown() { return !!FLOW && flowState.on && state.relief === 0; }
+function drawFlow(view, proj) {
+  if (!flowShown() || flowState.gl === false) return;
+  if (flowState.gl === null) {
+    try { flowState.gl = flowSetup(); flowState.frame = -1; }
+    catch (err) { flowState.gl = false; $('flow').disabled = true; $('flow').title = 'Flow particles: WebGL error ' + err.message; return; }
+  }
+  const G = flowState.gl, F = FRAMES[state.frame], scale = (F.flow_max || 0) / FLOW.speed_reference;
+  if (!(scale > 0)) return;
+  if (flowState.frame !== state.frame) flowUpload();
+  const [iu, iv] = PLANE_AXES, viewLo = [bmin[iu], bmin[iv]], viewHi = [bmax[iu], bmax[iv]];
+  const viewArea = (viewHi[0] - viewLo[0]) * (viewHi[1] - viewLo[1]);
+  if (!(viewArea > 0)) return;
+  const step = FLOW_TRAVEL * Math.max(viewHi[0] - viewLo[0], viewHi[1] - viewLo[1]) / FLOW_STEPS;
+  const frame = mapFrame(view, proj);         // the plot frame on screen (a turned view: half the canvas)
+  const framePixels = (frame ? (frame[2] - frame[0]) * (frame[3] - frame[1]) : 0.5 * canvas.width * canvas.height)
+    / (pixelRatio * pixelRatio);              // CSS px (pixelRatio holds a PNG's renderScale): a PNG has the same particles
+  const perView = flowState.density * framePixels / FLOW_PIXELS;
+  const colors = flowColors(), f = stretch(), arrows = flowState.style === 'arrows';
+  // arrows: a lattice square on screen (spacing from the view's stretched area per arrow), capped at ARROW_MAX per view
+  const arrowsPerView = flowState.density * framePixels / ARROW_PIXELS;
+  const arrowSpacing = Math.sqrt(viewArea * f[iu] * f[iv] / Math.min(arrowsPerView, ARROW_MAX));
+  const arrowDu = arrowSpacing / f[iu], arrowDv = arrowSpacing / f[iv];
+  const arrowMaxLen = flowState.arrowLength * 0.9 * Math.sqrt(framePixels / Math.min(arrowsPerView, ARROW_MAX)) * pixelRatio;
+  gl.disable(gl.DEPTH_TEST); gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  images().forEach((I, m) => {
+    const dir = flowDir(I);
+    FLOW.layers.forEach((FL, li) => {
+      const L = LAYERS[li];
+      if (!L.visible) return;
+      // the part of the layer this image shows: the view window mapped back (x = (x' - b) / a) and cut to the grid
+      const ext = FL.extent, lo = [], hi = [];
+      [iu, iv].forEach((c, k) => {
+        const e1 = (viewLo[k] - I.b[c]) / I.a[c], e2 = (viewHi[k] - I.b[c]) / I.a[c];
+        lo.push(Math.max(Math.min(e1, e2), ext[2 * k])); hi.push(Math.min(Math.max(e1, e2), ext[2 * k + 1]));
+      });
+      if (!(hi[0] > lo[0] && hi[1] > lo[1])) return;
+      if (arrows) {
+        // lattice points ext0 + (k + 1/2) d inside [lo, hi] (anchored at the grid origin: panning does not move them)
+        const ku0 = Math.ceil((lo[0] - ext[0]) / arrowDu - 0.5), ku1 = Math.floor((hi[0] - ext[0]) / arrowDu - 0.5);
+        const kv0 = Math.ceil((lo[1] - ext[2]) / arrowDv - 0.5), kv1 = Math.floor((hi[1] - ext[2]) / arrowDv - 0.5);
+        const nu = ku1 - ku0 + 1, nv = Math.min(kv1 - kv0 + 1, Math.floor(ARROW_MAX / Math.max(nu, 1)));
+        if (nu < 1 || nv < 1) return;
+        gl.useProgram(G.arrowProg);
+        const U = G.arrowUni, axis = (c, s) => { const e = [0, 0, 0]; e[c] = s; return e; };
+        gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, G.textures[li].texture); gl.uniform1i(U.uVec, 0);
+        gl.uniform4f(U.uExtent, ext[0], ext[2], ext[1] - ext[0], ext[3] - ext[2]);
+        gl.uniform4f(U.uLattice, ext[0] + (ku0 + 0.5) * arrowDu, ext[2] + (kv0 + 0.5) * arrowDv, arrowDu, arrowDv);
+        gl.uniform1i(U.uCountU, nu); gl.uniform1f(U.uDir, dir); gl.uniform1f(U.uScale, scale);
+        gl.uniformMatrix4fv(U.uView, false, view); gl.uniformMatrix4fv(U.uProj, false, proj);
+        gl.uniform3fv(U.uCenter, center); gl.uniform3fv(U.uStretch, f);
+        gl.uniform3fv(U.uClipLo, clipLo); gl.uniform3fv(U.uClipHi, clipHi);
+        gl.uniform2f(U.uViewport, canvas.width, canvas.height);
+        gl.uniform3fv(U.uAxU, axis(iu, 1)); gl.uniform3fv(U.uAxV, axis(iv, 1)); gl.uniform3fv(U.uAxW, axis(L.axis, L.position));
+        setImage(U, I);
+        gl.uniform1f(U.uMaxLen, arrowMaxLen); gl.uniform1f(U.uWidth, ARROW_WIDTH * pixelRatio);
+        gl.bindVertexArray(G.arrowVao);
+        // halo under the core: every arrow grown by its outline, then the arrows themselves
+        gl.uniform1f(U.uGrow, ARROW_HALO * pixelRatio); gl.uniform4fv(U.uColor, colors.halo);
+        gl.drawArraysInstanced(gl.TRIANGLES, 0, 9, nu * nv);
+        gl.uniform1f(U.uGrow, 0); gl.uniform4f(U.uColor, colors.core[0], colors.core[1], colors.core[2], Math.max(colors.core[3], 0.9));
+        gl.drawArraysInstanced(gl.TRIANGLES, 0, 9, nu * nv);
+        gl.bindTexture(gl.TEXTURE_2D, null);
+        return;
+      }
+      const count = Math.min(FLOW_MAX_PARTICLES, Math.round(perView * (hi[0] - lo[0]) * (hi[1] - lo[1]) / viewArea));
+      if (count < 1) return;
+      const nPoints = count * (FLOW_TAIL + 1);
+      // feedback pass: the particles' latest paths into the points buffer
+      gl.useProgram(G.tfProg);
+      gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, G.textures[li].texture); gl.uniform1i(G.tfUni.uVec, 0);
+      gl.uniform4f(G.tfUni.uExtent, ext[0], ext[2], ext[1] - ext[0], ext[3] - ext[2]);
+      gl.uniform4f(G.tfUni.uSeed, lo[0], lo[1], hi[0] - lo[0], hi[1] - lo[1]);
+      gl.uniform1f(G.tfUni.uClock, flowState.clock); gl.uniform1f(G.tfUni.uStep, step);
+      gl.uniform1f(G.tfUni.uDir, dir); gl.uniform1f(G.tfUni.uScale, scale);
+      gl.uniform1ui(G.tfUni.uSalt, (m * 977 + li * 131 + 17) >>> 0);
+      gl.bindVertexArray(G.emptyVao);
+      gl.enable(gl.RASTERIZER_DISCARD);
+      gl.bindTransformFeedback(gl.TRANSFORM_FEEDBACK, G.feedback);
+      gl.bindBufferBase(gl.TRANSFORM_FEEDBACK_BUFFER, 0, G.points);
+      gl.beginTransformFeedback(gl.POINTS); gl.drawArrays(gl.POINTS, 0, nPoints); gl.endTransformFeedback();
+      gl.bindBufferBase(gl.TRANSFORM_FEEDBACK_BUFFER, 0, null);
+      gl.bindTransformFeedback(gl.TRANSFORM_FEEDBACK, null);
+      gl.disable(gl.RASTERIZER_DISCARD);
+      gl.bindTexture(gl.TEXTURE_2D, null);
+      // draw pass: every path as screen-space quads
+      gl.useProgram(G.drawProg);
+      const U = G.drawUni, axis = (c, s) => { const e = [0, 0, 0]; e[c] = s; return e; };
+      gl.uniformMatrix4fv(U.uView, false, view); gl.uniformMatrix4fv(U.uProj, false, proj);
+      gl.uniform3fv(U.uCenter, center); gl.uniform3fv(U.uStretch, f);
+      gl.uniform3fv(U.uClipLo, clipLo); gl.uniform3fv(U.uClipHi, clipHi);
+      gl.uniform2f(U.uViewport, canvas.width, canvas.height);
+      gl.uniform3fv(U.uAxU, axis(iu, 1)); gl.uniform3fv(U.uAxV, axis(iv, 1)); gl.uniform3fv(U.uAxW, axis(L.axis, L.position));
+      setImage(U, I);
+      gl.bindVertexArray(G.drawVao);
+      gl.uniform4fv(U.uColor, colors.core); gl.uniform4fv(U.uHalo, colors.halo); gl.uniform1f(U.uWidth, 4.8 * pixelRatio);
+      gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, nPoints - 1);
+    });
+  });
+  gl.bindVertexArray(null); gl.disable(gl.BLEND); gl.enable(gl.DEPTH_TEST);
+}
+function flowTick(dt) { if (flowShown() && flowState.style === 'particles') flowState.clock += dt * flowState.speed / FLOW_LIFE; }
+function flowSync() {
+  if (!FLOW) return;
+  const arrows = flowState.style === 'arrows', label = FLOW.label.toLowerCase();
+  $('flow').setAttribute('aria-pressed', String(flowState.on));
+  $('flowstyle').value = flowState.style;
+  $('flowdensity').value = String(flowState.density); $('flowspeed').value = String(flowState.speed);
+  $('arrowlength').value = String(flowState.arrowLength);
+  $('flowspeed').hidden = arrows; $('arrowlength').hidden = !arrows;
+  $('flowstyle').disabled = $('flowdensity').disabled = $('flowspeed').disabled = $('arrowlength').disabled = !flowState.on;
+  $('flowdensity').title = arrows ? 'Number of arrows' : 'Number of flow particles';
+  $('flow').title = (arrows ? 'Arrows of the ' + label + ' (length in proportion to its magnitude; '
+                            : 'Particles moving along the ' + label + ' (speed in proportion to its magnitude; ')
+    + 'hidden while the map is raised) (V)';
+}
+$('flowgroup').style.display = FLOW ? '' : 'none';
+if (FLOW) {
+  $('flow').onclick = () => {
+    flowState.on = !flowState.on; saveFlow(); flowSync(); updateReadout();
+    // particles show on a flat map only: turning them on lowers a raised one (not remembered as terrain off)
+    if (flowState.on && (state.relief > 0 || (tween && !tween.flat))) setTerrain(false, true, false);
+  };
+  const setFlowStyle = (style) => { flowState.style = style; saveFlow(); flowSync(); updateReadout(); };
+  $('flowstyle').onchange = (e) => setFlowStyle(e.target.value);
+  $('flowdensity').oninput = (e) => { flowState.density = +e.target.value; saveFlow(); };
+  $('flowspeed').oninput = (e) => { flowState.speed = +e.target.value; saveFlow(); };
+  $('arrowlength').oninput = (e) => { flowState.arrowLength = +e.target.value; saveFlow(); };
+  window.addEventListener('keydown', (e) => {
+    if (e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT' && e.target.type !== 'range') return;
+    if (e.ctrlKey || e.metaKey || e.altKey || $('flow').disabled) return;
+    if (e.key === 'V') {             // Shift+V: particles <-> arrows (turns the flow on)
+      if (!flowState.on) $('flow').click();
+      setFlowStyle(FLOW_STYLES[(FLOW_STYLES.indexOf(flowState.style) + 1) % FLOW_STYLES.length]);
+    } else if (e.key === 'v') $('flow').click();
+  });
+  flowSync();
+}
+// ---- end vectors ----
+// ---- fields3d ----
+// The whole 3D field (DATA.volume; viz.field_viewer packs one float16 lattice per frame, value = offset + scale * r,
+// r in [0, 1] or [-1, 1] signed, with a finite-mask channel when the lattice leaves an element mesh) as a 3D texture,
+// ray-marched in one program through the volume box of every mirror image (front faces culled, so the eye may be
+// inside): movable slices (one per axis, from the texture), a lit isosurface (signed: +level and -level), nested
+// see-through shells or an emission-absorption cloud. Levels are fractions of the shown colour scale (limits(), log
+// too), so the Range slider and the colour limits move them. Visible cut planes are opaque: a ray stops at the first
+// one it meets (they span the box), so the volume shows in front of them only. Opaque results (slices, isosurface)
+// write gl_FragDepth, so object edges and the box test against them.
+const VOL = (!PLANAR && DATA.volume && FRAMES.every((F) => F.volume)) ? DATA.volume : null;
+const VOL_MODES = VOL ? [['planes', 'Cut planes'], ['slices', 'Slices'], ['iso', 'Isosurface'], ['shells', 'Shells'],
+                          ['cloud', 'Cloud']] : [];
+const VOL_CODE = { slices: 4, iso: 1, shells: 2, cloud: 3 };
+const VOL_LEVEL_DEFAULTS = { iso: SIGNED ? 0.45 : 0.5, shells: SIGNED ? 0.25 : 0.12, cloud: 0.15 };
+const volState = { mode: 'planes', levels: Object.assign({}, VOL_LEVEL_DEFAULTS), slices: [0.5, 0.5, 0.5],
+                   slicesOn: [true, true, true] };
+if (VOL) {
+  volState.mode = SIGNED ? 'iso' : 'shells';
+  // the slices start where the cut planes of the page are (else the middle)
+  for (const L of LAYERS) volState.slices[L.axis] = Math.min(1, Math.max(0, (L.position - VOL.lo[L.axis]) / ((VOL.hi[L.axis] - VOL.lo[L.axis]) || 1)));
+}
+function volumeShown() { return !!VOL && volState.mode !== 'planes'; }
+const VOL_VS = `#version 300 es
+precision highp float;
+in vec3 aCube;
+uniform mat4 uView; uniform mat4 uProj; uniform vec3 uCenter; uniform vec3 uStretch;
+uniform vec3 uMirA; uniform vec3 uMirB; uniform vec3 uBoxLo; uniform vec3 uBoxHi;
+out vec3 vShown;
+void main() {
+  vec3 placed = mix(uBoxLo, uBoxHi, aCube) * uMirA + uMirB;
+  vShown = (placed - uCenter) * uStretch;
+  gl_Position = uProj * uView * vec4(vShown, 1.0);
+}`;
+const VOL_FS = `#version 300 es
+precision highp float; precision highp int; precision highp sampler3D;
+in vec3 vShown;
+uniform sampler3D uVol; uniform int uMasked; uniform vec3 uN;
+uniform mat4 uView; uniform mat4 uProj; uniform vec3 uEye;
+uniform vec3 uCenter; uniform vec3 uStretch; uniform vec3 uMirA; uniform vec3 uMirB;
+uniform vec3 uBoxLo; uniform vec3 uBoxHi; uniform vec3 uClipLo; uniform vec3 uClipHi;
+uniform float uOffset; uniform float uScale; uniform float uValSign;
+uniform float uLo; uniform float uHi; uniform int uLog; uniform int uSigned;
+uniform int uMode; uniform float uLevel; uniform vec3 uStops[9];
+uniform vec4 uPlanes[3];   // opaque cut planes: (axis, placed position, on, -)
+uniform vec4 uSlices[3];   // slices: (axis, placed position, on, -)
+uniform float uDensity;    // samples per lattice step along the ray (volumeDensity: lower while frames are slow)
+uniform int uGraded; uniform highp sampler2D uAxisMap;   // graded lattice: texture coordinate per box position (R32F)
+uniform vec3 uFinest;      // smallest lattice step per axis (length units): the ray's sample spacing
+out vec4 outColor;
+const int MAPN = 2048;     // VOL_MAP_ENTRIES
+float mapAxis(float u, int row) {   // u in [0, 1] across the box -> texture coordinate along that axis
+  float x = clamp(u, 0.0, 1.0) * float(MAPN - 1);
+  int i = int(min(floor(x), float(MAPN - 2)));
+  return mix(texelFetch(uAxisMap, ivec2(i, row), 0).r, texelFetch(uAxisMap, ivec2(i + 1, row), 0).r, x - float(i));
+}
+vec3 cmap(float t) { t = clamp(t, 0.0, 1.0) * 8.0; int i = int(min(floor(t), 7.0)); return mix(uStops[i], uStops[i + 1], t - float(i)); }
+vec3 boxPart(vec3 placed) { return ((placed - uMirB) * uMirA - uBoxLo) / (uBoxHi - uBoxLo); }
+vec3 toTex(vec3 placed) {
+  vec3 u = boxPart(placed);
+  return uGraded == 0 ? u : vec3(mapAxis(u.x, 0), mapAxis(u.y, 1), mapAxis(u.z, 2));
+}
+float colourOf(float v) {   // unclamped fraction of the colour scale
+  if (uLog == 1) return (log(max(v, 1e-37)) - log(uLo)) / (log(uHi) - log(uLo));
+  return (v - uLo) / (uHi - uLo);
+}
+vec2 sampleAt(vec3 tex) {   // (colour fraction, inside the field 0 / 1)
+  vec4 s = texture(uVol, tex);
+  return vec2(colourOf((uOffset + uScale * s.r) * uValSign), uMasked == 1 ? step(0.5, s.g) : 1.0);
+}
+float axisOf(vec3 v, int i) { return i == 0 ? v.x : (i == 1 ? v.y : v.z); }
+vec3 gradientAt(vec3 placed) {  // d(colour fraction) / d(shown coordinates)
+  vec3 tex = toTex(placed), h = 0.75 / uN;
+  vec3 g = vec3(sampleAt(tex + vec3(h.x, 0, 0)).x - sampleAt(tex - vec3(h.x, 0, 0)).x,
+                sampleAt(tex + vec3(0, h.y, 0)).x - sampleAt(tex - vec3(0, h.y, 0)).x,
+                sampleAt(tex + vec3(0, 0, h.z)).x - sampleAt(tex - vec3(0, 0, h.z)).x) / (2.0 * h);
+  if (uGraded == 1) {   // d tex / d box fraction: the local slope of each axis map
+    vec3 u = boxPart(placed), du = vec3(1.0 / float(MAPN - 1));
+    g *= vec3(mapAxis(u.x + du.x, 0) - mapAxis(u.x - du.x, 0), mapAxis(u.y + du.y, 1) - mapAxis(u.y - du.y, 1),
+              mapAxis(u.z + du.z, 2) - mapAxis(u.z - du.z, 2)) / (2.0 * du);
+  }
+  return g * uMirA / ((uBoxHi - uBoxLo) * uStretch);
+}
+vec3 lit(vec3 base, vec3 shownPoint, vec3 grad, vec3 rayDir) {
+  // the mode player's lights (key, fill, specular, rim) on the surface normal, turned to the eye
+  vec3 n = normalize(grad); if (dot(n, rayDir) > 0.0) n = -n;
+  n = normalize(mat3(uView) * n);
+  vec3 v = normalize(-(uView * vec4(shownPoint, 1.0)).xyz);
+  vec3 key = normalize(vec3(0.45, 0.75, 0.55)), fill = normalize(vec3(-0.6, -0.25, 0.5));
+  float dk = max(dot(n, key), 0.0), df = max(dot(n, fill), 0.0);
+  float sp = pow(max(dot(n, normalize(key + v)), 0.0), 48.0);
+  float rim = pow(1.0 - max(dot(n, v), 0.0), 3.0);
+  return base * (0.30 + 0.62 * dk + 0.18 * df) + vec3(0.24) * sp + vec3(0.10) * rim;
+}
+float depthOf(vec3 shownPoint) { vec4 c = uProj * uView * vec4(shownPoint, 1.0); return clamp(0.5 * c.z / c.w + 0.5, 0.0, 1.0); }
+float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+void main() {
+  // the ray eye -> this back-face fragment in placed coordinates: placed(t) = e + d t (t = 1 here)
+  vec3 e = uEye / uStretch + uCenter, d = vShown / uStretch + uCenter - e;
+  vec3 box0 = min(uBoxLo * uMirA + uMirB, uBoxHi * uMirA + uMirB), box1 = max(uBoxLo * uMirA + uMirB, uBoxHi * uMirA + uMirB);
+  vec3 b0 = max(box0, uClipLo), b1 = min(box1, uClipHi);
+  vec3 inv = 1.0 / d, ta = (b0 - e) * inv, tb = (b1 - e) * inv;
+  float t0 = max(max(max(min(ta.x, tb.x), min(ta.y, tb.y)), min(ta.z, tb.z)), 0.0);
+  float t1 = min(min(max(ta.x, tb.x), max(ta.y, tb.y)), max(ta.z, tb.z));
+  if (t1 <= t0) discard;
+  for (int k = 0; k < 3; k++) {   // an opaque cut plane ends the ray
+    if (uPlanes[k].z < 0.5) continue;
+    int i = int(uPlanes[k].x); float dd = axisOf(d, i);
+    if (abs(dd) < 1e-30) continue;
+    float t = (uPlanes[k].y - axisOf(e, i)) / dd;
+    if (t > t0 && t < t1) t1 = t;
+  }
+  vec3 shownDir = normalize(vShown - uEye);
+  if (uMode == 4) {   // slices: the nearest slice the ray meets inside the field
+    float best = 1e30; vec2 hit = vec2(0.0);
+    for (int k = 0; k < 3; k++) {
+      if (uSlices[k].z < 0.5) continue;
+      int i = int(uSlices[k].x); float dd = axisOf(d, i);
+      if (abs(dd) < 1e-30) continue;
+      float t = (uSlices[k].y - axisOf(e, i)) / dd;
+      if (t < t0 || t > t1 || t >= best) continue;
+      vec2 s = sampleAt(toTex(e + d * t));
+      if (s.y < 0.5) continue;
+      best = t; hit = s;
+    }
+    if (best > 1e29) discard;
+    gl_FragDepth = depthOf(uEye + (vShown - uEye) * best);
+    outColor = vec4(cmap(hit.x), 1.0);
+    return;
+  }
+  if (uMode == 1) {   // a ray entering through an axis-limit cut beyond the level: the solid's cut face, field coloured
+    // (at the box faces the surface stays open: caps there would hide a wave's fronts behind the box sides)
+    vec3 p0 = e + d * t0, tol = 1e-4 * (b1 - b0);
+    bool cut = t0 > 0.0 && (any(greaterThan(step(abs(p0 - b0), tol) * step(box0 + tol, b0), vec3(0.5)))
+                            || any(greaterThan(step(abs(p0 - b1), tol) * step(b1 + tol, box1), vec3(0.5))));
+    vec2 first = sampleAt(toTex(p0));
+    if (cut && first.y > 0.5 && (uSigned == 1 ? abs(first.x - 0.5) >= 0.5 * uLevel : first.x >= uLevel)) {
+      gl_FragDepth = depthOf(uEye + (vShown - uEye) * t0);
+      outColor = vec4(cmap(first.x) * 0.94, 1.0);
+      return;
+    }
+  }
+  float voxels = length(d * (t1 - t0) / uFinest);   // lattice steps along the ray (graded: the finest)
+  int n = int(clamp(ceil(voxels * uDensity), 2.0, 600.0));
+  float dt = (t1 - t0) / float(n), stepVox = voxels / float(n);
+  float t = t0 + dt * hash(gl_FragCoord.xy);   // jittered start: no wood-grain bands
+  vec2 prev = sampleAt(toTex(e + d * t));
+  float prevT = t;
+  vec4 acc = vec4(0.0);
+  float lv = uLevel;
+  for (int s = 1; s <= 600; s++) {
+    if (s > n) break;
+    t = min(t + dt, t1);
+    vec2 cur = sampleAt(toTex(e + d * t));
+    if (uMode == 3) {   // cloud: the colour of the value, opacity rising above the threshold
+      if (cur.y > 0.5) {
+        float c = clamp(cur.x, 0.0, 1.0), w = uSigned == 1 ? abs(2.0 * c - 1.0) : c;
+        float a = 1.0 - exp(-7.0 * stepVox * smoothstep(lv, 1.0, w) * smoothstep(lv, 1.0, w));
+        acc.rgb += (1.0 - acc.a) * a * cmap(c) * 1.1; acc.a += (1.0 - acc.a) * a;
+      }
+    } else if (prev.y > 0.5 && cur.y > 0.5) {
+      // levels crossed between the two samples, nearest first: iso one (signed: +-), shells four (signed: 3 + 3)
+      int count = uMode == 1 ? (uSigned == 1 ? 2 : 1) : (uSigned == 1 ? 6 : 4);
+      for (int k = 0; k < 6; k++) {
+        if (k >= count) break;
+        int kk = (cur.x >= prev.x) ? k : count - 1 - k;   // a rising value meets the lower levels first
+        float L;
+        if (uMode == 1) L = uSigned == 1 ? (kk == 0 ? 0.5 - 0.5 * lv : 0.5 + 0.5 * lv) : lv;
+        else if (uSigned == 1) { float f = lv + (1.0 - lv) * (float(kk < 3 ? 2 - kk : kk - 3) + 0.5) / 3.0;
+                                 L = kk < 3 ? 0.5 - 0.5 * f : 0.5 + 0.5 * f; }
+        else L = lv + (1.0 - lv) * (float(kk) + 0.5) / 4.0;
+        if ((prev.x - L) * (cur.x - L) > 0.0 || prev.x == cur.x) continue;
+        float th = mix(prevT, t, clamp((L - prev.x) / (cur.x - prev.x), 0.0, 1.0));
+        if (uMode == 1) {   // refine the crossing: a few bisection steps
+          float a0 = prevT, a1 = t, f0 = prev.x - L;
+          for (int r = 0; r < 6; r++) { float m = 0.5 * (a0 + a1), fm = sampleAt(toTex(e + d * m)).x - L;
+            if (f0 * fm <= 0.0) a1 = m; else { a0 = m; f0 = fm; } }
+          th = 0.5 * (a0 + a1);
+        }
+        vec3 point = e + d * th, shownPoint = uEye + (vShown - uEye) * th;
+        vec3 grad = gradientAt(point);
+        vec3 base = cmap(uSigned == 1 && uMode == 1 ? (L > 0.5 ? 0.93 : 0.07) : L);
+        vec3 col = lit(base, shownPoint, grad, shownDir);
+        if (uMode == 1) { gl_FragDepth = depthOf(shownPoint); outColor = vec4(col, 1.0); return; }
+        float facing = abs(dot(normalize(grad), shownDir));
+        float a = clamp(0.16 + 0.55 * pow(1.0 - facing, 2.0), 0.0, 0.85);   // glassy: rims stronger
+        acc.rgb += (1.0 - acc.a) * a * col; acc.a += (1.0 - acc.a) * a;
+      }
+    }
+    if (acc.a > 0.97) break;
+    prev = cur; prevT = t;
+  }
+  if (uMode == 1 || acc.a < 0.003) discard;
+  gl_FragDepth = depthOf(uEye + (vShown - uEye) * t0);
+  outColor = acc;   // premultiplied
+}`;
+// samples per lattice step: full on PNG and recordings; on screen lowered while frames take long (a slow GPU stays
+// responsive) and raised again when they are quick
+const VOL_DENSITY = [0.5, 1.6];
+let volumeDensity = 1.2, volumeFrameTime = 1 / 60, volumePinned = false;   // pinned: full density (scripted pictures)
+function adaptVolume(dt) {
+  if (!volumeShown() || volumePinned) return;
+  volumeFrameTime += 0.1 * (dt - volumeFrameTime);
+  if (volumeFrameTime > 1 / 24) volumeDensity = Math.max(VOL_DENSITY[0], volumeDensity * 0.97);
+  else if (volumeFrameTime < 1 / 50) volumeDensity = Math.min(VOL_DENSITY[1], volumeDensity * 1.02);
+}
+let volMapTex = null;
+let volProg = null, volTex = null, volVao = null, volCount = 0, volFrame = -1, volFailed = false;
+const volUni = {};
+const volCache = new Map();
+function setupVolume() {
+  volProg = linkProgram(VOL_VS, VOL_FS, ['uView', 'uProj', 'uCenter', 'uStretch', 'uMirA', 'uMirB', 'uBoxLo', 'uBoxHi',
+    'uVol', 'uMasked', 'uN', 'uEye', 'uClipLo', 'uClipHi', 'uOffset', 'uScale', 'uValSign', 'uLo', 'uHi', 'uLog',
+    'uSigned', 'uMode', 'uLevel', 'uStops', 'uPlanes', 'uSlices', 'uDensity', 'uGraded', 'uAxisMap', 'uFinest'], volUni);
+  // a unit cube, every face counter-clockwise seen from outside (front faces are culled per image's handedness)
+  const corner = (i) => [i & 1, (i >> 1) & 1, (i >> 2) & 1];
+  const faces = [[0, 2, 6, 4], [1, 5, 7, 3], [0, 4, 5, 1], [2, 3, 7, 6], [0, 1, 3, 2], [4, 6, 7, 5]];
+  const out = [];
+  for (const q of faces) {
+    let [a, b, c, dd] = q.map(corner);
+    const mid = [0, 1, 2].map((k) => 0.25 * (a[k] + b[k] + c[k] + dd[k]) - 0.5);   // outward direction
+    if (dot(cross(sub(b, a), sub(c, a)), mid) < 0) [b, dd] = [dd, b];
+    out.push(...a, ...b, ...c, ...a, ...c, ...dd);
+  }
+  volCount = out.length / 3;
+  volVao = gl.createVertexArray(); gl.bindVertexArray(volVao);
+  vertexBuffer(gl.getAttribLocation(volProg, 'aCube'), new Float32Array(out), 3, gl.STATIC_DRAW);
+  gl.bindVertexArray(null);
+  volTex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_3D, volTex);
+  gl.texStorage3D(gl.TEXTURE_3D, 1, VOL.masked ? gl.RG16F : gl.R16F, VOL.n[0], VOL.n[1], VOL.n[2]);
+  for (const p of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T, gl.TEXTURE_WRAP_R]) gl.texParameteri(gl.TEXTURE_3D, p, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  if (VOL_GRADED) {   // the axis maps, read with texelFetch (R32F is not filterable everywhere): one row per axis
+    volMapTex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, volMapTex);
+    gl.texStorage2D(gl.TEXTURE_2D, 1, gl.R32F, VOL_MAP_ENTRIES, 3);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, VOL_MAP_ENTRIES, 3, gl.RED, gl.FLOAT, volumeAxisMaps());
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  }
+}
+function uploadVolume() {
+  if (!VOL || volFailed || !gl || !ready || !volumeShown() || volFrame === state.frame) return;
+  try { if (!volProg) setupVolume(); }
+  catch (err) { volFailed = true; volState.mode = 'planes'; syncVolume(); $('volmode').disabled = true;
+                $('volmode').title = 'Volume view: WebGL error ' + err.message; return; }
+  let texels = volCache.get(state.frame);
+  if (!texels) {
+    texels = new Uint16Array(b64bytes(FRAMES[state.frame].volume));
+    if (volCache.size >= 4) volCache.delete(volCache.keys().next().value);
+    volCache.set(state.frame, texels);
+  }
+  gl.bindTexture(gl.TEXTURE_3D, volTex); gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+  gl.texSubImage3D(gl.TEXTURE_3D, 0, 0, 0, 0, VOL.n[0], VOL.n[1], VOL.n[2], VOL.masked ? gl.RG : gl.RED, gl.HALF_FLOAT, texels);
+  volFrame = state.frame;
+}
+// the volume box (texel edges, length units) and the graded axes' centres (null: uniform)
+const VOL_BOX = VOL ? volumeBoxOf(VOL) : null;
+const VOL_CENTRES = VOL ? (VOL.axes || [null, null, null]).map((text) => text ? f32(text) : null) : null;
+const VOL_GRADED = !!VOL && VOL_CENTRES.some(Boolean);
+const VOL_MAP_ENTRIES = 2048;                 // the shader's MAPN
+const VOL_FINEST = VOL ? [0, 1, 2].map((c) => { const C = VOL_CENTRES[c];
+  if (!C) return (VOL_BOX[1][c] - VOL_BOX[0][c]) / VOL.n[c];
+  let m = Infinity; for (let i = 1; i < C.length; i++) m = Math.min(m, C[i] - C[i - 1]); return m; }) : null;
+function volumeAxisMaps() {
+  // per axis and map entry k (box fraction k / (entries - 1)) the texture coordinate: the fractional texel through
+  // the graded centres (texel i's centre at (i + 0.5) / n; beyond the end centres the end steps continue), on a
+  // uniform axis the fraction itself
+  const out = new Float32Array(3 * VOL_MAP_ENTRIES);
+  for (const c of [0, 1, 2]) {
+    const C = VOL_CENTRES[c], n = VOL.n[c], lo = VOL_BOX[0][c], span = VOL_BOX[1][c] - lo;
+    let i = 0;
+    for (let k = 0; k < VOL_MAP_ENTRIES; k++) {
+      const u = k / (VOL_MAP_ENTRIES - 1);
+      if (!C) { out[c * VOL_MAP_ENTRIES + k] = u; continue; }
+      const x = lo + u * span;
+      while (i < n - 2 && x > C[i + 1]) i++;
+      out[c * VOL_MAP_ENTRIES + k] = (i + 0.5 + (x - C[i]) / (C[i + 1] - C[i])) / n;
+    }
+  }
+  return out;
+}
+function slicePosition(c) { return VOL_BOX[0][c] + volState.slices[c] * (VOL_BOX[1][c] - VOL_BOX[0][c]); }
+function drawVolume(view, proj, lo, hi, logScale) {
+  if (!volumeShown() || volFailed) return;
+  uploadVolume();
+  if (!volProg || volFailed) return;
+  gl.useProgram(volProg);
+  gl.uniformMatrix4fv(volUni.uView, false, view); gl.uniformMatrix4fv(volUni.uProj, false, proj);
+  gl.uniform3fv(volUni.uCenter, center); gl.uniform3fv(volUni.uStretch, stretch());
+  gl.uniform3fv(volUni.uBoxLo, VOL_BOX[0]); gl.uniform3fv(volUni.uBoxHi, VOL_BOX[1]);
+  gl.uniform3fv(volUni.uClipLo, clipLo); gl.uniform3fv(volUni.uClipHi, clipHi);
+  gl.uniform3fv(volUni.uN, VOL.n); gl.uniform1i(volUni.uMasked, VOL.masked ? 1 : 0);
+  gl.uniform3fv(volUni.uFinest, VOL_FINEST); gl.uniform1i(volUni.uGraded, VOL_GRADED ? 1 : 0);
+  gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, volMapTex); gl.uniform1i(volUni.uAxisMap, 1);
+  const d = eyeDir(); gl.uniform3fv(volUni.uEye, cam.target.map((t, i) => t + cam.dist * d[i]));
+  const F = FRAMES[state.frame];
+  gl.uniform1f(volUni.uOffset, F.volume_offset); gl.uniform1f(volUni.uScale, F.volume_scale);
+  gl.uniform1f(volUni.uLo, lo); gl.uniform1f(volUni.uHi, hi);
+  gl.uniform1i(volUni.uLog, logScale ? 1 : 0); gl.uniform1i(volUni.uSigned, SIGNED ? 1 : 0);
+  gl.uniform1f(volUni.uDensity, renderScale > 1 || recorder || volumePinned ? VOL_DENSITY[1] : volumeDensity);
+  gl.uniform1i(volUni.uMode, VOL_CODE[volState.mode]); gl.uniform1f(volUni.uLevel, volState.levels[volState.mode] || 0);
+  gl.uniform3fv(volUni.uStops, new Float32Array(CMAPS[state.cmap].map(hexRgb).flat()));
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_3D, volTex); gl.uniform1i(volUni.uVol, 0);
+  const opaque = volState.mode === 'iso' || volState.mode === 'slices';
+  gl.enable(gl.DEPTH_TEST); gl.depthMask(opaque);
+  if (!opaque) { gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA); }
+  gl.enable(gl.CULL_FACE); gl.cullFace(gl.FRONT);
+  gl.bindVertexArray(volVao);
+  // translucent images back to front (their boxes do not overlap: mirrored across the box faces)
+  const eye = cam.target.map((t, i) => t + cam.dist * d[i]), f = stretch();
+  const boxMid = VOL_BOX[0].map((v, c) => 0.5 * (v + VOL_BOX[1][c]));
+  const order = images().map((I) => ({ I, far: -Math.hypot(...[0, 1, 2].map((c) => ((boxMid[c] * I.a[c] + I.b[c]) - center[c]) * f[c] - eye[c])) }))
+    .sort((p, q) => p.far - q.far);
+  for (const { I } of order) {
+    setImage(volUni, I);
+    gl.frontFace(I.a[0] * I.a[1] * I.a[2] > 0 ? gl.CCW : gl.CW);   // a reflection turns the faces' handedness
+    const planes = new Float32Array(12), slices = new Float32Array(12);
+    LAYERS.filter((L) => L.visible).slice(0, 3).forEach((L, k) => { planes.set([L.axis, I.a[L.axis] * L.position + I.b[L.axis], 1, 0], 4 * k); });
+    [0, 1, 2].forEach((c) => { slices.set([c, I.a[c] * slicePosition(c) + I.b[c], volState.slicesOn[c] ? 1 : 0, 0], 4 * c); });
+    gl.uniform4fv(volUni.uPlanes, planes); gl.uniform4fv(volUni.uSlices, slices);
+    gl.drawArrays(gl.TRIANGLES, 0, volCount);
+  }
+  gl.frontFace(gl.CCW); gl.disable(gl.CULL_FACE); gl.depthMask(true); gl.disable(gl.BLEND);
+  gl.bindVertexArray(null); gl.useProgram(prog);
+}
+const HALF = (() => {   // float16 bits -> value, for the start levels (the GPU reads the texture itself)
+  const out = new Float32Array(65536);
+  for (let h = 0; h < 65536; h++) {
+    const s = h & 0x8000 ? -1 : 1, e = (h >> 10) & 31, f = h & 1023;
+    out[h] = e === 0 ? s * f * Math.pow(2, -24) : e === 31 ? (f ? NaN : s * Infinity) : s * (1 + f / 1024) * Math.pow(2, e - 15);
+  }
+  return out;
+})();
+function volumeStartLevels() {
+  // start levels from the values, not fixed fractions: a peak (a source cell, a needle tip) would leave a fixed
+  // fraction of the colour scale enclosing next to nothing. Samples of the shown frame, or with colour limits over
+  // all frames of up to 12 frames spread over them. The isosurface encloses the top ~5 % of the samples (signed: of
+  // |value|), the shells start at the 80th percentile, the cloud at the 70th; a non-negative field whose 95th
+  // percentile lies below 2 % of its top opens on the log scale
+  const frames = state.scale === 'all' ? [...new Set(Array.from({ length: Math.min(NF, 12) },
+    (_, k) => Math.round(k * (NF - 1) / Math.max(Math.min(NF, 12) - 1, 1))))] : [state.frame];
+  const stepIn = VOL.masked ? 2 : 1, picked = [];
+  for (const f of frames) {
+    const F = FRAMES[f];
+    if (F.empty || !F.volume) continue;
+    const bits = new Uint16Array(b64bytes(F.volume)), count = bits.length / stepIn;
+    const every = Math.max(1, Math.floor(count * frames.length / 200000));
+    for (let k = 0; k < count; k += every) {
+      if (VOL.masked && HALF[bits[stepIn * k + 1]] < 0.5) continue;
+      const v = F.volume_offset + F.volume_scale * HALF[bits[stepIn * k]];
+      if (isFinite(v)) picked.push(SIGNED ? Math.abs(v) : v);
+    }
+  }
+  if (picked.length < 8) return;
+  const sorted = Float64Array.from(picked).sort(), at = (q) => sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))];
+  if (LOG_OK && at(0.95) > 0 && at(0.95) < 0.02 * sorted[sorted.length - 1]) {
+    state.log = true;
+    if (at(0.8) < limits()[0]) { state.decades = 4; $('decades').value = '4'; }   // the bulk below 3 decades
+  }
+  if (SIGNED && fig.color_min === null && fig.color_max === null && at(0.95) < 0.03 * limits()[1]) {
+    // a signed field has no log scale: a peak far above the bulk (a source cell) saturates instead (Range)
+    state.range = Math.max(0.02, Math.min(1, Math.round(100 * 8 * at(0.95) / limits()[1]) / 100));
+    $('range').value = state.range;
+  }
+  const [lo, hi] = limits(), logScale = state.log && LOG_OK;
+  const fraction = (v) => SIGNED ? v / hi : logScale ? Math.log(Math.max(v, 1e-300) / lo) / Math.log(hi / lo) : (v - lo) / (hi - lo);
+  for (const [mode, q] of [['iso', 0.95], ['shells', 0.8], ['cloud', 0.7]]) {
+    const f = fraction(at(q));
+    if (isFinite(f) && f > 0) volState.levels[mode] = Math.round(100 * Math.min(0.95, Math.max(0.03, f))) / 100;
+  }
+}
+function volumeLevelText() {
+  // the level's value in the field's unit (signed: +-)
+  const [lo, hi] = limits(), L = volState.levels[volState.mode], logScale = state.log && LOG_OK;
+  const at = (t) => logScale ? lo * Math.pow(hi / lo, t) : lo + t * (hi - lo);
+  if (SIGNED) return '±' + fmtValue(Math.abs(at(0.5 + 0.5 * L)), Q.unit);
+  return (volState.mode === 'iso' ? '' : '≥ ') + fmtValue(at(L), Q.unit);
+}
+function syncVolume() {
+  if (!VOL) return;
+  const m = volState.mode, levelled = m in VOL_LEVEL_DEFAULTS;
+  $('volmode').value = m;
+  for (const id of ['vollevellabel', 'vollevel', 'vollevelv']) $(id).style.display = levelled ? '' : 'none';
+  $('slicegroup').style.display = m === 'slices' ? '' : 'none';
+  if (levelled) {
+    $('vollevellabel').textContent = m === 'cloud' ? 'Threshold' : m === 'shells' ? 'From' : 'Level';
+    $('vollevel').value = volState.levels[m];
+    $('vollevel').title = m === 'cloud' ? 'Values below this fraction of the colour scale stay clear'
+      : m === 'shells' ? 'The lowest of the nested shells, as a fraction of the colour scale (the others step up to the top)'
+      : 'Isosurface value as a fraction of the colour scale' + (SIGNED ? ' (both signs)' : '');
+    $('vollevelv').textContent = volumeLevelText();
+  }
+  slicesUi.forEach((S, c) => { S.range.value = volState.slices[c]; S.button.setAttribute('aria-pressed', String(volState.slicesOn[c]));
+    S.button.textContent = AXIS_NAMES[c] + ' ' + Number(slicePosition(c).toPrecision(3)); });
+}
+function setVolumeMode(m) {
+  if (!VOL) return;
+  // a volume view hides the cut planes (their buttons bring them back: they then stop the rays), Cut planes shows them
+  const was = volState.mode; volState.mode = m;
+  if ((was === 'planes') !== (m === 'planes')) for (const L of LAYERS) L.visible = m === 'planes';
+  volFrame = -1; uploadVolume(); syncVolume(); updateReadout(); syncControls();
+}
+const slicesUi = [];
+if (VOL) {
+  $('volgroup').hidden = false;
+  $('volmode').replaceChildren(...VOL_MODES.map(([key, label]) => new Option(label, key)));
+  $('volmode').onchange = (e) => setVolumeMode(e.target.value);
+  $('vollevel').oninput = (e) => { volState.levels[volState.mode] = +e.target.value; syncVolume(); };
+  for (const c of [0, 1, 2]) {
+    const button = document.createElement('button'), range = document.createElement('input');
+    button.title = 'Show / hide the slice normal to ' + AXIS_NAMES[c] + ' (' + lengthUnit + ')';
+    range.type = 'range'; range.min = '0'; range.max = '1'; range.step = '0.002'; range.style.width = '72px';
+    range.title = 'Move the slice normal to ' + AXIS_NAMES[c];
+    button.onclick = () => { volState.slicesOn[c] = !volState.slicesOn[c]; syncVolume(); };
+    range.oninput = () => { volState.slices[c] = +range.value; volState.slicesOn[c] = true; syncVolume(); };
+    $('slicegroup').append(button, range); slicesUi.push({ button, range });
+  }
+  for (const L of LAYERS) L.visible = !volumeShown();
+  volumeStartLevels();
+  // the objects as see-through surfaces around the field (else their edges): outlines would lie on hidden planes
+  if (GEOM_FACES.some((G) => G.material !== null && G.material !== undefined)) state.geom = 'glass';   // material solids
+  else if (HAS_EDGES) state.geom = 'edges';
+  syncGeometry();
+  window.addEventListener('keydown', (e) => {
+    if (e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT' && e.target.type !== 'range') return;
+    if (e.ctrlKey || e.metaKey || e.altKey || (e.key !== 'v' && e.key !== 'V') || volFailed) return;
+    const keys = VOL_MODES.map(([key]) => key); setVolumeMode(keys[(keys.indexOf(volState.mode) + 1) % keys.length]);
+  });
+  syncVolume();
+}
+// a 3D view opens with a short eased turn into its resting angle (depth reads from the motion), unless the reader
+// prefers reduced motion; any pointer input ends it
+const INTRO_SECONDS = 2.4, INTRO_TURN = 0.7;
+let introClock = (!PLANAR && !(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches)) ? 0 : null;
+let introBase = null;
+function introTurn(dt) {
+  if (introClock === null) return;
+  if (introBase === null) introBase = cam.az;
+  introClock = Math.min(introClock + dt, INTRO_SECONDS);
+  const x = introClock / INTRO_SECONDS, ease = 1 - Math.pow(1 - x, 3);
+  cam.az = introBase + INTRO_TURN * (1 - ease);
+  if (introClock >= INTRO_SECONDS) introClock = null;
+}
+function stopIntro() { introClock = null; }
+function finishIntro() { if (introClock !== null && introBase !== null) cam.az = introBase; introClock = null; }
+canvas.addEventListener('pointerdown', stopIntro);
+canvas.addEventListener('wheel', stopIntro);
+function fitBoxCorners() {
+  // a 3D view: distance and target such that the projected box corners fill the area the heading, the colour bar,
+  // the hint and the axis labels leave free, centred in it (refined a few times: perspective is not linear)
+  const tan = Math.tan(15 * Math.PI / 180), half = shownSpan().map((v) => 0.5 * v);
+  const px = pixelRatio, F = fig.font_size * px, pad = PAD * px, B = barMetrics(), W = canvas.width, H = canvas.height;
+  const bar = fig.colorbar, labels = state.axes ? 4.5 * F : F;
+  const top = pad + Math.max(headingHeight(), bar.startsWith('top') ? B.height : 0) + labels;
+  const bottom = pad + (bar.startsWith('bottom') ? B.height : 20 * px) + labels;
+  const left = pad + (bar === 'left' ? B.width : 0) + labels, right = pad + (bar === 'right' ? B.width : 0) + labels;
+  const freeW = Math.max(W - left - right, 0.3 * W), freeH = Math.max(H - top - bottom, 0.3 * H);
+  const fx = left + 0.5 * (W - left - right), fy = top + 0.5 * (H - top - bottom);
+  for (let iter = 0; iter < 8; iter++) {
+    const view = viewMatrix(), proj = projMatrix();
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+    for (let i = 0; i < 8; i++) {
+      const p = [0, 1, 2].map((c) => ((i >> c) & 1) ? half[c] : -half[c]);
+      const v = [0, 1, 2, 3].map((r) => view[r] * p[0] + view[4 + r] * p[1] + view[8 + r] * p[2] + view[12 + r]);
+      const cw = proj[3] * v[0] + proj[7] * v[1] + proj[11] * v[2] + proj[15] * v[3];
+      if (!(cw > 1e-9)) return;               // a corner behind the eye: keep the plain fit
+      const sx = (proj[0] * v[0] / cw + 1) * 0.5 * W, sy = (1 - proj[5] * v[1] / cw) * 0.5 * H;
+      x0 = Math.min(x0, sx); x1 = Math.max(x1, sx); y0 = Math.min(y0, sy); y1 = Math.max(y1, sy);
+    }
+    const { s, u } = cameraAxes(), perPixel = 2 * cam.dist * tan / Math.max(H, 1);
+    const dx = 0.5 * (x0 + x1) - fx, dy = 0.5 * (y0 + y1) - fy;
+    cam.target = cam.target.map((t, i) => t + (s[i] * dx - u[i] * dy) * perPixel);
+    cam.dist *= Math.max((x1 - x0) / freeW, (y1 - y0) / freeH);
+  }
+}
+window.fieldViewer3d = { volume: volState, setMode: setVolumeMode, finishIntro, sync: syncVolume,
+                         fullQuality() { volumePinned = true; } };   // scripted views
+// ---- end fields3d ----
+
 // ---------- heading (drawn by drawHeading) and the automatic values the Plot settings panel shows ----------
+function frameHeading(F) {
+  // { main, meta } of the heading: the quantity leads a single state whose label only counts solves ('solve 1', a
+  // stationary result) or is empty; frames (time, wavelengths, modes) lead with their label and name the quantity below
+  const label = (F.label || '').replace(/\blambda\b/g, 'λ')
+    .replace(/^t = ([-+0-9.eE]+) s$/, (all, v) => 't = ' + fmtValue(+v, 's'));   // a raw session time: SI prefix
+  if (KIND === 'single') return /^(solve \d+)?$/.test(label) ? { main: Q.label, meta: '' } : { main: Q.label, meta: label };
+  return { main: label || 'frame ' + (state.frame + 1), meta: Q.label };
+}
 function updateReadout() {
   const F = FRAMES[state.frame];
-  const label = (F.label || '').replace(/\blambda\b/g, 'λ');
-  heading.main = KIND === 'single' ? (label || Q.label) : (label || 'frame ' + (state.frame + 1));
-  const parts = [];
-  if (KIND !== 'single' || label) parts.push(Q.label);
+  const head = frameHeading(F);
+  heading.main = head.main;
+  const parts = head.meta ? [head.meta] : [];
   if (F.empty) parts.push('no value in this frame');
   const planes = LAYERS.filter((L) => L.name && L.visible).map((L) => L.name + ' ' + lengthUnit);
   if (planes.length) parts.push(planes.join(', '));
   if (state.stretch && CAN_STRETCH) parts.push('stretched ' + STRETCH_TEXT);
   if (state.mirror && CAN_MIRROR) parts.push('mirrored at ' + MIRRORS.map((M) => M.face).join(', '));
+  if (flowShown()) parts.push((flowState.style === 'arrows' ? 'arrows: ' : 'streaks: ') + FLOW.label.toLowerCase());
+  waveReadout(parts);
+  if (MOTION && motionGain() > 0) parts.push(motionText());
   heading.meta = parts.join('  ·  ');
   $('framev').textContent = NF > 1 ? (state.frame + 1) + ' / ' + NF : '';
   const [lo, hi] = autoLimits();
   $('fs_color_min').placeholder = String(Number(lo.toPrecision(3)));   // grey: the automatic value
   $('fs_color_max').placeholder = String(Number(hi.toPrecision(3)));
+  if (VOL) syncVolume();   // fields3d: the level's value follows the colour scale
 }
 
 // ---------- Plot settings panel: every key of fig has the input 'fs_<key>' ----------
@@ -1423,7 +2479,7 @@ function syncSettings() {
   $('settingsbtn').textContent = 'Plot settings' + (limited ? ' •' : '');
   $('settingsbtn').title = 'Font sizes, colour and axis limits, colour bar and label places of the picture'
     + (limited ? ' (limits are set)' : '');
-  $('range').disabled = fig.color_max !== null || (SIGNED && fig.color_min !== null);   // the limit it scales is given
+  $('range').disabled = fig.color_max !== null || (DIVERGING && fig.color_min !== null);   // the limit it scales is given
   $('hint').style.display = fig.colorbar === 'bottom_left' || fig.colorbar === 'bottom' ? 'none' : '';
 }
 function applySettings(boundsChanged) {
@@ -1513,6 +2569,9 @@ function syncControls() {
   $('present').setAttribute('aria-pressed', String(document.body.classList.contains('present')));
   $('settingsbtn').setAttribute('aria-pressed', String(!$('settings').hidden));
   for (const L of LAYERS) if (L.button) L.button.setAttribute('aria-pressed', String(L.visible));
+  syncWaveControls();
+  syncScalars();
+  syncMotion();
 }
 function select(f) { state.frame = ((f % NF) + NF) % NF; uploadFrame(); updateReadout(); syncControls(); }
 $('framegroup').style.display = NF > 1 ? '' : 'none';
@@ -1533,7 +2592,7 @@ if (LAYERS.length > 1) {
   for (const L of LAYERS) {
     const b = document.createElement('button'); b.textContent = L.name || 'layer ' + (L.index + 1);
     b.title = 'Show / hide this cut plane';
-    b.onclick = () => { L.visible = !L.visible; if (!LAYERS.some((x) => x.visible)) L.visible = true; updateReadout(); syncControls(); };
+    b.onclick = () => { L.visible = !L.visible; if (!LAYERS.some((x) => x.visible) && !volumeShown()) L.visible = true; updateReadout(); syncControls(); };
     L.button = b; $('layergroup').appendChild(b);
   }
 } else $('layergroup').style.display = 'none';
@@ -1542,7 +2601,7 @@ $('prev').onclick = () => { state.playing = false; select(state.frame - 1); };
 $('next').onclick = () => { state.playing = false; select(state.frame + 1); };
 $('frame').oninput = (e) => { state.playing = false; select(+e.target.value); };
 $('speed').oninput = (e) => { state.fps = +e.target.value; syncControls(); };
-$('cmap').onchange = (e) => { state.cmap = e.target.value; store(SIGNED ? 'cmap_signed' : 'cmap', state.cmap); updateReadout(); };
+$('cmap').onchange = (e) => { state.cmap = e.target.value; store(cmapStoreKey(), state.cmap); updateReadout(); };
 $('scale').onchange = (e) => { state.scale = e.target.value; updateReadout(); };
 $('log').onclick = () => { state.log = !state.log; updateReadout(); syncControls(); };
 $('decades').onchange = (e) => { state.decades = +e.target.value; updateReadout(); };
@@ -1594,6 +2653,8 @@ $('record').onclick = () => {
   // time frames: one pass from the first frame; otherwise one full turn of the view
   let seconds;
   if (KIND === 'time') { select(0); state.playing = true; seconds = NF / state.fps; }
+  else if (PHASOR) { wave.playing = true; wave.theta = 0; seconds = 3 / wave.hz; }   // three periods of the phase
+  else if (motion.animate) { motion.theta = 0; seconds = MOTION_CYCLES_RECORDED * 2 * Math.PI / motionRate(); }   // whole cycles
   else { state.spin = true; seconds = 2 * Math.PI / SPIN_RATE; }
   syncControls();
   recorder.start(); $('rec').classList.add('on'); $('record').textContent = 'Stop';
@@ -1615,6 +2676,217 @@ window.addEventListener('keydown', (e) => {
   else if ((k === 'm' || k === 'M') && CAN_MIRROR) $('mirror').click();
   else if (k === 's' || k === 'S') $('spin').click();
 });
+
+// ---- solid2d ---- (deformed shapes, part 2: decoding, uniforms, body outlines, controls)
+const motion = { animate: !!MOTION && MOTION.oscillate, theta: 0, deform: DEFORM_START };
+const MOTION_CYCLES_RECORDED = MOTION && !MOTION.oscillate ? 2 : 3;
+function motionRate() { return 2 * Math.PI / (MOTION && MOTION.oscillate ? 2 : 3); }   // rad/s: a 2 s period, a 3 s ramp
+const motionCache = new Map();
+function motionFrame(f) {
+  // per layer Float32Array (n, 4): the channels in slots 0 .. MOTION_CHANNELS - 1, each over [-1, 1] of the frame's dmax
+  if (motionCache.has(f)) return motionCache.get(f);
+  const out = FRAMES[f].disp.map((text, i) => {
+    const q = i16(text), n = LAYERS[i].n, a = new Float32Array(4 * n);
+    if (q.length !== n * MOTION_CHANNELS) throw new Error('displacement codes do not match the layer samples');
+    for (let k = 0; k < n; k++) for (let c = 0; c < MOTION_CHANNELS; c++) a[4 * k + c] = q[k * MOTION_CHANNELS + c] / 32767;
+    return a;
+  });
+  if (motionCache.size > 16) motionCache.delete(motionCache.keys().next().value);
+  motionCache.set(f, out);
+  return out;
+}
+function motionMagnification() {
+  // shown / true displacement: the largest (over every frame for time frames, else of the shown frame) at Deform
+  const F = FRAMES[state.frame], ref = KIND === 'time' ? MOTION.max : F.dmax;
+  return ref > 0 ? motion.deform * DEFORM_FULL * REST_SPAN / ref : 0;
+}
+function motionGain() { return MOTION ? FRAMES[state.frame].dmax * motionMagnification() : 0; }   // length units per code unit
+function motionText() {
+  if (!MOTION.physical) return 'mode shape (amplitude arbitrary)';
+  const k = motionMagnification();
+  let text = String(Number(k.toPrecision(2)));
+  if (k >= 1000 || k < 0.01) { const e = Math.floor(Math.log10(k)); text = (k / Math.pow(10, e)).toFixed(1) + '·10' + superscript(e); }
+  return 'deformation × ' + text;
+}
+function motionLit() { return MOTION_NORMAL && motionGain() > 0; }   // a membrane bent out of its plane is lit
+function motionNormalReach() { return MOTION_NORMAL ? motion.deform * DEFORM_FULL * REST_SPAN : 0; }
+function motionInplaneReach() { return MOTION_INPLANE ? motion.deform * DEFORM_FULL * REST_SPAN : 0; }   // largest shown displacement
+const motionPhase = new Float32Array(4), motionW = new Float32Array(4);   // per-channel weights (no allocation per draw)
+function setMotionUniforms() {
+  // channel weights of Re[d exp(j theta)] (oscillating modes) or of the load ramp, times the gain; uAmp scales the
+  // colours of signed linear fields of a real oscillating mode with cos theta (exact for them)
+  const g = motionGain(), nc = MOTION_COMPONENTS.length, c = Math.cos(motion.theta), s = Math.sin(motion.theta);
+  const oscillating = motion.animate && !!MOTION && MOTION.oscillate;
+  const re = !motion.animate ? 1 : oscillating ? c : 0.5 * (1 - c), im = oscillating ? -s : 0;
+  for (let k = 0; k < 4; k++) motionPhase[k] = k >= MOTION_CHANNELS ? 0 : g * (k < nc ? re : im);
+  gl.uniform1f(uni.uAmp, oscillating && !MOTION.complex && SIGNED && !Q.phase && g > 0 ? c : 1);
+}
+for (const L of LAYERS) {   // per layer: the direction of each channel (true axes), the normal one signed per image
+  const dirs = new Float32Array(12), axes = DATA.layers[L.index].axes;
+  for (let k = 0; k < MOTION_CHANNELS; k++) {
+    const name = MOTION_COMPONENTS[k % MOTION_COMPONENTS.length];
+    dirs[3 * k + (name === 'u' ? AX[axes[0]] : name === 'v' ? AX[axes[1]] : L.axis)] = 1;
+  }
+  L.motionDirs = dirs;
+}
+function normalSign(I) {
+  // sign of the normal displacement in a mirror image: the product of the motion's signs of the faces it reflects in
+  if (I.normalSign === undefined) {
+    let sign = 1;
+    for (const M of MIRRORS) {
+      const c = AX[M.axis];
+      if (I.a[c] < 0 && Math.abs(I.b[c] - 2 * M.position) <= 1e-9 * (REST_SPAN + Math.abs(M.position)))
+        sign *= (MOTION && MOTION.mirror_signs[M.face]) || 1;
+    }
+    I.normalSign = sign;
+  }
+  return I.normalSign;
+}
+function setMotionLayer(u, L, I) {
+  if (!MOTION) return;
+  const flip = normalSign(I);
+  for (let k = 0; k < 4; k++)
+    motionW[k] = motionPhase[k] * (k < MOTION_CHANNELS && MOTION_COMPONENTS[k % MOTION_COMPONENTS.length] === 'n' ? flip : 1);
+  gl.uniform3fv(u.uDispDir, L.motionDirs); gl.uniform4fv(u.uDispW, motionW);
+}
+// body outlines: the boundary edges of the drawn triangles (edges of one valued triangle only) of frame 0, drawn as
+// screen-space quads deformed like the layer, plus a faint rest-shape ghost when the shape is magnified
+const OUTLINE_VS = `#version 300 es
+precision highp float;
+in vec3 aA; in vec3 aB; in vec4 aDA; in vec4 aDB; in vec2 aCorner;
+uniform mat4 uView; uniform mat4 uProj; uniform vec3 uCenter; uniform vec3 uStretch; uniform vec3 uMirA; uniform vec3 uMirB;
+uniform vec2 uViewport; uniform float uWidth; uniform vec3 uDispDir[4]; uniform vec4 uDispW;
+out vec3 vPlace;
+vec3 moved(vec3 p, vec4 d) { return p + d.x * uDispW.x * uDispDir[0] + d.y * uDispW.y * uDispDir[1] + d.z * uDispW.z * uDispDir[2]
+                                      + d.w * uDispW.w * uDispDir[3]; }
+void main() {
+  vec3 A = moved(aA, aDA) * uMirA + uMirB, B = moved(aB, aDB) * uMirA + uMirB;
+  vPlace = mix(A, B, aCorner.x);
+  vec4 ca = uProj * uView * vec4((A - uCenter) * uStretch, 1.0), cb = uProj * uView * vec4((B - uCenter) * uStretch, 1.0);
+  vec2 d = cb.xy / max(cb.w, 1e-6) * uViewport - ca.xy / max(ca.w, 1e-6) * uViewport; float len = length(d);
+  vec2 dir = len > 1e-6 ? d / len : vec2(1.0, 0.0), across = vec2(-dir.y, dir.x);
+  vec4 c = mix(ca, cb, aCorner.x);
+  c.xy += (across * aCorner.y + dir * (2.0 * aCorner.x - 1.0)) * uWidth * c.w / uViewport;
+  gl_Position = c;
+}`;
+const OUTLINE_FS = `#version 300 es
+precision highp float;
+in vec3 vPlace; uniform vec4 uColor; uniform vec3 uClipLo; uniform vec3 uClipHi;
+out vec4 outColor;
+void main() {
+  if (any(lessThan(vPlace, uClipLo)) || any(greaterThan(vPlace, uClipHi))) discard;
+  outColor = uColor;
+}`;
+let outlineGL = null, outlineProg = null;   // null: not set up yet, false: nothing to draw / failed
+const outlineUni = {};
+function boundaryEdges(L, ok) {
+  // [a, b, ...] vertex pairs of the edges belonging to exactly one triangle whose corners all hold a value
+  const count = new Map(), n = L.n, tri = L.tri;
+  const add = (p, q) => { const key = Math.min(p, q) * n + Math.max(p, q); count.set(key, (count.get(key) || 0) + 1); };
+  for (let t = 0; t < tri.length; t += 3) {
+    const a = tri[t], b = tri[t + 1], c = tri[t + 2];
+    if (!ok[2 * a + 1] || !ok[2 * b + 1] || !ok[2 * c + 1]) continue;
+    add(a, b); add(b, c); add(c, a);
+  }
+  const out = [];
+  for (const [key, times] of count) if (times === 1) out.push(Math.floor(key / n), key % n);
+  return out;
+}
+function setupOutlineGL() {
+  if (!MOTION) return false;
+  outlineProg = linkProgram(OUTLINE_VS, OUTLINE_FS, ['uView', 'uProj', 'uCenter', 'uStretch', 'uMirA', 'uMirB', 'uViewport', 'uWidth',
+                                                     'uDispDir', 'uDispW', 'uColor', 'uClipLo', 'uClipHi'], outlineUni);
+  const corners = new Float32Array([0, -1, 1, -1, 1, 1, 0, -1, 1, 1, 0, 1]);
+  const attributes = [['aA', 3, 0], ['aB', 3, 12], ['aDA', 4, 24], ['aDB', 4, 40]].map(([name, size, offset]) => [gl.getAttribLocation(outlineProg, name), size, offset]);
+  const ok = frameValues(0);
+  const tolerance = 1e-6 * REST_SPAN;
+  for (const L of LAYERS) {
+    // edges in a mirror plane are seams between the body and its image: last, left out while the images show
+    const all = boundaryEdges(L, ok[L.index]), open = [], seams = [];
+    for (let e = 0; e < all.length; e += 2) {
+      const a = all[e], b = all[e + 1];
+      const seam = MIRRORS.some((M) => Math.abs(L.pos[3 * a + AX[M.axis]] - M.position) <= tolerance
+                                    && Math.abs(L.pos[3 * b + AX[M.axis]] - M.position) <= tolerance);
+      (seam ? seams : open).push(a, b);
+    }
+    const pairs = open.concat(seams), m = pairs.length / 2;
+    const O = L.outline = { pairs, count: m, open: open.length / 2, rows: new Float32Array(14 * m) };   // per edge: A, B, displacement codes at A and B
+    for (let e = 0; e < m; e++) for (let c = 0; c < 3; c++) {
+      O.rows[14 * e + c] = L.pos[3 * pairs[2 * e] + c]; O.rows[14 * e + 3 + c] = L.pos[3 * pairs[2 * e + 1] + c]; }
+    O.vao = gl.createVertexArray(); gl.bindVertexArray(O.vao);
+    vertexBuffer(gl.getAttribLocation(outlineProg, 'aCorner'), corners, 2, gl.STATIC_DRAW);
+    O.buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, O.buf); gl.bufferData(gl.ARRAY_BUFFER, O.rows, gl.DYNAMIC_DRAW);
+    for (const [loc, size, offset] of attributes) if (loc >= 0) {
+      gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, size, gl.FLOAT, false, 56, offset); gl.vertexAttribDivisor(loc, 1); }
+  }
+  gl.bindVertexArray(null);
+  return true;
+}
+function uploadMotion() {
+  if (!MOTION || !gl || !ready) return;
+  const D = motionFrame(state.frame);
+  LAYERS.forEach((L, i) => { gl.bindBuffer(gl.ARRAY_BUFFER, L.dispBuf); gl.bufferSubData(gl.ARRAY_BUFFER, 0, D[i]); });
+  if (outlineGL === null) {
+    try { outlineGL = setupOutlineGL(); } catch (err) { outlineGL = false; console.error('body outlines: ' + err.message); }
+  }
+  if (!outlineGL) return;
+  for (const L of LAYERS) {
+    const O = L.outline, d = D[L.index];
+    for (let e = 0; e < O.count; e++) for (let c = 0; c < 4; c++) {
+      O.rows[14 * e + 6 + c] = d[4 * O.pairs[2 * e] + c]; O.rows[14 * e + 10 + c] = d[4 * O.pairs[2 * e + 1] + c]; }
+    gl.bindBuffer(gl.ARRAY_BUFFER, O.buf); gl.bufferSubData(gl.ARRAY_BUFFER, 0, O.rows);
+  }
+}
+const REST_W = new Float32Array(4);
+function drawMotionOutlines(view, proj, relief, pass) {
+  // pass 'moved': the deformed body's outline (crisp edges where the void is hidden), after the layers; 'rest': its
+  // rest shape, before the layers without depth writes, so the body covers it (shown only when magnified); neither
+  // over a relief (the outline would lie under the raised map)
+  if (!outlineGL || relief > 0 || (pass === 'rest' && !(motionGain() > 0))) return;
+  gl.useProgram(outlineProg);
+  gl.uniformMatrix4fv(outlineUni.uView, false, view); gl.uniformMatrix4fv(outlineUni.uProj, false, proj);
+  gl.uniform3fv(outlineUni.uCenter, center); gl.uniform3fv(outlineUni.uStretch, stretch());
+  gl.uniform3fv(outlineUni.uClipLo, clipLo); gl.uniform3fv(outlineUni.uClipHi, clipHi);
+  gl.uniform2f(outlineUni.uViewport, canvas.width, canvas.height);
+  gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  const flat = faceOn(); if (flat) gl.disable(gl.DEPTH_TEST);
+  if (pass === 'rest') gl.depthMask(false);
+  const ink = themeColors.dark && fig.background !== 'white' ? [0.9, 0.93, 0.98] : [0.07, 0.08, 0.11];
+  gl.uniform4fv(outlineUni.uColor, [...ink, pass === 'rest' ? 0.45 : 0.82]);
+  gl.uniform1f(outlineUni.uWidth, (pass === 'rest' ? 0.6 : 0.85) * pixelRatio);
+  for (const I of images()) {
+    setImage(outlineUni, I);
+    for (const L of LAYERS) {
+      const count = state.mirror && CAN_MIRROR ? L.outline.open : L.outline.count;
+      if (!L.visible || selfImage(L, I) || !count) continue;
+      if (pass === 'rest') { gl.uniform3fv(outlineUni.uDispDir, L.motionDirs); gl.uniform4fv(outlineUni.uDispW, REST_W); }
+      else setMotionLayer(outlineUni, L, I);
+      gl.bindVertexArray(L.outline.vao); gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, count);
+    }
+  }
+  gl.depthMask(true);
+  if (flat) gl.enable(gl.DEPTH_TEST);
+  gl.disable(gl.BLEND); gl.bindVertexArray(null);
+}
+function syncMotion() {
+  $('deformgroup').style.display = MOTION ? '' : 'none';
+  if (!MOTION) return;
+  $('animate').setAttribute('aria-pressed', String(motion.animate));
+  $('deform').value = motion.deform;
+  $('deformv').textContent = Math.round(motion.deform * 100) + ' %';
+}
+$('animate').title = MOTION && MOTION.oscillate
+  ? 'Animate the oscillation: the shape and the signed colours over one period, Re[u exp(jωt)] (D)'
+  : 'Animate the loading: the displacement ramps from 0 to the solution and back (D)';
+$('animate').onclick = () => { motion.animate = !motion.animate; motion.theta = 0; syncControls(); };
+$('deform').oninput = (e) => { motion.deform = +e.target.value; if (!cam.moved) fitDistance(); updateReadout(); syncControls(); };
+window.addEventListener('keydown', (e) => {
+  if (!MOTION || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT' && e.target.type !== 'range') return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.key === 'd' || e.key === 'D') $('animate').click();
+});
+if (MOTION_INPLANE && GEOM_MODES.some(([key]) => key === 'off')) { state.geom = 'off'; syncGeometry(); }   // the body outline stands in
+if (MOTION_INPLANE) state.stretch = false;   // a deformed shape is a picture of the body: true proportions (Stretch brings it back)
 
 // ---------- pointer: orbit, pan, zoom ----------
 const pointers = new Map(); let pinch = 0;
@@ -1679,16 +2951,417 @@ canvas.addEventListener('dblclick', (e) => {
   else resetCamera();
 });
 
+// ---- waves ----
+// Phase animation of phasor frames (DATA.phasor: each frame carries the partner of its Re / Im values, so the page
+// shows values cos(wt) + partner sin(wt) = Re / Im[A exp(j wt)], the instantaneous field over one period; Play turns
+// wt, the frame slider still steps the wavelengths / modes) and smooth playback of time frames (the next frame is
+// blended in between two snapshots). Both feed the vertex shader's second value aVal2 (uMixA / uMixB).
+// (PHASOR, SMOOTH_OK, WAVE_SECOND and wave are defined with the page constants: limits() reads them early)
+const quadCache = new Map();
+function quadValues(f) {
+  // per layer (partner, ok) pairs of frame f's phasor partner, decoded on the frame's own codes
+  if (quadCache.has(f)) return quadCache.get(f);
+  const out = decodeCodes(FRAMES[f], FRAMES[f].quadrature);
+  if (quadCache.size > 32) quadCache.delete(quadCache.keys().next().value);
+  quadCache.set(f, out);
+  return out;
+}
+function uploadSecond() {
+  // aVal2 of every layer: the shown frame's partner (phasor) or the frame after it (time frames; the last blends
+  // into the first, as playback wraps)
+  if (!WAVE_SECOND || !gl || !ready) return;
+  const values = PHASOR ? quadValues(state.frame) : frameValues((state.frame + 1) % NF);
+  LAYERS.forEach((L, i) => { gl.bindBuffer(gl.ARRAY_BUFFER, L.val2Buf); gl.bufferSubData(gl.ARRAY_BUFFER, 0, values[i]); });
+}
+function waveTick(dt) {
+  // per animation frame: turn the phase, or blend the next time frame by the playback clock's fraction
+  if (PHASOR) {
+    if (wave.playing) wave.theta = (wave.theta + 2 * Math.PI * wave.hz * dt) % (2 * Math.PI);
+    wave.mixA = Math.cos(wave.theta); wave.mixB = Math.sin(wave.theta);
+  } else if (SMOOTH_OK) {
+    const blend = wave.smooth && state.playing && NF > 1 ? Math.min(Math.max(frameClock, 0), 1) : 0;
+    wave.mixA = 1 - blend; wave.mixB = blend;
+  }
+}
+function shownFrameRange() {
+  // [lo, hi] of the shown frame; while a time frame blends into the next, blended too (the colour scale glides
+  // instead of jumping once per snapshot)
+  const F = FRAMES[state.frame];
+  if (!(SMOOTH_OK && wave.mixB > 0)) return [F.lo, F.hi];
+  const G = FRAMES[(state.frame + 1) % NF], b = wave.mixB;
+  if (F.empty || G.empty) return [F.lo, F.hi];
+  return [F.lo + (G.lo - F.lo) * b, F.hi + (G.hi - F.hi) * b];
+}
+function waveReadout(parts) {
+  // heading: the phase a still phasor page shows (a moving page names the animation once)
+  if (!PHASOR) return;
+  const degrees = Math.round(wave.theta * 180 / Math.PI) % 360;
+  parts.push(wave.playing ? 'animated over one period' : 'ωt = ' + degrees + '°');
+}
+function syncWaveControls() {
+  if (PHASOR) {
+    $('play').textContent = wave.playing ? 'Pause' : 'Play';
+    $('speedv').textContent = wave.hz.toFixed(2) + ' Hz';
+  }
+  if (SMOOTH_OK) smoothButton.setAttribute('aria-pressed', String(wave.smooth));
+}
+function toggleWave() { wave.playing = !wave.playing; updateReadout(); syncControls(); }
+const smoothButton = document.createElement('button');
+smoothButton.id = 'smooth';
+smoothButton.textContent = 'Smooth';
+smoothButton.title = 'Blend each snapshot into the next while playing (smooth motion between the stored frames)';
+smoothButton.onclick = () => { wave.smooth = !wave.smooth; store('smooth', wave.smooth ? 'on' : 'off'); syncControls(); };
+if (SMOOTH_OK) $('speedgroup').appendChild(smoothButton);
+if (PHASOR) {
+  // Play / Speed turn the phase (one cycle in 1 / hz s, as mode_player); frames are still stepped by the slider
+  $('play').style.display = ''; $('speedgroup').style.display = ''; $('framegroup').style.display = '';
+  for (const id of ['prev', 'next', 'frame', 'framev']) $(id).style.display = NF > 1 ? '' : 'none';   // one state: Play alone
+  $('play').title = 'Animate the phase: the field over one period, Re[A exp(jωt)] (Space)';
+  const speed = $('speed');
+  speed.min = '0.05'; speed.max = '2'; speed.step = '0.05'; speed.value = String(wave.hz);
+  speed.title = 'Cycles per second of the phase animation';
+  speed.oninput = (e) => { wave.hz = +e.target.value; syncControls(); };
+  $('play').onclick = toggleWave;
+  $('prev').onclick = () => select(state.frame - 1);   // stepping keeps the animation running
+  $('next').onclick = () => select(state.frame + 1);
+  $('frame').oninput = (e) => select(+e.target.value);
+  window.addEventListener('keydown', (e) => {
+    if (e.key !== ' ' || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT' && e.target.type !== 'range') return;
+    toggleWave(); e.preventDefault();
+  });
+}
+if (KIND === 'time' && NF > 1) state.playing = true;      // time frames open playing, as the mode animation
+// a wave pulse decays and spreads: signed time frames each on their own scale (blended while playing)
+if (SMOOTH_OK && SIGNED) { state.scale = 'frame'; $('scale').value = 'frame'; }
+// waves (phasor or signed time frames): the vivid diverging map until one is chosen (remembered for signed fields)
+if ((PHASOR || SMOOTH_OK && DIVERGING) && !store('cmap_signed')) { state.cmap = 'seismic'; $('cmap').value = 'seismic'; }
+{ // wave pages open with the Range at the frames' typical robust magnitude (frame 'robust', the 99.5th percentile
+  // of |value|) over their largest one, so a source cell or a field enhancement does not wash the waves out; the
+  // slider shows the saturation and 100 % brings the full range back (a still lobe, e.g. a waveguide mode, keeps 100 %)
+  const ratios = FRAMES.filter((F) => !F.empty && F.robust > 0)
+    .map((F) => F.robust / Math.max(Math.abs(F.lo), Math.abs(F.hi))).sort((a, b) => a - b);
+  const typical = ratios.length ? ratios[Math.floor(ratios.length / 2)] : 1;
+  if ((PHASOR || SMOOTH_OK && DIVERGING) && typical < 0.9) { state.range = Math.max(0.3, Math.round(100 * typical) / 100); $('range').value = String(state.range); }
+}
+
+// ---- scalars ----
+// contour lines (in the field program: uContour), the lit '3D' terrain (relief with walls down to a base, reached by a
+// tween from the face-on map; pages of one stationary state open with it) and the backdrop gradient behind the view
+const CONTOUR_COUNTS = { coarse: 6, normal: 12, fine: 24 };   // levels over the colour range, about
+const CONTOUR_STORE = 'contours:' + SCALAR_KIND;
+state.contours = (() => { const v = store(CONTOUR_STORE); return v === 'on' || (v !== 'off' && SCALAR_KIND !== 'other'); })();
+state.contourDensity = CONTOUR_COUNTS[store('contour_density')] ? store('contour_density') : 'normal';
+function niceStep(lo, hi, count) {
+  // a 1-2-5 step giving about count steps over [lo, hi]
+  const raw = (hi - lo) / Math.max(count, 1), p = Math.pow(10, Math.floor(Math.log10(raw)));
+  return [1, 2, 5, 10].map((m) => m * p).find((s) => s >= raw * (1 - 1e-9));
+}
+function contourLevels(lo, hi, logScale) {
+  // { c0, step, major }: levels c0 + k step in the value the shader counts (log10 on a log scale), every major-th one
+  // bold: on the colour bar's ticks (about 4 over the range, as drawColorbar's default bar), decades on a log scale.
+  // c0 a bold level just below lo keeps k small (float32 in the shader)
+  const n = CONTOUR_COUNTS[state.contourDensity];
+  const a = logScale ? Math.log10(lo) : lo, b = logScale ? Math.log10(hi) : hi;
+  if (!(b > a) || !isFinite(a) || !isFinite(b)) return null;
+  const bold = logScale ? Math.max(1, niceStep(a, b, 4)) : niceStep(a, b, 4);
+  let best = 1;
+  for (const sub of [1, 2, 4, 5, 10]) if (Math.abs((b - a) / (bold / sub) - n) < Math.abs((b - a) / (bold / best) - n)) best = sub;
+  return { c0: Math.floor(a / bold) * bold, step: bold / best, major: best };
+}
+function setContourUniforms(lo, hi, logScale) {
+  const C = state.contours ? contourLevels(lo, hi, logScale) : null;
+  gl.uniform1i(uni.uContour, C ? 1 : 0);
+  if (!C) return;
+  gl.uniform1f(uni.uC0, C.c0); gl.uniform1f(uni.uCStep, C.step); gl.uniform1f(uni.uCMajor, C.major);
+  gl.uniform1f(uni.uCWidth, 1.6 * pixelRatio);
+}
+
+// terrain: relief TERRAIN_RELIEF seen from above at an angle; the tween moves the camera and the relief together
+const TERRAIN_RELIEF = 0.32, TWEEN_SECONDS = 1.1;
+const TERRAIN_OFFERED = PLANAR;
+let tween = null;                            // { start, from, to, flat } while the view moves between flat and 3D
+function terrainPose() { return [FACE_ON[NORMAL][0] - 0.5, NORMAL === 2 ? 0.66 : 0.55]; }
+function poseOf(relief, flat) {
+  // the camera { az, el, dist, target } fitted for a relief, face-on (flat) or at the terrain angle
+  const keep = { az: cam.az, el: cam.el, dist: cam.dist, target: cam.target, moved: cam.moved, relief: state.relief };
+  state.relief = relief; [cam.az, cam.el] = flat ? FACE_ON[NORMAL] : terrainPose(); cam.target = [0, 0, 0];
+  fitDistance();
+  const pose = { az: cam.az, el: cam.el, dist: cam.dist, target: cam.target.slice(), relief };
+  Object.assign(cam, { az: keep.az, el: keep.el, dist: keep.dist, target: keep.target, moved: keep.moved });
+  state.relief = keep.relief;
+  return pose;
+}
+function setTerrain(on, animate = true, remember = true) {
+  if (!TERRAIN_OFFERED) return;
+  if (tween) finishTween();
+  if (remember) store('terrain', on ? 'on' : 'off');
+  const from = { az: cam.az, el: cam.el, dist: cam.dist, target: cam.target.slice(), relief: state.relief };
+  const to = on ? poseOf(state.relief > 0 ? state.relief : TERRAIN_RELIEF, false) : poseOf(0, true);
+  while (to.az - from.az > Math.PI) to.az -= 2 * Math.PI;   // the shorter way round
+  while (to.az - from.az < -Math.PI) to.az += 2 * Math.PI;
+  tween = { start: performance.now(), from, to, flat: !on };
+  if (!animate) finishTween();
+  syncScalars();
+}
+function finishTween() {
+  const T = tween; tween = null;
+  state.relief = T.to.relief;
+  if (T.flat) resetCamera();
+  else Object.assign(cam, { az: T.to.az, el: T.to.el, dist: T.to.dist, target: T.to.target, moved: false });
+  syncControls();
+}
+function scalarsTick(now) {
+  if (!tween) return;
+  const p = Math.min((now - tween.start) / (1000 * TWEEN_SECONDS), 1);
+  if (p >= 1) { finishTween(); return; }
+  const e = p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2;   // ease in and out
+  const A = tween.from, B = tween.to, mix = (a, b) => a + (b - a) * e;
+  // the map tilts before it lifts (and lies down before it turns face-on)
+  const r = tween.flat ? Math.max(0, 1 - 1.6 * e) : Math.min(1, Math.max(0, 1.6 * e - 0.25));
+  state.relief = (tween.flat ? A.relief : B.relief) * r;
+  Object.assign(cam, { az: mix(A.az, B.az), el: mix(A.el, B.el), dist: Math.exp(mix(Math.log(A.dist), Math.log(B.dist))),
+                       target: A.target.map((t, i) => mix(t, B.target[i])) });
+  $('reliefv').textContent = Math.round(state.relief * 100) + ' %'; $('relief').value = state.relief;
+}
+
+// walls of the raised map: a quad down to the base under every boundary edge (grid perimeter, triangulation edges
+// used once), coloured like the edge, lit darker; edges on a mirror plane are inside the unfolded map: left out
+// while the images show. Built on first use, values refreshed when the frame changes
+let walls = null;                            // null: not built yet, false: failed; else per layer
+let wallFrame = -1;
+function boundaryEdges(L, layer) {
+  if (layer.kind === 'grid') {
+    const nu = layer.nu, nv = layer.nv, e = [];
+    if (nu < 2 || nv < 2) return e;
+    for (let i = 0; i + 1 < nu; i++) e.push([i * nv, (i + 1) * nv], [i * nv + nv - 1, (i + 1) * nv + nv - 1]);
+    for (let j = 0; j + 1 < nv; j++) e.push([j, j + 1], [(nu - 1) * nv + j, (nu - 1) * nv + j + 1]);
+    return e;
+  }
+  const count = new Map(), n = L.n, tri = L.tri;
+  for (let t = 0; t < tri.length; t += 3) for (let c = 0; c < 3; c++) {
+    const a = tri[t + c], b = tri[t + (c + 1) % 3], key = Math.min(a, b) * n + Math.max(a, b);
+    count.set(key, (count.get(key) || 0) + 1);
+  }
+  const e = [];
+  for (const [key, k] of count) if (k === 1) e.push([Math.floor(key / n), key % n]);
+  return e;
+}
+function buildWalls() {
+  const aPos = gl.getAttribLocation(prog, 'aPos'), aVal = gl.getAttribLocation(prog, 'aVal'), aDown = gl.getAttribLocation(prog, 'aDown');
+  const tol = 1e-6 * (Math.max(...hmax.map((v, c) => v - hmin[c])) || 1);
+  const onMirror = (L, a, b) => (DATA.mirrors || []).some((M) => {
+    const c = AX[M.axis]; return Math.abs(L.pos[3 * a + c] - M.position) <= tol && Math.abs(L.pos[3 * b + c] - M.position) <= tol; });
+  return LAYERS.map((L, index) => {
+    const edges = boundaryEdges(L, DATA.layers[index]);
+    const outer = edges.filter(([a, b]) => !onMirror(L, a, b)), inner = edges.filter(([a, b]) => onMirror(L, a, b));
+    const ordered = outer.concat(inner), count = 6 * ordered.length;
+    const pos = new Float32Array(3 * count), down = new Float32Array(count), src = new Uint32Array(count);
+    let v = 0;
+    for (const [a, b] of ordered) for (const [node, d] of [[a, 0], [b, 0], [b, 1], [a, 0], [b, 1], [a, 1]]) {
+      pos.set(L.pos.subarray(3 * node, 3 * node + 3), 3 * v); down[v] = d; src[v] = node; v++;
+    }
+    const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+    vertexBuffer(aPos, pos, 3, gl.STATIC_DRAW);
+    const valBuf = vertexBuffer(aVal, new Float32Array(2 * count), 2, gl.DYNAMIC_DRAW);
+    vertexBuffer(aDown, down, 1, gl.STATIC_DRAW);
+    gl.bindVertexArray(null);
+    return { vao, valBuf, src, count, outerCount: 6 * outer.length, vals: new Float32Array(2 * count) };
+  });
+}
+function wallBase(relief) {
+  // depth of the walls' bottom below the plane: a little under the lowest raised point of the shown values
+  const [lo, hi] = limits(), F = FRAMES[state.frame], low = state.scale === 'frame' ? F.lo : DATA.range[0];
+  const logScale = state.log && LOG_OK;
+  let t = logScale ? (Math.log(Math.max(low, 1e-300)) - Math.log(lo)) / (Math.log(hi) - Math.log(lo)) : (low - lo) / (hi - lo);
+  t = Math.min(1, Math.max(0, isFinite(t) ? t : 0));
+  return -relief * (DIVERGING ? 2 * t - 1 : t) + 0.035 * Math.max(...shownSpan());
+}
+function drawWalls(relief) {
+  if (!(relief > 0) || !PLANAR) return;
+  if (walls === null) { try { walls = buildWalls(); } catch (err) { walls = false; console.error('terrain walls:', err); } }
+  if (!walls) return;
+  if (wallFrame !== state.frame) {
+    const values = frameValues(state.frame);
+    walls.forEach((W, i) => {
+      const V = values[i];
+      for (let k = 0; k < W.count; k++) { W.vals[2 * k] = V[2 * W.src[k]]; W.vals[2 * k + 1] = V[2 * W.src[k] + 1]; }
+      gl.bindBuffer(gl.ARRAY_BUFFER, W.valBuf); gl.bufferSubData(gl.ARRAY_BUFFER, 0, W.vals);
+    });
+    wallFrame = state.frame;
+  }
+  gl.uniform1f(uni.uWall, 1);
+  gl.uniform1f(uni.uBase, wallBase(relief));
+  for (const I of images()) {
+    setImage(uni, I);
+    walls.forEach((W, i) => {
+      const L = LAYERS[i];
+      if (!L.visible || selfImage(L, I)) return;
+      gl.uniform3fv(uni.uNormal, L.normal); gl.uniform1f(uni.uRelief, relief);
+      gl.bindVertexArray(W.vao); gl.drawArrays(gl.TRIANGLES, 0, state.mirror && CAN_MIRROR ? W.outerCount : W.count);
+    });
+  }
+  gl.uniform1f(uni.uWall, 0);
+}
+
+// backdrop: the theme's view gradient (top to bottom, a soft light behind the middle), drawn into the GL view so
+// pictures and recordings hold it; none with the Plot settings background 'white' (the clear colour is white)
+const BACK_VS = `#version 300 es
+out vec2 vUv;
+void main() { vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2)); vUv = p; gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0); }`;
+const BACK_FS = `#version 300 es
+precision highp float;
+in vec2 vUv; uniform vec3 uTop; uniform vec3 uBottom; uniform float uGlow;
+out vec4 outColor;
+void main() {
+  vec3 c = mix(uBottom, uTop, smoothstep(0.0, 1.0, vUv.y));
+  float r = length((vUv - vec2(0.5, 0.58)) * vec2(1.0, 1.25));
+  outColor = vec4(c + uGlow * (1.0 - smoothstep(0.0, 0.75, r)), 1.0);
+}`;
+let backProg = null, backColors = null, backTheme = null;
+const backUni = {};
+function drawBackdrop() {
+  if (fig.background === 'white') return;
+  if (backProg === null) { try { backProg = linkProgram(BACK_VS, BACK_FS, ['uTop', 'uBottom', 'uGlow'], backUni); }
+                           catch (err) { backProg = false; console.error('backdrop:', err); } }
+  if (!backProg) return;
+  if (backTheme !== themeColors) {           // readTheme makes a new object: the theme or the background changed
+    backTheme = themeColors;
+    backColors = { top: cssRgb('--view-top'), bottom: cssRgb('--view-bottom'), glow: themeColors.dark ? 0.035 : 0.02 };
+  }
+  gl.disable(gl.DEPTH_TEST); gl.depthMask(false);
+  gl.useProgram(backProg);
+  gl.uniform3fv(backUni.uTop, backColors.top); gl.uniform3fv(backUni.uBottom, backColors.bottom);
+  gl.uniform1f(backUni.uGlow, backColors.glow);
+  gl.bindVertexArray(null); gl.drawArrays(gl.TRIANGLES, 0, 3);
+  gl.depthMask(true); gl.enable(gl.DEPTH_TEST);
+}
+
+// outline decal: on a raised planar map the model outlines (and in 2D the point / line objects) are drawn once into a
+// texture over the plane (the line program, seen face-on through an orthographic matrix) and the field program lays
+// that texture on the surface, so they follow the relief (drawn as lines at the plane they would cut through it).
+// Redrawn when what it shows changes (key); mipmapped, so a turned view stays smooth
+let decalActive = false, decal = null;       // decal: { tex, fb, w, h, key }
+function decalKind(G) { return G.kind === 'outline' || (is2d && G.kind === 'glyph'); }
+let decalFailed = false;
+function prepareDecal() {
+  decalActive = false;
+  if (decalFailed) return;
+  if (!PLANAR || !(state.relief > 0) || !geometryGL || state.geom === 'off') return;
+  const lines = GEOM_LINES.filter((G) => decalKind(G) && (G.kind !== 'outline' || LAYERS[G.layer].visible));
+  if (!lines.length) return;
+  const [iu, iv] = PLANE_AXES, f = stretch();
+  const su = (hmax[iu] - hmin[iu]) * f[iu], sv = (hmax[iv] - hmin[iv]) * f[iv];
+  if (!(su > 0 && sv > 0)) return;
+  const side = Math.min(4096, gl.getParameter(gl.MAX_TEXTURE_SIZE));
+  const w = su >= sv ? side : Math.max(64, Math.round(side * su / sv)), h = su >= sv ? Math.max(64, Math.round(side * sv / su)) : side;
+  const screen = Math.max(canvas.width, canvas.height);
+  const key = [state.geom, state.geomColor, state.cmap, state.stretch, w, h, Math.round(screen / 64),
+               LAYERS.map((L) => L.visible ? 1 : 0).join('')].join('|');
+  if (!decal || decal.key !== key) renderDecal(lines, w, h, su, sv, side / (0.7 * screen), key);
+  decalActive = true;
+}
+function renderDecal(lines, w, h, su, sv, texelsPerPixel, key) {
+  if (!decal || decal.w !== w || decal.h !== h) {
+    if (decal) { gl.deleteTexture(decal.tex); gl.deleteFramebuffer(decal.fb); }
+    const tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texStorage2D(gl.TEXTURE_2D, Math.floor(Math.log2(Math.max(w, h))) + 1, gl.RGBA8, w, h);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    const fb = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) throw new Error('outline decal framebuffer incomplete');
+    decal = { tex, fb, w, h, key: '' };
+  }
+  const [iu, iv] = PLANE_AXES, f = stretch();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, decal.fb); gl.viewport(0, 0, w, h);
+  gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.disable(gl.DEPTH_TEST); gl.enable(gl.BLEND);
+  gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);   // premultiplied texels
+  gl.useProgram(lineProg);
+  // clip = M (p - centre) stretch: the plane's u, v onto x, y over the simulated part
+  const M = new Float32Array(16); M[4 * iu] = 2 / su; M[4 * iv + 1] = 2 / sv; M[15] = 1;
+  const middle = [0, 1, 2].map((c) => 0.5 * (hmin[c] + hmax[c]));
+  gl.uniformMatrix4fv(lineUni.uView, false, M); gl.uniformMatrix4fv(lineUni.uProj, false, new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]));
+  gl.uniform3fv(lineUni.uCenter, middle); gl.uniform3fv(lineUni.uStretch, f);
+  gl.uniform3fv(lineUni.uClipLo, NO_CLIP_LO); gl.uniform3fv(lineUni.uClipHi, NO_CLIP_HI);
+  gl.uniform2f(lineUni.uViewport, w, h);
+  setImage(lineUni, IDENTITY_IMAGE);
+  const dash = 0.008 * (Math.max(...SPAN) || 1);
+  for (const G of lines) {
+    const inset = G.kind === 'outline' && state.geomColor === 'material';
+    // Contrast outlines: drawn white here, the field program picks dark or light over each pixel's colour
+    gl.uniform4fv(lineUni.uColor, state.geomColor === 'auto' ? [1, 1, 1, 0.92] : lineRgba(G)); gl.uniform1f(lineUni.uInset, inset ? 1 : 0);
+    gl.uniform1f(lineUni.uWidth, (G.kind === 'glyph' ? 2.5 : inset ? 2.25 : 1.75) * pixelRatio * texelsPerPixel);
+    gl.uniform1f(lineUni.uDash, G.dashed ? dash : 0);
+    gl.bindVertexArray(G.vao); gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, G.count);
+  }
+  gl.bindVertexArray(null);
+  gl.bindTexture(gl.TEXTURE_2D, decal.tex); gl.generateMipmap(gl.TEXTURE_2D);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA); gl.disable(gl.BLEND); gl.enable(gl.DEPTH_TEST);
+  decal.key = key;
+}
+function setDecalUniforms() {
+  gl.uniform1i(uni.uDecal, decalActive ? 1 : 0);
+  if (!decalActive) return;
+  gl.uniform1i(uni.uDecalAuto, state.geomColor === 'auto' ? 1 : 0);
+  const [iu, iv] = PLANE_AXES, U = [0, 0, 0], V = [0, 0, 0]; U[iu] = 1; V[iv] = 1;
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, decal.tex); gl.uniform1i(uni.uDecalTex, 0);
+  gl.uniform3fv(uni.uDecalU, U); gl.uniform3fv(uni.uDecalV, V);
+  gl.uniform4f(uni.uDecalBox, hmin[iu], hmin[iv], hmax[iu] - hmin[iu], hmax[iv] - hmin[iv]);
+}
+
+// controls
+function syncScalars() {
+  $('contours').setAttribute('aria-pressed', String(state.contours));
+  $('contourn').value = state.contourDensity; $('contourn').disabled = !state.contours;
+  $('terrain').setAttribute('aria-pressed', String(tween ? !tween.flat : state.relief > 0));
+}
+$('terrain').style.display = TERRAIN_OFFERED ? '' : 'none';
+$('terrain').onclick = () => setTerrain(!(tween ? !tween.flat : state.relief > 0));
+$('contours').onclick = () => { state.contours = !state.contours; store(CONTOUR_STORE, state.contours ? 'on' : 'off'); syncScalars(); };
+$('contourn').onchange = (e) => { state.contourDensity = e.target.value; store('contour_density', state.contourDensity); };
+window.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT' && e.target.type !== 'range') return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.key === 'c' || e.key === 'C') $('contours').click();
+  else if ((e.key === 'r' || e.key === 'R') && TERRAIN_OFFERED) $('terrain').click();
+});
+// densities (carriers, concentrations) spanning decades open on a log scale showing them all (up to 9 decades: the
+// log codes' span)
+if (SCALAR_KIND === 'density' && LOG_OK) {
+  let low = Infinity;
+  for (const V of frameValues(0)) for (let k = 0; k < V.length; k += 2) if (V[k + 1] > 0 && V[k] > 0 && V[k] < low) low = V[k];
+  const decades = Math.log10(FRAMES[0].hi / low);
+  if (decades > 2) {
+    state.log = true;
+    state.decades = [2, 3, 4, 6, 9].find((d) => d >= decades - 0.05) || 9;
+    $('decades').value = String(state.decades);
+  }
+}
+// one stationary state (heat, potential, carriers: no frames to step) opens flat, as the canvas shows it, then rises
+// into the terrain, unless this browser turned the terrain off, the page was written with a view or flow particles
+// are on (the relief hides them: one of the two opens, the flow)
+const TERRAIN_AT_OPEN = TERRAIN_OFFERED && is2d && KIND === 'single' && !Q.phase && !DATA.phasor && !DATA.motion && !DATA.view
+  && !(FLOW && flowState.on) && store('terrain') !== 'off';
+
 // ---------- loop ----------
 const SPIN_RATE = 2 * Math.PI / 12;          // one turn in 12 s
 let last = performance.now(), frameClock = 0;
 function tick(now) {
   const dt = Math.min((now - last) / 1000, 0.1); last = now;
+  introTurn(dt); adaptVolume(dt);
   if (state.spin) cam.az -= SPIN_RATE * dt;
+  flowTick(dt);
+  scalarsTick(now);
+  if (motion.animate) motion.theta = (motion.theta + motionRate() * dt) % (2 * Math.PI);
   if (state.playing && NF > 1) {
     frameClock += dt * state.fps;
     if (frameClock >= 1) { const steps = Math.floor(frameClock); frameClock -= steps; select(state.frame + steps); }
   }
+  waveTick(dt);
   draw();
   if (recordCanvas) composite(recordCanvas);
   requestAnimationFrame(tick);
@@ -1699,7 +3372,8 @@ if (mq.addEventListener) mq.addEventListener('change', () => readTheme());
 window.addEventListener('resize', () => { resize(); });
 if (gl) { try { setupGL(); } catch (err) { $('empty').hidden = false; $('empty').textContent = 'WebGL error: ' + err.message; } }
 resize(); resetCamera(); syncControls(); syncSettings(); select(0);
-window.fieldViewer = { state, select, draw, cam, limits, figure: fig };
+if (TERRAIN_AT_OPEN) setTimeout(() => { if (state.relief === 0 && !tween) setTerrain(true); }, 700);
+window.fieldViewer = { state, select, draw, cam, limits, figure: fig, wave, motion };
 requestAnimationFrame(tick);
 })();
 </script>

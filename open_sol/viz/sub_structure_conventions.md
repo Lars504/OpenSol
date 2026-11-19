@@ -121,6 +121,41 @@ Sub file of the root `structure_conventions.md` (read that first). Visualizer an
   (slider, arrows; Record = one turn of the view); maps are drawn unlit so colours match the legend, lit only with
   relief. Colour limits default to all frames for 'time', to the shown frame for 'labelled' (independent states).
   Signed fields: diverging maps, symmetric limits; log scale only for non-negative fields.
+  Waves (the page's `// ---- waves ----` block; both feed the vertex shader's second value `aVal2`, shown value =
+  aVal uMixA + aVal2 uMixB, a constant (0, 1) where a VAO has no aVal2 buffer): phasor pages (`ViewerLayer.quadrature`,
+  all layers or none, signed quantity, never 'time' frames; data 'phasor', frame 'quadrature' on the frame's own codes,
+  whose [lo, hi] is -+ the largest modulus so every phase fits) animate values cos(wt) + quadrature sin(wt): api
+  `_phasor_partner` pairs '<base>_re' with '<base>_im' (sign -1) and '_im' with '_re' (+1), taken from the snapshots
+  beside the field or, live, rendered from kept snapshot solutions (`_snapshot_partners`; every frame on the same
+  samples, else the page stays still: explicit stored_fields often list only the _re part). Play / Speed (Hz, as
+  mode_player) turn wt, the slider steps frames without stopping it, Record = three periods. Time frames open
+  playing and, Smooth on (remembered), blend the next frame in by the playback clock's fraction (the last into the
+  first; not for angles), with `shownFrameRange` blending the per-frame colour limits too (signed time pages open on
+  'This frame'). Signed frames carry 'robust' (`ROBUST_PERCENTILE` of |value|, phasor: moduli): wave pages (phasor,
+  signed time) open the Range at their median ratio to the frame maximum when below 0.9 (min 0.3; never other pages:
+  a still lobe such as a waveguide mode would saturate) and default to the 'seismic' map until a signed map is
+  remembered. A raw session time label 't = <float> s' is shown SI-prefixed.
+  Signed fields: diverging maps, symmetric limits (`DIVERGING`: only when the values cross zero by more than 2 % of
+  the largest magnitude or a mirror image flips the sign; a signed field of one sign is coloured like a magnitude over
+  its own range, and may take the log scale); log scale only for non-negative fields.
+  Scalar look (the page's `// ---- scalars` blocks): `SCALAR_KIND` (temperature / potential / density / other, from
+  the quantity label and unit) picks the opening colour map (each kind remembers the user's choice under its own
+  store key, `cmapStoreKey`) and whether contours start on; densities spanning > 2 decades open on a log scale over
+  the decades the data reach (<= 9, the log codes' span). Colour maps are mirrored in mode_player (CMAPS /
+  CMAP_CHOICES: change both). Contour lines live in the field fragment shader (`vVal` = the value the levels count,
+  log10 on a log scale; levels from `contourLevels`: about CONTOUR_COUNTS over the colour range, every `major`-th
+  bold on the colour bar's default ticks, `c0` a bold level below lo so k stays small in float32; none where the
+  field is flat or the levels crowd): they follow relief and mirror images for free, so a new field program keeps
+  `vVal`. 3D terrain (planar views; `setTerrain` tweens camera and relief together, `scalarsTick` from `tick`; a
+  single stationary state opens flat and rises after 0.7 s unless this browser turned it off, `DATA.view` is
+  set or flow particles are on (one of the two opens: the flow); `resetCamera` of a raised map returns to `terrainPose`): walls are quads under the layers' boundary edges
+  (grid perimeter / triangulation edges used once) with `aDown` = 1 at the bottom (`uBase` below the lowest shown
+  value), edges on a mirror plane left out while the images show. On a raised planar map the outlines (and 2D point /
+  line objects: `decalKind`) are not drawn as lines (they would cut through the relief): `prepareDecal` draws them
+  with the line program through an orthographic matrix into a mipmapped texture over the simulated part, keyed on
+  what they show, and the field shader lays it on the surface at `vSrc` (the unmirrored point, so images reuse it;
+  Contrast colour picked per pixel there). The backdrop gradient is drawn into the GL view (pictures hold it), none
+  with the Plot settings background 'white'. The scale bar has a halo of the opposite tone.
   Quasi-2D (page-side, no Python input): a 2D map or a set of 3D layers in one plane (a single cut) is 'planar': it
   opens face-on as the canvas shows it ((u, v) of `FieldData.axes` right / up), tightly fitted inside the readout /
   legend / axis-label insets, with relief. An axis spanning below 1 / MAX_ASPECT (4) of the largest is stretched by a
@@ -144,8 +179,9 @@ Sub file of the root `structure_conventions.md` (read that first). Visualizer an
   DOM corner grip (`placeGrip` from draw, outside PNG / recordings). Other views keep the camera zoom / pan.
   Scale bar (Plot settings `scale_bar`, default 'on'; on = the axes start off on a planar view, the Axes button brings
   them back; a non-planar 3D view ignores it and keeps its axes: `scaleBarOffered`):
-  drawn only on a planar view seen face-on (one scale on screen); its px per length come from projecting a step along
-  the camera's right axis divided by the stretch, so it is right on a stretched axis; length a 1-2-5 value near a
+  drawn on every planar view, face-on or tilted (relief / terrain, membrane motion's oblique start, turned by hand);
+  its px per length come from projecting a step along the camera's right axis at the map centre divided by the
+  stretch, so it is right on a stretched axis and, tilted, the screen-horizontal scale at the centre's depth; length a 1-2-5 value near a
   fifth of the view (follows the zoom) or `scale_bar_length` (m, remembered per file with the limits); home: the lower
   right corner inside the plot frame.
   Plot settings (field_viewer only; mode_player has none): one object `fig` on the page = the keys of
@@ -198,3 +234,85 @@ Sub file of the root `structure_conventions.md` (read that first). Visualizer an
   `snap_to_mirrors` (api calls it before computing the outlines, so they are the plane's sections); the page then
   skips the image that maps a layer onto itself (`selfImage`: field, mesh lines, outlines), else the coincident,
   for odd fields sign-flipped, copy z-fights.
+  Flow particles (field_viewer only; 2D maps): a layer's `ViewerVectors` (its in-plane vector on its own raster, a
+  triangle layer passes its FieldData raster) with a page `ViewerFlow` label; `viewer_data` resamples them onto a
+  uniform grid over the layer extent (`_uniform_flow`: block means of the finite samples, NaN for cells holding only
+  NaN, nearest source sample where the grid is finer; size by `_flow_shape` within FLOW_MAX_BYTES), int16 per frame
+  over +-its largest magnitude, rows along v (texture rows). `_strided` / `_plane_padded` rebuild layers: they carry
+  `vectors` (a new ViewerLayer construction must too). api `_viewer_flow` picks the vector (`_FLOW_TYPES`: steady
+  flows only, never waves (em, acoustics) or displacements (mechanics); `_FLOW_BASES` /
+  `<base>_abs|_x|_y`, components `<base>_x` or `<base>x`; heat: -grad T scaled to heat_flux_abs when stored) from the
+  same snapshot / state as each frame, else no flow (no error: optional). Mirror images: `ViewerMirror.flow_sign` =
+  image sign of the component along the plane (api from the components' parities): -1 runs that image's particles
+  backwards. Page (`// ---- vectors ----`): stateless pathlines, each particle's latest FLOW_TAIL + 1 path points
+  recomputed from its hashed seed every draw by a transform-feedback pass (so PNG, recordings, frame changes, zoom
+  and mirrors keep no particle state), drawn as one-pass quads (core + halo in the fragment shader: two passes
+  brighten every joint). Speeds normalise by `speed_reference` (a percentile, not the max: a 1/r peak would freeze
+  the rest), clamped to 1; below STILL a particle dies (holes, solids and insulators are zero vectors, not NaN: they
+  would collect crawling dots). Seeds fill the shown window per image (count by area, so zoom and mirrors keep the
+  screen density). Hidden on a raised map (relief; turning Flow on lowers it, not stored as terrain off); `uploadFrame` resets `flowState.frame` so the textures follow.
+  Style 'arrows' (`flowState.style`, remembered with the flow settings; page-side only, same textures): instanced
+  arrows (`ARROW_VS`, shape built in the vertex shader) on a lattice anchored at the layer grid's origin, square on
+  screen (spacing from Density over the stretched view area), direction = the projected data direction (follows the
+  particles on a stretched axis), length = the clamped speed ratio x 0.9 spacing x Arrow length; halo pass (arrows
+  grown by ARROW_HALO px) under the core pass.
+  Deformed shapes (`viewer_data(motion=ViewerMotion)`; api `_viewer_motion`, 2D models of the `_MOTION_FIELDS`
+  physics types: solid_mechanics u_x / u_y, membrane w_re, plus the `_im` parts when every frame holds them and they
+  are not negligible): each layer's `displacement` = one array per channel on the layer's own samples (components
+  'u' / 'v' along its axes, 'n' along its normal; real channels, then imaginary), packed per frame as int16 over
+  [-dmax, dmax] interleaved per sample. A displacement on other samples than the shown field (a P0 raster field
+  over a P1 displacement triangulation: `_samples_like` compares node counts / raster shapes) gives no motion (a
+  subtitle note), never an interpolation. Every array a layer carries must follow the layer through `_strided`,
+  `_plane_padded` (displacement pads: the in-plane component normal to the plane 0, the normal one by
+  `mirror_signs`) and `_hide_void`: a new per-sample array goes through all three. Solids hide their void
+  (`_hide_void`: youngs_modulus <= 0; NaN values + zero displacement and a crop to the solid cells on grids except on
+  mirror faces, whose pads would otherwise bridge the gap; dropped triangles and unused nodes on triangulations), so
+  the page fits the body; skipped when a void grid cell moves (a c_ij-only material has E = 0). Page (`// ----
+  solid2d ----` blocks): the vertex shader adds sum aDisp[c] uDispW[c] uDispDir[c] before the mirror transform (so
+  in-plane images reflect the deformed shape; the normal channel's image sign is `normalSign`); the box and other
+  buffers without aDisp read the generic attribute value set to 0 in setupGL. Magnification: the largest displacement
+  (all frames for 'time', the shown frame otherwise) shows as Deform x DEFORM_FULL of the rest body size; bounds stay
+  the rest shape's (room would change the Stretch), the face-on fit leaves `motionInplaneReach` around the map, and
+  Stretch starts off for in-plane motion (a stretched axis would magnify that displacement too). Oscillating states
+  animate Re[d exp(j theta)] and, for a real mode of a signed field, the colours by uAmp = cos theta; static states'
+  Animate ramps only the shape. Body outlines: boundary edges of frame 0's valued triangles (mirror-plane seams last,
+  skipped while the images show), deformed after the layers and the rest shape before them without depth writes.
+  3D volumes (field_viewer only; page block `// ---- fields3d ----`): `ViewerFrame.volume` (`ViewerVolume`: values
+  (nx, ny, nz), NaN = no value, ascending centres; every frame or none, never for a phase) is packed per frame as a
+  float16 3D texture (x fastest; value = frame `volume_offset` + `volume_scale` * r: linear frames r in [0, 1], log
+  frames r = v / hi, signed r = v / max |v|; a finite-mask channel (RG16F) only when a lattice holds NaN). Lattice:
+  per-axis block means within MAX_VOLUME_BYTES / MAX_VOLUME_SAMPLES / MAX_VOLUME_SIDE, an axis keeps >= 2 samples;
+  graded axes stay graded (`DATA.volume.axes`: their centres; the page maps a box position to a texture coordinate
+  through an R32F axis map read with texelFetch, and rays step by the finest cell), never resampled onto a uniform
+  lattice (a needle on fine cells vanishes). Volumes join the frame colour range. api `_viewer_volumes`: live Results
+  of Cartesian 3D models only (the current state; snapshots from their kept solutions through
+  `Session.restored_snapshot`, GUI runs, at most MAX_VOLUME_FRAMES; headless runs keep none, so their snapshot pages
+  have no volume), reduced at once (`reduced_volume`, element meshes averaged over half the smallest element: their
+  sample lattice is finer than the elements and P0 values speckle isosurfaces). A page with a volume is never
+  PLANAR (its one cut becomes a plane in the volume's box; the box joins hmin / hmax). One ray-march program draws
+  the volume box of every mirror image (front faces culled per image handedness, translucent images back to front):
+  View Cut planes / Slices (one per axis, from the texture) / Isosurface (signed: +-level; capped only at axis-limit
+  cuts, open at the box faces) / Shells / Cloud; levels are fractions of the shown colour scale (`limits()`, log
+  too), start levels from percentiles of the values (`volumeStartLevels`, which may also switch on the log scale or
+  lower Range). Visible cut planes are opaque and end the rays (they span the box); slices and the isosurface write
+  gl_FragDepth, so objects and the box test against them; volume views hide the cut planes (their buttons may hide
+  them all) and open with the objects as glass when solids have materials. Sample density adapts to the frame time
+  (full on PNG / recording / `fieldViewer3d.fullQuality()`). Non-planar 3D views fit the projected box corners into
+  the area the heading, colour bar and labels leave (`fitBoxCorners`) and open with a short eased turn
+  (`introTurn`; reduced-motion respected); mode_player keeps its own fit.
+- field_viewer feature blocks (the page's `// ---- waves / scalars / vectors / solid2d / fields3d ----` blocks and their
+  Python data): each is optional per page and they combine, so
+  - every per-sample array a `ViewerLayer` carries (`quadrature`, `vectors`, `displacement`; `ViewerFrame.volume`)
+    follows the layer through every rebuild: `_strided`, `_plane_padded`, `_mirror_padded_frames`, the plan's frame
+    rebuild in `viewer_data`, api `_hide_void`; `_check_layers` / `_layer_codes` count it. A new array joins all of them.
+  - one page shows one animation clock per thing: api drops the phasor partner when the deformed shape oscillates
+    (`ViewerMotion.oscillate`) or a volume is attached (3D: volume views win), and `viewer_data` refuses a phasor page
+    with volumes; the page's terrain does not open on phasor, motion or volume pages.
+  - the field program's vertex attributes are aPos, aVal, aVal2 (waves), aDown (terrain walls), aDisp (motion): a VAO
+    without one reads the generic value set in setupGL (aVal2 (0, 1), aDisp 0, aDown 0), so a new attribute sets one.
+  - start-up runs top to bottom: a block's top-level code may call shared functions (limits, syncControls,
+    updateReadout) that read another block's state, so state those shared functions read is declared with the page
+    constants near the top (the waves `PHASOR` / `SMOOTH_OK` / `wave`), never inside a later block (a `const` read
+    before its line throws and the page stays blank).
+  - key bindings: V = Flow, Shift+V particles / arrows (2D flow pages) and View cycling (3D volume pages; never on the same page), C contours,
+    R terrain, D deform animation, G objects, M mirror.

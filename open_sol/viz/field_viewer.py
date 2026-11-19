@@ -3,11 +3,16 @@
 `write_field_viewer` packs `ViewerFrame`s (one or more `ViewerLayer`s per frame: a grid of cell-centre samples or a
 triangulation, each a 2D map or a cut plane placed in 3D) into `field_viewer.html`, a single page with no network use
 (hand-written WebGL2, data embedded as base64, values int16-quantised per frame). Frames are time snapshots (the page
-plays them), or labelled states (wavelengths, modes, DFT frequencies: a slider, no playback). `layer_from_field`
+plays them), or labelled states (wavelengths, modes, DFT frequencies: a slider; with phasor partners the page
+animates their phase, Re[A exp(j wt)]). `layer_from_field`
 reads a FieldData duck-typed (viz never imports api or model); api.Results.export_html collects the frames. An
 optional `ViewerGeometry` adds the model objects: their outlines on every layer and, in 3D, their edges and surfaces;
-`ViewerMirror`s let the page draw the mirror images of a half / quarter model (a Mirror button). `figure_settings`
-checks the Plot settings a page opens with (font sizes, colour and axis limits, colour bar and label places).
+`ViewerMirror`s let the page draw the mirror images of a half / quarter model (a Mirror button); a `ViewerMotion`
+with per-layer displacements lets it draw the deformed shape (solids in plane, membranes out of plane) and animate it
+(modes oscillate); a `ViewerVolume` per frame puts the whole 3D field on the page (a float16 3D texture the page
+ray-marches: slices, isosurfaces, shells, a cloud). `figure_settings` checks the Plot settings a page opens with (font
+sizes, colour and axis limits, colour bar and label places). 2D maps whose layers carry `ViewerVectors` (with a
+`ViewerFlow` naming them) get moving flow particles (a Flow button).
 """
 
 import json
@@ -22,7 +27,9 @@ from .mode_player import _b64, length_scale
 TEMPLATE_FILE = 'field_viewer.html'
 DATA_MARKER = '/*__FIELD_DATA__*/null'
 FORMAT = 'open_sol.field_viewer'
-FORMAT_VERSION = 3                    # 2: length_scale, figure (Plot settings); 3: inward directions in line rows
+FORMAT_VERSION = 4                    # 2: length_scale, figure (Plot settings); 3: inward directions in line rows;
+#                                       4: phasor partners (frame 'quadrature', data 'phasor'), flow vectors ('flow'),
+#                                          motion (displacement channels per frame), volume
 FRAME_KINDS = ('time', 'labelled')    # time: snapshots the page can play; labelled: wavelengths, modes, frequencies
 MAX_BYTES = 24_000_000                # quantised values of every frame and layer (the page is ~4/3 of this, base64)
 MAX_FRAMES = 200
@@ -33,6 +40,7 @@ _Q_SPAN = 65534                       # int16 codes -32767 .. 32767 map lo .. hi
 _Q_NAN = -32768
 _Q_LOW = -_Q_SPAN // 2                # lowest value code (log codes: at or below the floor, decoded as the frame's lo)
 LOG_DECADES = 9                       # log codes span hi * 10^-9 .. hi (step ~0.03 % of the value)
+ROBUST_PERCENTILE = 99.5              # frame 'robust' of signed fields (`_robust_magnitude`)
 LOG_CODE_RATIO = 1e-3                 # non-negative frames with lo <= this * hi get log codes (intensities, |E|)
 _AXIS_INDEX = {'x': 0, 'y': 1, 'z': 2}
 _TIME_UNITS = ((1e-15, 'fs'), (1e-12, 'ps'), (1e-9, 'ns'), (1e-6, 'µs'), (1e-3, 'ms'), (1.0, 's'))
@@ -41,6 +49,17 @@ MATERIAL_COLORS = ('#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c56
 NO_MATERIAL_COLOR = '#b0b0b0'
 GLYPH_ARM = 0.012                     # half length of a point object's cross, fraction of the largest layer span
 MAX_GEOMETRY_BYTES = 8_000_000        # packed outline segments and surface triangles (float32)
+FLOW_MAX_BYTES = 6_000_000            # flow vectors of every frame and layer (int16 x, y per sample of a uniform grid)
+FLOW_MAX_SIDE = 320                   # flow grid samples along a layer's longer side (at most; fewer for many frames)
+FLOW_MIN_SIDE = 24
+FLOW_SPEED_PERCENTILE = 95            # magnitude the page's fastest particles move at (above: as fast): a point
+                                      # source's 1/r peak would otherwise leave every other particle standing still
+MAX_VOLUME_BYTES = 16_000_000         # float16 volume samples of every frame (3D fields; the page ~4/3 of this)
+MAX_VOLUME_SAMPLES = 1_100_000        # lattice samples per frame (~103^3: a ray-march stays interactive)
+MIN_VOLUME_SAMPLES = 24_000           # many frames: the lattice is never coarser than this (~29^3)
+MAX_VOLUME_FRAMES = 60                # frames a caller reads volumes for (each one a whole 3D field read)
+MAX_VOLUME_SIDE = 256                 # lattice samples along one axis (WebGL2's guaranteed 3D texture size)
+_UNIFORM_TOLERANCE = 1e-3             # relative spread of the centre steps below which a volume axis is uniform
 _OUTER_FACES = ('x_lo', 'x_hi', 'y_lo', 'y_hi', 'z_lo', 'z_hi')
 # Plot settings of the page (its panel edits the same keys; field_viewer.html FIGURE_CHOICES / FIGURE_RANGES)
 FIGURE_CHOICES = {
@@ -58,6 +77,7 @@ FIGURE_RANGES = {'font_size': (6.0, 40.0), 'title_size': (8.0, 72.0),           
                  'colorbar_length': (0.1, 1.0)}                                  # fraction of the view side
 FIGURE_LIMITS = ('color', 'x', 'y', 'z')   # <name>_min / <name>_max: colour limits (field unit), axis limits (m)
 FIGURE_LENGTHS = ('scale_bar_length',)     # positive lengths (m)
+MOTION_COMPONENTS = ('u', 'v', 'n')        # displacement along a layer's first / second axis and along its normal
 
 
 @dataclass(eq=False)
@@ -73,6 +93,29 @@ class ViewerLayer:
     plane: tuple | None = None
     triangulation: tuple | None = None   # (nodes (n, 2) float, triangles (k, 3) int)
     extent: tuple | None = None
+    vectors: 'ViewerVectors | None' = None   # in-plane vector field of a 2D map (flow particles), its own grid
+    quadrature: np.ndarray | None = None   # phasor partner, shaped as values: the page animates
+    #                                        values cos(wt) + quadrature sin(wt) (`layer_from_field(quadrature=)`)
+    displacement: tuple | None = None    # ViewerMotion.channels arrays shaped like values (m): real, then imaginary
+
+
+@dataclass(eq=False)
+class ViewerVectors:
+    """An in-plane vector field over a 2D map layer, drawn as moving flow particles: x, y (nu, nv) components along the
+    layer's (u, v) axes on the u_centres x v_centres grid (m; None = uniform cells over the layer extent), NaN = no
+    flow there (outside the domain, holes). Its own grid: a triangle-mesh layer passes its FieldData raster."""
+    x: np.ndarray
+    y: np.ndarray
+    u_centres: np.ndarray | None = None
+    v_centres: np.ndarray | None = None
+
+
+@dataclass(eq=False)
+class ViewerFlow:
+    """What the flow particles of a page follow (label, unit of the vectors' magnitude): every layer of every frame
+    then carries ViewerVectors."""
+    label: str
+    unit: str = ''
 
 
 @dataclass(eq=False)
@@ -89,11 +132,21 @@ class ViewerGeometry:
 
 
 @dataclass(eq=False)
+class ViewerVolume:
+    """A 3D field on a lattice of cell centres (m): values (nx, ny, nz), NaN = no value (outside an element mesh);
+    the page ray-marches it (isosurfaces, nested shells, a glowing cloud, movable slices)."""
+    values: np.ndarray
+    centres: tuple                       # (x, y, z) 1D arrays [m], ascending
+
+
+@dataclass(eq=False)
 class ViewerFrame:
-    """One state: its layers (the same surfaces in every frame) and its readout label."""
+    """One state: its layers (the same surfaces in every frame) and its readout label; volume: the whole 3D field
+    of that state (ViewerVolume, every frame or none)."""
     layers: list
     label: str = ''
     time: float | None = None
+    volume: 'ViewerVolume | None' = None
 
 
 @dataclass(eq=False)
@@ -105,12 +158,33 @@ class ViewerQuantity:
 
 
 @dataclass(eq=False)
+class ViewerMotion:
+    """Displacement the page deforms every layer by (each layer's `displacement`: one array per channel, the
+    components in order, then their imaginary parts when complex). components: an ordered subset of
+    MOTION_COMPONENTS ('u', 'v' in plane: solids; 'n' along the layer normal: membranes); oscillate: modes and
+    harmonic states (the page animates Re[d exp(j theta)], and signed colours with cos theta when real), else a
+    static state (its Animate button ramps the load 0 -> 1); mirror_signs {face: +1 | -1}: sign of the normal
+    displacement in that face's image (in-plane parts follow the reflection itself; missing faces +1); physical:
+    False for eigenmodes (an arbitrary amplitude: the page names no magnification)."""
+    components: tuple
+    complex: bool = False
+    oscillate: bool = False
+    mirror_signs: dict = field(default_factory=dict)
+    physical: bool = True
+
+    @property
+    def channels(self) -> int:
+        return len(self.components) * (2 if self.complex else 1)
+
+
+@dataclass(eq=False)
 class ViewerMirror:
     """A mirror plane of the model the page can unfold across: face 'x_lo' ... 'z_hi', position (m) of the plane on
     its axis, value_sign of the field's image (+1 even, -1 odd: negated, a phase shifted by pi)."""
     face: str
     position: float
     value_sign: int = 1
+    flow_sign: int = 1                   # flow particles of the image: +1 the reflected paths, -1 those run backwards
 
 
 def _centres(centres, low, high, count):
@@ -120,33 +194,52 @@ def _centres(centres, low, high, count):
     return low + (np.arange(count) + 0.5) * (high - low) / count
 
 
-def layer_from_field(field_data) -> ViewerLayer:
+def layer_from_field(field_data, quadrature=None, quadrature_sign=1.0) -> ViewerLayer:
     """ViewerLayer of a FieldData (duck-typed): its display triangulation when it has one, else its window cells
-    (uniform over extent when x_centers / y_centers are None); a 3D cut keeps its plane and in-plane axes."""
+    (uniform over extent when x_centers / y_centers are None); a 3D cut keeps its plane and in-plane axes.
+    quadrature: the FieldData of the phasor partner on the same samples (the Im part of a Re field: sign -1, the Re
+    part of an Im field: sign +1, so the page animates Re / Im[(re + j im) exp(j wt)]); ValueError when its samples
+    differ."""
     axes = tuple(getattr(field_data, 'axes', ('x', 'y')))
     plane = getattr(field_data, 'plane', None)
     plane = None if plane is None else (str(plane[0]), float(plane[1]))
     triangulation = getattr(field_data, 'triangulation', None)
     if triangulation is not None:
         nodes, triangles, node_values = triangulation
-        nodes, triangles, node_values = _clipped_triangulation(
-            np.asarray(nodes, dtype=np.float64).reshape(-1, 2), np.asarray(triangles).reshape(-1, 3),
-            np.asarray(node_values, dtype=np.float64).reshape(-1), field_data.extent)
-        return ViewerLayer(values=node_values, axes=axes, plane=plane, triangulation=(nodes, triangles),
-                           extent=tuple(float(edge) for edge in field_data.extent))
+        nodes = np.asarray(nodes, dtype=np.float64).reshape(-1, 2)
+        triangles = np.asarray(triangles).reshape(-1, 3)
+        partner = None
+        if quadrature is not None:
+            other = getattr(quadrature, 'triangulation', None)
+            if other is None or np.shape(other[0]) != np.shape(triangulation[0]):
+                raise ValueError(f'phasor partner {quadrature.component!r} is not on the display triangulation of '
+                                 f'{field_data.component!r}')
+            partner = quadrature_sign * np.asarray(other[2], dtype=np.float64).reshape(-1)
+        nodes, triangles, used = _clipped_triangulation(nodes, triangles, field_data.extent)
+        return ViewerLayer(values=np.asarray(node_values, dtype=np.float64).reshape(-1)[used], axes=axes,
+                           plane=plane, triangulation=(nodes, triangles),
+                           extent=tuple(float(edge) for edge in field_data.extent),
+                           quadrature=None if partner is None else partner[used])
     values = np.asarray(field_data.values, dtype=np.float64)
     if values.ndim != 2 or min(values.shape) < 2:
         raise ValueError(f'field {field_data.physics}.{field_data.component}: a map needs at least 2 x 2 samples, '
                          f'got shape {values.shape} (a 1D field is a curve: export a figure)')
+    partner = None
+    if quadrature is not None:
+        partner = quadrature_sign * np.asarray(quadrature.values, dtype=np.float64)
+        if partner.shape != values.shape or getattr(quadrature, 'triangulation', None) is not None:
+            raise ValueError(f'phasor partner {quadrature.component!r} has samples {partner.shape}, '
+                             f'{field_data.component!r} {values.shape}')
     u0, u1, v0, v1 = (float(edge) for edge in field_data.extent)
     return ViewerLayer(values=values, axes=axes, plane=plane, extent=(u0, u1, v0, v1),
                        u_centres=_centres(field_data.x_centers, u0, u1, values.shape[0]),
-                       v_centres=_centres(field_data.y_centers, v0, v1, values.shape[1]))
+                       v_centres=_centres(field_data.y_centers, v0, v1, values.shape[1]), quadrature=partner)
 
 
-def _clipped_triangulation(nodes, triangles, node_values, extent):
-    """The triangles whose centroid lies inside extent (u0, u1, v0, v1): the window, without the absorbing ring
-    the display triangulation also covers (as visualization._draw_triangles clips it); unused nodes dropped."""
+def _clipped_triangulation(nodes, triangles, extent):
+    """(nodes, triangles, used node indices) of the triangles whose centroid lies inside extent (u0, u1, v0, v1):
+    the window, without the absorbing ring the display triangulation also covers (as visualization._draw_triangles
+    clips it); unused nodes dropped (node values: values[used])."""
     u0, u1, v0, v1 = (float(edge) for edge in extent)
     centroids = nodes[triangles].mean(axis=1)
     inside = ((centroids[:, 0] >= u0) & (centroids[:, 0] <= u1) & (centroids[:, 1] >= v0)
@@ -157,7 +250,7 @@ def _clipped_triangulation(nodes, triangles, node_values, extent):
     used = np.unique(triangles)
     renumber = np.full(len(nodes), -1, dtype=np.int64)
     renumber[used] = np.arange(used.size)
-    return nodes[used], renumber[triangles], node_values[used]
+    return nodes[used], renumber[triangles], used
 
 
 def time_label(seconds) -> str:
@@ -181,12 +274,15 @@ def _check_layers(frames):
             raise ValueError(f'frame {index} has {len(frame.layers)} layers, frame 0 has {len(first)}')
         for layer, reference in zip(frame.layers, first):
             same = ((layer.triangulation is None) == (reference.triangulation is None)
+                    and (layer.vectors is None) == (reference.vectors is None)
+                    and (layer.quadrature is None) == (reference.quadrature is None)
                     and layer.plane == reference.plane and tuple(layer.axes) == tuple(reference.axes)
-                    and np.shape(layer.values) == np.shape(reference.values))
+                    and np.shape(layer.values) == np.shape(reference.values)
+                    and (layer.displacement is None) == (reference.displacement is None))
             if not same:
-                raise ValueError(f'frame {index}: a layer differs from frame 0 (kind, plane, axes or sample count '
-                                 f'{np.shape(layer.values)} vs {np.shape(reference.values)}): one page shows one set '
-                                 'of surfaces')
+                raise ValueError(f'frame {index}: a layer differs from frame 0 (kind, phasor partner, plane, axes, '
+                                 f'displacement or sample count {np.shape(layer.values)} vs '
+                                 f'{np.shape(reference.values)}): one page shows one set of surfaces')
 
 
 def _stride(layers, n_frames, max_bytes):
@@ -199,7 +295,7 @@ def _stride(layers, n_frames, max_bytes):
     for stride in range(1, MAX_STRIDE + 1):
         if any(_layer_samples(layer, stride) > MAX_LAYER_CELLS for layer in grids):
             continue
-        if 2 * sum(_layer_samples(layer, stride) for layer in layers) * n_frames <= max_bytes:
+        if 2 * sum(_layer_codes(layer, stride) for layer in layers) * n_frames <= max_bytes:
             return stride
         if max(_layer_samples(layer, stride + 1) for layer in grids) < MIN_LAYER_CELLS:
             return stride
@@ -209,11 +305,21 @@ def _stride(layers, n_frames, max_bytes):
     return MAX_STRIDE
 
 
+def _codes(layer):
+    """int16 codes per sample of a layer: its value plus one per displacement channel."""
+    return 1 + (0 if layer.displacement is None else len(layer.displacement))
+
+
 def _layer_samples(layer, stride):
     if layer.triangulation is not None:
         return int(np.size(layer.values))
     nu, nv = np.shape(layer.values)
     return (-(-nu // stride)) * (-(-nv // stride))
+
+
+def _layer_codes(layer, stride):
+    """int16 codes a layer packs per frame: per sample its value, the phasor partner and each displacement channel."""
+    return _layer_samples(layer, stride) * (_codes(layer) + (0 if layer.quadrature is None else 1))
 
 
 def _block_mean(values, stride, axes):
@@ -244,10 +350,14 @@ def _strided(layer, stride):
     = block mean centres); triangulations unchanged."""
     if layer.triangulation is not None or stride == 1:
         return layer
+    displacement = (None if layer.displacement is None
+                    else tuple(_block_mean(channel, stride, (0, 1)) for channel in layer.displacement))
     return ViewerLayer(values=_block_mean(layer.values, stride, (0, 1)),
                        u_centres=_block_mean(layer.u_centres, stride, (0,)),
                        v_centres=_block_mean(layer.v_centres, stride, (0,)), axes=layer.axes, plane=layer.plane,
-                       extent=layer.extent)
+                       extent=layer.extent, vectors=layer.vectors,
+                       quadrature=None if layer.quadrature is None else _block_mean(layer.quadrature, stride, (0, 1)),
+                       displacement=displacement)
 
 
 def _log_floor(low, high):
@@ -364,7 +474,7 @@ def plan_frames(layers, n_frames, max_bytes=MAX_BYTES, max_frames=MAX_FRAMES) ->
         raise ValueError(f'the display triangulation needs {geometry} bytes, above max_bytes {max_bytes}')
     keep = min(n_frames, max_frames)
     stride = _stride(layers, keep, max_bytes)
-    per_frame = 2 * sum(_layer_samples(layer, stride) for layer in layers)
+    per_frame = 2 * sum(_layer_codes(layer, stride) for layer in layers)
     if per_frame > max_bytes:
         raise ValueError(f'one frame needs {per_frame} bytes at stride {stride}, above max_bytes {max_bytes}: export '
                          'a coarser field')
@@ -630,25 +740,42 @@ def _plane_pads(layer, mirrors, tolerance):
         end = centres[0] if side == 'lo' else centres[-1]
         edge = extent[2 * index + (side == 'hi')]
         if abs(edge - mirror.position) <= tolerance < abs(end - mirror.position):
-            pads.append((index, side, float(mirror.position), int(mirror.value_sign)))
+            pads.append((index, side, float(mirror.position), int(mirror.value_sign), mirror.face))
     return pads
 
 
-def _plane_padded(layer, pads, phase):
+def _padded_row(values, index, side, even):
+    """values with the row next to its side of axis index repeated (even) or zeroed (odd; NaN kept) on that side."""
+    nearest = np.take(values, [0 if side == 'lo' else -1], axis=index)
+    row = nearest if even else np.where(np.isfinite(nearest), 0.0, np.nan)
+    return np.concatenate((row, values) if side == 'lo' else (values, row), axis=index)
+
+
+def _plane_padded(layer, pads, phase, motion=None):
     """Grid layer with a sample row on each padded mirror plane (even image: the nearest row, odd: 0, a phase keeps
-    the nearest), so the map and its mirror image meet without a one-cell gap."""
+    the nearest), so the map and its mirror image meet without a one-cell gap; displacement rows likewise (the
+    in-plane component normal to the plane 0, the tangential one repeated, the normal one by the motion's sign)."""
     values = np.asarray(layer.values, dtype=np.float64)
+    quadrature = None if layer.quadrature is None else np.asarray(layer.quadrature, dtype=np.float64)
     centres = [np.asarray(layer.u_centres, dtype=np.float64), np.asarray(layer.v_centres, dtype=np.float64)]
-    for index, side, position, sign in pads:
-        nearest = np.take(values, [0 if side == 'lo' else -1], axis=index)
-        row = nearest if sign > 0 or phase else np.where(np.isfinite(nearest), 0.0, np.nan)
-        values = np.concatenate((row, values) if side == 'lo' else (values, row), axis=index)
+    channels = None if layer.displacement is None else [np.asarray(c, dtype=np.float64) for c in layer.displacement]
+    names = () if motion is None else motion.components * (2 if motion.complex else 1)
+    for index, side, position, sign, face in pads:
+        values = _padded_row(values, index, side, sign > 0 or phase)
+        if quadrature is not None:   # the partner has the same parity
+            quadrature = _padded_row(quadrature, index, side, sign > 0 or phase)
         centres[index] = np.concatenate(([position], centres[index]) if side == 'lo' else (centres[index], [position]))
+        if channels is not None:
+            for k, name in enumerate(names):
+                even = (motion.mirror_signs.get(face, 1) > 0 if name == 'n'
+                        else MOTION_COMPONENTS.index(name) != index)
+                channels[k] = _padded_row(channels[k], index, side, even)
     return ViewerLayer(values=values, u_centres=centres[0], v_centres=centres[1], axes=layer.axes, plane=layer.plane,
-                       extent=layer.extent)
+                       extent=layer.extent, vectors=layer.vectors, quadrature=quadrature,
+                       displacement=None if channels is None else tuple(channels))
 
 
-def _mirror_padded_frames(frames, mirrors, phase):
+def _mirror_padded_frames(frames, mirrors, phase, motion=None):
     """frames with their grid layers padded onto the mirror planes (pads decided on frame 0, the same surfaces in
     every frame)."""
     if not mirrors:
@@ -657,8 +784,9 @@ def _mirror_padded_frames(frames, mirrors, phase):
     pads = [_plane_pads(layer, mirrors, tolerance) for layer in frames[0].layers]
     if not any(pads):
         return frames
-    return [ViewerFrame([_plane_padded(layer, pad, phase) if pad else layer for layer, pad in zip(frame.layers, pads)],
-                        frame.label, frame.time) for frame in frames]
+    return [ViewerFrame([_plane_padded(layer, pad, phase, motion) if pad else layer
+                         for layer, pad in zip(frame.layers, pads)],
+                        frame.label, frame.time, frame.volume) for frame in frames]
 
 
 def _mirror_data(mirrors, scale):
@@ -671,9 +799,258 @@ def _mirror_data(mirrors, scale):
     for mirror in mirrors:
         if mirror.face not in _OUTER_FACES or int(mirror.value_sign) not in (1, -1):
             raise ValueError(f'mirror {mirror.face!r} sign {mirror.value_sign!r}: faces {_OUTER_FACES}, signs +1 / -1')
+        if int(mirror.flow_sign) not in (1, -1):
+            raise ValueError(f'mirror {mirror.face!r} flow_sign {mirror.flow_sign!r}: +1 / -1')
         data.append({'face': mirror.face, 'axis': mirror.face[0], 'position': float(mirror.position) / scale,
-                     'sign': int(mirror.value_sign)})
+                     'sign': int(mirror.value_sign), 'flow_sign': int(mirror.flow_sign)})
     return data
+
+
+# ---- flow particles (in-plane vectors of 2D maps) ----
+def _flow_shape(extent, n_frames, n_layers, source_shape):
+    """(gu, gv) samples of a layer's uniform flow grid: FLOW_MAX_SIDE along the longer side of extent, fewer when every
+    frame and layer would pass FLOW_MAX_BYTES (int16 x, y), never finer than the source raster, at least
+    FLOW_MIN_SIDE."""
+    u0, u1, v0, v1 = extent
+    width, height = u1 - u0, v1 - v0
+    if not (width > 0 and height > 0):
+        raise ValueError(f'flow vectors need a layer extent with area, got {extent}')
+    ratio = min(width, height) / max(width, height)
+    budget = math.sqrt(FLOW_MAX_BYTES / (4.0 * n_frames * n_layers * ratio))
+    side = int(max(FLOW_MIN_SIDE, min(FLOW_MAX_SIDE, max(source_shape), budget)))
+    short = max(2, int(round(side * ratio)))
+    return (side, short) if width >= height else (short, side)
+
+
+def _uniform_flow(vectors, extent, shape):
+    """float64 (gu, gv, 2) of ViewerVectors on a uniform grid of shape over extent (m): the mean of the finite source
+    samples whose centres fall in each cell, NaN for a cell holding only NaN samples, the source sample nearest to
+    the centre for a cell holding none (a grid finer than the source there)."""
+    u0, u1, v0, v1 = extent
+    gu, gv = shape
+    x = np.asarray(vectors.x, dtype=np.float64)
+    y = np.asarray(vectors.y, dtype=np.float64)
+    if x.ndim != 2 or x.shape != y.shape or min(x.shape) < 2:
+        raise ValueError(f'flow vectors need two (nu, nv) component arrays of at least 2 x 2, got {x.shape} / '
+                         f'{y.shape}')
+    nu, nv = x.shape
+    centres = []
+    for given, low, high, count in ((vectors.u_centres, u0, u1, nu), (vectors.v_centres, v0, v1, nv)):
+        axis = _centres(given, low, high, count)
+        if len(axis) != count:
+            raise ValueError(f'flow vector centres ({len(axis)}) do not match the component arrays ({count})')
+        if np.any(np.diff(axis) <= 0):
+            raise ValueError('flow vector centres must ascend')
+        centres.append(axis)
+    cells = [np.clip(np.floor((axis - low) / (high - low) * count).astype(np.int64), 0, count - 1)
+             for axis, low, high, count in ((centres[0], u0, u1, gu), (centres[1], v0, v1, gv))]
+    index = (cells[0][:, None] * gv + cells[1][None, :]).reshape(-1)
+    finite = (np.isfinite(x) & np.isfinite(y)).reshape(-1)
+    size = gu * gv
+    held = np.bincount(index, minlength=size)
+    count = np.bincount(index[finite], minlength=size)
+    out = np.full((size, 2), np.nan)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        for component, values in enumerate((x, y)):
+            out[:, component] = np.bincount(index[finite], weights=values.reshape(-1)[finite], minlength=size) / count
+    empty = held == 0
+    if np.any(empty):
+        nearest = []
+        for axis, low, high, cells_along in ((centres[0], u0, u1, gu), (centres[1], v0, v1, gv)):
+            target = low + (np.arange(cells_along) + 0.5) * (high - low) / cells_along
+            right = np.clip(np.searchsorted(axis, target), 1, len(axis) - 1)
+            nearest.append(np.where(target - axis[right - 1] <= axis[right] - target, right - 1, right))
+        source = (nearest[0][:, None] * nv + nearest[1][None, :]).reshape(-1)[empty]
+        out[empty, 0] = x.reshape(-1)[source]
+        out[empty, 1] = y.reshape(-1)[source]
+        out[empty & ~np.isfinite(out).all(axis=1)] = np.nan
+    return out.reshape(gu, gv, 2)
+
+
+def _flow_data(frames, flow, scale):
+    """(page JSON of the flow, per frame {'flow': [b64 per layer], 'flow_max': float}) of the layers' ViewerVectors:
+    each layer's vectors on a uniform grid over its extent (`_uniform_flow`), int16 codes of x, y over +-the frame's
+    largest magnitude (-32768 = no flow), interleaved and stored row by row along v (texture rows); the page's
+    speed_reference = the FLOW_SPEED_PERCENTILE of the non-zero magnitudes (all frames); None, [] without."""
+    first = frames[0].layers
+    if all(layer.vectors is None for layer in first):
+        if flow is not None:
+            raise ValueError('flow= names the vectors of the layers, but no layer carries ViewerVectors')
+        return None, [{} for _ in frames]
+    if flow is None:
+        raise ValueError('layers carry ViewerVectors: pass flow=ViewerFlow(label, unit) naming them')
+    if any(layer.vectors is None or layer.plane is not None for layer in first):
+        raise ValueError('flow vectors need every layer to be a 2D map (plane None) carrying ViewerVectors')
+    extents = [_layer_extent(layer) for layer in first]
+    shapes = [_flow_shape(extent, len(frames), len(first), np.shape(layer.vectors.x))
+              for extent, layer in zip(extents, first)]
+    packed, peak, magnitudes_seen = [], 0.0, []
+    for frame in frames:
+        grids = [_uniform_flow(layer.vectors, extent, shape)
+                 for layer, extent, shape in zip(frame.layers, extents, shapes)]
+        magnitudes = [np.hypot(grid[..., 0], grid[..., 1]) for grid in grids]
+        frame_max = max((float(np.nanmax(m)) for m in magnitudes if np.isfinite(m).any()), default=0.0)
+        peak = max(peak, frame_max)
+        magnitudes_seen += [m[np.isfinite(m) & (m > 0)] for m in magnitudes]
+        codes = []
+        for grid in grids:
+            finite = np.isfinite(grid).all(axis=2)
+            q = np.zeros(grid.shape)
+            if frame_max > 0:
+                q = np.clip(np.round(np.where(finite[..., None], grid, 0.0) / frame_max * 32767), -32767, 32767)
+            q = q.astype('<i2')
+            q[~finite] = _Q_NAN
+            codes.append(_b64(np.ascontiguousarray(q.transpose(1, 0, 2))))   # (gv, gu, 2): texture rows along u
+        packed.append({'flow': codes, 'flow_max': frame_max})
+    if not peak > 0:
+        raise ValueError(f'the flow vectors ({flow.label}) are zero or have no finite value in every frame')
+    moving = np.concatenate(magnitudes_seen)
+    page = {'label': flow.label, 'unit': flow.unit, 'max': peak,
+            'speed_reference': float(np.percentile(moving, FLOW_SPEED_PERCENTILE)) if moving.size else peak,
+            'layers': [{'nu': int(gu), 'nv': int(gv), 'extent': [float(edge) / scale for edge in extent]}
+                       for (gu, gv), extent in zip(shapes, extents)]}
+    return page, packed
+
+
+# ---- motion (deformed shapes) ----
+def _check_motion(frames, motion):
+    """ValueError unless every layer of every frame holds motion.channels displacement arrays shaped like its values
+    (no motion: no layer holds any) and the motion's components and mirror signs are valid."""
+    if motion is None:
+        if any(layer.displacement is not None for frame in frames for layer in frame.layers):
+            raise ValueError('layers carry displacements but no ViewerMotion says what they are')
+        return
+    components = tuple(motion.components)
+    if not components or len(set(components)) != len(components) or any(
+            name not in MOTION_COMPONENTS for name in components) or list(components) != sorted(
+            components, key=MOTION_COMPONENTS.index):
+        raise ValueError(f'motion components {components!r}: an ordered subset of {MOTION_COMPONENTS}')
+    for face, sign in motion.mirror_signs.items():
+        if face not in _OUTER_FACES or int(sign) not in (1, -1):
+            raise ValueError(f'motion mirror sign {face!r}: {sign!r}: faces {_OUTER_FACES}, signs +1 / -1')
+    for index, frame in enumerate(frames):
+        for layer in frame.layers:
+            channels = layer.displacement
+            if channels is None or len(channels) != motion.channels:
+                raise ValueError(f'frame {index}: a layer holds {0 if channels is None else len(channels)} '
+                                 f'displacement channels, the motion {components} (complex {motion.complex}) needs '
+                                 f'{motion.channels}')
+            for channel in channels:
+                if np.shape(channel) != np.shape(layer.values):
+                    raise ValueError(f'frame {index}: displacement shape {np.shape(channel)} differs from the values '
+                                     f'{np.shape(layer.values)}')
+
+
+def _displacement_codes(layers, scale):
+    """(largest |displacement| over the layers' channels in length units, per layer base64 int16 codes of the
+    channels interleaved per sample over [-max, max]; NaN -> 0)."""
+    largest = 0.0
+    for layer in layers:
+        for channel in layer.displacement:
+            channel = np.asarray(channel, dtype=np.float64)
+            finite = channel[np.isfinite(channel)]
+            if finite.size:
+                largest = max(largest, float(np.abs(finite).max()))
+    largest /= scale
+    codes = []
+    for layer in layers:
+        stacked = np.stack([np.asarray(channel, dtype=np.float64).reshape(-1) / scale
+                            for channel in layer.displacement], axis=1)
+        stacked = np.where(np.isfinite(stacked), stacked, 0.0)
+        scaled = stacked / largest if largest > 0 else np.zeros_like(stacked)
+        codes.append(_b64(np.round(np.clip(scaled, -1.0, 1.0) * 32767).astype('<i2')))
+    return largest, codes
+
+
+# ---- 3D volumes (ray-marched by the page) ----
+def _volume_strides(shape, n_frames, max_bytes):
+    """Per-axis lattice strides of a volume: one block size, the smallest keeping one frame within
+    MAX_VOLUME_SAMPLES (and MAX_VOLUME_SIDE per axis) and all frames within max_bytes (float16), never coarser than
+    MIN_VOLUME_SAMPLES allows; an axis keeps at least 2 samples (a thin slab is not averaged away)."""
+    target = min(MAX_VOLUME_SAMPLES, max(MIN_VOLUME_SAMPLES, max_bytes // (2 * max(n_frames, 1))))
+
+    def strides(block):
+        return tuple(min(block, max(1, size // 2)) for size in shape)
+
+    def counts(block):
+        return [-(-size // stride) for size, stride in zip(shape, strides(block))]
+
+    block = 1
+    while (math.prod(counts(block)) > target or max(counts(block)) > MAX_VOLUME_SIDE) and block < max(shape):
+        block += 1
+    return strides(block)
+
+
+def _axis_block_means(values, centres, strides):
+    """values and centres averaged in blocks of strides[axis] samples along each axis (NaN-aware)."""
+    centres = list(centres)
+    for axis, stride in enumerate(strides):
+        if stride > 1:
+            values = _block_mean(values, stride, (axis,))
+            centres[axis] = _block_mean(np.asarray(centres[axis], dtype=np.float64), stride, (0,))
+    return values, centres
+
+
+def reduced_volume(volume, n_frames, min_step=None) -> ViewerVolume:
+    """volume averaged in the blocks a page of n_frames volumes takes (the strides viewer_data would choose), so a
+    caller collecting many frames holds small float32 lattices, not full fields; unchanged when it already fits.
+    min_step (m): blocks at least this long along each axis (an element mesh sampled on a finer lattice: its
+    piecewise values would give stair-stepped, speckled isosurfaces; block means over the element size do not)."""
+    values = np.asarray(volume.values)
+    strides = _volume_strides(values.shape, min(n_frames, MAX_FRAMES), MAX_VOLUME_BYTES)
+    if min_step is not None:
+        steps = [float(np.min(np.diff(np.asarray(axis, dtype=np.float64)))) for axis in volume.centres]
+        strides = tuple(max(stride, min(int(min_step // step), size // 2))
+                        for stride, step, size in zip(strides, steps, values.shape))
+    if max(strides) == 1:
+        return volume
+    reduced, centres = _axis_block_means(values, volume.centres, strides)
+    return ViewerVolume(values=reduced.astype(np.float32), centres=tuple(centres))
+
+
+def _volume_lattice(volume, strides):
+    """(values (mx, my, mz) float64, centres [3 ascending arrays]) of a ViewerVolume after per-axis block means (no
+    aliasing of oscillating fields). Graded axes stay graded: the page maps a position to the texture through the
+    centres (`_graded_axes`), so a thin part on fine cells (a needle) keeps its resolution."""
+    values = np.asarray(volume.values, dtype=np.float64)
+    if values.ndim != 3 or min(values.shape) < 2:
+        raise ValueError(f'a viewer volume needs at least 2 x 2 x 2 samples, got shape {values.shape}')
+    centres = [np.asarray(axis, dtype=np.float64).reshape(-1) for axis in volume.centres]
+    if len(centres) != 3 or any(len(axis) != size for axis, size in zip(centres, values.shape)):
+        raise ValueError(f'volume centres {[len(axis) for axis in centres]} do not match its values {values.shape}')
+    if any(np.any(np.diff(axis) <= 0) for axis in centres):
+        raise ValueError('volume centres must be strictly ascending along every axis')
+    return _axis_block_means(values, centres, strides)
+
+
+def _graded_axes(centres, scale):
+    """Per axis None (uniform centres) or the base64 float32 centres in length units (a graded axis)."""
+    graded = []
+    for axis in centres:
+        steps = np.diff(axis)
+        uniform = float(np.ptp(steps)) <= _UNIFORM_TOLERANCE * float(steps.mean())
+        graded.append(None if uniform else _b64((axis / scale).astype('<f4')))
+    return graded
+
+
+def _volume_code_frame(low, high, log_low, signed):
+    """(offset, scale) of a frame's volume samples: the page reads value = offset + scale * r from the float16 r.
+    Linear frames r = (v - lo) / (hi - lo) in [0, 1]; log-coded frames r = v / hi (relative precision down to the
+    floor of the log scale); signed fields r = v / max |v| in [-1, 1]."""
+    if signed:
+        return 0.0, max(abs(low), abs(high)) or 1.0
+    if log_low is not None:
+        return 0.0, high or 1.0
+    return low, (high - low) or 1.0
+
+
+def _volume_bytes(values, offset, scale, masked):
+    """base64 float16 texels in texture order (x fastest, then y, then z): r, or (r, finite) pairs when masked."""
+    finite = np.isfinite(values)
+    codes = np.where(finite, (values - offset) / scale, 0.0).transpose(2, 1, 0)
+    if masked:
+        codes = np.stack([codes, finite.transpose(2, 1, 0).astype(np.float64)], axis=-1)
+    return _b64(codes.astype('<f2'))
 
 
 def figure_settings(figure) -> dict:
@@ -713,49 +1090,101 @@ def figure_settings(figure) -> dict:
 
 
 def viewer_data(frames, quantity, title='', subtitle='', frame_kind='labelled', view=None, plan=None,
-                max_bytes=MAX_BYTES, max_frames=MAX_FRAMES, geometry=None, mirrors=None, figure=None):
+                max_bytes=MAX_BYTES, max_frames=MAX_FRAMES, geometry=None, mirrors=None, figure=None, flow=None,
+                motion=None):
     """The JSON-able dict the page reads. frames [ViewerFrame] (one surface set throughout), quantity ViewerQuantity,
     frame_kind 'time' | 'labelled', view (azimuth, elevation) degrees or None, geometry ViewerGeometry or None,
     mirrors [ViewerMirror] the planes the page can unfold across (a Mirror button; grid layers ending on one get a
     sample row on it). plan None: frames are thinned and grid layers strided here (plan_frames over max_bytes /
     max_frames); a plan: frames already follow it (picked and strided by the caller). The subtitle names any
     thinning or stride. figure: the page's Plot settings (`figure_settings` keys) it opens with, over the ones the
-    browser remembers."""
+    browser remembers. flow: ViewerFlow naming the ViewerVectors every layer carries (2D maps only; flow particles,
+    their mirror images follow ViewerMirror.flow_sign), None without vectors. Layers with a phasor partner (`ViewerLayer.quadrature`, all or none; a signed quantity,
+    labelled frames): the page animates values cos(wt) + quadrature sin(wt), each frame quantised over -+ its largest
+    modulus. motion: ViewerMotion of the layers' displacements (deformed shape, animation), None = none. Frame volumes (every frame or none; not for a phase or
+    a phasor page) go on one uniform lattice within MAX_VOLUME_BYTES (block means; graded axes keep their centres) and
+    join the frame's colour range."""
     if not frames:
         raise ValueError('nothing to show: no field frames')
     if frame_kind not in FRAME_KINDS:
         raise ValueError(f'frame_kind {frame_kind!r} is not one of {FRAME_KINDS}')
     figure = figure_settings(figure)
     _check_layers(frames)
+    _check_motion(frames, motion)
+    volumes = [frame.volume for frame in frames]
+    if any(volume is not None for volume in volumes) and any(volume is None for volume in volumes):
+        raise ValueError('every frame needs a volume, or none does')
     if plan is None:
         plan = plan_frames(frames[0].layers, len(frames), max_bytes, max_frames)
         frames = [ViewerFrame([_strided(layer, plan.stride) for layer in frames[index].layers], frames[index].label,
-                              frames[index].time) for index in plan.indices]
+                              frames[index].time, frames[index].volume) for index in plan.indices]
     elif len(frames) != len(plan.indices):
         raise ValueError(f'{len(frames)} frames for a plan of {len(plan.indices)}')
     mirrors = list(mirrors or [])
-    frames = _mirror_padded_frames(frames, mirrors, bool(quantity.phase))
+    frames = _mirror_padded_frames(frames, mirrors, bool(quantity.phase), motion)
     first = frames[0].layers
     span = max(_layer_span(layer) for layer in first)
     if geometry is not None and geometry.box is not None:
         span = max(span, *(float(size) for size in geometry.box))
     scale, unit = length_scale(span or 1.0)
+    flow_page, flow_frames = _flow_data(frames, flow, scale)
+    phasor = _phasor_frames(frames, quantity, frame_kind)
+    lattices, volume_entry = [None] * len(frames), None
+    if frames[0].volume is not None:
+        if phasor:
+            raise ValueError('a phasor page has no volume view (its planes animate the phase): pass frames without '
+                             'volume or without quadrature')
+        if quantity.phase:
+            raise ValueError('a phase field has no volume view (its values wrap at +-pi): pass frames without volume')
+        shape = np.shape(frames[0].volume.values)
+        if any(np.shape(frame.volume.values) != shape for frame in frames):
+            raise ValueError('the frame volumes differ in shape: one page shows one lattice')
+        strides = _volume_strides(shape, len(frames), MAX_VOLUME_BYTES)
+        lattices = [_volume_lattice(frame.volume, strides) for frame in frames]
+        values0, centres0 = lattices[0]
+        if any(not all(np.allclose(axis, axis0, rtol=1e-9, atol=0.0) for axis, axis0 in zip(centres, centres0))
+               for _, centres in lattices[1:]):
+            raise ValueError('the frame volumes lie on different lattices: one page shows one lattice')
+        masked = any(not np.all(np.isfinite(values)) for values, _ in lattices)
+        volume_entry = {'n': [int(size) for size in values0.shape],
+                        'lo': [float(axis[0]) / scale for axis in centres0],
+                        'hi': [float(axis[-1]) / scale for axis in centres0],
+                        'axes': _graded_axes(centres0, scale), 'masked': bool(masked),
+                        'strides': [int(stride) for stride in strides]}
     packed, ranges = [], []
-    for frame in frames:
-        frame_range = _finite_range(layer.values for layer in frame.layers)
+    for frame, flow_frame, lattice in zip(frames, flow_frames, lattices):
+        frame_range = (_phasor_range(frame.layers) if phasor else
+                       _finite_range([*(layer.values for layer in frame.layers),
+                                      *(() if lattice is None else (lattice[0],))]))
         if frame_range is not None:
             ranges.append(frame_range)
         low, high = frame_range or (0.0, 0.0)   # no value at all: every code is _Q_NAN
-        log_low = _log_floor(low, high)
-        packed.append({'label': frame.label, 'time': None if frame.time is None else float(frame.time),
-                       'lo': low, 'hi': high, 'empty': frame_range is None, 'log_lo': log_low,
-                       'values': [_b64(_quantised(layer.values, low, high, log_low)) for layer in frame.layers]})
+        log_low = None if phasor else _log_floor(low, high)
+        entry = {'label': frame.label, 'time': None if frame.time is None else float(frame.time),
+                 'lo': low, 'hi': high, 'empty': frame_range is None, 'log_lo': log_low,
+                 'values': [_b64(_quantised(layer.values, low, high, log_low)) for layer in frame.layers],
+                 **flow_frame}
+        if phasor:   # the partner on the same codes: [lo, hi] = -+ the largest modulus, so every phase fits
+            entry['quadrature'] = [_b64(_quantised(layer.quadrature, low, high)) for layer in frame.layers]
+        if quantity.signed and not quantity.phase:
+            entry['robust'] = _robust_magnitude(frame.layers, phasor)
+        if motion is not None:
+            entry['dmax'], entry['disp'] = _displacement_codes(frame.layers, scale)
+        if lattice is not None:
+            offset, code_scale = _volume_code_frame(low, high, log_low, bool(quantity.signed))
+            entry.update(volume=_volume_bytes(lattice[0], offset, code_scale, volume_entry['masked']),
+                         volume_offset=offset, volume_scale=code_scale)
+        packed.append(entry)
     if not ranges:
         raise ValueError('the field has no finite value in any frame')
     low, high = min(lo for lo, _ in ranges), max(hi for _, hi in ranges)
     return {
         'format': FORMAT, 'version': FORMAT_VERSION,
-        'title': title, 'subtitle': ' · '.join(part for part in (subtitle, *plan.notes) if part),
+        'title': title,
+        'subtitle': ' · '.join(part for part in (
+            subtitle, *plan.notes,
+            '' if volume_entry is None or max(volume_entry['strides']) == 1
+            else f"volume cells averaged in {' x '.join(map(str, volume_entry['strides']))} blocks") if part),
         'dimensions': 3 if any(layer.plane is not None for layer in first) else 2,
         'length_unit': unit, 'length_scale': float(scale),   # m per length unit of the page
         'figure': figure or None,
@@ -767,7 +1196,58 @@ def viewer_data(frames, quantity, title='', subtitle='', frame_kind='labelled', 
         'view': None if view is None else [float(view[0]), float(view[1])],
         'geometry': None if geometry is None else _geometry_data(geometry, first, scale),
         'mirrors': _mirror_data(mirrors, scale),
+        'flow': flow_page,
+        'phasor': phasor,
+        'motion': None if motion is None else {
+            'components': list(motion.components), 'complex': bool(motion.complex),
+            'oscillate': bool(motion.oscillate), 'physical': bool(motion.physical),
+            'max': max(frame['dmax'] for frame in packed),
+            'mirror_signs': {face: int(sign) for face, sign in motion.mirror_signs.items()}},
+        'volume': volume_entry,
     }
+
+
+def _phasor_frames(frames, quantity, frame_kind):
+    """True when the layers carry phasor partners (the page animates the phase); ValueError when only some do, or
+    for a quantity or frame kind a phase animation cannot show (an unsigned or angle quantity, played time frames)."""
+    partners = [layer.quadrature is not None for layer in frames[0].layers]
+    if not any(partners):
+        return False
+    if not all(partners):
+        raise ValueError('phasor partners on some layers only: every layer of a phase-animated page needs one')
+    if not quantity.signed or quantity.phase:
+        raise ValueError(f'a phasor partner animates a signed Re / Im field; {quantity.label!r} is '
+                         + ('an angle' if quantity.phase else 'unsigned'))
+    if frame_kind == 'time':
+        raise ValueError("phasor partners on time frames: the page plays either the snapshots or the phase "
+                         "(frame_kind 'labelled')")
+    return True
+
+
+def _robust_magnitude(layers, phasor):
+    """ROBUST_PERCENTILE of the finite |values| (phasor: moduli) of a frame's layers, None without any: the page's
+    wave pages open with their colour Range there, so a hot spot (a source cell, a field enhancement) does not wash
+    the waves out."""
+    parts = []
+    for layer in layers:
+        values = np.asarray(layer.values, dtype=np.float64).reshape(-1)
+        if phasor:
+            values = np.hypot(values, np.asarray(layer.quadrature, dtype=np.float64).reshape(-1))
+        values = np.abs(values[np.isfinite(values)])
+        if values.size:
+            parts.append(values)
+    return float(np.percentile(np.concatenate(parts), ROBUST_PERCENTILE)) if parts else None
+
+
+def _phasor_range(layers):
+    """(-m, m) of the largest finite modulus m of the layers' (values, quadrature) pairs, None without any."""
+    largest = -math.inf
+    for layer in layers:
+        modulus = np.hypot(np.asarray(layer.values, dtype=np.float64), np.asarray(layer.quadrature, dtype=np.float64))
+        finite = modulus[np.isfinite(modulus)]
+        if finite.size:
+            largest = max(largest, float(finite.max()))
+    return None if largest == -math.inf else (-largest, largest)
 
 
 def render_html(data):

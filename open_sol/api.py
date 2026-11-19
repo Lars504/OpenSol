@@ -5,6 +5,7 @@ import copy
 import itertools
 import math
 import os
+import re
 import shutil
 import sys
 import time
@@ -59,8 +60,9 @@ from .model.time_estimate import estimate_overheads, estimate_time, estimated_ru
 from .model.templates import make_template, template_entries
 from .model.validate import internal_error_text, refused_on_estimated_counts, validate
 from .viz.common import line_profile
-from .viz.field_viewer import (ViewerFrame, ViewerGeometry, ViewerLayer, ViewerMirror, ViewerQuantity,
-                               figure_settings, layer_from_field, mirror_plane, plan_frames, snap_to_mirrors,
+from .viz.field_viewer import (MAX_VOLUME_FRAMES, ViewerFlow, ViewerFrame, ViewerGeometry, ViewerLayer, ViewerMirror,
+                               ViewerMotion, ViewerQuantity, ViewerVectors, ViewerVolume, figure_settings,
+                               layer_from_field, mirror_plane, plan_frames, reduced_volume, snap_to_mirrors,
                                strided_layer, time_label, write_field_viewer)
 from .viz.mode_player import mode_player_from_results
 from .viz.result_plots import (far_field_wavelengths, save_field_figure, save_line_profile_figure,
@@ -91,9 +93,28 @@ _LIVE_RESULTS = weakref.WeakSet()      # Results whose GPU session is still open
 _LIVE_RESULTS_WARNING_PATTERN = r'\d+ earlier Results still hold a GPU session'   # start of _live_results_warning
 _FLUX_FIGURE_SERIES = ('', 'power')    # flux_spectrum curve series drawn on its figure's power panel (as the GUI)
 _DERIVED_SERIES_QUANTITY = 'derived_series:'   # Results.sweep_figure quantity prefix of a derived-series overlay
+# web page deformed shapes (2D models): physics type -> (ViewerMotion components, displacement fields, their imaginary
+# parts when the run has them, the stiffness field whose cells <= 0 are void or ''), and the studies whose states
+# oscillate (modes, harmonic responses: the page animates them)
+_MOTION_FIELDS = {'solid_mechanics': (('u', 'v'), ('u_x', 'u_y'), ('u_x_im', 'u_y_im'), 'youngs_modulus'),
+                  'membrane': (('n',), ('w_re',), ('w_im',), '')}
+_OSCILLATING_STUDIES = ('eigenfrequency', 'frequency_response', 'optomechanics')
+_MODE_STUDIES = ('eigenfrequency', 'optomechanics')   # their displacements have an arbitrary amplitude
+_NEGLIGIBLE_IMAGINARY = 1e-6   # imaginary displacement parts below this x the real maximum: a real (standing) mode
 # study summary keys copied into summary.json when the study set them (optimization, thermal_noise, mode_analysis,
 # eigenfrequency / optomechanics, nonlinear_frequency_domain, frequency_response; convergence: StudySpec.adaptation,
 # also written as convergence.json; estimation: StudySpec.estimation)
+# web page flow particles (2D Cartesian field pages of these physics types; their vectors are steady flows, not waves or
+# displacements): the vector a field's page animates, by base name: a field '<base>_abs' / '<base>_x' / '<base>_y' its
+# own base, else _FLOW_BASES (tried in order); components '<base>_x' / '<base>_y' (or '<base>x' / '<base>y'). heat has
+# no flux components: -grad T scaled to heat_flux_abs (_FLOW_GRADIENTS: type -> (potential, magnitude) names)
+_FLOW_TYPES = ('laminar_flow', 'electric_currents', 'electrostatics', 'drift_diffusion', 'magnetostatics', 'heat')
+_FLOW_BASES = {'V': ('J', 'E', 'D'), 'q_joule': ('J',), 'current_source': ('J',), 'current_source_ext': ('J',),
+               'rho_free': ('E',), 'rho_free_ext': ('E',), 'rho_ion': ('E',), 'A': ('B',), 'w_mag': ('B',),
+               'J_coupled': ('B',), 'J_applied': ('B',), 'pressure': ('u',), 'vorticity': ('u',), 'viscosity': ('u',),
+               'N': ('Jn', 'J'), 'P': ('Jp', 'J'), 'phi_n': ('Jn',), 'phi_p': ('Jp',), 'recombination': ('J',),
+               'generation': ('J',), 'net_doping': ('J', 'E'), 'space_charge': ('E',)}
+_FLOW_GRADIENTS = {'heat': ('T', 'heat_flux_abs')}
 _STUDY_SUMMARY_KEYS = ('optimization', 'noise_frequencies', 'n_modes', 'n_resonances', 'n_channels', 'nonlinear_solve',
                        'feedback', 'response_frequencies', 'frequency_sweep', 'convergence', 'estimation')
 
@@ -1138,10 +1159,125 @@ def _stored_cut_index(snapshot, plane):
     return min(on_axis, key=lambda index: abs(planes[index][1] - float(plane[1])))
 
 
+def _raster_centres(field_data, axis):
+    """float64 cell centres of a FieldData raster along axis 0 (x_centers) / 1 (y_centers); uniform cells over its
+    extent when they are None."""
+    given = field_data.x_centers if axis == 0 else field_data.y_centers
+    if given is not None:
+        return np.asarray(given, dtype=np.float64).reshape(-1)
+    low, high = (float(edge) for edge in field_data.extent[2 * axis:2 * axis + 2])
+    count = np.shape(field_data.values)[axis]
+    return low + (np.arange(count) + 0.5) * (high - low) / count
+
+
+def _gradient_flow(potential, magnitude):
+    """ViewerVectors along -grad of the potential FieldData's raster (heat flows down the temperature), with length
+    the magnitude FieldData's (heat_flux_abs: q = -k grad T in an isotropic material) when given, else |grad|."""
+    values = np.asarray(potential.values, dtype=np.float64)
+    u_centres, v_centres = _raster_centres(potential, 0), _raster_centres(potential, 1)
+    if values.ndim != 2 or min(values.shape) < 2:
+        raise ValueError(f'a flow from the gradient needs a 2D raster of at least 2 x 2, got {values.shape}')
+    grad_x, grad_y = np.gradient(values, u_centres, v_centres)
+    if magnitude is not None:
+        size = np.asarray(magnitude.values, dtype=np.float64)
+        if size.shape != values.shape:
+            raise ValueError(f'flow magnitude raster {size.shape} differs from the potential raster {values.shape}')
+        length = np.hypot(grad_x, grad_y)
+        with np.errstate(invalid='ignore', divide='ignore'):
+            factor = np.where(length > 0, size / length, 0.0)
+        grad_x, grad_y = grad_x * factor, grad_y * factor
+    return ViewerVectors(x=-grad_x, y=-grad_y, u_centres=u_centres, v_centres=v_centres)
+def _samples_like(layer, field_data):
+    """float64 values of field_data on the samples of a 2D ViewerLayer (its display triangulation nodes, else its
+    raster), None when they are not the same samples."""
+    if layer.triangulation is not None:
+        if getattr(field_data, 'triangulation', None) is None:
+            return None
+        companion = layer_from_field(field_data)
+        if len(companion.triangulation[0]) != len(layer.triangulation[0]):
+            return None
+        return np.asarray(companion.values, dtype=np.float64)
+    values = np.asarray(field_data.values, dtype=np.float64)
+    return values if values.shape == np.shape(layer.values) else None
+
+
+def _hide_void(frames, stiffness, mirror_sides=()):
+    """Hide the void cells of a solid (stiffness FieldData <= 0) on 2D viewer frames in place, so the page shows (and
+    fits) the body alone: grid layers get NaN values and zero displacement there and are cropped to the solid cells
+    (not on the mirror_sides faces, whose planes the page reflects at), display triangulations lose the triangles
+    whose centroid lies in a void cell and the nodes only those used. Skipped when the stiffness marks no solid or no
+    void cell, or (grids) a void cell moves (a solid without that stiffness, e.g. given by its c_ij only: hiding it
+    would hide material)."""
+    solid_raster = np.asarray(stiffness.values, dtype=np.float64) > 0.0
+    if solid_raster.all() or not solid_raster.any():
+        return
+    layers = [frame.layers[0] for frame in frames]
+    if layers[0].triangulation is None:
+        if solid_raster.shape != np.shape(layers[0].values):
+            return
+        void = ~solid_raster
+        if any(np.any(np.asarray(channel)[void] != 0.0) for layer in layers for channel in layer.displacement):
+            return
+        rows, columns = np.flatnonzero(solid_raster.any(axis=1)), np.flatnonzero(solid_raster.any(axis=0))
+        axes = layers[0].axes
+        i0 = 0 if f'{axes[0]}_lo' in mirror_sides else max(int(rows[0]), 0)
+        i1 = solid_raster.shape[0] if f'{axes[0]}_hi' in mirror_sides else int(rows[-1]) + 1
+        j0 = 0 if f'{axes[1]}_lo' in mirror_sides else max(int(columns[0]), 0)
+        j1 = solid_raster.shape[1] if f'{axes[1]}_hi' in mirror_sides else int(columns[-1]) + 1
+        if i1 - i0 < 2 or j1 - j0 < 2:   # a map needs 2 x 2 samples
+            i0, i1, j0, j1 = 0, solid_raster.shape[0], 0, solid_raster.shape[1]
+        crop = (slice(i0, i1), slice(j0, j1))
+        for layer in layers:
+            layer.values = np.where(void, np.nan, np.asarray(layer.values, dtype=np.float64))[crop]
+            if layer.quadrature is not None:
+                layer.quadrature = np.where(void, np.nan, np.asarray(layer.quadrature, dtype=np.float64))[crop]
+            layer.displacement = tuple(np.where(void, 0.0, np.asarray(channel, dtype=np.float64))[crop]
+                                       for channel in layer.displacement)
+            layer.u_centres, layer.v_centres = layer.u_centres[i0:i1], layer.v_centres[j0:j1]
+        return
+    u0, u1, v0, v1 = (float(edge) for edge in stiffness.extent)
+    nu, nv = solid_raster.shape
+    u_centres = (np.asarray(stiffness.x_centers, dtype=np.float64) if stiffness.x_centers is not None
+                 else u0 + (np.arange(nu) + 0.5) * (u1 - u0) / nu)
+    v_centres = (np.asarray(stiffness.y_centers, dtype=np.float64) if stiffness.y_centers is not None
+                 else v0 + (np.arange(nv) + 0.5) * (v1 - v0) / nv)
+    nodes, triangles = layers[0].triangulation
+    centroids = np.asarray(nodes, dtype=np.float64)[np.asarray(triangles)].mean(axis=1)
+    iu = np.clip(np.searchsorted(0.5 * (u_centres[1:] + u_centres[:-1]), centroids[:, 0]), 0, nu - 1)
+    iv = np.clip(np.searchsorted(0.5 * (v_centres[1:] + v_centres[:-1]), centroids[:, 1]), 0, nv - 1)
+    keep = solid_raster[iu, iv]
+    if not keep.any():
+        return
+    triangles = np.asarray(triangles)[keep]
+    used = np.unique(triangles)
+    renumber = np.full(len(nodes), -1, dtype=np.int64)
+    renumber[used] = np.arange(used.size)
+    kept = (np.asarray(nodes)[used], renumber[triangles])
+    for layer in layers:
+        layer.triangulation = kept
+        layer.values = np.asarray(layer.values)[used]
+        if layer.quadrature is not None:
+            layer.quadrature = np.asarray(layer.quadrature)[used]
+        layer.displacement = tuple(np.asarray(channel)[used] for channel in layer.displacement)
+
+
 def _held_cuts(snapshot, key):
     """FieldData of key that a 3D snapshot holds on a placed plane: its mid-height z cut and its stored cuts."""
     return [fields[key] for fields in (snapshot.fields, *snapshot.cuts)
             if key in fields and fields[key].plane is not None]
+
+
+def _same_samples(field_data, other):
+    """True when two FieldData sample the same points: same plane and display triangulation node count, or the
+    same grid shape."""
+    if field_data.plane != other.plane:
+        return False
+    mesh, other_mesh = getattr(field_data, 'triangulation', None), getattr(other, 'triangulation', None)
+    if (mesh is None) != (other_mesh is None):
+        return False
+    if mesh is not None:
+        return np.shape(mesh[0]) == np.shape(other_mesh[0])
+    return np.shape(field_data.values) == np.shape(other.values)
 
 
 def _nearest_held_cuts(snapshot, key, planes):
@@ -1584,11 +1720,21 @@ class Results:
         """Write a self-contained web page (no network: hand-written WebGL2, data embedded) to turn, zoom and colour
         in a browser; returns the written path (.html added when missing). what: a field ('physics.component' or a
         component unique among field_names(), narrowed by physics) -> viz.field_viewer: every stored snapshot holding
-        it is a frame (time snapshots play, labelled ones such as wavelengths or modes get a slider), else the current
-        (live) or saved state; a 3D field is shown on its cut planes in place (live state: an x, y and z cut, each at
+        it is a frame (time snapshots play, labelled ones such as wavelengths or modes get a slider; a '<base>_re' /
+        '_im' field whose partner is stored beside it, or rendered from kept snapshot solutions (GUI runs), is
+        animated over one period, Re / Im[A exp(j wt)]), else the current (live) or saved state; a 2D Cartesian page
+        of a steady-flow physics (_FLOW_TYPES) carries the in-plane vector of its field (_viewer_flow, from the same
+        snapshot / state) for moving flow particles or arrows; a field of a 2D solid_mechanics / membrane physics is drawn on
+        the deformed body (its displacement u_x / u_y or w_re, plus the imaginary parts when held, per frame; a Deform
+        magnification; the solid's void cells, youngs_modulus <= 0, hidden and cropped away; modes and frequency
+        responses oscillate, static states ramp their load with Animate); a 3D field is shown on its cut planes in
+        place (live state: an x, y and z cut, each at
         a mirror plane of the field's physics (drawn on the plane), else through the middle of the material objects
         not spanning the window on that axis, else the window middle;
-        snapshots and closed / loaded runs: the mid-height z cut plus the study stored_cuts); planes [(axis,
+        snapshots and closed / loaded runs: the mid-height z cut plus the study stored_cuts; live Results of a
+        Cartesian 3D model also put the whole field on the page (viz.field_viewer.ViewerVolume: the current state,
+        or every snapshot's kept solution in GUI runs, up to MAX_VOLUME_FRAMES), drawn as movable slices, a lit
+        isosurface, nested see-through shells or a glowing cloud); planes [(axis,
         position [m])] (3D field pages; the GUI passes its shown cut) picks them instead: the live state on exactly
         those planes, a snapshot its held cut on each plane's axis nearest the position (live: the current state
         when the snapshots hold no cut on an axis, named in the subtitle). A dft_fields result
@@ -1673,47 +1819,254 @@ class Results:
                                  'those planes need live Results')
             if missing:   # live: the current state is there on any plane
                 stored, note = [], f", the snapshots hold no {' / '.join(missing)} cut"
+        partner, partner_sign = self._phasor_partner(key)
         if len(stored) > 1:
             frames = []
             three_d = self.spec is not None and self.spec.domain.size_z is not None
-            for snapshot in stored:
-                fields = ([snapshot.fields[key]] + [cut[key] for cut in snapshot.cuts if key in cut] if planes is None
-                          else _nearest_held_cuts(snapshot, key, planes))
+            frame_kind = 'time' if all(snapshot.label is None for snapshot in stored) else 'labelled'
+
+            def held(snapshot, name):
+                return ([snapshot.fields[name]] + [cut[name] for cut in snapshot.cuts if key in cut] if planes is None
+                        else _nearest_held_cuts(snapshot, name, planes))
+
+            held_fields = [held(snapshot, key) for snapshot in stored]
+            partner_fields = (None if partner is None or frame_kind == 'time'
+                              else self._snapshot_partners(key, stored, held_fields, partner, held))
+            for index, (snapshot, fields) in enumerate(zip(stored, held_fields)):
                 if three_d and any(field_data.plane is None for field_data in fields):
                     raise ValueError(f'the snapshots of {key!r} have no cut-plane records (an older run directory): '
                                      'their planes cannot be placed in 3D')
+                partners = [None] * len(fields) if partner_fields is None else partner_fields[index]
                 label = snapshot.label or fields[0].time_label or time_label(snapshot.time)
-                frames.append(ViewerFrame([layer_from_field(field_data) for field_data in fields], label,
+                frames.append(ViewerFrame([layer_from_field(field_data, other, partner_sign)
+                                           for field_data, other in zip(fields, partners, strict=True)], label,
                                           float(snapshot.time)))
-            frame_kind = 'time' if all(snapshot.label is None for snapshot in stored) else 'labelled'
+            sources = [snapshot.fields for snapshot in stored]
             info = stored[0].fields[key].info
             unfolded = bool(getattr(stored[0].fields[key], 'unfolded', False))
             source = f'{len(stored)} snapshots'
         else:
             fields = self._state_fields(key, planes)
-            frames = [ViewerFrame([layer_from_field(field_data) for field_data in fields],
+            partners = [None] * len(fields) if partner is None else self._state_fields(partner, planes)
+            frames = [ViewerFrame([layer_from_field(field_data, other, partner_sign)
+                                   for field_data, other in zip(fields, partners, strict=True)],
                                   fields[0].time_label or '', float(fields[0].time))]
             frame_kind = 'labelled'
+            sources = [None]   # the current / saved state
             info = fields[0].info
             unfolded = bool(getattr(fields[0], 'unfolded', False))
             source = ('current state' if self.is_live else 'saved state') + note
         quantity = ViewerQuantity(label=info.label, unit=info.unit, signed=bool(info.signed),
                                   phase=str(info.parity or '').startswith('phase_'))
+        if not quantity.signed or quantity.phase:   # a '_re' / '_im' name on a field the phase cannot animate
+            for frame in frames:
+                for layer in frame.layers:
+                    layer.quadrature = None
+        motion, motion_note = (None, '') if planes is not None or unfolded else self._viewer_motion(key, frames,
+                                                                                                     sources)
+        source += motion_note
+        if motion is not None and motion.oscillate:   # the shape oscillates on its own clock: no second phase animation
+            for frame in frames:
+                for layer in frame.layers:
+                    layer.quadrature = None
+        flow, flow_infos = self._viewer_flow(key, frames, stored if len(stored) > 1 else None)
+        if not quantity.phase and not unfolded:   # a phase wraps at +-pi; unfolded sectors are no session volume
+            volumes = self._viewer_volumes(key, stored if len(stored) > 1 else None)
+            if volumes is not None:
+                for frame, volume in zip(frames, volumes):
+                    frame.volume = volume
+                    for layer in frame.layers:   # 3D: the volume views (isosurfaces, slices), not a phase animation
+                        layer.quadrature = None
         # parity-sector snapshots are stored unfolded already: no images of them
         mirrors = [] if unfolded else self._viewer_mirrors(
-            key.partition('.')[0], info, [(layer.axes, layer.extent) for layer in frames[0].layers])
+            key.partition('.')[0], info, [(layer.axes, layer.extent) for layer in frames[0].layers], flow_infos)
         snap_to_mirrors(frames, mirrors)   # before the outlines: a cut next to a mirror plane is drawn on it
         objects = self._viewer_geometry([layer.plane for layer in frames[0].layers]) if geometry else None
         return write_field_viewer(path, frames, quantity, title=self._page_title(title) or info.label,
                                   subtitle=f'{key}, {source} (open_sol)', frame_kind=frame_kind, geometry=objects,
-                                  mirrors=mirrors, figure=figure)
+                                  mirrors=mirrors, figure=figure, flow=flow, motion=motion)
 
-    def _viewer_mirrors(self, physics, info, spans):
+    def _viewer_motion(self, key, frames, sources):
+        """(ViewerMotion, subtitle note) of a 2D field page whose physics has a displacement (_MOTION_FIELDS), the
+        frames' layers given their displacement channels in place (sources: per frame the snapshot's field dict, None
+        = the current / saved state); solids also hide their void cells (stiffness <= 0: values NaN, triangles
+        dropped) when the stiffness field marks them consistently. (None, '') for other physics and 3D models;
+        (None, note) when the displacement is not on the shown field's samples."""
+        if self.spec is None or self.spec.domain.size_z is not None:
+            return None, ''
+        physics = key.partition('.')[0]
+        physics_type = next((entry.type for entry in self.spec.physics if entry.name == physics), None)
+        if physics_type not in _MOTION_FIELDS or any(len(frame.layers) != 1 for frame in frames):
+            return None, ''
+        components, real_names, imag_names, stiffness_name = _MOTION_FIELDS[physics_type]
+        names = set(self.field_names())
+
+        def fetch(source, name):
+            if source is None:
+                return self.field(f'{physics}.{name}') if f'{physics}.{name}' in names else None
+            return source.get(f'{physics}.{name}')
+
+        reals = [[fetch(source, name) for name in real_names] for source in sources]
+        if any(field_data is None for row in reals for field_data in row):
+            return None, ''   # snapshots without the displacement: no deformed shape to draw
+        imags = [[fetch(source, name) for name in imag_names] for source in sources]
+        complex_parts = all(field_data is not None for row in imags for field_data in row)
+        if complex_parts:
+            real_peak = max(float(np.nanmax(np.abs(field_data.values))) for row in reals for field_data in row)
+            imag_peak = max(float(np.nanmax(np.abs(field_data.values))) for row in imags for field_data in row)
+            complex_parts = imag_peak > _NEGLIGIBLE_IMAGINARY * real_peak
+        channel_rows = [row + (imags[index] if complex_parts else []) for index, row in enumerate(reals)]
+        for frame, row in zip(frames, channel_rows):
+            layer = frame.layers[0]
+            channels = [_samples_like(layer, field_data) for field_data in row]
+            if any(channel is None for channel in channels):
+                return None, ', no deformed shape (the displacement lies on other samples than this field)'
+            layer.displacement = tuple(channels)
+        if stiffness_name and f'{physics}.{stiffness_name}' in names:
+            _hide_void(frames, self.field(f'{physics}.{stiffness_name}'),
+                       set(mirror_faces(self._state_spec(), physics)))
+        mirror_signs = {}
+        if 'n' in components:   # the normal displacement's images follow its own parity, not the shown field's
+            spans = [(layer.axes, layer.extent) for layer in frames[0].layers]
+            mirror_signs = {mirror.face: mirror.value_sign
+                            for mirror in self._viewer_mirrors(physics, reals[0][0].info, spans)}
+        motion = ViewerMotion(components=components, complex=complex_parts,
+                              oscillate=self.spec.study.type in _OSCILLATING_STUDIES, mirror_signs=mirror_signs,
+                              physical=self.spec.study.type not in _MODE_STUDIES)
+        return motion, ''
+
+    def _viewer_flow(self, key, frames, snapshots):
+        """(ViewerFlow, (x info, y info) whose parities mirror the flow) after putting the in-plane vector the page of
+        field key animates (_FLOW_TYPES / _FLOW_BASES / _FLOW_GRADIENTS) on every frame's layer as ViewerVectors, read
+        from each frame's snapshot (snapshots, else the current / saved state); (None, None) for 3D, polar /
+        spherical models, other types and when a frame lacks the components."""
+        spec = self.spec
+        if spec is None or spec.domain.size_z is not None or spec.domain.coordinates != 'cartesian' \
+                or spec.dimensions == 1:
+            return None, None
+        physics, _, name = key.partition('.')
+        kind = next((entry.type for entry in spec.physics if entry.name == physics), None)
+        if kind not in _FLOW_TYPES or any(len(frame.layers) != 1 for frame in frames):
+            return None, None
+        if snapshots is not None:
+            getters = [snapshot.fields.get for snapshot in snapshots]
+            available = set.intersection(*(set(snapshot.fields) for snapshot in snapshots))
+        else:
+            available = set(self.field_names())
+            getters = [lambda field_key: self.field(field_key) if field_key in available else None]
+        if len(getters) != len(frames):
+            raise RuntimeError(f'{len(frames)} page frames but {len(getters)} flow sources')
+        if kind in _FLOW_GRADIENTS:
+            potential, magnitude = (f'{physics}.{part}' for part in _FLOW_GRADIENTS[kind])
+            if potential not in available:
+                return None, None
+            magnitude = magnitude if magnitude in available else None
+            for frame, get in zip(frames, getters):
+                frame.layers[0].vectors = _gradient_flow(get(potential), None if magnitude is None else get(magnitude))
+            info = getters[0](potential).info
+            label = 'Heat flux' if magnitude else f'-grad {info.label}'
+            unit = getters[0](magnitude).info.unit if magnitude else f'{info.unit}/m'
+            return ViewerFlow(label=label, unit=unit), (info, info)
+        bases = [*_FLOW_BASES.get(name, ())]
+        for suffix in ('_abs', '_x', '_y'):
+            if name.endswith(suffix):
+                bases.insert(0, name[:-len(suffix)])
+        pair = next(((f'{physics}.{base}{sep}x', f'{physics}.{base}{sep}y') for base in bases for sep in ('_', '')
+                     if f'{physics}.{base}{sep}x' in available and f'{physics}.{base}{sep}y' in available), None)
+        if pair is None:
+            return None, None
+        for frame, get in zip(frames, getters):
+            x_field, y_field = get(pair[0]), get(pair[1])
+            if np.shape(x_field.values) != np.shape(y_field.values):
+                raise ValueError(f'{pair[0]} and {pair[1]} have different sample grids')
+            frame.layers[0].vectors = ViewerVectors(x=x_field.values, y=y_field.values,
+                                                    u_centres=_raster_centres(x_field, 0),
+                                                    v_centres=_raster_centres(x_field, 1))
+        x_info, y_info = getters[0](pair[0]).info, getters[0](pair[1]).info
+        label = re.sub(r' (x|r)( \(.*\))?$', '', x_info.label)   # 'Magnetic flux density x (axisymmetric: r)'
+        return ViewerFlow(label=label, unit=x_info.unit), (x_info, y_info)
+
+    def _snapshot_partners(self, key, stored, held_fields, partner, held):
+        """Per snapshot of stored the FieldData of the phasor partner key on the planes of held_fields (the field's
+        held FieldData per snapshot): stored beside the field, else (live GUI runs) rendered from the snapshot's kept
+        solution; None unless every snapshot has it on the same samples (a page animates all its frames or none)."""
+        physics, _, component = partner.partition('.')
+        live = self.session.snapshots if self.is_live else []
+        out = []
+        for snapshot, fields in zip(stored, held_fields):
+            if partner in snapshot.fields and all(partner in cut for cut in snapshot.cuts if key in cut):
+                others = held(snapshot, partner)
+            else:
+                index = next((i for i, entry in enumerate(live) if entry is snapshot), None)
+                if index is None or physics not in live[index].solutions:
+                    return None
+                others = [self.session.snapshot_field(index, component, physics, field_data.plane)
+                          for field_data in fields]
+            if len(others) != len(fields) or any(not _same_samples(a, b) for a, b in zip(fields, others)):
+                return None
+            out.append(others)
+        return out
+
+    def _phasor_partner(self, key):
+        """(partner key, sign) of a phasor field '<physics>.<base>_re' / '_im' whose partner is a field too: the Im
+        part with sign -1, the Re part with +1 (the page animates Re / Im[(re + j im) exp(j wt)], time exp(+j wt));
+        (None, 1.0) for any other field."""
+        physics, _, component = key.partition('.')
+        base, _, part = component.rpartition('_')
+        if not base or part not in ('re', 'im'):
+            return None, 1.0
+        partner = f"{physics}.{base}_{'im' if part == 're' else 're'}"
+        if partner not in self.field_names():
+            return None, 1.0
+        return partner, (-1.0 if part == 're' else 1.0)
+
+    def _viewer_volumes(self, key, snapshots=None):
+        """ViewerVolumes (reduced to the page's lattice) of the 3D field key for the page's frames: the live state
+        (snapshots None), else one per snapshot from its kept solution (GUI runs: Snapshot.solutions); None when
+        not offered (2D, closed / loaded runs, polar / cylindrical domains, snapshots without kept solutions, a
+        field above the volume size limit: RuntimeWarning)."""
+        if (not self.is_live or self.spec is None or self.spec.domain.size_z is None
+                or self.spec.domain.coordinates != 'cartesian'):
+            return None
+        physics, _, component = key.partition('.')
+        count = 1 if snapshots is None else len(snapshots)
+        try:
+            if snapshots is None:
+                return [self._reduced_volume(component, physics, count)]
+            if count > MAX_VOLUME_FRAMES:
+                warnings.warn(f'web page volume of {key}: not offered for {count} snapshots (at most '
+                              f'{MAX_VOLUME_FRAMES}: each is a whole 3D field read); the cut planes are shown',
+                              RuntimeWarning, stacklevel=4)
+                return None
+            roots = {id(snapshot): index for index, snapshot in enumerate(self.session.snapshots)}
+            if any(id(snapshot) not in roots or physics not in snapshot.solutions for snapshot in snapshots):
+                return None   # headless runs keep no snapshot solutions: the page shows the cut planes only
+            volumes = []
+            for snapshot in snapshots:
+                with self.session.restored_snapshot(roots[id(snapshot)], [physics]):
+                    volumes.append(self._reduced_volume(component, physics, count))
+            return volumes
+        except ValueError as exc:   # session.volume: above its size limit
+            warnings.warn(f'web page volume of {key}: not offered ({exc})', RuntimeWarning, stacklevel=4)
+            return None
+
+    def _reduced_volume(self, component, physics, n_frames):
+        """The session volume as the page's lattice; on an element mesh averaged over half the smallest element
+        size (its sample lattice is finer than the elements)."""
+        volume = self.session.volume(component, physics=physics)
+        record = next(record for record in self.session.mesh_records() if physics in record['physics'])
+        min_step = 0.5 * float(record['dx_min']) if record['kind'] == 'tetrahedra' else None
+        return reduced_volume(ViewerVolume(values=volume.values, centres=volume.centres), n_frames, min_step)
+
+    def _viewer_mirrors(self, physics, info, spans, flow_infos=None):
         """ViewerMirrors of the model's mirror faces for a field of physics (FieldInfo info; None = an even
-        intensity), placed on the window edges of spans [(axes, extent)]; RuntimeWarning for what is not offered."""
+        intensity), placed on the window edges of spans [(axes, extent)]; RuntimeWarning for what is not offered.
+        flow_infos (x, y FieldInfos of the page's flow vectors): each image's flow_sign = the image sign of the
+        component along the plane (+1: the reflected paths, -1: run backwards)."""
         if self.spec is None:
             return []
-        faces = mirror_faces(self._state_spec(), physics)
+        all_faces = mirror_faces(self._state_spec(), physics)
+        faces = all_faces
         if info is not None:
             faces = field_plane_signs(faces, info)
         if not faces:
@@ -1733,8 +2086,12 @@ class Results:
             if position is None:
                 unplaced.append(face)
                 continue
+            flow_sign = 1
+            if flow_infos is not None:   # the tangential component: y along an x plane, x along a y plane
+                along = flow_infos[1] if face[0] == 'x' else flow_infos[0]
+                flow_sign = image_sign(field_parity(along), face[0], field_plane_signs(all_faces, along)[face])
             mirrors.append(ViewerMirror(face=face, position=position,
-                                        value_sign=image_sign(parity, face[0], plane_sign)))
+                                        value_sign=image_sign(parity, face[0], plane_sign), flow_sign=flow_sign))
         if unplaced:
             warnings.warn(f"web page mirror images: not across {', '.join(unplaced)} (no shown plane spans that axis)",
                           RuntimeWarning, stacklevel=4)

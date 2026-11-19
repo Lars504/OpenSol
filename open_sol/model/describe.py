@@ -1332,14 +1332,25 @@ _RESULTS_NOTES = (
         'self-contained web '
         'page (no network, WebGL2) to turn, zoom and colour in a browser (colour maps, log scale, colour range; PNG '
         "and video export, the PNG as shown with its heading, axes and colour bar); what = a field ('physics.component' or a unique component; physics narrows it): every "
-        'stored snapshot holding it is a frame (time snapshots play, labelled ones such as wavelengths or modes get '
-        'a slider), else the current / saved state, a 2D map (optional relief) or a 3D field on its cut planes in '
+        'stored snapshot holding it is a frame (time snapshots play, blended from one to the next, labelled ones '
+        "such as wavelengths or modes get a slider; a '<base>_re' / '_im' field whose partner is stored beside it, "
+        'or rendered from kept snapshot solutions in GUI runs, is animated over one period, Re / Im[A exp(j wt)]), '
+        'else the current / saved state, a 2D map (optional relief; with flow particles moving along, or arrows of, the '
+        'in-plane vector of 2D Cartesian laminar_flow, electric_currents, electrostatics, drift_diffusion, '
+        'magnetostatics and heat pages: the field\'s own components, the velocity of pressure / vorticity, the current '
+        'density of V / q_joule, B of A, -grad T scaled to heat_flux_abs when stored; a Flow button and a Particles / '
+        'Arrows choice; a 2D '
+        'solid_mechanics / membrane field drawn on the deformed body, magnified by a Deform slider, the void cells of a '
+        'solid hidden: modes and frequency responses oscillate, a static state ramps its load with Animate) or a 3D '
+        'field on its cut planes in '
         'place (live state: an x, y and z cut, each at a mirror plane of the field\'s physics (the window cell next '
         'to it, drawn on the plane), else through the middle of the material objects that do not span the window on '
         'that axis, else the window middle; snapshots and closed / loaded runs: the mid-height z cut and '
         "the stored_cuts; planes [(axis, position m)] instead: the live state on exactly those planes, a snapshot "
         "its held cut on each axis nearest the position, ValueError for 2D models or an axis no snapshot holds when "
-        "not live); a dft_fields result 'physics.feature': its intensity map per monitored frequency; a "
+        "not live; live Results of a Cartesian 3D model also put the whole field on the page, the current state or "
+        "each snapshot's kept solution (GUI runs, up to 60 snapshots), drawn as movable slices, a lit isosurface "
+        "(signed fields: both signs), nested see-through shells or a glowing cloud); a dft_fields result 'physics.feature': its intensity map per monitored frequency; a "
         'mode_shapes result: the complex mode shapes animated on the solid surface beside the band diagram (a sweep '
         'contributes every successful value on the same surface mesh, abscissa k a / 2 pi of the Bloch wavenumber, '
         'else the swept parameter; coloured by displacement, and with the kept stress / strain of the mode_shapes '
