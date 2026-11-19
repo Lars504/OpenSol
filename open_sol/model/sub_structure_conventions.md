@@ -161,206 +161,76 @@ templates, describe. Current state, no changelog.
   failed'; an axis without band ends or custom edges is one segment whose whole-axis rescale moves a band by up to half
   an outer cell. Auto wavelength rule: the index is taken at wavelength_min only (`_material_index`), so metals mesh by
   skin depth (gold ~11 at 1.55 um).
-- Triangle meshes (triangulate): `triangle_meshing.triangulate(spec, parameters, registry, mesh)` = sizes,
-  `mesher_size_field` (fem SizeField form of `meshing.triangle_size_field`: keep the two size rules equal),
-  `model_pslg` (every 2D primitive outline incl. composite inputs, lines, points), the fem mesher (gmsh when `mesher`
-  'gmsh'), the PML ring of `TriangleSizing.pml_widths`, tags by `element_masks` (rasterize at centroids, ring
-  centroids clamped into the window). Point tests go through `contained`: a union of >= 4 inputs tests each input
-  only at points in its bounding box (KD tree), bit-identical to rasterize. It is the only reader of shape internals
-  for the mesher. `mirror_x` / `mirror_y` (mirror line = window centre): `_mirrored_parts` meshes the half window
-  (geometry plus mirror images, symmetric size field), rings its outer faces, then `fem.mesher.reflect_mesh`; line /
-  point tags found geometrically; the estimate takes the denser of each pixel and its image; asymmetric material
-  objects only warn. `TriangleSizing.periodic_axes` (from `DomainRequirements.periodic_axes`): opposite sides meshed
-  with matching nodes; no PML ring there (refused in `_element_sizing`). Mesh data and mesher rules: fem sub file.
-- Tetrahedron meshes (MeshSpec kind 'tetrahedra', 3D Cartesian only): sizes by `meshing.tetrahedron_sizing` (the
-  triangle rules through `_element_sizing`; `TetrahedronSizing`: pml_widths over six faces = cpml_npml x h_max;
-  size_points [x, y, z, h] and face_sizes (SizedFace: window / object box faces) act as gmsh Ball / MathEval fields
-  with twins in `tetrahedron_element_density` (estimate and mesh must agree; builtin: face_sizes are bands,
-  size_points refused); periodic_axes = union of the physics' `DomainRequirements.periodic_axes` (gmsh periodic
-  surfaces); edge_sizes = object -> smallest size below h_max of `PhysicsType.mesh_edge_sizes` (`_edge_sizes`; gmsh
-  refines along primitive edges, the estimate adds `Solid.edge_distance` sources; builtin ignores them, validate
-  warns)). A non-EM physics may pad with any boundary_config carrying npml_sides and differences()
-  (`pml3d.PMLPadding`). Estimate `_tetrahedron_estimate` (`TetrahedronMeshEstimate`, extent (x0, x1, y0, y1, z0,
-  z1)): sweep_axis 'z' -> `swept_estimate` (footprint with the 2D thin-source pixel means, `_thin_sources`); builtin
-  exact (Kuhn split of `axis_edges`); gmsh TETRAHEDRON_FILL (uncalibrated) x integral of `tetrahedron_element_density` on a voxel raster (each voxel averages h^-3 of its
-  winning source over +- half a voxel: centre values counted thin films ~2x). `material_elements` = elements each material paints (builder's rule): a physics whose dofs
-  live on part of the mesh scales by it (solid_mechanics_3d: stiff materials). `tetrahedral_meshing.tetrahedralize` =
-  gmsh of `model_solids` (spheres, boxes, z cylinders, untapered z circles, rectangle prisms of any axis, untapered z
-  rounded rectangles; composite inputs included; others tagged per element: a staircase) or the Kuhn split. Plain
-  objects carry their refinement size on their solids; a refined composite goes in as a `sized_regions` field tree,
-  so a difference's hole is not refined and the mesh matches the estimate's composite mask. RefinementSpec.where:
-  'edges' joins `TetrahedronSizing.edge_sizes`, 'surface' fills `surface_sizes` (`sized_surfaces`, estimate twin
-  `SizedRegion.surface_distance`); both gmsh only: `_explicit_refinements(places=)` refuses them elsewhere (default
-  'inside'; `frozen_mesh_spec` passes every place through), validate errors / warns (`primitives_without_solids`).
-  Regions by contains_points_3d at clamped centroids with per-gmsh-volume majority (`by_entity_majority`); builder
-  object masks and the mesh's `object_faces` both come from `tetrahedral_meshing.element_membership`, so masks and
-  face tags agree. Build: the 2D element paths (x, y, z of clamped centroids; `ctx.dimensions` is 3, so 3D code tests
-  `grid_kind == 'tensor'` first); boundaries `ctx.boundary_faces(entities)`, points `ctx.point_position(name)`
-  (located by the physics, no nodes). Session (`TetrahedraAccess`): field / segment_profile / volume sample the
-  renderer's `sample(component, points)` on the uniform lattice `TetrahedronDomain.sample_centres`; `evaluate` at
-  degree-4 quadrature points in element chunks, integrals x touch_factor; refused: interface selections, max / min (and mode_volume without a
-  point) touching a mirror face, fields of physics on another mesh; a NaN sample (missed location) raises. Adaptation
-  only 'uniform', no cross-mesh transfers. On-disk gmsh cache: fem sub file.
-- Builtin tetrahedra: `tetrahedron_sizing` fills `TetrahedronSizing.axis_edges` from `builtin_axis_edges` (repr =
-  `axis_edges_digest`, so the element-mesh key follows every grading input); mesher and estimate read them through
-  `sizing_axis_edges` (a hand-made sizing without them: uniform `kuhn_axis_edges`), so the estimate stays exact. The
-  window part is `graded_window_edges(..., axes='xyz', keep_uniform=True)` (per axis; swept prisms take its z layers
-  with keep_uniform=False to always snap object faces), then `shell_axis_edges`: nothing finer than h_max (uniform mode
-  ignores refinements / axes; face_sizes act in every mode) = equal cells <= h_max, no snaps; else a MeshConfig at
-  base h_max as `_plan`'s nonuniform branch (refinements + auto refinements, MeshAxisSpec plans, max_ratio = growth,
-  outer grading), each SizedFace a band across its plane, every primitive's `axis_parallel_faces` snapped at h_max
-  (snap merge rule: an unrefined film thinner than h_max / 4 keeps one face only). A remainder-rounded segment may hold
-  cells up to ~1.5x its target. Allowed: axes / dx_x.. / outer grading (validate checks refinements as tensor ones);
-  size_points refused; physics edge sizes ignored with a warning; `frozen_mesh_spec` keeps axes.
-- Swept prism layers (MeshSpec.sweep_axis 'z', tetrahedra with either mesher; `model/swept_meshing.py`, fem
-  `prism_layers`): `_element_sizing` sets `sizing.sweep_axis` / `layer_edges` (repr = `layer_edges_digest`) and is
-  NOT graded builtin (axis_edges stay ()), so code branching on `sizing.mesher == 'builtin'` checks `sweep_axis` first.
-  In-plane = the triangle rules on `footprint_shapes(shapes)` (box -> rectangle, z cylinder / sphere -> circle, x / y
-  prisms and tapers -> `geometry._footprint`; vertical-walled primitives go into the PSLG, the rest are tagged per
-  element) via `triangle_meshing._plain_parts(..., size_field=)`. A refinement's dx sizes in-plane over the object's
-  whole column and also grades the z layers unless dx_z is given: give dx_z = dx (or more) for in-plane only. Entities
-  = (PSLG face, z band, membership of region objects holding an unswept primitive or a z face that is no layer plane):
-  the majority squares faceted curved walls but never wipes out per-element tags. Estimate `swept_estimate`: footprint
-  triangles (`meshing.triangle_counts`) x 3 x layers. Refused (`swept_mesh_problem` / `swept_refinement_problem`):
-  size_points, x / y axes, dx_x / dx_y unlike dx, x / y face sizes, where edges / surface, mirrors; x / y PML ring =
-  pml_layers layers.
-- Auto `wavelength_min` None = min over the physics' `PhysicsType.shortest_wavelength(...)` hooks (FDFD / em_modes:
-  shortest solved wavelength; FDTD `make_source_shortest_wavelength`: gaussian f0 (1 + bandwidth), ricker 2 f0), the
-  same rule as the FDTD resolution warning; hooks skip unresolvable inputs and return None; none at all is a model
-  error. `MeshEstimate.wavelength_min / wavelength_source` feed the GUI estimate, check.json and a validation info. A
-  sweep changing that wavelength re-meshes per value.
-- Memory estimate (`meshing.estimate_memory`): MESH_ESTIMATE_ERRORS on bad input (validate's `check_memory` then stays
-  silent: the input is reported at its node; another exception is an internal-error Issue at ('meshes',)). With a
-  memory_budget or host_budget, `_sweep_value_problem` also estimates each sweep value (error at ('study',) above
-  either budget; the 80 % warnings and the fixed 8 GiB host warning only for the base values). Every budget check folds
-  the estimate by `meshing.backend_memory` (cpu backend: device bytes count as host, no GPU budget): check_memory,
-  `_sweep_value_problem` and study_adaptation `_memory_problem` alike. `MemoryContext.material_regions` box cells are
-  the selection's bounding box (an upper bound). `builder.build` estimates mesh and memory once (`_cached_estimates`)
-  and passes them to validate and the ledger check; only `make_domain` plans the grid again. Against a GPU budget the
-  judged estimate is `meshing.fitted_memory_estimate` (an over-budget study default resolves without its study,
-  `plain_roles`: solvers sub file "Model path"); `_sweep_value_problem` fits each sweep value the same way.
-- Memory estimate parts: `core.memory_estimate.MemoryEstimate` (gpu_steady, gpu_build_peak, host, gpu_run, items /
-  host_items / run_items, transient_items, gpu_external / external_extra / external_items; gpu_run = device bytes the
-  study allocates after the build: run_items stay once allocated (harmonic FDTD accumulators, growing probe traces,
-  the FDFD system / solution, adjoint caches, fixed-point field copies) + the largest phase of transient_items
-  ((phase, label, bytes): arrays freed when their phase ends, e.g. assembly temporaries, one solve's vectors, one
-  feature's adjoint solve, a refactorisation that runs only at a second frequency; phases of the whole model never
-  overlap, so `combine` takes the largest one, never their sum: an item alive across phases is a run item; a phase
-  that runs once before some run items exist (a single solve's assembly, a released cold-start factor) books
-  `phase_before_items(phase, later run items)`, so the sum stays the true peak); post-solve
-  field updates (DiffusionSystem flux: `diffusion_system_estimate(flux=, dissipation=)`); Session reads cache no
-  pixel-sized device arrays (a polar display image is gathered on the host); gpu_external = cuDSS factors outside the
-  cupy pool alive through the run, external_transient_items ((phase, label, bytes)) = factors alive only in a transient
-  phase, listed once per phase they live in (`cudss_factor.factor_device_bytes`, never a local formula; physics
-  estimators go through `definition_helpers.cudss_external(phases={label: phase(s)})`, one_at_a_time for unphased
-  factors released before the next is planned; external_extra = the largest factorisation's peak on top); a MUMPS /
-  PARDISO factor (solvers.host_direct, host memory outside numpy) is a host item, never an external one:
-  `host_direct.factor_host_bytes` (or a booked SuperLU item x `superlu_bytes_scale(name)`) + `solver_host_bytes`, its
-  fill / workspace constants uncalibrated (an estimator left at the plain SuperLU size says so in its sub file). The budget
-  check uses `device_peak` = max(build peak, steady + run items + the largest phase of (its pool transients + the
-  factors alive in it)) + gpu_external + external_extra, `external_peak` (the external_memory record) = gpu_external +
-  the largest phase of phase-bound factors + external_extra: split a solve into phases in the order the code allocates
-  (mechanics `eigen_device_items`: pencil set-up before the factor, the eigs M mirror and the Arnoldi solve with it),
-  never one phase holding arrays that are never live together) = model arrays
-  (MaterialGrid union of `material_schema`, dynamic material updates, couplings) + every `PhysicsType.memory_estimate(
-  settings, mesh, MemoryContext)` + every enabled `FeatureType.memory_estimate(values, n_selected_cells, mesh)`
-  (bounding-box cells), combined as parts built in sequence plus the build caches. `validate(..., memory_budget=,
-  host_budget=)` errors when device_peak / host exceeds its budget and warns above `MEMORY_WARN_FRACTION` (80 %); without
-  a host budget the fixed 8 GiB host warning applies. `solver_defaults.memory_check` 'warning' turns every over-budget
-  error into a warning (check_memory, `_sweep_value_problem` returning (text, level), study_adaptation `_memory_problem`
-  never stopping a refinement for memory): a new budget check takes its level from `schema.memory_check_level(spec)`.
-  The budget issues sit at ('mesh', name) of `validate.memory_verdict` (the used mesh with the largest part:
-  `validate(memory_parts=)` = estimate_memory's by_mesh, else computed when an issue is reported). An over-budget error
-  is final only on a built element mesh (`meshing.awaits_built_mesh`: any triangle / tetrahedron estimate not yet
-  counts_built): a triangle / gmsh or swept tetrahedron estimate is a size-field integral
-  (`meshing.has_estimated_counts`; builtin tetrahedra counts are exact, but their factor fill still needs the built
-  mesh; the size integral is too low as well as too high, e.g. 0.36x on the graded 5 mm hirsch2025 mesh), so build,
-  whenever a used element mesh is not built, and api.check, when
-  `refused_on_estimated_counts`, first validate without budgets (other errors come before a mesher run), mesh
-  (`meshing.built_mesh_estimates` -> `with_built_counts`, `counts_built`, + `estimate.dissection`: the built mesh's
-  fem.dissection.MeshDissection, from which a physics estimator counts its cuDSS factor entries instead of using a
-  growth law; build keeps the meshes for its domain stage
-  through `element_meshes_kept`, so no second mesher run) and judge those counts (build: also its ledger check);
-  plain validate reports the error with a note naming the meshes still to build. Per sweep value and per refinement level the check is still on the size-based estimate.
-  The runtime guards stay either way (pool limit, the cuDSS plan check of its own estimate against free memory). Budgets: builder = `gpu_memory.budget_bytes()` minus the pool
-  bytes other live sessions hold and `core.host_memory.available_bytes()` (None when unknown); GUI = the worker's last
-  MemoryStatus `budget` / `host_available` (5 % tolerance); CLI check / show = host RAM (api.check only its arguments).
-- Build: an exception in a step becomes ModelError with one Issue at that step's path ('parameters', 'geometry',
-  'mesh', 'material', 'physics', 'feature', 'coupling', 'model' for `runner.prepare`; a solver: ('solver', node), on
-  Automatic its physics). Validation warnings / infos only go to `log`; `BuildSummary.warnings` = `BuildContext.log`
-  warnings (+ the estimate-check warning).
-- Build memory: `build` = CPU part (validate, parameters, geometry, memory estimate) + `_build_on_gpu` (ledger stages:
-  domain, material arrays per type, materials, one per (physics, role) solver, physics create, feature apply,
-  material updates, physics finalize, couplings, runner prepare, build temporaries freed (negative), `finish()` books
-  the rest as 'other (untracked)'). Any exception leaving `_build_on_gpu` gets `exc.build_memory` (failed_owner = the
-  raising stage); build_session copies it into BuildFailed and logs `gpu_memory.ledger_text` on OOM. `peak_bytes`
-  (pool reserved minus used at the start) relies on the pool being emptied before the build (`build_session` frees
-  the cached blocks first: an api Results kept open leaves its blocks cached) and no `free_all_blocks` during it. A
-  new build stage gets its own `MemoryLedger.track(owner)` (nesting raises RuntimeError), else its bytes land in
-  'other (untracked)'. The record (`Session.build_memory`, `BuildSummary.gpu_*`, BuildFailed / OOM StudyFailed
-  `.build_memory`, summary.json) is CPU data only. The builder compares it with `meshing.estimate_memory`
-  (`builder.estimate_verdict`, differences within 1 MiB not judged): the estimate should sit just below, a warning
-  when it is above ('over': it books what was not held) or more than ESTIMATE_SMALL_ITEMS (25 %) below
-  ('unaccounted': an unlisted array). After each run `study._run_built` compares the pool's reserved
-  high-water mark minus `Session.pool_baseline_bytes` with gpu_steady + gpu_run the same way
-  (`builder.run_memory_record`, summary `run_memory`), and the outside-pool high-water mark of the live cuDSS solvers
-  since `build_session` (`cudss_factor.external_high_water_bytes` minus `Session.external_baseline_bytes`) with
-  gpu_external + external_extra (`builder.external_memory_record`, summary `external_memory`). Free bytes `free_all_blocks` cannot return (chunk remainders
-  around arrays of earlier open Results) are left out of build peak and run memory (`start_free_bytes`,
-  `pool_baseline_free_bytes`), floored at the used-bytes growth. Temporaries placed in those blocks do not raise
-  the reserved mark, so the held bytes lie in [measured, measured + those free bytes] (`peak_unseen_bytes`,
-  run_memory `unseen_bytes`): verdict and deviation use the point of that interval nearest the estimate
-  (`builder.estimate_gap`; an estimate inside it is not judged). adaptation_tensor_strip_heater: its second run
-  starts beside the first run's open Results and read build peak -61 % where the same model alone reads -12 %.
-- Session lifetime: `Session.close()` (idempotent) clears solvers, couplings, features, renderers and caches
-  (`Simulation.clear()` / `MultiphysicsRunner.clear()`); a cleared Simulation is dead. Snapshots, spec, registry,
-  parameters stay; other accessors raise RuntimeError. `study.release_session(on_session, session, emit,
-  baseline_bytes)`: on_session(None), `close()`, `release_all` (gc, cuFFT cache, `free_all_blocks`); with emit, pool
-  use above `pool_baseline_bytes` + 1 MiB logs a 'GPU memory leak' warning (process-wide counters: a later live
-  session gives a false leak; api checks only when no later live Results exists). The run-start release in
-  `_run_single` skips the gc.collect when neither the pool nor cuDSS holds live bytes (the last close collected); a
-  sweep's per-value release (`collect_garbage=COLLECT_WHEN_LIVE`) collects only when pool used or cuDSS external
-  bytes after the close exceed what the last collect left (a cycle still holding device memory; refcount frees the
-  rest), and the first value's release always collects (before `freeze_collect_baseline`).
-- GPU OOM = cupy OutOfMemoryError or a CUDA / library error naming an allocation failure (host MemoryError is
-  ordinary): Issue at the failing step's node (outside any step ('model',)), memory released before BuildFailed /
-  StudyFailed (`out_of_memory=True`), run_study closes the run's session, a derived value gives NaN.
-- Conformal boundaries: when `schema.conformal_boundaries_physics` names any physics, the builder makes one
-  `boundary_locator.geometry_locator(ctx)` (host only: resolved shapes + the materials' expanded selections) and hands
-  it to each named solver by `set_conformal_boundaries` right after create, before its features (the solvers keep it;
-  Session.close frees them); `BuildContext.conformal_locator_of(name)` gives it during create already (2D FDTD
-  conformal pole weights). Honoured 2D grids: `PhysicsType.conformal_coordinates` (default cartesian; heat / potential
-  also polar, spherical); on a mapped window the locator maps logical coordinates by `DomainMap.to_physical` before
-  testing, so core.cut_cells works on logical cells unchanged; `material_test(index)` = the effective region of one
-  spec material. Tests use `geometry.rasterize` on float64 points (a centre within float32 rounding of an edge may
-  disagree with the build mask; callers fall back to the staircase link). 3D (`GeometryLocator(dimensions=3)`,
-  em_fdtd_3d only): `geometry.contains_points_3d` (the tetra tags' test) = the per-height `_section` rules per point
-  (prisms half-open along their axis with the taper offset per point, boxes / cylinder_z half-open in z, spheres
-  closed, composites recursive); a new 3D kind or prism option goes there (the build's x / y tapers sample 256 levels,
-  the point tests are exact).
-  `conformal_memory_estimate` is added by `meshing.estimate_memory`. Perimeter flux features reach the outline through
-  `definition_helpers.outline_pieces_of` / `outline_full_grid` (None without a locator or in 3D: the staircased
-  `perimeter_flux_weights`, metric-weighted on polar). Conformal model self-test cases run conformal_boundaries on only,
-  with tolerances below the staircase errors, so a silent staircase fallback still fails: keep it so in new cases.
-- Subpixel smoothing: when `schema.subpixel_smoothing_physics` names any physics, a 'subpixel geometry' ledger stage
-  after 'materials' runs `subpixel_geometry.interface_geometry(ctx)` (raster strips of STRIP_SAMPLES freed at once;
-  issues at ('solvers',)), then each named solver gets `set_subpixel_smoothing` right after create (buffers book under
-  the physics stage). The geometry is a local of `_build_on_gpu`, never on ctx / Session (solvers own it).
-  `subpixel_memory_estimate` is rough (bounding-box perimeters over the finest cell), inside the ledger tolerance only
-  because the arrays are small. 3D (`build_interface_geometry_3d`): the 2D builder runs once per `cross_section_runs`
-  run on a `_PlaneView` at the run's height and its sets are lifted to the run's layers (E_x / E_y faces take 1 -
-  stored n^2: the 2D sets store the hz component's); run boundaries sample cell-centre columns at Z_SAMPLES heights per
-  half cell (E_z faces z-normal; faces kept with fill 0 / 1 when every sample shows one material, since a dropped face
-  takes the arithmetic two-cell mean; per location the highest `_SCORES` candidate wins). Walls are vertical within a
-  run: tapers / spheres smoothed per layer, staircased along z (documented limit). All runs go through one
-  `build_section_geometries` call: per raster and kind, the mixed locations of every section (run) and strip share
-  gather batches (`_Batch`: windows copied from the strip image, coarse 4 x 4 neighbourhood, run index carried; a
-  multi-section batch is capped by `_batch_locations` so its windows + chunk temporaries stay within one strip's
-  painting bytes, a single section keeps LOCATION_CHUNK); per-location arithmetic is the old one, the merge keys on
-  section x plane + location. Run-boundary z sampling paints only the box of columns whose two runs differ (the faces
-  read nothing else). The build is backend-neutral (2D:
-  `array_module_of` the coarse index; 3D: `domain.xp`; host index work by `to_host`): a new array op there must exist
-  in numpy and cupy alike (no `cp.` names, no cupy-only kernels).
+- Triangle meshes (triangulate): `triangle_meshing.triangulate` (module header; mesh data and mesher rules: fem sub
+  file). `mesher_size_field` is the mesher's form of `meshing.triangle_size_field` (the estimate's raster): a size
+  rule changes in both. Element tags use the build-mask rule (`element_masks` -> `contained`, bit-identical to
+  rasterize), never a second point test. `mirror_x` / `mirror_y` mesh the half window and reflect it
+  (`_mirrored_parts`); the estimate takes the denser of each pixel and its image; asymmetric material objects only
+  warn (`mirror_mismatch`).
+- Tetrahedron meshes (MeshSpec kind 'tetrahedra'): sizes `meshing.tetrahedron_sizing` (the triangle rules through
+  `_element_sizing`), mesher `tetrahedral_meshing.tetrahedralize` (gmsh solids, sized regions / surfaces, Kuhn split:
+  its module header), estimate `_tetrahedron_estimate`. Every gmsh size field has its twin in
+  `tetrahedron_element_density` (estimate and mesh must agree: a new field adds both); gmsh counts are
+  TETRAHEDRON_FILL (uncalibrated) x a size integral, only builtin counts are exact. `material_elements` (elements
+  each material paints, the builder's rule) lets a physics whose dofs live on part of the mesh scale its estimate
+  (solid_mechanics_3d: stiff materials). Builder object masks and the mesh's `object_faces` both come from
+  `element_membership`: a tag rule changes there only. A non-EM physics pads the mesh with any boundary_config
+  carrying npml_sides (`pml3d.PMLPadding`). Session reads: `field_access_tetrahedra` (its refusals raise).
+- Builtin tetrahedra: `TetrahedronSizing.axis_edges` (`builtin_axis_edges` = `graded_window_edges` + the PML shell)
+  is the one grid of mesher and estimate (`sizing_axis_edges`), so the estimate is exact; its repr is
+  `axis_edges_digest` (swept: `layer_edges_digest`), so the element-mesh key follows every grading input. Snap merge
+  (core `snap_positions`): an unrefined film thinner than h_max / 4 keeps one face only (refine it to resolve both;
+  a swept mesh then tags it per element). A remainder-rounded segment may hold cells up to ~1.5x its target.
+- Swept prism layers (MeshSpec.sweep_axis 'z'): `model/swept_meshing.py` (rules in its header, user rules in the
+  sweep_axis help, refusals `swept_mesh_problem` / `swept_refinement_problem`), fem `prism_layers`. The footprint
+  goes through `triangle_meshing._plain_parts(..., size_field=)`: a change to the 2D mesher path reaches swept meshes.
+- Memory estimate (`meshing.estimate_memory`; parts per mesh: `_mesh_memory`): MESH_ESTIMATE_ERRORS are model errors
+  reported at their node (check_memory then stays silent), any other exception an internal-error Issue at
+  ('meshes',). Three budget checks: validate `check_memory` (`memory_verdict`: issues at ('mesh', the largest part);
+  80 % warnings, the 8 GiB host warning without a host budget), `_sweep_value_problem` (each sweep value, at
+  ('study',)) and study_adaptation `_memory_problem` (each next level, stops the refinement). All judge
+  `fitted_memory_estimate` (an over-budget study default resolves without its study: solvers sub file "Model path")
+  through `backend_memory` at `schema.memory_check_level`: a new budget check does the same. A refusal is final only
+  on built element meshes (`meshing.awaits_built_mesh`): build and api.check (`refused_on_estimated_counts`) validate
+  without budgets first, then mesh (`built_mesh_estimates`, kept for the build's domain stage) and judge the built
+  counts and `estimate.dissection` (the counted factor fill); per sweep value and refinement level the check stays on
+  the size-based estimate. Budgets: builder = `gpu_memory.budget_bytes()` minus the pool bytes of other live sessions
+  and `host_memory.available_bytes()`; GUI = the worker's last MemoryStatus; CLI check / show = host RAM; api.check
+  only its arguments.
+- Memory estimate parts: `core.memory_estimate.MemoryEstimate` (its docstring and `device_peak` / `external_peak`);
+  estimator rules: root "Physics definitions" ("Estimates mirror the solver"). Session reads cache no pixel-sized
+  device arrays (a polar display image is gathered on the host), so they book nothing; post-solve field updates do
+  (DiffusionSystem flux: `diffusion_system_estimate(flux=, dissipation=)`).
+- Build: every step runs under `builder._issue_at(path)`, so an exception becomes ModelError with one Issue at that
+  step's node (a solver: ('solver', node), on Automatic its physics; `runner.prepare`: ('model',)), and under
+  `ledger.track(owner)` (nesting raises; untracked bytes land in 'other (untracked)'): a new step gets both.
+- Build memory: the ledger's `peak_bytes` (pool reserved minus used at the start) relies on `build_session` emptying
+  the pool first and no `free_all_blocks` during the build. The record (`Session.build_memory`, BuildFailed /
+  StudyFailed `.build_memory`, summary.json) is CPU data only, so it travels with an exception without its frames.
+  Build, run and outside-pool records are judged by `builder.estimate_verdict` ('over' / 'unaccounted'). Free pool
+  blocks stranded beside earlier open Results hide temporaries from the high-water marks (`estimate_gap` takes the
+  nearest point of [measured, measured + unseen]): a run beside open Results reads low (adaptation_tensor_strip_heater
+  second run: build peak -61 %, alone -12 %), so judge estimators on a fresh process.
+- Session lifetime: `Session.close()` / `study.release_session` (docstrings); the Simulation it clears is dead. The
+  leak warning compares process-wide pool counters, so a later live session reads as a leak (api `Results.close`
+  skips the check then).
+- GPU OOM = `gpu_memory.is_out_of_memory` (cupy pool or a CUDA library allocation failure; host MemoryError is
+  ordinary), never a type or text match of its own. Build: Issue at the failing step (outside one ('model',)), memory
+  released before BuildFailed / StudyFailed (`out_of_memory=True`); run_study closes the session that ran out. A
+  handler that turns failures into NaN / warnings re-raises it (study series, live fields), except
+  `Session.derived_values` (NaN and a warning: the run's results stay).
+- Conformal boundaries (root "Physics definitions"; honouring types, cut geometry: core sub file "Cut geometry"):
+  one host `boundary_locator.geometry_locator(ctx)` per build, also during create (`BuildContext.conformal_locator_of`:
+  2D FDTD conformal pole weights). It tests float64 points by the build-mask
+  rules (`geometry.rasterize`; 3D `geometry.contains_points_3d`, where a new 3D kind or prism option goes), so a
+  centre within float32 rounding of an edge may disagree with the build mask: callers fall back to the staircase
+  link. Conformal self-test cases run with conformal_boundaries on only and tolerances below the staircase errors, so
+  a silent staircase fallback fails: keep it so in new cases.
+- Subpixel smoothing (averaging and ownership: em sub file "Subpixel smoothing"):
+  `subpixel_geometry.interface_geometry` runs once per mesh in a 'subpixel geometry' ledger stage after 'materials'
+  (issues at ('solvers',)). `subpixel_memory_estimate` is rough (bounding-box perimeters), within the ledger
+  tolerance only because the arrays are small. The build is backend neutral (`array_module_of` the coarse index / `domain.xp`, host work by `to_host`):
+  a new array op there must exist in numpy and cupy alike (no `cp.` names, no cupy-only kernels).
 - Static materials: later materials win whole cells, but a selection containing 'all' only fills uncovered cells
   (`geometry.material_paint_order` is the one rule; `paint_material_index` paints it for preview, validation fallback
   and builder, whose region masks are `index == k + 1`). Only `material_properties` of present types that the

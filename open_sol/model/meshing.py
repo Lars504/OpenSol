@@ -2172,7 +2172,7 @@ def _tetrahedron_estimate(spec, mesh_spec, parameters, registry, shapes):
         n_elements, n_nodes, n_edges, smallest, centres, elements = swept_estimate(spec, parameters, shapes, sizing)
     elif sizing.mesher == 'builtin':
         edges = sizing_axis_edges(sizing, window_high)
-        cells =[len(axis_edges) - 1 for axis_edges in edges]
+        cells = [len(axis_edges) - 1 for axis_edges in edges]
         nodes = [count + 1 for count in cells]
         n_elements = 6 * math.prod(cells)
         n_nodes = math.prod(nodes)
