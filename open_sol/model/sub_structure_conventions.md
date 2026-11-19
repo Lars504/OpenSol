@@ -1089,6 +1089,11 @@ templates, describe. Current state, no changelog.
   label prefix gets a rule in `_Builder._memory_step` / `_time_step`. Study steps are per StudyType name in
   `_study_steps` (a new study type falls back to its summary with a note: add its steps there); the study's
   `time_counts` are listed generically. Time items come from one run (per_run); the whole-study total from estimate_time.
+  Measured values (`build_record`, `study_summary` of a run of the same model): build ledger owners go to steps by
+  `_Builder._ledger_step` (model.builder's `ledger.track` owner names, per-mesh ones suffixed ' <mesh>' with several
+  meshes: a new or renamed owner needs a rule there, else it lands in 'unplaced'); time_check items by label (a
+  multi-run check: the last '<run>: <label>' record), seconds groups by counter path (`_group_step`; 'study' = the
+  first study step). Items are timed per group only: an item's measured seconds = its count x the group ratio.
 
 ## Registry, templates, describe
 - CouplingType source_type / target_type are None, a name or a tuple: test only with `schema.coupling_type_accepts` /

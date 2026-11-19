@@ -409,14 +409,17 @@ Sub file of the root `structure_conventions.md`. GUI gotchas.
   estimate, else dx outside auto, so it shows when the estimate fails). Estimate adds
   `meshing.line_block_hint` only when a line_block solver fits a role (`_line_block_fits`).
 - Solve flow window (`solve_flow_view.py`, Solvers form button 'Show solve flow…' -> `show_solve_flow`: one
-  non-modal `SolveFlowDialog` per document, a child of the main window, found again by `findChildren`): draws
-  `model.solve_flow.solve_flow` of the document's cached estimates only (`used_mesh_estimates`, fitted
-  `memory_estimate` + `plain_roles()`, `run_time_estimate()` = estimate_time per_run (counters kept: solver items go to
-  their role box), `time_overheads()`, `time_estimate()` for the whole-study total): GUI thread, nothing run, no
-  `bridge.call`. Redraw debounced 400 ms after `changed` / `issues_invalidated`, only while visible (showEvent redraws a
-  dirty chart), keeping the selected step by key; the first draw zooms to fit within _MIN / _MAX_READABLE_SCALE (a tall chart
-  scrolls from its top; 'Fit to window' fits whole), and showEvent sets the splitter share once (the text browser's size hint
-  would take most of the width). Boxes paint their own texts (kind tag, title,
-  subtitle, estimate line: one elided line each, full texts in the tooltip) and bars in `_StepBox.paint`; the row kind
-  is the box tag (no label column). Box fills are light with dark text in every theme; mesh / materials borders take
+  non-modal `SolveFlowDialog` per document, a child of the first ancestor holding `bridge` (MainWindow), found again by
+  `findChildren`): draws `model.solve_flow.solve_flow` of the document's cached estimates only (`used_mesh_estimates`,
+  fitted `memory_estimate` + `plain_roles()`, `run_time_estimate()` = estimate_time per_run (counters kept: solver
+  items go to their role box), `time_overheads()`, `time_estimate()` for the whole-study total): GUI thread, nothing
+  run, no `bridge.call`. Measured values = `bridge.last_build_summary` (ledger gpu_breakdown / stage_seconds) and
+  `last_study_summary` (time_check, run_memory, external_memory), passed only while `results_inputs` of
+  `bridge.results_spec` equals the document's (the Results panel's out-of-date rule), else a note says why; boxes then
+  grow a green measured line. Redraw debounced 400 ms after `changed` / `issues_invalidated` / every bridge build or
+  run end, only while visible (showEvent redraws a dirty chart), keeping the selected step by key; the first draw fits
+  the whole chart, the mouse wheel zooms (no scrolling), and showEvent sets the splitter share once (the text browser's
+  size hint would take most of the width). Boxes paint their own texts (kind tag, title, subtitle, estimate and
+  measured lines: one elided line each, full texts in the tooltip) and bars in `_StepBox.paint`; the row kind is the
+  box tag (no label column). Box fills are light with dark text in every theme; mesh / materials borders take
   `helpers.mesh_color`. A new step kind needs `_KIND_COLORS` and `_KIND_TAGS` entries.
