@@ -1,6 +1,9 @@
 """Solve flow window (Solvers > Show solve flow): the model.solve_flow chart of the document drawn as boxes and arrows,
 and for the clicked step its solver choice, memory items and run-time items with the ops they are priced from."""
 import html
+import math
+import sys
+import traceback
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
@@ -148,18 +151,28 @@ class SolveFlowDialog(QtWidgets.QDialog):
             return
         self._dirty = False
         document = self.document
-        estimates, _errors = document.used_mesh_estimates()
-        run_time, message = document.run_time_estimate()
-        study_time, _ = document.time_estimate()
-        self.flow = solve_flow(document.spec, document.registry, document.parameters(), estimates,
-                               document.memory_estimate(), document.plain_roles(), run_time,
-                               document.time_overheads(), study_time, message)
         keep = self._selected_key
         self.scene.blockSignals(True)
         try:
             self.scene.clear()
+            self._boxes = {}
+            self.flow = None
+            estimates, _errors = document.used_mesh_estimates()
+            run_time, message = document.run_time_estimate()
+            study_time, _ = document.time_estimate()
+            self.flow = solve_flow(document.spec, document.registry, document.parameters(), estimates,
+                                   document.memory_estimate(), document.plain_roles(), run_time,
+                                   document.time_overheads(), study_time, message)
             self._boxes = _draw_flow(self.scene, self.flow, document.spec)
             self.scene.setSceneRect(self.scene.itemsBoundingRect().adjusted(-24, -24, 24, 24))
+        except Exception:   # a solve_flow / drawing bug: shown in the window and logged, never a blank window
+            self.scene.clear()
+            self._boxes, self.flow = {}, None
+            self.details.setHtml('<h3 style="color:#b00020">The solve flow could not be drawn</h3>'
+                                 '<p>This is a bug in the solve flow; the traceback is also in the Messages tab.</p>'
+                                 f'<pre>{html.escape(traceback.format_exc())}</pre>')
+            sys.excepthook(*sys.exc_info())
+            return
         finally:
             self.scene.blockSignals(False)
         self._select(keep if keep in self._boxes else None)
@@ -353,6 +366,13 @@ def _box_fonts():
     return tuple(_FONTS)
 
 
+def _share(value, largest) -> float:
+    """value / largest in [0, 1]; 0 for a zero or non-finite pair (NaN geometry can crash Qt's painter)."""
+    if not largest or not math.isfinite(largest) or not math.isfinite(value):
+        return 0.0
+    return min(max(float(value) / float(largest), 0.0), 1.0)
+
+
 def _elided(text, font, width) -> str:
     return QtGui.QFontMetricsF(font).elidedText(text, QtCore.Qt.TextElideMode.ElideRight, max(width, 0.0))
 
@@ -388,8 +408,8 @@ def _draw_flow(scene, flow, spec) -> dict:
     for step in flow.steps:
         border = (mesh_color(spec, step.key.split(':', 1)[1]) if step.kind in ('mesh', 'materials')
                   else _BORDER_COLOR)
-        shares = (step.memory_bytes / largest_bytes if largest_bytes else 0.0,
-                  step.time_seconds / largest_seconds if largest_seconds else 0.0)
+        shares = tuple(_share(value, largest) for value, largest in ((step.memory_bytes, largest_bytes),
+                                                                     (step.time_seconds, largest_seconds)))
         box = _StepBox(step, rects[step.key], _KIND_COLORS.get(step.kind, '#eeeeee'), border, shares)
         box.setZValue(2)
         box.setToolTip(rich_tooltip(step.title, step.subtitle, step.explanation))

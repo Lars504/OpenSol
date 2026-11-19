@@ -202,6 +202,9 @@ def solve_flow(spec, registry, parameters, meshes, memory=None, plain_roles=froz
             builder.place_time(estimate.items, source)
             builder.place_not_estimated(estimate.not_estimated)
     builder.add_unplaced_step(lanes)
+    if builder.bad_times:
+        notes.append('Time items with a non-finite estimate (an estimate bug; counted as 0 s here): '
+                     + '; '.join(builder.bad_times))
     links = tuple(FlowLink(f'physics:{coupling.source}', f'physics:{coupling.target}', coupling.name)
                   for coupling in spec.couplings if coupling.enabled
                   and coupling.source in physics_lanes and coupling.target in physics_lanes)
@@ -238,6 +241,7 @@ class _Builder:
         self.order = []
         self.mesh_of_physics = {}
         self.solver_keys = {}   # (physics, role) -> step key
+        self.bad_times = []     # labels of time items whose seconds are not finite (an estimate bug)
 
     def _row(self, kind, label=None):
         if kind not in self.row_of_kind or kind == 'study':
@@ -397,6 +401,9 @@ class _Builder:
         for item in items:
             key, short = self._time_step(item, source)
             seconds = item.counts()[1] * (item.seconds_per_unit or 0.0)
+            if not math.isfinite(seconds):   # listed in the notes; kept out of the step sums
+                self.bad_times.append(f'{item.label}: {item.count!r} x {item.seconds_per_unit!r} s')
+                seconds = 0.0
             self._target(key)['time'].append(TimeEntry(short, item, source, seconds))
 
     def place_not_estimated(self, labels):
