@@ -19,6 +19,7 @@ from ..solvers.roles import SolverRequest
 from .expressions import (FIELD_COORDINATE_NAMES, THREE_D_COORDINATE_NAMES, TIME_NAMES, Expression, ExpressionError,
                           compile_expression, error_message, evaluate_parameters, evaluate_scalar)
 from .build_masks import mesh_masks
+from .definition_helpers import uses_time
 from .geometry import (GEOMETRY_KINDS, cross_section_runs, domain_map, domain_object_rasterizer, expand_entities,
                        paint_material_index, point_z, resolve_geometry)
 from .meshing import make_domain, mesh_material_types, optional_material_arrays, physics_settings
@@ -290,7 +291,7 @@ class BuildContext:
         TimeDependentUpdate attached after the features; setter runs only when the value changed (setters are
         incremental, so a repeat is a no-op: ramps that level off, steps). ExpressionError for a value outside
         bounds_param's range."""
-        if not (isinstance(value, Expression) and not value.names.isdisjoint(TIME_NAMES)):
+        if not uses_time(value):
             setter(self.eval_scalar(value) if isinstance(value, (str, Expression)) else value)
             return
         runner = self.sim.runner

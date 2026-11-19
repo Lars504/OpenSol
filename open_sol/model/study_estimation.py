@@ -11,7 +11,7 @@ from .analytic import split_key
 from .estimation import curve_model, fit_statistics, resolve_estimation, weighted_residuals
 from .expressions import evaluate_parameters
 from .meshing import element_meshes_kept
-from .study import (Cancelled, LogEvent, Progress, StudyFailed, StudyStarted, _clamped_fraction, _fail_sweep_setup,
+from .study import (LogEvent, Progress, StudyFailed, StudyStarted, _clamped_fraction, _fail_sweep_setup,
                     _parity_sectors_requested, _record_failure, _run_built, build_session, release_session,
                     summed_runs)
 
@@ -134,11 +134,8 @@ class _Estimation:
         resolved = self.resolved
         if self.evaluations >= resolved.max_evaluations:
             raise _Stop('max_evaluations', f'max_evaluations ({resolved.max_evaluations}) reached')
-        if self.evaluations > 0:
-            try:
-                self.control.checkpoint(self.service)
-            except Cancelled:
-                raise _Stop('cancelled', f'cancelled after {self.evaluations} evaluations') from None
+        if self.evaluations > 0 and self.control.checkpoint_cancelled(self.service):
+            raise _Stop('cancelled', f'cancelled after {self.evaluations} evaluations')
         values = resolved.values_of(key)
         self.evaluations += 1
         index = self.evaluations

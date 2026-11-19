@@ -22,15 +22,15 @@ from ..core.memory_estimate import BOOL_BYTES, FLOAT32_BYTES, MemoryEstimate, co
 from ..core.mesh import SEGMENT_PROFILES, MeshConfig, complete_axis_edges, has_uniform_spacing, segment_widths
 from ..materials import effective_material_data
 from ..physics.em.dispersion import complex_permittivity
-from .expressions import TIME_NAMES, ExpressionError, evaluate_scalar, referenced_names
+from .expressions import ExpressionError, evaluate_scalar
 from .geometry import (GEOMETRY_KINDS, axis_parallel_faces, bounding_box, contains_points_3d, domain_map, domain_size,
                        domain_size_z, expand_entities, is_plain, line_orientation, material_selections,
                        paint_material_index, point_z, rasterize_window, resolve_geometry, z_extent)
 from .schema import (MESH_KIND_DEFAULTS, MESH_PARAMS, DomainRequirements, array_owner, get_registry,
-                     permittivity_arrays, resolve_values, resolved_solvers, solver_backend, state_field_names,
-                     study_default_roles)
+                     permittivity_arrays, resolve_values, resolved_solvers, solver_backend, study_default_roles)
 from .spec import REFINEMENT_PLACES
 from .boundary_locator import conformal_memory_estimate
+from .definition_helpers import dynamic_material_values
 from .subpixel_geometry import subpixel_memory_estimate
 
 MAX_MESH_CELLS = 400_000_000
@@ -2654,20 +2654,7 @@ def _feedback_copy_count(spec, registry, n_updates, names=None):
 def _state_dependent_property_count(spec, registry, property_names=None):
     """Material property values (of property_names; None: any) that reference a physics state field or time t (one
     DynamicMaterialUpdate each)."""
-    state_names = frozenset(state_field_names(spec, registry)) | TIME_NAMES
-    count = 0
-    for material in spec.materials:
-        if not isinstance(material.properties, dict):
-            continue
-        for name, value in material.properties.items():
-            if not isinstance(value, str) or (property_names is not None and name not in property_names):
-                continue
-            try:
-                if not referenced_names(value).isdisjoint(state_names):
-                    count += 1
-            except ExpressionError:   # reported by validate
-                continue
-    return count
+    return sum(1 for _ in dynamic_material_values(spec, registry, property_names))
 
 
 def _build_cache_bytes(mesh, regions):

@@ -272,7 +272,7 @@ class SweepSpec:
     True): keep the snapshots of every sweep value (summary sweep 'snapshots'), False only the last one's. reuse_build:
     build once and re-set the following feature values per value (model.sweep_reuse)."""
     parameter: str
-    values: list = field(default_factory=list)
+    values: list = field(default_factory=list)   # spacing 'list' only (kept, unused otherwise): read point_values()
     keep_fields: bool = True
     spacing: str = 'list'
     lower: float | int | str | None = None

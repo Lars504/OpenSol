@@ -5,12 +5,11 @@ thermoelastic_damping features."""
 from dataclasses import replace
 
 from ...core.memory_estimate import MemoryEstimate, host_real_lu_bytes
-from ...model.definition_helpers import (conducting_fraction, eigen_search, evaluates_to, optional_material_param,
-                                         reports_model_checks)
-from ...model.expressions import TIME_NAMES, ExpressionError, evaluate_scalar, referenced_names
+from ...model.definition_helpers import (conducting_fraction, eigen_search, evaluates_to, material_follows_state,
+                                         optional_material_param, reports_model_checks)
+from ...model.expressions import ExpressionError, evaluate_scalar
 from ...model.geometry import expand_entities
-from ...model.schema import (FREE_MESH_KINDS, FeatureType, Issue, Param, feature_path, resolve_values,
-                             state_field_names)
+from ...model.schema import FREE_MESH_KINDS, FeatureType, Issue, Param, feature_path, resolve_values
 from ...solvers.pcg import resolve_max_iterations
 from .material_params import (PHOTOELASTIC_P11_PARAM, PHOTOELASTIC_P12_PARAM, POISSON_RATIO_PARAM,
                               YOUNGS_MODULUS_PARAM)
@@ -903,21 +902,9 @@ def support_result(solver, region, axes, unit):
 
 
 def stiffness_follows_state(context):
-    """True when a spec material's youngs_modulus or poisson_ratio references a physics state field or time t (the
-    operator is re-assembled during the run)."""
-    state_names = frozenset(state_field_names(context.spec, context.registry)) | TIME_NAMES
-    for material in context.spec.materials:
-        properties = material.properties if isinstance(material.properties, dict) else {}
-        for name in STIFFNESS_ARRAYS:
-            value = properties.get(name)
-            if not isinstance(value, str):
-                continue
-            try:
-                if not referenced_names(value).isdisjoint(state_names):
-                    return True
-            except ExpressionError:   # reported by validate
-                continue
-    return False
+    """True when a spec material's stiffness (youngs_modulus, poisson_ratio, c_ij) references a physics state field or
+    time t (the operator is re-assembled during the run)."""
+    return material_follows_state(context, STIFFNESS_ARRAYS)
 
 
 # ---- reused sweep builds (SweepSpec.reuse_build; model.sweep_reuse) ----

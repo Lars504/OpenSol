@@ -356,22 +356,28 @@ def optimization_evaluations(context) -> tuple:
     return min(float(context.count('iterations', 1)) + 1.0, limit), 'guess', limit
 
 
-def material_follows_state(context, property_names) -> bool:
-    """Whether a spec material sets one of property_names to an expression of a physics state field or time t (a
-    DynamicMaterialUpdate re-writes it during the run)."""
-    state_names = frozenset(state_field_names(context.spec, context.registry)) | TIME_NAMES
-    for material in context.spec.materials:
-        properties = material.properties if isinstance(material.properties, dict) else {}
-        for name in property_names:
-            value = properties.get(name)
-            if not isinstance(value, str):
+def dynamic_material_values(spec, registry, property_names=None):
+    """(material, property name) of every spec material value (of property_names; None: any) that references a
+    physics state field or time t: the builder makes each a DynamicMaterialUpdate (builder._is_dynamic), re-written
+    during the run. The one CPU rule for "is this property dynamic" (estimates, validate, refactorisation choices)."""
+    state_names = frozenset(state_field_names(spec, registry)) | TIME_NAMES
+    for material in spec.materials:
+        if not isinstance(material.properties, dict):
+            continue
+        for name, value in material.properties.items():
+            if not isinstance(value, str) or (property_names is not None and name not in property_names):
                 continue
             try:
                 if not referenced_names(value).isdisjoint(state_names):
-                    return True
+                    yield material, name
             except ExpressionError:   # reported by validate
                 continue
-    return False
+
+
+def material_follows_state(context, property_names) -> bool:
+    """Whether a spec material sets one of property_names to an expression of a physics state field or time t (a
+    DynamicMaterialUpdate re-writes it during the run)."""
+    return next(dynamic_material_values(context.spec, context.registry, property_names), None) is not None
 
 
 def resolved_stepper_precision(solvers) -> str:

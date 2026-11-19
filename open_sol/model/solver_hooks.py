@@ -116,7 +116,10 @@ class OptomechanicalSolver(Protocol):
 
 @runtime_checkable
 class WarmStartSolver(Protocol):
-    """Optional (study warm_start): host fields of the solve, written into the next sweep value's build."""
+    """Optional (study warm_start): host fields of the solve, written into the next sweep value's build (only on an
+    unchanged mesh; never device arrays: they would outlive their session, which release_session reports as a leak).
+    A class attribute warm_start_extrapolate = True gets float array fields extrapolated linearly in the swept value
+    over the last two states (factor clamped to [-1, 1])."""
     def warm_start_fields(self): ...
     def seed_warm_start(self, fields): ...
 

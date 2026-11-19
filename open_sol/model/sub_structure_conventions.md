@@ -231,170 +231,67 @@ templates, describe. Current state, no changelog.
   (issues at ('solvers',)). `subpixel_memory_estimate` is rough (bounding-box perimeters), within the ledger
   tolerance only because the arrays are small. The build is backend neutral (`array_module_of` the coarse index / `domain.xp`, host work by `to_host`):
   a new array op there must exist in numpy and cupy alike (no `cp.` names, no cupy-only kernels).
-- Static materials: later materials win whole cells, but a selection containing 'all' only fills uncovered cells
-  (`geometry.material_paint_order` is the one rule; `paint_material_index` paints it for preview, validation fallback
-  and builder, whose region masks are `index == k + 1`). Only `material_properties` of present types that the
-  material sets are written (defaults never filled); a name shared by several present types uses its first Param with
-  expands_to the ordered union; an isotropic property writes only arrays no later property of the same material
-  writes; non-finite values are checked only under the mask. Same-named properties across types need equal kind,
-  unit, min / max and flags (`register_physics` raises; `Registry.material_property_params()` keeps the first).
-- `Simulation.add_material(mask, material, dispersion, **properties)` is the script copy of those rules (keep both in
-  step): present types = registered types whose `material_schema` arrays all exist; Drude background + poles on every
-  solver with `add_dispersive`; numbers / full-grid arrays only; later calls win cells, but a mask overlapping
-  existing pole cells raises (poles are never removed). Script names and defaults follow the model (`waveform`, EM
-  point `current` 1e-3 A); heat / potential take coordinates via `add_probe_at` / `add_point_heat_source_at`.
-- Permittivity: eps_xx / eps_yy / eps_zz win over eps_r per array (`schema.array_owner`, `permittivity_arrays`). The
-  E_z types (em_fdtd_ez, em_fdfd_ez) map eps_r and eps_zz to eps_r, the H_z types eps_r to eps_xx + eps_yy.
-- `PhysicsType.optional_material_schema` {array: (default, trigger properties)}: `meshing.optional_material_arrays`
-  (builder allocation and model-array estimate alike) allocates an array only when a spec material (library merged)
-  sets a trigger property to anything but None; `builder.owned_property_writes` (also Simulation.add_material) skips unallocated arrays, so an expands_to
-  entry may name one (em_fdtd_3d eps_xx / eps_yy / sigma_m). Consumers check `materials.property_names()`.
-- Memory estimate selections (`_selection_cells`, region box_cells, feature n_selected_cells) are 3D box cell counts
-  in 3D (z cells of the union `z_extent`, open prism ends clamped); `MaterialRegionInfo.box_bounds` holds that box's
-  per-axis (first, last) full-grid cells (em_fdtd_3d sizes its pole boxes from them).
-- A state-dependent property becomes DynamicMaterialUpdate '<material>.<property>' (every = largest stride of the
-  physics it reads), ahead of user couplings; one using t too (`builder._is_dynamic`; t only: every = the smallest
-  stride, a 0-d value under the mask) reads `runner.t` at each cadenced tick (the clock moves first). Code asking "is
-  this property dynamic" tests state names | `expressions.TIME_NAMES` (meshing count, mechanics
-  `stiffness_follows_state`, em `_permittivity_writer_issues`).
-- Feature values of t (Param `time_dependent`, resolved to an Expression of parameters and t): the apply hands them to
-  `BuildContext.follow_time(value, setter, solver, label, bounds_param)` (plain numbers: setter once), which sets the
-  value at t = 0 and registers a `TimeDependentUpdate` (after the material updates, before user couplings) calling
-  setter(value(t)) before every step of that physics whose value changed (an equal value skips the setter, so a setter
-  must not rely on being re-called). A setter must be cheap and incremental (a source adds the change to its applied
-  array; a face value updates in place: `DiffusionPhysicsBase.set_face_value`, `FluidPhysics.set_face_value`), never
-  re-allocate per step; `definition_helpers.uses_time` tells the apply.
-- resonance_monitor is one shared row (`definition_resonance.resonance_monitor_feature`) over a physics'
-  `ResonanceProbe` declaration (probe of 1 to MAX_POINTS points with one joint pole fit, dt read at result time, source
-  waveforms, unit, per-component sample delay in steps (a declaration, never a name rule; self-stamping probes declare
-  none), band 'wavelength' for EM / 'frequency' else). A new time-stepped physics with a point probe declares one
-  instead of copying the feature (numerics: core sub file "Resonance finder").
-- BuildContext: `object_window_mask` (window slices + cropped mask) / `perimeter_mask / perimeter_weights` are cached:
-  never modify them; `domain_mask` is fresh and 'all' includes the PML; perimeters cover window cells only;
-  `selection(entities, kind=None)` skips the kind check. On triangles: masks per element ((slice of all elements,),
-  mask by `geometry.rasterize` at float64 clamped centroids = the mesh's region rule), `eval_field` / painting give
-  (n_elements,) arrays, boundaries `boundary_edges(entities)` (edge tags of outer faces, object outlines, lines),
-  points `point_node(name)`; perimeter_mask / perimeter_weights raise there.
-- `ctx.masks` (build_masks.py, `mesh_masks(ctx)`): CartesianMasks / MappedMasks (2D windows; polar, spherical, 1D),
-  BoxMasks / SectorMasks (3D tensor: `paints_by_slabs` True = material_index per z-slab), TriangleMasks,
-  TetrahedraMasks. BuildContext keeps the public methods and delegates; a lookup the kind lacks raises in MeshMasks;
-  mask caches live on the masks object (`release_caches` -> `release`). A new grid kind = a MeshMasks subclass + its
-  mesh_masks entry, next to its FieldAccess.
-- `geometry.perimeter_weights` (object-perimeter heat_flux, convection, current_density, surface_charge) weights each
-  exposed face by |normal component| (Sobel gradient of the mask over 3x3 perimeter cells): slanted / curved edges
-  within ~2 % at any dx (fixed-stencil bias, no convergence), never the raw staircase (+27 % on circles). Thin cells
-  and axis corners keep the staircase, so rectangles stay exact; a concave corner loses ~0.02 dx. Feature applies call
-  `definition_helpers.perimeter_flux_weights(ctx, solver, objects)` (adds `x_face_scales` r_face / r_c on an
-  axisymmetric DiffusionSystem, uncached).
-- Session reads go through `session.access` (field_access*.py: TensorAccess / MappedAccess / LineAccess by DomainMap,
-  TriangleAccess, TetrahedraAccess; ElementAccess holds element selections). Session checks arguments, picks the mesh
-  view and delegates; the access calls back through `access.view`. A read a kind lacks raises ValueError in the base
-  class; a cross-mesh read asks the SOURCE view's access (`values_on_window(target, ...)`, `values_at(points)`). A
-  new grid kind = a FieldAccess subclass + its entry in session.ELEMENT_ACCESS (or the tensor choice in
-  `Session.access`); display caches live on the access, so `_mesh_view` / close reset `_access`. FieldData /
-  LineProfile / VolumeData live in field_data (session re-exports them).
-- Session (GPU-owning thread only): `field()` native cells with centres; `display_field()` native on uniform meshes
-  up to max_pixels, else nearest-cell resampling on square pixels (graded always); `canvas_field()` = `field()` on
-  graded Cartesian tensor planes up to CANVAS_NATIVE_CELLS, else `display_field()`. Snapshots take `field` when the
-  field's mesh window has <= 250k cells, else `display_field`; results_io saves snapshot centres when present.
-  `evaluate` on window arrays ('mean' area-weighted, 'integral' per unit z length, parameters shadow fields; a solver
-  with `axisymmetric` True weights by 2 pi r_c, `_ring_weights`); 3D `_evaluate_planes` evaluates one z plane at a
-  time (`_plane_namespace`): field expressions are elementwise, so a new non-local function would break this. Failing
-  derived values give NaN plus a warning. dft results without freq_index hold metadata only.
-- `FieldInfo.requires_study` (e.g. harmonic FDTD phasors, 'frequency_domain'): `Session.available_fields` and GUI lists
-  drop it in other studies, validate rejects it as a stored field there, its `device_field` raises ValueError outside
-  the study (derived values: NaN + warning). It stays in `output_fields`.
-- 3D field access: every 3D read goes through `TensorAccess._plane_source(renderer, component)` -> plane(axis, window
-  index) (the renderer's `device_plane`, else slices of ONE `device_field` volume per read, never per plane).
-  `segment_profile(component, start, end, sampling)` -> host `LineProfile` (`analytic.segment_cells`: two samples per
-  finest cell, NaN outside; 'nearest' = containing cells, 'trilinear' = 8 surrounding centres, constant in the outer
-  half cells; one gather per touched z layer; no mirror unfolding); `volume(component, max_bytes=VOLUME_MAX_BYTES)` ->
-  host `VolumeData` one z plane at a time (ValueError above max_bytes before any fetch). `StudySpec.stored_cuts`
-  [[axis, position]] (3D only, `_check_stored_cuts`): `_SnapshotRecorder` stores the stored fields per cut in
-  `Snapshot.cuts[i]` (same 250k-cell rule per plane, counted in the 1 GB limit; `study.stored_cut_planes`), the summary
-  lists the recorded planes, the estimate adds one 'stored-cut snapshot planes' transient item (phase 'snapshot cut fetch'). A closed / loaded Results
-  has no `field(plane=)`, only `snapshot_field(..., plane=)` (nearest stored cut, or an index).
-- Shared reads of one state: `Session.shared_field_reads()` (Session.derived_values, each derived-series point) keeps
-  every 2D tensor window field per (mesh, physics, field) for the block (`TensorAccess.window_values`; 3D volumes are
-  not kept); `shared_plane_reads()` keeps one `_plane_source` per (mesh, renderer, component), so `_SnapshotRecorder`
-  takes all cuts and 3D-segment profiles of one stored field from one volume (one block per field: one volume held at
-  a time). Code inside a block must not step or re-solve; a blank physics' snapshot field is a NaN copy of its last
-  stored FieldData (no read).
+- Static materials: `geometry.material_paint_order` / `paint_material_index` is the one painting order (later
+  materials win whole cells, a selection containing 'all' only fills uncovered cells) for builder, preview,
+  validation, meshing estimates and the symmetry check: never a local order. Only properties the material sets are
+  written (unset arrays keep the MaterialGrid defaults); which arrays a set property writes:
+  `builder.merged_property_params` / `owned_property_writes`, shared with `Simulation.add_material` (its script
+  differences are in its docstring; script names and defaults follow the model: `waveform`, EM point `current`
+  1e-3 A). Code asking which property writes an array (eps_xx / _yy / _zz win over eps_r) uses `schema.array_owner`.
+- An `optional_material_schema` array exists only when triggered (schema comment): a solver reading one checks
+  `materials.property_names()` first.
+- A material value of state names or t becomes a DynamicMaterialUpdate '<material>.<property>'
+  (`builder._dynamic_update`), ahead of the time updates and user couplings. CPU code asking "is this property
+  dynamic" (estimates, refactorisation choices) uses `definition_helpers.dynamic_material_values` /
+  `material_follows_state`, never its own name test.
+- Feature values of t (Param `time_dependent`): the apply hands them to `BuildContext.follow_time` (docstring: when
+  the setter runs; `definition_helpers.uses_time` tells the apply). A setter is cheap and incremental (a source adds
+  the change to its applied array; a face value updates in place: `DiffusionPhysicsBase.set_face_value`,
+  `FluidPhysics.set_face_value`), never re-allocates per step and is not re-called for an equal value.
+- resonance_monitor: a new time-stepped physics with a point probe declares a `ResonanceProbe`
+  (`definition_resonance`) instead of copying the feature (numerics: core sub file "Resonance finder").
+- BuildContext masks: the cached ones (`object_window_mask`, `object_box_mask`, `perimeter_mask` / `_weights`) are
+  shared across features: never write into them (cupy has no read-only flag); `domain_mask` is fresh. Object-perimeter
+  fluxes (heat_flux, convection, radiation, current_density, ...) take
+  `definition_helpers.perimeter_flux_weights(ctx, solver, objects)` (adds the (r, z) / polar face scales), never
+  `ctx.perimeter_weights` alone; `geometry.perimeter_weights` weights each exposed face by |normal| (curved edges
+  within ~2 %, rectangles exact; the raw staircase is +27 % on circles).
+- Session reads: Session checks arguments, picks the mesh view and delegates to `session.access` (root "Meshes per
+  physics"); a cross-mesh read asks the SOURCE view's access (`values_on_window(target, ...)`, `values_at(points)`).
+- 3D field access: every 3D read (cuts, `segment_profile`, `volume`, snapshot cuts) slices planes from
+  `TensorAccess._plane_source` (the renderer's `device_plane`, else ONE `device_field` volume per read, shared inside
+  `Session.shared_plane_reads`), never a device_field per plane; host volumes come one z plane at a time. A closed /
+  loaded Results has no `field(plane=)`, only `snapshot_field(..., plane=)` (nearest `StudySpec.stored_cuts` plane).
+- `FieldInfo.requires_study` fields stay in `output_fields`: code listing readable fields filters through
+  `Session.available_fields`; reading one outside its study raises ValueError (derived values: NaN + warning).
 - Validation never raises (a callback exception becomes an 'internal error in <owner>' Issue). A type's validate runs
   after the generic checks (unknown keys, visible param values, 'ref' / 'names' targets, selection kind / object_kinds
   / counts, `requires_uniform_mesh`): do not repeat them; ValidationContext helpers return None / [] for problems
-  reported elsewhere. Model-wide material checks run once, in the first physics of each type (EM: first of family
-  'em'); domain size is reported at ('geometry',). Messages name the offending value (`short_repr`) and the valid
-  alternatives. Other checks see only the base parameter values; `_check_sweep` re-runs parameters, geometry, domain
-  size, `estimate_mesh` and (with a budget) `estimate_memory` per sweep value (when the base passes them).
-- Sweep values: read `SweepSpec.point_values()` (custom `values` for spacing 'list', else count linear / log points
-  lower..upper with exact end points), never `sweep.values` directly (kept but unused with a range spacing).
-  `study.sweep_values_of` evaluates them over the base parameters.
-- Symmetry check (`symmetry_check.symmetry_issues`, `check_symmetry` at the physics' path): per mirror face (bc
-  symmetric / antisymmetric, else the x_lo axis of an axisymmetric physics) material objects drawn beyond the plane
-  are sampled on a grid mirrored about it (160 per side and axis in 2D, 40 in 3D) and compared with the mirrored inside
-  (one-sample tolerance; an object reaching beyond by <= 25 % of its inside reach or to the far window edge is an edge
-  extension, compared only within its reach); a warning names the objects. Not checked: x / y material expressions,
-  sources.
-- Worker: the only thread touching cupy or a Session in the GUI process; events are CPU dataclasses; Progress,
-  LiveFrame, LiveResults, MemoryStatus are overwrite slots (`take_latest`), DeviceInfo queued. Without a usable GPU
-  DeviceInfo / MemoryStatus are kind 'cpu' (host RAM), no budget; a job whose `solver_backend(spec)` is 'cpu' skips
-  the GPU budget refresh. LiveResults timeseries above 4000 samples are min / max per bin (`decimation_stride` > 1):
-  never FFT them (the GUI waits for StudyFinished). Every job first `release_session`s the previous session;
-  `call(fn)` runs between jobs and at study checkpoints (each new session bumps `Built.session_serial`; WorkerBridge
-  passes the last delivered one and the worker refuses calls for an older session); `call(fn, needs_session=False)`
-  runs host work without a session (GUI triangle mesh preview); cancel / pause / resume act only on a running study.
-  Each job ends with exactly one final event (Built/BuildFailed, StudyFinished/StudyFailed); a run job may first emit
-  Built/BuildFailed per sweep value. A new study sets the summary `tick_unit` (names its `ticks`; `_run_built`
-  defaults 'step'; printed by `study.tick_count_text`); `Progress.tick_unit` names a progress tick.
-- Progress stages: every built-in study run creates one `study._StageProgress(emit, names)` (only the stages this run
-  has) and hands `stage_emit(name)` to each stage function as its `emit`; a stage emits its own fraction 0..1 and wall
-  time, the wrapper sets `stage_fraction` / `stage_elapsed` and the run `fraction` (equal share per stage) /
-  `wall_elapsed`. A new study type or stage does the same, else the bar restarts at 0 per stage. Messages name the
-  physics (`_physics_text`); `solve_stationary`'s loop fraction is `_fixed_point_fraction` (decades of relative change
-  toward the tolerance, never decreasing). Solve-counting stages use `_count_progress`.
-- `run_study` never raises and returns the last session it built that is still alive; a sweep first closes the
-  previous value's session; a completed sweep whose last value failed closes that session (`session_live` False); a
-  non-OOM failure of a single run keeps its session. The sweep table lists failed values in `failed` [{index, value,
-  message}] (study status stays 'completed'; api reports status 'partial', CLI exit 1). A feature result a value cannot
-  produce (`_feature_results`: an FDFD probe in an eigenfrequency sweep) is left out with one warning per key, never
-  fails the value. The summary carries `parameters` (of the session its values come from) and `sweep_index`. Loops
-  that stop on a cancel between items test `control.checkpoint_cancelled(service)` (RunControl.checkpoint as a flag).
-- `solve_stationary` returns `fixed_point` {converged, iterations, relative_change, tolerance} (None without a loop);
-  stationary / frequency_domain summaries carry it and the sweep table a `converged` per value. Non-convergence keeps
-  status 'completed'; `api._final_status` only notes it in the message.
-- Time-dependent loop per ~0.1 s chunk: checkpoint, due snapshot, `runner.advance(n, min(t_final, next_output))`, one
-  `Device().synchronize()` + 1 ms sleep, Progress, live output; `runner.flush()` at the end (also when cancelled)
-  before the final snapshot and derived values. Intermediate snapshots stop above 1 GB. Stationary: `runner.prepare`,
-  then `solve_stationary(session, physics_names, ...)` (also the frequency_domain background): `_stationary_roles`
-  splits the physics into sinks (no coupling reading them writes a remaining physics; a DynamicMaterialUpdate counts
-  as writing all) and the loop; Gauss-Seidel sweeps of the loop in runner order (`step(0.0, inf)`, each coupling
-  `apply_now`'d right after its last source steps) until the loop's primary fields reach a fixed point (change /
-  max|f|, `_FixedPointMonitor`: one window copy per loop field (a run item); heat T compared as `T_rise`: float32
-  absolute T quantises at ~3e-5 K); a non-finite change raises (NaN compares False, so it would run all
-  max_iterations); `_GROWTH_STOP_ITERATIONS` (3) non-decreasing changes in a row from iteration 4 stop with a warning
-  (converged False; also a noise-floor stall); then one sweep of the sinks upstream first (no loop: that sweep is the
-  single pass; a cancel skips it); never calls `Simulation.run`. Picard with study `relaxation` w (default 1) on the
-  loop-back couplings only (`_wrap_loop_back`: target stepped at or before the coupling in the sweep, every DMU): each
-  term injects previous + w (new - previous) via `transfer_value` + `write` (the first transfer is unrelaxed, so the
-  change is divided by w from iteration 3). Study setting `anderson_depth` m > 0 (opt-in) replaces that by
-  `_MixedTransfer` + `_LoopBackMixer`: each loop-back part writes its new value at once (plain Gauss-Seidel inside the
-  sweep) and records a host float64 copy; `mix()` at the next sweep's start re-injects every part with the
-  `core.damped_iteration.AndersonHistory` step (each part scaled by its largest magnitude, complex as real pairs), so
-  the last sweep's own values stay injected when the loop stops. A changed set of parts restarts the history; the
-  change is divided by min(w, 1). Opt-in because a secant method can converge where Picard cannot: an unstable branch
-  or an unphysical fixed point past a runaway (analytic_electrothermal_runaway at J_ratio 1.05: negative
-  resistivity). With a loop-back coupling the loop never converges in iteration 1 (`_has_loop_back`): that sweep
-  solved with slots from before the solve (warm-start seed, previous wavelength), so a stale fixed point would show a
-  change of ~0 (slug_flow_graetz returned the previous value's T every second sweep value). Without acceleration
-  oscillating loops with |g| > 1 need w ~ 1/(1 - g). Each sweep value starts cold unless study setting `warm_start`
-  (stationary, frequency_domain): `_run_sweep` keeps host copies of `warm_start_fields()` and, on an unchanged mesh,
-  `seed_warm_start` writes them into the next build (free cells only via `DiffusionSystem.seed_unknown`), then
-  `apply_now`s every coupling whose source_fields are all seeded slots. A solver with `warm_start_extrapolate = True`
-  gets float array fields linearly extrapolated in the swept value from the last two states on the same meshes
-  (factor clamped to [-1, 1]; non-array / integer fields pass unchanged). Never keep device copies across sessions
-  (release_session reports them as a leak). Each sweep value builds a spec copy with `sweep` None and without the
-  target-'sweep' analytic curves (api / GUI evaluate those on the full spec).
+  reported elsewhere. Model-wide material checks run once (`definition_helpers.reports_model_checks`; EM: the first
+  physics of family 'em'); domain size is reported at ('geometry',). Messages name the offending value (`short_repr`)
+  and the valid alternatives. Checks see the base parameter values only; `_check_sweep` re-runs parameters, geometry,
+  domain size, `estimate_mesh` and (with a budget) `estimate_memory` per sweep value.
+- Worker (`worker.py`; GUI side: gui sub file): the only thread touching cupy or a Session in the GUI process; events
+  carry CPU data; Progress / LiveFrame / LiveResults / MemoryStatus are `take_latest` slots, the rest queued. Each job
+  ends with exactly one final event (Built / BuildFailed, StudyFinished / StudyFailed; a run may first emit Built /
+  BuildFailed per sweep value). LiveResults timeseries above 4000 samples are min / max per bin
+  (`decimation_stride` > 1): never FFT them. A `call(fn)` made for an older session (`Built.session_serial`) fails.
+  A new study sets its summary `tick_unit` (default 'step').
+- Progress stages: every study run creates one `study._StageProgress(emit, names)` (only the stages this run has) and
+  hands `stage_emit(name)` to each stage as its `emit`; a new study type or stage does the same, else the bar restarts
+  at 0 per stage. A stage emits its own fraction 0..1 (solve counts: `_count_progress`; fixed points:
+  `_fixed_point_fraction`, never decreasing); messages name the physics (`_physics_text`).
+- `run_study` (docstring: never raises, which session it returns): a sweep closes the previous value's session
+  first, a failed last value its own (`session_live` False); a non-OOM failure of a single run keeps its session.
+  Failed sweep values are listed in the sweep table `failed` (status stays 'completed'; api 'partial', CLI exit 1);
+  a feature result a value cannot produce is left out with one warning per key (`_feature_results`), and a stationary
+  loop that does not converge stays 'completed' (`fixed_point`, sweep table `converged`). Loops that stop on a cancel
+  between items test `control.checkpoint_cancelled(service)`.
+- Stationary fixed point (`solve_stationary`, also the background step of frequency_domain / mode / eigen studies;
+  rules in its docstring and the fixed-point param helps): with a loop-back coupling the loop never converges in
+  sweep 1 (`_has_loop_back`: that sweep solved with slots from before the solve, so a stale fixed point showed a
+  change of ~0: slug_flow_graetz returned the previous value's T every second sweep value); a non-finite change raises
+  (NaN compares False and would run all max_iterations). Warm starts: `solver_hooks.WarmStartSolver`.
 - Reused sweep builds (`SweepSpec.reuse_build`, `sweep_reuse.py`): `reuse_issues(spec, registry)` = what refuses it
   (time_dependent / optimization studies, parity_sectors, adaptation, and every spec value reaching a live parameter =
   the swept one + its dependents (`live_parameter_names`), except feature Params and physics settings flagged
