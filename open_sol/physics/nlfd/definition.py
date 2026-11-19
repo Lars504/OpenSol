@@ -8,6 +8,7 @@ register."""
 # (definition_fdfd.direct_solver_issues).
 import math
 from dataclasses import dataclass, replace
+from difflib import SequenceMatcher
 
 from ...core import time_estimate as te
 from ...core.constants import C0, ETA0
@@ -367,36 +368,38 @@ def _merged_text(ez_text, hz_text, separator=' '):
     return ez_text if ez_text == hz_text else f'E_z channels: {ez_text}{separator}H_z channels: {hz_text}'
 
 
-def _balanced(sentences):
-    joined = '. '.join(sentences)
-    return joined.count('(') == joined.count(')')
+def _sentences(text):
+    """text split after '. ' into sentences, never inside parentheses (each keeps its own full stop)."""
+    sentences, current = [], ''
+    for part in text.split('. '):
+        current = f'{current}. {part}' if current else part
+        if current.count('(') == current.count(')'):
+            sentences.append(current)
+            current = ''
+    if current:
+        sentences.append(current)
+    return [sentence if index == len(sentences) - 1 else f'{sentence}.' for index, sentence in enumerate(sentences)]
 
 
 def _merged_help(ez_text, hz_text):
-    """One help / description for both polarisations: the sentences ('. '-separated) both texts start and end with are
-    printed once, around 'E_z channels: <rest of ez> H_z channels: <rest of hz>' (each rest keeps >= 1 sentence; a
-    shared part never ends inside parentheses)."""
+    """One help / description for both polarisations: sentences the two texts share (in order, a sentence diff) are
+    printed once; each run that differs becomes 'E_z channels: <ez run> H_z channels: <hz run>' in place (a side
+    without a run reads 'only')."""
     if ez_text == hz_text:
         return ez_text
-    ez_parts, hz_parts = ez_text.split('. '), hz_text.split('. ')
-    shortest = min(len(ez_parts), len(hz_parts))
-    head = 0
-    while head < shortest - 1 and ez_parts[head] == hz_parts[head]:
-        head += 1
-    while head and not _balanced(ez_parts[:head]):
-        head -= 1
-    tail = 0
-    while tail < shortest - 1 - head and ez_parts[-1 - tail] == hz_parts[-1 - tail]:
-        tail += 1
-    while tail and not _balanced(ez_parts[len(ez_parts) - tail:]):
-        tail -= 1
-
-    def rest(parts):
-        text = '. '.join(parts[head:len(parts) - tail])
-        return text if text.endswith('.') else f'{text}.'
-    start = '. '.join(ez_parts[:head]) + '. ' if head else ''
-    end = ' ' + '. '.join(ez_parts[len(ez_parts) - tail:]) if tail else ''
-    return f'{start}E_z channels: {rest(ez_parts)} H_z channels: {rest(hz_parts)}{end}'
+    ez_parts, hz_parts = _sentences(ez_text), _sentences(hz_text)
+    pieces = []
+    for tag, ez_lo, ez_hi, hz_lo, hz_hi in SequenceMatcher(None, ez_parts, hz_parts, autojunk=False).get_opcodes():
+        ez_run, hz_run = ' '.join(ez_parts[ez_lo:ez_hi]), ' '.join(hz_parts[hz_lo:hz_hi])
+        if tag == 'equal':
+            pieces.append(ez_run)
+        elif not hz_run:
+            pieces.append(f'E_z channels only: {ez_run}')
+        elif not ez_run:
+            pieces.append(f'H_z channels only: {hz_run}')
+        else:
+            pieces.append(f'E_z channels: {ez_run} H_z channels: {hz_run}')
+    return ' '.join(pieces)
 
 
 def _merged_param(ez_param, hz_param):

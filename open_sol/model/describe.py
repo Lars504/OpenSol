@@ -1259,66 +1259,66 @@ _RESULTS_NOTES = (
         'build_memory: the build ledger record (summary.json failed_build_memory layout) or null.',
         'Results: status, spec, out_dir, session (live only), build_summary, log, is_live; summary() -> dict; '
         'field_names(), result_names(); convergence() -> copy of the mesh refinement report of a '
-        'StudySpec.adaptation run (KeyError without one); field(name, physics=None, plane=None, unfold=False, '
-        'native=False) -> FieldData (unfold=True: mirrored over the model\'s x / y mirror faces, ValueError for a '
-        'field without a parity; values '
-        'float32 (nx, ny) '
-        'on the native window cells, x_centers / y_centers float64 in m, extent, info, time, plane, axes; 3D models: '
+        'StudySpec.adaptation run (KeyError without one); save(path, save_arrays=True); close(copy_to_host=True); '
+        'Results.load(path).',
+        'Results.field(name, physics=None, plane=None, unfold=False, native=False) -> FieldData: values float32 '
+        '(nx, ny) on the native window cells, x_centers / y_centers float64 in m, extent, info, time, plane, axes. '
+        "unfold=True mirrors over the model's x / y mirror faces (ValueError for a field without a parity). 3D: "
         "plane=(axis, position [m]) picks the cut normal to axis 'x' | 'y' | 'z' (values along axes ('y', 'z') / "
-        "('x', 'z') / ('x', 'y'), x_centers / y_centers and extent along them), live Results only, default and saved "
-        'fields the mid-height z cut; polar / spherical domains: a containing-cell image over the sector\'s box, NaN '
-        "outside, native_shape set; native=True (live only) gives the window cells instead: axes ('r', 'phi' | "
-        "'theta'), x_centers = r in m, y_centers = the angle in rad, extent (r_min, r_max, angle_min, angle_max), "
-        'mapped_centres = the drawing-plane (x, y) centres in m, float64 (nx, ny) each); volume(name, physics=None, '
-        'max_bytes=2**30) -> VolumeData of a 3D field '
-        '(values float32 (wx, wy, wz) on the window cells, centres (x, y, z) float64 in m, info, time; live only, '
-        'ValueError above max_bytes) and export_volume(name, path, physics=None, max_bytes=2**30) -> its .npz '
-        '(values, x_centers, y_centers, z_centers, metadata kind volume); '
-        "export_html(path, what=None, physics=None, title=None, geometry=True, planes=None, figure=None, "
+        "('x', 'z') / ('x', 'y')), live only; default and saved fields the mid-height z cut. Polar / spherical "
+        "domains: a containing-cell image over the sector's box, NaN outside, native_shape set; native=True (live "
+        "only) gives the window cells instead: axes ('r', 'phi' | 'theta'), x_centers = r in m, y_centers = the "
+        'angle in rad, extent (r_min, r_max, angle_min, angle_max), mapped_centres = the drawing-plane (x, y) '
+        'centres in m, float64 (nx, ny) each.',
+        'Results.volume(name, physics=None, max_bytes=2**30) -> VolumeData of a 3D field (values float32 (wx, wy, '
+        'wz) on the window cells, centres (x, y, z) float64 in m, info, time; live only, ValueError above '
+        'max_bytes); export_volume(name, path, physics=None, max_bytes=2**30) -> its .npz (values, x_centers, '
+        'y_centers, z_centers, metadata kind volume).',
+        "Results.result(physics, feature, **options) or result('physics.feature', **options) -> result dict "
+        "(dft_fields: freq_index=i adds freq_index and intensity); figure(what, path, title='', freq_index=None, "
+        'series=None) -> PNG path of a field (physics.component or a unique component) or a feature result '
+        '(physics.feature; series: only that series of an xy result); derived_curves() -> [(plot, xy result or '
+        'None, {curve name: error text})] of the derived curves over the final results.',
+        'Results.scene_figure(path, field=None, physics=None, planes=None, z_stretch=1.0, view=None) -> path of a 3D '
+        'run: the api scene_figure picture of its model (built parameters) with field on cut planes in one colour '
+        "scale, the objects then as edges only (live: planes [(axis, position [m])], default an x, y and z cut "
+        'through the structure as export_html; closed / loaded: the saved mid-height z cut plus the stored cuts of '
+        'a last snapshot at the same time).',
+        "Results.export_html(path, what=None, physics=None, title=None, geometry=True, planes=None, figure=None, "
         'fields=None, max_bytes=None) -> the written .html path: a self-contained web page (no network, WebGL2; '
-        "PNG and video export). what = a field ('physics.component' or a unique component; physics narrows it): "
-        'every stored snapshot holding it is a frame (time snapshots play, labelled ones get a slider; a '
-        "'<base>_re' / '_im' pair is animated over one period, Re / Im[A exp(j wt)]), else the current / saved "
-        'state; a 2D map (2D Cartesian flow / current / potential / magnetostatic / heat pages can add particles '
-        'or arrows of the in-plane vector; 2D solid_mechanics / membrane fields drawn on the deformed body) or a '
-        '3D field on cut planes (live: an x, y and z cut at a mirror plane of its physics, else through the '
-        'objects that do not span the window, else the window middle; snapshots and closed / loaded runs: the '
-        'mid-height z cut and stored_cuts; planes [(axis, position m)]: the live state on exactly those planes, a '
-        'snapshot its held cut nearest each, ValueError in 2D or for an axis no snapshot holds when not live; '
-        'live Cartesian 3D Results also put the whole field on the page, up to 60 kept GUI snapshots); a '
-        "dft_fields result 'physics.feature': its intensity map per frequency; a mode_shapes result: the complex "
-        'mode shapes animated on the solid surface beside the band diagram (a sweep: every successful value, '
-        'abscissa k a / 2 pi of the Bloch wavenumber, else the swept parameter), coloured by displacement or, '
-        "with the kept stress / strain, stress, strain and energy measures; fields = a list of 'stress' / "
-        "'strain' (None = every kept one, ValueError for one not kept); max_bytes: viz.mode_player."
-        'ModePageTooLarge (a ValueError with .sizes per group) when the mode data would pass it, nothing written; '
-        'fields / max_bytes on another page: ValueError; None = the only mode_shapes result. geometry (field and '
-        '2D dft_fields pages): the model objects at the built parameters drawn on the page (ValueError without '
-        'the model spec: pass geometry=False); mirror planes add the mirror images. Large data is thinned (named '
-        "in the page subtitle). figure (field and dft_fields pages): {setting: value} the page's Plot settings "
-        "panel opens with (its Copy settings gives this dict; None / missing = automatic; ValueError on a "
-        'mode_shapes page, for an unknown key, a value outside its choices / range or min >= max): font_size (px, '
-        "6 - 40, default 11), title_size (px, 8 - 72, default 26), title 'top_left' | 'top_center' | 'top_right' "
-        "| 'off', color_min / color_max (field unit; a signed field with one of them stays symmetric about 0), "
-        'x_min / x_max / y_min / y_max / z_min / z_max (axis limits in m; not along the normal of a single '
-        "plane), colorbar 'bottom_right' | 'bottom_left' | 'top_right' | 'top_left' | 'right' | 'left' | 'top' "
-        "| 'bottom' | 'off', colorbar_length (fraction of the view side, 0.1 - 1), horizontal_axis 'bottom' | "
-        "'top', vertical_axis 'left' | 'right', scale_bar 'on' | 'off' (default 'on': a true-length bar on a "
-        'face-on map in place of the axes), scale_bar_length (m, > 0; default a round length near a fifth of the '
-        "view), scale_bar_color and legend_color 'auto' | 'white' | 'black', background 'theme' | 'white', "
-        'export_scale 1 | 2 | 4 (PNG pixels per screen pixel); other result kinds raise ValueError; live, closed '
-        'or loaded alike; '
-        'result(physics, feature, '
-        "**options) or result('physics.feature', **options) -> result dict (dft_fields: freq_index=i adds "
-        "freq_index and intensity); figure(what, path, title='', freq_index=None, series=None) -> PNG path of a field "
-        '(physics.component or a unique component) or a feature result (physics.feature; series: only that series '
-        'of an xy result); scene_figure(path, field=None, physics=None, planes=None, z_stretch=1.0, view=None) -> '
-        'path of a 3D run: the api scene_figure picture of its model (built parameters) with field on cut planes in '
-        'one colour scale, the objects then as edges only (live: planes [(axis, position [m])], default an x, y and '
-        'z cut through the structure as export_html; closed / loaded: the saved mid-height z cut plus the stored '
-        'cuts of a last snapshot at the same time); derived_curves() -> '
-        '[(plot, xy result or None, {curve name: error text})] of the derived curves over the final results; '
-        'save(path, save_arrays=True); close(copy_to_host=True); Results.load(path).',
+        'PNG and video export), live, closed or loaded alike; other result kinds raise ValueError.',
+        "  - what = a field ('physics.component' or a unique component; physics narrows it): every stored snapshot holding "
+        "it is a frame (time snapshots play, labelled ones get a slider; a '<base>_re' / '_im' pair is animated "
+        'over one period, Re / Im[A exp(j wt)]), else the current / saved state. 2D: a map (2D Cartesian flow / '
+        'current / potential / magnetostatic / heat pages can add particles or arrows of the in-plane vector; 2D '
+        'solid_mechanics / membrane fields drawn on the deformed body). 3D: cut planes (live: an x, y and z cut at '
+        'a mirror plane of its physics, else through the objects that do not span the window, else the window '
+        'middle; snapshots and closed / loaded runs: the mid-height z cut and stored_cuts); planes [(axis, '
+        'position m)]: the live state on exactly those planes, a snapshot its held cut nearest each, ValueError in '
+        '2D or for an axis no snapshot holds when not live; live Cartesian 3D Results also put the whole field on '
+        'the page, up to 60 kept GUI snapshots.',
+        "  - what = a dft_fields result 'physics.feature': its intensity map per frequency.",
+        '  - what = a mode_shapes result (None = the only one): the complex mode shapes animated on the solid surface '
+        'beside the band diagram (a sweep: every successful value, abscissa k a / 2 pi of the Bloch wavenumber, '
+        'else the swept parameter), coloured by displacement or, with the kept stress / strain, stress, strain and '
+        "energy measures; fields = a list of 'stress' / 'strain' (None = every kept one, ValueError for one not "
+        'kept); max_bytes: viz.mode_player.ModePageTooLarge (a ValueError with .sizes per group) when the mode '
+        'data would pass it, nothing written; fields / max_bytes on another page: ValueError.',
+        '  - geometry (field and 2D dft_fields pages): the model objects at the built parameters (ValueError '
+        'without the model spec: pass geometry=False); mirror planes add the mirror images. Large data is thinned '
+        '(named in the page subtitle).',
+        "  - figure (field and dft_fields pages): {setting: value} the page's Plot settings panel opens with (its "
+        'Copy settings gives this dict; None / missing = automatic; ValueError on a mode_shapes page, for an '
+        "unknown key, a value outside its choices / range or min >= max): font_size (px, 6 - 40, default 11), "
+        "title_size (px, 8 - 72, default 26), title 'top_left' | 'top_center' | 'top_right' | 'off', color_min / "
+        'color_max (field unit; a signed field with one of them stays symmetric about 0), x_min / x_max / y_min / '
+        'y_max / z_min / z_max (axis limits in m; not along the normal of a single plane), colorbar '
+        "'bottom_right' | 'bottom_left' | 'top_right' | 'top_left' | 'right' | 'left' | 'top' | 'bottom' | 'off', "
+        "colorbar_length (fraction of the view side, 0.1 - 1), horizontal_axis 'bottom' | 'top', vertical_axis "
+        "'left' | 'right', scale_bar 'on' | 'off' (default 'on': a true-length bar on a face-on map in place of "
+        'the axes), scale_bar_length (m, > 0; default a round length near a fifth of the view), scale_bar_color '
+        "and legend_color 'auto' | 'white' | 'black', background 'theme' | 'white', export_scale 1 | 2 | 4 (PNG "
+        'pixels per screen pixel).',
         'Stored states (live, closed and loaded alike): snapshots() -> [(time, label, [physics.component keys])] '
         '(frequency_domain: one per wavelength, field() holds only the last); snapshot_field(index, name, '
         'physics=None, plane=None) -> FieldData of one snapshot, float32 on the native window cells (x_centers / '
@@ -2713,7 +2713,8 @@ def _types_text(accepted):
 
 
 def _bullets(lines):
-    return [f'- {line}' for line in lines]
+    """'- line' per line; a line already starting with '  - ' is a sub-bullet of the one before and stays as is."""
+    return [line if line.startswith('  - ') else f'- {line}' for line in lines]
 
 
 def _paragraph(text):

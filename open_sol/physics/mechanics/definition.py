@@ -1948,12 +1948,10 @@ SOLID_MECHANICS = PhysicsType(
                 'stress_stiffening takes the initial stress alone. strain_energy_density / kinetic_energy_density '
                 '(triangles, J/m^3, not in state()): a static solve 1/2 sigma : eps_el (no initial stress) and 0, a '
                 'shown mode or response the time averages 1/4 Re(sigma : eps_el*) and 1/4 rho omega^2 |u|^2 (azimuthal '
-                'order: twice the phi mean, so ring integrals give totals); not physical in a PML ring. Bloch cells: '
-                f'periodic_x / _y with bloch_kx / _ky (band diagrams, template {BAND_TEMPLATE_2D}; a free top over a '
-                'Fixed bottom or an elastic PML gives the surface / plate waves of one period; tensor mesh also '
-                'piezoelectric: an electrode grating of one IDT period gives the SAW stopband edges at the zone edge). '
-                f'Optics: {STRAIN_OPTIC_COUPLING} (strain -> EM index), {OPTICAL_FORCE_COUPLING} (em_fdfd_ez -> '
-                f'body_force_x / _y). A 3D model (size_z set) uses {SOLID_3D_TYPE_NAME}.',
+                'order: twice the phi mean, so ring integrals give totals); not physical in a PML ring. Bloch band '
+                f'diagrams: periodic_x / _y, template {BAND_TEMPLATE_2D}; on the tensor mesh also piezoelectric (an '
+                'electrode grating of one IDT period gives the SAW stopband edges at the zone edge). A 3D model '
+                f'(size_z set) uses {SOLID_3D_TYPE_NAME}.',
     settings=(_GEOMETRY_PARAM, AZIMUTHAL_ORDER_PARAM, _OUT_OF_PLANE_PARAM, _THICKNESS_PARAM, _AXIAL_FORCE_PARAM,
               _BENDING_PARAM, _BENDING_MOMENT_X_PARAM, _BENDING_MOMENT_Y_PARAM, _TARGET_FREQUENCY_PARAM,
               STRESS_STIFFENING_PARAM, *GEOMETRIC_NONLINEARITY_PARAMS, _AXIAL_WAVENUMBER_PARAM, _PIEZOELECTRIC_PARAM,
