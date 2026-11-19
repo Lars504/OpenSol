@@ -27,7 +27,7 @@ from ..model.spec import (RESERVED_ENTITY_NAMES, AnalyticCurveSpec, CouplingSpec
                           ParameterSpec, PhysicsSpec, SelectionSpec, SolverSpec, StudySpec, SweepSpec)
 from ..model.study import sweep_value_spec
 from ..model.templates import make_template
-from ..model.time_estimate import estimate_time
+from ..model.time_estimate import estimate_overheads, estimate_time
 from ..model.validate import internal_error_text, memory_verdict, validate
 from ..solvers.roles import BACKENDS
 
@@ -199,6 +199,47 @@ class SpecEstimates:
                 sys.excepthook(*sys.exc_info())
                 return None, ''
         return self._cached('time_estimate', estimate)
+
+    def plain_roles(self):
+        """plain_roles of the cached memory estimate (meshing.fitted_memory_estimate), frozenset() without one."""
+        return self._memory_estimates()[2] or frozenset()
+
+    def run_time_estimate(self):
+        """(TimeEstimate or None, message) of one study run at the model's parameter values (estimate_time per_run:
+        counters kept, so solver items name their role) on the cached used-mesh estimates and plain roles; the solve
+        flow chart's per-step items. Cached per revision; (None, '') when a mesh or the memory estimate fails."""
+        def estimate():
+            estimates, _errors = self.used_mesh_estimates()
+            memory = self.memory_estimate()
+            if not estimates or any(mesh is None for mesh in estimates.values()) or memory is None:
+                return None, ''
+            try:
+                return estimate_time(self.spec, self.parameters(), self.registry, estimates, per_run=True,
+                                     plain_roles=self.plain_roles())
+            except MESH_ESTIMATE_ERRORS:
+                return None, ''
+            except Exception:   # crashing recipe: traceback to the log
+                sys.excepthook(*sys.exc_info())
+                return None, ''
+        return self._cached('run_time_estimate', estimate)
+
+    def time_overheads(self) -> dict:
+        """estimate_overheads(per_run=True) of one run ({'build', 'output'} TimeEstimates; {} without a machine profile
+        or estimate), cached per revision."""
+        def estimate():
+            estimates, _errors = self.used_mesh_estimates()
+            memory = self.memory_estimate()
+            if not estimates or any(mesh is None for mesh in estimates.values()) or memory is None:
+                return {}
+            try:
+                return estimate_overheads(self.spec, self.parameters(), self.registry, estimates, per_run=True,
+                                          memory=memory)
+            except MESH_ESTIMATE_ERRORS:
+                return {}
+            except Exception:   # crashing estimator: traceback to the log
+                sys.excepthook(*sys.exc_info())
+                return {}
+        return self._cached('time_overheads', estimate)
 
     def issues(self) -> list:
         """validate(spec) findings (Issue list), reusing the cached mesh and memory estimates (or the mesh failure

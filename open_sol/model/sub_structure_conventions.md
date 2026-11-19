@@ -1078,6 +1078,17 @@ templates, describe. Current state, no changelog.
   estimate: domain estimated X, took Y; ..." after "Build time by stage"; check.json `time_estimate.build` is the
   whole study's build. Constants are UNCALIBRATED; `triangulate(log=)` logs the split to calibrate them. The 'domain'
   stage is host-only and independent of earlier sweep values: every value that remeshes pays it in full.
+- Solve flow (`solve_flow.py`, the GUI's Show solve flow chart; CPU, GUI-thread safe, nothing built): steps per row
+  (model, one mesh + materials step per used mesh, one solver step per resolved (physics, role), one physics step,
+  couplings, the study's steps, results) over lanes (one per resolved role of a physics). It reads the estimate
+  item labels, so they are an interface: memory "[mesh '<m>': ]physics '<p>': ", "feature '<p>.<f>': ", "model: ",
+  "subpixel smoothing: ", "conformal boundaries: ", "grid transfer "; time "physics '<p>': " (a solver item goes to its
+  role by its `counter` / `seconds_counter` path ('solvers', p, 'roles', role, ...), so a role recipe keeps
+  `work.counter(...)` paths), "mesh '<m>': " build items, "snapshots on mesh '<m>': ", not-estimated "physics '<p>'" /
+  "coupling '<c>'". An item no rule matches lands in the red 'Unplaced estimate items' step (never dropped): a new
+  label prefix gets a rule in `_Builder._memory_step` / `_time_step`. Study steps are per StudyType name in
+  `_study_steps` (a new study type falls back to its summary with a note: add its steps there); the study's
+  `time_counts` are listed generically. Time items come from one run (per_run); the whole-study total from estimate_time.
 
 ## Registry, templates, describe
 - CouplingType source_type / target_type are None, a name or a tuple: test only with `schema.coupling_type_accepts` /

@@ -48,6 +48,7 @@ from .helpers import (coupling_mesh_text, evaluation_mesh, memory_estimate_text,
 from .mesh_preview import AUTO_PREVIEW_MAX_ELEMENTS, AUTO_PREVIEW_MAX_TETRAHEDRA
 from .model_tree import (MESH_KIND_LABELS, RESULT_SETTING_ADDERS, RESULT_SETTINGS_TIPS, coupling_candidates,
                          solver_candidates)
+from .solve_flow_view import show_solve_flow
 
 _MAX_EVERY = 1_000_000_000
 _REFINED_MESH_MODES = ('nonuniform', 'auto')   # mesh modes that apply the explicit refinements (model/meshing)
@@ -2778,6 +2779,17 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
         layout.addWidget(_group('In use', hint_label('\n'.join(lines) if lines else
                                                      'No physics of this model hands out a solver job in the current '
                                                      'study.')))
+        flow_button = QtWidgets.QPushButton('Show solve flow…')
+        flow_button.setToolTip(rich_tooltip(
+            'A flow chart of every step of a run of this model: meshes, materials, the solver each physics job '
+            'uses and why, the physics, couplings, the study loop and the results.',
+            'Each step shows the memory and run time the estimates book at it; click a step to see the items and '
+            'what they are computed from.'))
+        _on_click(flow_button, lambda: show_solve_flow(self._document, self))
+        flow_row = QtWidgets.QHBoxLayout()
+        flow_row.addWidget(flow_button)
+        flow_row.addStretch(1)
+        layout.addLayout(flow_row)
         add_box = QtWidgets.QGroupBox('Add a solver')
         add_layout = QtWidgets.QVBoxLayout(add_box)
         fitting = [(role, solver_type) for role, solver_type, reason in solver_candidates(spec, self._registry)
