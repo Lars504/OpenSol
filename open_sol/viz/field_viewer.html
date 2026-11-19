@@ -1386,15 +1386,17 @@ syncGeometry();
 // Flow particles (DATA.flow: per 2D map layer an in-plane vector on a uniform grid over the layer's extent, int16 x, y
 // per frame over +-flow_max). Stateless pathlines: particle i lives generations of FLOW_LIFE s of flow clock, each
 // starting at a hashed seed inside the window shown (the visible part of the layer, per mirror image) and moving along
-// the field in RK2 steps of the vector normalised by the page's largest magnitude (FLOW_TRAVEL of the shown span per
-// life at that magnitude: slow regions crawl, fast ones stream). A transform-feedback pass writes FLOW_TAIL + 1 points
+// the field in RK2 steps of the vector normalised by the page's speed_reference (FLOW_TRAVEL of the shown span per
+// life at that magnitude or more: slow regions crawl, fast ones stream; the reference, a high percentile rather than
+// the largest, keeps a singular peak from freezing the rest). A transform-feedback pass writes FLOW_TAIL + 1 points
 // of every particle's latest path, each recomputed from its seed, so nothing is kept between draws (PNG, recordings,
 // frame changes and zoom need no reset); the draw pass strokes them as screen-space quads fading to the tail, a light
 // core over a dark halo (the reverse over a light colour-map middle), so they read over any colour. Mirror images: the
 // paths are reflected, and run backwards where the product of the images' flow_sign is -1 (a vector odd along the
 // plane). No particles on a raised map (relief would hide them under its surface).
 const FLOW = DATA.flow || null;
-const FLOW_STEPS = 48, FLOW_TAIL = 16, FLOW_LIFE = 3.2, FLOW_TRAVEL = 0.32, FLOW_BASE = 2600, FLOW_MAX_PARTICLES = 30000;
+const FLOW_STEPS = 48, FLOW_TAIL = 16, FLOW_LIFE = 3.2, FLOW_TRAVEL = 0.32, FLOW_PIXELS = 120, FLOW_MAX_PARTICLES = 30000;
+// FLOW_PIXELS: CSS px^2 of the plot frame per particle at density 1 (so a small view is not crowded)
 const flowState = (() => {
   const out = { on: !!FLOW, density: 1, speed: 1, clock: 0, gl: null, frame: -1 }, kept = storedJson('flow');
   if (typeof kept.on === 'boolean') out.on = out.on && kept.on;
@@ -1410,18 +1412,24 @@ uniform sampler2D uVec;
 uniform vec4 uExtent;        // u0, v0, width, height of the layer's flow grid (length units)
 uniform vec4 uSeed;          // window the seeds fill: u0, v0, width, height
 uniform float uClock;        // flow clock in lives
-uniform float uStep;         // length units per step at the page's largest magnitude
+uniform float uStep;         // length units per step at the page's speed reference (and above)
 uniform float uDir;          // +1, -1: an image whose flow runs backwards
-uniform float uScale;        // this frame's largest magnitude / the page's
+uniform float uScale;        // this frame's largest magnitude / the page's speed reference
 uniform uint uSalt;          // per image and layer: their particles differ
 out vec4 vPoint;             // u, v, alpha, index along the tail (0 = its end)
 uint hashU(uint x) { x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16; return x; }
 float rnd(uint x) { return float(hashU(x) >> 8) / 16777216.0; }
-vec3 flowAt(vec2 p) {         // (vector / page largest, 1 inside the flow); zero outside the grid
+const float STILL = 0.004;    // below this fraction of the speed reference a particle has stopped: gone
+vec3 flowAt(vec2 p) {         // (vector / speed reference, at most 1 long; 1 where it flows); zero outside the grid
   vec2 t = (p - uExtent.xy) / uExtent.zw;
   if (any(lessThan(t, vec2(0.0))) || any(greaterThan(t, vec2(1.0)))) return vec3(0.0);
   vec4 s = texture(uVec, t);
-  return vec3(s.xy * (uScale * uDir), s.z);
+  vec2 v = s.xy * (uScale * uDir);
+  float len = length(v);
+  if (len > 1.0) v /= len;
+  // holes and the outside (no value), and still regions (solids, insulators: a zero vector) stop particles, which
+  // would otherwise crawl ever slower into them and pile up as dots
+  return vec3(v, s.z > 0.5 && dot(v, v) > STILL * STILL ? 1.0 : 0.0);
 }
 void main() {
   int i = gl_VertexID / ${FLOW_TAIL + 1}, k = gl_VertexID - i * ${FLOW_TAIL + 1};
@@ -1432,8 +1440,7 @@ void main() {
   for (int t = 0; t < 4; t++) {      // a seed where something flows (not in holes, solids or the outside)
     uint h = hashU(ui * 0x9e3779b9u ^ hashU(uint(gen) * 0x85ebca6bu + uint(t) * 0x27d4eb2fu + uSalt));
     vec2 q = uSeed.xy + vec2(rnd(h), rnd(h ^ 0x68e31da4u)) * uSeed.zw;
-    vec3 f = flowAt(q);
-    if (f.z > 0.5 && dot(f.xy, f.xy) > 1e-6) { p = q; inside = 1.0; break; }
+    if (flowAt(q).z > 0.5) { p = q; inside = 1.0; break; }
   }
   float steps = max(age * float(${FLOW_STEPS}) - float(${FLOW_TAIL} - k), 0.0);
   int n = int(steps);
@@ -1448,7 +1455,7 @@ void main() {
   }
   if (flowAt(p).z < 0.5) inside = 0.0;
   float fade = smoothstep(0.0, 0.12, age) * (1.0 - smoothstep(0.78, 1.0, age));
-  float slow = 0.2 + 0.8 * smoothstep(0.0, 0.12, length(flowAt(p).xy));   // nearly still particles dimmed
+  float slow = smoothstep(STILL, 0.1, length(flowAt(p).xy));   // slow particles fade out before they stop
   vPoint = vec4(p, inside * fade * slow, float(k));
 }`;
 const FLOW_TF_FS = `#version 300 es
@@ -1561,7 +1568,7 @@ function flowDir(I) {
 function flowColors() {
   // a light core over a dark halo, or the reverse over a colour map whose middle is light (diverging maps)
   const [r, g, b] = hexRgb(CMAPS[state.cmap][4]);
-  return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.5 ? { core: [0.04, 0.05, 0.07, 0.9], halo: [1, 1, 1, 0.45] }
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.5 ? { core: [0.04, 0.05, 0.07, 0.78], halo: [1, 1, 1, 0.45] }
                                                    : { core: [1, 1, 1, 0.95], halo: [0.02, 0.03, 0.06, 0.42] };
 }
 function flowShown() { return !!FLOW && flowState.on && state.relief === 0; }
@@ -1571,13 +1578,17 @@ function drawFlow(view, proj) {
     try { flowState.gl = flowSetup(); flowState.frame = -1; }
     catch (err) { flowState.gl = false; $('flow').disabled = true; $('flow').title = 'Flow particles: WebGL error ' + err.message; return; }
   }
-  const G = flowState.gl, F = FRAMES[state.frame], scale = (F.flow_max || 0) / FLOW.max;
+  const G = flowState.gl, F = FRAMES[state.frame], scale = (F.flow_max || 0) / FLOW.speed_reference;
   if (!(scale > 0)) return;
   if (flowState.frame !== state.frame) flowUpload();
   const [iu, iv] = PLANE_AXES, viewLo = [bmin[iu], bmin[iv]], viewHi = [bmax[iu], bmax[iv]];
   const viewArea = (viewHi[0] - viewLo[0]) * (viewHi[1] - viewLo[1]);
   if (!(viewArea > 0)) return;
   const step = FLOW_TRAVEL * Math.max(viewHi[0] - viewLo[0], viewHi[1] - viewLo[1]) / FLOW_STEPS;
+  const frame = mapFrame(view, proj);         // the plot frame on screen (a turned view: half the canvas)
+  const framePixels = (frame ? (frame[2] - frame[0]) * (frame[3] - frame[1]) : 0.5 * canvas.width * canvas.height)
+    / (pixelRatio * pixelRatio);              // CSS px (pixelRatio holds a PNG's renderScale): a PNG has the same particles
+  const perView = flowState.density * framePixels / FLOW_PIXELS;
   const colors = flowColors(), f = stretch();
   gl.disable(gl.DEPTH_TEST); gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
   images().forEach((I, m) => {
@@ -1592,7 +1603,7 @@ function drawFlow(view, proj) {
         lo.push(Math.max(Math.min(e1, e2), ext[2 * k])); hi.push(Math.min(Math.max(e1, e2), ext[2 * k + 1]));
       });
       if (!(hi[0] > lo[0] && hi[1] > lo[1])) return;
-      const count = Math.min(FLOW_MAX_PARTICLES, Math.round(flowState.density * FLOW_BASE * (hi[0] - lo[0]) * (hi[1] - lo[1]) / viewArea));
+      const count = Math.min(FLOW_MAX_PARTICLES, Math.round(perView * (hi[0] - lo[0]) * (hi[1] - lo[1]) / viewArea));
       if (count < 1) return;
       const nPoints = count * (FLOW_TAIL + 1);
       // feedback pass: the particles' latest paths into the points buffer

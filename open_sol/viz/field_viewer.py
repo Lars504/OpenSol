@@ -45,6 +45,8 @@ MAX_GEOMETRY_BYTES = 8_000_000        # packed outline segments and surface tria
 FLOW_MAX_BYTES = 6_000_000            # flow vectors of every frame and layer (int16 x, y per sample of a uniform grid)
 FLOW_MAX_SIDE = 320                   # flow grid samples along a layer's longer side (at most; fewer for many frames)
 FLOW_MIN_SIDE = 24
+FLOW_SPEED_PERCENTILE = 95            # magnitude the page's fastest particles move at (above: as fast): a point
+                                      # source's 1/r peak would otherwise leave every other particle standing still
 _OUTER_FACES = ('x_lo', 'x_hi', 'y_lo', 'y_hi', 'z_lo', 'z_hi')
 # Plot settings of the page (its panel edits the same keys; field_viewer.html FIGURE_CHOICES / FIGURE_RANGES)
 FIGURE_CHOICES = {
@@ -766,7 +768,8 @@ def _uniform_flow(vectors, extent, shape):
 def _flow_data(frames, flow, scale):
     """(page JSON of the flow, per frame {'flow': [b64 per layer], 'flow_max': float}) of the layers' ViewerVectors:
     each layer's vectors on a uniform grid over its extent (`_uniform_flow`), int16 codes of x, y over +-the frame's
-    largest magnitude (-32768 = no flow), interleaved and stored row by row along v (texture rows); None, [] without."""
+    largest magnitude (-32768 = no flow), interleaved and stored row by row along v (texture rows); the page's
+    speed_reference = the FLOW_SPEED_PERCENTILE of the non-zero magnitudes (all frames); None, [] without."""
     first = frames[0].layers
     if all(layer.vectors is None for layer in first):
         if flow is not None:
@@ -779,12 +782,13 @@ def _flow_data(frames, flow, scale):
     extents = [_layer_extent(layer) for layer in first]
     shapes = [_flow_shape(extent, len(frames), len(first), np.shape(layer.vectors.x))
               for extent, layer in zip(extents, first)]
-    packed, peak = [], 0.0
+    packed, peak, magnitudes_seen = [], 0.0, []
     for frame in frames:
         grids = [_uniform_flow(layer.vectors, extent, shape) for layer, extent, shape in zip(frame.layers, extents, shapes)]
         magnitudes = [np.hypot(grid[..., 0], grid[..., 1]) for grid in grids]
         frame_max = max((float(np.nanmax(m)) for m in magnitudes if np.isfinite(m).any()), default=0.0)
         peak = max(peak, frame_max)
+        magnitudes_seen += [m[np.isfinite(m) & (m > 0)] for m in magnitudes]
         codes = []
         for grid in grids:
             finite = np.isfinite(grid).all(axis=2)
@@ -797,7 +801,9 @@ def _flow_data(frames, flow, scale):
         packed.append({'flow': codes, 'flow_max': frame_max})
     if not peak > 0:
         raise ValueError(f'the flow vectors ({flow.label}) are zero or have no finite value in every frame')
+    moving = np.concatenate(magnitudes_seen)
     page = {'label': flow.label, 'unit': flow.unit, 'max': peak,
+            'speed_reference': float(np.percentile(moving, FLOW_SPEED_PERCENTILE)) if moving.size else peak,
             'layers': [{'nu': int(gu), 'nv': int(gv), 'extent': [float(edge) / scale for edge in extent]}
                        for (gu, gv), extent in zip(shapes, extents)]}
     return page, packed

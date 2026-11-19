@@ -198,3 +198,20 @@ Sub file of the root `structure_conventions.md` (read that first). Visualizer an
   `snap_to_mirrors` (api calls it before computing the outlines, so they are the plane's sections); the page then
   skips the image that maps a layer onto itself (`selfImage`: field, mesh lines, outlines), else the coincident,
   for odd fields sign-flipped, copy z-fights.
+  Flow particles (field_viewer only; 2D maps): a layer's `ViewerVectors` (its in-plane vector on its own raster, a
+  triangle layer passes its FieldData raster) with a page `ViewerFlow` label; `viewer_data` resamples them onto a
+  uniform grid over the layer extent (`_uniform_flow`: block means of the finite samples, NaN for cells holding only
+  NaN, nearest source sample where the grid is finer; size by `_flow_shape` within FLOW_MAX_BYTES), int16 per frame
+  over +-its largest magnitude, rows along v (texture rows). `_strided` / `_plane_padded` rebuild layers: they carry
+  `vectors` (a new ViewerLayer construction must too). api `_viewer_flow` picks the vector (`_FLOW_TYPES`: steady
+  flows only, never waves (em, acoustics) or displacements (mechanics); `_FLOW_BASES` /
+  `<base>_abs|_x|_y`, components `<base>_x` or `<base>x`; heat: -grad T scaled to heat_flux_abs when stored) from the
+  same snapshot / state as each frame, else no flow (no error: optional). Mirror images: `ViewerMirror.flow_sign` =
+  image sign of the component along the plane (api from the components' parities): -1 runs that image's particles
+  backwards. Page (`// ---- vectors ----`): stateless pathlines, each particle's latest FLOW_TAIL + 1 path points
+  recomputed from its hashed seed every draw by a transform-feedback pass (so PNG, recordings, frame changes, zoom
+  and mirrors keep no particle state), drawn as one-pass quads (core + halo in the fragment shader: two passes
+  brighten every joint). Speeds normalise by `speed_reference` (a percentile, not the max: a 1/r peak would freeze
+  the rest), clamped to 1; below STILL a particle dies (holes, solids and insulators are zero vectors, not NaN: they
+  would collect crawling dots). Seeds fill the shown window per image (count by area, so zoom and mirrors keep the
+  screen density). Hidden on a raised map (relief); `uploadFrame` resets `flowState.frame` so the textures follow.
