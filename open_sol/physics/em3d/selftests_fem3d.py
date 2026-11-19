@@ -2,7 +2,7 @@
 layer, PEC cube spectra on structured Kuhn meshes (static count, convergence orders, mirror sectors), FEMPhysics3D on
 a lossy dielectric cube with PML symmetry checks (CPU, specs() empty, check({})), Bloch faces on periodic Kuhn cubes,
 em_fdfd_3d on a builtin 'tetrahedra' mesh through the model layer (CPU runs: PEC cube; Bloch cube with field derived
-values); the gmsh Mie sphere is examples/em3d/fem_mie_sphere_resonance_3d."""
+values); the gmsh Mie sphere is examples/em/fem_mie_sphere_resonance_3d."""
 import math
 
 import numpy as np

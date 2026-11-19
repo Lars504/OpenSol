@@ -105,13 +105,19 @@ Sub file of the root `structure_conventions.md`. GUI gotchas.
 - WorkerBridge keeps `device` / `last_memory_status` and re-emits them; the gauge shows pool_used / budget, on kind
   'cpu' (no usable GPU) host RAM. The build-memory table is filled from Built (`BuildSummary.gpu_*`) and BuildFailed
   (`build_memory`). Examples menu: one submenu per `<repo>/examples` subfolder (`ExampleCatalog.folders()`, no file
-  read; json directly in examples/ is not listed); aboutToShow runs `ExampleCatalog.scan(folder)` (skips `*_out`,
-  hidden folders; raw JSON title / description / physics types only, cached per file version), listing every readable
+  read; json directly in examples/ is not listed); one folder per physics area, its 2D / 3D / axisymmetric models
+  together (no `em3d` folder). Below a folder: space submenus (`examples.EXAMPLE_SPACES`, always shown, even one) of
+  its single-type models, then a separator and Multiphysics -> spaces of its models with several types (the
+  multiphysics folder: spaces directly), then a submenu per physics type group when a space holds several.
+  `ExampleModel.space` comes from the raw JSON only: `size_z` 3D, `size_y` null 1D, spherical grid or every physics
+  instance axisymmetric (`schema.instance_spaces` over the type's setting defaults: heat 'geometry', the BOR types)
+  Axisymmetric, else 2D; aboutToShow runs `ExampleCatalog.scan(folder)` (skips `*_out`,
+  hidden folders; raw JSON title / description / domain / physics types only, cached per file version), listing every readable
   file: never load_model / validate there (on a CPU-only machine validation probes cuDSS / gmsh per file and stalls the
   hover); a model is checked only when opened, like any file; menus are rebuilt
   on every aboutToShow and old submenus deleteLater'd (`clear()` keeps them). An example opens as an untitled copy.
   Entries show `ModelSpec.title`, never the file stem (examples/README.md indexes stems: its "Naming" paragraph has the
-  menu path folder label (`examples._FOLDER_LABELS`) -> physics type label(s) -> title, and the title convention
+  menu path folder label (`examples._FOLDER_LABELS`) -> space -> physics type label(s) -> title, and the title convention
   'Analytic: ...' for benchmarks); the tooltip ends with the relative path. A folder without a `_FOLDER_LABELS` entry shows its name capitalised.
 - PySide6 is imported before pyqtgraph (`gui/__init__`). `app.main` sets `imageAxisOrder='col-major'` (images are
   `[i, j]`) and the QSettings names ('open_sol', 'open_sol') that results.py relies on.

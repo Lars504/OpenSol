@@ -242,7 +242,7 @@ subpixel smoothing), pec_domain and resonance_table; no conformal PEC.
 - Self-tests `selftests_fdfd3d` (CPU operator cases; model runs on gpu with the cudss_mixed eigen node of
   `_eigen_solvers`, only em3d_fdfd_eigen_pec_box also on the cpu: keep heavy cases and examples off the cpu); templates
   pec_box_eigenmodes_3d, nanobeam_mirror_cell_bands_3d (Automatic). Open cavity = example
-  examples/em3d/fdfd_mie_sphere_resonance_3d (gpu only): smoothed 1.0e-2 blue, staircase 2.8e-3 red: the subpixel
+  examples/em/fdfd_mie_sphere_resonance_3d (gpu only): smoothed 1.0e-2 blue, staircase 2.8e-3 red: the subpixel
   average is diagonal with in-plane normals per z layer, biased low on oblique faces, so it need not beat the staircase
   on curved 3D surfaces.
 - Band diagrams: a parameter sweep over bloch_k<axis> (fresh factor per k). A uniform mesh has ceil(size / dx) cells:
@@ -290,7 +290,7 @@ subpixel smoothing), pec_domain and resonance_table; no conformal PEC.
   `fallback_refusal` (`_nedelec_fallback_refusal`, counted on the TetrahedronMesh only when a cuDSS refusal would fall
   back): above that fill the refusal raises with the remedy (gpu cudss_mixed, mumps / pardiso, coarser mesh, mirrors)
   instead of a silent minutes-long SuperLU. Uncalibrated (the threshold is a guess between 0.2 and 0.6 GiB).
-- Self-tests `selftests_fem3d` (tolerances first estimates); Mie sphere example examples/em3d/fem_mie_sphere_resonance_3d
+- Self-tests `selftests_fem3d` (tolerances first estimates); Mie sphere example examples/em/fem_mie_sphere_resonance_3d
   (gpu).
 - Open: cudss_mixed refinements per caller (belongs in physics/em/eigenfrequency.py), periodic gmsh meshes, driven
   solves, interface faces.

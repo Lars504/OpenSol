@@ -18,7 +18,7 @@ from ..model.schema import ISSUE_LEVELS, Issue, with_gui_run_features
 from ..model.templates import template_entries
 from .canvas import ModelCanvas
 from .document import COMPUTED_RESULTS_NODE, issue_node_path
-from .examples import MULTIPHYSICS_FOLDER, ExampleCatalog
+from .examples import EXAMPLE_SPACES, MULTIPHYSICS_FOLDER, MULTIPHYSICS_LABEL, ExampleCatalog
 from .forms import NO_VALUE, format_quantity, rich_tooltip
 from .helpers import (USER_ERRORS, ask_run_directory, ask_save_path, format_duration, remember_directory,
                       run_user_operation, start_directory, study_summary_text)
@@ -1255,32 +1255,62 @@ class MainWindow(QtWidgets.QMainWindow):
             placeholder.setEnabled(False)
 
     def _populate_example_folder_menu(self, folder_menu, folder_name):
-        """Scan one example folder into its submenu, a folded submenu per physics combination when there are several
-        (single physics first, a separator before the combinations); unreadable files are logged, none is validated."""
+        """Scan one example folder into its submenu: a submenu per space (2D / 3D / Axisymmetric, those present) of
+        its single-physics models, then, after a separator, a Multiphysics submenu of its models with several physics
+        types split the same way (the multiphysics folder: its spaces directly); unreadable files are logged, none is
+        validated."""
         examples, newly_unreadable = self._example_catalog.scan(folder_name)
         for relative_path, reason in newly_unreadable:
             self.log_message('info', f'Example {relative_path} is not listed in the Examples menu: {reason}')
-        for submenu in folder_menu.findChildren(QtWidgets.QMenu):   # clear() keeps addMenu's QMenu objects
+        for submenu in folder_menu.findChildren(QtWidgets.QMenu):   # clear() keeps addMenu's QMenu objects (recursive)
             submenu.deleteLater()
         folder_menu.clear()
-        several_groups = len({example.group for example in examples}) > 1
-        group, group_menu, previous_n_types = None, folder_menu, 0
-        for example in examples:
-            if several_groups and example.group != group:
-                if previous_n_types == 1 and example.n_physics_types > 1:
+        if folder_name == MULTIPHYSICS_FOLDER:
+            self._add_example_spaces(folder_menu, examples)
+        else:
+            single = [example for example in examples if example.n_physics_types <= 1]
+            coupled = [example for example in examples if example.n_physics_types > 1]
+            self._add_example_spaces(folder_menu, single)
+            if coupled:
+                if single:
                     folder_menu.addSeparator()
-                group, previous_n_types = example.group, example.n_physics_types
-                group_menu = folder_menu.addMenu(group.replace('&', '&&'))
-                group_menu.setToolTipsVisible(True)
-            action = group_menu.addAction(example.title.replace('&', '&&'))
-            action.setToolTip(example.tooltip())
-            action.setStatusTip(f'Open the example {example.relative_path} as an untitled model')
-            action.triggered.connect(lambda _checked=False, path=example.path: self._open_example(path))
+                coupled_menu = self._add_example_submenu(folder_menu, MULTIPHYSICS_LABEL,
+                                                         'Models coupling several physics types')
+                self._add_example_spaces(coupled_menu, coupled)
         if not examples:
             placeholder = folder_menu.addAction('(no examples)')
             placeholder.setToolTip(f'Model files (*.json) in {self._example_catalog.directory / folder_name} are '
                                    'listed here; they are checked when opened.')
             placeholder.setEnabled(False)
+
+    @staticmethod
+    def _add_example_submenu(menu, label, tooltip=''):
+        submenu = menu.addMenu(label.replace('&', '&&'))
+        submenu.setToolTipsVisible(True)
+        if tooltip:
+            submenu.menuAction().setToolTip(tooltip)
+        return submenu
+
+    def _add_example_spaces(self, menu, examples):
+        """A submenu per space present among examples (EXAMPLE_SPACES order), even a single one: the menu always
+        says 2D / 3D / Axisymmetric."""
+        for space, tooltip in EXAMPLE_SPACES.items():
+            in_space = [example for example in examples if example.space == space]
+            if in_space:
+                self._add_example_groups(self._add_example_submenu(menu, space, tooltip), in_space)
+
+    def _add_example_groups(self, menu, examples):
+        """The examples (scan order) into menu, a folded submenu per physics type group when there are several."""
+        several_groups = len({example.group for example in examples}) > 1
+        group, group_menu = None, menu
+        for example in examples:
+            if several_groups and example.group != group:
+                group = example.group
+                group_menu = self._add_example_submenu(menu, group)
+            action = group_menu.addAction(example.title.replace('&', '&&'))
+            action.setToolTip(example.tooltip())
+            action.setStatusTip(f'Open the example {example.relative_path} as an untitled model')
+            action.triggered.connect(lambda _checked=False, path=example.path: self._open_example(path))
 
     def _open_example(self, path):
         if not self._confirm_discard_changes():
