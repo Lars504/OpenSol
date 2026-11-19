@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from profiler_harness import SOLVER_ROLE_PARTS, STUDY_PARTS, case_specs, main  # noqa: E402
+from profiler_harness import SOLVER_ROLE_PARTS, STUDY_PARTS, case_specs, main, refined, without_exact_cg  # noqa: E402
 
 BLOCK_CASE = 'solid_3d_uniaxial_block_graded'
 MODES_CASE = 'solid_3d_eigenfrequency_roller_box'
@@ -21,16 +21,6 @@ COLUMN_CASE = 'solid_3d_column_z_expressions'
 MULTIGRID_CASE = 'solid_3d_multigrid'   # its block / bilayer runs on pcg preconditioner multigrid
 BLOCK_REFINEMENT = 4      # cell widths / 4: ~2e5 cells, ~6e5 dofs (one large static CG solve)
 MODES_REFINEMENT = 3      # 27 x 15 x 12 cells, ~1.6e4 free dofs (a PCG solve per Lanczos application)
-
-
-def _refined(spec, factor):
-    """Deep copy of spec with the first mesh's base dx and every refinement dx divided by factor."""
-    spec = copy.deepcopy(spec)
-    mesh = spec.meshes[0]
-    mesh.dx = float(mesh.dx) / factor
-    for refinement in mesh.refinements:
-        refinement.dx = float(refinement.dx) / factor
-    return spec
 
 
 def _production(spec, preconditioner=None, precision=None):
@@ -43,23 +33,20 @@ def _production(spec, preconditioner=None, precision=None):
             if node.name == EXACT_CG_NAME:
                 node.settings = {'preconditioner': preconditioner, **({'precision': precision} if precision else {})}
         return spec
-    spec.solvers = [node for node in spec.solvers if node.name != EXACT_CG_NAME]
-    for physics in spec.physics:
-        physics.solvers = {role: name for role, name in physics.solvers.items() if name != EXACT_CG_NAME}
-    return spec
+    return without_exact_cg(spec)
 
 
 def _specs():
     """{run: ModelSpec}: the selftest runs plus refined copies, all on production solver settings."""
     block = case_specs(BLOCK_CASE)['run']
     multigrid = case_specs(MULTIGRID_CASE)
-    fine_multigrid_block = _refined(multigrid['block'], BLOCK_REFINEMENT)
+    fine_multigrid_block = refined(multigrid['block'], BLOCK_REFINEMENT)
     modes = case_specs(MODES_CASE)['lowest']
-    return {'block': _production(block), 'block_fine': _production(_refined(block, BLOCK_REFINEMENT)),
+    return {'block': _production(block), 'block_fine': _production(refined(block, BLOCK_REFINEMENT)),
             'block_fine_multigrid': _production(fine_multigrid_block, 'multigrid'),
             'block_fine_multigrid_double': _production(fine_multigrid_block, 'multigrid', 'double'),
-            'bilayer_fine_multigrid': _production(_refined(multigrid['bilayer'], BLOCK_REFINEMENT), 'multigrid'),
-            'modes': _production(modes), 'modes_fine': _production(_refined(modes, MODES_REFINEMENT)),
+            'bilayer_fine_multigrid': _production(refined(multigrid['bilayer'], BLOCK_REFINEMENT), 'multigrid'),
+            'modes': _production(modes), 'modes_fine': _production(refined(modes, MODES_REFINEMENT)),
             'column': _production(case_specs(COLUMN_CASE)['run'])}
 
 

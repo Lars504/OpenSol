@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from profiler_harness import SOLVER_ROLE_PARTS, STUDY_PARTS, main  # noqa: E402,F401
+from profiler_harness import SOLVER_ROLE_PARTS, STUDY_PARTS, main, without_exact_cg  # noqa: E402,F401
 
 
 def methods(target_class, names, prefix):
@@ -53,11 +53,7 @@ def scaled_spec(spec, refine=1.0, steps=1.0, automatic=True):
         if steps != 1.0 and isinstance(time_step, (int, float)) and not isinstance(time_step, bool):
             physics.settings['time_step'] = float(time_step) / steps
     if automatic:
-        from open_sol.model.selftest_helpers import EXACT_CG_NAME
-        for physics in spec.physics:
-            if physics.solvers.get('linear') == EXACT_CG_NAME:
-                del physics.solvers['linear']
-        spec.solvers = [solver for solver in spec.solvers if solver.name != EXACT_CG_NAME]
+        without_exact_cg(spec)
     return spec
 
 

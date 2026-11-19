@@ -1,6 +1,8 @@
 """Shared harness of the profiler_solver_*.py scripts: runs selftest case specs with GPU-synchronised part timers and
 cProfile, then writes out/<name>/report.txt (parts, untimed rest, host hot spots, sync / transfer sites), runs.md
 (one column per run, e.g. per --compare value) and solution_check.json (the selftest check() of the profiled runs)."""
+# Module level: stdlib only, open_sol imported inside functions: run_all_profilers loads this file on its own (its
+# markers, variant names, PROFILED_CODE) and must not load open_sol (seconds per run_all).
 import _thread
 import argparse
 import cProfile
@@ -40,8 +42,8 @@ N_CALLER_TARGETS = 15
 CALLER_MIN_SECONDS = 0.001   # callers of an outside function below this (own and cumulative) fold into one line
 # one record per part: [calls, inclusive s, exclusive s, inclusive process-CPU s, device wait s (own exit synchronize)]
 EMPTY_RECORD = (0, 0.0, 0.0, 0.0, 0.0)
-# stdout line of a profile cut short (--time-limit or Ctrl+C): its report holds the parts timed until then
-# (run_all_profilers reads it: keep the text the same there)
+# stdout line of a profile cut short (--time-limit or Ctrl+C): its report holds the parts timed until then (run_all
+# reads it)
 PARTIAL_REPORT_MARKER = 'partial report'
 
 
@@ -71,11 +73,13 @@ class _TimeLimit:
             self._timer.cancel()
 
 
-# --if-changed: stdout lines of a profile that still stands, nothing run (run_all_profilers reads them: keep the texts)
+# stdout texts run_all_profilers reads (it takes them from this module, loaded on its own):
+# --if-changed: the lines of a profile that still stands, nothing run
 UNCHANGED_MARKER = 'unchanged since '
 KEPT_REPORT_MARKER = 'kept report: '
 # one stdout line per checked group: '<marker><status> <group>: <detail>' (run_all_profilers reads the status word)
 SOLUTION_CHECK_MARKER = 'solution check: '
+NOTHING_PROFILED = 'nothing profiled'   # end of the --compare-only / --solver-type line when no run takes the value
 SOLUTION_CHECK_FILE = 'solution_check.json'   # next to report.txt: the check records of the profile
 PROFILE_CACHE_FILE = 'profile_cache.json'   # next to report.txt / runs.json: what the last complete profile depended on
 ORIGIN_ATTRIBUTE = '_selftest_origin'   # ModelSpec attribute case_specs sets (deepcopy, refined and in-place edits keep it)
@@ -538,6 +542,24 @@ SINGLE_PRECISIONS = ('single', 'mixed', 'half_storage')
 SOLVER_TYPE_SETTING = 'solver_type'   # run label '<run> solver_type=<type>' of --solver-type (run_all's token)
 
 
+def variant_token(setting, value) -> str:
+    """'NAME=value' of a --compare / --solver-type variant: its run-name suffix (variant_run), its solution check
+    group and run_all's token."""
+    return f'{setting}={value}'
+
+
+def variant_run(run_name, setting, value) -> str:
+    """Run name of a variant: '<run> NAME=value' (a repeat appends '_N'; base_run undoes both but the repeat)."""
+    return f'{run_name} {variant_token(setting, value)}'
+
+
+def base_run(name) -> str:
+    """Run name without variant_run's ' NAME=value' suffix (a repeat's '_N' kept): the same task under every solver
+    (run_all's split plot columns)."""
+    match = re.fullmatch(r'(.*?) \S+?=\S+?(_\d+)?', name)
+    return match.group(1) + (match.group(2) or '') if match else name
+
+
 def solver_group(back_end, precision, backend, type_name=None) -> str:
     """run_all group of one role's solver: its type in TYPE_GROUPS, else its library back end's package, else numpy on
     the cpu (scipy) or cupy by precision (single / mixed: cudss_mixed, double or unknown: cudss)."""
@@ -641,7 +663,7 @@ def solver_type_variants(specs, type_name, backend):
         if not changed:
             print(f'--solver-type: run {run_name!r}: no solver role takes {type_name}; dropped', flush=True)
             continue
-        variants[f'{run_name} {SOLVER_TYPE_SETTING}={type_name}'] = variant
+        variants[variant_run(run_name, SOLVER_TYPE_SETTING, type_name)] = variant
     return variants
 
 
@@ -653,6 +675,17 @@ def automatic_solvers(spec):
         if physics_spec.solvers:
             physics_spec.solvers.clear()
     return variant
+
+
+def without_exact_cg(spec):
+    """spec (edited in place, returned) without the selftests' exact_cg node (selftest_helpers.with_exact_cg: double,
+    tolerance 1e-12): the roles it held run Automatic. A profile on that node times the selftest's accuracy, not
+    production."""
+    from open_sol.model.selftest_helpers import EXACT_CG_NAME
+    spec.solvers = [node for node in spec.solvers if node.name != EXACT_CG_NAME]
+    for physics_spec in spec.physics:
+        physics_spec.solvers = {role: name for role, name in physics_spec.solvers.items() if name != EXACT_CG_NAME}
+    return spec
 
 
 def with_precision(spec, precision):
@@ -714,14 +747,14 @@ def setting_variants(specs, assignment, backend, keep_unchanged=True):
             if not changed:
                 skipped.append(value)
                 continue
-            label = f'{run_name} {setting}={value}'
+            label = variant_run(run_name, setting, value)
             twin = first_with_key.setdefault(_run_key(variant, spec), label)
             if twin != label:
                 print(f'--compare: run {label!r} is the same model as {twin!r}; dropped', flush=True)
                 continue
             origin = getattr(variant, ORIGIN_ATTRIBUTE, None)
             if origin is not None:   # each compared value is checked on its own
-                setattr(variant, ORIGIN_ATTRIBUTE, dataclasses.replace(origin, setting=f'{setting}={value}'))
+                setattr(variant, ORIGIN_ATTRIBUTE, dataclasses.replace(origin, setting=variant_token(setting, value)))
             variants[label] = variant
         if len(skipped) == len(values):
             if keep_unchanged:
@@ -1271,7 +1304,7 @@ def main(name, parts, description, case=None, runs=None, variant=None, specs=Non
         run_specs = setting_variants(run_specs, options.compare, options.backend,
                                      keep_unchanged=not options.compare_only)
         if not run_specs:
-            line = f'--compare-only: no run of {name} takes {options.compare}; nothing profiled'
+            line = f'--compare-only: no run of {name} takes {options.compare}; {NOTHING_PROFILED}'
             if CHECK_ONLY:
                 raise ProfileChecked([line])
             print(line, flush=True)
@@ -1279,7 +1312,7 @@ def main(name, parts, description, case=None, runs=None, variant=None, specs=Non
     if options.solver_type:
         run_specs = solver_type_variants(run_specs, options.solver_type, options.backend)
         if not run_specs:
-            line = f'--solver-type: no run of {name} takes {options.solver_type}; nothing profiled'
+            line = f'--solver-type: no run of {name} takes {options.solver_type}; {NOTHING_PROFILED}'
             if CHECK_ONLY:
                 raise ProfileChecked([line])
             print(line, flush=True)

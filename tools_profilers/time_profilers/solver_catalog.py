@@ -32,8 +32,13 @@ class Candidate:
 
     @property
     def row(self) -> str:
-        """Report row / record key: the label, '<label> @gpu' on the gpu backend."""
-        return self.label if self.backend == 'cpu' else f'{self.label} @{self.backend}'
+        """Report row / record key: row_of(label, backend)."""
+        return row_of(self.label, self.backend)
+
+
+def row_of(label, backend) -> str:
+    """Report row / record key of a solver label on a backend: the label, '<label> @gpu' on the gpu backend."""
+    return label if backend == 'cpu' else f'{label} @{backend}'
 
 
 def choice_names(solver_type) -> tuple:
