@@ -13,7 +13,6 @@ _TOLERANCE_FLOOR = pcg.FLOAT32_TOLERANCE_FLOOR
 _HOST_DIRECT_NAMES = ' / '.join(host_direct.HOST_DIRECT_BACK_ENDS)
 _HOST_DIRECT_DOUBLE_NAMES = ' / '.join(host_direct.HOST_DIRECT_DOUBLE_BACK_ENDS)
 _HOST_DIRECT_MIXED_NAMES = ' / '.join(host_direct.HOST_DIRECT_MIXED_BACK_ENDS)
-_HOST_MEMORY_PERCENT = round(100 * host_direct.HOST_FRACTION)
 _GUI_LIBRARY_NAMES = {'pardiso': 'Intel PARDISO'}   # drop-down / tip wording; others: host_direct.LIBRARY_LABELS
 _HOST_DIRECT_INSTALL = '; '.join(f'{host_direct.LIBRARY_LABELS[library]}: {host_direct.install_hint(library)}'
                                  for library in host_direct.HOST_DIRECT_LIBRARIES)
@@ -50,18 +49,13 @@ PCG_PARAMS = (
           help=f'Arithmetic of the CG vectors and operator (the physics stores its fields as float32 either way). '
                f'single saves solver memory but CG stalls near a relative residual of {_TOLERANCE_FLOOR:g}: use '
                f'tolerance >= {_TOLERANCE_FLOOR:g} with it (validation warns). mixed (heat, electric_currents, '
-               'electrostatics, magnetostatics: Jacobi on the assembled operator): the system is assembled in '
-               'float64, CG runs in float32 (vectors and a float32 copy of the operator values, ~1.5-2x '
-               'faster per iteration) and each time its residual fell by '
-               f'{pcg.MIXED_REPLACEMENT_RATIO:g} the float64 residual replaces it (the search direction is kept, '
-               'no restart), so any tolerance double reaches is reached in about the iterations of double '
-               '(+~30 B per cell for the float32 copies). '
-               'solid_mechanics_3d: float32 copies of the element Lame pair and the block-Jacobi inverses drive a '
-               'float32 matrix-free product, which on GPUs with slow float64 arithmetic (most consumer cards) is '
-               'several times cheaper than the float64 one (the stiffness product is compute bound). Not for 2D '
-               'solid_mechanics (block preconditioner on the assembled operator). A node that sets no precision '
-               'takes solver_defaults.precision, else the physics\' Automatic one (solid_mechanics_3d on the gpu '
-               'backend with a tensor mesh: mixed), else double.',
+               'electrostatics, magnetostatics with Jacobi; solid_mechanics_3d): CG in float32 (~1.5-2x faster per '
+               f'iteration, +~30 B per cell), the float64 residual replacing its own each time it fell by '
+               f'{pcg.MIXED_REPLACEMENT_RATIO:g}, so any tolerance double reaches is reached in about the iterations '
+               'of double; solid_mechanics_3d runs a float32 matrix-free product, several times cheaper on GPUs '
+               'with slow float64 arithmetic. Not for 2D solid_mechanics. A node that sets no precision takes '
+               "solver_defaults.precision, else the physics' Automatic one (solid_mechanics_3d on the gpu backend "
+               'with a tensor mesh: mixed), else double.',
           tip='Number precision of the iterative solver.\n\n'
               '- Double precision: suits almost every model.\n'
               "- Single precision: saves memory, but cannot reach a 'Solver tolerance' below about "
@@ -94,26 +88,19 @@ PCG_PARAMS = (
     Param('preconditioner', 'choice', 'jacobi', label='Preconditioner', choices=pcg.PRECONDITIONERS,
           choice_labels=(('jacobi', 'Jacobi (diagonal)'), ('multigrid', 'Multigrid')),
           help='CG preconditioner. jacobi: the inverse diagonal (solid_mechanics: its 2x2 / 3x3 block diagonal), '
-               'cheap per iteration, but the iterations grow with the cells along the longest window axis (~10 per '
-               'cell) and with mesh grading, cell aspect ratio and coefficient contrast (outer grading to large '
-               'cells, 1e3x conductivity ratios: up to ~1e5 iterations). multigrid (heat, electric_currents, '
-               'electrostatics, magnetostatics; precision single or double): a smoothed-aggregation algebraic '
-               'multigrid V(1,1)-cycle (l1-Jacobi smoothing) built from the assembled operator, coarsening along '
-               f'strong couplings (threshold {multigrid.STRENGTH_THRESHOLD:g}), so graded and stretched cells '
-               'semi-coarsen; typically 10-40 iterations whatever the mesh size, each costing ~4-6 Jacobi '
-               'iterations; the hierarchy takes ~150 B per cell (double) on the device, every assembly rebuilds its '
-               'coarse operators and a change of the sparsity (held cells, empty rows) re-runs the aggregation, one '
-               'host pass over the operator. Best for steady solves on large or strongly graded meshes; for implicit '
-               'time steps the warm-started Jacobi is often cheaper. Automatic (no node) of heat, electric_currents, '
-               'electrostatics and magnetostatics on the gpu backend is pcg with multigrid (jacobi when '
-               'solver_defaults.precision is mixed); a pcg node without this setting uses jacobi. '
-               'solid_mechanics_3d on a tensor mesh (any precision, mixed included): a geometric multigrid '
-               'V(2,2)-cycle on the brick operator itself (cells paired 2:1 per axis, volume-mean Lame values, '
-               'trilinear transfers, Chebyshev block-Jacobi smoothing, a small dense coarsest level), each iteration '
-               'costing ~6-8 block-Jacobi iterations and the hierarchy ~1/6 of the system arrays; a solve that needs '
-               'far more iterations than multigrid should, or stalls (thin solids in void, strong stiffness contrast '
-               'or grading make the coarse levels weak), switches that solid to block Jacobi with a warning. Not '
-               'Automatic there yet.',
+               'cheap per iteration, but iterations grow with the cells along the longest window axis (~10 per '
+               'cell), grading, aspect ratio and coefficient contrast (outer grading, 1e3x conductivity ratios: up '
+               'to ~1e5). multigrid (heat, electric_currents, electrostatics, magnetostatics; precision single or '
+               'double): smoothed-aggregation algebraic multigrid V(1,1) (strength threshold '
+               f'{multigrid.STRENGTH_THRESHOLD:g}, graded cells semi-coarsen), typically 10-40 iterations at any '
+               'mesh size, each ~4-6 Jacobi iterations, ~150 B per cell (double) on the device; every assembly '
+               'rebuilds the coarse operators. Best for steady solves on large or strongly graded meshes; for '
+               'implicit time steps the warm-started Jacobi is often cheaper. Automatic of those four types on the '
+               'gpu backend is pcg with multigrid (jacobi at mixed precision); a pcg node without this setting uses '
+               'jacobi. solid_mechanics_3d on a tensor mesh (any precision; not Automatic): geometric multigrid '
+               'V(2,2) on the brick operator, each iteration ~6-8 block-Jacobi iterations, the hierarchy ~1/6 of '
+               'the system arrays; a solve that stalls or needs far more iterations than expected (thin solids in '
+               'void, strong stiffness contrast or grading) switches that solid to block Jacobi with a warning.',
           tip='How the iterative solver is accelerated.\n\n'
               '- Jacobi (diagonal): light per step; suits small or uniform meshes and time-stepped heat.\n'
               '- Multigrid: far fewer steps on large or strongly graded meshes and with very different materials; '
@@ -151,17 +138,11 @@ def _empty_memory_estimate(values, request):
 PCG = SolverType(
     'pcg', 'Iterative linear solver', roles=('linear',), params=PCG_PARAMS,
     description='Preconditioned conjugate gradients for symmetric positive definite systems (the linear role of '
-                'heat, electric_currents, electrostatics, magnetostatics, solid_mechanics, solid_mechanics_3d): Jacobi '
-                'or the physics\' block-Jacobi preconditioner, or algebraic multigrid (the scalar diffusion types), '
-                'warm-started from the previous solve; on the GPU '
-                '(fused cupy kernels) or the CPU backend (numpy / scipy, the same iteration); double, single or mixed '
-                '(float32 CG passes refined against the float64 residual) precision. '
-                'Automatic is pcg with the defaults below, except the preconditioner: multigrid for the scalar '
-                'diffusion types (jacobi at mixed precision; on triangle and tetrahedron meshes Automatic is '
-                'sparse_direct, pcg is opt-in there; solid_mechanics_3d on tetrahedra solves with sparse_direct only); '
-                'to change precision, tolerance, max_iterations or the '
-                'preconditioner add a '
-                'pcg solver node and assign it (physics solvers {"linear": "<node name>"}).',
+                'heat, electric_currents, electrostatics, magnetostatics, solid_mechanics, solid_mechanics_3d), '
+                'warm-started from the previous solve, on both backends. Automatic is pcg with the defaults below '
+                'except the preconditioner (see it); on triangle and tetrahedron meshes Automatic is sparse_direct '
+                'and pcg opt-in (solid_mechanics_3d on tetrahedra: sparse_direct only). To change a setting add a '
+                'pcg node and assign it (physics solvers {"linear": "<node name>"}).',
     summary='Iterative solver for diffusion and elasticity problems: fast and memory-light on large meshes.',
     operators=('spd',), backends=('gpu', 'cpu'), precisions=('double', 'single', 'mixed'),
     grids=('tensor', 'triangles', 'tetrahedra'),
@@ -192,26 +173,16 @@ LINE_BLOCK = SolverType(
     'line_block', 'Line-block direct solver', roles=('shifted', 'linear'), opt_in_roles=('linear',),
     params=LINE_BLOCK_PARAMS,
     description='Batched block-tridiagonal direct solver for families K + sum s_i M_i + sum t_j N_j of structured '
-                '2D systems (M_i diagonal, N_j sparse with the same line coupling as K): unknowns ordered line by '
-                'line, per shift a block Thomas '
-                'factorisation (cost lines x b^3, b = unknowns across a line), many shifts per batch, equilibrated and '
-                'refined against the double-precision operator; on the GPU (cupy) or the CPU backend (numpy, the same '
-                'array code, chunks sized by the available RAM). Users (role shifted): heat thermal noise spectra '
-                '(K + j omega C + q^2 A per frequency and axial wavenumber) and em_fdfd_bor (every driven system and '
-                'shift-invert operator, the orders of an azimuthal_orders list as shifts m, m^2 of K0 + m K1 + m^2 '
-                'K2; a kept factor serves the Arnoldi iterations; frequency_domain wavelengths of one order in batches '
-                'of whole operators) and em_modes (the shift-invert operators of the mode solves: omega and, with '
-                'group_index, omega (1 +- 1e-3), and in a frequency_domain study the next wavelengths, in batches of '
-                'whole operators). Role linear (em_fdfd_ez / em_fdfd_hz only; '
-                'Automatic stays sparse_direct): one block factor of the Helmholtz operator per wavelength and '
-                'material state, reused for every source and as the shift-invert factor of the eigenfrequency study; '
-                'frequency_domain wavelengths in batches of whole operators; the periodic axis (if any) lies inside '
-                'the blocks, two periodic axes are refused; adjoint (transposed) solves of the optimization study and '
-                'rejected solves use a host SuperLU of the same operator instead. A batch holds at most 8 operators '
-                'and what 60 % of the free memory holds. A rejected solve is re-solved by the physics\' '
-                'host SuperLU. On the CPU backend it is slower than the Automatic host SuperLU (each solve 7-15 x '
-                'slower on 1e4-4e4 unknown complex 2D operators, double and mixed alike, at about the same '
-                'factorisation time): there it only serves comparisons with the GPU runs.',
+                '2D systems: unknowns ordered line by line, per shift a block Thomas factorisation (cost lines x b^3, '
+                'b = unknowns across a line), many shifts per batch (at most 8 operators and 60 % of the free '
+                'memory), refined against the double-precision operator; both backends. Role shifted: heat thermal '
+                'noise spectra, em_fdfd_bor (driven systems and shift-invert operators, azimuthal orders as shifts) '
+                'and em_modes (the mode shift-invert operators, group_index and frequency_domain wavelengths in '
+                'batches). Role linear (em_fdfd_ez / em_fdfd_hz only; Automatic stays sparse_direct): one block '
+                'factor per wavelength and material state, reused for every source and as the eigenfrequency '
+                'shift-invert factor; at most one periodic axis (inside the blocks); adjoint solves of the '
+                "optimization study and rejected solves use the physics' host SuperLU. On the CPU backend each solve "
+                'is 7-15 x slower than the Automatic host SuperLU: there it only serves comparisons with GPU runs.',
     summary='Fast GPU solver for frequency sweeps on elongated or mirror-reduced cross-sections, for round '
             '(axisymmetric) wave models and for elongated 2D frequency-domain light models. On the CPU backend the '
             'automatic solver is faster.',
@@ -227,57 +198,37 @@ _SPARSE_DIRECT_LABELS = {'auto': 'Automatic', 'scipy_splu': 'Direct solver on th
 SPARSE_DIRECT_PARAMS = (
     Param('back_end', 'choice', 'auto', label='Back end', choices=sparse_direct.LINEAR_SOLVER_CHOICES,
           choice_labels=tuple((name, _SPARSE_DIRECT_LABELS[name]) for name in sparse_direct.LINEAR_SOLVER_CHOICES),
-          help='Where the sparse factorisation runs (role linear). scipy_splu: SuperLU on the host (needs scipy; the '
-               'matrix moves to the host, where its L + U factors stay), one factorisation reused for every right-hand '
-               'side, practical up to ~1e6 unknowns (warning above, refused above 2e6). cusolver_qr: sparse QR on the '
-               'GPU (cupy only), one factorisation per solve, for small models (~1e5 unknowns on a square grid): its '
-               'workspace, estimated as 64 B * nx * ny * the cell count of the narrower axis (doubled by a '
-               'periodic wrap of the other axis), lies outside the GPU memory budget, so validation warns '
-               'above 512 MiB and refuses above 2 GiB, and the solver also refuses a workspace over half the free GPU '
-               'memory (overrunning the GPU freezes the display). auto: scipy_splu when scipy is installed, else '
-               'cusolver_qr; on the cpu backend always scipy_splu (cusolver_qr is an error there); on the gpu backend '
-               'with nvmath-python installed, the frequency-response linear solves of pressure_acoustics (triangle and '
-               'tetrahedron meshes) and membrane (triangle meshes) take cudss_mixed instead, solid_mechanics_3d on '
-               'tetrahedra cudss_mixed, and cudss: em_fdfd_ez / _hz (tensor and triangle meshes), em_fdfd_bor / '
-               'em_fdfd_conical and drift_diffusion (tensor meshes; drift_diffusion also triangles), solid_mechanics '
-               'on triangles and the heat / electric_currents / electrostatics / magnetostatics types on triangle and '
-               'tetrahedron meshes (the run summary records the resolved back end); when cuDSS refuses such an operator (a zero pivot, missed accuracy or too '
-               'little GPU memory) that solver switches to scipy_splu for the rest of the run with a warning (up to '
-               '2e6 unknowns). The shifted role '
-               '(thermal noise) and magnetic_fields_ac always factorise on the host. cudss (GPU backend, needs '
-               "nvmath-python with cuDSS; only where the physics offers it: heat, electric_currents, electrostatics, "
-               'magnetostatics, solid_mechanics and solid_mechanics_3d, em_fdfd_ez / em_fdfd_hz, em_fdfd_bor, '
-               'em_fdfd_conical, drift_diffusion (real LU of every Newton Jacobian) and em_fdfd_nonlinear (opt-in '
-               'only: its channels keep one factor each; picard Kerr / free-carrier channels then refactorise every '
-               'sweep, no recycled GMRES) linear solves): NVIDIA\'s sparse '
-               'direct solver '
-               'factorises on the GPU in double precision (real symmetric positive definite systems by Cholesky, '
-               'LDL^T if that fails; its own nested-dissection ordering) and keeps the factor in GPU memory outside '
-               'the cupy pool (refused when cuDSS\'s own estimate after planning exceeds 80 % of the free device '
-               'memory; the host SuperLU size rules do not apply); a re-assembly with the same sparsity pattern '
-               '(new material values, Newton / saturation iterations) refactorises without the host planning step; '
-               'solves stay on the GPU. A probe solve checks each factor (cuDSS refinement when its residual misses '
-               '1e-10). cudss_mixed: the diagonally equilibrated operator factorised in single precision (float32 / '
-               'complex64: on GPUs with slow double arithmetic ~10x faster to factorise, half the factor memory), '
-               'every solve refined by float64 residual steps to 1e-12 (~3-4 single solves per solve); refused at '
-               'the first factor when single precision cannot reach that (very high contrast: use cudss). '
-               f'{_HOST_DIRECT_NAMES} (both backends, never chosen by auto; only where the physics offers them: the '
-               'linear solves of heat, electric_currents, electrostatics, magnetostatics(_3d), solid_mechanics(_3d), '
-               'pressure_acoustics, membrane, em_fdfd_ez / em_fdfd_hz, em_fdfd_bor, em_fdfd_conical, drift_diffusion '
-               f'and em_fdfd_nonlinear, the shifted role of heat thermal noise, and {_HOST_DIRECT_DOUBLE_NAMES} for '
-               'magnetic_fields_ac): a multicore sparse direct factor on the host by MUMPS (python-mumps) or Intel MKL '
-               'PARDISO (pydiso, x86-64 only), after the diagonal equilibration of cuDSS: LDL^T for (complex) '
-               'symmetric operators (the symmetrised D A of the FDFD types; the real symmetric positive definite '
-               'systems: PARDISO Cholesky, LDL^T if that fails, MUMPS LDL^T), LU otherwise; transposed (adjoint) '
-               'solves, GMRES on an '
-               'earlier factor and inertia counts work as with scipy_splu. The scipy_splu size rules apply '
-               '(uncalibrated for these libraries), plus a check of the library\'s own memory estimate after its '
-               f'analysis against {_HOST_MEMORY_PERCENT} % of the available RAM; a probe solve checks each factor '
-               '(float64 GMRES refinement on the factor when its residual misses 1e-10); a refusal raises (no '
-               'fallback).'
-               f'{_HOST_DIRECT_MIXED_HELP} Threads: the library defaults (OMP_NUM_THREADS for MUMPS, '
-               'MKL_NUM_THREADS for PARDISO; with numba or a threaded BLAS in the same process set them to share the '
-               f'cores). Optional packages, a validation error without them: {_HOST_DIRECT_INSTALL}.',
+          help='Where the sparse factorisation runs (role linear; the back ends a role offers: its line under Roles '
+               'by physics type). scipy_splu: host SuperLU (scipy), one factorisation reused for every right-hand '
+               'side, practical up to ~1e6 unknowns (warning above, refused above 2e6). cusolver_qr: GPU sparse QR '
+               '(cupy), one factorisation per solve, small models only (~1e5 unknowns on a square grid): its '
+               'workspace (~64 B * nx * ny * the cells of the narrower axis, doubled by a periodic wrap of the other '
+               'axis) lies outside the GPU budget: validation warns above 512 MiB and refuses above 2 GiB, the '
+               'solver refuses more than half the free GPU memory. auto: scipy_splu (cusolver_qr without scipy; '
+               'always scipy_splu on the cpu backend); on the gpu backend with nvmath-python cudss_mixed for the '
+               'frequency-response solves of pressure_acoustics (triangles, tetrahedra) and membrane (triangles) and '
+               'for solid_mechanics_3d on tetrahedra, cudss for em_fdfd_ez / _hz (tensor, triangles), em_fdfd_bor, '
+               'em_fdfd_conical and drift_diffusion (tensor; drift_diffusion also triangles), solid_mechanics on '
+               'triangles and heat / electric_currents / electrostatics / magnetostatics on triangles and tetrahedra '
+               '(the run summary records the resolved back end); a cuDSS refusal (zero pivot, missed accuracy, too '
+               'little GPU memory) then switches that solver to scipy_splu for the rest of the run with a warning (up '
+               'to 2e6 unknowns). The shifted role (thermal noise) and magnetic_fields_ac always factorise on the '
+               'host. cudss (GPU backend, nvmath-python with cuDSS): a double-precision factor (Cholesky for SPD '
+               'systems, LDL^T if that fails) kept in GPU memory outside the cupy pool (refused when cuDSS\'s own '
+               'estimate exceeds 80 % of the free device memory; no host size rules); a re-assembly with the same '
+               'sparsity refactorises without replanning; a probe solve checks each factor (cuDSS refinement when '
+               'its residual misses 1e-10). em_fdfd_nonlinear: opt-in only, one factor per channel (picard Kerr / '
+               'free-carrier channels refactorise every sweep, no recycled GMRES). cudss_mixed: the equilibrated '
+               'operator factorised in single precision (~10x faster factorisation on GPUs with slow double '
+               'arithmetic, half the factor memory), every solve refined in float64 to 1e-12 (~3-4 single solves); '
+               'refused at the first factor when single precision cannot reach that (very high contrast: use cudss). '
+               f'{_HOST_DIRECT_NAMES}: the host MUMPS / Intel MKL PARDISO factor (rules: solvers notes; '
+               f'{_HOST_DIRECT_DOUBLE_NAMES} also for magnetic_fields_ac), after the cuDSS equilibration: LDL^T for '
+               '(complex) symmetric operators (PARDISO: Cholesky for SPD, LDL^T if that fails), else LU; adjoint '
+               'solves, GMRES on an earlier factor and inertia counts as scipy_splu; a probe solve checks each factor '
+               '(float64 GMRES refinement when its residual misses 1e-10).'
+               f'{_HOST_DIRECT_MIXED_HELP} Threads: OMP_NUM_THREADS (MUMPS) / MKL_NUM_THREADS (PARDISO); set them to '
+               f'share the cores with numba or a threaded BLAS. Install: {_HOST_DIRECT_INSTALL}.',
           tip='Where the equations are solved.\n\n'
               '- Automatic: the processor solver when the SciPy package is installed, else the graphics card solver; '
               'with nvmath-python installed, the GPU cuDSS solver takes the direct solves of sound pressure and '
@@ -345,23 +296,15 @@ def _validate_sparse_direct(vctx, values, path):
 
 SPARSE_DIRECT = SolverType(
     'sparse_direct', 'Sparse direct solver', roles=('linear', 'shifted'), params=SPARSE_DIRECT_PARAMS,
-    description='Sparse direct factorisation, double precision (complex128): host SuperLU (scipy) or GPU sparse QR '
-                '(back_end). Role linear: the Helmholtz systems of em_fdfd_ez / em_fdfd_hz / em_fdfd_nonlinear (one '
-                'factorisation per wavelength and material state, reused for every source; after a small operator '
-                'change GMRES on the earlier factor first), every Newton step of drift_diffusion and the eddy-current '
-                'system of magnetic_fields_ac (host only); also the linear role of heat, electric_currents, '
-                'electrostatics and magnetostatics (their Automatic on the CPU backend: one real float64 host '
-                'SuperLU per assembly, exact solves; scipy_splu only), and the Automatic linear solver of the '
-                'diffusion and elastic types on triangle meshes and of heat on tetrahedra (FEM, both backends). Role '
-                'shifted: one host SuperLU '
-                'per shift K + s M, the '
-                'reference of the thermal noise spectra. Iterative solvers are not offered for these (they stall on '
-                'the indefinite Helmholtz matrix). On the CPU backend: SuperLU on scipy operators, numpy solutions. '
-                'back_end cudss / cudss_mixed (GPU cuDSS, kept device factor, plan reused across re-assemblies) only '
-                'where the physics offers it (the diffusion and elastic linear roles, em_fdfd_ez / _hz, em_fdfd_bor, '
-                'em_fdfd_conical, drift_diffusion). '
-                f'back_end {_HOST_DIRECT_NAMES} (the optional host MUMPS / Intel MKL PARDISO, multicore, both '
-                'backends, never chosen by auto) likewise only where the physics offers them.',
+    description='Sparse direct factorisation in double precision (back_end). Role linear: the Helmholtz systems of '
+                'em_fdfd_ez / em_fdfd_hz / em_fdfd_nonlinear (one factorisation per wavelength and material state, '
+                'reused for every source; after a small operator change GMRES on the earlier factor first), every '
+                'Newton step of drift_diffusion, the eddy-current system of magnetic_fields_ac (host only), the '
+                'linear role of heat, electric_currents, electrostatics and magnetostatics (their Automatic on the '
+                'CPU backend: one real host SuperLU per assembly) and the Automatic linear solver of the diffusion '
+                'and elastic types on triangle meshes and of heat on tetrahedra. Role shifted: one host SuperLU per '
+                'shift K + s M, the reference of the thermal noise spectra. Iterative solvers are not offered for '
+                'the indefinite Helmholtz matrix (they stall).',
     summary='Exact solver for wave, semiconductor and frequency-sweep problems: robust, memory grows quickly with the '
             'mesh.',
     operators=('spd', 'complex_symmetric', 'general'), backends=('gpu', 'cpu'), precisions=('double',),
@@ -425,34 +368,25 @@ ARPACK_PARAMS = (
     Param('factorization', 'choice', 'auto', label='Shift-invert factorisation',
           choices=arpack_shift_invert.FACTORIZATIONS,
           choice_labels=tuple((name, _FACTORIZATION_LABELS[name]) for name in arpack_shift_invert.FACTORIZATIONS),
-          help="LU of the shifted operator. auto: superlu, except on the gpu backend with nvmath-python installed for "
-               "the vibration modes of solid_mechanics on triangle meshes (cudss) and of solid_mechanics_3d on "
-               "tetrahedra (cudss_mixed; brick meshes have no factor), where a cuDSS refusal (a zero pivot, missed "
-               "accuracy or too little GPU memory) switches that solver to superlu for the rest of the run with a "
-               "warning (up to 2e6 unknowns; the run summary records the resolved value and eigen_auto_fallbacks). "
-               "superlu: scipy SuperLU on the host (host memory, both backends). cudss "
-               "(GPU backend, needs nvmath-python with cuDSS): NVIDIA's sparse direct solver factorises on the device "
-               "in double precision with its own nested-dissection ordering (LDL^T where the operator is complex "
-               "symmetric after a diagonal scaling: em_fdfd_3d, 2D em_fdfd without Bloch phase, solid_mechanics); the factor lives in GPU memory "
-               "outside the cupy pool (refused when cuDSS's own estimate exceeds 80 % of the free device memory, and "
-               "the host SuperLU size rule of the FDFD eigen solves no longer applies); ARPACK still runs on the host, so each "
-               "operator application moves one vector to the device and back. A probe solve checks the factor and "
-               "turns on cuDSS iterative refinement when its residual misses 1e-10. cudss_mixed (em_fdfd_3d, "
-               "em_fdfd_ez / em_fdfd_hz, em_fdfd_bor, em_fdfd_conical, em_modes on triangle meshes, solid_mechanics "
-               "and solid_mechanics_3d on tetrahedra): the diagonally equilibrated operator factorised in single "
-               "precision (complex64 / float32: about 10x faster to factorise on GPUs with slow double arithmetic, "
-               "half the GPU memory, solves ~2x cheaper). The resonance solves of the frequency-domain optics types "
-               "and em_modes correct every ARPACK solve by one float64 residual step (~3e-8), stop ARPACK at ~1e-6 "
-               "and re-evaluate each eigenvalue by the float64 Rayleigh quotient of its vector, accurate to ~1e-14 "
-               "because the scaled operator is complex symmetric (with a Bloch phase it is not: full float64 "
-               "refinement per solve instead); the solid_mechanics pencils refine every solve to 1e-12. "
-               f"{_HOST_DIRECT_DOUBLE_NAMES} (every eigen role, both backends, never chosen by auto; needs "
-               "python-mumps / pydiso): the shifted operator factorised on the host by MUMPS or Intel MKL PARDISO "
-               "(x86-64 only), multicore, with the cudss equilibration and LDL^T where the operator is (complex) "
-               "symmetric after the diagonal scaling, else LU; inertia counts of target / band searches come from "
-               "the library's LDL^T pivots (a counting SuperLU when pivots were perturbed or the pencil is "
-               "Hermitian); the host SuperLU size rules apply, plus the library's own memory estimate after its "
-               f"analysis against {_HOST_MEMORY_PERCENT} % of the available RAM; a refusal raises (no fallback)."
+          help="LU of the shifted operator (the choices a role offers: its line under Roles by physics type). auto: "
+               "superlu, except on the gpu backend with nvmath-python for the vibration modes of solid_mechanics on "
+               "triangles (cudss) and solid_mechanics_3d on tetrahedra (cudss_mixed), where a cuDSS refusal (zero "
+               "pivot, missed accuracy, too little GPU memory) switches that solver to superlu for the rest of the "
+               "run with a warning (up to 2e6 unknowns; the run summary records the resolved value and "
+               "eigen_auto_fallbacks). superlu: scipy SuperLU on the host (both backends). cudss (GPU backend, "
+               "nvmath-python with cuDSS): a double-precision device factor (LDL^T where the scaled operator is "
+               "complex symmetric: em_fdfd_3d, 2D em_fdfd without Bloch phase, solid_mechanics) outside the cupy pool "
+               "(refused when cuDSS's own estimate exceeds 80 % of the free device memory; no host SuperLU size "
+               "rule); ARPACK stays on the host, moving one vector per operator application; a probe solve turns on "
+               "cuDSS refinement when its residual misses 1e-10. cudss_mixed: the equilibrated operator factorised "
+               "in single precision (~10x faster factorisation on GPUs with slow double arithmetic, half the GPU "
+               "memory, ~2x cheaper solves); the optics resonance and em_modes solves add one float64 residual step "
+               "per solve (~3e-8), stop ARPACK at ~1e-6 and re-evaluate each eigenvalue by its float64 Rayleigh "
+               "quotient (~1e-14; with a Bloch phase full float64 refinement per solve instead); the solid_mechanics "
+               f"pencils refine every solve to 1e-12. {_HOST_DIRECT_DOUBLE_NAMES}: the host MUMPS / Intel MKL "
+               "PARDISO factor (rules: solvers notes) with the cudss equilibration, LDL^T where the scaled operator is "
+               "(complex) symmetric, else LU; inertia counts of target / band searches from its LDL^T pivots (a "
+               "counting SuperLU when pivots were perturbed or the pencil is Hermitian)."
                f"{_HOST_FACTORIZATION_MIXED_HELP} Ignored by solid_mechanics_3d on brick meshes (no factor).",
           tip='Where the eigenvalue search factorises its matrix.\n\n'
               '- Automatic: host SuperLU, except vibration modes on finite element meshes, which use the GPU cuDSS '
@@ -500,19 +434,12 @@ def _validate_arpack(vctx, values, path):
 
 ARPACK_SHIFT_INVERT = SolverType(
     'arpack_shift_invert', 'Shift-invert eigensolver', roles=('eigen',), params=ARPACK_PARAMS,
-    description='Eigenpairs nearest a target: host SuperLU (or, factorization cudss, GPU cuDSS; auto: cuDSS for the '
-                f'vibration modes of finite element solids on the GPU; {_HOST_DIRECT_DOUBLE_NAMES}: the optional '
-                'multicore host MUMPS / Intel MKL PARDISO) factorisation of the operator shifted to the '
-                'target and '
-                'ARPACK (scipy eigs, largest |theta| of the shifted inverse) in double precision. Used by em_modes '
-                '(cross-section modes near the effective-index guess) and by em_fdfd_ez / em_fdfd_hz in an '
-                'eigenfrequency study (resonances nearest the wavelength setting). solid_mechanics (eigenfrequency, '
-                'optomechanics: plane-strain or 2.5D guided vibration modes) uses symmetric shift-invert Lanczos '
-                '(scipy eigsh) on a real SuperLU factor of K - sigma M. solid_mechanics_3d (eigenfrequency) '
-                'uses it without a factor: symmetric Lanczos (scipy eigsh) on K^-1 M at 0, each K^-1 one PCG solve of '
-                "its 'linear' solver on the device. The ARPACK basis stays on the host and SuperLU runs the same on "
-                'both backends (cudss: GPU backend only); on '
-                'triangle and tetrahedron meshes (FEM) the same factorisation of the assembled element matrices.',
+    description='Eigenpairs nearest a target: a factorisation of the operator shifted to the target (see '
+                'factorization) and ARPACK (scipy eigs) in double precision, the ARPACK basis on the host. Used by '
+                'em_modes (modes near the effective-index guess) and the frequency-domain EM types in an '
+                'eigenfrequency study (resonances nearest the wavelength setting). solid_mechanics: symmetric '
+                'shift-invert Lanczos (scipy eigsh) on a real factor of K - sigma M; solid_mechanics_3d on bricks: '
+                "Lanczos on K^-1 M at 0 without a factor, each K^-1 one PCG solve of its 'linear' solver.",
     summary='Finds the modes or resonances closest to a target value.',
     operators=('spd', 'complex_symmetric', 'general'), backends=('gpu', 'cpu'), precisions=('double',),
     grids=('tensor', 'triangles', 'tetrahedra'), create=_create_arpack, validate=_validate_arpack,
@@ -587,18 +514,15 @@ EXPLICIT_KERNELS_PARAMS = (
     Param('precision', 'choice', 'single', label='Solver precision', choices=('single', 'double', 'half_storage'),
           choice_labels=(('single', 'Single precision'), ('double', 'Double precision'),
                          ('half_storage', 'Half-precision storage')),
-          help='single: float32 fields and arithmetic (every engine). double (em_fdtd_ez / em_fdtd_hz, both '
-               'backends): float64 fields, coefficients, CPML, pole and source arrays and arithmetic, about 2x the field '
-               'memory and time; for long or high-Q ring-downs, where float32 rounding of the coefficients (~1e-7 of '
-               'the mode frequency) accumulates into a visible phase drift; materials, coupling slots, absorbed '
-               'power, probe traces and the box DFT spectra stay float32 / complex64; refused with nonlinear_medium '
-               'and gain_medium. half_storage (em_fdtd_3d, elastic_waves, '
-               'laminar_flow transient only): the fields / lattice populations are stored as fp16 and computed in '
-               'float32 '
-               'registers, about half the field memory and up to ~1.5-2x faster on bandwidth-bound grids; fp16 has an '
-               '11-bit mantissa, so results carry a ~1e-3 relative noise floor (-60 dB): flux spectra with deep nulls, '
-               'harmonic inversion / Q values and steady states are refused or unusable (features that need single '
-               'say so in validation), decaying tails below ~1e-7 of the peak flush to zero.',
+          help='single: float32 fields and arithmetic (every engine). double (em_fdtd_ez / em_fdtd_hz): float64 '
+               'fields, coefficients and arithmetic, about 2x the field memory and time, for long or high-Q '
+               'ring-downs where float32 coefficient rounding (~1e-7 of the mode frequency) drifts the phase; '
+               'materials, coupling slots, absorbed power, probe traces and DFT spectra stay float32 / complex64; '
+               'refused with nonlinear_medium and gain_medium. half_storage (em_fdtd_3d, elastic_waves, transient '
+               'laminar_flow): fp16 storage, float32 arithmetic, about half the field memory and up to ~1.5-2x '
+               'faster; results carry a ~1e-3 relative noise floor (-60 dB): flux spectra with deep nulls, harmonic '
+               'inversion / Q values and steady states are refused or unusable (validation says so), decaying tails '
+               'below ~1e-7 of the peak flush to zero.',
           tip='Number precision of the time stepping.\n\n'
               '- Single precision: suits every model.\n'
               '- Double precision: about twice the memory and time, for long runs and sharp resonances of 2D light '
@@ -615,14 +539,9 @@ def _create_explicit_kernels(ctx, request):
 EXPLICIT_KERNELS = SolverType(
     'explicit_kernels', 'Explicit time stepping', roles=('stepper',), params=EXPLICIT_KERNELS_PARAMS,
     description='The fused GPU kernels of an explicit time-stepping engine (em_fdtd_ez / em_fdtd_hz / em_fdtd_3d, '
-                'elastic_waves, laminar_flow): single precision (float32 fields and arithmetic), double (float64 '
-                'fields and arithmetic; em_fdtd_ez / em_fdtd_hz, kernels compiled per precision) or half_storage '
-                '(fp16 fields in memory, float32 arithmetic; em_fdtd_3d, elastic_waves and transient laminar_flow). On '
-                'the CPU backend (every stepper type) the same steps run as numpy twins of the kernels, or '
-                'numba-compiled twins of the per-step field updates (Yee updates, em_fdtd_3d CPML / ohmic loss, the '
-                'elastic_waves velocity / stress updates, the lattice step) when numba is installed (environment variable '
-                'OPEN_SOL_CPU_KERNELS=numpy keeps numpy); single or double there, several times slower than a GPU: '
-                'small 2D models and tests.',
+                'elastic_waves, laminar_flow); precision: see the setting. On the CPU backend the same steps run as '
+                'numpy twins of the kernels, numba-compiled when numba is installed (OPEN_SOL_CPU_KERNELS=numpy keeps '
+                'numpy); single or double there, several times slower than a GPU: small 2D models and tests.',
     summary='Time stepping on the graphics card (or the processor for small 2D light models), in single or double '
             'precision or with half-precision field storage.',
     operators=('spd', 'complex_symmetric', 'general'), backends=('gpu', 'cpu'),

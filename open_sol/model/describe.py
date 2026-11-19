@@ -11,7 +11,7 @@ from ..core.renderer import primary_field_info
 from ..materials import REGISTRY as MATERIAL_LIBRARY
 from ..materials.crystal_tensors import CRYSTALS
 from .expressions import (BUILTIN_CONSTANTS, CONSTANT_DESCRIPTIONS, COORDINATE_NAMES, FUNCTION_ARITY,
-                          FUNCTION_DESCRIPTIONS, MAX_EXPRESSION_LENGTH, RESERVED_NAMES, arity_text)
+                          FUNCTION_DESCRIPTIONS, MAX_EXPRESSION_LENGTH, RESERVED_NAMES)
 from .analytic import (CURVE_FUNCTION_DESCRIPTIONS, CURVE_RESULT_KINDS, DERIVED_RESULT_KINDS, FIT_QUANTITIES,
                        MAX_FIT_DEGREE, PEAK_FIT_QUANTITIES)
 from .geometry import GEOMETRY_KINDS
@@ -32,6 +32,15 @@ _TRAILING_TOPICS = ('templates', 'results')
 _SELFTESTS_TOPIC = 'selftests'   # topic only: the selftest cases (the 'results' section only points to it)
 _JSON_LINE_WIDTH = 120   # template JSON: a value stays on one line while it fits, else one key / item per line
 _SHARED_TEXT_MIN_CHARS = 150   # full reference: a physics / coupling / study text this long seen twice is shared
+_PARAM_LEGEND = (   # spec notes 'Param lines'; also atop every topic view that prints param lines
+    'Param lines read "- `name` [unit] (facts) - Label", the help indented below ([1] = dimensionless). '
+    'Facts: the kind unless float (a choice lists its choices a | b); default <value>, or required; the '
+    'range (> a, >= a, <= b, [a, b], (a, b]); nullable = null allowed; may use x, y / fields / t = names an '
+    'expression may use beyond parameters (expressions: Names available where); visible when ... = used and '
+    'checked only then; writes = the material arrays set. Material properties may use x, y and physics fields and '
+    'write the array of their own name unless marked "no x, y", "no fields" or "writes ...". Consecutive params '
+    'differing only in name and label share one line.')
+_PARAM_SECTIONS = ('geometry', 'materials', 'mesh', 'solvers', 'physics_types', 'coupling_types', 'study_types')
 _SPEC_CLASS_PLACES = {'list': 'items of {owner}.{field}', 'one': '{owner}.{field}',
                       'optional': '{owner}.{field} (or null)'}   # _NESTED_FIELDS arity -> where the class sits
 
@@ -91,85 +100,63 @@ _SPEC_FIELD_HELP = {
     'SolverSpec.type': 'Registered solver type: pcg, line_block, sparse_direct, arpack_shift_invert, block_eigen, '
                        'explicit_kernels (see solvers: roles, settings and which physics use them).',
     'SolverSpec.settings': 'Values of the solver type settings by name (see solvers); missing keys take the defaults.',
-    'SolverDefaultsSpec.backend': "auto (default) | gpu | cpu: where the run computes (api check / run backend=, CLI "
-                                  "--backend override it); auto = gpu when cupy is installed, else cpu. cpu needs "
-                                  "every physics type to list it in its backends (the Backends line of each physics "
-                                  "type; else a validation error per physics) and every solver to fit it (pcg, line_block, sparse_direct without "
-                                  "cusolver_qr, arpack_shift_invert, block_eigen do; explicit_kernels does not); on cpu the "
-                                  "device memory estimate counts against the host RAM.",
+    'SolverDefaultsSpec.backend': (
+        'auto (default) | gpu | cpu: where the run computes (api check / run backend=, CLI --backend override it); '
+        'auto = gpu when cupy is installed, else cpu. cpu needs every physics type to list it in its backends (else '
+        'a validation error per physics) and every solver to fit it (explicit_kernels and sparse_direct cusolver_qr '
+        'do not); on cpu the device memory estimate counts against the host RAM.'),
     'SolverDefaultsSpec.precision': (
         "auto (default) | single | double | mixed | half_storage: model-wide solver precision. auto = each solver's "
-        "own default (pcg double, explicit_kernels single, ...). Otherwise every role solver whose type and role "
-        "offer that precision takes it, unless its solver node sets a precision of its own (the per-solver "
-        "override): Automatic roles and nodes without a precision setting. Solvers that do not offer it keep their "
-        "default (a validation info names them), e.g. double makes pcg and the time steppers double while "
-        "sparse_direct / arpack_shift_invert / banded are double anyway; mixed reaches only pcg nodes and Automatic "
-        "pcg of heat, electric_currents, electrostatics and magnetostatics, and line_block and block_eigen nodes. A node with "
-        "pcg preconditioner multigrid and no precision of its own fails with mixed (set the node precision). "
-        "check.json / summary.json solvers record the precision each role resolved to."),
+        'own default (pcg double, explicit_kernels single, ...). Otherwise every role solver whose type and role '
+        'offer it takes it, unless its solver node sets its own precision; the others keep their default (a '
+        'validation info names them), e.g. double makes pcg and the time steppers double (sparse_direct / '
+        'arpack_shift_invert / banded are double anyway); mixed reaches only pcg nodes, Automatic pcg of heat, '
+        'electric_currents, electrostatics and magnetostatics, and line_block / block_eigen nodes. A pcg node with '
+        'preconditioner multigrid and no own precision fails with mixed. check.json / summary.json solvers record '
+        'the precision each role resolved to.'),
     'SolverDefaultsSpec.memory_check': (
-        "error (default) | warning: what a memory estimate over the budget does (the GPU estimate at its peak, cuDSS "
-        "factors outside the pool included, against the GPU budget; the host estimate against the available RAM; "
-        "also per sweep value and per mesh refinement level). error refuses the model before the build (a triangle / "
-        "tetrahedron mesh is built first when the estimate from its sizes is over: the judgement is on the built "
-        "element count; the issue is reported at the mesh with the largest part); warning "
-        "builds and runs it anyway with a validation warning, for a model whose estimate is known to be high (the "
-        "cuDSS factor size depends on the fill of cuDSS's reordering, which the estimate can only model). The "
-        "runtime guards stay: the GPU pool limit raises OutOfMemoryError, and "
-        "each cuDSS plan checks cuDSS's own memory estimate against the free device memory before it factorises (an "
-        "Automatic sparse_direct back end then falls back to SuperLU, an explicit cudss node raises); MUMPS / "
-        "PARDISO factors (the host direct back ends / factorizations) check their own estimate after the analysis "
-        "against 80 % of the available RAM (an explicit node raises)."),
+        'error (default) | warning: what a memory estimate over the budget does (the GPU estimate at its peak, cuDSS '
+        'factors included, against the GPU budget; the host estimate against the available RAM; also per sweep value '
+        'and refinement level). error refuses the model before the build (triangle / tetrahedron meshes are built '
+        'first when the size-based estimate is over: the judgement uses the built element count); warning builds '
+        'and runs it with a validation warning, for a model whose estimate is known to be high (cuDSS fill can only '
+        'be modelled). Runtime guards stay: the GPU pool limit raises OutOfMemoryError; each cuDSS plan checks its '
+        'own estimate against the free device memory before factorising (Automatic sparse_direct then falls back to '
+        'SuperLU, an explicit cudss node raises); MUMPS / PARDISO check theirs against 80 % of the available RAM '
+        '(an explicit node raises).'),
     'SolverDefaultsSpec.subpixel_smoothing': (
-        'false (default) | true: anisotropic permittivity averaging at material interfaces (Kottke / Farjadpour). '
-        'Fill fraction and normal of every E_z cell / E_x and E_y face whose volume two materials share come once '
-        'at build from 64 x 4 and 4 x 64 sample rasters per cell of the drawn material regions (each location takes '
-        'the one whose fine axis is nearer its normal); the averaging (E_z and the field '
-        'component along an interface: mean eps; across it: the harmonic mean, the diagonal of the inverse tensor) '
-        'is reapplied to the current eps of two neighbouring cells of those materials after every change, so '
-        'thermo-optic and other eps couplings keep working. Honoured by em_fdtd_ez / _hz, em_fdfd_ez / _hz, em_modes '
-        '(E_x / E_y faces with the in-plane normal, E_z cells the area mean) and em_fdtd_3d outside an optimization '
-        'study (incl. their mode ports); every other physics ignores it (validation info). em_fdtd_3d: the in-plane '
-        'geometry per run of z cells sharing one cross-section (vertical walls: exact for z prisms; tapers and spheres '
-        'are smoothed per layer, staircased along z) plus horizontal interfaces (prism tops / bottoms) sampled at 16 '
-        'heights per half cell; the averaged face eps are re-quantised into a uint16 face index (2 bytes per cell). '
-        'Only the background eps is averaged: sigma_e, mu_r and Drude / Lorentz poles keep their cell '
-        'membership, and expression-defined eps jumps inside one material stay staircased. Restores second order '
-        'on curved E_z interfaces; on slanted H_z interfaces it is better than staircasing, not second order.'),
+        'false (default) | true: anisotropic permittivity averaging at material interfaces (Kottke / Farjadpour): in '
+        'cells two materials share, E_z and the component along the interface see the mean eps, the component '
+        'across it the harmonic mean, from fill fraction and normal sampled once at build (64 x 4 and 4 x 64 per '
+        'cell); reapplied after every eps change, so thermo-optic and other eps couplings keep working. Honoured by '
+        'em_fdtd_ez / _hz, em_fdfd_ez / _hz, em_modes and em_fdtd_3d outside an optimization study (mode ports '
+        'included); every other physics ignores it (validation info). em_fdtd_3d: exact for vertical walls of z '
+        'prisms, tapers and spheres smoothed per layer (staircased along z), prism tops / bottoms sampled at 16 '
+        'heights per half cell; the face eps cost 2 bytes per cell. Only the background eps is averaged: sigma_e, '
+        'mu_r and Drude / Lorentz poles keep their cell membership, and expression-defined eps jumps inside one '
+        'material stay staircased. Second order on curved E_z interfaces; on slanted H_z interfaces better than '
+        'staircasing, not second order.'),
     'SolverDefaultsSpec.conformal_boundaries': (
-        'false (default) | true: curved walls at their drawn position instead of staircased to the cells, located '
-        'once at build from the drawn geometry (bisection along the cell links and faces). em_fdtd_ez / _hz '
-        'pec_domain: E_z puts E_z = 0 at the exact wall distance along each H link to a PEC cell; H_z (Dey-Mittra) '
-        'updates H_z of each cut cell from the free lengths of its faces and its free area, and only faces wholly '
-        'inside the metal are PEC. Each corrected cell is limited so its update stays within the stability limit of '
-        'the unchanged time step (the smallest cut never sets dt; a very small cut is then partly staircased). '
-        'em_fdtd_ez / _hz dispersive materials (Drude / Lorentz poles): each pole current is weighted by the share '
-        'of its control area inside the drawn material (E_z: the cell, exact for E tangential to the interface; '
-        'H_z: the dual cell of each E_x / E_y face) instead of 0 / 1, the Courant check with those shares; the '
-        'background eps keeps the cell mask (subpixel_smoothing averages it). '
-        'em_fdfd_ez / _hz pec_domain: the same E_z wall distances (t >= 0.02) and H_z free face lengths, the H_z '
-        'free area (>= 0.02 of the cell) entering the k0^2 mu term, so the operator stays reciprocal; no time-step '
-        'limit. Mode ports, sources and the FDFD poles keep the cell mask. laminar_flow: interpolated (Bouzidi, '
-        'linear) bounce-back on the links from fluid to solid cells, with the wall where the solid material is drawn '
-        '(a material counts as solid when most of its cells have viscosity 0); outer faces keep their face rules. '
-        'heat, electric_currents, electrostatics (cut cells): held regions (temperature / voltage on object '
-        'perimeters, fixed_temperature_domain, terminal) put their value on the drawn outline: the free neighbour '
-        'conducts c A / (t d) to it, t d its distance from the free centre along the link (t >= 0.02, Shortley-'
-        'Weller), instead of the half cell 2 c A / w; walls of non-conducting materials (a material counts as closed '
-        'when most of its cells conduct neither) get fractional face apertures and merged cut-cell volumes (>= 0.02), '
-        're-located whenever an assembly\'s conducting cells change (k(T), sigma(T)); perimeter heat_flux / '
-        'current_density / surface_charge feed their value times each cut cell\'s chord of the drawn outline into the '
-        'object cell owning it, convection loses h L / (1 + h delta / k_n) there (delta the owner centre\'s distance to '
-        'the chord). em_modes pec_domain (Dey-Mittra on the projected Yee cell): E_z = 0 at the wall distance along '
-        'each centre link into the metal, H_z from the free lengths of its E_x / E_y edges over the free area of its '
-        'dual cell (fractions >= 0.02). em_fdtd_3d pec_domain (3D models, Dey-Mittra): every H face between four '
-        'cell centres the drawn surface cuts takes the free lengths of its four E edges over its free area, floored '
-        'so its update row stays within its uncut row at the time step (heuristic 3D Courant floor; E faces between '
-        'two metal cells stay pinned). 2D Cartesian models only otherwise; heat / potential also (r, z) and polar / '
-        'spherical domains (the cut fractions along the logical (r, angle) links / faces / cells, outline chords in '
-        'the local (dr, r d_angle) frame; links across an angle_wrap seam stay staircased); every other physics '
-        'ignores it (validation info). Features thinner than 1/16 of a cell '
-        'face, or that no cell centre sees, stay invisible.'),
+        'false (default) | true: curved walls at their drawn position instead of staircased (located once at build). '
+        'em_fdtd_ez / _hz pec_domain: E_z = 0 at the exact wall distance along each link into a PEC cell; H_z '
+        '(Dey-Mittra) from the free face lengths and area of each cut cell, only faces wholly in the metal PEC; each '
+        'corrected cell is limited to stay stable at the unchanged time step (a very small cut is then partly '
+        'staircased). Their Drude / Lorentz poles: each pole current is weighted by the share of its control area '
+        'inside the drawn material instead of 0 / 1 (the Courant check uses the shares); the background eps keeps '
+        'the cell mask (subpixel_smoothing averages it). em_fdfd_ez / _hz pec_domain: the same wall distances and '
+        'free lengths / area (fractions >= 0.02), the operator stays reciprocal; mode ports, sources and FDFD poles '
+        'keep the cell mask. laminar_flow: linear interpolated (Bouzidi) bounce-back at the drawn solid wall (a '
+        'material is solid when most of its cells have viscosity 0); outer faces keep their face rules. heat, '
+        'electric_currents, electrostatics (cut cells): held values on object perimeters (temperature / voltage, '
+        'fixed_temperature_domain, terminal) sit on the drawn outline (Shortley-Weller, t >= 0.02); walls of '
+        'non-conducting materials (most cells conduct neither) get fractional face apertures and merged cut cells '
+        '(>= 0.02), re-located when the conducting cells change (k(T), sigma(T)); perimeter heat_flux / '
+        'current_density / surface_charge feed value x outline chord into the owning cell, convection loses h L / '
+        '(1 + h delta / k_n). em_modes pec_domain: Dey-Mittra on the projected Yee cell (fractions >= 0.02). '
+        'em_fdtd_3d pec_domain (3D): Dey-Mittra H faces from the free lengths of their four E edges over their free '
+        'area, floored for stability at the time step. Otherwise 2D Cartesian only; heat / potential also (r, z) and '
+        'polar / spherical domains (links across an angle_wrap seam stay staircased); every other physics ignores it '
+        '(validation info). Features thinner than 1/16 of a cell face, or that no cell centre sees, stay invisible.'),
     'ModelSpec.study': 'What to compute (StudySpec): study type, its settings, stored fields and an optional sweep.',
     'ModelSpec.derived_values': 'Scalars evaluated at the end of the run (DerivedValueSpec), reported in '
                                 'summary.json derived (with derived_reference / derived_error when they have a '
@@ -188,70 +175,59 @@ _SPEC_FIELD_HELP = {
     'ParameterSpec.expression': 'Number or expression of other parameters and constants, e.g. "550*nm"; it must '
                                 'evaluate to a finite number.',
     'ParameterSpec.description': 'Free text, e.g. the meaning and unit.',
-    'DomainSpec.size_x': 'Width of the physical domain in m (> 0), x from 0 to size_x. On a uniform mesh the meshed '
-                         'window (Domain.physical_extent) is ceil(size_x / dx) cells wide, so it can be one cell '
-                         'larger than requested; EM PML cells are added outside. Polar / spherical coordinates: the '
-                         'radial depth in m, r from radius_min to radius_min + size_x (exact: dr = size_x / '
-                         'ceil(size_x / dx)).',
-    'DomainSpec.size_y': 'Height of the physical domain in m (> 0), y from 0 to size_y; as for size_x, the meshed '
-                         'window can be one cell taller than requested on a uniform mesh. Polar / spherical '
-                         'coordinates: the angle span in rad (polar <= 2 pi; spherical angle_min + size_y <= pi). '
-                         'null = a 1D model (symmetry 2.20), invariant in both other directions: coordinates '
-                         'cartesian = a slab along x from 0 to size_x (totals per m^2), polar = a cylinder, r from '
-                         'radius_min to radius_min + size_x (per m of length; geometry planar), spherical = a sphere '
-                         '(whole shells; geometry axisymmetric); size_z, angle_min and angle_wrap stay unset. Only '
-                         'types whose dimensions include 1 run (heat, electric_currents, electrostatics). The model '
-                         'is drawn on the x axis of the plane (x = the slab coordinate or r, y = 0): objects select '
-                         'the cells whose centres (x, 0) they hold (rectangles across y = 0, circles about the origin '
-                         'for shells), points sit on y = 0, line curves run along y = 0; outer faces x_lo / x_hi only '
-                         '(x_lo at r = 0: the centre, no area). Mesh: uniform at dx, or graded by a mesh axis x entry '
-                         '(no axis y, object refinements or auto mode). Fields are the (nx, 1) cells along x; the '
-                         'Automatic linear solver is banded on both backends.',
+    'DomainSpec.size_x': 'Width of the physical domain in m (> 0), x from 0 to size_x. A uniform mesh has ceil(size_x '
+                         '/ dx) cells, so the meshed window (Domain.physical_extent) can be one cell wider; EM PML '
+                         'cells lie outside. Polar / spherical: the radial depth in m, r from radius_min to '
+                         'radius_min + size_x (exact: dr = size_x / ceil(size_x / dx)).',
+    'DomainSpec.size_y': 'Height of the physical domain in m (> 0), y from 0 to size_y (window rounding as size_x). '
+                         'Polar / spherical: the angle span in rad (polar <= 2 pi; spherical angle_min + size_y <= '
+                         'pi). null = a 1D model (symmetry 2.20), invariant in both other directions: cartesian = a '
+                         'slab along x (totals per m^2), polar = a cylinder, r from radius_min (per m of length; '
+                         'geometry planar), spherical = a sphere (whole shells; geometry axisymmetric); size_z, '
+                         'angle_min and angle_wrap stay unset; only types whose dimensions include 1 (heat, '
+                         'electric_currents, electrostatics). Drawn on the x axis (y = 0): objects select the cells '
+                         'whose centres (x, 0) they hold, points sit and line curves run on y = 0; outer faces x_lo / '
+                         'x_hi only (x_lo at r = 0: no area). Mesh: uniform at dx, or graded by a mesh axis x entry '
+                         '(no axis y, object refinements or auto mode). Fields are (nx, 1); the Automatic linear '
+                         'solver is banded.',
     'DomainSpec.coordinates': (
-        "cartesian (default) | polar | spherical: the in-plane grid of a 2D model. polar = (r, phi) cells, the "
-        'drawing at x = r cos phi, y = r sin phi about the origin (planar per unit z, every physics with geometry '
-        "'planar'); spherical = (r, theta) cells of the meridional half plane, x = r sin theta the distance to the "
-        "rotation axis y, y = r cos theta (every physics with geometry 'axisymmetric', whole shells). Circles about "
-        'the origin, annuli, spheres, shells and cones (theta = const) are conformal; other shapes staircase on the '
-        'cell centres. Outer faces: x_lo / x_hi = the inner / outer arc (r = radius_min, the origin when 0: no '
-        'area), y_lo / y_hi = the rays at angle_min / angle_min + size_y (spherical theta = 0 / pi: the axis, no '
-        'area); insulated by default (a full 2 pi disk keeps a cut at y_lo / y_hi unless angle_wrap joins them). '
-        'Only physics '
-        'types whose coordinate_grids include polar may run (heat, electric_currents, electrostatics; 3D: heat); '
-        'k_xx / k_yy (sigma_dc_*, eps_dc_*) are the radial / angular components there and *_xy is refused; object '
-        'perimeter flux features (heat_flux, convection, current_density, surface_charge on objects) weight each '
-        'exposed cell face by its metric area (2D; refused in 3D sectors and 1D models); '
-        'solver_defaults.conformal_boundaries applies on 2D polar / spherical grids too (heat, potential). '
-        "Mesh: uniform at dx radially and dx along the outer arc (angle cells = ceil(size_y r_max / dx)); "
-        "nonuniform: mesh axis 'x' bands / edges / segments (in r - radius_min) grade the radius, axis 'y' edges / "
-        "segments (rad) set the angle cells; object refinements, mode 'auto' and EM PML are refused. Fields come "
-        'as a containing-cell image over the sector\'s box (NaN outside); the _x / _y field components are the '
-        'radial / angular ones; derived values integrate over the exact sector areas / shell volumes. With size_y '
-        'null the same three values pick a 1D slab / cylinder / sphere (see size_y). polar with size_z set = a 3D '
-        'cylindrical (r, phi, z) sector (symmetry 2.21; heat only): the same (r, phi) plane at every height, z '
-        'along the axis (uniform at dx, or graded by a mesh axis z entry), z_lo / z_hi the end faces; geometry z '
-        'params apply as in Cartesian 3D (prisms along z, spheres, boxes; masks on the drawing-plane centres per '
-        'cross-section); k_zz is axial. Fields are z cuts only (plane x / y, stored x / y cuts and 3D segment line '
-        'curves are refused), each shown as the polar window; derived values integrate over the volumes r_c dr '
-        'dphi dz; Session.volume gives (r, phi, z) centres.'),
-    'DomainSpec.radius_min': 'Polar / spherical coordinates: r of the x_lo face in m (>= 0; 0 = the origin is in the '
-                             'domain, a face without area). Ignored (warning) on a Cartesian grid.',
-    'DomainSpec.angle_min': 'Polar coordinates: phi of the y_lo face in rad (from +x toward +y); spherical: theta of '
-                            'the y_lo face from the +y rotation axis (>= 0). Ignored (warning) on a Cartesian grid.',
+        "cartesian (default) | polar | spherical: the in-plane grid of a 2D model. polar = (r, phi) cells, x = r cos "
+        "phi, y = r sin phi about the origin (planar per unit z, every physics with geometry 'planar'); spherical = "
+        '(r, theta) cells of the meridional half plane, x = r sin theta the distance to the rotation axis y, y = r '
+        "cos theta (every physics with geometry 'axisymmetric', whole shells). Circles about the origin, annuli, "
+        'spheres, shells and cones (theta = const) are conformal; other shapes staircase on the cell centres. Outer '
+        'faces: x_lo / x_hi = the inner / outer arc (r = 0: no area), y_lo / y_hi = the rays at angle_min / '
+        'angle_min + size_y (spherical theta = 0 / pi: the axis, no area); insulated by default (a full 2 pi disk '
+        'keeps a cut unless angle_wrap joins them). Only types whose coordinate_grids include polar (heat, '
+        'electric_currents, electrostatics; 3D: heat); k_xx / k_yy (sigma_dc_*, eps_dc_*) are the radial / angular '
+        'components and *_xy is refused; object perimeter flux features (heat_flux, convection, current_density, '
+        'surface_charge) weight each exposed face by its metric area (2D; refused in 3D sectors and 1D); '
+        'conformal_boundaries applies on 2D grids too (heat, potential). Mesh: uniform at dx radially and along the '
+        "outer arc (angle cells = ceil(size_y r_max / dx)); nonuniform: mesh axis 'x' bands / edges / segments (in r "
+        "- radius_min) grade the radius, axis 'y' edges / segments (rad) the angle; object refinements, mode 'auto' "
+        "and EM PML are refused. Fields come as a containing-cell image over the sector's box (NaN outside), _x / _y "
+        'components radial / angular; derived values integrate over the exact sector areas / shell volumes. With '
+        'size_y null: a 1D slab / cylinder / sphere (see size_y). polar with size_z set = a 3D cylindrical (r, phi, '
+        'z) sector (symmetry 2.21; heat only): z along the axis (uniform at dx, or graded by a mesh axis z entry), '
+        'z_lo / z_hi the end faces, geometry z params as in Cartesian 3D (masks on the drawing-plane centres per '
+        'cross-section), k_zz axial; fields are z cuts only (plane x / y, stored x / y cuts and 3D segment line '
+        'curves refused), derived values integrate over r_c dr dphi dz; Session.volume gives (r, phi, z) centres.'),
+    'DomainSpec.radius_min': 'Polar / spherical: r of the x_lo face in m (>= 0; 0 = the origin is in the domain, a '
+                             'face without area). Ignored (warning) on a Cartesian grid.',
+    'DomainSpec.angle_min': 'Polar: phi of the y_lo face in rad (from +x toward +y); spherical: theta of the y_lo face '
+                            'from the +y rotation axis (>= 0). Ignored (warning) on a Cartesian grid.',
     'DomainSpec.angle_wrap': (
-        "Polar coordinates only: none (default) | periodic | antiperiodic. periodic joins the y_hi ray to the y_lo ray "
-        '(u continues across): a full 2 pi annulus or disk without a cut, or one C_N sector of size_y = 2 pi / N of a '
-        'structure with N-fold rotational symmetry whose sources and conditions share it (warning when 2 pi / size_y '
-        'is not whole). antiperiodic = u changes sign across the wrap, the angular Bloch phase pi of a C_N sector: '
-        'needs an even N = 2 pi / size_y (error otherwise): the response to sources that alternate in sign from '
-        'sector to sector; other Bloch phases are complex and not available. y_lo / y_hi are then no boundary: features may not select them (error). The wrap is '
-        'exact in the finite-volume operator (the face between the last and first angle cells), anchoring counts '
-        'loops through it (an antiperiodic loop anchors on its own).'),
-    'DomainSpec.size_z': 'null (default) = a 2D model; a length in m (> 0) makes the model 3D, z from 0 to size_z: '
-                         'the xy layout is extruded over each object\'s z0..z1 interval (layer stack), the outer '
-                         'faces gain z_lo / z_hi and only physics types whose dimensions include 3 are allowed. z '
-                         'cells follow the mesh: uniform at dx, or graded by the refinements\' z extents (see mesh '
-                         'mode).',
+        'Polar only: none (default) | periodic | antiperiodic. periodic joins the y_hi ray to the y_lo ray: a full 2 '
+        'pi annulus or disk without a cut, or one C_N sector of size_y = 2 pi / N whose sources and conditions share '
+        'the symmetry (warning when 2 pi / size_y is not whole). antiperiodic = u changes sign across the wrap (Bloch '
+        'phase pi; needs an even N = 2 pi / size_y, else an error): sources alternating in sign between sectors; other '
+        'Bloch phases are not available. y_lo / y_hi are then no boundary (features selecting them: error). Exact in '
+        'the finite-volume operator; anchoring counts loops through the wrap (an antiperiodic loop anchors on its '
+        'own).'),
+    'DomainSpec.size_z': 'null (default) = a 2D model; a length in m (> 0) makes it 3D, z from 0 to size_z: the xy '
+                         "layout is extruded over each object's z0..z1 (layer stack), the outer faces gain z_lo / "
+                         'z_hi and only physics types whose dimensions include 3 are allowed. z cells: uniform at dx, '
+                         "or graded by the refinements' z extents (see mesh mode).",
     'GeometrySpec.name': 'Identifier, unique among geometry objects and selections (one namespace); not '
                          f"{', '.join(RESERVED_ENTITY_NAMES)}.",
     'GeometrySpec.kind': f"Geometry kind: {', '.join(GEOMETRY_KINDS)} (see geometry).",
@@ -263,19 +239,16 @@ _SPEC_FIELD_HELP = {
                               '(boundary) or all (domain). interface: domain objects (their outlines; composites: '
                               'the outline of the result).',
     'SelectionSpec.side': "Kind 'interface' only: 'inside' | 'outside' = the side of the outline its fields are read "
-                          "from; '' for the other kinds. An interface selection (2D models, polar / spherical domains "
-                          'too; not 3D) is the outline of each listed object in the drawing plane, sampled every half '
-                          'finest cell (outline parts on the window edge skipped); each sample reads its side 1.5 and '
-                          '2.5 local cells deep along the outward normal, each a weighted least-squares plane (in the '
-                          'drawing plane, through the cell centres) through the side cells of a 4 x 4 block whose '
-                          '8 neighbours lie on that side too (so no cell-centre average mixes the materials), '
-                          'extrapolated linearly onto the outline (exact for fields linear on the side; error ~1.9 '
-                          '(k_n h)^2 for a wave of normal wavenumber k_n; a side thinner than ~4 cells gives no '
-                          'samples; on a polar window the block does not reach across an angle_wrap seam). Derived '
-                          'values '
-                          'reduce such samples (see DerivedValueSpec.selection) and line curves read them (see '
-                          'AnalyticCurveSpec.interface): one-sided normal components (D_n continuity: E_n jumps by '
-                          'eps_2 / eps_1), tangential ones continuous.',
+                          "from; '' for the other kinds. An interface selection (2D models incl. polar / spherical; "
+                          'not 3D) is the outline of each listed object, sampled every half finest cell (parts on '
+                          'the window edge skipped); each sample reads its side 1.5 and 2.5 local cells deep along '
+                          'the outward normal from least-squares planes through 4 x 4 blocks of side cells (no '
+                          'average mixes materials), extrapolated linearly onto the outline: exact for fields linear '
+                          'on the side, error ~1.9 (k_n h)^2 for a wave of normal wavenumber k_n; a side thinner than '
+                          '~4 cells gives no samples (a polar block does not cross an angle_wrap seam). Derived values '
+                          'reduce the samples (DerivedValueSpec.selection), line curves read them '
+                          '(AnalyticCurveSpec.interface): normal components one-sided (E_n jumps by eps_2 / eps_1), '
+                          'tangential ones continuous.',
     'MaterialSpec.name': 'Identifier, unique among materials.',
     'MaterialSpec.library': 'Library material name (see materials), or null / "" for none.',
     'MaterialSpec.properties': 'Material properties of the present physics types {name: number or expression}, '
@@ -377,22 +350,21 @@ _SPEC_FIELD_HELP = {
     'MeshSegmentSpec.ratio': 'Size ratio of the profile (see profile); 1 = uniform.',
     'StudySpec.type': 'Registered study type name (see the study type sections).',
     'StudySpec.settings': 'Values of the study type params by name; missing keys take the defaults.',
-    'StudySpec.solved_physics': "Physics names the study solves itself (the industry-standard physics per study step), "
-                                "e.g. ['membrane']; the others run first as stationary background physics (also those "
-                                'of a type the study could solve), so couplings from them into the listed physics are '
-                                "allowed. [] = every physics whose solver has the study's solve. Only "
-                                'frequency_domain, mode_analysis, eigenfrequency, frequency_response and optomechanics '
-                                '(validation error elsewhere).',
+    'StudySpec.solved_physics': "Physics names the study solves itself, e.g. ['membrane']; the others (also of a type "
+                                'the study could solve) run first as stationary background physics, so couplings from '
+                                "them into the listed physics are allowed. [] = every physics whose solver has the "
+                                "study's solve. Only frequency_domain, mode_analysis, eigenfrequency, "
+                                'frequency_response and optomechanics (validation error elsewhere).',
     'StudySpec.stored_fields': "Output fields stored in snapshots, as 'physics.component' (e.g. 'em.ez'); [] "
                                '(default) = every output field of every physics (primary fields first); list fields '
                                'to store fewer and save memory (snapshots past 1 GB keep only the final state).',
     'StudySpec.sweep': 'Optional parameter sweep (SweepSpec): one build and run per value; null = no sweep.',
     'StudySpec.stored_cuts': "3D models only: extra cut planes [axis 'x' | 'y' | 'z', position in m (number or "
                              'parameter expression)] each snapshot stores besides the mid-height z cut (the window '
-                             'cell containing the position; same stored fields, resolution rules and 1 GB limit), '
-                             'e.g. [["y", 1e-6]] for an xz side cut; saved run directories keep them. Read with '
-                             "Results.snapshot_field(index, name, plane=(axis, position) or the cut's index); "
-                             'summary.json stored_cuts lists the planes (cell-centre positions). [] = none.',
+                             'cell containing the position; same stored fields and 1 GB limit), e.g. [["y", 1e-6]] '
+                             'for an xz side cut. Read with Results.snapshot_field(index, name, plane=(axis, position) '
+                             "or the cut's index); summary.json stored_cuts lists them (cell-centre positions). [] = "
+                             'none.',
     'StudySpec.adaptation': 'Optional mesh refinement levels (AdaptationSpec, S7.7): the study is rebuilt and rerun on '
                             'refined meshes until a derived value converges; null = the model meshes as they are. '
                             'Only study types that support it (validation), no sweep or parity sectors.',
@@ -410,13 +382,12 @@ _SPEC_FIELD_HELP = {
     'AdaptationSpec.anisotropic': 'Tensor meshes: refine x and y bands separately by the indicator part that '
                                   'dominates (true) or both axes alike.',
     'AdaptationSpec.keep_levels': 'true: keep every level\'s snapshots, not only the last level\'s.',
-    'StudySpec.estimation': 'Optional parameter estimation (EstimationSpec; industry-standard parameter estimation): '
-                            'the study is rebuilt and rerun per evaluation with the estimated parameters set, until '
-                            'the weighted misfit of measured derived values and curves is least; then one run at the '
-                            'best point stays live (summary estimation). null = one run. Any study type; no sweep or '
-                            'adaptation (validation); parity_sectors run every sector per evaluation (combined values '
-                            'fitted). A geometry parameter remeshes per evaluation (element meshes are reused while '
-                            'unchanged), which adds finite-difference noise: keep diff_step large or use nelder_mead.',
+    'StudySpec.estimation': 'Optional parameter estimation (EstimationSpec): the study is rebuilt and rerun per '
+                            'evaluation with the estimated parameters set until the weighted misfit of measured '
+                            'derived values and curves is least, then run once at the best point (summary '
+                            'estimation). null = one run. Any study type; no sweep or adaptation; parity_sectors run '
+                            'every sector per evaluation (combined values fitted). A geometry parameter remeshes per '
+                            'evaluation, adding finite-difference noise: keep diff_step large or use nelder_mead.',
     'EstimationSpec.parameters': 'Estimated model parameters (EstimatedParameterSpec, >= 1); each evaluation sets '
                                  'them as numbers, parameters depending on them follow.',
     'EstimationSpec.targets': 'Measured derived values (EstimationTargetSpec); residual (model - value) / sigma.',
@@ -464,77 +435,62 @@ _SPEC_FIELD_HELP = {
                              'only those of the last value; past 1 GB in total only each value\'s final snapshot is '
                              'kept (a warning). false: only the last value keeps its snapshots, earlier values keep '
                              'their derived values and results only.',
-    'SweepSpec.reuse_build': 'true: build once and run every value on that build: the swept parameter (and the '
-                             'parameters depending on it) may reach only values that follow a reused build, with '
-                             'parameters only (no x / y / z / t): feature values and physics settings whose help says '
-                             'so (loads, held values, voltages, doping, em_eme wavelength, magnetic_fields_ac '
-                             'frequency, ...), material property values read by no EM type (repainted, then every '
-                             'solver of the mesh re-reads them; not on 3D tensor meshes), derived values, analytic / '
-                             'derived curves and study settings; any other use (geometry, mesh, other material values, '
-                             'dispersion, physics / solver / coupling settings, stored cuts) is a validation error, as '
-                             'are the time_dependent and optimization studies and parity_sectors. Each value then '
-                             're-sets those values and reruns the study from the previous state (nonlinear solids start '
-                             'Newton from it; summary sweep builds = 1); followed values are not range-checked per '
-                             'value. A model with a physics that cannot rerun (no reset_records) is rebuilt per value '
-                             '(an info line). false (default): one build per value.',
+    'SweepSpec.reuse_build': 'true: build once and run every value on that build. The swept parameter (and those '
+                             'depending on it) may then reach only values that follow a reused build, with parameters '
+                             'only (no x / y / z / t): feature values and physics settings whose help says so (loads, '
+                             'held values, voltages, doping, em_eme wavelength, magnetic_fields_ac frequency, ...), '
+                             'material property values read by no EM type (repainted and re-read; not on 3D tensor '
+                             'meshes), derived values, analytic / derived curves and study settings; any other use '
+                             '(geometry, mesh, other material values, dispersion, physics / solver / coupling '
+                             'settings, stored cuts) is a validation error, as are the time_dependent and '
+                             'optimization studies and parity_sectors. Each value reruns the study from the previous '
+                             'state (nonlinear solids start Newton from it; summary sweep builds = 1); followed values '
+                             'are not range-checked per value. A physics that cannot rerun makes the model rebuild per '
+                             'value (an info line). false (default): one build per value.',
     'DerivedValueSpec.name': 'Identifier, unique among derived values; its key in summary.json derived.',
-    'DerivedValueSpec.expression': 'source null: expression of parameters, x, y (3D models: z), t and output '
-                                   'fields (<physics>_<field>, or <field> when one physics alone provides it); over '
-                                   f"an interface selection also {', '.join(INTERFACE_VARIABLES)} (outward unit "
-                                   'normal of the object outline, tangent = the normal turned +90 deg; on a polar / '
-                                   'spherical domain their radial / angular components, as the fields _x / _y there; '
-                                   'they shadow parameters), e.g. "em_ex_re*normal_x + em_ey_re*normal_y". Operation '
-                                   "'expression' (source null, an industry-standard global evaluation): one number of "
-                                   'parameters, scalar outputs, t and the derived values listed before this one, no '
-                                   'fields, x, y, z or selection, e.g. c_eff = "sqrt(N_int / rho_int)" of two '
-                                   'integrals listed above; evaluated in float64 in list order like every derived '
-                                   'value. With a source: '
-                                   'expression of the result sample names and parameters, evaluated per sample, e.g. '
-                                   '"power" or "1 - fraction_positive" (see Derived values). Both may use the names of '
-                                   'the derived values listed before this one (their values; NaN when they failed): '
-                                   'resonator figures of merit, e.g. W_E = integral of eps0_const*em_eps_r*'
-                                   'em_e_intensity/4 (time-averaged stored electric energy of a phasor field, J/m in '
-                                   '2D), V = mode_volume of em_eps_r*em_e_intensity, n_eff = '
-                                   'sqrt(eps_int / e2_int) of two integrals (operation expression), Purcell factor F '
-                                   '= 3/(4*pi**2)*(lam/n)**3'
-                                   '*Q/V in 3D, (Q/(pi**2*V))*(lam/n)**2 for an out-of-plane (E_z) line emitter in 2D '
-                                   '(twice that in-plane, H_z family), with lam and Q from a resonance_table source '
-                                   '(operation at, at = the row); first-order shift of a small inclusion of '
-                                   'polarisability alpha [F m^2; 2D: F] at a point: d_omega/omega = -alpha*E2_at/(2*'
-                                   'eps0_const*eps_int) with E2_at = |E|^2 at the point (operation at) and eps_int = '
-                                   'integral of eps_r*|E|^2 (Clausius-Mossotti sphere: alpha = 4*pi*eps0_const*eps_b*'
-                                   'a**3*(eps_s - eps_b)/(eps_s + 2*eps_b); 2D rod along z with E_z: alpha = '
-                                   'eps0_const*(eps_s - eps_b)*area; in-plane E: 2*eps0_const*eps_b*area*(eps_s - '
-                                   'eps_b)/(eps_s + eps_b)).',
+    'DerivedValueSpec.expression': 'source null: expression of parameters, x, y (3D: z), t and output fields '
+                                   '(<physics>_<field>, or <field> when one physics alone provides it); over an '
+                                   f"interface selection also {', '.join(INTERFACE_VARIABLES)} (outward unit normal "
+                                   'of the outline, tangent = the normal turned +90 deg; polar / spherical: radial / '
+                                   'angular components; they shadow parameters), e.g. "em_ex_re*normal_x + '
+                                   'em_ey_re*normal_y". Operation \'expression\': one number of parameters, scalar '
+                                   'outputs and t (no fields, x, y, z or selection), e.g. c_eff = "sqrt(N_int / '
+                                   'rho_int)". With a source: an expression of the result sample names and '
+                                   'parameters per sample, e.g. "power" or "1 - fraction_positive" (see Derived '
+                                   'values). All may use the derived values listed before this one (evaluated in '
+                                   'float64 in list order; NaN when they failed). Examples: stored electric energy '
+                                   'W_E = integral of eps0_const*em_eps_r*em_e_intensity/4 (J/m in 2D); V = '
+                                   'mode_volume of em_eps_r*em_e_intensity; Purcell F = 3/(4*pi**2)*(lam/n)**3*Q/V '
+                                   'in 3D, (Q/(pi**2*V))*(lam/n)**2 for an E_z line emitter in 2D (twice that for '
+                                   'H_z), lam and Q from a resonance_table source (operation at, at = the row); '
+                                   'small-inclusion shift d_omega/omega = -alpha*E2_at/(2*eps0_const*eps_int) with '
+                                   'E2_at = |E|^2 at the point (operation at), eps_int = integral of eps_r*|E|^2 and '
+                                   'alpha [F m^2; 2D: F] = 4*pi*eps0_const*eps_b*a**3*(eps_s - eps_b)/(eps_s + '
+                                   '2*eps_b) (sphere), eps0_const*(eps_s - eps_b)*area (2D rod, E_z), '
+                                   '2*eps0_const*eps_b*area*(eps_s - eps_b)/(eps_s + eps_b) (2D rod, in-plane E).',
     'DerivedValueSpec.selection': 'Domain entities to reduce over; [] = the whole physical window; or exactly one '
                                   "'interface' selection: its one-sided outline samples (see SelectionSpec.side; "
                                   f"operations {', '.join(INTERFACE_OPERATIONS)}: mean / integral weighted by outline "
                                   'length, integral per unit z length, axisymmetric times 2 pi r). Must be [] with a '
                                   "source and for operation 'expression'.",
     'DerivedValueSpec.point': "Field operations only: point object of 'at' (required: the value in the window cell "
-                              "containing it) and of 'mode_volume' (the field-at-point definition: integral / the "
-                              "value there; '' = integral / maximum over the selection).",
+                              "containing it) and of 'mode_volume' (integral / the value there; '' = integral / "
+                              'maximum over the selection).',
     'DerivedValueSpec.operation': f"{' | '.join(DERIVED_OPERATIONS)}. Over fields ("
-                                  f"{', '.join(FIELD_DERIVED_OPERATIONS)}): mean is area-weighted, integral is the "
-                                  'sum of value * cell area (per unit z length; with a physics set to geometry '
-                                  "'axisymmetric' both use the ring volume 2 pi r * cell area), mode_volume = "
-                                  'integral / (maximum over the selection, or the value at point) [m^3; 2D: m^2, the '
-                                  'area of a per-length mode], at = the value in the cell containing point; integral '
-                                  'and mode_volume count each mirror face the selection reaches twice (the unfolded '
-                                  'structure), and max / min (also the mode_volume maximum) include the mirror image '
-                                  'there (each field with its mirror parity, x / y / z reflected). expression (source '
-                                  'null, selection [], no point): the expression itself, one number of parameters, '
-                                  'scalar outputs, t and earlier derived values (see expression). Over a source (the '
-                                  'finite samples inside window): mean, max, min, integral = trapezoid over the '
-                                  'abscissa (from the window edges, interpolated), argmax = abscissa of the maximum '
-                                  '(parabola through it and its neighbours), fwhm = full width where the largest '
-                                  'peak falls to half its maximum on both sides (linear crossings; baseline 0: '
-                                  'subtract one in the expression), polyfit / exp_fit / lorentz_fit / two_exp_fit / '
-                                  'two_wave_fit / richardson / multi_lorentz_fit / pole_fit = the quantity '
-                                  'fit of a least-squares fit (see fit), last = the last sample in result order (the '
-                                  'final time of a timeseries), at = linear interpolation at the abscissa value at. '
-                                  'far_field angles wrap around (at, window, a peak at 0 rad; argmax in [0, 2 pi) '
-                                  'without a window).',
+                                  f"{', '.join(FIELD_DERIVED_OPERATIONS)}): mean is area-weighted, integral = sum of "
+                                  'value * cell area (per unit z length; geometry axisymmetric: ring volume 2 pi r * '
+                                  'cell area), mode_volume = integral / (maximum over the selection, or the value at '
+                                  'point) [m^3; 2D: m^2], at = the value in the cell containing point; integral and '
+                                  'mode_volume count each mirror face the selection reaches twice (the unfolded '
+                                  'structure), max / min (and the mode_volume maximum) include the mirror image. '
+                                  'expression: see expression. Over a source (the finite samples inside window): '
+                                  'mean, max, min, integral = trapezoid over the abscissa (window edges '
+                                  'interpolated), argmax = abscissa of the maximum (parabola through it and its '
+                                  'neighbours), fwhm = full width at half the largest peak (linear crossings; '
+                                  'baseline 0: subtract one in the expression), the fits = the quantity fit (see '
+                                  'fit), last = the last sample (the final time of a timeseries), at = linear '
+                                  'interpolation at the abscissa value at. far_field angles wrap (at, window, a peak '
+                                  'at 0 rad; argmax in [0, 2 pi) without a window).',
     'DerivedValueSpec.source': "null = fields over the selection (operation 'expression': no fields, the other values); "
                                "'physics.feature' = the 1D result of that enabled "
                                f"feature (kinds {', '.join(DERIVED_RESULT_KINDS)}), reduced over its samples; the "
@@ -608,63 +564,57 @@ _SPEC_FIELD_HELP = {
                                     're-evaluated per point), x, y [m], z [m, the cut height or the 3D segment '
                                     'point; 3D models only] and s [m from the line start] (line). '
                                     'Variables shadow parameters of the same name.',
-    'AnalyticCurveSpec.series': "Simulated quantity the curve belongs to (drawn in its colour): an xy series name, "
-                                "a table column name, 'ratio' for the Spectra ratio-to-reference plot of a "
-                                "flux_spectrum / wavelength xy target, 'fft' for the probe FFT plot of a timeseries "
-                                '(|FFT| * dt as the Probes tab plots it, in the value unit times s), for sweep the '
-                                "derived value name, 'physics.feature' of a timeseries (its final value) or a "
-                                "'<column>_<k>' series of a per-value table (band k: the k-th smallest value, as "
-                                "Results.sweep_xy); '' = drawn with every quantity of the target.",
+    'AnalyticCurveSpec.series': "Simulated quantity the curve belongs to (drawn in its colour): an xy series or table "
+                                "column name, 'ratio' (Spectra ratio-to-reference plot of a flux_spectrum / "
+                                "wavelength xy target), 'fft' (probe FFT of a timeseries: |FFT| * dt, value unit "
+                                "times s); for sweep the derived value name, 'physics.feature' of a timeseries (its "
+                                "final value) or '<column>_<k>' of a per-value table (band k: the k-th smallest "
+                                "value, as Results.sweep_xy); '' = every quantity of the target.",
     'AnalyticCurveSpec.line': "Target 'line' only: [x0, y0, x1, y1] in m (numbers or parameter expressions), two "
-                              'distinct points; the Line profile tab plots field along it with the curve. 3D models '
-                              'also take the 3D segment [x0, y0, z0, x1, y1, z1] (any direction, e.g. along z or '
-                              'oblique): sampled from the final state of the whole volume (containing cells or '
-                              'trilinear, see sampling; no mirror unfolding; live Results only), so plane stays '
-                              'null; every snapshot also stores the profile of each 3D segment line curve, so '
-                              'snapshot works with it (also from a saved run).',
-    'AnalyticCurveSpec.sampling': "Target 'line' with a 3D segment line only: 'nearest' (default; each sample reads "
-                                  "its containing cell and curve_error compares at those cell centres) or "
-                                  "'trilinear' (each sample interpolated between the 8 surrounding cell centres, "
-                                  'constant in the outer half cells; curve_error compares at the sample points, so a '
-                                  'smooth field along an oblique segment shows no staircase). Other lines: '
-                                  "'nearest' (validation error otherwise).",
-    'AnalyticCurveSpec.field': "Target 'line' only: output field 'physics.component' (e.g. 'heat.T') sampled "
-                               'along the line from the final state (or the snapshot), each sample reading the cell '
-                               'containing it (on a cell edge: the upper cell, as a probe there).',
+                              'distinct points (the Line profile tab plots field along it). 3D models also take a 3D '
+                              'segment [x0, y0, z0, x1, y1, z1] in any direction, sampled from the final state of the '
+                              'whole volume (see sampling; no mirror unfolding; live Results only; plane stays null); '
+                              'every snapshot also stores its profile, so snapshot works with it (saved runs too).',
+    'AnalyticCurveSpec.sampling': "Target 'line' with a 3D segment only: 'nearest' (default: the containing cell, "
+                                  "curve_error at those cell centres) or 'trilinear' (between the 8 surrounding cell "
+                                  'centres, constant in the outer half cells; curve_error at the sample points, so an '
+                                  "oblique segment shows no staircase). Other lines: 'nearest' only (validation "
+                                  'error).',
+    'AnalyticCurveSpec.field': "Target 'line' only: output field 'physics.component' (e.g. 'heat.T') sampled along the "
+                               'line from the final state (or the snapshot) in the containing cells (on a cell edge: '
+                               'the upper cell).',
     'AnalyticCurveSpec.x_column': "'table' targets only: numeric column used as the abscissa x of the curve and the "
                                   "plot (rows sorted by it); '' = the 0-based row index. series names the plotted "
                                   'column.',
     'AnalyticCurveSpec.plane': "Target 'line' in 3D models only: height z [m] (number or parameter expression) of "
                                'the horizontal cut the line [x0, y0, x1, y1] lies in; null = the GUI cut-plane choice '
                                '(when a z cut), headless the mid-height cut. Not with snapshot (snapshots hold the '
-                               'mid-height cut) or a 3D segment line (side planes: give a 3D segment).',
+                               'mid-height cut) or a 3D segment (side planes: give a 3D segment).',
     'AnalyticCurveSpec.snapshot': "Target 'line' only: sample field from a stored snapshot instead of the final "
-                                  'state: an index into Results.snapshots() (int, negative from the end) or a '
-                                  "snapshot label, whole or its text before ':' (e.g. 'mode 2', 'resonance 1', "
-                                  "'iteration 3', 'lambda = 1550 nm'), else that text without its mirror parity tag "
-                                  "('mode 2' for 'mode 2 [x_lo symmetric]'; it must match one snapshot); null = the "
-                                  'final state. field must be a stored field (a 3D segment line: any field, its '
-                                  'profile is stored with each snapshot of the run).',
+                                  'state: an index into Results.snapshots() (negative from the end) or a snapshot '
+                                  "label, whole or its text before ':' (e.g. 'mode 2', 'resonance 1', 'lambda = 1550 "
+                                  "nm'), also without its mirror parity tag ('mode 2' for 'mode 2 [x_lo symmetric]'); "
+                                  'it must match one snapshot; null = the final state. field must be stored (a 3D '
+                                  'segment: any field).',
     'AnalyticCurveSpec.tolerance': 'Optional number >= 0 or null: largest accepted summary.json curve_error max '
-                                   '(max |simulated - analytic| / ptp(analytic) at the simulated samples, so an absolute '
+                                   '(max |simulated - analytic| / ptp(analytic) at the simulated samples: an absolute '
                                    'temperature is judged against its rise; target sweep: relative per swept value; a '
-                                   'feature target in a sweep: at every value). Used only by selftest --examples, which fails the example above it '
-                                   'or when the curve cannot be compared; null = reported, never failed.',
+                                   'feature target in a sweep: at every value). Used only by selftest --examples, '
+                                   'which fails the example above it or when the curve cannot be compared; null = '
+                                   'reported, never failed.',
     'AnalyticCurveSpec.interface': "Target 'line' in 2D models only: name of an 'interface' selection; '' = the "
-                                   'containing cells. Each line sample (two per finest cell) then reads the '
-                                   "selection's side along the outward normal of the nearest outline sample of its "
-                                   'objects and extrapolates onto the sample itself (see SelectionSpec.side), and '
-                                   'the curve is compared at the sample positions; draw the line along the outline '
-                                   '(e.g. a slot-waveguide sidewall). field is one component, or with projection the '
-                                   'x component of an in-plane vector. Polar / spherical domains: live Results read '
-                                   'the (r, angle) cells (field(native=True)), saved ones and snapshots the image '
-                                   'over the sector box (first order at the outline).',
+                                   'containing cells. Each line sample (two per finest cell) then reads the side '
+                                   'along the outward normal of the nearest outline sample and extrapolates onto '
+                                   'itself (see SelectionSpec.side); draw the line along the outline (e.g. a '
+                                   'slot-waveguide sidewall). field is one component, or with projection the x '
+                                   'component of an in-plane vector. Polar / spherical: live Results read the (r, '
+                                   'angle) cells, saved ones and snapshots the image over the sector box (first order '
+                                   'at the outline).',
     'AnalyticCurveSpec.projection': f"With interface only: '' (field as it is) | {' | '.join(INTERFACE_PROJECTIONS)}: "
-                                    'field names the x component of an in-plane vector (e.g. em.ex_re, its y component '
-                                    'em.ey_re, found by turning its axis letter x into y: E_x -> E_y), both read '
-                                    'one-sided and projected on the nearest outline normal (normal) or the tangent = '
-                                    'normal turned +90 deg (tangential); on a polar / spherical domain the components '
-                                    'are radial / angular and projected as such. A snapshot curve needs both stored.',
+                                    'field names the x component of an in-plane vector (e.g. em.ex_re; its y partner '
+                                    'em.ey_re by x -> y), both read one-sided and projected on the nearest outline '
+                                    'normal or the tangent = normal turned +90 deg (polar / spherical: radial / '
+                                    'angular components). A snapshot curve needs both stored.',
     'DerivedCurveSpec.name': 'Identifier, unique among derived curves; its key in summary.json derived_curves.',
     'DerivedCurveSpec.expression': 'Expression of the input aliases (arrays on the curve abscissa, or numbers for '
                                    'scalar samples), x (the abscissa, in its unit) and parameters, evaluated per '
@@ -696,13 +646,13 @@ _SPEC_FIELD_HELP = {
 
 _EXPRESSION_SYNTAX = (
     'Arithmetic: + - * / // % ** and unary + -; ** is the power (^ is not allowed).',
-    'Comparisons < <= > >= == != give 1 (true) or 0 (false), e.g. "(x > 1*um) * 2"; chained comparisons (a < b < '
-    'c), and / or / not and if / else are not allowed: use where, min and max.',
-    'Integer literals become floats (1/2 = 0.5). Only numbers, names and calls of the functions below with '
-    'positional arguments are allowed (no attributes, indexing, strings or keywords). A function name without "(" '
-    'is an ordinary name, which only a result sample name can supply (see Derived values).',
+    'Comparisons < <= > >= == != give 1 or 0, e.g. "(x > 1*um) * 2"; chained comparisons, and / or / not and if / '
+    'else are not allowed: use where, min and max.',
+    'Integer literals become floats (1/2 = 0.5). Only numbers, names and positional calls of the functions below '
+    '(no attributes, indexing, strings or keywords). A function name without "(" is an ordinary name, which only a '
+    'result sample name can supply (see Derived values).',
     f'At most {MAX_EXPRESSION_LENGTH} characters. Results must be real: a complex result (e.g. (-8)**(1/3)) is an '
-    'error, and a value outside a function domain (log(-1)) gives nan, which fails where a finite number is needed.',
+    'error; a value outside a function domain (log(-1)) gives nan, which fails where a finite number is needed.',
     'With numbers and parameters only an expression gives one float; with x, y, z or fields it is evaluated per '
     'cell.',
 )
@@ -710,96 +660,101 @@ _NAME_AVAILABILITY = (
     'ParameterSpec.expression: numbers, constants and other parameters in any order (unknown names and cycles are '
     'errors).',
     'Domain size, geometry params, mesh values, refinement dx / margin, sweep values, dispersion pole values and '
-    'every param without "may use x, y": parameters only.',
-    'Physics settings, feature params and material properties marked "may use x, y": also x and y, the cell centres '
-    'in m (EM PML cells take the nearest window centre), and in 3D models the height z [m] (z in a 2D model is a '
-    'validation error). 3D materials using z are written one z cell plane at a time, feature values using z cover '
-    'the bounding box of their selection.',
-    'Params marked "may use physics fields" (material properties): also the state fields of the physics in the '
-    'model as <physics>_<field>, or <field> when one physics alone provides it (e.g. T with one heat physics); such '
-    'a property is rewritten right after each step of the physics it reads (the one with the largest every), so '
-    'physics stepping on later ticks see it, but only when one of them solved or stepped since the last rewrite (a '
-    'quasi-static physics that did not re-solve rewrites nothing), and once more after the final solves of a '
-    'time-dependent run (a '
-    'stationary study iterates it; a '
-    'frequency_domain study allows only fields of its background physics). They may also use the time t [s] '
-    '(with or without fields and x, y): a property using t is rewritten at the start of every runner step (before '
-    'the steps of that tick, t = the step start time; t = 0 in every other study).',
-    'Feature params marked "may use t": also the time t [s] with parameters only (no x, y, z: a value changing in '
-    'time is uniform in space), re-evaluated at the start of every runner step of the physics (t = its step start '
-    'time; an implicit step, e.g. transient heat, sees the start value, a first-order lag); t = 0 at the build and in '
-    'every other study.',
+    'every param not marked "may use x, y": parameters only.',
+    'Settings, feature params and material properties that may use x, y: also x and y, the cell centres in m (EM '
+    'PML cells take the nearest window centre), and in 3D models z [m] (z in a 2D model is a validation error). 3D '
+    'materials using z are written one z cell plane at a time, feature values using z cover the bounding box of '
+    'their selection.',
+    'Material properties that may use fields: also the state fields of the physics in the model as '
+    '<physics>_<field>, or <field> when one physics alone provides it (e.g. T); such a property is rewritten right '
+    'after each step of the physics it reads (the one with the largest every), so physics stepping on later ticks '
+    'see it, but only when one of them solved or stepped since the last rewrite (a quasi-static physics that did not '
+    're-solve rewrites nothing), and once more after the final solves of a time-dependent run (a stationary study '
+    'iterates it; frequency_domain allows only fields of its background physics). They may also use t [s] (with or '
+    'without fields and x, y): rewritten at the start of every runner step (t = the step start time; t = 0 in every '
+    'other study).',
+    'Feature params that may use t: also the time t [s] with parameters only (no x, y, z), re-evaluated at the start '
+    'of every runner step of the physics (an implicit step, e.g. transient heat, sees the start value, a '
+    'first-order lag); t = 0 at the build and in every other study.',
     'Coupling params of kind expression (field_transfer expression): value (the source field), x, y (3D: z) and '
     'parameters; no other field names and no t.',
     'Derived values: parameters, x, y (3D: z), t (the final time), the output fields as <physics>_<field> or a unique '
-    '<field> and the scalar outputs of a physics (its type\'s Scalar outputs, e.g. em_modes n_eff_1) as '
-    '<physics>_<name> only (a number after the run; a name the solver did not report gives NaN plus a warning); with '
-    'a source the sample names of that result (a derived curve source: the curve name and x) instead (see Derived '
-    'values). Derived value at / reference / window / wavelength: parameters only.',
+    '<field> and the scalar outputs of a physics (e.g. em_modes n_eff_1) as <physics>_<name> only (a name the solver '
+    'did not report gives NaN plus a warning); with a source the sample names of that result instead (a derived '
+    'curve source: the curve name and x; see Derived values). Derived value at / reference / window / wavelength: '
+    'parameters only.',
     'Analytic curves: parameters and the variables of their target (AnalyticCurveSpec.expression).',
-    'Derived curves: parameters, their input aliases and x, plus the calls gradient / cumtrapz '
-    '(DerivedCurveSpec.expression); reference: parameters and x.',
+    'Derived curves: parameters, their input aliases and x, plus gradient / cumtrapz (DerivedCurveSpec.expression); '
+    'reference: parameters and x.',
     'A parameter may not have the name of a physics state or output field or scalar output (validation error).',
 )
 _GEOMETRY_NOTES = (
     'Coordinates are physical, in m, with the origin at the lower-left corner of the physical domain: x from 0 to '
     'size_x (to the right), y from 0 to size_y (up); EM PML cells lie outside.',
-    'Masks test cell centres: rectangles and polygons are half-open [x0, x1) x [y0, y1), circles and ellipses are '
-    'closed; rounded rectangles are half-open along their straight sides, closed on their corner arcs; a point or line end exactly on a cell edge goes to the upper cell.',
-    "Validation's material preview uses float64 cell centres over (0, size_x, 0, size_y) while the build tests "
-    'float32 cell centres clamped into the window, so cells exactly on a boundary can differ: avoid material edges '
-    'exactly on cell centres.',
-    'Composite inputs (union, intersection, difference, array) are consumed: they can no longer be selected on their '
-    'own and may feed only one composite.',
+    'Masks test cell centres: rectangles, polygons and boxes are half-open ([x0, x1) x [y0, y1), corners in any '
+    'order: a centre on x0 / y0 is inside, on x1 / y1 outside), circles, ellipses and spheres closed; rounded '
+    'rectangles are half-open along their straight sides, closed on their corner arcs; a point or line end exactly '
+    'on a cell edge goes to the upper cell.',
+    "Validation's material preview uses float64 cell centres while the build tests float32 centres clamped into the "
+    'window, so cells exactly on a boundary can differ: avoid material edges exactly on cell centres.',
+    'Composite inputs (union, intersection, difference, array; composites included) are consumed: they can no longer '
+    'be selected on their own and may feed only one composite.',
     'An array repeats its base object on an nx x ny (x nz) grid of copies moved by multiples of pitch_x / pitch_y / '
     'pitch_z, the base being the first copy: one GeometrySpec for thousands of holes or pillars. It acts as one '
     'domain object (a union of its copies) in selections, materials, features and refinements; meshes follow every '
     "copy's outline. Copies are internal shapes named '<array>[i,j]' (never selectable); overlapping copies get a "
     'validation warning.',
+    "3D extrusion of the 2D domain kinds (params z0, z1, axis, sidewall_angle; 3D models only: in 2D they must stay "
+    "null / 'z' / 0): the shape is extruded along axis between z0 and z1, centres with min(z0, z1) <= coordinate < "
+    "max(z0, z1) inside. axis 'x' / 'y': the shape's (x, y) are the model's (y, z) / (x, z), the ellipse angle turns "
+    'from the first toward the second, and z0 / z1 (both required, beyond the domain to run into the PML) are its '
+    "ends along x / y: a circle with axis 'x' is a cylinder along x. Faces parallel to the mesh axes become snap "
+    'nodes on refined meshes; curved faces are staircased. sidewall_angle (deg, -90 < angle < 90, needs z0 and '
+    'z1): the shape as given sits at min(z0, z1) and is offset inward by (s - min(z0, z1)) tan(angle) toward the '
+    'other end (positive narrows: etched ridges, tapers; negative widens: undercuts, V-grooves as a widening hole); '
+    'rectangles shrink on every side, circles become cones, ellipses frusta (both semi-axes by the same offset), '
+    'polygons are offset per vertex (mitred; simple polygons only); a collapsing or self-intersecting offset is an '
+    'error. Slanted walls are staircased per z cell; along x / y each cross-section is sampled in 256 steps.',
 )
 _MATERIAL_NOTES = (
     'MaterialSpec.library takes a library material name below; properties override its values (a null property '
     'keeps the library value); dispersion null inherits the library poles, [] removes them, a list replaces them.',
-    'Materials apply in list order and later materials win overlapping cells (whole cells). A material whose '
-    'selection contains all is a background material: it fills only the cells no other material covers, wherever it '
-    'sits in the list (of several background materials the later wins). Cells under no material keep the type '
-    'defaults: vacuum for EM, k = 0 (no conduction) for heat, sigma_dc = 0 (insulator) for electric_currents, '
-    'eps_dc = 1 (vacuum) for electrostatics.',
-    'Only the material properties of the physics types present in a model are written, and only those the merged '
-    'material sets; each physics type section lists its material properties with units and help. A property of kind '
-    'table (e.g. magnetostatics bh_curve) is one constant table per material, written to no array: its physics reads '
-    'it per material region.',
+    'Materials apply in list order, later materials winning overlapping (whole) cells. A material whose selection '
+    'contains all is a background material: it fills only the cells no other material covers, wherever it sits in '
+    'the list (of several, the later wins). Cells under no material keep the type defaults: vacuum for EM, k = 0 '
+    'for heat, sigma_dc = 0 for electric_currents, eps_dc = 1 for electrostatics.',
+    'Only the properties of the physics types present, and only those the merged material sets, are written. A '
+    'table property (e.g. magnetostatics bh_curve) is one constant table per material region, written to no array.',
     'eps_r is isotropic; eps_xx, eps_yy, eps_zz are components written after it (a component wins): the E_z types '
-    '(em_fdtd_ez, em_fdfd_ez) see eps_zz (their eps_r array), the H_z types (em_fdtd_hz, em_fdfd_hz) see eps_xx and '
-    'eps_yy, em_modes sees all three; each type lists its own vocabulary.',
-    'Library optical values (eps_r, sigma_e) are for 1.55 um; an entry without dispersion poles has the same index '
-    'at every wavelength. Thermal data use the model property names (cp = specific heat). Electrical data (sigma_dc, '
-    'eps_dc) are static values for electric_currents / electrostatics, distinct from the optical sigma_e / eps_r.',
+    '(em_fdtd_ez, em_fdfd_ez) see eps_zz (their eps_r array), the H_z types (em_fdtd_hz, em_fdfd_hz) eps_xx and '
+    'eps_yy, em_modes all three.',
+    'Library optical values (eps_r, sigma_e) are for 1.55 um; without dispersion poles the index is the same at '
+    'every wavelength. Thermal data use the model property names (cp = specific heat). sigma_dc / eps_dc are static '
+    'values for electric_currents / electrostatics, distinct from the optical sigma_e / eps_r.',
     'Dispersion poles are dicts {"model": "drude" | "lorentz", ...} with the params below (EM only); for a Drude '
     'material that sets no permittivity property for an array (eps_r or that component) the first Drude eps_inf is '
     'the background permittivity of that array.',
     'An {"model": "nk_fit", ...} entry (one per material; library materials with tabulated n, k only: their '
     'description names the data set) is replaced by eps_inf (>= 1) + an optional Drude pole + Lorentz poles fitted '
-    'to the table over [wavelength_start, wavelength_stop] (bounded least squares, all pole values >= 0: passive); '
-    'the library optical values are then dropped, eps_inf is the Drude eps_inf or, without a Drude pole, eps_r. '
-    'Validation reports the fit (max |eps error| relative to |eps|, loss error relative to |Im eps| + 0.03 |eps|) as '
-    'info, as a warning above 2 % / 10 % or when the study band leaves the fit range. FDTD steps the fitted poles; '
-    'the FDFD, em_modes and slab-mode ports use their exact chi(omega).',
+    'to the table over [wavelength_start, wavelength_stop] (passive: all pole values >= 0); the library optical '
+    'values are then dropped, eps_inf is the Drude eps_inf or, without a Drude pole, eps_r. Validation reports the '
+    'fit error (max |eps error| / |eps|, loss error / (|Im eps| + 0.03 |eps|)) as info, a warning above 2 % / 10 % '
+    'or when the study band leaves the fit range. FDTD steps the fitted poles; FDFD, em_modes and slab-mode ports '
+    'use their exact chi(omega).',
     'A {"model": "crystal", "crystal": <name>, "euler_deg": [phi, theta, psi], "plane": "sagittal"} entry (one per '
     f"material; crystals {', '.join(sorted(CRYSTALS))}) is no pole: it is removed from the list and sets the rotated "
-    'crystal data in model axes, c11, c12, c22, c66 (c16 / c26 when non-zero), rho, piezo_e11 .. piezo_e26 and the clamped eps_dc_xx / _yy / '
-    '_xy; with optical data (not every crystal) also photoelastic_p11 / _p12 (+ the elastic_waves tensor entries '
-    'photoelastic_p16 .. _p66 when the cut is not isotropic in them; row 6 = xy, the eps_xy of em_fdfd_hz) and the '
-    'clamped Pockels tensor pockels_r11 .. _r62 when non-zero (precedence: library < crystal < explicit properties, '
-    'also beside nk_fit). The optical '
-    'index itself is not set (eps_r / eps_xx / eps_yy stay the material values). euler_deg are plain numbers in '
-    "degrees, SAW convention: passive Rz(psi) Rx(theta) Rz(phi), rows X1' = propagation, X3' = surface normal (YZ = "
-    "0, 90, 90); sagittal = model (x, y, z) = (X1', X3', -X2'). Only the anti-plane couplings "
-    'are dropped (validation reports the sagittal values as info and warns when they are not negligible), and the '
-    'off-diagonal photoelastic / Pockels index change (the acousto-optic and Pockels couplings warn). A 3D model needs '
-    "\"plane\": \"full\" (2D models 'sagittal', the default; validation errors otherwise): model (x, y, z) = (X1', X2', "
-    "X3'), the surface normal along z, and the entry sets all 21 c11 .. c66 (Voigt 1 xx, 2 yy, 3 zz, 4 yz, 5 xz, 6 xy), "
-    'the 18 piezo_e11 .. piezo_e36, eps_dc_xx / _yy / _zz / _yz / _xz / _xy and rho (no optical entries).',
+    'crystal data in model axes: c11, c12, c22, c66 (c16 / c26 when non-zero), rho, piezo_e11 .. piezo_e26 and the '
+    'clamped eps_dc_xx / _yy / _xy; with optical data (not every crystal) also photoelastic_p11 / _p12 (+ '
+    'photoelastic_p16 .. _p66 for elastic_waves when the cut is not isotropic in them; row 6 = xy, the eps_xy of '
+    'em_fdfd_hz) and the clamped Pockels pockels_r11 .. _r62 when non-zero (precedence: library < crystal < '
+    'explicit properties, also beside nk_fit). The optical index is not set. euler_deg in degrees, SAW convention: '
+    "passive Rz(psi) Rx(theta) Rz(phi), rows X1' = propagation, X3' = surface normal (YZ = 0, 90, 90); sagittal = "
+    "model (x, y, z) = (X1', X3', -X2'). The anti-plane couplings and the off-diagonal photoelastic / Pockels index "
+    'change are dropped (validation reports the sagittal values as info and warns when not negligible; the '
+    'acousto-optic and Pockels couplings warn). A 3D model needs "plane": "full" (2D: \'sagittal\', the default; '
+    "else validation errors): model (x, y, z) = (X1', X2', X3'), the surface normal along z; it sets all 21 c11 .. "
+    'c66 (Voigt 1 xx, 2 yy, 3 zz, 4 yz, 5 xz, 6 xy), the 18 piezo_e11 .. piezo_e36, eps_dc_xx / _yy / _zz / _yz / '
+    '_xz / _xy and rho (no optical entries).',
 )
 _RESULTS_NOTES = (
     ('Command line', (
@@ -1327,64 +1282,39 @@ _RESULTS_NOTES = (
         'ValueError above max_bytes) and export_volume(name, path, physics=None, max_bytes=2**30) -> its .npz '
         '(values, x_centers, y_centers, z_centers, metadata kind volume); '
         "export_html(path, what=None, physics=None, title=None, geometry=True, planes=None, figure=None, "
-        "fields=None, max_bytes=None) -> the "
-        'written .html path: a '
-        'self-contained web '
-        'page (no network, WebGL2) to turn, zoom and colour in a browser (colour maps, log scale, colour range; PNG '
-        "and video export, the PNG as shown with its heading, axes and colour bar); what = a field ('physics.component' or a unique component; physics narrows it): every "
-        'stored snapshot holding it is a frame (time snapshots play, blended from one to the next, labelled ones '
-        "such as wavelengths or modes get a slider; a '<base>_re' / '_im' field whose partner is stored beside it, "
-        'or rendered from kept snapshot solutions in GUI runs, is animated over one period, Re / Im[A exp(j wt)]), '
-        'else the current / saved state, a 2D map (optional relief; with flow particles moving along, or arrows of, the '
-        'in-plane vector of 2D Cartesian laminar_flow, electric_currents, electrostatics, drift_diffusion, '
-        'magnetostatics and heat pages: the field\'s own components, the velocity of pressure / vorticity, the current '
-        'density of V / q_joule, B of A, -grad T scaled to heat_flux_abs when stored; a Flow button and a Particles / '
-        'Arrows choice; a 2D '
-        'solid_mechanics / membrane field drawn on the deformed body, magnified by a Deform slider, the void cells of a '
-        'solid hidden: modes and frequency responses oscillate, a static state ramps its load with Animate) or a 3D '
-        'field on its cut planes in '
-        'place (live state: an x, y and z cut, each at a mirror plane of the field\'s physics (the window cell next '
-        'to it, drawn on the plane), else through the middle of the material objects that do not span the window on '
-        'that axis, else the window middle; snapshots and closed / loaded runs: the mid-height z cut and '
-        "the stored_cuts; planes [(axis, position m)] instead: the live state on exactly those planes, a snapshot "
-        "its held cut on each axis nearest the position, ValueError for 2D models or an axis no snapshot holds when "
-        "not live; live Results of a Cartesian 3D model also put the whole field on the page, the current state or "
-        "each snapshot's kept solution (GUI runs, up to 60 snapshots), drawn as movable slices, a lit isosurface "
-        "(signed fields: both signs), nested see-through shells or a glowing cloud); a dft_fields result 'physics.feature': its intensity map per monitored frequency; a "
-        'mode_shapes result: the complex mode shapes animated on the solid surface beside the band diagram (a sweep '
-        'contributes every successful value on the same surface mesh, abscissa k a / 2 pi of the Bloch wavenumber, '
-        'else the swept parameter; coloured by displacement, and with the kept stress / strain of the mode_shapes '
-        'feature by von Mises, largest principal and maximum shear stress, pressure, stress and strain components, '
-        'volumetric strain, strain and kinetic energy densities (time averages) and a piezoelectric potential, each '
-        "normalised over the mode and cycle; fields = a list of 'stress' / 'strain' to put on the page, None = every "
-        'kept one, ValueError for one not kept; max_bytes: viz.mode_player.ModePageTooLarge (a ValueError with '
-        '.sizes in bytes per group), nothing written, when the mode data would pass it; fields / max_bytes on '
-        'another page: ValueError); None = the only mode_shapes result; geometry (field and dft_fields pages; a 3D '
-        'DFT map excepted): the model objects at the built parameters, their outlines on every map / cut plane and '
-        'in 3D their edges and see-through surfaces, switched on the page (Objects; ValueError without the model '
-        'spec: pass geometry=False); a model with mirror planes (field pages, 2D DFT maps): the page also draws '
-        "the field's mirror images (signs by its parity) and the objects', the whole structure, switched by its "
-        'Mirror button; large data is thinned (grid stride, evenly '
-        'kept frames, named in the page subtitle); figure (field and dft_fields pages; ValueError on a mode_shapes '
-        "page, for an unknown key, a value outside its choices / range or min >= max): {setting: value} the page's "
-        'Plot settings panel opens with (the panel edits the same settings, the browser remembers them and its '
-        'Copy settings gives this dict; None / missing = automatic): font_size (px of the axis and colour bar '
-        "texts, 6 - 40, default 11), title_size (px of the heading, 8 - 72, default 26), title 'top_left' | "
-        "'top_center' | 'top_right' | 'off' (heading: frame label and field), color_min / color_max (colour "
-        'limits in the field unit; a signed field with only one of them stays symmetric about 0), x_min / x_max / '
-        'y_min / y_max / z_min / z_max (axis limits in m: field, mesh lines and objects are cut there, the axes '
-        "and the fit follow; they may reach past the data; not along the normal of a single plane), colorbar "
-        "'bottom_right' | 'bottom_left' | 'top_right' | 'top_left' | 'right' | 'left' | 'top' | 'bottom' | 'off', "
-        'colorbar_length (fraction of the view side, 0.1 - 1), horizontal_axis '
-        "'bottom' | 'top' and vertical_axis 'left' | 'right' (side of the axis ticks and titles of a map seen "
-        "face-on), scale_bar 'on' | 'off' (default 'on': a bar of a round true length on a map seen face-on, in "
-        'place of the axes, so a 2D map / single cut starts with the axes off; a 3D view keeps its axes; dragged on '
-        'the page), scale_bar_length (m, > 0; default a round '
-        "length near a fifth of the view, following the zoom), scale_bar_color and legend_color 'auto' | 'white' "
-        "| 'black' (the scale bar; the names of the material legend, which is dragged on the page too), "
-        "background 'theme' | 'white', export_scale 1 | 2 | 4 (PNG pixels per screen pixel); "
-        'other result kinds raise ValueError (figures); live, closed or '
-        'loaded alike; '
+        'fields=None, max_bytes=None) -> the written .html path: a self-contained web page (no network, WebGL2; '
+        "PNG and video export). what = a field ('physics.component' or a unique component; physics narrows it): "
+        'every stored snapshot holding it is a frame (time snapshots play, labelled ones get a slider; a '
+        "'<base>_re' / '_im' pair is animated over one period, Re / Im[A exp(j wt)]), else the current / saved "
+        'state; a 2D map (2D Cartesian flow / current / potential / magnetostatic / heat pages can add particles '
+        'or arrows of the in-plane vector; 2D solid_mechanics / membrane fields drawn on the deformed body) or a '
+        '3D field on cut planes (live: an x, y and z cut at a mirror plane of its physics, else through the '
+        'objects that do not span the window, else the window middle; snapshots and closed / loaded runs: the '
+        'mid-height z cut and stored_cuts; planes [(axis, position m)]: the live state on exactly those planes, a '
+        'snapshot its held cut nearest each, ValueError in 2D or for an axis no snapshot holds when not live; '
+        'live Cartesian 3D Results also put the whole field on the page, up to 60 kept GUI snapshots); a '
+        "dft_fields result 'physics.feature': its intensity map per frequency; a mode_shapes result: the complex "
+        'mode shapes animated on the solid surface beside the band diagram (a sweep: every successful value, '
+        'abscissa k a / 2 pi of the Bloch wavenumber, else the swept parameter), coloured by displacement or, '
+        "with the kept stress / strain, stress, strain and energy measures; fields = a list of 'stress' / "
+        "'strain' (None = every kept one, ValueError for one not kept); max_bytes: viz.mode_player."
+        'ModePageTooLarge (a ValueError with .sizes per group) when the mode data would pass it, nothing written; '
+        'fields / max_bytes on another page: ValueError; None = the only mode_shapes result. geometry (field and '
+        '2D dft_fields pages): the model objects at the built parameters drawn on the page (ValueError without '
+        'the model spec: pass geometry=False); mirror planes add the mirror images. Large data is thinned (named '
+        "in the page subtitle). figure (field and dft_fields pages): {setting: value} the page's Plot settings "
+        "panel opens with (its Copy settings gives this dict; None / missing = automatic; ValueError on a "
+        'mode_shapes page, for an unknown key, a value outside its choices / range or min >= max): font_size (px, '
+        "6 - 40, default 11), title_size (px, 8 - 72, default 26), title 'top_left' | 'top_center' | 'top_right' "
+        "| 'off', color_min / color_max (field unit; a signed field with one of them stays symmetric about 0), "
+        'x_min / x_max / y_min / y_max / z_min / z_max (axis limits in m; not along the normal of a single '
+        "plane), colorbar 'bottom_right' | 'bottom_left' | 'top_right' | 'top_left' | 'right' | 'left' | 'top' "
+        "| 'bottom' | 'off', colorbar_length (fraction of the view side, 0.1 - 1), horizontal_axis 'bottom' | "
+        "'top', vertical_axis 'left' | 'right', scale_bar 'on' | 'off' (default 'on': a true-length bar on a "
+        'face-on map in place of the axes), scale_bar_length (m, > 0; default a round length near a fifth of the '
+        "view), scale_bar_color and legend_color 'auto' | 'white' | 'black', background 'theme' | 'white', "
+        'export_scale 1 | 2 | 4 (PNG pixels per screen pixel); other result kinds raise ValueError; live, closed '
+        'or loaded alike; '
         'result(physics, feature, '
         "**options) or result('physics.feature', **options) -> result dict (dft_fields: freq_index=i adds "
         "freq_index and intensity); figure(what, path, title='', freq_index=None, series=None) -> PNG path of a field "
@@ -1501,7 +1431,7 @@ def describe(topic=None, as_dict=False, registry=None):
     if as_dict:
         return view
     if topic is not None:
-        return _markdown(_view_blocks(view))
+        return _markdown(_view_blocks(view, legend=True))
     return _reference_file_text(reference, registry)
 
 
@@ -1735,10 +1665,11 @@ def _spec_notes():
     label_examples = ', '.join(f'{json.dumps(list(path))} -> {node_label(path)}'
                                for path in ((), ('mesh',), ('feature', 'em', 'source')))
     return {
+        'Param lines': [_PARAM_LEGEND],
         'Names': [
             'Node names (parameters, geometry objects, selections, materials, physics, features, couplings, meshes, '
-            'derived values, analytic and derived curves) are Python identifiers (letters, digits and _, not starting with a digit), unique within their '
-            'kind; feature names are unique within their physics.',
+            'derived values, analytic and derived curves) are Python identifiers, unique within their kind (features: '
+            'within their physics).',
             'Geometry objects and selections share one namespace and may not use the reserved entity names '
             f"{', '.join(RESERVED_ENTITY_NAMES)}.",
             'Parameter names may not be reserved expression names (functions, constants, x, y, z, t, value) or '
@@ -1749,58 +1680,63 @@ def _spec_notes():
             'FeatureSpec.selection, DerivedValueSpec.selection, SelectionSpec.entities) holds geometry object '
             'names, named selections of the same kind (expanded recursively) and reserved entity names.',
             'Domain entities: domain objects and all (the whole domain; build masks include the PML ring). Boundary '
-            f'entities: the outer faces {face_texts} and domain objects, meaning their perimeter cells inside the '
+            f'entities: the outer faces {face_texts} and domain objects = their perimeter cells inside the '
             'object (the window edge is no perimeter). Point and line entities: point and line objects.',
-            '3D models (DomainSpec.size_z set) add the outer faces z_lo (lower z face) and z_hi (upper z face); the '
-            '2D domain kinds become prisms over their z0 / z1 params (null = full height), points and lines sit at '
-            'their z param (null = mid-height), and box, cylinder_z and sphere are 3D-only kinds. Results stay 2D: '
-            'fields are cut planes (the mid-height z cut unless an x / y / z plane is chosen).',
-            'Objects consumed as inputs of a composite (union, intersection, difference, array) cannot be selected on '
-            'their own.',
+            '3D models (DomainSpec.size_z set) add the outer faces z_lo and z_hi; the 2D domain kinds become prisms '
+            'over z0 / z1 (null = full height), points and lines sit at their z (null = mid-height), and box, '
+            'cylinder_z and sphere are 3D-only. Fields are cut planes (the mid-height z cut unless an x / y / z '
+            'plane is chosen).',
+            'Inputs of a composite (union, intersection, difference, array) cannot be selected on their own.',
         ],
         'Values': [
             'Numeric fields and float / int params take a number or an expression string of parameters, e.g. '
-            '"2*r_disk + 50*nm" (see expressions); params marked "may use x, y", "may use physics fields" or "may '
-            'use t" may use those names too.',
+            '"2*r_disk + 50*nm" (see expressions).',
             'Settings and params dicts (PhysicsSpec.settings, FeatureSpec.params, CouplingSpec.params, '
-            'StudySpec.settings, GeometrySpec.params) hold values by param name: a missing key takes the param '
-            'default, an unknown key is an error.',
-            'A param is checked only while it is visible (visible when ...); an invisible param whose value fails '
-            'keeps its default.',
-            'Validation checks ranges of values that evaluate over the parameters. Material properties using x, y, z '
-            'are range-checked on their cells at build time; those using physics fields at every update (for '
-            'fields of an FDTD or transient physics at update 1, 2, 4, 8, ... and every 100th, so a run fails late, '
-            'and a range left after the last such check is not reported), naming the '
-            'material, property and the range found. Other expressions of x, y, z are checked for finite values '
-            'only.',
+            'StudySpec.settings, GeometrySpec.params) hold values by param name: a missing key takes the default, an '
+            'unknown key is an error.',
+            'A param is checked only while visible (visible when ...); an invisible param whose value fails keeps its '
+            'default.',
+            'Validation range-checks values that evaluate over the parameters. Material properties using x, y, z are '
+            'range-checked on their cells at build time; those using physics fields at every update (FDTD / transient '
+            'fields: at update 1, 2, 4, 8, ... and every 100th, so a run fails late and a range left after the last '
+            'check is not reported), naming material, property and range. Other expressions of x, y, z are checked '
+            'for finite values only.',
         ],
         'Physics, couplings and study': [
             'Snapshots (StudySpec.stored_fields): time_dependent at the output interval plus the final state, '
-            'stationary the final state, frequency_domain one per wavelength (labelled "lambda = <nm> nm"), '
-            'mode_analysis one per mode (labelled "mode <k>: n_eff = <value>"), eigenfrequency one per resonance '
-            '(labelled "resonance <k>: lambda = <nm> nm, Q = <value>"). A snapshot holds the native window '
-            'cells (graded included, x_centers / y_centers set) up to 250,000 cells; a larger window is nearest-cell '
-            'resampled on square pixels of max(finest cell, sqrt(window area / 250,000)) (native_shape = the window '
-            'cells, x_centers None), which can skip features finer than a pixel. 3D models: the mid-height z cut, '
-            'plus each StudySpec.stored_cuts plane (opt-in).',
-            'A physics type lists the studies it supports; a study with a background study (the "Background study" '
-            'line of its entry, e.g. frequency_domain: stationary) also accepts the physics that support only that '
-            'one and solves them first as background physics. Heat is solved as a steady state in every study except '
-            'time_dependent.',
-            'StudySpec.sweep {"parameter": name, "values": [...]} builds and runs the model once per value with the '
-            'parameter set to it ({"spacing": "linear" | "log", "lower", "upper", "count"} for a range instead); '
-            'summary.json sweep holds the derived values and feature result digests per value.',
-            'Physics type entries: "Default study" is the study the GUI applies when the physics is the first one. '
-            'State fields are the solver state: expressions name them <physics>_<field>, or <field> when one physics '
-            'alone provides it; field_transfer source_field. Output fields are what Results.field, study '
-            'stored_fields (<physics>.<field>) and derived values read; all of them are stored when stored_fields '
-            'is []. Scalar outputs are numbers after a run; derived-value expressions name them <physics>_<name>.',
+            'stationary the final state, frequency_domain one per wavelength ("lambda = <nm> nm"), mode_analysis one '
+            'per mode ("mode <k>: n_eff = <value>"), eigenfrequency one per resonance ("resonance <k>: lambda = <nm> '
+            'nm, Q = <value>"). A snapshot holds the native window cells (x_centers / y_centers set) up to 250,000 '
+            'cells; a larger window is nearest-cell resampled on square pixels of max(finest cell, sqrt(window area '
+            '/ 250,000)) (native_shape set, x_centers None), which can skip features finer than a pixel. 3D: the '
+            'mid-height z cut plus each StudySpec.stored_cuts plane.',
+            'A physics type lists the studies it supports; a study with a background study (e.g. frequency_domain: '
+            'stationary) also accepts the physics that support only that one and solves them first as background '
+            'physics. Heat is solved as a steady state in every study except time_dependent.',
+            'StudySpec.sweep {"parameter": name, "values": [...]} builds and runs the model once per value '
+            '({"spacing": "linear" | "log", "lower", "upper", "count"} for a range); summary.json sweep holds the '
+            'derived values and feature result digests per value.',
+            'Physics type entries: the default study is the one the GUI applies when the physics is the first; '
+            'backends = SolverDefaultsSpec.backend values it runs on, mesh kinds = MeshSpec.kind values, refinement '
+            'indicator fields = what StudySpec.adaptation reads when its solver has no error indicator of its own, '
+            'dispersion poles = whether MaterialSpec.dispersion is read; each feature is also a topic '
+            '`<physics>.<feature>`. State fields are the solver state: expressions name them <physics>_<field>, or '
+            '<field> when one physics alone provides it; field_transfer source_field. Output fields are what '
+            'Results.field, study stored_fields (<physics>.<field>) and derived values read; [] stored_fields stores '
+            'all. Scalar outputs are numbers after a run; derived-value expressions name them <physics>_<name>.',
             'Source slots (physics type entries) are the coupling targets (CouplingSpec.target; field_transfer '
             'target_slot), with unit and meaning; a slot takes one overwriting coupling, or several additive ones '
             'whose contributions are summed (see the coupling types).',
-            'Feature entries: "Result kind `<kind>`" means Results.result(physics name, feature name) returns a dict '
-            'with the keys listed under Result kinds (topic results; a feature topic lists them inline). "Requires a '
-            'uniform mesh": nonuniform and auto modes fall back to a uniform grid at the finest target (see mesh).',
+            'Feature entries (params in FeatureSpec.params): "result kind `<kind>`" = Results.result(physics name, '
+            'feature name) returns a dict with the keys under Result kinds (topic results; a feature topic lists them '
+            'inline); "requires a uniform mesh" = nonuniform and auto modes fall back to a uniform grid at the finest '
+            'target (see mesh); "stepper precisions ... only" = another resolved stepper precision is a validation '
+            'error at the feature.',
+            'Coupling entries: "across meshes" = what happens when source and target run on different meshes.',
+            'Study entries: "solution feedback" = couplings from a physics the study solves into background physics '
+            'are allowed (feedback rounds); "coupled points" = couplings and material properties may read a physics '
+            'the study solves, each point of the study axis then a stationary fixed point of every physics; '
+            '"StudySpec.adaptation allowed" = mesh refinement levels are supported.',
         ],
         'Derived values': [
             'A derived value that fails for any reason, including running out of GPU memory, becomes NaN plus a '
@@ -1906,8 +1842,8 @@ def _geometry_section():
         entity_kinds.setdefault(kind.entity_kind, []).append(kind.name)
     kind_listing = '; '.join(f"{entity_kind}: {', '.join(names)}" for entity_kind, names in entity_kinds.items())
     return {
-        'about': 'ModelSpec.geometry objects are named shapes in m; selections, materials, features and mesh '
-                 'refinements refer to them by name.',
+        'about': 'ModelSpec.geometry objects are named shapes in m (Params: GeometrySpec.params); selections, '
+                 'materials, features and mesh refinements refer to them by name.',
         'notes': [f'Geometry kinds by entity kind: {kind_listing}.', *_GEOMETRY_NOTES],
         'kinds': {name: {'name': kind.name, 'label': kind.label, 'entity_kind': kind.entity_kind,
                          'composite': kind.composite, 'description': kind.description,
@@ -1947,61 +1883,49 @@ def _mesh_section(physics_types):
                  '(PhysicsSpec.mesh, "" = the first). check.json reports the resulting grids (cells, dx range, dt, '
                  'PML cells) before any GPU work.',
         'notes': [
-            'Per-physics meshes (S7.2): every mesh spans the same domain; its padding (PML, mirror ghosts) and auto '
-            'sizes come from the physics on it only. One mesh is required for: all EM physics (family em), physics '
-            'joined by a coupling whose type does not transfer across meshes, a feature naming another physics, and '
-            'every physics of a thermal_noise, optomechanics or nonlinear_frequency_domain study (validation errors). '
-            'Cross-mesh couplings interpolate fields (linear between cell centres, edge-extended into padding) and '
-            'move densities conservatively (overlap averages: window totals kept); a state-dependent material '
-            'property reads the fields of a physics on another mesh interpolated. A mesh no physics uses is a '
-            'warning and is not built. Fields and feature results live on their physics\' own mesh (FieldData / '
-            'saved fields name it); a derived value is evaluated on the mesh of the first physics (model order) its '
-            'expression names, the fields of the others interpolated onto it (validate lists them as info).',
-            'Mesh kind triangles (S7.5, 2D Cartesian models): free triangles following curved boundaries for the '
-            'physics, features and solvers that declare them (the Mesh kinds line of each type: '
-            f"{', '.join(on_triangles) or 'none registered'}; some only in one study, validation names the limits). "
-            'Sizes as an industry-standard free '
-            'triangular mesher: dx = maximum element size, max_ratio = maximum growth rate (null: 1.3), refinements = '
-            'maximum sizes in / along / at their objects, h_min (null: dx / 100), curvature_factor 0.3 along circle '
+            'Per-physics meshes: every mesh spans the same domain; its padding (PML, mirror ghosts) and auto sizes '
+            'come from the physics on it only. One mesh is required for all EM physics, physics joined by a coupling '
+            'whose type does not transfer across meshes, a feature naming another physics, and every physics of a '
+            'thermal_noise, optomechanics or nonlinear_frequency_domain study (validation errors). Cross-mesh '
+            'couplings interpolate fields (linear between cell centres, edge-extended into padding) and move '
+            'densities conservatively (window totals kept); a state-dependent material property reads fields of '
+            'another mesh interpolated. A mesh no physics uses is a warning and is not built. Fields and feature '
+            "results live on their physics' own mesh (FieldData / saved fields name it); a derived value is "
+            'evaluated on the mesh of the first physics (model order) its expression names, the other fields '
+            'interpolated onto it (validate lists them as info).',
+            'Mesh kind triangles (2D Cartesian models): free triangles following curved boundaries, for the types '
+            f"that declare them ({', '.join(on_triangles) or 'none registered'}; some only in one study, validation "
+            'names the limits). dx = maximum element size, max_ratio = growth rate (null: 1.3), refinements = '
+            'maximum sizes in / along / at their objects, h_min (null: dx / 100), curvature_factor along circle '
             'and ellipse edges; auto: the wavelength rule with points_per_wavelength (null: 5), else the '
-            'physics-controlled rule; the absorbing ring has pml_layers structured layers over the PML cells x dx.',
-            'Mesh kind tetrahedra (3D Cartesian models): tetrahedra for '
+            'physics-controlled rule; the absorbing ring has pml_layers structured layers.',
+            'Mesh kind tetrahedra (3D Cartesian models): for '
             f"{', '.join(on_tetrahedra) or 'none registered'} (em_fdfd_3d: its eigenfrequency study, Nedelec edge "
-            "elements by the discretization setting). Sizes as triangles; mesher 'gmsh' follows spheres, boxes, z "
-            'cylinders and z-prism circles / rectangles (any axis for rectangles), composite inputs and array copies '
-            'included, other '
-            "objects are tagged per element; 'builtin' splits the bricks of a rectilinear grid into 6 tetrahedra "
-            '(no slivers at any aspect ratio), equal cells <= dx, or graded by the tensor rules (refinements with '
-            'per-axis sizes, axes, face_sizes as bands) with flat object faces as element faces; curved objects '
-            "are a staircase. sweep_axis 'z' (either mesher) meshes the x-y footprint with triangles and stacks them "
-            'in z layers graded by the z tensor rules (object top / bottom faces are layer planes), each prism split '
-            'into 3 tetrahedra: thin plates and films with a few layers across. '
-            'The PML is a shell of pml_cells x dx outside every cpml face meshed like the window. Fields '
-            'are sampled on a uniform lattice over the window (cut planes, profiles, volumes); derived values of fields '
-            'reduce degree-4 quadrature points of the window (or selected) elements (not yet: interface selections, '
-            'max / min over mirror images, fields of physics on other meshes).',
-            'No physics boundary configuration -> no PML. EM CPML cells (pml_cells per cpml face; each PML cell is dx '
-            'wide on a uniform grid; on a graded one they grow by max_ratio per cell from the window edge cell up to '
-            'the base size) are added outside the domain, so the physical domain keeps its size and the grid grows.',
+            "elements by the discretization setting). Sizes as triangles; see mesher and sweep_axis. The PML is a "
+            'shell of pml_cells x dx outside every cpml face meshed like the window. Fields are sampled on a uniform '
+            'lattice over the window (cut planes, profiles, volumes); derived values of fields reduce degree-4 '
+            'quadrature points of the window (or selected) elements (not yet: interface selections, max / min over '
+            'mirror images, fields of physics on other meshes).',
+            'No physics boundary configuration -> no PML. EM CPML cells (pml_cells per cpml face; dx wide on a '
+            'uniform grid, on a graded one growing by max_ratio from the window edge cell up to the base size) are '
+            'added outside the domain, so the physical domain keeps its size and the grid grows.',
             'Several physics may define the boundary configuration when they agree (equal face types, CPML and Bloch '
-            'settings); different ones are a validation error. E_z and H_z pec / pmc walls are half a cell apart '
-            '(E_z pec at the outermost cell centre, H_z pec on its inner face); symmetric / antisymmetric mirror '
-            'planes (E mirror-even / odd, PMC / PEC planes) coincide.',
+            'settings), else a validation error. E_z and H_z pec / pmc walls are half a cell apart (E_z pec at the '
+            'outermost cell centre, H_z pec on its inner face); symmetric / antisymmetric mirror planes coincide.',
             'A uniform mesh has ceil(size / dx) cells per axis, so the meshed window (Domain.physical_extent) can be '
             'one cell larger than size_x / size_y.',
             'nonuniform and auto fall back to a uniform grid when no refinement is finer than the base size, or at '
             'the finest target when an enabled feature requires a uniform mesh '
             f"({', '.join(uniform_features) or 'none registered'}); the note in check.json mesh says why.",
-            'Refinements apply in nonuniform and auto modes only (uniform mode ignores them): each refines the '
-            'columns and rows spanned by a geometry object plus its margin to its dx; rectangle edges inside the '
-            'domain become cell edges (no staircase), so a gap between two such edges narrower than dx (but >= '
-            '0.25 dx) gets cells of its width, which can set the time step; auto mode adds one refinement per '
-            'material object by its refractive index. dx_x / dx_y / dx_z refine only some axes (anisotropic); '
-            'MeshSpec.axes adds a per-axis max_ratio, coordinate bands and custom edges or uniform / geometric / '
-            'tanh segments (they replace that axis, PML padding as usual); outer_dx grows the cells beyond the '
-            'refined core. The RefinementSpec and MeshAxisSpec fields are listed under spec.',
-            'Time step with EM: dt = courant_factor * dx / (c * sqrt(2)) on a uniform mesh (3D models: c * '
-            'sqrt(3), the 3D limit; on a graded mesh the limit of the finest cells); the merged courant factor is the smallest declared (default 0.99). '
+            'Refinements apply in nonuniform and auto modes only: each refines the columns and rows spanned by its '
+            'object plus margin to its dx; rectangle edges inside the domain become cell edges (no staircase), so a '
+            'gap between two such edges narrower than dx (but >= 0.25 dx) gets cells of its width, which can set the '
+            'time step; auto mode adds one refinement per material object by its refractive index. MeshSpec.axes '
+            'adds a per-axis max_ratio, coordinate bands and custom edges or uniform / geometric / tanh segments '
+            '(replacing that axis, PML padding as usual); outer_dx grows the cells beyond the refined core. The '
+            'RefinementSpec and MeshAxisSpec fields are listed under spec.',
+            'Time step with EM: dt = courant_factor * dx / (c * sqrt(2)) on a uniform mesh (3D: c * sqrt(3); graded: '
+            'the limit of the finest cells); the merged courant factor is the smallest declared (default 0.99). '
             'check.json study shows dt_estimate and n_steps.',
         ],
         'limits': {'max_cells': MAX_MESH_CELLS, 'max_cells_per_axis': MAX_AXIS_CELLS},
@@ -2014,39 +1938,35 @@ def _solvers_section(registry, physics_types):
     return {
         'about': 'A physics hands its numerical jobs (roles) to solvers: ModelSpec.solvers holds solver nodes '
                  '(SolverSpec: name, type, settings), PhysicsSpec.solvers {role: node name} assigns them; a role left '
-                 'out is Automatic (the role\'s default type at its default settings; SolverDefaultsSpec.precision, '
-                 'when not auto, replaces the precision of every solver that offers it and sets none). check.json '
-                 'solvers shows what every role resolves to, summary.json solvers what ran (type, node, backend, '
-                 'precision, settings, counters): Automatic depends on the machine (backend auto, sparse_direct '
-                 'back_end auto), so the record is the reference for comparing runs.',
+                 "out is Automatic (the role's default type at its default settings, precision per "
+                 'SolverDefaultsSpec.precision). check.json solvers shows what every role resolves to, summary.json '
+                 'solvers what ran (type, node, backend, precision, settings, counters): Automatic depends on the '
+                 'machine, so that record is the reference for comparing runs.',
         'notes': [
             'Roles: ' + '; '.join(f'{role} ({text})' for role, text in SOLVER_ROLES.items()) + '. A role is used only '
-            'in the studies listed for it (all studies when none are listed); an assignment in another study is a '
-            'warning and ignored.',
+            'in the studies listed for it (else all); an assignment in another study is a warning and ignored.',
             'Validation: an unknown node or role is an error at the physics; a node of the wrong role, operator '
-            'class, backend, grid kind or precision (solver_misfit) is an error naming the fitting choices; a node '
-            'no physics uses is a warning at the node; the node settings are checked like physics settings.',
-            'Feature precisions: a feature whose entry lists "Stepper precisions ... only" (e.g. resonance_monitor, '
-            'the em_fdtd_3d plane wave and mode ports) works only when the stepper role of its physics resolves to '
-            'one of them; an enabled one is a validation error at the feature otherwise (e.g. with half_storage).',
+            'class, backend, grid kind or precision (solver_misfit) is an error naming the fitting choices; an '
+            'unused node is a warning; node settings are checked like physics settings.',
+            'Feature precisions: a feature listing "stepper precisions ... only" (e.g. resonance_monitor, the '
+            'em_fdtd_3d plane wave and mode ports) needs the stepper role of its physics to resolve to one of them '
+            '(else a validation error at the enabled feature, e.g. with half_storage).',
             'Solver knobs are never physics settings: e.g. the CG precision / tolerance / max_iterations of heat, '
             'electric_currents, electrostatics, magnetostatics, solid_mechanics and solid_mechanics_3d are the '
             'settings of a pcg node assigned as their linear solver ({"name": "cg", "type": "pcg", "settings": '
             '{"tolerance": 1e-12}} in solvers, {"linear": "cg"} in the physics solvers).',
             'One node may serve several physics; the build creates one runtime per (physics, role).',
-            'Opt-in roles: line_block fills the linear role of em_fdfd_ez / em_fdfd_hz only (its shifted role: heat '
-            'thermal noise, em_fdfd_bor, em_modes); a line_block node assigned as the linear solver of any other physics is a '
-            'misfit.',
-            'sparse_direct back_end auto: a role\'s auto_back_end_by_grid {grid kind: back end} (pressure_acoustics on '
-            'triangles / tetrahedra, membrane on triangles: cudss_mixed) replaces it on the gpu backend when '
-            'nvmath-python is installed, for Automatic and for nodes that leave back_end auto; else auto is host '
-            'SuperLU (scipy_splu).',
+            'Opt-in: line_block fills the linear role of em_fdfd_ez / em_fdfd_hz only (shifted role: heat thermal '
+            'noise, em_fdfd_bor, em_modes); as the linear solver of any other physics it is a misfit.',
+            "sparse_direct back_end auto: a role's auto_back_end_by_grid (pressure_acoustics on triangles / "
+            'tetrahedra, membrane on triangles: cudss_mixed) applies on the gpu backend when nvmath-python is '
+            'installed, for Automatic and for nodes leaving back_end auto; else auto is host SuperLU (scipy_splu).',
             'sparse_direct back_end / arpack_shift_invert factorization '
-            f"{', '.join(host_direct.HOST_DIRECT_BACK_ENDS)}: the optional multicore host direct solvers MUMPS "
-            '(python-mumps) and Intel MKL PARDISO (pydiso, x86-64 only) on both backends, opt-in like cudss (only '
-            'roles whose line under Roles by physics type lists them; elsewhere a misfit) and never chosen by auto; without the package a node is a validation error. The '
-            'host SuperLU size rules apply, each factor checks the library\'s own memory estimate after its analysis '
-            f'against {round(100 * host_direct.HOST_FRACTION)} % of the available RAM, and a refusal raises (no '
+            f"{', '.join(host_direct.HOST_DIRECT_BACK_ENDS)}: the optional multicore host solvers MUMPS "
+            '(python-mumps) and Intel MKL PARDISO (pydiso, x86-64 only) on both backends, opt-in (only roles whose '
+            'line under Roles by physics type lists them, else a misfit; never chosen by auto; without the package '
+            'a validation error). The host SuperLU size rules apply; each factor checks its own memory estimate '
+            f'against {round(100 * host_direct.HOST_FRACTION)} % of the available RAM, a refusal raises (no '
             'fallback).',
         ],
         'types': {solver_type.name: {
@@ -2135,9 +2055,9 @@ def _study_entry(study_type):
 
 def _templates_section(registry):
     return {
-        'about': 'Worked examples: every template validates without errors (selftest templates_validate), and '
-                 'modifying the closest one is the most reliable way to write a valid model. api.template(key) '
-                 'returns one as a ModelSpec, python -m open_sol template KEY FILE writes its model file.',
+        'about': 'Worked examples that validate without errors (selftest templates_validate): modifying the closest '
+                 'one is the most reliable way to write a valid model. api.template(key) returns one as a ModelSpec, '
+                 'python -m open_sol template KEY FILE writes its model file.',
         'entries': {entry.key: {'key': entry.key, 'label': entry.label, 'description': entry.description,
                                 'model': _plain(template_model(entry).to_dict())}
                     for entry in template_entries(registry)},
@@ -2280,17 +2200,15 @@ def _header_blocks(topic_groups):
     return [
         ['# open_sol API reference'],
         [f'Regenerate with: {REGENERATE_COMMAND} (also writes {TEMPLATES_FILE})'],
-        ['Generated by describe() from the registry (physics, feature, coupling and study types), the model spec, '
-         'the expression vocabulary, the material library and the templates; selftest fails while this file '
-         f'differs from it. The template model JSON is in {TEMPLATES_FILE} beside this file.'],
+        ['Generated by describe() from the registry, the model spec, the expression vocabulary, the material '
+         f'library and the templates (their model JSON: {TEMPLATES_FILE} beside this file); selftest fails while '
+         'this file differs from it.'],
         ['Workflow: write the closest template (Templates) to a model JSON file with python -m open_sol template KEY '
          'model.json, edit it, run python -m open_sol check model.json (check.json), then python -m open_sol run '
          'model.json --figures (summary.json, log.txt, figures/); --set NAME=EXPR changes a parameter for one check / '
          'run. Units are SI unless a unit says otherwise; every wavelength is a vacuum wavelength.'],
-        ['More worked model files (examples/<physics area>/*.json, one folder per physics area plus multiphysics, '
-         'many with an analytic reference; scripts in examples/em, examples/multiphysics and '
-         'examples/headless_run.py) live in the examples folder beside the package (examples/README.md); they are '
-         'not part of this reference.'],
+        ['More worked model files, many with an analytic reference, are in examples/<physics area>/*.json beside the '
+         'package (examples/README.md; not part of this reference).'],
         [f'Topics (describe(topic) or python -m open_sol describe <topic>): {rules}.'],
     ]
 
@@ -2298,8 +2216,8 @@ def _header_blocks(topic_groups):
 def _contents_blocks(file_name, header, body, has_shared_texts=False):
     """'## Contents': file line range of every '## ' section of header + contents + body (and of the '### '
     subsections of sections over _CONTENTS_SPLIT_LINES lines), for offset / limit reads of file_name."""
-    shared_rule = (' A line "Help: shared `<key>`" stands for the text under "#### `<key>`" in Shared help texts '
-                   '(Grep it); every occurrence of a repeated long text, the first included, points there.'
+    shared_rule = (' "Help: shared `<key>`" (a line, or the end of a param line) stands for the text under "#### '
+                   '`<key>`" in Shared help texts (Grep it); every occurrence of a repeated long text points there.'
                    if has_shared_texts else '')
     body_lines = _markdown(body).split('\n')[:-1]
     headings = [(index, line.split(' ', 1)[0], line.lstrip('#').strip()) for index, line in enumerate(body_lines)
@@ -2326,12 +2244,15 @@ def _contents_blocks(file_name, header, body, has_shared_texts=False):
     return contents(prefix_line_count + 2)
 
 
-def _view_blocks(view, shared=None, template_index=False):
+def _view_blocks(view, shared=None, template_index=False, legend=False):
     """Markdown blocks of a reference view (the whole reference or one topic), sections in topic order; shared
     ({text: key}, full reference only) prints those texts once in '## Shared help texts' before the physics;
-    template_index prints one line per template instead of its JSON (REFERENCE_FILE)."""
+    template_index prints one line per template instead of its JSON (REFERENCE_FILE); legend (topic views) starts a
+    view with param lines with _PARAM_LEGEND (the full reference has it in the spec notes)."""
     shared = shared or {}
     blocks = []
+    if legend and any(key in view for key in _PARAM_SECTIONS):
+        blocks.append([_PARAM_LEGEND])
     for key, render in (('spec', _spec_blocks), ('expressions', _expressions_blocks),
                         ('geometry', _geometry_blocks), ('materials', _materials_blocks), ('mesh', _mesh_blocks),
                         ('solvers', _solvers_blocks)):
@@ -2339,10 +2260,10 @@ def _view_blocks(view, shared=None, template_index=False):
             blocks += render(view[key])
     if shared:
         blocks += [['## Shared help texts'],
-                   ['Long texts (param help, feature and type descriptions) that occur more than once in the '
-                    'physics, coupling and study sections below; each occurrence reads "Help: shared `<key>`", key = '
-                    'its first owner: <physics>.<param>, <physics>.<feature>, <physics>.<feature>.<param>, '
-                    '<coupling or study type>.<param> or a type name.']]
+                   ['Long texts (param help, feature and type descriptions) occurring more than once in the '
+                    'physics, coupling and study sections below; key = the first owner: <physics>.<param>, '
+                    '<physics>.<feature>, <physics>.<feature>.<param>, <coupling or study type>.<param> or a type '
+                    'name.']]
         for text, key in shared.items():
             blocks += [[f'#### `{key}`'], [text]]
     for physics_name, entry in view.get('physics_types', {}).items():
@@ -2375,31 +2296,41 @@ def _spec_blocks(section):
 
 
 def _expressions_blocks(section):
+    listed = {entry['name'] for entry in section['functions'] + section['constants']}
     blocks = [['## Expressions'], [section['about']], ['### Syntax'], _bullets(section['syntax']),
               ['### Functions'],
-              [f"- {entry['description']} [{arity_text(entry['min_args'], entry['max_args'])}]"
-               for entry in section['functions']],
+              [f"- {entry['description']}" for entry in section['functions']],
               ['### Constants'],
               [f"- `{entry['name']}` = {_value_text(entry['value'])}: {entry['description']}"
                for entry in section['constants']],
               ['### Reserved names'],
-              [f"Not usable as parameter names: {', '.join(section['reserved_names'])}. Time and "
-               f"coordinates: {', '.join(section['coordinate_names'])}; value is the source field in coupling expressions."],
+              [f"Not usable as parameter names: every function and constant above and "
+               f"{', '.join(name for name in section['reserved_names'] if name not in listed) or 'nothing else'} "
+               f"({', '.join(section['coordinate_names'])}: time and coordinates; value: the source field in coupling "
+               'expressions).'],
               ['### Names available where'], _bullets(section['availability']),
               ['### Physics field names by physics type']]
-    blocks.append([f"- `{name}`: state fields {_names_text(names['state'])}; output fields "
-                   f"{_names_text(names['output'])}" for name, names in section['physics_fields'].items()]
-                  or ['none'])
+    blocks.append([f"- `{name}`: {_field_names_text(names['state'], names['output'])}"
+                   for name, names in section['physics_fields'].items()] or ['none'])
     return blocks
+
+
+def _field_names_text(state, output):
+    """'state fields a, b; output fields: the state fields except b, plus c' (both lists when they share none)."""
+    if not any(name in output for name in state):
+        return f'state fields {_names_text(state)}; output fields {_names_text(output)}'
+    missing = [name for name in state if name not in output]
+    extra = [name for name in output if name not in state]
+    return (f"state fields {_names_text(state)}; output fields: the state fields"
+            + (f" except {', '.join(missing)}" if missing else '') + (f", plus {', '.join(extra)}" if extra else ''))
 
 
 def _geometry_blocks(section):
     blocks = [['## Geometry'], [section['about']], _bullets(section['notes'])]
     for entry in section['kinds'].values():
         blocks += [[f"### Geometry kind `{entry['name']}` - {entry['label']}"], _paragraph(entry['description']),
-                   [f"- GeometrySpec.kind `{entry['name']}`; entity kind {entry['entity_kind']}; composite: "
-                    f"{_yes_no(entry['composite'])}"],
-                   ['Params (GeometrySpec.params):'] + _params_lines(entry['params'])]
+                   [f"- Entity kind {entry['entity_kind']}{'; composite' if entry['composite'] else ''}"],
+                   _params_block('Params:', entry['params'])]
     return blocks
 
 
@@ -2408,10 +2339,11 @@ def _materials_blocks(section):
     for entry in section['library'].values():
         dispersion = _value_text(entry['dispersion']) if entry['dispersion'] else 'none'
         blocks += [[f"#### Library material `{entry['name']}`"], _paragraph(entry['description']),
-                   [f"- Properties: {_value_text(entry['properties'])}", f'- Dispersion poles: {dispersion}']]
-    blocks.append(['### Material property names by physics type (MaterialGrid arrays each writes)'])
-    blocks.append([f'- `{type_name}`: ' + ', '.join(f"{name} ({', '.join(arrays) or 'table, no array'})"
-                                                   for name, arrays in properties.items())
+                   [f"- Properties: {_value_text(entry['properties'])}; dispersion poles: {dispersion}"]]
+    blocks.append(['### Material property names by physics type (arrays written, when not the own name)'])
+    blocks.append([f'- `{type_name}`: ' + ', '.join(
+        name if arrays == [name] else f"{name} ({', '.join(arrays) or 'table, no array'})"
+        for name, arrays in properties.items())
                    for type_name, properties in section['property_vocabulary'].items()] or ['none'])
     blocks.append(['### Dispersion pole models (MaterialSpec.dispersion items)'])
     for model, params in section['dispersion_models'].items():
@@ -2431,20 +2363,21 @@ def _solvers_blocks(section):
     blocks = [['## Solvers'], [section['about']], _bullets(section['notes']), ['### Solver types']]
     for entry in section['types'].values():
         blocks += [[f"#### Solver type `{entry['name']}` - {entry['label']}"], _paragraph(entry['description']),
-                   [f"- SolverSpec.type `{entry['name']}`; roles {_names_text(entry['roles'])}; operators "
-                    f"{_names_text(entry['operators'])}; backends {_names_text(entry['backends'])}; precisions "
-                    f"{_names_text(entry['precisions'])}; grids {_names_text(entry['grids'])}"],
-                   ['Params (SolverSpec.settings):'] + _params_lines(entry['params'])]
-    blocks.append(['### Roles by physics type (Automatic = the default type at its default settings)'])
+                   [f"- Roles {_names_text(entry['roles'])}; operators {_names_text(entry['operators'])}; backends "
+                    f"{_names_text(entry['backends'])}; precisions {_names_text(entry['precisions'])}; grids "
+                    f"{_names_text(entry['grids'])}"],
+                   _params_block('Params (SolverSpec.settings):', entry['params'])]
+    blocks.append(['### Roles by physics type (Automatic = the default type at its default settings; studies '
+                   'listed only where the role is restricted to them)'])
     lines = []
     for physics_name, roles in section['physics_roles'].items():
         for role, entry in roles.items():
-            studies = _names_text(entry['studies']) if entry['studies'] else 'every study'
+            studies = f", studies {_names_text(entry['studies'])}" if entry['studies'] else ''
             restricted = ''.join(f"; {name} {_names_text(values)} only"
                                  for name, values in entry['setting_choices'].items())
             by_study = ''.join(f"; Automatic `{choice['type']}` in a {key}"
                                for key, choice in entry['automatic_by_study'].items())
-            lines.append(f"- `{physics_name}` {role}: operator {entry['operator']}, Automatic `{entry['automatic']}`, "
+            lines.append(f"- `{physics_name}` {role}: operator {entry['operator']}, Automatic `{entry['automatic']}`"
                          f"{studies}, precisions {_names_text(entry['precisions'])}{restricted}{by_study}")
     blocks.append(lines or ['none'])
     return blocks
@@ -2454,20 +2387,16 @@ def _physics_blocks(entry, shared):
     """Physics type entry (the lead-ins of its fields, slots and outputs are explained once in the spec notes)."""
     name = entry['name']
     blocks = [[f"## Physics type `{name}` - {entry['label']}"], _text_lines(entry['description'], shared),
-              [f"- PhysicsSpec.type `{name}`; default instance name `{entry['default_instance_name']}`",
-               f"- Supported studies: {_names_text(entry['supported_studies'])}",
-               f"- Default study: {_value_text(entry['default_study'])}",
-               f"- Backends (SolverDefaultsSpec.backend): {_names_text(entry['backends'])}",
-               f"- Mesh kinds (MeshSpec.kind): {_names_text(entry['grids'])}; refinement indicator fields (when "
-               f"its solver has no error indicator of its own): {_names_text(entry['indicator_fields'])}",
-               f"- Dispersion poles (MaterialSpec.dispersion): {'used' if entry['uses_dispersion'] else 'not used'}",
-               f"- Features (topics `{name}.<feature>`): {_names_text(entry['features'])}"],
+              [f"- Default instance name `{entry['default_instance_name']}`; studies "
+               f"{_names_text(entry['supported_studies'])} (default {_value_text(entry['default_study'])})",
+               f"- Backends {_names_text(entry['backends'])}; mesh kinds {_names_text(entry['grids'])}; refinement "
+               f"indicator fields {_names_text(entry['indicator_fields'])}; dispersion poles "
+               f"{'used' if entry['uses_dispersion'] else 'not used'}",
+               f"- Features: {_names_text(entry['features'])}"],
               ['### Settings (PhysicsSpec.settings)'], _params_lines(entry['settings'], shared),
               ['### Material properties (MaterialSpec.properties)'],
-              _params_lines(entry['material_properties'], shared),
-              ['### Fields'],
-              _fields_lines('State fields:', entry['state_fields']),
-              _fields_lines(f"Output fields (primary {entry['primary_field'] or 'none'}):", entry['output_fields'])]
+              _params_lines(entry['material_properties'], shared, material=True),
+              ['### Fields'], _fields_lines(entry)]
     if entry['scalar_outputs']:
         blocks.append([f"Scalar outputs: {entry['scalar_outputs']}"])
     blocks += [['### Source slots'],
@@ -2479,54 +2408,41 @@ def _physics_blocks(entry, shared):
 
 
 def _feature_blocks(physics_name, entry, shared):
-    facts = [f"- FeatureSpec.type `{entry['name']}`; category {entry['category']}",
-             f'- Selection (FeatureSpec.selection): {_selection_text(entry)}']
+    facts = [f"Category {entry['category']}", f'selection {_selection_text(entry)}']
     if entry['requires_uniform_mesh']:
-        facts.append('- Requires a uniform mesh (see mesh)')
+        facts.append('requires a uniform mesh (see mesh)')
     if entry['grids'] != ['tensor']:
-        facts.append(f"- Mesh kinds (MeshSpec.kind): {_names_text(entry['grids'])}")
+        facts.append(f"mesh kinds {_names_text(entry['grids'])}")
     if entry['precisions']:
-        facts.append(f"- Stepper precisions {_names_text(entry['precisions'])} only (see solvers): another "
-                     "precision of the physics' resolved stepper solver is a validation error at the feature")
-    if entry['result_kind'] is None:
-        facts.append('- Result: none')
-    elif 'result_keys' in entry:   # feature topic: the keys inline
-        facts.append(f"- Result kind `{entry['result_kind']}`: Results.result(physics name, feature name) returns "
-                     'a dict with these keys:')
-        facts += [f"  - `{item['key']}`: {item['meaning']}" for item in entry['result_keys']]
-    else:
-        facts.append(f"- Result kind `{entry['result_kind']}`")
+        facts.append(f"stepper precisions {_names_text(entry['precisions'])} only (see solvers)")
+    facts.append('result none' if entry['result_kind'] is None else f"result kind `{entry['result_kind']}`")
+    lines = [f"- {'; '.join(facts)}"]
+    if entry['result_kind'] is not None and 'result_keys' in entry:   # feature topic: the keys inline
+        lines.append('- Keys of the Results.result(physics name, feature name) dict:')
+        lines += [f"  - `{item['key']}`: {item['meaning']}" for item in entry['result_keys']]
     return [[f"### Feature `{physics_name}.{entry['name']}` - {entry['label']}"],
-            _text_lines(entry['description'], shared),
-            facts, ['Params (FeatureSpec.params):'] + _params_lines(entry['params'], shared)]
+            _text_lines(entry['description'], shared), lines, _params_block('Params:', entry['params'], shared)]
 
 
 def _coupling_blocks(entry, shared):
     return [[f"## Coupling type `{entry['name']}` - {entry['label']}"], _text_lines(entry['description'], shared),
-            [f"- CouplingSpec.type `{entry['name']}`; source physics type {_types_text(entry['source_type'])}; "
-             f"target physics type {_types_text(entry['target_type'])}",
-             '- Across meshes (source and target on different meshes): '
+            [f"- Source physics type {_types_text(entry['source_type'])}; target physics type "
+             f"{_types_text(entry['target_type'])}; across meshes: "
              + ('not allowed (one mesh)' if entry['mesh_transfer'] is None
                 else 'the source field is interpolated onto the target mesh' if entry['mesh_transfer'] == 'field'
                 else f"its result moves to the target mesh ({entry['value_kind']})")],
-            ['Params (CouplingSpec.params):'] + _params_lines(entry['params'], shared)]
+            _params_block('Params (CouplingSpec.params):', entry['params'], shared)]
 
 
 def _study_blocks(entry, shared):
-    facts = [f"- StudySpec.type `{entry['name']}`; needs a physics that steps in time: "
-             f"{_yes_no(entry['requires_time_stepping'])}"]
+    """Study type entry (what its flags mean is explained once in the spec notes)."""
+    facts = [f"Needs a physics that steps in time: {_yes_no(entry['requires_time_stepping'])}"]
     if entry['background_study']:
-        facts.append(f"- Background study: {entry['background_study']}")
-    if entry['solution_feedback']:
-        facts.append('- Solution feedback: couplings from a physics this study solves into background physics are '
-                     'allowed (feedback rounds)')
-    if entry['coupled_points']:
-        facts.append('- Coupled points: couplings and material properties may read a physics this study solves; '
-                     'each point of the study axis is then a stationary fixed point of every physics')
-    if entry['supports_adaptation']:
-        facts.append('- Mesh refinement levels: StudySpec.adaptation allowed')
+        facts.append(f"background study {entry['background_study']}")
+    facts += [text for key, text in (('solution_feedback', 'solution feedback'), ('coupled_points', 'coupled points'),
+                                     ('supports_adaptation', 'StudySpec.adaptation allowed')) if entry[key]]
     return [[f"## Study type `{entry['name']}` - {entry['label']}"], _text_lines(entry['description'], shared),
-            facts, ['Params (StudySpec.settings):'] + _params_lines(entry['params'], shared)]
+            [f"- {'; '.join(facts)}"], _params_block('Params (StudySpec.settings):', entry['params'], shared)]
 
 
 def _templates_blocks(section):
@@ -2540,19 +2456,21 @@ def _templates_blocks(section):
 def _template_index_blocks(section):
     """REFERENCE_FILE's Templates: one line per template (key, label, description, the types it uses)."""
     return [['## Templates'], [section['about']],
-            [f"The model JSON of each template is in {TEMPLATES_FILE} beside this file (its Contents gives each "
-             "template's line range; also describe('templates')). One line per template: key - label: description, "
-             'then the physics types, features (<physics>.<feature>), couplings, solver types and study it uses.'],
+            [f"Their model JSON is in {TEMPLATES_FILE} beside this file (its Contents gives each template's line "
+             "range; also describe('templates')). One line per template: key - label: description, then the physics "
+             'types it uses (their feature types in parentheses), couplings, solver types and study.'],
             [f"- `{entry['key']}` - {entry['label']}: {entry['description']} Uses {_template_uses(entry['model'])}."
              for entry in section['entries'].values()] or ['none']]
 
 
 def _template_uses(model):
-    """'physics a, b; features a.x; couplings c; solvers s; study t' of a plain model dict (empty groups left out)."""
-    physics = model.get('physics', [])
-    groups = (('physics', [item['type'] for item in physics]),
-              ('features', [f"{item['type']}.{feature['type']}" for item in physics
-                            for feature in item.get('features', [])]),
+    """'physics a (x, y), b; couplings c; solvers s; study t' of a plain model dict: each physics type with its
+    feature types in parentheses (empty groups left out)."""
+    features = {}   # physics type -> its feature types, first use order
+    for item in model.get('physics', []):
+        features.setdefault(item['type'], []).extend(feature['type'] for feature in item.get('features', []))
+    groups = (('physics', [f"{name} ({', '.join(dict.fromkeys(types))})" if types else name
+                           for name, types in features.items()]),
               ('couplings', [item['type'] for item in model.get('couplings', [])]),
               ('solvers', [item['type'] for item in model.get('solvers', [])]))
     parts = [f"{label} {', '.join(dict.fromkeys(names))}" for label, names in groups if names]
@@ -2616,10 +2534,16 @@ def _notes_blocks(notes):
     return blocks
 
 
-def _params_lines(params, shared=None):
+def _params_lines(params, shared=None, material=False):
     """Lines of a param list ('none' when empty); consecutive params with help that differ only in name and label
-    share one entry (e.g. the four bc_* faces); a help text in shared ({text: key}) becomes a pointer line."""
-    return [line for group in _param_groups(params) for line in _param_lines(group, shared or {})] or ['none']
+    share one entry (e.g. the four bc_* faces); a help text in shared ({text: key}) becomes a pointer on the param
+    line. material: material properties (x, y and fields implied, own-name array not printed; _PARAM_LEGEND)."""
+    return [line for group in _param_groups(params) for line in _param_lines(group, shared or {}, material)] or ['none']
+
+
+def _params_block(lead, params, shared=None):
+    """lead + its param lines, or 'lead none' on one line when there are no params."""
+    return [lead] + _params_lines(params, shared) if params else [f'{lead} none']
 
 
 def _param_groups(params):
@@ -2638,38 +2562,52 @@ def _shared_facts(entry):
     return {key: value for key, value in entry.items() if key not in ('name', 'label')}
 
 
-def _param_lines(group, shared):
-    """'- `name`, ... (kind; unit; default; range; ...) - Label / ...' and the indented help line of params sharing
-    every fact but name and label."""
+_DEPENDENCE_NAMES = (('field_dependent', 'x, y'), ('state_dependent', 'fields'), ('time_dependent', 't'))
+_MATERIAL_IMPLIED = ('field_dependent', 'state_dependent')   # flags every material property line leaves unsaid
+
+
+def _param_lines(group, shared, material=False):
+    """'- `name`, ... [unit] (facts) - Label / ...' and the indented help line of params sharing every fact but name
+    and label (notation: _PARAM_LEGEND); a shared help becomes '. Help: shared `<key>`' on the param line."""
     entry = group[0]
-    facts = [_kind_text(entry['kind'], entry['ref_kind'])]
+    kind = _kind_text(entry['kind'], entry['ref_kind'])
+    facts = [] if kind == 'float' or (kind == 'choice' and entry['choices']) else [kind]
     if entry['columns']:
         facts.append('columns ' + ', '.join(f'{name} [{unit}]' if unit else name for name, unit in entry['columns']))
     if entry['increasing']:
         facts.append('>= 2 rows, every column strictly increasing')
-    if entry['unit']:
-        facts.append(f"unit {entry['unit']}" + ''.join(f', {unit} {space}' for space, unit in entry['space_units']))
     if entry['default'] is not None:
         facts.append(f"default {_value_text(entry['default'])}")
     elif not entry['optional']:
         facts.append('required')
     if entry['min'] is not None or entry['max'] is not None:
-        facts.append(f'range {_range_text(entry)}')
-    if entry['choices']:
-        facts.append('choices ' + ' | '.join(_choice_text(choice) for choice in entry['choices']))
+        facts.append(_range_text(entry))
+    choices = [_choice_text(choice) for choice in entry['choices'] or ()]
+    if choices:
+        facts.append(' | '.join(choices) if len(choices) > 1 else f'choice {choices[0]} only')
     if entry['optional']:
-        facts.append('optional (null allowed)')
-    facts += [text for key, text in (('field_dependent', 'may use x, y'), ('state_dependent', 'may use physics fields'),
-                                     ('time_dependent', 'may use t')) if entry[key]]
+        facts.append('nullable')
+    implied = _MATERIAL_IMPLIED if material else ()
+    uses = [text for key, text in _DEPENDENCE_NAMES if entry[key] and key not in implied]
+    if uses:
+        facts.append(f"may use {', '.join(uses)}")
+    facts += [f'no {text}' for key, text in _DEPENDENCE_NAMES if key in implied and not entry[key]]
     if entry['visible_if']:
         facts.append(f"visible when {_visible_text(entry['visible_if'])}")
-    if entry['expands_to']:
-        facts.append(f"writes arrays {', '.join(entry['expands_to'])}")
+    if entry['expands_to'] != ([entry['name']] if material else []):
+        facts.append(f"writes {', '.join(entry['expands_to']) or 'no array'}")
     names = ', '.join(f"`{item['name']}`" for item in group)
-    line = f"- {names} ({'; '.join(facts)})"
+    line = f'- {names}'
+    if entry['unit']:
+        line += f" [{entry['unit']}" + ''.join(f', {unit} {space}' for space, unit in entry['space_units']) + ']'
+    if facts:
+        line += f" ({'; '.join(facts)})"
     labels = [item['label'] for item in group if item['label']]
     if labels:
         line += f" - {' / '.join(labels)}"
+    key = shared.get(entry['help']) if entry['help'] else None
+    if key is not None:
+        return [f'{line}. Help: shared `{key}`']
     return [line] + _text_lines(entry['help'], shared, '  ')
 
 
@@ -2694,13 +2632,13 @@ def _kind_text(kind, ref_kind):
 
 
 def _range_text(entry):
-    """'[min, max]', '(min, inf)' ... of a param dict (min_exclusive -> open lower bound)."""
+    """'> min', '>= min', '<= max', '[min, max]' or '(min, max]' of a param dict (min_exclusive -> open lower bound)."""
     low, high = entry['min'], entry['max']
-    left = '(' if low is None or entry['min_exclusive'] else '['
-    right = ')' if high is None else ']'
-    low_text = '-inf' if low is None else _value_text(low)
-    high_text = 'inf' if high is None else _value_text(high)
-    return f'{left}{low_text}, {high_text}{right}'
+    if high is None:
+        return f"{'>' if entry['min_exclusive'] else '>='} {_value_text(low)}"
+    if low is None:
+        return f'<= {_value_text(high)}'
+    return f"{'(' if entry['min_exclusive'] else '['}{_value_text(low)}, {_value_text(high)}]"
 
 
 def _spec_field_line(entry):
@@ -2708,13 +2646,22 @@ def _spec_field_line(entry):
     return f"- `{entry['name']}` ({entry['type']}; {status}): {entry['help']}"
 
 
-def _fields_lines(lead, field_entries):
-    lines = [lead]
-    for entry in field_entries:
-        unit = f" ({entry['unit']})" if entry['unit'] else ''
-        study = f" [{entry['requires_study']} study only]" if entry['requires_study'] else ''
-        lines.append(f"- `{entry['name']}` - {entry['label']}{unit}{study}")
-    return lines if field_entries else lines + ['- none']
+def _field_line(entry, mark=''):
+    unit = f" ({entry['unit']})" if entry['unit'] else ''
+    study = f" [{entry['requires_study']} study only]" if entry['requires_study'] else ''
+    return f"- `{entry['name']}` - {entry['label']}{unit}{study}{mark}"
+
+
+def _fields_lines(entry):
+    """Output fields, '[state]' on those that are also a state field, then the state fields that are no output
+    field (a same-named state field with another label / unit counts as one of those)."""
+    outputs, states = entry['output_fields'], entry['state_fields']
+    lines = [f"Output fields (primary {entry['primary_field'] or 'none'}; [state] = also a state field):"]
+    lines += [_field_line(field, ' [state]' if field in states else '') for field in outputs] or ['- none']
+    state_only = [field for field in states if field not in outputs]
+    if state_only:
+        lines += ['State fields that are no output field:'] + [_field_line(field) for field in state_only]
+    return lines
 
 
 def _selection_text(entry):
@@ -2724,18 +2671,14 @@ def _selection_text(entry):
         return 'none (a selection is ignored with a warning)'
     parts = [f'{kind} entities']
     if entry['object_kinds']:
-        parts.append(f"object kinds {', '.join(entry['object_kinds'])}")
+        parts.append(f"object kinds {' / '.join(entry['object_kinds'])}")
     low, high = entry['min_entities'], entry['max_entities']
-    if high is None:
-        parts.append(f'count at least {low}')
-    elif low == high:
-        parts.append(f'count exactly {low}')
-    else:
-        parts.append(f'count {low} to {high}')
+    parts.append(f'at least {low}' if high is None else f'exactly {low}' if low == high else f'{low} to {high}')
     if kind == 'boundary':
-        parts.append(f"outer faces {'allowed' if entry['allow_outer_faces'] else 'not allowed'}")
-        parts.append(f"object perimeters {'allowed' if entry['allow_interior'] else 'not allowed'}")
-    return '; '.join(parts)
+        outer, interior = entry['allow_outer_faces'], entry['allow_interior']
+        parts.append('outer faces and object perimeters' if outer and interior else 'outer faces only' if outer
+                     else 'object perimeters only' if interior else 'neither outer faces nor object perimeters')
+    return ', '.join(parts)
 
 
 def _value_text(value):

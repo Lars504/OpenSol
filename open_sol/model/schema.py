@@ -1512,20 +1512,15 @@ MESH_PARAMS = (
               'Cartesian models only).\n'
               '- Tetrahedra: free tetrahedra that follow spheres, boxes and cylinders, for the physics that support '
               'them (3D Cartesian models only; best with the Gmsh mesher).',
-          help="tensor: rectilinear cells (uniform or graded rows and columns; every physics type); triangles: a "
-               "conforming triangle mesh for finite elements (2D Cartesian models only); tetrahedra: a tetrahedron "
-               "mesh for finite elements (3D Cartesian models only; mesher 'gmsh' conforms to boxes, spheres, z "
-               "cylinders and z-prism rectangles / circles, composite inputs included, other objects are tagged "
-               "per element; 'builtin' = a Kuhn split of the bricks of a rectilinear grid graded like a tensor mesh, "
-               "see mesher). Physics, features and solvers declare the kinds they run on, validation refuses the "
-               "others. On triangles / gmsh tetrahedra dx is the maximum element size, max_ratio the maximum element "
-               "growth rate, refinements the maximum sizes in or along their objects (margin and dx_x / dx_y / dx_z "
-               "unused; gmsh tetrahedra also along the edges or at the surface only: RefinementSpec.where), axes "
-               "and outer_dx / outer_ratio do not apply; builtin tetrahedra take the tensor rules "
-               "(refinements with margin and dx_x / dx_y / dx_z, axes, outer_dx / outer_ratio; no size_points); "
-               "h_min, curvature_factor and mesher apply to triangles / tetrahedra only, pml_layers and mirror_x / "
-               "mirror_y to triangles only (a tetrahedron PML shell is meshed like the window), face_sizes to "
-               "tetrahedra only; size_points are [x, y, h] on triangles, [x, y, z, h] on gmsh tetrahedra."),
+          help="tensor: rectilinear cells (uniform or graded; every physics type); triangles: conforming finite "
+               "elements (2D Cartesian models only); tetrahedra: finite elements (3D Cartesian models only; see "
+               "mesher). Physics, features and solvers declare the kinds they run on (validation refuses the "
+               "others). On triangles / gmsh tetrahedra dx is the maximum element size, max_ratio the element "
+               "growth rate, refinements the maximum sizes in or along their objects (margin, dx_x / dx_y / dx_z, "
+               "axes and outer_dx / outer_ratio unused; gmsh tetrahedra also RefinementSpec.where); builtin "
+               "tetrahedra take the tensor rules (no size_points). h_min, curvature_factor and mesher: triangles / "
+               "tetrahedra only; pml_layers and mirror_x / mirror_y: triangles only (a tetrahedron PML shell is "
+               "meshed like the window); face_sizes: tetrahedra only."),
     Param('mode', 'choice', 'uniform', label='Mesh mode', choices=('uniform', 'nonuniform', 'auto'),
           choice_labels=(('uniform', 'Uniform'), ('nonuniform', 'Graded'), ('auto', 'Automatic')),
           tip='How the cell sizes are chosen.\n\n'
@@ -1542,31 +1537,20 @@ MESH_PARAMS = (
               'and the refinements (marked automatic) so you can change them; choosing Automatic again recalculates '
               'them. Switching from Automatic to Uniform keeps the cell size (empty: fills in the smallest automatic '
               'size).',
-          help='uniform: one cell size dx; nonuniform: base size dx plus the mesh refinements, graded by max_ratio; '
-               'auto with an EM physics (family em) on this mesh or wavelength_min set: cell size wavelength_min / '
-               '(points_per_wavelength * n) in each material, n = |sqrt(eps * mu_r)| '
-               'at wavelength_min, largest over the permittivity arrays the mesh\'s physics types use, eps = the '
-               'array background (a component such as eps_zz over eps_r, else the Drude eps_inf) - j sigma_e / '
-               '(omega eps0) + the dispersion poles at that wavelength (a metal is meshed by its skin depth: gold '
-               '|n| ~11 at 1.55 um), plus the refinements; auto without either (physics-controlled, S7.8): base '
-               'size = the longest domain side / 50, every domain object the mesh\'s physics use (material '
-               'selections setting one of their properties, their feature selections) refined to its smallest '
-               'bounding-box side / 4, plus the refinements; with laminar_flow on the mesh a uniform grid at the '
-               'smallest such side / 16 (lattice Boltzmann); a set dx scales every auto size so the finest equals '
-               'it (see dx; null = the rule alone). auto raises for a permittivity, sigma_e, mu_r or pole '
-               'value it uses that depends on x, y, z or a field (use nonuniform there). '
-               'Graded meshes are rectilinear (one width per grid column and per row): a refinement refines every '
-               'column and row its object plus margin spans, across the whole domain, so a waveguide crossing the '
-               'domain refines that whole axis unless the refinement sets per-axis sizes (dx_x / dx_y / dx_z; a '
-               'value >= the base size leaves that axis unrefined); the grading ramps lie outside the refined bands. '
-               'MeshSpec.axes adds per-axis options: max_ratio, coordinate bands, and custom edges or segments '
-               '(uniform / geometric / tanh) that replace the graded cells of that axis. '
-               'In 3D models z is graded the same way: a refinement refines the z layers of its object\'s z extent '
-               'plus margin (points / lines at their z, unset z = the whole height; an open prism end reaches the '
-               'domain edge), set z0 / z1 '
-               'faces of prisms are exact cell edges, and z cells away from refinements take the base size. '
-               'nonuniform and auto fall back to a uniform grid when no refinement is finer than the base size, or '
-               '(at the finest size) when a feature needs a uniform mesh (FDFD plane wave, laminar flow faces).'),
+          help='uniform: one cell size dx; nonuniform: base size dx plus the refinements, graded by max_ratio; auto '
+               'with an EM physics on this mesh or wavelength_min set: cell size wavelength_min / '
+               '(points_per_wavelength * n) per material, n = |sqrt(eps * mu_r)| at wavelength_min, largest over '
+               "the permittivity arrays the mesh's physics use, eps including - j sigma_e / (omega eps0) and the "
+               'dispersion poles (a metal is meshed by its skin depth: gold |n| ~11 at 1.55 um), plus the '
+               'refinements; auto without either (physics-controlled): base size = the longest domain side / 50, '
+               "every domain object the mesh's physics use refined to its smallest bounding-box side / 4, plus the "
+               'refinements; with laminar_flow a uniform grid at the smallest such side / 16. auto raises for a '
+               'permittivity, sigma_e, mu_r or pole value depending on x, y, z or a field (use nonuniform). Graded '
+               'meshes are rectilinear: a refinement refines every column and row its object plus margin spans, '
+               'across the whole domain (per-axis sizes dx_x / dx_y / dx_z limit that); grading ramps lie outside '
+               "the refined bands. 3D: z is graded the same way (refinements over their object's z extent plus "
+               'margin; set prism z0 / z1 faces are exact cell edges; z cells away from refinements take the base '
+               'size).'),
     Param('dx', 'float', 20e-9, label='Cell size', unit='m', min=0.0, min_exclusive=True, optional=True,
           tip='Size of every cell of a uniform mesh, or of the largest cells of a graded mesh (on triangles: the '
               'maximum element size).\n\n'
@@ -1575,39 +1559,29 @@ MESH_PARAMS = (
               "In Automatic mode it is the smallest cell size: the automatic sizes are scaled so the finest cells "
               "get it, which replaces 'Points per wavelength'. Empty: the automatic rule alone sizes the cells.",
           help='Cell size of a uniform mesh, or the base (coarsest) size of a nonuniform one (required in both); '
-               'typically lambda / (20 n) for EM, n the largest refractive index. In auto mode the smallest cell '
-               'size: every auto size (base and object refinements, of the wavelength or the physics-controlled '
-               'rule) is scaled by one factor so the finest equals dx, replacing points_per_wavelength (the '
-               'wavelength rule still sets the size ratios between materials); the lattice Boltzmann rule takes it '
-               'as its uniform size; null = the auto rule alone. Explicit refinements are not scaled. The grid is '
-               'limited to 400e6 cells and '
-               '50,000 cells per axis, counting the PML cells that are added outside the domain; a uniform mesh '
-               'rounds size_x / size_y up to whole cells, so the meshed window can be one cell larger. Validation '
-               'previews materials on float64 centres while the build tests float32 clamped cell centres, so a '
-               'material edge exactly on a cell centre can differ: avoid placing edges exactly on cell centres.'),
+               'typically lambda / (20 n) for EM, n the largest refractive index. auto: the smallest cell size, '
+               'every auto size scaled by one factor so the finest equals dx (replacing points_per_wavelength; the '
+               'material size ratios stay; lattice Boltzmann: its uniform size); null = the auto rule alone. '
+               'Explicit refinements are not scaled.'),
     Param('max_ratio', 'float', None, label='Maximum growth ratio', unit='1', min=1.0, min_exclusive=True,
           visible_if=(('mode', ('nonuniform', 'auto')), ('kind', FREE_MESH_KINDS)), optional=True,
           tip='Largest size ratio between neighbouring cells of a graded or automatic mesh, or between '
               'neighbouring triangles or tetrahedra.\n\n'
               '1.1 to 1.3 is typical. Smaller values grade more smoothly, with fewer reflections, but need more '
               'cells. Empty: 1.15 for rectangular cells, 1.3 for triangles.',
-          help='Largest size ratio of neighbouring cells on a graded mesh, or the maximum element growth rate of a '
-               'triangle mesh (> 1); typically 1.1-1.3. Smaller ratios grade more smoothly (less numerical '
-               'reflection) but need more cells. null = the kind default: 1.15 (tensor), 1.3 (triangles, the '
-               'industry-standard default).'),
+          help='Largest size ratio of neighbouring cells, or the element growth rate on triangles / tetrahedra; '
+               'typically 1.1-1.3 (smaller: less numerical reflection, more cells). null = 1.15 (tensor), 1.3 '
+               '(triangles).'),
     Param('wavelength_min', 'float', None, label='Shortest wavelength', unit='m', min=0.0, min_exclusive=True,
           visible_if=(('mode', ('nonuniform', 'auto')),), optional=True,
           tip='Shortest vacuum wavelength the automatic mesh must resolve, in metres: 1.55e-6 for 1550 nm. Used in '
               'Automatic mode only.\n\n'
               'Empty: the shortest source or solved wavelength of the physics. Set it to keep one mesh during a '
               'sweep.',
-          help='Shortest vacuum wavelength to resolve in auto mode. The auto cell size in a material of index n is '
-               'wavelength_min / (points_per_wavelength * n). Empty (null): the shortest wavelength over the '
-               'physics: FDFD and em_modes the shortest solved one (a frequency_domain study: its shortest '
-               'wavelength, else the wavelength setting), FDTD the shortest significant source wavelength (gaussian lambda / (1 + '
-               'bandwidth), ricker lambda / 2) of the physics on this mesh; a model error when an EM physics is on '
-               'the mesh but none gives one (without EM physics auto mode takes the physics-controlled rule). A '
-               'parameter sweep that changes that wavelength re-meshes per value. Set it to keep one mesh, to mesh '
+          help='Shortest vacuum wavelength to resolve in auto mode (see mode). null = the shortest of the physics on '
+               'this mesh: FDFD and em_modes the shortest solved one, FDTD the shortest significant source '
+               'wavelength (gaussian lambda / (1 + bandwidth), ricker lambda / 2); a model error when an EM physics '
+               'gives none. A sweep changing that wavelength re-meshes per value: set it to keep one mesh, to mesh '
                'finer, or for a wavelength the physics do not know (e.g. one generated inside the model).'),
     Param('points_per_wavelength', 'float', None, label='Points per wavelength', unit='1', min=1.0,
           visible_if=(('mode', ('nonuniform', 'auto')),), optional=True,
@@ -1615,23 +1589,21 @@ MESH_PARAMS = (
               '15 to 30 is typical for rectangular cells, about 5 for triangles. Too few cause phase errors that grow '
               "with the distance travelled. Empty: 20 for rectangular cells, 5 for triangles. Not used while 'Cell "
               "size' is set: it fixes the smallest cells instead.",
-          help='Cells (triangles: elements) per wavelength inside each material in auto mode; typically 15-30 on '
-               'tensor meshes. Too few cells give numerical dispersion (phase errors that grow with the propagation '
-               "distance). null = the kind default: 20 (tensor), 5 (triangles: the industry-standard five quadratic "
-               'elements per wavelength). Unused while dx is set (the finest cells take dx).'),
+          help='Cells (triangles: elements) per wavelength in each material in auto mode; typically 15-30 on '
+               'tensor meshes (too few: phase errors growing with distance). null = 20 (tensor), 5 (triangles, '
+               'quadratic elements). Unused while dx is set.'),
     Param('outer_dx', 'float', None, label='Outer cell size', unit='m', min=0.0, min_exclusive=True,
           visible_if=(('mode', ('nonuniform', 'auto')),), optional=True,
           tip='Largest cell size far from the structure. Leave empty to keep the main cell size everywhere.\n\n'
               'Outside the refined region the cells keep growing up to this size, so a large domain (for example '
               'a thousand times the structure) costs only a few dozen extra cells per side. Meant for heat, '
               'electrostatics and other slowly decaying fields, not for wave physics.',
-          help='Outer grading (graded meshes; null = off): outside the refined core of each axis (the span of every '
-               'refinement and band on that axis, margins included) cells grow geometrically from the base size '
-               'by outer_ratio per cell up to outer_dx, so a domain ~1e3 x the structure costs a few dozen cells '
-               'per side (quasi-static far fields: steady heat, electrostatics, low-frequency thermal noise). An '
-               'axis without refinements is not outer graded; outer_dx <= the base size does nothing. Independent '
-               'of the PML ramp (PML cells still grade toward the base size). Jacobi-PCG iterations grow with the '
-               'grading: sparse direct solvers suit it better.'),
+          help='Outer grading (null = off): outside the refined core of each axis (its refinements and bands with '
+               'margins) cells grow from the base size by outer_ratio per cell up to outer_dx, so a domain ~1e3 x '
+               'the structure costs a few dozen cells per side (quasi-static far fields: steady heat, '
+               'electrostatics, low-frequency thermal noise). An axis without refinements, or outer_dx <= the base '
+               'size, is not outer graded; the PML ramp is unaffected. Jacobi-PCG iterations grow with the grading: '
+               'sparse direct solvers suit it better.'),
     Param('outer_ratio', 'float', None, label='Outer growth ratio', unit='1', min=1.0, min_exclusive=True,
           visible_if=(('mode', ('nonuniform', 'auto')),), optional=True,
           tip='Size ratio between neighbouring cells of the outer grading. Empty: the maximum growth ratio.',
@@ -1658,19 +1630,16 @@ MESH_PARAMS = (
               'surfaces; Built-in splits the boxes of a rectangular grid into tetrahedra. That grid is graded '
               'like rectangular cells (refinements with sizes per axis, face sizes and the per-axis options), '
               'so it suits thin or long flat structures; curved objects get a staircase.',
-          help="Triangles: 'builtin' = open_sol's conforming Delaunay refinement (numpy / scipy, deterministic); "
-               "tetrahedra: 'builtin' = the bricks of a rectilinear grid split into 6 tetrahedra each (Kuhn "
-               "orthoschemes: every dihedral angle <= 90 deg, no slivers at any brick aspect ratio; periodic sides "
-               'match). Uniform mode, or nothing finer than dx: equal cells <= dx per axis. Else the grid is graded '
-               'like a nonuniform tensor mesh at base dx: refinements (and auto ones) with margin and dx_x / dx_y / '
-               'dx_z, axes (bands, edges, segments, max_ratio), outer_dx / outer_ratio, face_sizes as bands '
-               '[c - distance, c + distance] across their face plane, and every flat face of a domain object (box, '
-               'rectangle prism sides, set prism ends) snapped as an element face. The PML shell takes cells of dx. '
-               'Curved objects are tagged per element (a staircase); size_points are refused (mesher gmsh), h_min '
-               "and a physics' edge sizes are unused (a warning). Example, a slender clamped string: refinement "
-               '{string, dx 0.5 um, dx_y = dx_z = 50 nm} plus face_sizes x_lo / x_hi 50 nm. '
-               "'gmsh' = the gmsh program run as an external process (OPEN_SOL_GMSH or the PATH; never linked), a "
-               'validation error when it is not found.'),
+          help="Triangles: 'builtin' = conforming Delaunay refinement (deterministic); tetrahedra: 'builtin' = the "
+               'bricks of a rectilinear grid split into 6 tetrahedra each (no slivers at any aspect ratio; periodic '
+               'sides match), equal cells <= dx in uniform mode, else graded like a nonuniform tensor mesh at base dx '
+               '(refinements with margin and per-axis sizes, axes, outer grading, face_sizes as bands across their '
+               'face plane), every flat face of a domain object snapped as an element face, the PML shell in cells '
+               "of dx; curved objects are a staircase; size_points refused, h_min and a physics' edge sizes unused "
+               '(a warning). Example, a slender clamped string: refinement {string, dx 0.5 um, dx_y = dx_z = 50 nm} '
+               "plus face_sizes x_lo / x_hi 50 nm. 'gmsh' = the external gmsh program (OPEN_SOL_GMSH or the PATH; a "
+               'validation error when not found): tetrahedra conform to boxes, spheres, z cylinders and z-prism '
+               'rectangles / circles (composite inputs included), other objects are tagged per element.'),
     Param('sweep_axis', 'choice', 'none', label='Swept layers', choices=('none', 'z'),
           choice_labels=(('none', 'Off'), ('z', 'Along z (prism layers)')),
           visible_if=(('kind', ('tetrahedra',)),),
@@ -1682,18 +1651,15 @@ MESH_PARAMS = (
               'and bottom faces). Every flat top or bottom face of an object is a layer boundary.\n\n'
               'Boxes, z cylinders and straight z prisms follow exactly; spheres and tapered or x / y extruded shapes '
               '(except rectangles) get a staircase.',
-          help="Tetrahedra only (experiment plan D5). 'none' = the 3D mesher of mesher. 'z' = swept prism layers: "
-               'the xy footprint meshed by the triangle mesher of mesher (builtin / gmsh 2D; dx = maximum element '
-               'size, refinement dx in / along their objects\' footprints over the whole height, h_min, '
-               "curvature_factor, max_ratio growth; a physics' edge sizes refine along the objects' outlines), "
-               'extruded through the z layers of the tensor planner (as builtin tetrahedra along z: refinements '
-               '(dx_z, else dx) with margins, a z MeshAxisSpec, face_sizes on z_lo / z_hi faces as bands, outer_dx; '
-               'every set z face of a domain object snapped as a layer plane; the PML shell in cells of dx) and '
-               'each prism split into 3 tetrahedra by the minimum-vertex rule (conforming; periodic sides matched; '
-               'about 3 x triangles x layers elements). Conforming: boxes, z cylinders, untapered z prisms and '
-               'untapered x / y rectangles; spheres, other x / y prisms and tapers are tagged per element (a '
-               'warning). The x / y PML ring has pml_layers structured layers. Refused: size_points, x / y axes '
-               'options, dx_x / dx_y unlike dx, face sizes on x / y faces, where edges / surface.'),
+          help="Tetrahedra only. 'none' = the 3D mesher of mesher. 'z' = swept prism layers: the xy footprint "
+               "meshed by mesher's triangle mesher (dx, refinement dx over the objects' footprints, h_min, "
+               'curvature_factor, max_ratio), extruded through z layers graded as builtin tetrahedra along z '
+               '(refinement dx_z else dx with margins, a z MeshAxisSpec, face_sizes on z_lo / z_hi, outer_dx; every '
+               'set z face of a domain object a layer plane), each prism split into 3 tetrahedra (about 3 x '
+               'triangles x layers elements). Conforming: boxes, z cylinders, untapered z prisms and x / y '
+               'rectangles; spheres, other x / y prisms and tapers are tagged per element (a warning). The x / y PML '
+               'ring has pml_layers layers. Refused: size_points, x / y axes options, dx_x / dx_y unlike dx, face '
+               'sizes on x / y faces, where edges / surface.'),
     Param('pml_layers', 'int', 8, label='Absorbing layers', unit='1', min=1.0,
           visible_if=(('kind', ('triangles',)), ('sweep_axis', ('z',))),
           tip='Number of structured element layers across each absorbing (PML) boundary layer of a triangle mesh '
@@ -1707,18 +1673,16 @@ MESH_PARAMS = (
               'For structures that are symmetric left to right, so the results keep the symmetry exactly (no '
               'mixing of even and odd modes by an uneven mesh). The mesh follows the drawn objects and their '
               'mirror images; the absorbing layers on the left and right must be equal.',
-          help='Triangles: mesh the half window x <= size_x / 2 (it conforms to the geometry and its mirror image), '
-               'then mirror it about x = size_x / 2 (nodes on the line shared, the PML ring mirrored too), so the '
-               'mesh and every operator on it are exactly mirror symmetric: an even drive gives no odd response '
-               'beyond rounding (parity selection rules). The size field is the smaller of the sizes at a point and '
-               'at its image. Needs equal absorbing rings on x_lo and x_hi (else the mesh estimate fails); a '
-               'warning names material objects that are not mirror symmetric (the mesh still conforms to them; '
-               'sources and probes are not checked). Default false.'),
+          help='Triangles: mesh the half window x <= size_x / 2 (conforming to the geometry and its mirror image) '
+               'and mirror it about x = size_x / 2, so the mesh and every operator are exactly mirror symmetric (an '
+               'even drive gives no odd response beyond rounding). Needs equal absorbing rings on x_lo and x_hi; a '
+               'warning names material objects that are not mirror symmetric (sources and probes are not '
+               'checked).'),
     Param('mirror_y', 'bool', False, label='Mirror-symmetric in y', visible_if=(('kind', ('triangles',)),),
           tip='Like Mirror-symmetric in x, across the horizontal centre line: the bottom half is meshed and copied '
               'to the top. Both together mesh one quarter.',
           help='Triangles: as mirror_x about y = size_y / 2 (equal absorbing rings on y_lo and y_hi); with mirror_x '
-               'the quarter window is meshed and mirrored twice. Default false.'),
+               'the quarter window is meshed and mirrored twice.'),
 )
 
 

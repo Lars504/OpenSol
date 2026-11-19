@@ -1114,9 +1114,15 @@ templates, describe. Current state, no changelog.
   examples/*.json layout `_json_lines`). Markdown size: selftest cases appear only in the 'selftests' topic;
   consecutive params differing only in name / label share one entry; in the full reference only, a physics / coupling
   / study text of >= `_SHARED_TEXT_MIN_CHARS` occurring twice is printed once under '## Shared help texts' with "Help:
-  shared `<key>`" at each occurrence: keep repeated help texts identical word for word so they merge. Lead-ins
-  repeated per entry live once in the spec notes 'Physics, couplings and study'; the header Topics line comes from
-  `_topic_groups` (a new topic group goes there only).
+  shared `<key>`" at each occurrence (a param's ends its param line): keep repeated help texts identical word for word
+  so they merge. Param lines print only deviations (`_param_lines`, notation in `_PARAM_LEGEND`: spec notes 'Param
+  lines', and atop every topic view with params): `name` [unit] (kind unless float, default / required, range as
+  > a / [a, b], choices a | b, nullable, may use x, y / fields / t, visible when, writes); material properties imply
+  "may use x, y, fields" and their own-name array (deviations: "no fields", "writes ..."). The unit, range, default and
+  choices are printed from the Param, so a help text does not repeat them. Fields list the output fields once, marking
+  "[state]", then the state-only ones. Lead-ins repeated per entry (physics / feature / coupling / study fact lines)
+  live once in the spec notes 'Physics, couplings and study'; the header Topics line comes from `_topic_groups` (a new
+  topic group goes there only).
 
 ## Import contracts, structure index
 - `import_contracts.CONTRACTS` patterns are fnmatch on module names relative to the package ('*' crosses dots);

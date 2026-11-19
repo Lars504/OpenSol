@@ -319,7 +319,8 @@ curves -> selftest_report_analytic.json); the CLI wraps them (`selftest --exampl
   `geometry` setting with the single choice 'axisymmetric' (so the partner rule counts them as axisymmetric) and
   always set `axisymmetric`.
 - Help texts are API contract (describe -> api_reference.md): units, sign / axis conventions, typical values and
-  gotchas, ASCII only (describe raises). Unit '1' = dimensionless (GUI hides it, also for integer counts / numbers),
+  gotchas, ASCII only (describe raises); describe prints the Param's unit, default, range and choices on the param
+  line, so the help need not restate them. Unit '1' = dimensionless (GUI hides it, also for integer counts / numbers),
   '' non-numeric; units with spaces ('W/(m K)'), never '*'. A unit that depends on the space (planar W/m, axisymmetric
   / 3D W) goes in `Param.space_units` (`schema.param_in_space`). A gotcha a user can hit belongs in a help text or
   validation message, not only here.
