@@ -682,7 +682,8 @@ class AcousticPhysics(PhysicsSolver):
 
     def enable_bound_charge(self, permittivity_xx, permittivity_yy, permittivity_xy) -> None:
         """Two-way piezo: allocate the bound-charge buffers and re-derive dt from the stiffened c^D = c^E + e^T eps^-1 e
-        (relative eps_dc arrays of the electrostatics, full grid, kept by reference)."""
+        (relative eps_dc arrays of the electrostatics, full grid, kept by reference: dt is not re-derived when they
+        change at run time)."""
         if not self.piezoelectric:
             raise ValueError("elastic_waves has no piezo_e* arrays: the two-way piezoelectric coupling needs a "
                              "piezoelectric material")

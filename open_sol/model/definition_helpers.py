@@ -18,7 +18,8 @@ from ..solvers.roles import SolverRole, resolved_precision
 from .expressions import TIME_NAMES, Expression, ExpressionError, evaluate_scalar, referenced_names
 from .geometry import (bounding_box, domain_size_z, expand_entities, perimeter_weights, point_z,
                        preview_pixel_centers)
-from .schema import EIGENFREQUENCY_STUDY, FREE_MESH_KINDS, Issue, Param, feature_path, known_physics, state_field_names
+from .schema import (EIGENFREQUENCY_STUDY, FREE_MESH_KINDS, FREQUENCY_RESPONSE_STUDY, Issue, Param, feature_path,
+                     known_physics, state_field_names)
 
 
 def evaluates_to(value, parameters, predicate):
@@ -194,6 +195,20 @@ def study_duration(vctx):
         return None
     values = vctx.values(study_type.params, vctx.spec.study.settings)
     return None if values is None else values.get('duration')
+
+
+def study_frequencies(values, ascending=False) -> list:
+    """Frequencies [Hz] of a frequency sweep study's resolved settings, in solve order: the explicit list (sorted with
+    ascending), else n_frequencies from frequency_start to frequency_stop, linear or (log_spacing) geometric; 1 = the
+    arithmetic / geometric mean. The one spacing rule (frequency_response / thermal_noise, physics PML references)."""
+    if values['frequencies']:
+        frequencies = [float(frequency) for frequency in values['frequencies']]
+        return sorted(frequencies) if ascending else frequencies
+    start, stop, count = values['frequency_start'], values['frequency_stop'], values['n_frequencies']
+    if count == 1:
+        return [math.sqrt(start * stop) if values['log_spacing'] else 0.5 * (start + stop)]
+    spaced = np.geomspace(start, stop, count) if values['log_spacing'] else np.linspace(start, stop, count)
+    return [float(frequency) for frequency in spaced]
 
 
 def wavelength_range_issues(values, path):
@@ -601,7 +616,7 @@ def reduced_sweep_memory_items(context, unknowns, csr_entries) -> list:
     from ..solvers.arpack_shift_invert import arnoldi_basis_size
     from .schema import resolve_values
     study = context.spec.study
-    if study.type != 'frequency_response':
+    if study.type != FREQUENCY_RESPONSE_STUDY:
         return []
     try:
         values = resolve_values(context.registry.study_type(study.type).params,

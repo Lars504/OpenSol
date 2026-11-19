@@ -23,11 +23,11 @@ from ...model.definition_helpers import (AXISYMMETRIC, AXISYMMETRIC_SPACE_SETTIN
                                          reduced_sweep_time_items,
                                          reports_model_checks, resolved_back_end, scalar_harmonic_build_items,
                                          scalar_harmonic_build_items_3d, selected_material_data,
-                                         shell_element_fraction, validate_points_inside)
+                                         shell_element_fraction, study_frequencies, validate_points_inside)
 from ...model.expressions import Expression, ExpressionError
 from ...model.geometry import expand_entities
-from ...model.schema import (DomainRequirements, FeatureType, Issue, Param, PhysicsType, SolverRole, feature_path,
-                             resolve_values)
+from ...model.schema import (FREQUENCY_RESPONSE_STUDY, DomainRequirements, FeatureType, Issue, Param, PhysicsType,
+                             SolverRole, feature_path, resolve_values)
 from ...solvers.host_direct import factor_label, host_direct_precision, solver_host_bytes, superlu_bytes_scale
 from ...solvers.sparse_direct import CUDSS_BACK_ENDS, device_pencil_bytes, scipy_available
 from ..mechanics.pml3d import DEFAULT_PML_CELLS, PMLPadding
@@ -38,7 +38,6 @@ from .solver_harmonic_fem import (ACOUSTIC_HARMONIC_SCHEMA, BACKGROUND_KINDS, FI
 
 TYPE_NAME = 'pressure_acoustics'       # = selftests_harmonic.TYPE_NAME (selftests never import this)
 INSTANCE_NAME = 'pressure_acoustics'
-FREQUENCY_RESPONSE_STUDY = 'frequency_response'   # = model.study_frequency_response.STUDY_NAME
 _TETRAHEDRA = 'tetrahedra'
 _BOUNDARY_FEATURES = ('sound_hard', 'sound_soft', 'prescribed_pressure', 'impedance', 'vibrating_boundary')
 _MIN_ELEMENTS_PER_WAVELENGTH = {1: 10.0, 2: 5.0}   # resolution warning (P1 / P2, the industry rule of thumb)
@@ -377,8 +376,8 @@ def _surface_result(session, solver, monitor, feature_spec, options):
 
 # ---- study frequencies (CPU) ----
 def study_frequency_band(spec, registry, parameters):
-    """(lowest, highest) frequency [Hz] of a frequency_response study (as model.study._frequency_list spaces them),
-    None for another study or values that do not resolve."""
+    """(lowest, highest) frequency [Hz] of a frequency_response study (definition_helpers.study_frequencies), None for
+    another study or values that do not resolve."""
     study = spec.study
     if study.type != FREQUENCY_RESPONSE_STUDY:
         return None
@@ -386,14 +385,8 @@ def study_frequency_band(spec, registry, parameters):
         values = resolve_values(registry.study_type(study.type).params, study.settings or {}, parameters)
     except (KeyError, ValueError, TypeError):
         return None
-    if values.get('frequencies'):
-        frequencies = [float(value) for value in values['frequencies']]
-        return min(frequencies), max(frequencies)
-    start, stop = float(values['frequency_start']), float(values['frequency_stop'])
-    if int(values['n_frequencies']) == 1:
-        centre = math.sqrt(start * stop) if values['log_spacing'] else 0.5 * (start + stop)
-        return centre, centre
-    return min(start, stop), max(start, stop)
+    frequencies = study_frequencies(values)
+    return min(frequencies), max(frequencies)
 
 
 # ---- physics factory ----

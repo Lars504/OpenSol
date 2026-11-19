@@ -5,13 +5,14 @@ frequency of a list in Hz, one labelled snapshot per frequency (setting snapshot
 # wavelength-based. Each frequency is one complex factorisation per solved physics (a cuDSS factor reuses its plan).
 import time
 
-from .schema import Issue, Param, StudyType
+from .definition_helpers import study_frequencies
+from .schema import FREQUENCY_RESPONSE_STUDY, Issue, Param, StudyType
 from .solver_hooks import FrequencyResponseSolver, ReducedSweepSolver
 from .study import (_PARITY_SECTORS_PARAM, LogEvent, _background_fixed_point_params, _background_stage,
-                    _count_progress, _frequency_list, _frequency_range_issues, _scipy_issues, _selected_physics,
+                    _count_progress, _frequency_range_issues, _scipy_issues, _selected_physics,
                     _solve_static_states, _solver_roles, _study_solved_types, _with_parity_sectors)
 
-STUDY_NAME = 'frequency_response'
+STUDY_NAME = FREQUENCY_RESPONSE_STUDY
 _FREQUENCY_STAGE = 'Frequency solves'
 _SOLVED_TYPES_TEXT = 'solid_mechanics, solid_mechanics_3d, membrane or pressure_acoustics'   # the frequency-response types (missing-physics remedy)
 SNAPSHOT_CHOICES = ('all', 'last', 'none')   # setting snapshots: frequencies that keep a snapshot
@@ -28,7 +29,7 @@ def _run_frequency_response(session, values, emit, control, service):
     """Background stationary solve, background -> solved couplings once, then per frequency solve_frequency_response
     of every solved physics and a snapshot labelled 'f = <Hz> Hz' as the snapshots setting selects."""
     runner = session.runner
-    frequencies = _frequency_list(values)
+    frequencies = study_frequencies(values)
     snapshots = values['snapshots']
     solved, background = _solver_roles(runner.physics, FrequencyResponseSolver, 'frequency response',
                                        f'add a {_SOLVED_TYPES_TEXT} physics', selected=_selected_physics(session))

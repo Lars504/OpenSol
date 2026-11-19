@@ -1777,19 +1777,6 @@ def _study_solved_types(vctx, study_name):
             yield physics, physics_type
 
 
-def _frequency_list(values, ascending=False) -> list:
-    """Study frequencies [Hz] in solve order: the explicit list (sorted with ascending), else n_frequencies from
-    frequency_start to frequency_stop, linear or (log_spacing) geometric; 1 = the arithmetic / geometric mean."""
-    if values['frequencies']:
-        frequencies = [float(frequency) for frequency in values['frequencies']]
-        return sorted(frequencies) if ascending else frequencies
-    start, stop, count = values['frequency_start'], values['frequency_stop'], values['n_frequencies']
-    if count == 1:
-        return [math.sqrt(start * stop) if values['log_spacing'] else 0.5 * (start + stop)]
-    spaced = np.geomspace(start, stop, count) if values['log_spacing'] else np.linspace(start, stop, count)
-    return [float(frequency) for frequency in spaced]
-
-
 def _frequency_range_issues(values) -> list:
     """[error] for a frequency range that does not increase (more than one frequency, no explicit list)."""
     if values['frequencies'] or values['frequency_stop'] > values['frequency_start'] or values['n_frequencies'] <= 1:

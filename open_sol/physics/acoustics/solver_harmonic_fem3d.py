@@ -60,14 +60,17 @@ class PressureAcousticsFEMPhysics3D(AcousticHarmonicBase):
     def _window_face_entities(self, face) -> np.ndarray:
         return np.asarray(window_faces(self.mesh, face), dtype=np.int64)
 
+    def _face_degree(self) -> int:
+        """Face rule degree of _entity_load and _entity_quadrature (one rule: surface p_b integrals match the loads)."""
+        return self.order + 2
+
     def _entity_load(self, entities, value) -> np.ndarray:
-        return assemble_face_load_3d(self.full, np.asarray(entities, dtype=np.int64), value)
+        return assemble_face_load_3d(self.full, np.asarray(entities, dtype=np.int64), value, degree=self._face_degree())
 
     def _entity_quadrature(self, entities) -> tuple:
-        """assemble_face_load_3d's default rule (degree order + 2 on affine faces; the face basis sums to 1): (points
-        (k, q, 3), rule weight x face area)."""
+        """_entity_load's rule (affine faces; the face basis sums to 1): (points (k, q, 3), rule weight x face area)."""
         faces = np.asarray(entities, dtype=np.int64)
-        bary, rule_weights = triangle_face_rule(self.order + 2)
+        bary, rule_weights = triangle_face_rule(self._face_degree())
         points = np.einsum('qi,kic->kqc', bary, self.mesh.points[self.mesh.faces[faces]])
         return points, face_areas_3d(self.mesh, faces)[:, None] * rule_weights[None, :]
 

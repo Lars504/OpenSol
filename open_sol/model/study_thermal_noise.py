@@ -4,10 +4,11 @@ log- or linearly spaced frequency list."""
 import math
 import time
 
+from .definition_helpers import study_frequencies
 from .schema import Param, StudyType
 from .solver_hooks import ModeSolver, ThermalNoiseSolver
 from .study import (_MODE_STAGE, Cancelled, LogEvent, _background_fixed_point_params, _background_stage,
-                    _count_progress, _frequency_list, _frequency_range_issues, _physics_text,
+                    _count_progress, _frequency_range_issues, _physics_text,
                     _refuse_stepping_background, _scipy_issues, _solve_mode_snapshots)
 
 STUDY_NAME = 'thermal_noise'
@@ -18,7 +19,7 @@ def _run_thermal_noise(session, values, emit, control, service):
     """Background stationary solve, background -> mode / noise couplings once, every mode solve with one snapshot per
     mode number, then the noise spectra of every heat physics; one final snapshot."""
     runner = session.runner
-    frequencies = _frequency_list(values, ascending=True)   # the band integral needs them ascending
+    frequencies = study_frequencies(values, ascending=True)   # the band integral needs them ascending
     noise = [name for name, solver in runner.physics.items() if isinstance(solver, ThermalNoiseSolver)]
     modes = [name for name, solver in runner.physics.items() if isinstance(solver, ModeSolver)]   # solved first
     background = [name for name in runner.physics if name not in noise and name not in modes]

@@ -597,12 +597,14 @@ def coupling_role_text(coupling_type, role) -> str:
     return 'any' if accepted is None else ' or '.join(f"'{name}'" for name in accepted)
 
 
-# built-in study names (model.study / study_eigenfrequency register them); physics compare study names against these,
-# never the literal (FieldInfo.requires_study of harmonic fields, wavelength settings frequency_domain overrides)
+# built-in study names (model.study / study_eigenfrequency / study_frequency_response register them); physics compare
+# study names against these, never the literal (FieldInfo.requires_study of harmonic fields, wavelength settings
+# frequency_domain overrides)
 FREQUENCY_DOMAIN_STUDY = 'frequency_domain'   # the wavelength-based harmonic study
 EIGENFREQUENCY_STUDY = 'eigenfrequency'
 TIME_DEPENDENT_STUDY = 'time_dependent'
 STATIONARY_STUDY = 'stationary'
+FREQUENCY_RESPONSE_STUDY = 'frequency_response'   # the frequency-list (Hz) harmonic study
 
 
 @dataclass(frozen=True)
