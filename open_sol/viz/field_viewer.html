@@ -237,6 +237,11 @@ body.present .app { padding: 10px; gap: 10px; }
     <div class="group" id="reliefgroup"><label for="relief">Relief</label>
       <input type="range" id="relief" min="0" max="1" step="0.01" value="0" title="Raise the map by its value">
       <span class="val num" id="reliefv"></span></div>
+    <div class="group" id="deformgroup">
+      <button id="animate" aria-pressed="false">Animate</button>
+      <label for="deform">Deform</label>
+      <input type="range" id="deform" min="0" max="1" step="0.01" value="0.4" title="Magnification of the displacement: 0 = the rest shape, full = a quarter of the body size (D: animate)">
+      <span class="val num" id="deformv"></span></div>
     <div class="group" id="layergroup"></div>
     <div class="group" id="geomgroup"><label for="geom">Objects</label>
       <select id="geom" title="Model objects drawn with the field (G)"></select>
@@ -451,6 +456,22 @@ const hmin = [Infinity, Infinity, Infinity], hmax = [-Infinity, -Infinity, -Infi
 for (const L of LAYERS) for (let k = 0; k < L.n; k++) for (let c = 0; c < 3; c++) {
   const v = L.pos[3 * k + c]; if (v < hmin[c]) hmin[c] = v; if (v > hmax[c]) hmax[c] = v; }
 
+// ---- solid2d ---- (deformed shapes, part 1: data; part 2 follows the controls)
+// DATA.motion: every frame holds per layer the displacement channels (components 'u' / 'v' along the layer's axes,
+// 'n' along its normal; real parts, then imaginary ones) as int16 over [-dmax, dmax] (length units); the page moves
+// the samples by them, magnified so the largest shows as a fraction of the body size (Deform), and animates them:
+// modes oscillate (Re[d exp(j theta)]), static states ramp the load 0 -> 1 -> 0
+const MOTION = DATA.motion || null;
+const MOTION_COMPONENTS = MOTION ? MOTION.components : [];
+const MOTION_CHANNELS = MOTION ? MOTION_COMPONENTS.length * (MOTION.complex ? 2 : 1) : 0;
+const MOTION_INPLANE = MOTION_COMPONENTS.some((c) => c !== 'n');
+const MOTION_NORMAL = PLANAR && MOTION_COMPONENTS.includes('n');
+const DEFORM_FULL = 0.25;                     // Deform at full: the largest displacement shows as this x the body size
+const DEFORM_START = MOTION_INPLANE ? 0.4 : 0.8;
+const REST_SPAN = Math.max(...PLANE_AXES.map((c) => hmax[c] - hmin[c])) || 1;   // body size (simulated part, at rest)
+// (the bounds stay those of the rest shape, room for the deformation would change the Stretch of thin bodies: a
+// face-on fit leaves the room around the map instead, motionInplaneReach)
+
 // thin geometries: the GUI canvas gives them unequal scales (and its side views a Stretch z); here an axis whose span is
 // below 1 / MAX_ASPECT of the largest is stretched by a 1-2-5 factor, named on its axis title and in the readout
 const MAX_ASPECT = 4;
@@ -575,20 +596,23 @@ if (!gl) { $('empty').hidden = false; $('empty').textContent = 'This browser has
 const VS = `#version 300 es
 precision highp float;
 precision highp int;
-in vec3 aPos; in vec2 aVal;
+in vec3 aPos; in vec2 aVal; in vec4 aDisp;
 uniform mat4 uView; uniform mat4 uProj; uniform vec3 uCenter;
+uniform vec3 uDispDir[4]; uniform vec4 uDispW; uniform float uAmp;   // deformed shape: aPos + sum aDisp[c] uDispW[c] uDispDir[c]
 uniform float uLo; uniform float uHi; uniform int uLog; uniform int uSigned;
 uniform float uRelief; uniform vec3 uNormal; uniform vec3 uStretch;
 uniform vec3 uMirA; uniform vec3 uMirB; uniform float uValSign; uniform int uPhase;   // mirror image: a x + b, value sign
 out float vT; out float vOk; out vec3 vViewPos; out vec3 vPlace;
 void main() {
-  float v = aVal.x, t;
+  float v = aVal.x * uAmp, t;       // uAmp: cos(theta) of an oscillating mode (signed linear fields), else 1
   if (uValSign < 0.0) v = (uPhase == 1) ? (v > 0.0 ? v - 3.14159265 : v + 3.14159265) : -v;
   if (uLog == 1) t = (log(max(v, 1e-37)) - log(uLo)) / (log(uHi) - log(uLo));
   else t = (v - uLo) / (uHi - uLo);
   t = clamp(t, 0.0, 1.0);
   float h = (uSigned == 1) ? 2.0 * t - 1.0 : t;
-  vPlace = aPos * uMirA + uMirB;      // true coordinates of the (mirrored) point: the axis limits cut on them
+  vec3 d = aDisp.x * uDispW.x * uDispDir[0] + aDisp.y * uDispW.y * uDispDir[1] + aDisp.z * uDispW.z * uDispDir[2]
+         + aDisp.w * uDispW.w * uDispDir[3];
+  vPlace = (aPos + d) * uMirA + uMirB;   // true coordinates of the (deformed, mirrored) point: the axis limits cut on them
   vec3 p = (vPlace - uCenter) * uStretch + uNormal * (uRelief * h);
   vT = t; vOk = aVal.y;
   vec4 vp = uView * vec4(p, 1.0);
@@ -647,15 +671,18 @@ function setupGL() {
   if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
   for (const name of ['uView', 'uProj', 'uCenter', 'uLo', 'uHi', 'uLog', 'uSigned', 'uRelief', 'uNormal', 'uStretch',
                       'uStops', 'uLine', 'uLineColor', 'uShade', 'uMirA', 'uMirB', 'uValSign', 'uPhase',
-                      'uClipLo', 'uClipHi'])
+                      'uClipLo', 'uClipHi', 'uDispDir', 'uDispW', 'uAmp'])
     uni[name] = gl.getUniformLocation(prog, name);
   const aPos = gl.getAttribLocation(prog, 'aPos'), aVal = gl.getAttribLocation(prog, 'aVal');
+  const aDisp = gl.getAttribLocation(prog, 'aDisp');
+  if (aDisp >= 0) gl.vertexAttrib4f(aDisp, 0, 0, 0, 0);   // buffers without a displacement (box, no motion) stay put
   for (const L of LAYERS) {
     L.vao = gl.createVertexArray(); gl.bindVertexArray(L.vao);
     vertexBuffer(aPos, L.pos, 3, gl.STATIC_DRAW);
     L.valBuf = vertexBuffer(aVal, new Float32Array(2 * L.n), 2, gl.DYNAMIC_DRAW);
     L.triBuf = indexBuffer(L.tri);
     L.edgeBuf = L.edges ? indexBuffer(L.edges) : null;
+    if (MOTION && aDisp >= 0) L.dispBuf = vertexBuffer(aDisp, new Float32Array(4 * L.n), 4, gl.DYNAMIC_DRAW);
   }
   // outline of the shown box: 12 edges, every vertex valued (aVal = (0, 1)); rewritten when the bounds change
   const box = boxLines(); boxCount = box.length / 3;
@@ -671,6 +698,7 @@ function uploadFrame() {
   if (!gl || !ready) return;
   const values = frameValues(state.frame);
   LAYERS.forEach((L, i) => { gl.bindBuffer(gl.ARRAY_BUFFER, L.valBuf); gl.bufferSubData(gl.ARRAY_BUFFER, 0, values[i]); });
+  uploadMotion();
 }
 
 // ---------- camera ----------
@@ -689,7 +717,8 @@ let plotScale = (() => { const v = Number(store(PLOT_SCALE_STORE));
 function setPlotScale(v) { plotScale = Math.max(PLOT_SCALE_MIN, Math.min(1, v)); store(PLOT_SCALE_STORE, String(plotScale)); }
 function resetCamera() {
   if (PLANAR) [cam.az, cam.el] = FACE_ON[NORMAL];
-  else { cam.az = 2.2; cam.el = 0.42; }        // eye at +x, -y, +z: x to the right, y into the view
+  else { cam.az = 2.2; cam.el = 0.42; }
+  if (PLANAR && MOTION_NORMAL) { cam.az += 0.45; cam.el = 0.62; }   // an out-of-plane deformation: an oblique view        // eye at +x, -y, +z: x to the right, y into the view
   if (DATA.view) { cam.az = DATA.view[0] * Math.PI / 180; cam.el = DATA.view[1] * Math.PI / 180; }
   cam.target = [0, 0, 0]; cam.moved = false;
   fitDistance();
@@ -734,14 +763,15 @@ function fitDistance() { const fov = 30 * Math.PI / 180, tan = Math.tan(fov / 2)
     const ins = viewInsets(), [iu, iv] = PLANE_AXES;
     const freeW = Math.max(plotScale * (canvas.width - ins.left - ins.right), 1);
     const freeH = Math.max(plotScale * (canvas.height - ins.top - ins.bottom), 1);
-    cam.dist = Math.max(span[iu] / freeW, span[iv] / freeH) * canvas.height / (2 * tan) || 1;
+    const reach = motionInplaneReach(), f = stretch();   // room around the map for a deformed shape
+    cam.dist = Math.max((span[iu] + 2 * reach * f[iu]) / freeW, (span[iv] + 2 * reach * f[iv]) / freeH) * canvas.height / (2 * tan) || 1;
     const perPixel = 2 * cam.dist * tan / Math.max(canvas.height, 1), { s, u } = cameraAxes();
     const right = 0.5 * (ins.left - ins.right), up = 0.5 * (ins.bottom - ins.top);   // map centre from the canvas centre, px
     cam.target = [0, 1, 2].map((i) => -(s[i] * right + u[i] * up) * perPixel);
     return;
   }
   const aspect = canvas.width / Math.max(canvas.height, 1);
-  if (PLANAR) span[NORMAL] += reliefHeight();
+  if (PLANAR) span[NORMAL] += reliefHeight() + 2 * motionNormalReach();
   const r = 0.5 * Math.hypot(span[0], span[1], span[2]) || 1;
   const h = r / tan, w = r / (tan * Math.min(aspect, 1.0));
   cam.dist = Math.max(h, w) * (PLANAR ? 0.92 : 0.86); }
@@ -801,7 +831,9 @@ function draw() {
   gl.uniform1i(uni.uLog, logScale ? 1 : 0); gl.uniform1i(uni.uSigned, SIGNED ? 1 : 0);
   gl.uniform3fv(uni.uStops, new Float32Array(CMAPS[state.cmap].map(hexRgb).flat()));
   const relief = PLANAR ? reliefHeight() : 0;
-  gl.uniform1f(uni.uShade, relief > 0 ? 1 : 0);
+  gl.uniform1f(uni.uShade, relief > 0 || motionLit() ? 1 : 0);
+  setMotionUniforms();
+  drawMotionOutlines(view, proj, relief, 'rest'); gl.useProgram(prog);   // the rest shape under the body
   gl.disable(gl.BLEND);
   gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(1, 1);   // fills behind their mesh lines
   gl.uniform1i(uni.uLine, 0); gl.uniform1i(uni.uPhase, Q.phase ? 1 : 0);
@@ -809,7 +841,7 @@ function draw() {
     setImage(uni, I);
     for (const L of LAYERS) {
       if (!L.visible || selfImage(L, I)) continue;
-      gl.uniform3fv(uni.uNormal, L.normal); gl.uniform1f(uni.uRelief, relief);
+      gl.uniform3fv(uni.uNormal, L.normal); gl.uniform1f(uni.uRelief, relief); setMotionLayer(uni, L, I);
       gl.bindVertexArray(L.vao); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, L.triBuf);
       gl.drawElements(gl.TRIANGLES, L.tri.length, gl.UNSIGNED_INT, 0);
     }
@@ -823,13 +855,13 @@ function draw() {
       setImage(uni, I);
       for (const L of LAYERS) {
         if (!L.visible || !L.edgeBuf || selfImage(L, I)) continue;
-        gl.uniform3fv(uni.uNormal, L.normal); gl.uniform1f(uni.uRelief, relief);
+        gl.uniform3fv(uni.uNormal, L.normal); gl.uniform1f(uni.uRelief, relief); setMotionLayer(uni, L, I);
         gl.bindVertexArray(L.vao); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, L.edgeBuf);
         gl.drawElements(gl.LINES, L.edges.length, gl.UNSIGNED_INT, 0);
       }
     }
   }
-  setImage(uni, IDENTITY_IMAGE);
+  setImage(uni, IDENTITY_IMAGE); gl.uniform4f(uni.uDispW, 0, 0, 0, 0); gl.uniform1f(uni.uAmp, 1);
   if (state.box && !PLANAR) {
     // the box lies on the axis limits themselves: drawn uncut
     gl.uniform3fv(uni.uClipLo, NO_CLIP_LO); gl.uniform3fv(uni.uClipHi, NO_CLIP_HI);
@@ -838,6 +870,7 @@ function draw() {
   }
   gl.disable(gl.BLEND);
   gl.bindVertexArray(null);
+  drawMotionOutlines(view, proj, relief, 'moved');
   drawGeometry(view, proj);
   drawAxes(view, proj);
   drawOverlay(view, proj);
@@ -1388,6 +1421,7 @@ function updateReadout() {
   if (planes.length) parts.push(planes.join(', '));
   if (state.stretch && CAN_STRETCH) parts.push('stretched ' + STRETCH_TEXT);
   if (state.mirror && CAN_MIRROR) parts.push('mirrored at ' + MIRRORS.map((M) => M.face).join(', '));
+  if (MOTION && motionGain() > 0) parts.push(motionText());
   heading.meta = parts.join('  ·  ');
   $('framev').textContent = NF > 1 ? (state.frame + 1) + ' / ' + NF : '';
   const [lo, hi] = autoLimits();
@@ -1513,6 +1547,7 @@ function syncControls() {
   $('present').setAttribute('aria-pressed', String(document.body.classList.contains('present')));
   $('settingsbtn').setAttribute('aria-pressed', String(!$('settings').hidden));
   for (const L of LAYERS) if (L.button) L.button.setAttribute('aria-pressed', String(L.visible));
+  syncMotion();
 }
 function select(f) { state.frame = ((f % NF) + NF) % NF; uploadFrame(); updateReadout(); syncControls(); }
 $('framegroup').style.display = NF > 1 ? '' : 'none';
@@ -1594,6 +1629,7 @@ $('record').onclick = () => {
   // time frames: one pass from the first frame; otherwise one full turn of the view
   let seconds;
   if (KIND === 'time') { select(0); state.playing = true; seconds = NF / state.fps; }
+  else if (motion.animate) { motion.theta = 0; seconds = MOTION_CYCLES_RECORDED * 2 * Math.PI / motionRate(); }   // whole cycles
   else { state.spin = true; seconds = 2 * Math.PI / SPIN_RATE; }
   syncControls();
   recorder.start(); $('rec').classList.add('on'); $('record').textContent = 'Stop';
@@ -1615,6 +1651,217 @@ window.addEventListener('keydown', (e) => {
   else if ((k === 'm' || k === 'M') && CAN_MIRROR) $('mirror').click();
   else if (k === 's' || k === 'S') $('spin').click();
 });
+
+// ---- solid2d ---- (deformed shapes, part 2: decoding, uniforms, body outlines, controls)
+const motion = { animate: !!MOTION && MOTION.oscillate, theta: 0, deform: DEFORM_START };
+const MOTION_CYCLES_RECORDED = MOTION && !MOTION.oscillate ? 2 : 3;
+function motionRate() { return 2 * Math.PI / (MOTION && MOTION.oscillate ? 2 : 3); }   // rad/s: a 2 s period, a 3 s ramp
+const motionCache = new Map();
+function motionFrame(f) {
+  // per layer Float32Array (n, 4): the channels in slots 0 .. MOTION_CHANNELS - 1, each over [-1, 1] of the frame's dmax
+  if (motionCache.has(f)) return motionCache.get(f);
+  const out = FRAMES[f].disp.map((text, i) => {
+    const q = i16(text), n = LAYERS[i].n, a = new Float32Array(4 * n);
+    if (q.length !== n * MOTION_CHANNELS) throw new Error('displacement codes do not match the layer samples');
+    for (let k = 0; k < n; k++) for (let c = 0; c < MOTION_CHANNELS; c++) a[4 * k + c] = q[k * MOTION_CHANNELS + c] / 32767;
+    return a;
+  });
+  if (motionCache.size > 16) motionCache.delete(motionCache.keys().next().value);
+  motionCache.set(f, out);
+  return out;
+}
+function motionMagnification() {
+  // shown / true displacement: the largest (over every frame for time frames, else of the shown frame) at Deform
+  const F = FRAMES[state.frame], ref = KIND === 'time' ? MOTION.max : F.dmax;
+  return ref > 0 ? motion.deform * DEFORM_FULL * REST_SPAN / ref : 0;
+}
+function motionGain() { return MOTION ? FRAMES[state.frame].dmax * motionMagnification() : 0; }   // length units per code unit
+function motionText() {
+  if (!MOTION.physical) return 'mode shape (amplitude arbitrary)';
+  const k = motionMagnification();
+  let text = String(Number(k.toPrecision(2)));
+  if (k >= 1000 || k < 0.01) { const e = Math.floor(Math.log10(k)); text = (k / Math.pow(10, e)).toFixed(1) + '·10' + superscript(e); }
+  return 'deformation × ' + text;
+}
+function motionLit() { return MOTION_NORMAL && motionGain() > 0; }   // a membrane bent out of its plane is lit
+function motionNormalReach() { return MOTION_NORMAL ? motion.deform * DEFORM_FULL * REST_SPAN : 0; }
+function motionInplaneReach() { return MOTION_INPLANE ? motion.deform * DEFORM_FULL * REST_SPAN : 0; }   // largest shown displacement
+const motionPhase = new Float32Array(4), motionW = new Float32Array(4);   // per-channel weights (no allocation per draw)
+function setMotionUniforms() {
+  // channel weights of Re[d exp(j theta)] (oscillating modes) or of the load ramp, times the gain; uAmp scales the
+  // colours of signed linear fields of a real oscillating mode with cos theta (exact for them)
+  const g = motionGain(), nc = MOTION_COMPONENTS.length, c = Math.cos(motion.theta), s = Math.sin(motion.theta);
+  const oscillating = motion.animate && !!MOTION && MOTION.oscillate;
+  const re = !motion.animate ? 1 : oscillating ? c : 0.5 * (1 - c), im = oscillating ? -s : 0;
+  for (let k = 0; k < 4; k++) motionPhase[k] = k >= MOTION_CHANNELS ? 0 : g * (k < nc ? re : im);
+  gl.uniform1f(uni.uAmp, oscillating && !MOTION.complex && SIGNED && !Q.phase && g > 0 ? c : 1);
+}
+for (const L of LAYERS) {   // per layer: the direction of each channel (true axes), the normal one signed per image
+  const dirs = new Float32Array(12), axes = DATA.layers[L.index].axes;
+  for (let k = 0; k < MOTION_CHANNELS; k++) {
+    const name = MOTION_COMPONENTS[k % MOTION_COMPONENTS.length];
+    dirs[3 * k + (name === 'u' ? AX[axes[0]] : name === 'v' ? AX[axes[1]] : L.axis)] = 1;
+  }
+  L.motionDirs = dirs;
+}
+function normalSign(I) {
+  // sign of the normal displacement in a mirror image: the product of the motion's signs of the faces it reflects in
+  if (I.normalSign === undefined) {
+    let sign = 1;
+    for (const M of MIRRORS) {
+      const c = AX[M.axis];
+      if (I.a[c] < 0 && Math.abs(I.b[c] - 2 * M.position) <= 1e-9 * (REST_SPAN + Math.abs(M.position)))
+        sign *= (MOTION && MOTION.mirror_signs[M.face]) || 1;
+    }
+    I.normalSign = sign;
+  }
+  return I.normalSign;
+}
+function setMotionLayer(u, L, I) {
+  if (!MOTION) return;
+  const flip = normalSign(I);
+  for (let k = 0; k < 4; k++)
+    motionW[k] = motionPhase[k] * (k < MOTION_CHANNELS && MOTION_COMPONENTS[k % MOTION_COMPONENTS.length] === 'n' ? flip : 1);
+  gl.uniform3fv(u.uDispDir, L.motionDirs); gl.uniform4fv(u.uDispW, motionW);
+}
+// body outlines: the boundary edges of the drawn triangles (edges of one valued triangle only) of frame 0, drawn as
+// screen-space quads deformed like the layer, plus a faint rest-shape ghost when the shape is magnified
+const OUTLINE_VS = `#version 300 es
+precision highp float;
+in vec3 aA; in vec3 aB; in vec4 aDA; in vec4 aDB; in vec2 aCorner;
+uniform mat4 uView; uniform mat4 uProj; uniform vec3 uCenter; uniform vec3 uStretch; uniform vec3 uMirA; uniform vec3 uMirB;
+uniform vec2 uViewport; uniform float uWidth; uniform vec3 uDispDir[4]; uniform vec4 uDispW;
+out vec3 vPlace;
+vec3 moved(vec3 p, vec4 d) { return p + d.x * uDispW.x * uDispDir[0] + d.y * uDispW.y * uDispDir[1] + d.z * uDispW.z * uDispDir[2]
+                                      + d.w * uDispW.w * uDispDir[3]; }
+void main() {
+  vec3 A = moved(aA, aDA) * uMirA + uMirB, B = moved(aB, aDB) * uMirA + uMirB;
+  vPlace = mix(A, B, aCorner.x);
+  vec4 ca = uProj * uView * vec4((A - uCenter) * uStretch, 1.0), cb = uProj * uView * vec4((B - uCenter) * uStretch, 1.0);
+  vec2 d = cb.xy / max(cb.w, 1e-6) * uViewport - ca.xy / max(ca.w, 1e-6) * uViewport; float len = length(d);
+  vec2 dir = len > 1e-6 ? d / len : vec2(1.0, 0.0), across = vec2(-dir.y, dir.x);
+  vec4 c = mix(ca, cb, aCorner.x);
+  c.xy += (across * aCorner.y + dir * (2.0 * aCorner.x - 1.0)) * uWidth * c.w / uViewport;
+  gl_Position = c;
+}`;
+const OUTLINE_FS = `#version 300 es
+precision highp float;
+in vec3 vPlace; uniform vec4 uColor; uniform vec3 uClipLo; uniform vec3 uClipHi;
+out vec4 outColor;
+void main() {
+  if (any(lessThan(vPlace, uClipLo)) || any(greaterThan(vPlace, uClipHi))) discard;
+  outColor = uColor;
+}`;
+let outlineGL = null, outlineProg = null;   // null: not set up yet, false: nothing to draw / failed
+const outlineUni = {};
+function boundaryEdges(L, ok) {
+  // [a, b, ...] vertex pairs of the edges belonging to exactly one triangle whose corners all hold a value
+  const count = new Map(), n = L.n, tri = L.tri;
+  const add = (p, q) => { const key = Math.min(p, q) * n + Math.max(p, q); count.set(key, (count.get(key) || 0) + 1); };
+  for (let t = 0; t < tri.length; t += 3) {
+    const a = tri[t], b = tri[t + 1], c = tri[t + 2];
+    if (!ok[2 * a + 1] || !ok[2 * b + 1] || !ok[2 * c + 1]) continue;
+    add(a, b); add(b, c); add(c, a);
+  }
+  const out = [];
+  for (const [key, times] of count) if (times === 1) out.push(Math.floor(key / n), key % n);
+  return out;
+}
+function setupOutlineGL() {
+  if (!MOTION) return false;
+  outlineProg = linkProgram(OUTLINE_VS, OUTLINE_FS, ['uView', 'uProj', 'uCenter', 'uStretch', 'uMirA', 'uMirB', 'uViewport', 'uWidth',
+                                                     'uDispDir', 'uDispW', 'uColor', 'uClipLo', 'uClipHi'], outlineUni);
+  const corners = new Float32Array([0, -1, 1, -1, 1, 1, 0, -1, 1, 1, 0, 1]);
+  const attributes = [['aA', 3, 0], ['aB', 3, 12], ['aDA', 4, 24], ['aDB', 4, 40]].map(([name, size, offset]) => [gl.getAttribLocation(outlineProg, name), size, offset]);
+  const ok = frameValues(0);
+  const tolerance = 1e-6 * REST_SPAN;
+  for (const L of LAYERS) {
+    // edges in a mirror plane are seams between the body and its image: last, left out while the images show
+    const all = boundaryEdges(L, ok[L.index]), open = [], seams = [];
+    for (let e = 0; e < all.length; e += 2) {
+      const a = all[e], b = all[e + 1];
+      const seam = MIRRORS.some((M) => Math.abs(L.pos[3 * a + AX[M.axis]] - M.position) <= tolerance
+                                    && Math.abs(L.pos[3 * b + AX[M.axis]] - M.position) <= tolerance);
+      (seam ? seams : open).push(a, b);
+    }
+    const pairs = open.concat(seams), m = pairs.length / 2;
+    const O = L.outline = { pairs, count: m, open: open.length / 2, rows: new Float32Array(14 * m) };   // per edge: A, B, displacement codes at A and B
+    for (let e = 0; e < m; e++) for (let c = 0; c < 3; c++) {
+      O.rows[14 * e + c] = L.pos[3 * pairs[2 * e] + c]; O.rows[14 * e + 3 + c] = L.pos[3 * pairs[2 * e + 1] + c]; }
+    O.vao = gl.createVertexArray(); gl.bindVertexArray(O.vao);
+    vertexBuffer(gl.getAttribLocation(outlineProg, 'aCorner'), corners, 2, gl.STATIC_DRAW);
+    O.buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, O.buf); gl.bufferData(gl.ARRAY_BUFFER, O.rows, gl.DYNAMIC_DRAW);
+    for (const [loc, size, offset] of attributes) if (loc >= 0) {
+      gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, size, gl.FLOAT, false, 56, offset); gl.vertexAttribDivisor(loc, 1); }
+  }
+  gl.bindVertexArray(null);
+  return true;
+}
+function uploadMotion() {
+  if (!MOTION || !gl || !ready) return;
+  const D = motionFrame(state.frame);
+  LAYERS.forEach((L, i) => { gl.bindBuffer(gl.ARRAY_BUFFER, L.dispBuf); gl.bufferSubData(gl.ARRAY_BUFFER, 0, D[i]); });
+  if (outlineGL === null) {
+    try { outlineGL = setupOutlineGL(); } catch (err) { outlineGL = false; console.error('body outlines: ' + err.message); }
+  }
+  if (!outlineGL) return;
+  for (const L of LAYERS) {
+    const O = L.outline, d = D[L.index];
+    for (let e = 0; e < O.count; e++) for (let c = 0; c < 4; c++) {
+      O.rows[14 * e + 6 + c] = d[4 * O.pairs[2 * e] + c]; O.rows[14 * e + 10 + c] = d[4 * O.pairs[2 * e + 1] + c]; }
+    gl.bindBuffer(gl.ARRAY_BUFFER, O.buf); gl.bufferSubData(gl.ARRAY_BUFFER, 0, O.rows);
+  }
+}
+const REST_W = new Float32Array(4);
+function drawMotionOutlines(view, proj, relief, pass) {
+  // pass 'moved': the deformed body's outline (crisp edges where the void is hidden), after the layers; 'rest': its
+  // rest shape, before the layers without depth writes, so the body covers it (shown only when magnified); neither
+  // over a relief (the outline would lie under the raised map)
+  if (!outlineGL || relief > 0 || (pass === 'rest' && !(motionGain() > 0))) return;
+  gl.useProgram(outlineProg);
+  gl.uniformMatrix4fv(outlineUni.uView, false, view); gl.uniformMatrix4fv(outlineUni.uProj, false, proj);
+  gl.uniform3fv(outlineUni.uCenter, center); gl.uniform3fv(outlineUni.uStretch, stretch());
+  gl.uniform3fv(outlineUni.uClipLo, clipLo); gl.uniform3fv(outlineUni.uClipHi, clipHi);
+  gl.uniform2f(outlineUni.uViewport, canvas.width, canvas.height);
+  gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  const flat = faceOn(); if (flat) gl.disable(gl.DEPTH_TEST);
+  if (pass === 'rest') gl.depthMask(false);
+  const ink = themeColors.dark && fig.background !== 'white' ? [0.9, 0.93, 0.98] : [0.07, 0.08, 0.11];
+  gl.uniform4fv(outlineUni.uColor, [...ink, pass === 'rest' ? 0.45 : 0.82]);
+  gl.uniform1f(outlineUni.uWidth, (pass === 'rest' ? 0.6 : 0.85) * pixelRatio);
+  for (const I of images()) {
+    setImage(outlineUni, I);
+    for (const L of LAYERS) {
+      const count = state.mirror && CAN_MIRROR ? L.outline.open : L.outline.count;
+      if (!L.visible || selfImage(L, I) || !count) continue;
+      if (pass === 'rest') { gl.uniform3fv(outlineUni.uDispDir, L.motionDirs); gl.uniform4fv(outlineUni.uDispW, REST_W); }
+      else setMotionLayer(outlineUni, L, I);
+      gl.bindVertexArray(L.outline.vao); gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, count);
+    }
+  }
+  gl.depthMask(true);
+  if (flat) gl.enable(gl.DEPTH_TEST);
+  gl.disable(gl.BLEND); gl.bindVertexArray(null);
+}
+function syncMotion() {
+  $('deformgroup').style.display = MOTION ? '' : 'none';
+  if (!MOTION) return;
+  $('animate').setAttribute('aria-pressed', String(motion.animate));
+  $('deform').value = motion.deform;
+  $('deformv').textContent = Math.round(motion.deform * 100) + ' %';
+}
+$('animate').title = MOTION && MOTION.oscillate
+  ? 'Animate the oscillation: the shape and the signed colours over one period, Re[u exp(jωt)] (D)'
+  : 'Animate the loading: the displacement ramps from 0 to the solution and back (D)';
+$('animate').onclick = () => { motion.animate = !motion.animate; motion.theta = 0; syncControls(); };
+$('deform').oninput = (e) => { motion.deform = +e.target.value; if (!cam.moved) fitDistance(); updateReadout(); syncControls(); };
+window.addEventListener('keydown', (e) => {
+  if (!MOTION || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT' && e.target.type !== 'range') return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.key === 'd' || e.key === 'D') $('animate').click();
+});
+if (MOTION_INPLANE && GEOM_MODES.some(([key]) => key === 'off')) { state.geom = 'off'; syncGeometry(); }   // the body outline stands in
+if (MOTION_INPLANE) state.stretch = false;   // a deformed shape is a picture of the body: true proportions (Stretch brings it back)
 
 // ---------- pointer: orbit, pan, zoom ----------
 const pointers = new Map(); let pinch = 0;
@@ -1685,6 +1932,7 @@ let last = performance.now(), frameClock = 0;
 function tick(now) {
   const dt = Math.min((now - last) / 1000, 0.1); last = now;
   if (state.spin) cam.az -= SPIN_RATE * dt;
+  if (motion.animate) motion.theta = (motion.theta + motionRate() * dt) % (2 * Math.PI);
   if (state.playing && NF > 1) {
     frameClock += dt * state.fps;
     if (frameClock >= 1) { const steps = Math.floor(frameClock); frameClock -= steps; select(state.frame + steps); }
@@ -1699,7 +1947,7 @@ if (mq.addEventListener) mq.addEventListener('change', () => readTheme());
 window.addEventListener('resize', () => { resize(); });
 if (gl) { try { setupGL(); } catch (err) { $('empty').hidden = false; $('empty').textContent = 'WebGL error: ' + err.message; } }
 resize(); resetCamera(); syncControls(); syncSettings(); select(0);
-window.fieldViewer = { state, select, draw, cam, limits, figure: fig };
+window.fieldViewer = { state, select, draw, cam, limits, figure: fig, motion };
 requestAnimationFrame(tick);
 })();
 </script>

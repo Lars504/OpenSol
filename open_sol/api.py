@@ -59,7 +59,7 @@ from .model.time_estimate import estimate_overheads, estimate_time, estimated_ru
 from .model.templates import make_template, template_entries
 from .model.validate import internal_error_text, refused_on_estimated_counts, validate
 from .viz.common import line_profile
-from .viz.field_viewer import (ViewerFrame, ViewerGeometry, ViewerLayer, ViewerMirror, ViewerQuantity,
+from .viz.field_viewer import (ViewerFrame, ViewerGeometry, ViewerLayer, ViewerMirror, ViewerMotion, ViewerQuantity,
                                figure_settings, layer_from_field, mirror_plane, plan_frames, snap_to_mirrors,
                                strided_layer, time_label, write_field_viewer)
 from .viz.mode_player import mode_player_from_results
@@ -91,6 +91,14 @@ _LIVE_RESULTS = weakref.WeakSet()      # Results whose GPU session is still open
 _LIVE_RESULTS_WARNING_PATTERN = r'\d+ earlier Results still hold a GPU session'   # start of _live_results_warning
 _FLUX_FIGURE_SERIES = ('', 'power')    # flux_spectrum curve series drawn on its figure's power panel (as the GUI)
 _DERIVED_SERIES_QUANTITY = 'derived_series:'   # Results.sweep_figure quantity prefix of a derived-series overlay
+# web page deformed shapes (2D models): physics type -> (ViewerMotion components, displacement fields, their imaginary
+# parts when the run has them, the stiffness field whose cells <= 0 are void or ''), and the studies whose states
+# oscillate (modes, harmonic responses: the page animates them)
+_MOTION_FIELDS = {'solid_mechanics': (('u', 'v'), ('u_x', 'u_y'), ('u_x_im', 'u_y_im'), 'youngs_modulus'),
+                  'membrane': (('n',), ('w_re',), ('w_im',), '')}
+_OSCILLATING_STUDIES = ('eigenfrequency', 'frequency_response', 'optomechanics')
+_MODE_STUDIES = ('eigenfrequency', 'optomechanics')   # their displacements have an arbitrary amplitude
+_NEGLIGIBLE_IMAGINARY = 1e-6   # imaginary displacement parts below this x the real maximum: a real (standing) mode
 # study summary keys copied into summary.json when the study set them (optimization, thermal_noise, mode_analysis,
 # eigenfrequency / optomechanics, nonlinear_frequency_domain, frequency_response; convergence: StudySpec.adaptation,
 # also written as convergence.json; estimation: StudySpec.estimation)
@@ -1138,6 +1146,76 @@ def _stored_cut_index(snapshot, plane):
     return min(on_axis, key=lambda index: abs(planes[index][1] - float(plane[1])))
 
 
+def _samples_like(layer, field_data):
+    """float64 values of field_data on the samples of a 2D ViewerLayer (its display triangulation nodes, else its
+    raster), None when they are not the same samples."""
+    if layer.triangulation is not None:
+        if getattr(field_data, 'triangulation', None) is None:
+            return None
+        companion = layer_from_field(field_data)
+        if len(companion.triangulation[0]) != len(layer.triangulation[0]):
+            return None
+        return np.asarray(companion.values, dtype=np.float64)
+    values = np.asarray(field_data.values, dtype=np.float64)
+    return values if values.shape == np.shape(layer.values) else None
+
+
+def _hide_void(frames, stiffness, mirror_sides=()):
+    """Hide the void cells of a solid (stiffness FieldData <= 0) on 2D viewer frames in place, so the page shows (and
+    fits) the body alone: grid layers get NaN values and zero displacement there and are cropped to the solid cells
+    (not on the mirror_sides faces, whose planes the page reflects at), display triangulations lose the triangles
+    whose centroid lies in a void cell and the nodes only those used. Skipped when the stiffness marks no solid or no
+    void cell, or (grids) a void cell moves (a solid without that stiffness, e.g. given by its c_ij only: hiding it
+    would hide material)."""
+    solid_raster = np.asarray(stiffness.values, dtype=np.float64) > 0.0
+    if solid_raster.all() or not solid_raster.any():
+        return
+    layers = [frame.layers[0] for frame in frames]
+    if layers[0].triangulation is None:
+        if solid_raster.shape != np.shape(layers[0].values):
+            return
+        void = ~solid_raster
+        if any(np.any(np.asarray(channel)[void] != 0.0) for layer in layers for channel in layer.displacement):
+            return
+        rows, columns = np.flatnonzero(solid_raster.any(axis=1)), np.flatnonzero(solid_raster.any(axis=0))
+        axes = layers[0].axes
+        i0 = 0 if f'{axes[0]}_lo' in mirror_sides else max(int(rows[0]), 0)
+        i1 = solid_raster.shape[0] if f'{axes[0]}_hi' in mirror_sides else int(rows[-1]) + 1
+        j0 = 0 if f'{axes[1]}_lo' in mirror_sides else max(int(columns[0]), 0)
+        j1 = solid_raster.shape[1] if f'{axes[1]}_hi' in mirror_sides else int(columns[-1]) + 1
+        if i1 - i0 < 2 or j1 - j0 < 2:   # a map needs 2 x 2 samples
+            i0, i1, j0, j1 = 0, solid_raster.shape[0], 0, solid_raster.shape[1]
+        crop = (slice(i0, i1), slice(j0, j1))
+        for layer in layers:
+            layer.values = np.where(void, np.nan, np.asarray(layer.values, dtype=np.float64))[crop]
+            layer.displacement = tuple(np.where(void, 0.0, np.asarray(channel, dtype=np.float64))[crop]
+                                       for channel in layer.displacement)
+            layer.u_centres, layer.v_centres = layer.u_centres[i0:i1], layer.v_centres[j0:j1]
+        return
+    u0, u1, v0, v1 = (float(edge) for edge in stiffness.extent)
+    nu, nv = solid_raster.shape
+    u_centres = (np.asarray(stiffness.x_centers, dtype=np.float64) if stiffness.x_centers is not None
+                 else u0 + (np.arange(nu) + 0.5) * (u1 - u0) / nu)
+    v_centres = (np.asarray(stiffness.y_centers, dtype=np.float64) if stiffness.y_centers is not None
+                 else v0 + (np.arange(nv) + 0.5) * (v1 - v0) / nv)
+    nodes, triangles = layers[0].triangulation
+    centroids = np.asarray(nodes, dtype=np.float64)[np.asarray(triangles)].mean(axis=1)
+    iu = np.clip(np.searchsorted(0.5 * (u_centres[1:] + u_centres[:-1]), centroids[:, 0]), 0, nu - 1)
+    iv = np.clip(np.searchsorted(0.5 * (v_centres[1:] + v_centres[:-1]), centroids[:, 1]), 0, nv - 1)
+    keep = solid_raster[iu, iv]
+    if not keep.any():
+        return
+    triangles = np.asarray(triangles)[keep]
+    used = np.unique(triangles)
+    renumber = np.full(len(nodes), -1, dtype=np.int64)
+    renumber[used] = np.arange(used.size)
+    kept = (np.asarray(nodes)[used], renumber[triangles])
+    for layer in layers:
+        layer.triangulation = kept
+        layer.values = np.asarray(layer.values)[used]
+        layer.displacement = tuple(np.asarray(channel)[used] for channel in layer.displacement)
+
+
 def _held_cuts(snapshot, key):
     """FieldData of key that a 3D snapshot holds on a placed plane: its mid-height z cut and its stored cuts."""
     return [fields[key] for fields in (snapshot.fields, *snapshot.cuts)
@@ -1686,6 +1764,7 @@ class Results:
                 frames.append(ViewerFrame([layer_from_field(field_data) for field_data in fields], label,
                                           float(snapshot.time)))
             frame_kind = 'time' if all(snapshot.label is None for snapshot in stored) else 'labelled'
+            sources = [snapshot.fields for snapshot in stored]
             info = stored[0].fields[key].info
             unfolded = bool(getattr(stored[0].fields[key], 'unfolded', False))
             source = f'{len(stored)} snapshots'
@@ -1694,11 +1773,15 @@ class Results:
             frames = [ViewerFrame([layer_from_field(field_data) for field_data in fields],
                                   fields[0].time_label or '', float(fields[0].time))]
             frame_kind = 'labelled'
+            sources = [None]   # the current / saved state
             info = fields[0].info
             unfolded = bool(getattr(fields[0], 'unfolded', False))
             source = ('current state' if self.is_live else 'saved state') + note
         quantity = ViewerQuantity(label=info.label, unit=info.unit, signed=bool(info.signed),
                                   phase=str(info.parity or '').startswith('phase_'))
+        motion, motion_note = (None, '') if planes is not None or unfolded else self._viewer_motion(key, frames,
+                                                                                                     sources)
+        source += motion_note
         # parity-sector snapshots are stored unfolded already: no images of them
         mirrors = [] if unfolded else self._viewer_mirrors(
             key.partition('.')[0], info, [(layer.axes, layer.extent) for layer in frames[0].layers])
@@ -1706,7 +1789,55 @@ class Results:
         objects = self._viewer_geometry([layer.plane for layer in frames[0].layers]) if geometry else None
         return write_field_viewer(path, frames, quantity, title=self._page_title(title) or info.label,
                                   subtitle=f'{key}, {source} (open_sol)', frame_kind=frame_kind, geometry=objects,
-                                  mirrors=mirrors, figure=figure)
+                                  mirrors=mirrors, figure=figure, motion=motion)
+
+    def _viewer_motion(self, key, frames, sources):
+        """(ViewerMotion, subtitle note) of a 2D field page whose physics has a displacement (_MOTION_FIELDS), the
+        frames' layers given their displacement channels in place (sources: per frame the snapshot's field dict, None
+        = the current / saved state); solids also hide their void cells (stiffness <= 0: values NaN, triangles
+        dropped) when the stiffness field marks them consistently. (None, '') for other physics and 3D models;
+        (None, note) when the displacement is not on the shown field's samples."""
+        if self.spec is None or self.spec.domain.size_z is not None:
+            return None, ''
+        physics = key.partition('.')[0]
+        physics_type = next((entry.type for entry in self.spec.physics if entry.name == physics), None)
+        if physics_type not in _MOTION_FIELDS or any(len(frame.layers) != 1 for frame in frames):
+            return None, ''
+        components, real_names, imag_names, stiffness_name = _MOTION_FIELDS[physics_type]
+        names = set(self.field_names())
+
+        def fetch(source, name):
+            if source is None:
+                return self.field(f'{physics}.{name}') if f'{physics}.{name}' in names else None
+            return source.get(f'{physics}.{name}')
+
+        reals = [[fetch(source, name) for name in real_names] for source in sources]
+        if any(field_data is None for row in reals for field_data in row):
+            return None, ''   # snapshots without the displacement: no deformed shape to draw
+        imags = [[fetch(source, name) for name in imag_names] for source in sources]
+        complex_parts = all(field_data is not None for row in imags for field_data in row)
+        if complex_parts:
+            real_peak = max(float(np.nanmax(np.abs(field_data.values))) for row in reals for field_data in row)
+            imag_peak = max(float(np.nanmax(np.abs(field_data.values))) for row in imags for field_data in row)
+            complex_parts = imag_peak > _NEGLIGIBLE_IMAGINARY * real_peak
+        channel_rows = [row + (imags[index] if complex_parts else []) for index, row in enumerate(reals)]
+        for frame, row in zip(frames, channel_rows):
+            layer = frame.layers[0]
+            channels = [_samples_like(layer, field_data) for field_data in row]
+            if any(channel is None for channel in channels):
+                return None, ', no deformed shape (the displacement lies on other samples than this field)'
+            layer.displacement = tuple(channels)
+        if stiffness_name and f'{physics}.{stiffness_name}' in names:
+            _hide_void(frames, self.field(f'{physics}.{stiffness_name}'), set(mirror_faces(self._state_spec(), physics)))
+        mirror_signs = {}
+        if 'n' in components:   # the normal displacement's images follow its own parity, not the shown field's
+            spans = [(layer.axes, layer.extent) for layer in frames[0].layers]
+            mirror_signs = {mirror.face: mirror.value_sign
+                            for mirror in self._viewer_mirrors(physics, reals[0][0].info, spans)}
+        motion = ViewerMotion(components=components, complex=complex_parts,
+                              oscillate=self.spec.study.type in _OSCILLATING_STUDIES, mirror_signs=mirror_signs,
+                              physical=self.spec.study.type not in _MODE_STUDIES)
+        return motion, ''
 
     def _viewer_mirrors(self, physics, info, spans):
         """ViewerMirrors of the model's mirror faces for a field of physics (FieldInfo info; None = an even
