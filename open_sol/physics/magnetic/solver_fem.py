@@ -16,6 +16,7 @@ from ...core.solver_base import PhysicsSolver
 from ...fem.indicators import CHUNK_ITEMS, add_edge_terms, edge_sides, lagrange_at
 from ...fem.renderer import FEMFieldRenderer
 from .materials import MAGNETIC_SCHEMA, PERMEABILITY_ARRAYS, REMANENCE_ARRAYS, SATURATION_ARRAY
+from .mirror_totals import MirrorTotals, element_touched_faces
 from .renderer import MAGNETIC_FIELD_INFOS
 from .saturation import (TRIANGLE_NONLINEAR_METHODS, bh_curve, refuse_curve_conflicts, saturation_curve_terms,
                          tabulated_curve_terms)
@@ -30,12 +31,14 @@ _REMEDY_TEXT = 'Keep magnetic insulation (the default) on at least one face, or 
 @dataclass(frozen=True, eq=False)
 class FEMCoilRegion:
     """Runtime object of a stranded coil on triangles: host bool window elements, turns, current [A] (> 0 along +z /
-    +phi), cross-section area [m^2] (the r-z area when axisymmetric)."""
+    +phi), cross-section area [m^2] (the r-z area when axisymmetric) and mirror_factor (2 per model mirror plane it
+    reaches: its image joins it in series)."""
     name: str
     elements: object
     turns: int
     current: float
     area: float
+    mirror_factor: float = 1.0
 
 
 class ElementFields:
@@ -51,10 +54,10 @@ def _host(array) -> np.ndarray:
     return np.asarray(to_host(array), dtype=np.float64)
 
 
-class TriangleMagneticBase(PhysicsSolver):
+class TriangleMagneticBase(MirrorTotals, PhysicsSolver):
     """What MagneticFEMPhysics and MagneticACFEMPhysics share on a triangle mesh: faces, node probes, element masks,
-    the current-density slot and the axisymmetric ring; subclasses set type_label, _probe_component, `system`,
-    `fields` (J_coupled) and `_axisymmetric`."""
+    the current-density slot, the axisymmetric ring and the mirror-plane factors (MirrorTotals); subclasses set
+    type_label, _probe_component, `system`, `fields` (J_coupled) and `_axisymmetric`."""
 
     name = 'magnetic'
     coordinate_grids = ('cartesian',)
@@ -142,6 +145,11 @@ class TriangleMagneticBase(PhysicsSolver):
             raise ValueError(f'{self._label()} {what}: mask has {mask.size} values, expected one per element '
                              f'({self.domain.mesh.n_elements})')
         return mask & self.system.window_elements
+
+    def _coil_touched_faces(self, elements) -> set:
+        """Outer faces with a window-edge mesh edge of one of the (host bool) coil elements."""
+        owners = self.domain.mesh.edge_elements
+        return element_touched_faces(elements, {face: owners[self.system.face_edges(face)] for face in FACES})
 
     def _kelly_indicator(self, compliance):
         """eta^2 per element: Kelly jumps h_E compliance int_E |[H . t]|^2 ds of the tangential H (the subclass's
@@ -314,7 +322,8 @@ class MagneticFEMPhysics(TriangleMagneticBase):
         _, area = self.system.region_integrals(elements)
         if not area > 0.0:
             raise ValueError(f"coil '{name}' selects no window element")
-        coil = FEMCoilRegion(name, elements, int(turns), float(current), area)
+        coil = FEMCoilRegion(name, elements, int(turns), float(current), area,
+                             self._coil_mirror_factor(name, self._coil_touched_faces(elements)))
         density = np.where(elements, coil.turns * coil.current / area, 0.0)
         self.fields.J_applied += self.xp.asarray(density, dtype=DTYPE)
         self._source_dirty = True
@@ -333,19 +342,24 @@ class MagneticFEMPhysics(TriangleMagneticBase):
         return True
 
     def coil_results(self, coil: FEMCoilRegion) -> dict:
-        """current, turns, flux_linkage [Wb/m planar, Wb axisymmetric] = turns / area * int A dA (x 2 pi r), inductance
-        = flux_linkage / current [H/m, H] (nan at zero current)."""
+        """current, turns (the drawn cross-section's), flux_linkage [Wb/m planar, Wb axisymmetric] = mirror_factor x
+        turns / area * int A dA (x 2 pi r; its images on the mirror planes it reaches join it in series), inductance =
+        flux_linkage / current [H/m, H] (nan at zero current), mirror_factor."""
         if self.system.n_solves == 0:
             raise RuntimeError(f"{self._label()}: coil '{coil.name}' needs a solve first")
         integral, _ = self.system.region_integrals(coil.elements)
-        linkage = coil.turns * (self.ring_angle if self._axisymmetric else 1.0) * integral / coil.area
+        linkage = (coil.mirror_factor * coil.turns * (self.ring_angle if self._axisymmetric else 1.0) * integral
+                   / coil.area)
         inductance = linkage / coil.current if coil.current != 0.0 else float('nan')
-        return {'current': coil.current, 'turns': coil.turns, 'flux_linkage': linkage, 'inductance': inductance}
+        return {'current': coil.current, 'turns': coil.turns, 'flux_linkage': linkage, 'inductance': inductance,
+                'mirror_factor': coil.mirror_factor}
 
     def field_energy(self) -> float:
-        """Stored energy int w(B) dV of the window [J/m planar, J axisymmetric]: the integral of H dB (secant and true
-        energy agree for linear materials); with remanence the energy of B alone."""
-        return self.system.stored_energy() * (self.ring_angle if self._axisymmetric else 1.0)
+        """Stored energy int w(B) dV of the window [J/m planar, J axisymmetric] times window_mirror_factor (its images
+        on the model mirror planes): the integral of H dB (secant and true energy agree for linear materials); with
+        remanence the energy of B alone."""
+        return (self.system.stored_energy() * (self.ring_angle if self._axisymmetric else 1.0)
+                * self.window_mirror_factor)
 
     def rebuild_operator(self) -> None:
         self._materials_dirty = True

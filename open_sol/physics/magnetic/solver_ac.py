@@ -19,6 +19,7 @@ from .circuit import (COIL_RESULT_KEYS, ConductorRow, RecycledFactor, bordered_s
                       coil_drive, coil_result_values, stranded_resistance)
 from .fields import AC_FIELD_NAMES, MagneticFieldsAC2D
 from .materials import CONDUCTIVITY_ARRAYS, MAGNETIC_AC_SCHEMA, PERMEABILITY_ARRAYS
+from .mirror_totals import tensor_touched_faces
 from .renderer import MagneticACRenderer
 from .solver import MagneticPhysics
 
@@ -29,7 +30,8 @@ _UNEXTENDED_FIELDS = frozenset({'A_re', 'J_coupled', 'J_applied_re', 'J_applied_
 class ACCoilRegion:
     """Runtime object of an AC coil: host bool window mask, 'stranded' (J = turns I / area, no eddy currents in its
     cells) or 'solid' (one circuit row), drive, complex drive value (current [A]; voltage V/m planar, V axisymmetric),
-    turns, fill factor (stranded resistance) and cross-section area [m^2]."""
+    turns, fill factor (stranded resistance), cross-section area [m^2] and mirror_factor (2 per model mirror plane it
+    reaches: its image joins it, stranded in series, solid in parallel)."""
     name: str
     mask_window: np.ndarray
     conductor: str
@@ -38,6 +40,7 @@ class ACCoilRegion:
     turns: int
     fill_factor: float
     area: float
+    mirror_factor: float = 1.0
 
 
 class _AssemblyOnlySolver:
@@ -203,13 +206,14 @@ class MagneticACPhysics(MagneticPhysics):
         return MagneticACRenderer(self)
 
     def scalars(self) -> dict:
-        """energy [J/m, J], eddy_loss / magnetic_loss [W/m, W] (time averages), per coil COIL_RESULT_KEYS; {} before a
-        solve."""
+        """energy [J/m, J], eddy_loss / magnetic_loss [W/m, W] (time averages) of the window times
+        window_mirror_factor (its images on the model mirror planes), per coil COIL_RESULT_KEYS; {} before a solve."""
         if self._n_harmonic_solves == 0:
             return {}
         power = face_power(self._host.operator, self._solution, self._host.held)
-        ring = 2.0 * math.pi if self._axisymmetric else 1.0
-        values = {'energy': 0.25 * ring * power.real, 'eddy_loss': float(np.sum(self._q_eddy * self._cell_volume())),
+        ring = (2.0 * math.pi if self._axisymmetric else 1.0) * self.window_mirror_factor
+        values = {'energy': 0.25 * ring * power.real,
+                  'eddy_loss': self.window_mirror_factor * float(np.sum(self._q_eddy * self._cell_volume())),
                   'magnetic_loss': 0.5 * self.omega * ring * power.imag}
         for coil in self.coils:
             result = self.coil_results(coil)
@@ -251,7 +255,8 @@ class MagneticACPhysics(MagneticPhysics):
         area = float(np.sum(np.outer(system.dx_window, system.dy_window)[mask_host]))
         if not area > 0.0:
             raise ValueError(f"coil '{name}' selects no window cell")
-        coil = ACCoilRegion(name, mask_host, conductor, drive, value, int(turns), float(fill_factor), area)
+        coil = ACCoilRegion(name, mask_host, conductor, drive, value, int(turns), float(fill_factor), area,
+                            self._coil_mirror_factor(name, tensor_touched_faces(mask_host), conductor == 'solid'))
         if conductor == 'stranded':
             density = coil.turns * value / area
             self._applied_source_window += self.xp.where(mask_window, DTYPE(density.real), DTYPE(0.0))
@@ -264,7 +269,9 @@ class MagneticACPhysics(MagneticPhysics):
     def coil_results(self, coil: ACCoilRegion) -> dict:
         """Complex current and loop voltage (stranded: R I + j omega flux linkage, R from the coil cells' sigma_dc and
         fill_factor; solid: the circuit unknown), Z = V / I -> resistance Re Z, inductance Im Z / omega, power
-        Re(V I*) / 2; planar per unit length (A, V/m, Ohm/m, H/m, W/m), axisymmetric whole rings (A, V, Ohm, H, W)."""
+        Re(V I*) / 2; planar per unit length (A, V/m, Ohm/m, H/m, W/m), axisymmetric whole rings (A, V, Ohm, H, W).
+        A coil reaching mirror planes is the unfolded one (mirror_factor f): stranded in series (voltage x f at the
+        same current), solid in parallel (current x f at the same voltage)."""
         if self._n_harmonic_solves == 0:
             raise RuntimeError(f"magnetic_fields_ac '{self.name}': coil '{coil.name}' needs a solve first")
         host = self._host
@@ -277,13 +284,14 @@ class MagneticACPhysics(MagneticPhysics):
             sigma = host.sigma[mask]
             path = host.cell_area[mask] * (ring * np.broadcast_to(host.radius, unknown.shape)[mask])
             resistance_dc = stranded_resistance(coil.turns, coil.fill_factor, coil.area, path, sigma)
-            voltage = resistance_dc * current + 1j * self.omega * linkage
+            voltage = coil.mirror_factor * (resistance_dc * current + 1j * self.omega * linkage)
         else:
             drive_value = self._conductor_drives[coil.name]
             weights = (host.sigma_eddy * host.cell_area / host.radius)[mask]
-            current = complex(np.sum(weights * (drive_value - 1j * self.omega * unknown[mask])))
+            current = coil.mirror_factor * complex(np.sum(weights * (drive_value - 1j * self.omega * unknown[mask])))
             voltage = ring * drive_value
-        return coil_result_values(current, voltage, self.omega, coil.conductor, coil.drive)
+        return {**coil_result_values(current, voltage, self.omega, coil.conductor, coil.drive),
+                'mirror_factor': coil.mirror_factor}
 
     def field_energy(self) -> float:
         """Time-averaged magnetic energy (1/4) Re(u^H K u) of the free cells [J/m planar, J axisymmetric]."""

@@ -154,12 +154,13 @@ def own_mirror_face_conflicts(vctx, physics_spec, face_feature_types, own_mirror
     return issues
 
 
-def mirror_feature_issues(vctx, physics_spec, feature_spec, settings_params):
+def mirror_feature_issues(vctx, physics_spec, feature_spec, settings_params, axis_rule=True):
     """Rules of a core.mirror.MIRROR_FEATURES face feature (heat, potential, ... symmetry): a Cartesian domain (or 1D
     slab), never the x_lo rotation axis or the x_hi cylinder of geometry 'axisymmetric' (settings_params: the type's settings, read through
     vctx.values), and every other physics of the model with mirror bc settings (EM bc_<face> symmetric /
     antisymmetric) mirrors the face itself (else its fields unfold and its integrals double with a sign it never
-    solved). Parity sectors of a type without features of both signs are refused by study validation."""
+    solved). Parity sectors of a type without features of both signs are refused by study validation. axis_rule
+    False: the type's own axis rule already refuses a face feature on the axisymmetric x_lo (magnetic)."""
     path = feature_path(physics_spec, feature_spec)
     try:
         faces = [name for name in expand_entities(vctx.spec, feature_spec.selection) if name in FACES_3D]
@@ -171,7 +172,7 @@ def mirror_feature_issues(vctx, physics_spec, feature_spec, settings_params):
         issues.append(Issue('error', path, f'a {feature_spec.type} face needs a Cartesian domain (a 1D slab too), not the '
                                            f'{vctx.domain_map.grid_text} grid (the unfolding mirrors the window, not '
                                            'the drawn sector): remove the feature'))
-    if 'x_lo' in faces and not vctx.spec.is_3d and is_axisymmetric(vctx.values(settings_params,
+    if axis_rule and 'x_lo' in faces and not vctx.spec.is_3d and is_axisymmetric(vctx.values(settings_params,
                                                                                 physics_spec.settings)):
         unfold = (' Unfold mirror planes (Results.field(unfold=True)) shows the r < 0 side of the axisymmetric '
                   'field without it' if physics_spec.type in AXIS_UNFOLD_TYPES else '')

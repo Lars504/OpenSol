@@ -9,7 +9,7 @@ import math
 import numpy as np
 
 from ...core.constants import MU0
-from ...model.schema import SelfTestCase
+from ...model.schema import GLOBAL_DERIVED_OPERATION, SelfTestCase
 from ...model.selftest_helpers import cell_centre, scaled_worst_result, solver_role, with_exact_cg, worst_error
 from ...model.spec import (AnalyticCurveSpec, DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec,
                            MeshAxisSpec, MeshBandSpec, MeshSpec, ModelSpec, ParameterSpec, PhysicsSpec, RefinementSpec,
@@ -630,14 +630,17 @@ _PARITY_FIELDS = ('phi_m', 'B_x', 'B_y', 'B_z', 'H_x', 'H_y', 'H_z')
 
 
 def _parity_spec(title, cells, extra_features):
-    """Magnetised cube (remanence_z, mu 2) on uniform cells, x faces symmetry (the anchor), plus extra_features."""
+    """Magnetised cube (remanence_z, mu 2) on uniform cells, x faces symmetry (the anchor), plus extra_features; derived
+    W = the energy scalar."""
     size = tuple(count * _PARITY_CELL for count in cells)
     low, high = (tuple(index * _PARITY_CELL for index in corner) for corner in _PARITY_MAGNET)
-    return _magnetic_spec(
+    spec = _magnetic_spec(
         title, size, [FeatureSpec('x_mirror', 'symmetry', ['x_lo', 'x_hi']), *extra_features],
         materials=[MaterialSpec('magnet', properties={'mu_dc': _PARITY_PERMEABILITY,
                                                       'remanence_z': _PARITY_REMANENCE}, selection=['cube'])],
         geometry=[_box('cube', low, high)], mesh=MeshSpec(mode='uniform', dx=_PARITY_CELL))
+    spec.derived_values = [DerivedValueSpec('W', f'{_MAGNETIC}_energy', [], GLOBAL_DERIVED_OPERATION)]
+    return spec
 
 
 def _parity_runs():
@@ -652,7 +655,9 @@ def _parity_runs():
 
 def _check_parity(results_by_name):
     """Each half model's fields against the full model's lower half; per field relative to its group maximum (phi_m,
-    the B components, the H components of the full model)."""
+    the B components, the H components of the full model). Energy: the symmetry z_hi of half_z is a model mirror plane,
+    so half_z reports the full model's energy; the insulation y_hi of half_y is none, so half_y reports half of it (the
+    x symmetry faces count x 4 in every run)."""
     full = {name: _volume(results_by_name['full'], name)[0] for name in _PARITY_FIELDS}
     scales = {group: max(float(np.max(np.abs(full[name]))) for name in _PARITY_FIELDS if name.startswith(group))
               for group in ('phi', 'B', 'H')}
@@ -667,7 +672,10 @@ def _check_parity(results_by_name):
                 raise ValueError(f'{half} {name}: window {values.shape}, expected {reference.shape}')
             errors[f'{half}_{name}'] = (float(np.max(np.abs(values - reference)))
                                         / scales[name.split('_')[0]])
-    return _report(errors, scales=scales)
+    energies = {name: _derived(results, 'W') for name, results in results_by_name.items()}
+    errors['half_z_energy'] = abs(energies['half_z'] / energies['full'] - 1.0)
+    errors['half_y_energy'] = abs(2.0 * energies['half_y'] / energies['full'] - 1.0)
+    return _report(errors, scales=scales, energies=energies)
 
 
 # ---- magnet3d_cpu_gpu ----
@@ -806,9 +814,12 @@ SELFTEST_CASES_3D = (
                      'midplane); half_y: the lower half along y with magnetic_insulation on y_hi (phi_m even, B '
                      'tangential). The full model restricted to each half is the discrete solution of the half '
                      '(face conductances and remanence face terms coincide on the plane). measured = largest '
-                     'deviation of phi_m, B and H per component relative to the full model\'s maximum of its group, '
-                     f'tolerance {_TOLERANCE:g}. Pins the face kinds behind core.mirror.FACE_FEATURE_SIGNS; the '
-                     'unfold of a model mirror plane itself is not exercised. Not run yet.'),
+                     'deviation of phi_m, B and H per component relative to the full model\'s maximum of its group; '
+                     'energy scalar: the symmetry faces are model mirror planes (x 2 each, the x faces x 4 in every '
+                     'run), so half_z reports the full energy, while insulation is none, so half_y reports half of it '
+                     f'(relative); tolerance {_TOLERANCE:g}. Pins the face kinds behind '
+                     'core.mirror.FACE_FEATURE_SIGNS and the window mirror factor of the energy; the unfold of a '
+                     'model mirror plane itself is not exercised. Not run yet.'),
         specs=_parity_runs, check=_check_parity),
     SelfTestCase(
         name='magnet3d_cpu_gpu',

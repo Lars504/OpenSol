@@ -4,6 +4,7 @@ plus its template
 and selftests; shares the face / held-region features, mu_dc Params and validate_magnetic_common with
 definition_magnetostatics. Imports no cupy at module level."""
 from ...core import time_estimate as te
+from ...core.mirror import mirror_faces
 from ...core.memory_estimate import (COMPLEX128_BYTES, COMPLEX128_CSR_ENTRY_BYTES, FLOAT32_BYTES, FLOAT64_BYTES,
                                      MemoryEstimate, combine, diffusion_system_estimate, host_lu_bytes,
                                      window_cell_count)
@@ -104,17 +105,26 @@ _COIL_DESCRIPTION = (
     'and loop voltage (stranded: R_dc I + j omega flux linkage), Z = V / I: resistance Re Z, inductance Im Z / omega, '
     'power Re(V I*) / 2; planar per m of length (A, V/m, Ohm/m, H/m, W/m), axisymmetric whole rings (A, V, Ohm, H, '
     'W). With several conductors each Z includes the mutual terms (for series +I / -I the resistances and '
-    'inductances add to the loop values). Scalars <feature>_<key> carry the same numbers.')
+    'inductances add to the loop values). Mirror planes of the model (a symmetry face): a conductor whose cells reach '
+    'a plane joins its image and reports the unfolded conductor (extra mirror_factor = 2 per plane reached): '
+    'stranded in series (turns, current and so J stay the drawn cross-section\'s; flux linkage, resistance and '
+    'voltage x mirror_factor), solid in parallel (the drive current or voltage is the drawn part\'s; the reported '
+    'current x mirror_factor at the same voltage, so resistance and inductance / mirror_factor, power x '
+    'mirror_factor). A solid conductor reaching a mirror plane where magnetic insulation makes A odd is a build error '
+    '(its image would need the opposite voltage); a conductor off the planes has image conductors of its own, not '
+    'included. Scalars <feature>_<key> carry the same numbers.')
 _PROBE_DESCRIPTION = ('Vector potential amplitude |A| (planar A_z, axisymmetric A_phi) [T m] of the cell containing '
                       'the point, one sample per solve plus one at the end of the run.')
 _SLOT_DOCS = ('A/m^2', 'Coupled current density J_z (axisymmetric J_phi; field J_coupled), a real amplitude at phase 0 '
                        'added to the current_source and coil features; each transfer replaces it.')
 _SCALARS_HELP = (
-    'energy: time-averaged magnetic energy (1/4) Re(A^H K A) of the free cells (J/m planar, J axisymmetric); '
-    'eddy_loss: time-averaged ohmic loss, the integral of q_eddy = sigma_dc |E|^2 / 2 over the conducting cells '
-    '(induced and solid-conductor currents; stranded coils excluded) in W/m or W; magnetic_loss: (omega / 2) Im(A^H K '
-    'A), the mu_dc_loss dissipation (W/m, W; the integral of q_magnetic only approximately at material interfaces); '
-    'per enabled coil feature <coil>_' + ', <coil>_'.join(COIL_RESULT_KEYS) + ' as its table result.')
+    'Totals of the model unfolded over its mirror planes (a symmetry face: x 2 per plane; coils reaching a plane join '
+    'their image). energy: time-averaged magnetic energy (1/4) Re(A^H K A) of the free cells (J/m planar, J '
+    'axisymmetric); eddy_loss: time-averaged ohmic loss, the integral of q_eddy = sigma_dc |E|^2 / 2 over the '
+    'conducting cells (induced and solid-conductor currents; stranded coils excluded) in W/m or W; magnetic_loss: '
+    '(omega / 2) Im(A^H K A), the mu_dc_loss dissipation (W/m, W; the integral of q_magnetic only approximately at '
+    'material interfaces); per enabled coil feature <coil>_' + ', <coil>_'.join(COIL_RESULT_KEYS)
+    + ' as its table result.')
 _PHYSICS_DESCRIPTION = (
     '2D time-harmonic magnetic fields (eddy currents) at one frequency (setting frequency), quasi-static: curl(nu '
     'curl A) + j omega sigma_dc A = J with nu = 1 / (mu0 (mu_dc - j mu_dc_loss)), phasors exp(+j omega t) of peak '
@@ -236,7 +246,8 @@ def _validate_ac(vctx, physics_spec, settings_values):
 
 # ---- physics factory callbacks ----
 def _create(ctx, physics_spec, values):
-    """MagneticACPhysics (tensor) or MagneticACFEMPhysics (triangles, the discretization order)."""
+    """MagneticACPhysics (tensor) or MagneticACFEMPhysics (triangles, the discretization order) with the model mirror
+    faces (core.mirror.mirror_faces, this physics' signs)."""
     host_solver = ctx.solvers(physics_spec.name)['linear']
     if ctx.domain.grid_kind == 'triangles':
         from .solver_ac_fem import MagneticACFEMPhysics   # lazy: no solver code at definition import time
@@ -246,6 +257,7 @@ def _create(ctx, physics_spec, values):
         from .solver_ac import MagneticACPhysics   # lazy: no solver code at definition import time
         solver = MagneticACPhysics(ctx.domain, values['frequency'], axisymmetric=is_axisymmetric(values),
                                    host_solver=host_solver)
+    solver.set_mirror_faces(mirror_faces(ctx.spec, physics_spec.name))   # before the coils: their image factors
     # a reused sweep build re-sets the frequency (both grid kinds are RerunSolvers)
     ctx.follow_parameters(physics_spec.settings, values, ('frequency',), solver.set_frequency, solver,
                           f"physics '{physics_spec.name}' frequency")
@@ -467,8 +479,10 @@ _FEATURES = (
                               tip='Whether the current or the voltage of the conductor is given.'),
                         Param('current', 'float', 1.0, label='Current amplitude', unit='A',
                               visible_if=(('conductor', ('stranded',)), ('drive', ('current',))),
-                              help='Peak current per turn (solid: the total current), > 0 along +z (axisymmetric: '
-                                   'counter-clockwise seen from +z), at the given phase.',
+                              help='Peak current per turn (solid: the total current of the selected cells; a '
+                                   'conductor reaching a mirror plane reports mirror_factor times it, its image '
+                                   'joined), > 0 along +z (axisymmetric: counter-clockwise seen from +z), at the given '
+                                   'phase.',
                               tip='Peak value of the alternating current; the sign sets the direction.'),
                         Param('voltage', 'float', 1e-3, label='Voltage amplitude', unit='V/m',
                               space_units=(('axisymmetric', 'V'),), visible_if=(('drive', ('voltage',)),),

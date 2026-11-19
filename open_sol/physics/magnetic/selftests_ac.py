@@ -10,13 +10,16 @@ from ...core.constants import MU0
 from ...model.selftest_helpers import max_relative_error, relative_error
 from ...model.spec import (DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec,
                            ParameterSpec, PhysicsSpec, RefinementSpec, StudySpec, SweepSpec)
-from .selftests import (_BAND, _CELL, _GAP_PARAMETER, _LENGTH, _MAGNETIC, _RUN, _TOLERANCE, _WIDTH, _band_rectangle,
-                        _derived_value, _in_range, _mirror_y, _report, _window_field, needle_model)
+from .selftests import (_BAND, _CELL, _GAP_PARAMETER, _LENGTH, _MAGNETIC, _RUN, _TOLERANCE, _WIDTH, _Y_MIRROR_FACTOR,
+                        _band_rectangle, _derived_value, _in_range, _mirror_y, _report, _scalar_value, _window_field,
+                        needle_model)
 
 MAGNETIC_AC_TYPE_NAME = 'magnetic_fields_ac'   # = the definition's type name (the definition imports this module)
 
-# 1D layout of the DC cases (1 x 0.1 mm, 10 um cells, symmetry y faces). Copper sigma_dc; the frequencies put the skin
-# depth delta = sqrt(2 / (omega mu0 sigma)) at ~10 cells (slab) and ~5 cells (strip half width 0.1 mm).
+# 1D layout of the DC cases (1 x 0.1 mm, 10 um cells, symmetry y faces: model mirror planes, so the losses and the
+# strip's current count x 4 = _Y_MIRROR_FACTOR; the strip reaches both and joins its images in parallel). Copper
+# sigma_dc; the frequencies put the skin depth delta = sqrt(2 / (omega mu0 sigma)) at ~10 cells (slab) and ~5 cells
+# (strip half width 0.1 mm).
 _COPPER = 5.8e7                   # S/m
 _SKIN_FREQUENCY = 4.4e5           # Hz: delta ~ 99.6 um, the slab is ~10 delta deep
 _DRIVE_POTENTIAL = 1e-6           # T m held on the first cell column
@@ -105,7 +108,7 @@ def _ac_model(title, features, materials, geometry, frequency, derived_values=()
 
 
 def _loss_value():
-    return DerivedValueSpec('P', f'{_MAGNETIC}_eddy_loss', [], 'max')
+    return _scalar_value('P', f'{_MAGNETIC}_eddy_loss')
 
 
 def _skin_specs():
@@ -145,20 +148,22 @@ def _check_skin(results_by_name):
     loss_density, _, _ = _window_field(results, 'q_eddy')
     exact = _skin_solution(edges)
     loss = _derived_value(results, 'P')
+    loss_closed = _Y_MIRROR_FACTOR * exact['loss']   # the y mirror images counted
     free = slice(1, None)
     field_scale = float(np.max(np.abs(exact['B_y'])))
     errors = {'A': max_relative_error(potential[free], exact['A'][:, None], _DRIVE_POTENTIAL),
               'B_y': max_relative_error(flux_density[free], exact['B_y'][:, None], field_scale),
               'q_eddy': max_relative_error(loss_density[free], exact['q_eddy'][:, None], float(np.max(exact['q_eddy']))),
-              'eddy_loss': relative_error(loss, exact['loss'])}
+              'eddy_loss': relative_error(loss, loss_closed)}
     delta = _skin_depth(_SKIN_FREQUENCY)
-    return _report(loss, exact['loss'], errors, skin_depth_m=delta, B_surface_T=field_scale,
+    return _report(loss, loss_closed, errors, skin_depth_m=delta, B_surface_T=field_scale,
                    continuous_B_surface_T=_DRIVE_POTENTIAL * math.sqrt(2.0) / delta, n_cells=list(potential.shape))
 
 
 def _check_strip(results_by_name):
-    """A, J_conduction and v against the exact bordered system; the circuit row (current = I) and the Poynting
-    identity (eddy_loss = Re(V I*) / 2) to _IDENTITY_TOLERANCE, entered as error * _TOLERANCE / _IDENTITY_TOLERANCE."""
+    """A, J_conduction and v against the exact bordered system; the circuit row (current = 4 I: the strip joins its images
+    on both y mirror planes in parallel, x 2 each, at the same v) and the Poynting identity (eddy_loss = Re(V I*) / 2, both x 4) to
+    _IDENTITY_TOLERANCE, entered as error * _TOLERANCE / _IDENTITY_TOLERANCE."""
     results = results_by_name[_RUN]
     potential, edges = _complex_field(results, 'A')
     density, _ = _complex_field(results, 'J_conduction')
@@ -166,17 +171,18 @@ def _check_strip(results_by_name):
     row = results.result(_MAGNETIC, 'bar')
     current = complex(row['current_re'], row['current_im'])
     voltage = complex(row['voltage_re'], row['voltage_im'])
-    prescribed = _STRIP_CURRENT * np.exp(1j * math.radians(_STRIP_PHASE))
+    prescribed = _Y_MIRROR_FACTOR * _STRIP_CURRENT * np.exp(1j * math.radians(_STRIP_PHASE))   # the unfolded strip
     loss = _derived_value(results, 'P')
     identity_scale = _TOLERANCE / _IDENTITY_TOLERANCE
     errors = {'A': max_relative_error(potential, exact['A'][:, None], float(np.max(np.abs(exact['A'])))),
               'J_conduction': max_relative_error(density, exact['J'][:, None], float(np.max(np.abs(exact['J'])))),
               'voltage': abs(voltage - exact['v']) / abs(exact['v']),
-              'eddy_loss': relative_error(loss, exact['loss']),
+              'eddy_loss': relative_error(loss, _Y_MIRROR_FACTOR * exact['loss']),
               'current_row_scaled': identity_scale * abs(current - prescribed) / abs(prescribed),
               'poynting_scaled': identity_scale * relative_error(loss, float(row['power']))}
-    return _report(abs(current), _STRIP_CURRENT, errors, resistance_ohm_per_m=float(row['resistance']),
-                   dc_resistance_ohm_per_m=1.0 / (_COPPER * (_BAND[1] - _BAND[0]) * _WIDTH),
+    return _report(abs(current), _Y_MIRROR_FACTOR * _STRIP_CURRENT, errors,
+                   resistance_ohm_per_m=float(row['resistance']),
+                   dc_resistance_ohm_per_m=1.0 / (_COPPER * (_BAND[1] - _BAND[0]) * _Y_MIRROR_FACTOR * _WIDTH),
                    inductance_H_per_m=float(row['inductance']), skin_depth_m=_skin_depth(_STRIP_FREQUENCY),
                    n_cells=list(potential.shape))
 

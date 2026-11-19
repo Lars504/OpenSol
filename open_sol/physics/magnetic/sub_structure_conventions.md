@@ -36,8 +36,26 @@ Sub file of the root `structure_conventions.md`. DiffusionSystem (assembly, PCG,
   remanence face terms) averaged to centres, B = H / nu + B_r (exact at magnet edges); B, H = 0 in held cells.
 - Faces: every face starts Dirichlet A = 0 (insulation); `symmetry` is Neumann 0. On a model mirror plane the fields
   unfold with the face's own sign (`core.mirror.FACE_FEATURE_SIGNS`: symmetry A even, insulation A odd; A / J polar_z,
-  B / H axial); magnetic faces never make a mirror plane themselves. Axisymmetric x_lo is the axis: psi = 0,
-  `set_face_bc('x_lo', ...)` raises, validation (`axisymmetric_issues`, 'error') rejects features selecting it.
+  B / H axial). Axisymmetric x_lo is the axis: psi = 0, `set_face_bc('x_lo', ...)` raises, validation
+  (`axisymmetric_issues`, 'error') rejects features selecting it.
+- Mirror planes (all three types; `mirror_totals.py`): `symmetry` is in `core.mirror.MIRROR_FEATURES` (2D +1, 3D -1),
+  so a symmetry face IS a model mirror plane; magnetic_insulation never is (it is also the far boundary and every
+  unset face). The type has no Neumann face that is not a mirror: a face "next to ideal iron" or both y faces of a 1D
+  slice double the totals too (x 4 for the 1D layouts of the self-tests / examples, `selftests._Y_MIRROR_FACTOR`).
+  Every solver is a `MirrorTotals`: `_create` calls `set_mirror_faces(mirror_faces(spec, name))` before any feature
+  applies (it raises once a coil exists, and on the axisymmetric x_lo / x_hi); energy, eddy_loss and magnetic_loss x
+  `window_mirror_factor` (2^k over the model's k mirror faces: the window reaches all of them); a coil reaching a plane
+  (tensor: its mask's edge layer, `tensor_touched_faces`; elements: an owner of a window-edge edge / face,
+  `element_touched_faces`) gets `mirror_factor` at add_coil: stranded (2D, AC, 3D) joins in series (linkage, R_dc,
+  voltage x f; turns / current / J stay the drawn ones), solid joins in parallel (current x f at the same v; the
+  drive value is the drawn part's; Z / f). A solid conductor on an odd plane (insulation on another physics' mirror)
+  raises at add_coil (v would have to flip). A new total of these solvers multiplies by the same factors.
+  Validation (`definition_magnetostatics.mirror_plane_issues`, also 3D): the symmetry feature through
+  `mirror_feature_issues` (its axisymmetric x_lo error duplicates the axis rule's), `own_mirror_face_conflicts` for
+  magnetic_insulation on a symmetry face, external_field with any model mirror plane (its ring replaces the face),
+  another physics' mirror on the axisymmetric x_lo / x_hi, and a warning for another physics' mirror on an unset face.
+  No `mirror_face_issues`: both magnetic face kinds are valid mirror images. Parity sectors refuse (one sign only).
+  Not covered by a self-test: the coil factor on triangles / tetrahedra beyond the 1D y slices, the odd solid refusal.
 - Axis rule: x_lo = `BCSide('dirichlet', value=0.0, conductance_factor=2.0)` (half cell's series resistance puts c at
   r_c / 2), set in `__init__`; the core face terms carry it into assembly, flux_at_centres, field_energy, the remanence
   face drive and face_inward_flux, and ac_operator's `boundary_terms` reads it too. Never add an axis term elsewhere
@@ -178,7 +196,8 @@ Sub file of the root `structure_conventions.md`. DiffusionSystem (assembly, PCG,
   currents, cleared per full assembly, at most `COIL_FIELD_CACHE_BYTES`). w_mag = B^2 / (2 mu0 mu) (the energy
   scalar's density, as 2D and the tensor 3D solver; not B . H / 2 inside magnets).
 - Coil results carry 'energy' (both mesh kinds); the identity self-test reads it there since field derived values
-  raise on tetrahedra. Not done: mirror-plane unfolding (unchecked), nodal B display, Lorentz force.
+  raise on tetrahedra. Not done: a tetrahedra mirror-plane self-test (energy / coil factors as tensor, unrun), nodal B
+  display, Lorentz force.
 - cuDSS (unmeasured): operator real SPD. Linear models: one factor, few solves; host SuperLU fine up to ~1e5 P2 dofs,
   above cuDSS pays (3D fill). Saturation refactors per iteration (15-50): plan reuse (`CudssFactorization.refactorize`)
   is the win; cudss_mixed is risky at mu contrasts 1e3-1e5 (measure single_residual on an iron-core model first). The
@@ -227,7 +246,9 @@ Sub file of the root `structure_conventions.md`. DiffusionSystem (assembly, PCG,
 - Coils: linkage by `region_integrals`; probes A at a point's node; error_indicator Kelly tangential-H jumps.
   Estimates: time = DiffusionSystem recipe with (NEWTON_ITERATIONS_GUESS + 1) solves per saturating solve
   (uncalibrated; quadrature / line-search work not priced).
-- Open: mirror-plane unfolding (not checked on triangles), a same-mesh Lorentz-force self-test, an axisymmetric
+- Mirror planes: the Session refuses max / min over mirror images on triangles, so triangle self-tests read scalars
+  with operation 'expression' (`selftests._scalar_value`) and fields 'at' points.
+- Open: a same-mesh Lorentz-force self-test, an axisymmetric
   remanence self-test (A_phi of an axial magnet shell has a 1 / r part, not in P2: needs a convergence tolerance), held
   regions in any triangle self-test.
 - cuDSS (unmeasured): reduced K and K_t real SPD; Newton one factor + ONE solve per step with a fixed pattern per
@@ -298,9 +319,10 @@ Sub file of the root `structure_conventions.md`. DiffusionSystem (assembly, PCG,
   solid_mechanics is plane strain: validation errors and the transform raises. Adds with em_solid_optical_force.
 
 ## Self-tests (`selftests.py`)
-- 1D layout 1 x 0.1 mm, 10 um cells, symmetry y faces, band on cell edges; the expectation is the exact DISCRETE
+- 1D layout 1 x 0.1 mm, 10 um cells, symmetry y faces (model mirror planes: energy, losses and coils spanning the
+  height x 4 = `_Y_MIRROR_FACTOR`), band on cell edges; the expectation is the exact DISCRETE
   solution on the run's cells (`_planar_line_solution`, `_axisymmetric_line_solution` with the doubled axis
-  conductance), float64 CG 1e-12, tolerance 1e-6. magnet_permeable_slab has B_x normal to the slab faces (the plan's
+  conductance and insulation x_hi: a symmetry face on the axisymmetric x_hi is refused), float64 CG 1e-12, tolerance 1e-6. magnet_permeable_slab has B_x normal to the slab faces (the plan's
   B_y orientation would not be uniform). magnet_saturating_sheet: 'picard', relaxation 0.44 = 2 / (2 + k_max), on a
   sparse_direct node (`_model(direct=True)`). No tensor flux-driven saturation case; Anderson deep saturation is the
   example `bh_curve_table_core.json`. The tabulated sheet (no origin row, H past the last row; exact B = forward
@@ -314,4 +336,8 @@ Sub file of the root `structure_conventions.md`. DiffusionSystem (assembly, PCG,
   forms (P2 holds piecewise-quadratic A exactly), unlike the FV discrete identities of selftests.py;
   _remanent_slab is the only remanence case on triangles. Float64 scalars / derived 1e-9, float32 probes 1e-6.
 - `selftests_coupled.py`: magnet_induction_heating_strip, magnet_lorentz_force_sheet; both repeat on the cpu
-  (variant 'cpu').
+  (variant 'cpu'). The Lorentz sheet's magnetic symmetry x_hi / y faces are model mirror planes for its solid too
+  (fixed on x_hi, free y faces): its reaction check depends on how solid_mechanics counts reactions there.
+- Mirror coverage: magnet_symmetry_half_model (selftests.py: the half on a symmetry x_lo reports the full model's
+  energy / inductance, mirror_factor 8 vs 4, unfold=True A / B_y equal the full ones), the x 4 of every 1D case, and
+  magnet3d_mirror_parity's energies (symmetry half = full, insulation half = full / 2).

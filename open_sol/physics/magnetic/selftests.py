@@ -1,5 +1,6 @@
 """Analytic self-tests of magnetostatics (planar current sheet on a graded mesh; axisymmetric solenoid; permeable slab and
-empty axisymmetric box in an external field; remanent slab; coil pair inductance; saturating sheet (Picard); the sheet
+empty axisymmetric box in an external field; remanent slab; coil pair inductance; half model on a symmetry face;
+saturating sheet (Picard); the sheet
 in a tabulated B-H curve is run by selftests_backend) and the 'flux_concentrator_needle' template; specs built fresh.
 Every expectation is the exact finite-volume solution on the run's cells."""
 import math
@@ -7,7 +8,7 @@ import math
 import numpy as np
 
 from ...core.constants import MU0
-from ...model.schema import SelfTestCase
+from ...model.schema import GLOBAL_DERIVED_OPERATION, SelfTestCase
 from ...model.selftest_helpers import (EXACT_CG_TOLERANCE, cell_edges, max_relative_error, relative_error, solver_role,
                                        with_direct_node, with_exact_cg, worst_error)
 from ...model.spec import (DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec,
@@ -30,6 +31,9 @@ _N_CELLS = (round(_LENGTH / _CELL), round(_WIDTH / _CELL))   # (100, 10)
 _BAND = (0.4e-3, 0.6e-3)           # m
 _CURRENT_DENSITY = 1e6             # A/m^2: sheet / winding, B ~ mu0 J 0.2 mm = 2.5e-4 T
 _PROBE_CELL = (24, 5)              # window cell of the vector potential probe (uniform mesh)
+# The symmetry faces are model mirror planes (core.mirror.MIRROR_FEATURES): the type's own totals (energy, losses, coil
+# results of a coil reaching the plane) count one image per plane, x 2 each. Both y faces of the 1D layout: x 4.
+_Y_MIRROR_FACTOR = 4.0
 
 # Graded variant: refinement line on x = 0.5 mm (dx 2.5 um, margin 0.45 mm), the band edges then off the cell edges:
 # the band is the cells whose float32 centres fall in it (as the build rasterises), edges rebuilt from the centres.
@@ -104,21 +108,24 @@ def _planar_line_solution(edges, current_density, permeability, remanence=None):
 
 
 def _axisymmetric_line_solution(edges, current_density):
-    """Exact discrete (mu = 1) psi(r) between the axis (psi = 0, doubled half-cell conductance) and a symmetry x_hi:
-    psi [T m^2], A_phi, B_z [T] at the centres and energy per m of height [J/m]."""
+    """Exact discrete (mu = 1) psi(r) between the axis (psi = 0, doubled half-cell conductance) and an insulation x_hi
+    (psi = 0, plain half-cell conductance), solved densely: psi [T m^2], A_phi, B_z [T] at the centres and energy per m
+    of height [J/m]."""
     widths = np.diff(edges)
     radii = 0.5 * (edges[:-1] + edges[1:])
     reluctivity = 1.0 / MU0
     coefficient = reluctivity / radii                        # c = nu / r_c
-    conductance = np.empty(widths.size)                      # faces 0..n-1 per m of height
+    conductance = np.empty(widths.size + 1)                  # faces 0..n per m of height
     conductance[0] = 2.0 * (2.0 * coefficient[0] / widths[0])
-    conductance[1:] = 1.0 / (0.5 * widths[:-1] / coefficient[:-1] + 0.5 * widths[1:] / coefficient[1:])
-    sources = current_density * widths
-    flux = np.zeros(widths.size + 1)                         # toward +r per m of height (= -H_z), 0 on x_hi
-    flux[:-1] = -np.cumsum(sources[::-1])[::-1]
-    psi = -np.cumsum(flux[:-1] / conductance)
+    conductance[1:-1] = 1.0 / (0.5 * widths[:-1] / coefficient[:-1] + 0.5 * widths[1:] / coefficient[1:])
+    conductance[-1] = 2.0 * coefficient[-1] / widths[-1]
+    matrix = (np.diag(conductance[:-1] + conductance[1:]) - np.diag(conductance[1:-1], 1)
+              - np.diag(conductance[1:-1], -1))
+    psi = np.linalg.solve(matrix, current_density * widths)
+    padded = np.concatenate(([0.0], psi, [0.0]))
+    flux = conductance * (padded[:-1] - padded[1:])          # toward +r per m of height (= -H_z)
     return {'psi': psi, 'A': psi / radii, 'B_y': -0.5 * (flux[:-1] + flux[1:]) / reluctivity,
-            'energy_per_height': math.pi * float(np.sum(flux[:-1] ** 2 / conductance))}
+            'energy_per_height': math.pi * float(np.sum(flux ** 2 / conductance))}
 
 
 def _curve_flux_density(field):
@@ -191,9 +198,15 @@ def _mirror_y():
     return FeatureSpec('mirror', 'symmetry', ['y_lo', 'y_hi'])
 
 
+def _scalar_value(name, expression):
+    """Fresh derived value of a scalar-output expression (operation 'expression': no field reduction, so also on a
+    triangle mesh with mirror planes, where max / min over the images are not evaluated)."""
+    return DerivedValueSpec(name, expression, [], GLOBAL_DERIVED_OPERATION)
+
+
 def _energy_value():
-    """Fresh derived value W = the energy scalar (a constant field: 'max' reads it)."""
-    return DerivedValueSpec('W', f'{_MAGNETIC}_energy', [], 'max')
+    """Fresh derived value W = the energy scalar."""
+    return _scalar_value('W', f'{_MAGNETIC}_energy')
 
 
 def _current_sheet_specs(graded=False):
@@ -209,11 +222,11 @@ def _current_sheet_specs(graded=False):
 
 
 def _solenoid_specs():
-    """'run': axisymmetric winding J_phi = 1e6 A/m^2 in a < r < b, symmetry on x_hi and both z faces."""
+    """'run': axisymmetric winding J_phi = 1e6 A/m^2 in a < r < b, symmetry on both z faces, insulation on x_hi (the
+    default; a symmetry face cannot sit on the r_max cylinder)."""
     return {_RUN: _model(
         'Self-test: long solenoid (axisymmetric magnetostatics)',
-        [FeatureSpec('mirror', 'symmetry', ['x_hi', 'y_lo', 'y_hi']),
-         FeatureSpec('winding', 'current_source', ['band'], {'density': _CURRENT_DENSITY})],
+        [_mirror_y(), FeatureSpec('winding', 'current_source', ['band'], {'density': _CURRENT_DENSITY})],
         geometry=[_band_rectangle('band', *_BAND)], derived_values=[_energy_value()], axisymmetric=True)}
 
 
@@ -275,8 +288,31 @@ def _coil_pair_specs():
          FeatureSpec('go', 'coil', ['go'], {'current': _COIL_CURRENT, 'turns': _COIL_TURNS}),
          FeatureSpec('back', 'coil', ['back'], {'current': -_COIL_CURRENT, 'turns': _COIL_TURNS})],
         geometry=[_band_rectangle(name, *span) for name, span in _COIL_RANGES.items()],
-        derived_values=[_energy_value(), DerivedValueSpec('L_go', f'{_MAGNETIC}_go_inductance', [], 'max'),
-                        DerivedValueSpec('L_back', f'{_MAGNETIC}_back_inductance', [], 'max')])}
+        derived_values=[_energy_value(), _scalar_value('L_go', f'{_MAGNETIC}_go_inductance'),
+                        _scalar_value('L_back', f'{_MAGNETIC}_back_inductance')])}
+
+
+# Half model on a symmetry face: the coil pair layout with one coil 'winding' (10 turns over the band [0.4, 0.6] mm,
+# even about x = 0.5 mm) as 'full'; 'half' = the window x in [0.5, 1] mm, drawn from 0, with symmetry on x_lo (and the
+# y faces), insulation x_hi and the winding's right half (5 turns over [0, 0.1] mm: the same J).
+_HALF_TURNS = (10, 5)              # full, half
+
+
+def _half_model_specs():
+    """'full' / 'half': the even winding between insulation x faces, and its x >= 0.5 mm half on a symmetry x_lo."""
+    def model(half):
+        size = (_LENGTH / 2, _WIDTH) if half else (_LENGTH, _WIDTH)
+        band = (0.0, (_BAND[1] - _BAND[0]) / 2) if half else _BAND
+        faces = ([FeatureSpec('mirror', 'symmetry', ['x_lo', 'y_lo', 'y_hi']),
+                  FeatureSpec('wall', 'magnetic_insulation', ['x_hi'])] if half
+                 else [FeatureSpec('walls', 'magnetic_insulation', ['x_lo', 'x_hi']), _mirror_y()])
+        return _model(f"Self-test: winding {'half model on a symmetry face' if half else 'full model'} "
+                      '(magnetostatics)',
+                      [*faces, FeatureSpec('winding', 'coil', ['winding'],
+                                           {'current': _COIL_CURRENT, 'turns': _HALF_TURNS[int(half)]})],
+                      geometry=[_band_rectangle('winding', *band)], size=size,
+                      derived_values=[_energy_value(), _scalar_value('L', f'{_MAGNETIC}_winding_inductance')])
+    return {'full': model(False), 'half': model(True)}
 
 
 # ---- checks (CPU, on Results-like objects) ----
@@ -318,7 +354,7 @@ def _check_current_sheet(results_by_name, graded=False):
     field_y, _, _ = _window_field(results, 'H_y', graded=graded)
     density = np.where(_in_range(edges, *_BAND), _CURRENT_DENSITY, 0.0)
     exact = _planar_line_solution(edges, density, np.ones_like(density))
-    energy_closed = _WIDTH * exact['energy_per_width']
+    energy_closed = _Y_MIRROR_FACTOR * _WIDTH * exact['energy_per_width']   # the y mirror images counted
     energy = _derived_value(results, 'W')
     probe_cell = int(np.clip(np.searchsorted(edges, (_PROBE_CELL[0] + 0.5) * _CELL, side='right') - 1,
                              0, edges.size - 2))
@@ -336,23 +372,26 @@ def _check_current_sheet(results_by_name, graded=False):
 
 
 def _check_solenoid(results_by_name):
-    """A_phi = psi / r_c, B_z (also against mu0 J (b - a) on the axis column), B_r = 0 and the energy."""
+    """A_phi = psi / r_c, B_z, the jump B_z(axis) - B_z(x_hi) = mu0 J (b - a), B_r = 0 and the energy (x 4: the y
+    mirror images)."""
     results = results_by_name[_RUN]
     potential, edges, _ = _window_field(results, 'A')
     axial, _, _ = _window_field(results, 'B_y')
     radial, _, _ = _window_field(results, 'B_x')
     density = np.where(_in_range(edges, *_BAND), _CURRENT_DENSITY, 0.0)
     exact = _axisymmetric_line_solution(edges, density)
-    inside = MU0 * _CURRENT_DENSITY * (_BAND[1] - _BAND[0])
-    energy_closed = _WIDTH * exact['energy_per_height']
+    jump = MU0 * _CURRENT_DENSITY * (_BAND[1] - _BAND[0])   # Ampere across the winding (uniform B on both sides)
+    energy_closed = _Y_MIRROR_FACTOR * _WIDTH * exact['energy_per_height']
     energy = _derived_value(results, 'W')
+    measured_jump = float(np.mean(axial[0]) - np.mean(axial[-1]))
     errors = {'A': max_relative_error(potential, exact['A'][:, None], float(np.max(np.abs(exact['A'])))),
-              'B_z': max_relative_error(axial, exact['B_y'][:, None], inside),
-              'B_z_axis': max_relative_error(axial[0], inside, inside),
-              'B_r': max_relative_error(radial, 0.0, inside),
+              'B_z': max_relative_error(axial, exact['B_y'][:, None], jump),
+              'B_z_jump': relative_error(measured_jump, jump),
+              'B_r': max_relative_error(radial, 0.0, jump),
               'energy': relative_error(energy, energy_closed)}
-    return _report(float(np.mean(axial[0])), inside, errors, B_inside_closed_T=inside, energy_J=energy,
-                   energy_closed_J=energy_closed, n_cells=list(potential.shape))
+    return _report(measured_jump, jump, errors, B_inside_T=float(np.mean(axial[0])),
+                   B_outside_T=float(np.mean(axial[-1])), energy_J=energy, energy_closed_J=energy_closed,
+                   n_cells=list(potential.shape))
 
 
 def _check_permeable_slab(results_by_name):
@@ -446,10 +485,11 @@ def _check_coil_pair(results_by_name):
     density = sum(sign[name] * _COIL_TURNS * _COIL_CURRENT / (_WIDTH * float(np.sum(widths[mask])))
                   * mask.astype(np.float64) for name, mask in masks.items())
     exact = _planar_line_solution(edges, density, np.ones_like(widths))
-    energy_closed = _WIDTH * exact['energy_per_width']
+    # both coils reach both y mirror planes: each joins its images (x 4), as the energy counts them
+    energy_closed = _Y_MIRROR_FACTOR * _WIDTH * exact['energy_per_width']
     loop_inductance = 2.0 * energy_closed / _COIL_CURRENT ** 2
-    linkage_closed = _COIL_TURNS * float(np.sum(exact['A'][masks['go']] * widths[masks['go']])
-                                         / np.sum(widths[masks['go']]))
+    linkage_closed = _Y_MIRROR_FACTOR * _COIL_TURNS * float(np.sum(exact['A'][masks['go']] * widths[masks['go']])
+                                                            / np.sum(widths[masks['go']]))
     energy = _derived_value(results, 'W')
     inductance_sum = _derived_value(results, 'L_go') + _derived_value(results, 'L_back')
     linkage = float(results.result(_MAGNETIC, 'go')['flux_linkage'])
@@ -459,6 +499,32 @@ def _check_coil_pair(results_by_name):
               'loop_inductance': relative_error(inductance_sum, loop_inductance)}
     return _report(inductance_sum, loop_inductance, errors, unit='H/m', energy_J_per_m=energy,
                    flux_linkage_go_Wb_per_m=linkage, n_cells=list(potential.shape))
+
+
+def _check_half_model(results_by_name):
+    """The half on the symmetry face reports the full model's energy and coil inductance (its image counted: x 2 for
+    x_lo on top of the y faces' x 4; the winding reaches x_lo, so it joins its image), its A / B_y equal the full
+    model's right half, and Results.field(unfold=True) over x_lo (and the y faces) gives the full A and B_y (B_y odd
+    about the plane); mirror_factor 4 (full) and 8 (half)."""
+    full, half = results_by_name['full'], results_by_name['half']
+    errors, details = {}, {}
+    for name in ('W', 'L'):
+        values = (_derived_value(full, name), _derived_value(half, name))
+        errors[name] = relative_error(values[1], values[0])
+        details[name] = values
+    plane = _N_CELLS[0] // 2
+    for component in ('A', 'B_y'):
+        full_values, _, _ = _window_field(full, component)
+        half_values, _, _ = _window_field(half, component, shape=(plane, _N_CELLS[1]))
+        scale = float(np.max(np.abs(full_values)))
+        errors[f'{component}_half'] = max_relative_error(half_values, full_values[plane:], scale)
+        unfolded = np.asarray(half.field(f'{_MAGNETIC}.{component}', unfold=True).values, dtype=np.float64)
+        errors[f'{component}_unfolded'] = (math.inf if unfolded.shape[0] != _N_CELLS[0] else
+                                           max_relative_error(unfolded, full_values[:, :1], scale))
+        details[f'{component}_unfolded_shape'] = list(unfolded.shape)
+    factors = tuple(float(results.result(_MAGNETIC, 'winding')['mirror_factor']) for results in (full, half))
+    errors['mirror_factors'] = 0.0 if factors == (_Y_MIRROR_FACTOR, 2.0 * _Y_MIRROR_FACTOR) else math.inf
+    return _report(details['L'][1], details['L'][0], errors, unit='H/m', mirror_factors=factors, **details)
 
 
 # ---- template ----
@@ -577,7 +643,8 @@ def _check_mirror_parity(_results_by_name):
 
 # ---- cases ----
 _WINDOW_TEXT = (f'a {_LENGTH * 1e3:g} x {_WIDTH * 1e3:g} mm window of uniform {_CELL * 1e6:g} um cells '
-                f'({_N_CELLS[0]} x {_N_CELLS[1]}, no PML) with symmetry y faces (1D in x)')
+                f'({_N_CELLS[0]} x {_N_CELLS[1]}, no PML) with symmetry y faces (1D in x; both are model mirror '
+                f'planes, so the energy and the results of coils spanning the height count x {_Y_MIRROR_FACTOR:g})')
 _LAYOUT_TEXT = f'{_WINDOW_TEXT}, solved in float64 to a CG tolerance of {EXACT_CG_TOLERANCE:g} in a stationary study'
 _DIRECT_LAYOUT_TEXT = (f"{_WINDOW_TEXT}, each loop step solved by host SuperLU (sparse_direct node, back_end "
                        "'scipy_splu', float64) in a stationary study")
@@ -599,7 +666,8 @@ SELFTEST_CASES = (
                      f'check raises unless the widest / narrowest x cell >= {_GRADED_MIN_RATIO:g}. Exact: H_y at the '
                      'faces from Ampere (H_0 plus the enclosed current, H_0 fixed by A = 0 on both faces), A the sum '
                      'of H times the half-cell reluctance dx / (2 nu), B_y = mu0 H (centre average of two exact face '
-                     'values), B_x = 0, the energy (1/2) sum H^2 r_f w. error = max of the relative A, B_y, B_x, H_y, '
+                     'values), B_x = 0, the energy (1/2) sum H^2 r_f w times 4 (the symmetry y faces are model mirror '
+                     'planes: one image each). error = max of the relative A, B_y, B_x, H_y, '
                      f'energy and probe errors; measured = the energy scalar; {_BUDGET_TEXT}. Pins the c_xx = nu_yy '
                      'assembly, B = curl A and its sign (B_y > 0 right of a +z current), H, the energy scalar, the '
                      'unequal-width face reluctances and the graded probe lookup.'),
@@ -609,14 +677,15 @@ SELFTEST_CASES = (
         name='magnet_solenoid_axisymmetric', label='Magnetostatics: long solenoid (axisymmetric)',
         description=(f"Axisymmetric magnetostatics (geometry 'axisymmetric') through {_LAYOUT_TEXT} (x = r, y = z): "
                      f'J_phi = {_CURRENT_DENSITY:g} A/m^2 in the winding r in [{_BAND[0] * 1e3:g}, '
-                     f'{_BAND[1] * 1e3:g}] mm, symmetry on x_hi and both z faces (a long solenoid: B = 0 outside). '
-                     'Exact: the r-face flux (= -H_z per m of height) is minus the current outside the face, psi = r '
-                     'A_phi the sum of flux / conductance from the axis (psi = 0 with the doubled half-cell '
-                     'conductance 8 nu / dr^2 of the axis cell) over the planar operator with c = nu / r_c, whose '
-                     'harmonic face mean is nu / r_face: psi = B r^2 / 2 exactly inside, B_z = mu0 J (b - a) = '
-                     f'{MU0 * _CURRENT_DENSITY * (_BAND[1] - _BAND[0]):.6g} T inside (also on the axis column), mu0 J '
-                     '(b - r) in the winding, 0 outside, B_r = 0, the energy pi h sum F^2 / G. error = max of the '
-                     f'relative A_phi, B_z, axis B_z, B_r and energy errors; {_BUDGET_TEXT}. Pins the psi '
+                     f'{_BAND[1] * 1e3:g}] mm, symmetry on both z faces, magnetic insulation (psi = 0) on x_hi (a '
+                     'symmetry face is refused on the r_max cylinder: it has no mirror image). Exact: the 1D chain '
+                     'of the planar operator with c = nu / r_c (psi = 0 on the axis with the doubled half-cell '
+                     'conductance 8 nu / dr^2 of the axis cell, psi = 0 on x_hi with the plain half cell), solved '
+                     'densely: A_phi = psi / r_c, B_z from the face fluxes (uniform inside and outside the winding, '
+                     'the jump B_z(axis column) - B_z(x_hi column) = mu0 J (b - a) = '
+                     f'{MU0 * _CURRENT_DENSITY * (_BAND[1] - _BAND[0]):.6g} T by Ampere), B_r = 0, the energy pi h '
+                     'sum F^2 / G times 4 (the z faces are model mirror planes). error = max of the relative A_phi, '
+                     f'B_z, jump, B_r and energy errors; {_BUDGET_TEXT}. Pins the psi '
                      'formulation on the planar operator (never the ring-weighted one), the axis rule (x_lo '
                      'conductance_factor 2: assembly, face flux in B and the energy face term) and the axisymmetric '
                      'signs of B.'),
@@ -663,10 +732,27 @@ SELFTEST_CASES = (
                      'area, insulation x faces (default). Exact discrete A as magnet_slab_current_sheet_graded, energy W, '
                      'the go flux linkage N * mean A over the coil, and the loop inductance 2 W / I^2 = L_go + L_back '
                      '(each coil feature reports flux linkage / its own current; for series coils with +I and -I they '
-                     'add up to the loop value). error = max of the relative A, energy, go flux linkage and loop '
+                     'add up to the loop value); both coils span the height, so they reach both y mirror planes and '
+                     'join their images: energy and linkages x 4 (mirror_factor 4). error = max of the relative A, '
+                     'energy, go flux linkage and loop '
                      f'inductance errors; measured = L_go + L_back [H/m]; {_BUDGET_TEXT}. Pins the coil current '
                      'density, the flux linkage / inductance results and scalars, and the energy identity.'),
         specs=_coil_pair_specs, check=_check_coil_pair),
+    SelfTestCase(
+        name='magnet_symmetry_half_model', label='Magnetostatics: half model on a symmetry face',
+        description=(f'Magnetostatics through {_LAYOUT_TEXT}: full = a stranded coil of {_HALF_TURNS[0]} turns, '
+                     f'{_COIL_CURRENT:g} A over the band [{_BAND[0] * 1e3:g}, {_BAND[1] * 1e3:g}] mm (even about x = '
+                     f'0.5 mm) between insulation x faces; half = the window x in [0.5, 1] mm with a symmetry x_lo '
+                     f'face, insulation x_hi and the coil\'s right half ({_HALF_TURNS[1]} turns over 0.1 mm: the '
+                     'same J). '
+                     'The symmetry face is a model mirror plane: the half reports the unfolded totals, energy x 2 '
+                     'and, since the coil reaches the plane and joins its image, flux linkage / inductance x 2 '
+                     '(mirror_factor 8 = 2 x 4 with the y faces, the full coil 4). Exact discrete identities: W and L '
+                     'of the half equal the full model\'s, A and B_y of the half equal the full right half, and '
+                     'Results.field(unfold=True) of the half (x_lo symmetry: A even, B_y odd; the y images repeat '
+                     f'the rows) equals the full A / B_y. error = max of the relative errors; {_BUDGET_TEXT}. Pins '
+                     'the symmetry face as a mirror plane (unfolding, window and coil factors).'),
+        specs=_half_model_specs, check=_check_half_model),
     SelfTestCase(
         name='magnet_saturating_sheet', label='Magnetostatics: current sheet in saturating iron',
         description=(f'Magnetostatics through {_DIRECT_LAYOUT_TEXT}: J_z = {_SATURATING_CURRENT_DENSITY:g} A/m^2 in the '

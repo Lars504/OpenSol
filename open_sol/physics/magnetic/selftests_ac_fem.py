@@ -9,9 +9,10 @@ import numpy as np
 from ...core.constants import MU0
 from ...model.schema import SelfTestCase
 from ...model.selftest_helpers import last_value, scaled_worst_result
-from ...model.spec import (DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec,
-                           PhysicsSpec, SolverDefaultsSpec, StudySpec)
-from .selftests import _BAND, _LENGTH, _MAGNETIC, _RUN, _WIDTH, _band_rectangle, _derived_value, _mirror_y
+from ...model.spec import (DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec, PhysicsSpec,
+                           SolverDefaultsSpec, StudySpec)
+from .selftests import (_BAND, _LENGTH, _MAGNETIC, _RUN, _WIDTH, _Y_MIRROR_FACTOR, _band_rectangle, _derived_value,
+                        _mirror_y, _scalar_value)
 from .selftests_ac import (_COPPER, _DRIVE_POTENTIAL, _SKIN_FREQUENCY, _STRIP_CURRENT, _STRIP_FREQUENCY,
                            _STRIP_PHASE, MAGNETIC_AC_TYPE_NAME, _skin_depth, _strip_solution)
 
@@ -50,8 +51,7 @@ def _probes(kind):
 
 
 def _scalar_values():
-    return [DerivedValueSpec('P', f'{_MAGNETIC}_eddy_loss', [], 'max'),
-            DerivedValueSpec('W', f'{_MAGNETIC}_energy', [], 'max')]
+    return [_scalar_value('P', f'{_MAGNETIC}_eddy_loss'), _scalar_value('W', f'{_MAGNETIC}_energy')]
 
 
 def _skin_slab_specs():
@@ -86,8 +86,7 @@ def _solid_strip_specs():
          FeatureSpec('bar', 'coil', ['band'], {'conductor': 'solid', 'drive': 'current', 'current': _STRIP_CURRENT,
                                                'phase': _STRIP_PHASE})],
         [MaterialSpec('copper', properties={'sigma_dc': _COPPER}, selection=['band'])],
-        [_band_rectangle('band', *_BAND)], _STRIP_FREQUENCY, [DerivedValueSpec('P', f'{_MAGNETIC}_eddy_loss', [],
-                                                                               'max')])}
+        [_band_rectangle('band', *_BAND)], _STRIP_FREQUENCY, [_scalar_value('P', f'{_MAGNETIC}_eddy_loss')])}
 
 
 # ---- continuous solutions ----
@@ -142,10 +141,12 @@ def _probe_values(results, count):
 
 
 def _make_field_check(kind, solution):
-    """check of a held-driven skin case: |A| at the probes (relative to the largest), eddy_loss and energy."""
+    """check of a held-driven skin case: |A| at the probes (relative to the largest), eddy_loss and energy (x 4: the
+    symmetry y faces are model mirror planes, one image each)."""
     def check(results_by_name):
         results = results_by_name[_RUN]
         expected_potential, expected_loss, expected_energy = solution(_PROBE_X[kind])
+        expected_loss, expected_energy = _Y_MIRROR_FACTOR * expected_loss, _Y_MIRROR_FACTOR * expected_energy
         measured = _probe_values(results, len(_PROBE_X[kind]))
         loss, energy = _derived_value(results, 'P'), _derived_value(results, 'W')
         errors = {'A_probes': float(np.max(np.abs(measured - expected_potential)) / np.max(expected_potential)),
@@ -158,14 +159,16 @@ def _make_field_check(kind, solution):
 
 
 def _check_solid_strip(results_by_name):
-    """R, L and the loss against the fine finite-volume strip; the circuit row (current = I) and the Poynting identity
-    (eddy_loss = Re(V I*) / 2) to _IDENTITY_TOLERANCE."""
+    """R, L and the loss against the fine finite-volume strip; the circuit row and the Poynting identity (eddy_loss =
+    Re(V I*) / 2) to _IDENTITY_TOLERANCE. The strip reaches both y mirror planes and joins its images in parallel: the
+    reported current is 4 I at the same v, so R and L are 1 / 4 of the drawn slice's and the loss x 4."""
     results = results_by_name[_RUN]
     reference = _strip_solution(np.linspace(0.0, _LENGTH, _REFERENCE_CELLS + 1))
-    prescribed = _STRIP_CURRENT * np.exp(1j * math.radians(_STRIP_PHASE))
+    prescribed = _Y_MIRROR_FACTOR * _STRIP_CURRENT * np.exp(1j * math.radians(_STRIP_PHASE))   # the unfolded strip
     impedance = reference['v'] / prescribed
     omega = 2.0 * math.pi * _STRIP_FREQUENCY
-    expected = {'resistance': impedance.real, 'inductance': impedance.imag / omega, 'loss': reference['loss']}
+    expected = {'resistance': impedance.real, 'inductance': impedance.imag / omega,
+                'loss': _Y_MIRROR_FACTOR * reference['loss']}
     row = results.result(_MAGNETIC, 'bar')
     current = complex(row['current_re'], row['current_im'])
     loss = _derived_value(results, 'P')
@@ -177,7 +180,7 @@ def _check_solid_strip(results_by_name):
                   for name in errors}
     return scaled_worst_result(errors, tolerances, measured=measured, expected=expected,
                                dc_resistance_ohm_per_m=1.0 / (_COPPER * (_BAND[1] - _BAND[0])
-                                                              * _WIDTH))
+                                                              * _Y_MIRROR_FACTOR * _WIDTH))
 
 
 # ---- cases ----
@@ -191,7 +194,7 @@ AC_FEM_SELFTEST_CASES = (
                      f'{_DRIVE_POTENTIAL:g} T m on the first {_DRIVE_STRIP * 1e6:g} um strip, insulation x_hi, f = '
                      f'{_SKIN_FREQUENCY:g} Hz (skin depth {_skin_depth(_SKIN_FREQUENCY) * 1e6:.4g} um). Continuous: A '
                      '= A0 sinh(k (L - x)) / sinh(k (L - h)), k = (1 + j) / delta; |A| at three probe nodes, the '
-                     'eddy_loss and energy scalars (closed-form integrals), relative '
+                     'eddy_loss and energy scalars (closed-form integrals, x 4: the y mirror images), relative '
                      f'{_FIELD_TOLERANCE:g} each (first estimate: P2 discretisation error). error = the largest error '
                      'over its tolerance; tolerance 1. Not run yet.'),
         specs=_skin_slab_specs, check=_make_field_check('slab', _slab_solution)),
@@ -201,7 +204,7 @@ AC_FEM_SELFTEST_CASES = (
                      f'[{_ANNULUS[0] * 1e3:g}, {_ANNULUS[1] * 1e3:g}] mm, copper from its outer radius to x_hi '
                      '(insulation), air core inside (uniform B_z = 2 psi / r_a^2). Continuous: A_phi = c1 I1(k r) + '
                      'c2 K1(k r) in the copper (scipy.special, complex argument); |A_phi| at three probe nodes, '
-                     'eddy_loss and energy (whole rings, composite Gauss-Legendre), relative '
+                     'eddy_loss and energy (whole rings, composite Gauss-Legendre, x 4: the y mirror images), relative '
                      f'{_FIELD_TOLERANCE:g} each (first estimate). Pins the r weights of the mass, the A_phi form and '
                      'the held psi / r. error = the largest error over its tolerance; tolerance 1. Not run yet.'),
         specs=_skin_annulus_specs, check=_make_field_check('annulus', _annulus_solution)),
@@ -212,7 +215,9 @@ AC_FEM_SELFTEST_CASES = (
                      f'faces, f = {_STRIP_FREQUENCY:g} Hz (skin depth {_skin_depth(_STRIP_FREQUENCY) * 1e6:.3g} um). '
                      'Resistance, inductance and eddy_loss against the finite-volume bordered system on '
                      f'{_REFERENCE_CELLS} cells (selftests_ac._strip_solution, error ~3e-5), relative '
-                     f'{_REFERENCE_TOLERANCE:g}; the circuit row (result current = I) and the Poynting identity '
+                     f'{_REFERENCE_TOLERANCE:g}; the strip reaches both y mirror planes and joins its images in '
+                     'parallel (current x 4 at the same v: R and L / 4, the loss x 4); the circuit row (result '
+                     'current = 4 I) and the Poynting identity '
                      f'(eddy_loss = Re(V I*) / 2, exact for the shared quadrature) to {_IDENTITY_TOLERANCE:g}. error = '
                      'the largest error over its tolerance; tolerance 1. Not run yet.'),
         specs=_solid_strip_specs, check=_check_solid_strip),

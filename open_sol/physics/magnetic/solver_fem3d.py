@@ -23,6 +23,7 @@ from .coils3d import coil_edge_drive_per_ampere
 from .fields import (MAGNETIC_3D_CURRENT_NAMES, MAGNETIC_3D_FIELD_NAMES, MAGNETIC_3D_PERMEABILITY_NAME,
                      MAGNETIC_3D_PROBE_COMPONENTS)
 from .materials import MAGNETIC_3D_SCHEMA, PERMEABILITY_3D_ARRAYS, REMANENCE_3D_ARRAYS, SATURATION_ARRAY
+from .mirror_totals import MirrorTotals, element_touched_faces
 from .renderer import MAGNETIC_3D_FIELD_INFOS
 from .saturation import (ANDERSON_DEPTH, TENSOR_NONLINEAR_METHODS, bh_curve, refuse_curve_conflicts,
                          saturation_permeability, tabulated_reluctivity)
@@ -40,19 +41,22 @@ _ELEMENT_FIELDS = ('B_x', 'B_y', 'B_z', 'B_abs', 'H_x', 'H_y', 'H_z', 'w_mag')
 @dataclass(frozen=True, eq=False)
 class CoilRegionFEM3D:
     """Stranded coil on tetrahedra: axis index, turns, current [A] (> 0 counter-clockwise seen from +axis), axial
-    length h [m] and the host float64 Nedelec-1 dofs of T per ampere (n_edges,) [1]."""
+    length h [m], the host float64 Nedelec-1 dofs of T per ampere (n_edges,) [1] and mirror_factor (2 per model mirror
+    plane its winding reaches: its image joins it in series)."""
     name: str
     axis_index: int
     turns: int
     current: float
     axial_length: float
     per_ampere: np.ndarray
+    mirror_factor: float = 1.0
 
 
-class MagneticFEMPhysics3D(FEMDiffusionPhysicsBase3D):
+class MagneticFEMPhysics3D(MirrorTotals, FEMDiffusionPhysicsBase3D):
     """magnetostatics_3d on a fem.domain3d.TetrahedronDomain: div(mu (w - grad u)) = 0 by Lagrange elements of `order`
     (2 quadratic, 1 linear); one direct solve per change (a saturation loop when an element saturates); B = mu (w -
-    grad u), H = (B - B_r) / (mu0 mu) per element (means), 0 in held elements."""
+    grad u), H = (B - B_r) / (mu0 mu) per element (means), 0 in held elements; energy and coil results of the model
+    unfolded over its mirror planes (set_mirror_faces)."""
 
     name = 'magnetic'
     type_label = 'magnetostatics_3d'
@@ -188,7 +192,7 @@ class MagneticFEMPhysics3D(FEMDiffusionPhysicsBase3D):
         """energy [J], per coil <name>_flux_linkage [Wb] / <name>_inductance [H]; {} before a solve."""
         if self.system.n_solves == 0:
             return {}
-        values = {'energy': self._energy}
+        values = {'energy': self.field_energy()}
         for coil in self.coils:
             result = self.coil_results(coil)
             values[f'{coil.name}_flux_linkage'] = result['flux_linkage']
@@ -231,7 +235,10 @@ class MagneticFEMPhysics3D(FEMDiffusionPhysicsBase3D):
         winding = self.element_mask(mask) & self.system.window_elements
         per_ampere, axial_length = coil_edge_drive_per_ampere(self.domain.mesh, winding, axis, int(turns),
                                                               f"coil '{name}'", self.domain.locate)
-        coil = CoilRegionFEM3D(name, _AXES.index(axis), int(turns), float(current), axial_length, per_ampere)
+        owners = self.domain.mesh.face_elements
+        touched = element_touched_faces(winding, {face: owners[self.system.face_faces(face)] for face in FACES_3D})
+        coil = CoilRegionFEM3D(name, _AXES.index(axis), int(turns), float(current), axial_length, per_ampere,
+                               self._coil_mirror_factor(name, touched))
         self.coils.append(coil)
         self._write_current_density()
         self._source_dirty = True
@@ -251,20 +258,22 @@ class MagneticFEMPhysics3D(FEMDiffusionPhysicsBase3D):
         return True
 
     def coil_results(self, coil: CoilRegionFEM3D, flows=None) -> dict:
-        """current, turns, flux_linkage [Wb] = int T / I . B dV over the free elements (with an external field, ideal
-        iron at a potential or a symmetry face up to their boundary term), inductance = flux_linkage / current [H]
-        (nan at zero current), energy [J] (field_energy); flows: unused (the tensor signature)."""
+        """current, turns (the drawn winding's), flux_linkage [Wb] = mirror_factor x int T / I . B dV over the free
+        elements (with an external field, ideal iron at a potential or a symmetry face up to their boundary term; its
+        images on the mirror planes it reaches join it in series), inductance = flux_linkage / current [H] (nan at
+        zero current), energy [J] (field_energy), mirror_factor; flows: unused (the tensor signature)."""
         if self.system.n_solves == 0:
             raise RuntimeError(f"{self.type_label} '{self.name}': coil '{coil.name}' needs a solve first")
-        linkage = self._linkages[coil.name]
+        linkage = coil.mirror_factor * self._linkages[coil.name]
         inductance = linkage / coil.current if coil.current != 0.0 else float('nan')
         return {'current': coil.current, 'turns': coil.turns, 'flux_linkage': linkage, 'inductance': inductance,
-                'energy': self._energy}
+                'energy': self.field_energy(), 'mirror_factor': coil.mirror_factor}
 
     def field_energy(self, flows=None) -> float:
         """Energy [J] = int sum_c B_c^2 / (2 mu0 mu_c) dV over the free elements (held excluded; with remanence the
-        energy of B alone; saturating: the secant value)."""
-        return self._energy
+        energy of B alone; saturating: the secant value), times window_mirror_factor (the images on the model mirror
+        planes)."""
+        return self.window_mirror_factor * self._energy
 
     def add_probe_at(self, point, component: str = 'B_abs') -> FieldProbe:
         """Record B_abs [T] (|B| evaluated at the point) or phi_m [A] at (x, y, z) [m] whenever step records."""

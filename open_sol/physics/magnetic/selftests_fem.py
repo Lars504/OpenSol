@@ -17,9 +17,9 @@ from ...model.spec import (AnalyticCurveSpec, DerivedValueSpec, DomainSpec, Feat
 from .selftests import (_APPLIED_FIELD, _BAND, _COIL_CURRENT, _COIL_RANGES, _COIL_TURNS, _CURRENT_DENSITY,
                         _IRON_PERMEABILITY, _IRON_SATURATION, _LENGTH, _MAGNETIC, _REMANENCE, _RUN,
                         _SATURATING_CURRENT_DENSITY,
-                        _SATURATING_FIELD, _UNIFORM_DOMAIN, _WIDTH, MAGNETOSTATICS_TYPE_NAME, _band_rectangle,
-                        _curve_field, _curve_flux_density, _derived_value, _energy_value, _iron, _mirror_y,
-                        _nonlinear_iterations, _table_flux_density, _table_rows)
+                        _SATURATING_FIELD, _UNIFORM_DOMAIN, _WIDTH, _Y_MIRROR_FACTOR, MAGNETOSTATICS_TYPE_NAME,
+                        _band_rectangle, _curve_field, _curve_flux_density, _derived_value, _energy_value, _iron,
+                        _mirror_y, _nonlinear_iterations, _scalar_value, _table_flux_density, _table_rows)
 
 _ELEMENT = 1e-5                    # m, uniform triangle size of the 1 x 0.1 mm layout (as the tensor cells)
 _EXACT = 1e-9                      # relative, float64 results of the polynomial cases (energy, scalars)
@@ -167,13 +167,14 @@ def _coil_pair_specs():
          FeatureSpec('go', 'coil', ['go'], {'current': _COIL_CURRENT, 'turns': _COIL_TURNS}),
          FeatureSpec('back', 'coil', ['back'], {'current': -_COIL_CURRENT, 'turns': _COIL_TURNS})],
         geometry=[_band_rectangle(name, *span) for name, span in _COIL_RANGES.items()],
-        derived_values=[_energy_value(), DerivedValueSpec('L_go', f'{_MAGNETIC}_go_inductance', [], 'max'),
-                        DerivedValueSpec('L_back', f'{_MAGNETIC}_back_inductance', [], 'max')])}
+        derived_values=[_energy_value(), _scalar_value('L_go', f'{_MAGNETIC}_go_inductance'),
+                        _scalar_value('L_back', f'{_MAGNETIC}_back_inductance')])}
 
 
 def _remanent_slab_specs():
     """'linear' / 'quadratic': remanence_y with mu_dc 1.05 in the band between insulation x faces, symmetry y faces,
-    probes (p1 at the band centre), derived W, H_y max / min and B_y at p1."""
+    probes (p1 at the band centre), derived W, H_y and B_y at the probe points ('at': max / min over the y mirror
+    images are not evaluated on triangles)."""
     def model(order):
         points, probes = _probes()
         return _fem_model(
@@ -182,8 +183,9 @@ def _remanent_slab_specs():
             materials=[MaterialSpec('magnet', properties={'remanence_y': _REMANENCE, 'mu_dc': _MAGNET_PERMEABILITY},
                                     selection=['band'])],
             geometry=[_band_rectangle('band', *_BAND), *points],
-            derived_values=[_energy_value(), DerivedValueSpec('Hy_max', 'H_y', ['all'], 'max'),
-                            DerivedValueSpec('Hy_min', 'H_y', ['all'], 'min'),
+            derived_values=[_energy_value(),
+                            *(DerivedValueSpec(f'Hy_{point.name}', 'H_y', [], 'at', point=point.name)
+                              for point in points),
                             DerivedValueSpec('B_magnet', 'B_y', [], 'at', point='p1')],
             discretization=order)
     return {order: model(order) for order in ('linear', 'quadratic')}
@@ -275,6 +277,7 @@ def _check_current_sheet(results_by_name):
     symmetry) against the continuous solution."""
     results = results_by_name[_RUN]
     potential, flux_y, energy_per_width = _line_solution([(*_BAND, _CURRENT_DENSITY)])
+    energy_per_width *= _Y_MIRROR_FACTOR   # the energy scalar counts the images on the y mirror planes
     expected_potential = potential(np.array(_PROBE_X))
     measured_potential = _probe_values(results)
     expected_moment = (_gauss_integral(lambda x: flux_y(x) * (x - _BAND_CENTRE), list(_BAND))
@@ -314,9 +317,10 @@ def _check_coil_pair(results_by_name):
                  for (name, (x0, x1)), sign in zip(_COIL_RANGES.items(), (1.0, -1.0))}
     potential, _, energy_per_width = _line_solution([(*_COIL_RANGES[name], density)
                                                      for name, density in densities.items()])
-    expected = {'W': energy_per_width * _WIDTH}
+    # both coils span the height: they reach both y mirror planes and join their images (x 4), as the energy
+    expected = {'W': _Y_MIRROR_FACTOR * energy_per_width * _WIDTH}
     for (name, (x0, x1)), sign in zip(_COIL_RANGES.items(), (1.0, -1.0)):
-        linkage = _COIL_TURNS * _gauss_integral(potential, [x0, x1]) / (x1 - x0)
+        linkage = _Y_MIRROR_FACTOR * _COIL_TURNS * _gauss_integral(potential, [x0, x1]) / (x1 - x0)
         expected[f'L_{name}'] = linkage / (sign * _COIL_CURRENT)
     measured = {name: _derived_value(results, name) for name in expected}
     errors = {name: abs(measured[name] / expected[name] - 1.0) for name in expected}
@@ -327,7 +331,8 @@ def _check_coil_pair(results_by_name):
 
 def _check_remanent_slab(results_by_name):
     """P1 and P2: H_y = H0 everywhere (curl H = 0, int B_y dx = 0 from A = 0 on both x faces), B_y = mu0 mu H0 + B_r in
-    the band, A piecewise linear (in both spaces): probes, H max / min, B at p1 (float32) and W (float64)."""
+    the band, A piecewise linear (in both spaces): probes, H at the probe points, B at p1 (float32) and W (float64, x 4:
+    the y mirror images)."""
     lower, upper = _BAND
     thickness = upper - lower
     permeability = float(np.float32(_MAGNET_PERMEABILITY))   # the float32 MaterialGrid value (1.05: -4.5e-8 relative)
@@ -336,15 +341,16 @@ def _check_remanent_slab(results_by_name):
     positions = np.array(_PROBE_X)
     expected_potential = -(outer_flux * np.minimum(positions, lower) + magnet_flux * np.clip(positions - lower, 0.0,
                            thickness) + outer_flux * np.maximum(positions - upper, 0.0))
-    expected_energy = _WIDTH * (thickness * magnet_flux ** 2 / (2.0 * MU0 * permeability)
-                                + (_LENGTH - thickness) * outer_flux ** 2 / (2.0 * MU0))
+    expected_energy = _Y_MIRROR_FACTOR * _WIDTH * (thickness * magnet_flux ** 2 / (2.0 * MU0 * permeability)
+                                                   + (_LENGTH - thickness) * outer_flux ** 2 / (2.0 * MU0))
+    field_names = [f'Hy_p{index}' for index in range(len(_PROBE_X))]
     errors, details = {}, {}
     for order, results in results_by_name.items():
-        values = {name: _derived_value(results, name) for name in ('W', 'Hy_max', 'Hy_min', 'B_magnet')}
+        values = {name: _derived_value(results, name) for name in ('W', *field_names, 'B_magnet')}
         measured_potential = _probe_values(results)
         errors[f'{order}_A_probes'] = float(np.max(np.abs(measured_potential - expected_potential))
                                             / np.max(np.abs(expected_potential)))
-        errors[f'{order}_H'] = max(abs(values['Hy_max'] / field - 1.0), abs(values['Hy_min'] / field - 1.0))
+        errors[f'{order}_H'] = max(abs(values[name] / field - 1.0) for name in field_names)
         errors[f'{order}_B_magnet'] = abs(values['B_magnet'] / magnet_flux - 1.0)
         errors[f'{order}_energy'] = abs(values['W'] / expected_energy - 1.0)
         details[order] = dict(values, A_probes=measured_potential.tolist())
@@ -498,10 +504,10 @@ FEM_SELFTEST_CASES = (
         description=('P2 on uniform 10 um triangles of the 1 x 0.1 mm layout: J = 1e6 A/m^2 in the band [0.4, 0.6] mm '
                      '(its outline edges are mesh lines) between insulation x faces, symmetry y faces. The continuous '
                      'piecewise-quadratic A lies in the P2 space: A at three probe nodes (float32, 1e-6), the energy '
-                     '(float64, 1e-9) and the band mean of (x - x_c) B_y (1e-6; B_y is odd about the band centre x_c, '
-                     'so its plain mean is 0) against the closed form. error = the largest error over its tolerance; '
-                     'tolerance 1. Variant gpu: the same on the gpu backend (the solve on the run backend, same '
-                     'tolerance).'),
+                     '(float64, 1e-9; x 4: the symmetry y faces are model mirror planes, one image each) and the '
+                     'band mean of (x - x_c) B_y (1e-6; B_y is odd about the band centre x_c, so its plain mean is '
+                     '0) against the closed form. error = the largest error over its tolerance; tolerance 1. Variant '
+                     'gpu: the same on the gpu backend (the solve on the run backend, same tolerance).'),
         specs=_current_sheet_specs, check=_check_current_sheet,
         variants=(SelfTestVariant('gpu', 1.0, backend='gpu'),)),
     SelfTestCase(
@@ -516,7 +522,8 @@ FEM_SELFTEST_CASES = (
         name='magnet_fem_coil_inductance', label='Magnetostatics on triangles: go / return coil pair',
         description=('P2: coils go [0.2, 0.3] mm (+0.1 A) and back [0.7, 0.8] mm (-0.1 A), 10 turns each, insulation x '
                      'faces, symmetry y faces: the continuous piecewise-quadratic A is in the P2 space, so the energy, '
-                     'L_go and L_back equal the closed form (1e-9) and L_go + L_back = 2 W / I^2 (1e-9). error = the '
+                     'L_go and L_back equal the closed form (1e-9; all x 4: the y faces are model mirror planes and '
+                     'both coils reach them, joining their images) and L_go + L_back = 2 W / I^2 (1e-9). error = the '
                      'largest relative error over 1e-9; tolerance 1. Not run yet.'),
         specs=_coil_pair_specs, check=_check_coil_pair),
     SelfTestCase(
@@ -525,8 +532,9 @@ FEM_SELFTEST_CASES = (
                      f'with mu_dc {_MAGNET_PERMEABILITY:g} in the band [0.4, 0.6] mm, insulation x faces, symmetry y '
                      'faces. Without currents H_y = H0 is uniform (H0 = -B_r t / (mu0 (mu t + L - t)) from A = 0 on both '
                      'faces), B_y = mu0 mu H0 + B_r in the band and A is piecewise linear, so both spaces hold it: A at '
-                     'the three probe nodes, H_y max / min over the window and B_y at the band centre (float32, 1e-6), '
-                     'the energy int B^2 / (2 mu0 mu) (float64, 1e-9); the closed forms take the float32 mu_dc the '
+                     'the three probe nodes, H_y at those points (max / min over the y mirror images are not evaluated '
+                     'on triangles) and B_y at the band centre (float32, 1e-6), the energy int B^2 / (2 mu0 mu) x 4 '
+                     '(the y mirror images; float64, 1e-9); the closed forms take the float32 mu_dc the '
                      'MaterialGrid holds (1.05 as float64 left W 5.5e-8 off). Pins the remanence load int Q^T nu B_r '
                      'dV. error = the largest error over its tolerance; tolerance 1.'),
         specs=_remanent_slab_specs, check=_check_remanent_slab),
