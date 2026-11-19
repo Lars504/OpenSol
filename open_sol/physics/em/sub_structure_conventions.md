@@ -28,135 +28,72 @@ type's vocabulary and refusals are in its help texts and validation.
   `slab_waveguide_spec`, selftests_bor, selftests_eigenfrequency): grep the sibling imports before writing one.
 
 ## FDTD and shared EM
-- 'ez': Fields2D_Ez, FDTDEngine2D_Ez, EMRenderer, eps_r. 'hz': Fields2D_Hz, FDTDEngine2D_Hz, EMRendererHz, eps_xx /
-  eps_yy (never eps_r; filled from eps_r when it exists). `placement.PERMITTIVITY_ARRAYS` (=
-  `permittivity_arrays`) names them, `PERMITTIVITY_SLOTS` their `<array>_update` slots (read everywhere, error
-  messages too); direct MaterialGrid writes need `em.materials_changed({...})`.
-- Both FDTD engines subclass `fdtd_2d_base._YeeEngine2DBase` (also `_check_cell_array`, `record_dispersive_region`,
-  `add_pec_cells` shared with FDFDPhysics; the base holds inject_source (slot `<pol>_source` kept as
-  `_out_of_plane_source`), update_e, add_nonlinear / add_gain): a new engine sets `_E_COEFFICIENT_MATERIALS`,
-  `_rebuild_e_coefficients`, `_update_e_set`, `_accumulate_e_new_half` and the hooks `_permittivity_written` /
-  `_nonlinear_added` / `_sigma_e_changed` (finalize and sigma_e writes: loss boxes), never copies. Bad cell masks
-  raise TypeError (`xp=` default cupy: cpu-ready callers such as ModePhysics / EMEPhysics pass `domain.xp`).
-- FDTD on both backends: `EMPhysics.xp = domain.xp`; the engine raises unless fields, BoundaryManager / CPMLSided
-  share the MaterialGrid's xp; sources and monitors take `xp=` (None = default backend). Every FDTD-path kernel is a
-  `core.kernels` twin (core sub file "Kernel twins"): a new kernel gets its numpy twin in the same edit, host reads
-  via `to_host`. Not on the cpu yet (no refusal, they fail at the first transfer): Pockels, acousto-optic,
-  semiconductor couplings. Selftests `em_fdtd_cpu_gpu` / `em_fdtd_cpu_gpu_media` (heavy).
+- Permittivity array / slot names per polarisation only from `placement.PERMITTIVITY_ARRAYS` / `PERMITTIVITY_SLOTS`
+  (hz reads eps_xx / eps_yy, never eps_r), never literals. A direct MaterialGrid write is followed by
+  `em.materials_changed({...})`, else coefficients, source calibrations and the sigma_e loss boxes stay stale (a
+  sigma_e write then loses heat outside the old box).
+- MaterialGrid allocates no array by itself: EM arrays come from `materials.register_em_arrays` (FDTD engines,
+  FDFDPhysics) and the EM material_schema, so an eps_r write before any E_z solver exists raises; code outside EM
+  checks `property_names()` first.
+- Both FDTD engines subclass `fdtd_2d_base._YeeEngine2DBase` (the hooks a new engine fills: its class docstring); the
+  cell-mask helpers there (`_check_cell_array`, `record_dispersive_region`, `add_pec_cells`) also serve FDFD, em_modes,
+  BOR and EME. EM solvers take cell geometry and per-polarisation vocabulary from `placement` and
+  `boundaries.solver_boundary_config`: reuse, never copy (messages and checking order stay those of EMPhysics).
+- Backends: every FDTD-path kernel is a `core.kernels` twin (core sub file "Kernel twins"): a new kernel gets its numpy
+  twin in the same edit, host reads via `to_host`; sources and monitors take `xp=` (None = the default backend: EM
+  solvers pass `domain.xp`). Selftests `em_fdtd_cpu_gpu` / `em_fdtd_cpu_gpu_media` (heavy).
 - Stepper precision ('single' | 'double', STEPPER_ROLE; solver_plan S5): `EMPhysics(precision=)` builds fields /
-  BoundaryManager / CPMLSided / TFSF with `dtype=`; the engine takes `dtype` from its fields (BoundaryManager must
-  match) and keeps every field-side array in it (coefficients, spacings, CPML, pole buffers, jz_total, TFSF aux).
-  Kernel scalars are numpy scalars of the field dtype (`engine._real(...)`, `_dt_real`, `_inv_dt_real`): never
-  DTYPE(...) on a field-side kernel. Stay float32 under double: MaterialGrid arrays, coupling slots, q_accum, PEC keep
-  masks, source profiles / calibrations, FieldProbe traces, box DFT spectra (complex64; line spectra complex128),
-  subpixel coefficients (scattered into float64 ca / cb), the Courant check; renderers return float32, state()
-  float64. Refused under double: nonlinear_medium / gain_medium (FeatureType.precisions ('single',); add_nonlinear /
-  add_gain raise). Selftest em_fdtd_double_cavity_phase (heavy).
-- MaterialGrid allocates no array by itself: EM arrays come from `register_em_arrays` (FDTD engines, FDFDPhysics) and
-  the EM material_schema, so an eps_r write before any E_z solver exists raises. Code outside EM checks
-  `property_names()` first.
-- EM solvers take cell geometry and vocabulary from `placement` (`probe_cell`, `point_source_cell`, `flux_line_cells`,
-  `tfsf_box_cells`, `port_cells`, `sheet_line`, ...) and `boundaries.solver_boundary_config`: a new EM solver calls
-  them, never copies them (messages and checking order stay those of EMPhysics).
-- Yee spacing: kernels, CPML kappa and A1 operators use `yee_grid.grid_cell_widths(domain.grid)` via
-  `yee_inverse_spacings`, NOT `Domain.cell_widths()`. `*_e` = 1/w_i (centre), `*_h` = 1/mean(w_i, w_(i+1) mod n) (hi
-  face; last = periodic wrap). Non-periodic: the last face row is never updated and cell 0 reads its missing lo face
-  as 0, so the grid edge is PMC (ez) / PEC (hz) half a cell beyond the outermost centres (only cpml sides see it).
-- Source times = the centre of the update they follow (E: t+dt/2; H: t), never the new field time: dt/2 late makes
-  DFT / S(omega) lead the FDFD phasor by e^{+j omega dt/2}. Sources take the time as given (no offset).
-- ez step: update_h (+ CPML, `apply_h_walls`), magnetic injection at t, `apply_h_walls`, update_e (poles from E^n +
-  E^n loss half, Yee, CPML / BC post, corrections), electric sources at t+dt/2, `ez_source`, `apply_ez_walls`, PEC
-  keep, E^{n+1} loss half (`_accumulate_e_new_half`), monitors at t+dt.
-- hz: H_z at the centre, E_x on its hi-y face, E_y on its hi-x face; the last face row updates only on periodic axes.
-  Step: `refresh_coefficients`, update_h, `inject_magnetic` at t, `hz_source`, `apply_hz_walls`, update_e,
-  `inject_electric` at t+dt/2, `apply_exy_walls`, PEC keep, E^{n+1} loss half, monitors: E at t, H_z at t - dt/2.
-- PEC: every E-coefficient rebuild folds the keep mask into ca = cb = 0 (`_fold_pec_keep`); the per-step PEC keep
-  re-zeroes only `_pec_box` after injection and wall re-pin. A new coefficient path must end with `_fold_pec_keep`.
-- Conformal PEC (solver_defaults.conformal_boundaries, S7.6; `conformal_pec.py`, host): `pec_cells` is the staircase
-  mask at once (ports, poles, calibrations, FDFD read it); the engine gets the conformal data once in `finalize`.
-  E_z: H faces into a conformal cell scale their curl term (`set_conformal_faces`, wall distance floored); H_z
-  (Dey-Mittra): face keeps only where the face lies wholly in metal, cut cells weight their curl
-  (`set_conformal_cells`, area floored). Both floors keep each Gershgorin row <= (0.99 x 2 / dt)^2 so dt stays stable
-  (selftest conformal_pec_operator); at courant 0.99 the floors bite (disk-cavity errors ~ 1 / R), courant_factor 0.7
-  relaxes them. Kernels (`solvers/fdtd_conformal_kernels`) run right after each Yee H kernel, no wraps. Not
-  conformal: BOR, the Courant check, calibrations.
+  BoundaryManager / CPMLSided / TFSF with `dtype=`; every field-side array (coefficients, spacings, CPML, pole buffers,
+  jz_total, TFSF aux) is in the fields' dtype and kernel scalars are numpy scalars of it (`engine._real(...)`,
+  `_dt_real`, `_inv_dt_real`), never DTYPE(...). float32 also under double: MaterialGrid arrays, coupling slots,
+  q_accum, PEC keep masks, source profiles / calibrations, FieldProbe traces, box DFT spectra (complex64; line spectra
+  complex128), subpixel coefficients (scattered into float64 ca / cb), the Courant check; renderers return float32,
+  state() float64. Selftest em_fdtd_double_cavity_phase (heavy).
+- Yee edge: on a non-periodic axis the last face row is never updated and cell 0 reads its missing lo face as 0, so
+  the grid edge is PMC (ez) / PEC (hz) half a cell beyond the outermost centres (only cpml sides see it).
+- Times: a source injects at the centre time of the update it follows (E: t+dt/2; H: t), never the new field time
+  (dt/2 late makes DFT / S(omega) lead the FDFD phasor by e^{+j omega dt/2}); when monitors run, H-type fields are dt/2
+  behind E (`monitors.py` re-times them). Step order: each engine's `advance` docstring.
+- PEC: ca = cb = 0 is folded in at the end of every E-coefficient rebuild (`_fold_pec_keep`: a new coefficient path
+  ends with it); the per-step keep re-zeroes only `_pec_box` after injection and wall re-pin.
+- Conformal PEC (solver_defaults.conformal_boundaries, S7.6; method: `conformal_pec.py` header): `pec_cells` stays the
+  staircase mask (ports, poles, calibrations, FDFD read it); the engine gets the conformal data once in `finalize`.
+  The stability floors bite at courant 0.99 (disk-cavity errors ~ 1 / R), courant_factor 0.7 relaxes them (selftest
+  conformal_pec_operator). Not conformal: BOR, the Courant check, calibrations.
 - Conformal poles (same option, FDTD only; `conformal_poles.py`): `definition_common.write_dispersive_materials` reads
-  `BuildContext.conformal_locator_of` and passes ConformalPoleWeights to every pole's `add_dispersive(weights=)`
-  (E_z: cell inside-area share; H_z: half-cell shares combined with face_average shares). `dispersive_regions` keeps
-  the cell mask; the Courant check reads `_pole_stability_regions`. Exact first order for E tangential only (hz E
-  normal keeps the arithmetic share). Not conformal: FDFD / em_modes poles. Selftests em_conformal_pole_weights,
-  em_conformal_drude_film (heavy).
-- FDTD step graphs (gpu, `fdtd_2d_base.STEP_GRAPHS`, as em3d `_fixed_block`): `update_h` runs Yee + conformal + H CPML
-  + the post's H rows of every field set as one CUDA graph (`_h_block`), `_update_e_set` Yee + E CPML + E rows per set
-  (key ('e', set index)); the first step of a key runs eagerly, the second captures, later ones replay. Drude /
-  Lorentz poles join the E graph (pole updates, E step, pole corrections; key ('e', set, n_drude, n_lorentz): poles are
-  only appended) unless loss accumulation, a gain / nonlinear medium or the eager row copies sit between them. The wall
-  re-pins after the sources, the other pole paths, gain / nonlinear media, PEC keep and monitors stay eager, so
-  the engines call the CPML (`_cpml_post`) and `apply_*_walls` apart instead of `apply_*_post`. Outer-face rows are
-  one fused launch per call (`boundaries` wall_centre_rows / wall_plane_rows: corners = s_x s_y x the inner corner
-  cell, what the sequential row copies give), face types read once at BoundaryManager construction; with < 3 cells
-  along a pinned axis (`fused_walls` False) the old cupy row copies run eagerly outside the graphs (a column-row copy
-  overlaps its source row in cupy's bounds check, which copies the input: an allocation inside a capture). Fields, psi, ca / cb / da / db, the 1D spacings
-  and the conformal arrays are rewritten in place only (a new `set_conformal_*` tuple changes the H key); a new
-  replaceable input of a block joins its key. A failed capture warns and steps eagerly for good. The time recipe
-  books 1 + n_sets graph launches on the gpu instead of the weighted Yee / CPML launches.
-- FDTD probes (gpu): the FieldProbes among the monitors are taken over at their first step (`_take_probe_launch`:
-  `core.monitors.FieldProbeRows`, float32 / float64 cupy fields of the engine) and sampled by one launch at the end of
-  the real set's E graph (`_e_graph`: the launch id joins the key); `_finish_step` stamps the row and skips their
-  `record`. The record precedes the eager tail, so `_probes_need_resample` re-samples the row (one eager launch) when
-  a probe reads an E component (`_E_COMPONENTS`) and the tail may have written one: wall re-pin, PEC keep, non-fused
-  rows, poles with the loss halves, media, an E-side source array (ez_source) or an E-side injection (only an exact
-  PointSource (ez) / ElectricDipoleSource (hz) at DTYPE(amplitude temporal(t_half)) == 0 counts as none, the value
-  its injection skips at). A new eager E-side writer after the E graph joins that check. H probes never re-sample.
-  The time recipe books no probe launches on the gpu.
-- Both engines re-pin walls after injection (new engines must too): a source on a pinned row / face does nothing (line
-  / point / mode sources warn). The re-pin is skipped (`_walls_need_repin`, exact: the rows are idempotent) only when
-  every source is exactly a PointSource / MagneticLineCurrentSource / ElectricDipoleSource whose cells are >= 2 cells
-  inside every pinned axis (`BoundaryManager.clear_of_walls`) and no source array, pole, gain or nonlinear medium
-  writes after the fused rows; a new source type or post-wall writer re-pins until it is listed there. An E_z symmetric face next to the copied row is frozen, not re-zeroed, so an
-  injection there accumulates. `engine.time`, `q_accum_time` are host float64.
-- H_z face values (eps, sigma_e, pole weights, PEC) are defined only by `yee_grid.face_average` (width-weighted dual
-  mean; uniform = plain mean bit for bit), `face_pec` (either cell; not em_modes), `face_partner`; FDFD / slab modes /
-  sheet calibrations must use the same weighting: port modes are exact only while they agree. The fused
-  `e_face_coefficients` kernel inlines the mean (`face_shares`, no FMA): a weighting change must update it too
-  (em_operators_consistency part E). Faces -> centres: `yee_grid.lower_face` / `lower_face_partner`.
-- Sources are current-calibrated: point = filament current I [A]; line / gaussian beam = sheet current radiating
-  `amplitude` V/m each side in the local medium (a span end on a cpml window edge continues through the PML, so a
-  window-wide line is no slit): K = 2 amplitude cos(kappa/2) / eta(omega) of the line cells (validation warns when
-  media along / past the line differ, and for off-centre or truncated beams), kappa = `yee_grid.sheet_launch_factor`;
-  FDTD uses |eta / cos| at the centre frequency, FDFD the exact complex value. The TFSF aux source carries the same
-  cos(kappa0/2) (raises at <= pi cells per wavelength; Mur ends need the carrier-matched S, plain S echoes ~3e-3).
-  hz: magnetic line current K_m [V], dipole M [A], sheet currents on the hi face (a line in the last cell of a
-  non-periodic axis raises). `add_point_source` ez only; magnetic line current / dipole hz only.
-- Calibration is lazy (dirty flag on source add, `materials_changed`, slots); `EMPhysics.step` = refresh, recalibrate,
-  advance; before `finalize` calibrated sources inject 0; `engine.advance` skips calibration. Recalibration keeps the
-  sheet amplitude and K_m fixed, so power drifts with n(T); I and M give n-independent power. cb must stay live
-  (freezing it freezes only sqrt(eps / mu_r)). Help texts state this (`definition_common`: POINT_SOURCE_SIGN,
-  SHEET_POWER_DRIFT, MAGNETIC_CURRENT_DRIFT, beam_params, sheet_amplitude_param).
-- Coefficient rebuilds: E_z at once; H_z `eps_xx/yy_update` sets a dirty flag for `refresh_coefficients()` (cb is
-  also the Drude correction factor); `materials_changed` rebuilds at once ({mu_r, sigma_m} -> da / db).
-- `EMPhysics.finalize` raises unless eps*mu_r >= (C0 dt)^2 (1/dx_i^2 + 1/dy_j^2) + mu_r P everywhere incl. PML, P =
-  sum of (wp dt)^2/4 (Drude) or delta_eps (w0 dt)^2/(4 - (w0 dt)^2) (Lorentz): leap-frog poles are NOT stable
-  whenever Yee is (eps_inf = 1 aluminium needs dx <= ~5 nm; selftest em_drude_courant_bound). Scripts skipping
-  `finalize` and runtime slot rewrites are unchecked.
-- J.E accounting only while `engine.enable_q_accum` (`q_accum` None before the first enable; `jz_total` exists only
-  with a Drude pole). `absorbed_power` = current window, else `last_q_accum`, else zeros; without em_heat_joule the
-  window is the whole run. The model enables it for track_absorption or any reference (`_q_accum_referenced`).
-- Pole stepping (em3d too): J += damping J + drive E^n (velocity form, damping = c1 - 1: never a float32 c1 ~ 1), P
-  from the pre-update E^n; then E^{n+1} = E_pred - cb J^{n+1/2} (Lorentz - (cb/dt) dP): cb carries the sigma_e
-  factor 1 / (1 + k), never 1 / eps (over-couples a conducting cell vs the FDFD chi). Never update J from the
-  predictor E^{n+1} (unstable). Lorentz buffers P and dP: never a1 P^n + a2 P^{n-1} in float32.
-- Pole loss must be time-centred, as two halves (E^n at the pole update, E^{n+1} at the end of advance after
-  corrections, injection, re-pin and PEC keep, so they telescope on source cells): ez `q_accum_je_half` (twice),
-  `q_accum_lorentz_half`; hz `pole_power_*_half`, split per face by `q_accum_hz` (exact only with width-weighted face
-  values).
-- `add_drude(set_background=True)` writes eps = eps_inf under the mask; `add_dispersive` keeps it. mu_r / sigma_m
-  reach da / db only via `materials_changed` / `finalize`. E_z ohmic loss lives on the box of sigma_e > 0 cells, H_z
-  `q_accum_hz` on the loss box (sigma_e > 0 cells + the pole power face boxes grown one cell along the normal,
-  `_loss_box_launch`, refreshed after finalize / a sigma_e change / a new pole or nonlinear region): a direct sigma_e
-  write without `materials_changed` loses heat outside the old box. H_z poles share `_pole_regions`
-  per distinct mask (edit once per region); H_z pole faces cache box views (`_attach_face_views`) of ex / ey, cb_x /
-  cb_y and the power totals: rewrite those arrays in place only, never reassign.
+  `BuildContext.conformal_locator_of` and passes ConformalPoleWeights to every pole's `add_dispersive(weights=)`;
+  `dispersive_regions` keeps the cell mask, the Courant check reads `_pole_stability_regions`. Not conformal: FDFD /
+  em_modes poles. Selftests em_conformal_pole_weights, em_conformal_drude_film (heavy).
+- FDTD step graphs (gpu; capture rules: root file; what each graph holds: `fdtd_2d_base` header, fused rows:
+  `boundaries`): fields, psi, ca / cb / da / db, the 1D spacings, the conformal arrays and the H_z pole face totals are
+  rewritten in place only, never reassigned (graphs and the H_z pole face views hold them); a new replaceable input of
+  a block joins its key (a new `set_conformal_*` tuple changes the H key; poles are only appended, their counts are in
+  the E key). Poles join the E graph unless loss accumulation, a gain / nonlinear medium or the eager row copies
+  (`fused_walls` False: < 3 cells along a pinned axis) sit between them. A change of what is captured updates
+  `definition_fdtd.fdtd_time_step_estimate` (gpu: 1 + n_sets launches, no probe launches).
+- FDTD probes (gpu): FieldProbes are recorded at the end of the real set's E graph (`core.monitors.FieldProbeRows`) and
+  re-sampled after the eager tail per `_probes_need_resample`: a new eager E-side writer after the E graph joins it.
+- Wall re-pin: both engines re-pin the outer-face rows after injection (a new engine must too), so a source on a
+  pinned row / face does nothing (line / point / mode sources warn). `_walls_need_repin` skips it only for the exact
+  point-source types of `_point_source_cells` clear of the walls and no post-wall writer: a new source type or post-wall
+  writer re-pins until listed there. An E_z symmetric face next to the copied row is frozen, not re-zeroed, so an
+  injection there accumulates.
+- H_z face values and faces <-> centres only through `yee_grid` (its face-material comment is the definition): port
+  modes are exact only while FDTD, FDFD, slab modes and sheet calibrations agree; the fused `e_face_coefficients`
+  kernel inlines the mean, so a weighting change updates it too (em_operators_consistency part E).
+- Sources are current-calibrated (`sources.py` calibrations; what users are told: the `definition_common` help texts):
+  FDTD sheets use |eta / cos(kappa/2)| at the centre frequency, FDFD the exact complex value. Calibration is lazy
+  (dirty flag, applied in `EMPhysics.step` / `finalize`): before `finalize` calibrated sources inject 0 and
+  `engine.advance` alone never recalibrates. Injection weights carry cb: recompute them when it changes, never freeze.
+- Courant: `EMPhysics.finalize` checks Yee + leap-frog pole stability per cell incl. PML (poles are NOT stable whenever
+  Yee is: eps_inf = 1 aluminium needs dx <= ~5 nm; selftest em_drude_courant_bound); scripts skipping `finalize` and
+  runtime slot rewrites are unchecked.
+- J.E accounting runs only while `engine.enable_q_accum` (the model enables it for track_absorption or any reference:
+  `definition_common._q_accum_referenced`); `absorbed_power` = the current window, else `last_q_accum`, else zeros;
+  without em_heat_joule the window is the whole run.
+- Poles (em3d too): the velocity-form ADE, the cb factor of the E correction and the two time-centred loss halves are
+  derived in the `fdtd_ez_2d_kernels` / `fdtd_hz_2d_kernels` comments; a new pole path follows them (never J from the
+  predictor E^{n+1}, never a1 P^n + a2 P^{n-1} in float32).
 - BoundaryConfig PML cells must equal `Domain.npml_sides`; value equality, unhashable. `_validate` runs at
   construction and again in `solver_boundary_config`. BoundaryManager / CPMLSided are per polarisation (the engine
   refuses the other one: psi signs differ, it would amplify).

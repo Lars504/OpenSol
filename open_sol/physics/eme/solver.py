@@ -29,6 +29,7 @@ from ..em.design_density import DesignRegion, paint_regions
 from ..em.materials import DrudePole, LorentzPole, register_em_arrays
 from ..em.mode_ports import PortLine
 from ..em.operators import check_zero_bloch
+from ..em.placement import PERMITTIVITY_ARRAYS
 from ..em.slab_modes import solve_slab_modes
 from ..em.solvers.fdtd_2d_base import _check_cell_array, add_pec_cells, record_dispersive_region
 from ..em.yee_grid import grid_cell_widths
@@ -698,7 +699,7 @@ class EMEPhysics(EMEBase):
     @property
     def _design_arrays(self) -> tuple:
         """Permittivity arrays a design region writes: ez eps_r; hz eps_xx and eps_yy (an isotropic change)."""
-        return ('eps_r',) if self.polarization == 'ez' else ('eps_xx', 'eps_yy')
+        return PERMITTIVITY_ARRAYS[self.polarization]
 
     def add_design_region(self, mask, eps_min, eps_max, initial_density=0.5, filter_radius=0.0, projection_beta=0.0,
                           projection_eta=0.5):

@@ -35,6 +35,7 @@ from .definition_phase_change import phase_change_medium_feature
 from .materials import EM_MATERIAL_SCHEMAS
 from .memory_estimates import (FDTD_NUMBA_STREAMED_ITEMS, dft_monitor_memory_estimate, far_field_memory_estimate,
                                fdtd_memory_estimate, line_spectra_memory_estimate, pec_memory_estimate)
+from .placement import PERMITTIVITY_SLOTS
 from .renderer import EMRenderer, EMRendererHz
 
 _Q_ACCUM_INFO = FieldInfo('q_accum', 'Absorbed energy density', unit='J/m^3', cmap='magma')
@@ -354,10 +355,10 @@ _STEPPER_TEXT = ('Stepper (role stepper, explicit_kernels): precision single (fl
 # polarisation -> (renderer, permittivity slot -> MaterialGrid array, renderer state field names, extra state fields,
 # point-source params / apply / validate, line-feature validate); material_schema = EM_MATERIAL_SCHEMAS
 _POLARIZATIONS = {
-    'ez': (EMRenderer, {'eps_r_update': 'eps_r'}, ('ez', 'hx', 'hy', 'eps_r', 'sigma_e'),
+    'ez': (EMRenderer, PERMITTIVITY_SLOTS['ez'], ('ez', 'hx', 'hy', 'eps_r', 'sigma_e'),
            (_JZ_TOTAL_INFO, _Q_ACCUM_INFO),
            _EZ_POINT_SOURCE_PARAMS, apply_ez_point_source, validate_ez_point_feature, validate_ez_line_feature),
-    'hz': (EMRendererHz, {'eps_xx_update': 'eps_xx', 'eps_yy_update': 'eps_yy'}, ('hz', 'eps_xx', 'eps_yy', 'sigma_e'),
+    'hz': (EMRendererHz, PERMITTIVITY_SLOTS['hz'], ('hz', 'eps_xx', 'eps_yy', 'sigma_e'),
            (_Q_ACCUM_INFO,),
            hz_point_source_params(waveform_params(), time_domain=True), apply_hz_point_source,
            validate_hz_point_source, validate_hz_line_feature),
