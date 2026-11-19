@@ -1,17 +1,21 @@
 """Main window: model canvas in the centre, model tree / settings / results / 3D preview docks, Messages / Validation /
 Progress tabs, menus and a toolbar with progress + ETA; every GPU job goes through the WorkerBridge."""
 import collections
+import contextlib
 import math
 import numbers
 import os
+import sys
 import time
 import tempfile
 from functools import partial
+from pathlib import Path
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from .. import __version__
 from ..core.gpu_memory import format_bytes
+from ..io.model_io import save_model
 from ..model.expressions import error_message
 from ..model.geometry import GEOMETRY_KINDS
 from ..model.schema import ISSUE_LEVELS, Issue, with_gui_run_features
@@ -207,10 +211,41 @@ def _ask_mode_page_fields(parent, sizes):
     return [group for group, box in boxes.items() if box.isChecked()]
 
 
+_PACKAGE_ROOT = Path(__file__).resolve().parents[2]   # folder holding the open_sol package (launch_window)
+_CASCADE_OFFSET_PX = 40     # a window started by another one sits this far right and down of the saved place
+
+
 def web_page_directory():
     """Folder of the pages Open in browser writes (temporary: the OS may clear it; one file per model and target,
     rewritten on each open)."""
     return os.path.join(tempfile.gettempdir(), 'open_sol_pages')
+
+
+def window_copy_directory():
+    """Folder of the model copies Duplicate in new window hands to the new process (`app.main --copy`, which deletes
+    its copy once read and refuses a file anywhere else)."""
+    return os.path.join(tempfile.gettempdir(), 'open_sol_window_copies')
+
+
+def launch_window(arguments):
+    """Start another `python -m open_sol.gui <arguments> --cascade` process: its own window, worker, GPU session and
+    memory budget (gpu_memory.set_budget is per process); RuntimeError when it does not start. The package root goes
+    first on its PYTHONPATH, so it imports this open_sol however this one was started."""
+    if not sys.executable:
+        raise RuntimeError('the Python interpreter path is unknown (sys.executable is empty)')
+    environment = QtCore.QProcessEnvironment.systemEnvironment()
+    python_path = environment.value('PYTHONPATH', '')
+    environment.insert('PYTHONPATH', os.pathsep.join(part for part in (str(_PACKAGE_ROOT), python_path) if part))
+    process = QtCore.QProcess()
+    process.setProgram(sys.executable)
+    process.setArguments(['-m', 'open_sol.gui', *arguments, '--cascade'])
+    process.setWorkingDirectory(os.getcwd())
+    process.setProcessEnvironment(environment)
+    started = process.startDetached()
+    if isinstance(started, tuple):          # PySide6 returns (started, pid) where Qt has an out parameter
+        started = started[0]
+    if not started:
+        raise RuntimeError(f'could not start {sys.executable} -m open_sol.gui: {process.errorString()}')
 
 
 class MainWindow(QtWidgets.QMainWindow):
@@ -237,6 +272,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._worker_stopped = False
         self._gpu_device_text = ''            # memory gauge tooltip header from the worker's DeviceInfo
         self._example_catalog = ExampleCatalog(registry)
+        self._saves_geometry = True           # False in a window started by another one (cascade)
 
         self.canvas = ModelCanvas(document, registry)
         self.model_tree = ModelTree(document, registry)
@@ -410,6 +446,15 @@ class MainWindow(QtWidgets.QMainWindow):
                                                  tip='Save the last computed run (summary.json, log, model, result '
                                                      'arrays) into a folder, as the command-line run does')
         self.quit_action = self._make_action('&Quit', self.close, 'Ctrl+Q', 'Close open_sol')
+        window_tip = ('; it has its own worker and graphics card memory budget, so computing in both windows at once '
+                      'shares the card')
+        self.new_window_action = self._make_action('New &window', self._new_window, 'Ctrl+Shift+N',
+                                                   f'Open another open_sol window on the default template{window_tip}')
+        self.open_in_new_window_action = self._make_action(
+            'Open in new w&indow…', self._open_in_new_window, tip=f'Open a model file in another window{window_tip}')
+        self.duplicate_window_action = self._make_action(
+            '&Duplicate in new window', self._duplicate_in_new_window, 'Ctrl+Shift+D',
+            f'Open a copy of this model, unsaved edits included, as an untitled model in another window{window_tip}')
         self.undo_action = self._make_action('&Undo', self.document.undo, keys.Undo, 'Undo the last model change',
                                              pixmaps.SP_ArrowBack)
         self.redo_action = self._make_action('&Redo', self.document.redo, keys.Redo, 'Redo the undone change',
@@ -505,6 +550,8 @@ class MainWindow(QtWidgets.QMainWindow):
         file_menu.addAction(self.open_action)
         self.recent_menu = file_menu.addMenu('Open &recent')
         self.recent_menu.aboutToShow.connect(self._populate_recent_menu)
+        file_menu.addSeparator()
+        file_menu.addActions([self.new_window_action, self.open_in_new_window_action, self.duplicate_window_action])
         file_menu.addSeparator()
         file_menu.addActions([self.save_action, self.save_as_action, self.save_run_action])
         file_menu.addSeparator()
@@ -1108,6 +1155,59 @@ class MainWindow(QtWidgets.QMainWindow):
         remember_directory(path)
         self.show_status(f'Opened {path}')
 
+    # ---- other windows (each its own process: launch_window) ----
+    def _start_window(self, arguments, title, status):
+        try:
+            launch_window(arguments)
+        except RuntimeError as exc:
+            self._report_file_failure(title, error_message(exc))
+            return False
+        self.show_status(status)
+        return True
+
+    def _new_window(self):
+        self._start_window([], 'New window failed', 'Opening a new window')
+
+    def _open_in_new_window(self):
+        path, _selected_filter = QtWidgets.QFileDialog.getOpenFileName(
+            self, 'Open model in new window', start_directory(self.document), 'Model files (*.json);;All files (*)')
+        if not path:
+            return
+        path = os.path.abspath(path)
+        if self._start_window([path], 'Open in new window failed', f'Opening {path} in a new window'):
+            self._add_recent_file(path)
+            remember_directory(path)
+
+    def _duplicate_in_new_window(self):
+        """Hand the current spec (unsaved edits included) to a new window as an untitled model, through a file in
+        window_copy_directory() that the new process deletes once read (removed here when it does not start)."""
+        self._commit_pending_edit()
+        name = os.path.basename(self.document.path) if self.document.path else 'Untitled'
+        try:
+            os.makedirs(window_copy_directory(), exist_ok=True)
+            prefix = f"{file_stem(os.path.splitext(name)[0], 'model')}_"
+            handle, copy_path = tempfile.mkstemp(prefix=prefix, suffix='.json', dir=window_copy_directory())
+            os.close(handle)
+        except OSError as exc:
+            self._report_file_failure('Duplicate failed', f'Could not write the model copy: {error_message(exc)}')
+            return
+        try:
+            save_model(self.document.spec, copy_path)
+        except (OSError, ValueError) as exc:
+            os.remove(copy_path)
+            self._report_file_failure('Duplicate failed', f'Could not write the model copy: {error_message(exc)}')
+            return
+        if not self._start_window(['--copy', copy_path, f'--copy-name={name}'], 'Duplicate failed',
+                                  f'Opening a copy of {name} in a new window'):
+            with contextlib.suppress(OSError):
+                os.remove(copy_path)
+
+    def cascade(self):
+        """Window started by another one (`app.main --cascade`): sit _CASCADE_OFFSET_PX right and down of the saved
+        place, and keep only the dock layout on close (never this offset geometry, which would drift the saved one)."""
+        self._saves_geometry = False
+        self.move(self.pos() + QtCore.QPoint(_CASCADE_OFFSET_PX, _CASCADE_OFFSET_PX))
+
     def _open_recent(self, path):
         if self._confirm_discard_changes():
             self._open_path(path)
@@ -1363,7 +1463,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.restoreState(state)
 
     def _save_settings(self):
-        self._settings.setValue('main_window/geometry', self.saveGeometry())
+        if self._saves_geometry:
+            self._settings.setValue('main_window/geometry', self.saveGeometry())
         self._settings.setValue('main_window/state', self.saveState())
         self._settings.sync()
 
