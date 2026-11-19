@@ -9,6 +9,7 @@ import numpy as np
 
 from ...core import time_estimate as te
 from ...core.constants import FACES
+from ...core.mirror import feature_mirror_faces
 from ...core.memory_estimate import (BOOL_BYTES, FLOAT32_BYTES, FLOAT64_BYTES, INT32_BYTES, MemoryEstimate, combine,
                                      host_real_lu_bytes)
 from ...core.monitors import probe_result
@@ -24,7 +25,7 @@ from ...model.definition_helpers import (AXISYMMETRIC_SPACE_SETTINGS, AZIMUTHAL_
                                          evaluates_to, frequency_sweep_counts, geometry_param, host_direct_back_end,
                                          is_axisymmetric,
                                          linear_solver_direct, linear_solver_mixed, linear_solver_precision,
-                                         on_triangles, point_cells,
+                                         on_triangles, own_mirror_face_conflicts, point_cells,
                                          reduced_sweep_memory_items,
                                          reduced_sweep_time_items, validate_points_inside)
 from ...model.geometry import expand_entities, line_orientation
@@ -41,16 +42,18 @@ from .definition_bloch2d import (BAND_TEMPLATE_2D, bloch_issues_2d, complex_bloc
                                 trivial_bloch_phase_2d)
 from .definition_common import (DENSITY_PARAM, EIGENFREQUENCY_STUDY, GEOMETRIC_NONLINEARITY_PARAMS,
                                 INITIAL_STRESS_PROPERTIES, LOSS_PROPERTIES, MATERIAL_PROPERTIES, MODAL_STUDIES,
-                                PHOTOELASTIC_P44_PARAM, PIEZO_MATERIAL_PROPERTIES, STIFFNESS_TENSOR_PROPERTIES,
-                                STRESS_STIFFENING_PARAM, SUPPORT_FEATURES, TED_MATERIAL_PROPERTIES, apply_body_force,
+                                PHOTOELASTIC_P44_PARAM, PIEZO_MATERIAL_PROPERTIES, ROLLER_FEATURES,
+                                STIFFNESS_TENSOR_PROPERTIES, STRESS_STIFFENING_PARAM, SUPPORT_FEATURES,
+                                SYMMETRY_FEATURE, SYMMETRY_HELP, TED_MATERIAL_PROPERTIES, apply_body_force,
                                 apply_temperature_change,
                                 background_context, displacement_param, eigen_search_issues, electrode_result,
                                 follow_held_values, follow_load, following, free_body_allowed, frequency_probe_feature,
                                 initial_stress_materials, material_issues, materials_setting, modal_kept_count,
-                                modal_resonance_count, modal_study_issues, nonlinear_state_infos, outer_faces,
-                                piezo_material_issues, prestress_issues, register_support, resonance_table_feature,
-                                solid_linear_solver, solid_study, stiffness_follows_state, support_holders,
-                                support_result, thermoelastic_damping_feature, union_masks)
+                                modal_resonance_count, modal_study_issues, model_mirror_issues, nonlinear_state_infos,
+                                outer_faces, piezo_material_issues, pml_crossing_issues, prestress_issues,
+                                register_support, resonance_table_feature, solid_linear_solver, solid_study,
+                                stiffness_follows_state, support_holders, support_result, symmetry_issues,
+                                thermoelastic_damping_feature, union_masks)
 from .definition_frequency_response import (ADMITTANCE_FEATURE, FREQUENCY_RESPONSE_STUDY, anisotropy_issues,
                                             frequency_response_host_items, frequency_response_issues)
 from .fields import ENERGY_DENSITY_FIELDS, HARMONIC_IMAG_FIELDS, INPUT_ARRAYS, OUTPUT_ARRAYS
@@ -248,8 +251,8 @@ _BENDING_PARAM = Param(
          "e1 and e2, set by bending_moment_y and bending_moment_x; 'x': e1 only (e2 = 0), 'y': e2 only (e1 = 0); "
          "'none': uniform eps_zz = e0. A mirrored model draws half the section and the moments and force are those of "
          'the drawn part: hold the term across a mirror plane at 0 (a mirror on an x face: bending y; on a y face: '
-         "bending x; on both: none), since the whole body's eps_zz is even there. Each free term adds one pcg solve per "
-         'assembly.',
+         "bending x; on both: none), since the whole body's eps_zz is even there (a symmetry face: a validation error "
+         'otherwise). Each free term adds one pcg solve per assembly.',
     tip='Whether the long structure may bend out of the drawing. Free bending suits a long body with free ends; with '
         'a mirror plane, keep the strain from varying across that plane.')
 _BENDING_MOMENT_X_PARAM = Param(
@@ -502,6 +505,70 @@ def _validate_displacement(vctx, physics_spec, feature_spec, values):
     return []
 
 
+_FACE_FEATURES = ('fixed', 'roller', 'displacement', 'boundary_load', 'electrode')   # act on selected outer faces
+_GPS_TERM_AXES = {1: 'x', 2: 'y'}   # generalized plane strain terms h_1 = x - x_ref, h_2 = y - y_ref (BENDING_TERMS)
+
+
+def _validate_symmetry(vctx, physics_spec, feature_spec, values):
+    """symmetry: the shared solid rules (definition_common.symmetry_issues; mirror_feature_issues refuses x_lo / x_hi
+    of geometry axisymmetric), then errors for a generalized plane strain bending term varying across the plane and an
+    elastic PML (triangles) on a face meeting it."""
+    issues = symmetry_issues(vctx, physics_spec, feature_spec, SOLID_MECHANICS.settings, FACES,
+                             STIFFNESS_TENSOR_ARRAYS)
+    settings = vctx.values(SOLID_MECHANICS.settings, physics_spec.settings)
+    if not settings:   # reported at the physics
+        return issues
+    path = feature_path(physics_spec, feature_spec)
+    faces = outer_faces(vctx, feature_spec, FACES)
+    if not is_axisymmetric(settings) and settings.get('out_of_plane') == GENERALIZED_PLANE_STRAIN:
+        bending = settings.get('bending', 'xy')
+        varying = [_GPS_TERM_AXES[term] for term in BENDING_TERMS.get(bending, ()) if term in _GPS_TERM_AXES]
+        across = [axis for axis in varying if axis in {face[0] for face in faces}]
+        if across:
+            keep = next((axis for axis in varying if axis not in across), 'none')
+            issues.append(Issue('error', path, f"generalized plane strain bending '{bending}' lets eps_zz vary along "
+                                               f"{' and '.join(across)}, across the symmetry plane, where the "
+                                               'unfolded body is even: set bending to '
+                                               f"'{keep}' (the moments and the axial force stay those of the drawn "
+                                               'part)'))
+    if on_triangles(vctx, physics_spec):
+        issues.extend(pml_crossing_issues(path, faces, _pml_faces(settings)))
+    return issues
+
+
+def _segment_plane_issues(vctx, physics_spec, own_mirrors):
+    """Error per segment_load line lying on one of the solid's own symmetry faces with a nonzero (plain) component
+    normal to it: the hold takes it, and its mirror image cancels it (the tangential part is half the unfolded line
+    load)."""
+    size = vctx.domain_size
+    if not own_mirrors or size is None:
+        return []
+    tolerance = 1e-9 * max(size)
+    params = SOLID_MECHANICS.feature_type('segment_load').params
+    issues = []
+    for feature in physics_spec.features:
+        if not (feature.enabled and feature.type == 'segment_load'):
+            continue
+        values = vctx.values(params, feature.params) or {}
+        for name in vctx.objects(feature.selection):
+            shape = vctx.shapes.get(name)
+            if shape is None or shape.kind != 'line':
+                continue
+            for face in own_mirrors:
+                axis = face[0]
+                plane = 0.0 if face.endswith('lo') else size['xy'.index(axis)]
+                ends = (float(shape.values[f'{axis}0']), float(shape.values[f'{axis}1']))
+                normal = values.get(f't_{axis}')
+                if (all(abs(end - plane) <= tolerance for end in ends) and isinstance(normal, (int, float))
+                        and normal != 0.0):
+                    issues.append(Issue('error', feature_path(physics_spec, feature),
+                                        f"line '{name}' lies on the symmetry face {face}, where t_{axis} = "
+                                        f'{normal:.4g} Pa (normal to the plane) goes into the hold and its mirror '
+                                        'image cancels it: set t_' + axis + ' to 0 (a tangential load on the plane '
+                                        'is half the line load of the unfolded model)'))
+    return issues
+
+
 def _held_components(vctx, feature):
     """[(face, component)] an enabled support feature holds on outer faces ([('domain', 'x'), ('domain', 'y')] for
     fixed_domain, per set component for prescribed_displacement_domain); [] when its values or selection do not resolve
@@ -518,7 +585,7 @@ def _held_components(vctx, feature):
         return []
     if feature.type == 'fixed':
         return [(face, component) for face in faces for component in _COMPONENT_NAMES]
-    if feature.type == 'roller':
+    if feature.type in ROLLER_FEATURES:
         return [(face, 'x' if face in ('x_lo', 'x_hi') else 'y') for face in faces]
     if feature.type != 'displacement':   # a SUPPORT_FEATURES type the 2D solid has not registered (3D only)
         return []
@@ -816,7 +883,8 @@ def _validate_solid(vctx, physics_spec, settings_values):
     'stationary'): supports, CG iteration limit (tensor) or the triangle-mesh rules, materials, eigenfrequency
     densities, the guided axial_wavenumber (eigenfrequency study only, refused by optomechanics, which sets it for
     backward scattering), prestress, the elastic PML and the azimuthal order (triangles, eigenfrequency), geometric
-    nonlinearity (triangles)."""
+    nonlinearity (triangles), mirror planes (face features and normal segment loads on its own symmetry faces, model
+    mirror planes no roller holds)."""
     vctx = background_context(vctx, physics_spec)
     path = ('physics', physics_spec.name)
     triangles = on_triangles(vctx, physics_spec)
@@ -870,6 +938,10 @@ def _validate_solid(vctx, physics_spec, settings_values):
     issues.extend(_support_issues(vctx, physics_spec, path, axial_wavenumber, guided_by_study,
                                   is_axisymmetric(settings_values) and order != 1, free_body=free_body,
                                   held_elsewhere=order >= 2 or pml or bloch_cell))
+    own_mirrors = feature_mirror_faces(vctx.spec, physics_spec)   # its symmetry faces (model mirror planes)
+    issues.extend(own_mirror_face_conflicts(vctx, physics_spec, _FACE_FEATURES, own_mirrors))
+    issues.extend(_segment_plane_issues(vctx, physics_spec, own_mirrors))
+    issues.extend(model_mirror_issues(vctx, physics_spec, path, FACES, axis_held=is_axisymmetric(settings_values)))
     if triangles:
         issues.extend(_triangle_issues(vctx, physics_spec, settings_values, path))
         element_name = f"{settings_values.get('discretization', 'quadratic')} triangle"
@@ -1808,12 +1880,37 @@ _FEATURES = (
                 apply=_apply_fixed, result=_support_result, grids=_BOTH_GRIDS),
     FeatureType('roller', 'Roller', 'boundary_condition', 'boundary', allow_interior=False, result_kind='table',
                 summary='Lets the selected domain edges slide along themselves but not move away from or into the '
-                        'domain. Also the symmetry condition of a mirror-symmetric model.',
-                description='Roller (symmetry) support: the normal displacement is 0 (u_x on x_lo / x_hi, u_y on '
+                        'domain. For a mirror-symmetric model use Symmetry, which holds the same and unfolds the '
+                        'results.',
+                description='Roller support (the Symmetry feature holds the same and makes the face a model '
+                            'mirror plane): the normal displacement is 0 (u_x on x_lo / x_hi, u_y on '
                             'y_lo / y_hi), the tangential one free (zero shear traction; u_z of guided modes free '
                             'too). Rollers on one x face and one y face hold a solid completely. '
                             f'{_FACE_ONLY_TEXT} {_SUPPORT_RESULT_TEXT}',
                 apply=_apply_roller, result=_support_result, grids=_BOTH_GRIDS),
+    FeatureType(SYMMETRY_FEATURE, 'Symmetry', 'boundary_condition', 'boundary', allow_interior=False,
+                result_kind='table',
+                summary='Makes the selected domain edges mirror planes, so only half (or a quarter) of a structure '
+                        'that is the same on both sides of them needs to be drawn.',
+                description='Even mirror plane on outer faces (x_lo ... y_hi; geometry axisymmetric: y_lo / y_hi '
+                            'only): the face is held as by a Roller (normal displacement 0, zero shear traction; u_z '
+                            'of guided modes and U_phi of an azimuthal order free), the mirror image of a body '
+                            'deforming symmetrically about it, and becomes a model mirror plane (core.mirror). '
+                            + SYMMETRY_HELP.format(
+                                own_results='; inputs are those of the drawn part too (thickness, the generalized '
+                                            'plane strain axial_force and bending moments). Optomechanics: m_eff '
+                                            '(and so g0) of the unfolded body, x 2 per mirror plane (planar optics '
+                                            'mirror the face themselves; em_fdfd_bor optics need a pec / pmc wall '
+                                            'there)',
+                                own_errors=', x_lo / x_hi of geometry axisymmetric (the axis unfolds without a '
+                                           'feature in Unfold mirror planes; the cylinder r = R is no mirror '
+                                           'plane), a generalized plane strain bending term varying across the '
+                                           'plane (bending x or xy with an x face, y or xy with a y face), a '
+                                           'segment_load lying on the plane with a component normal to it (a '
+                                           'tangential one is half the line load of the unfolded model), with '
+                                           'em_fdfd_bor optics a mirror plane without a pec / pmc optical wall')
+                            + f' {_SUPPORT_RESULT_TEXT}',
+                apply=_apply_roller, result=_support_result, validate=_validate_symmetry, grids=_BOTH_GRIDS),
     FeatureType('displacement', 'Displacement', 'boundary_condition', 'boundary', allow_interior=False,
                 params=following((displacement_param('u_x', 'x'), displacement_param('u_y', 'y'))),
                 result_kind='table',

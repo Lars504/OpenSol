@@ -119,6 +119,30 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   old is freed: the estimator books it as a run item when a stiffness references a state field
   (`_stiffness_follows_state`).
 
+## Mirror planes (feature symmetry, both types; axis unfolding)
+- `symmetry` (`definition_common.SYMMETRY_FEATURE`, `core.mirror.MIRROR_FEATURES` +1) = the Roller apply / result on
+  outer faces (no solver path of its own) whose faces are model mirror planes: fields unfold with s = +1 (renderer
+  parities: u_n and shear with one normal index flip), Session integrals reaching them x 2, max / min over images. It
+  is in `SUPPORT_FEATURES` and `ROLLER_FEATURES` (every `_held_components`, the Bloch / PML face errors, estimators):
+  code testing `feature.type == 'roller'` for the normal hold must test ROLLER_FEATURES instead.
+- Validation: feature `_validate_symmetry` (2D / 3D) -> `definition_common.symmetry_issues` (mirror_feature_issues;
+  piezoelectric, materials failing `mirror_violation` over the stiffness names, uniform shear initial stress with a
+  normal index: errors; uniform normal body force: warning) + `pml_crossing_issues` (a PML ring / shell on a face of
+  another axis crosses the plane, the hold covers the window face only); 2D: generalized plane strain bending terms
+  across the plane; 3D: optomechanical_coupling, squeeze film gap side on the plane. Physics level:
+  `own_mirror_face_conflicts` over the type's `_FACE_FEATURES`, 2D `_segment_plane_issues` (normal t on a line on the
+  plane), `model_mirror_issues` (warning per model mirror plane no Roller / Symmetry / Fixed holds; axisymmetric x_lo
+  counts as held). Optomechanics: `_crystal_mirror_issues` (rotated crystal p), BOR pairing above.
+- Results the solid reports itself stay those of the drawn part (support / harmonic reaction tables, squeeze-film c / k,
+  mode_shapes surface; help text); m_eff in the optomechanics table is the unfolded body's. Parity sectors raise (no
+  odd solid feature).
+- Coverage (examples): confined_compression_oedometer (2D symmetry x_lo: reactions of the drawn half, means unchanged,
+  stress_yy_integral = sigma_yy 2 W H of the unfolded block), thermal_inclusion_sphere_3d (three 3D symmetry faces,
+  means unchanged).
+- Axis: `AXIS_UNFOLD_TYPES['solid_mechanics']` +1 is right for every renderer field at azimuthal_order 0 (u_r polar_x
+  flips, u_z keeps, stress / strain normal and hoop even, xy = rz axial_z flips, magnitudes unsigned); m != 0 is refused
+  by unfold_faces (u_z holds U_phi there).
+
 ## Anisotropic stiffness (`stiffness.py`, c_ij entries; piezoelectric plan stage 5)
 - Industry-standard plane strain: the full law in Voigt model axes (1 xx, 2 yy, 3 zz, 6 xy, engineering shear) with
   out-of-plane strains held (anti-plane u_z clamped, no c_4J / c_5J). Arrays c11, c12, c13, c22, c23, c33, c16, c26,
@@ -371,7 +395,8 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   field must stay out too. Tensor meshes only: `SolidFEMRenderer` drops it from its `field_infos`, since default
   snapshots store every listed field (`_stored_field_keys`) and a listed field the renderer cannot read fails the study.
 - Normalisation: |Q| = 1 at the reference node (peak or nearest reference_x / _y); g0 independent of it, g_om and m_eff
-  not. m_eff = length x 2^(EM mirror faces) x Q^T M Q: EM mirror faces need solid rollers (validation warning); the
+  not. m_eff = length x 2^(EM mirror faces) x Q^T M Q: EM mirror faces need solid rollers / symmetry (validation
+  warning; a solid symmetry face forces the optics to mirror it, so the count includes it); the
   em_modes mirror_factor cancels in the in-plane ratio. brillouin_gain (last column): em_modes with
   mechanical_quality_factor only (else NaN).
 - Backward scattering (scattering 'backward', em_modes only): guided modes at k_z = 2 Re beta (evaluate refuses
@@ -408,7 +433,9 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   `bor_optical_samples` needs the FEMBORPhysics `assembly` (a tensor-mesh BOR raises); interfaces touching PEC / the
   PML ring dropped. Solids kind 'triangles' (axisymmetric) or 'tetrahedra', sampled by point location in their own
   mesh. q_n from side 0 if solid, else side 1, else 0 (never the zero-padded field of a void element). m >= 1: x
-  `ring_factor(m)`, photoelastic 0. m_eff = Q^T M Q [kg] (no length / mirror factors), no om_integrand. Params
+  `ring_factor(m)`, photoelastic 0. m_eff = Q^T M Q [kg] x `OptomechanicalCoupling.mirror_factor` (2^(model mirror
+  planes), set by the apply from `mirror_faces(ctx.spec)`; validation requires each to be a y face with a pec / pmc
+  BOR wall; no length), no om_integrand. Params
   `prescribed_normal_displacement`, `axis_x` / `axis_y` (drawing y = 3D z).
 - A 3D solid with em_fdfd_bor optics is wired at runtime / validation only: em_fdfd_bor is 2D, so no model holds both
   yet.
@@ -422,8 +449,9 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   coupled into frequency_response): films evaluated in `solve_eigenfrequencies` after the pencil solve (`_modal_pencil`
   finish, on the merged list after a search); footprint from `_solid` of the last assembly, rebuilt when it changes;
   m_eff = Re(psi^H M psi) of the 1 m peak shape. resonance_table appends `GAS_TABLE_COLUMNS` (totals over films).
-  Refused: Bloch cells, PML faces, closed incompressible film. definition3d imports squeeze_film (and fem.surface_mesh)
-  at module level for its choice constants.
+  Refused: Bloch cells, PML faces, closed incompressible film, a gap side on a symmetry face; a vented rim on a model
+  mirror plane raises in `_vent_edges` (`mirror_planes` from the apply). definition3d imports squeeze_film (and
+  fem.surface_mesh) at module level for its choice constants.
 
 ## SolidMechanics3DPhysics / ElasticSystem3D (solid_mechanics_3d)
 - Isotropic 3D law sigma = lambda tr(eps) I + 2 mu eps - beta dT; forces, tractions and reactions in N.
@@ -650,7 +678,8 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
 - electrode_edge_size: `PhysicsType.mesh_edge_sizes` names electrode entities -> `TetrahedronSizing.edge_sizes` (gmsh
   only; info when unused).
 - Mirror check (`_mirror_issues`): warns per Roller whose selected materials' c_IJ / piezo_e* / eps_dc_* flip sign under
-  that reflection (`crystal_tensors.mirror_violation`): a half model would differ from the full one.
+  that reflection (`crystal_tensors.mirror_violation`): a half model would differ from the full one (a Symmetry face:
+  error, section "Mirror planes").
 - Solve: K_ff lazily via DiffusionDirectSolver on the 'linear' runtime (grid_defaults tetrahedra -> sparse_direct; pcg
   does not declare 'tetrahedra'). Eigen on 'eigen' eigsh_shifted (superlu / cudss / cudss_mixed refined to 1e-12; the
   SuperLU size limit is skipped for cuDSS); the tensor mesh ignores the factorization (info).

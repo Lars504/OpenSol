@@ -189,12 +189,26 @@ def mirror_feature_issues(vctx, physics_spec, feature_spec, settings_params):
             continue
         bc_params = {param.name for param in other_type.settings
                      if param.name.startswith('bc_') and set(MIRROR_SIGNS) <= set(param.choices or ())}
+        # EM types whose faces have no mirror choices (em_fdfd_bor / em_fdtd_bor walls): only a pec / pmc wall on
+        # the plane is a mirror of their fields
+        wall_params = {param.name for param in other_type.settings
+                       if other_type.family == 'em' and param.name.startswith('bc_')
+                       and not set(MIRROR_SIGNS) & set(param.choices or ())}
         mirrored_faces = [face for face in faces if f'bc_{face}' in bc_params]
-        if not mirrored_faces:
+        walled_faces = [face for face in faces if f'bc_{face}' in wall_params]
+        if not mirrored_faces and not walled_faces:
             continue
         other_values = vctx.values(other_type.settings, other.settings)
         if not other_values:   # reported at that physics
             continue
+        for face in walled_faces:
+            value = other_values.get(f'bc_{face}')
+            if value not in ('pec', 'pmc'):
+                issues.append(Issue('error', path, f"{face} is a model mirror plane through this {feature_spec.type} "
+                                                   f"face, but '{other.name}' ({other.type}) sets bc_{face} = "
+                                                   f"{value!r}, which is no mirror of its fields: set it to pec or "
+                                                   'pmc (the wall of the mirror parity) or remove the face from this '
+                                                   'feature'))
         for face in mirrored_faces:
             value = other_values.get(f'bc_{face}')
             if value not in MIRROR_SIGNS:

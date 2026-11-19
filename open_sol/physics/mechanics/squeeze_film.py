@@ -7,8 +7,9 @@ finds the flat footprint faces on the gap side, builds a fem.surface_mesh footpr
 # element behind them, the outermost such plane), then one SurfaceMesh / SqueezeFilm (P2) is built on first evaluation
 # from the solid of the last assembly (rebuilt when it changes). Vents: 'all' rim edges, 'none', or the rim minus the
 # edges lying on window planes (every in-plane axis: 'window_sealed', one axis: '<axis>_sealed'): sealed rims are mirror
-# planes of a half / quarter model. Per resonance: w = -u . n_out of the mode (peak |u| 1 m), m_eff = Re(psi^H M psi)
-# over every dof of the pencil (piezoelectric: the massless potential adds nothing), omega = Re omega. Coordinates are the
+# planes of a half / quarter model; a model mirror plane (mirror_planes: a symmetry face) must be sealed where the rim
+# meets it, else _vent_edges raises (p = 0 there is not the even image of the film continuing across). Per resonance:
+# w = -u . n_out of the mode (peak |u| 1 m), m_eff = Re(psi^H M psi) over every dof of the pencil (piezoelectric: the massless potential adds nothing), omega = Re omega. Coordinates are the
 # mesh's (fem.surface_mesh keeps the tet in-plane coordinates); planar integrals (no r weight).
 import numpy as np
 
@@ -70,10 +71,11 @@ def sealed_rim_axes(vents, normal_axis) -> tuple:
 
 class SqueezeFilmDamping:
     """Runtime of one squeeze_film_damping feature: candidate tet faces, gap side, the SqueezeFilm inputs (ambient None
-    = incompressible) and vents; the SurfaceMesh / SqueezeFilm built on first evaluation; rows of the last solve."""
+    = incompressible), vents and the model mirror planes (faces); the SurfaceMesh / SqueezeFilm built on first
+    evaluation; rows of the last solve."""
 
     def __init__(self, name, faces, side, gap, viscosity, ambient_pressure=None, *, mean_free_path=0.0,
-                 slip='veijola', vents='all'):
+                 slip='veijola', vents='all', mirror_planes=()):
         if side not in FACES_3D:
             raise ValueError(f"squeeze film '{name}': gap side must be one of {', '.join(FACES_3D)}, got {side!r}")
         self.name = str(name)
@@ -84,6 +86,7 @@ class SqueezeFilmDamping:
                            mean_free_path=float(mean_free_path), slip=slip)
         sealed_rim_axes(vents, 'xyz'.index(side[0]))   # fails early on a bad choice
         self.vents = vents
+        self.mirror_planes = tuple(face for face in mirror_planes if face[0] != side[0])   # in-plane axes only
         self.surface = None   # fem.surface_mesh.SurfaceMesh of the footprint
         self.film = None      # SqueezeFilm on it
         self.rows = None      # mode_gas_damping rows of the last evaluated solve
@@ -115,8 +118,8 @@ class SqueezeFilmDamping:
         return self.film
 
     def _vent_edges(self, surface, tet_mesh):
-        """Vented rim edges of the footprint (None = every rim edge)."""
-        if self.vents == 'all':
+        """Vented rim edges of the footprint (None = every rim edge); ValueError when one lies on a mirror plane."""
+        if self.vents == 'all' and not self.mirror_planes:
             return None
         mesh = surface.mesh
         rim = mesh.boundary_edges().astype(np.int64)
@@ -125,11 +128,20 @@ class SqueezeFilmDamping:
         window = np.asarray(tet_mesh.window, dtype=np.float64)
         slack = PLANE_TOLERANCE * float((window[3:] - window[:3]).max())
         ends = tet_mesh.points[surface.nodes[mesh.edges[rim].astype(np.int64)]]   # (k, 2, 3)
+
+        def on_plane(axis, plane):
+            return (np.abs(ends[:, :, axis] - plane) <= slack).all(axis=1)
         sealed = np.zeros(len(rim), dtype=bool)
         for axis in sealed_rim_axes(self.vents, surface.axis):
             for plane in (window[axis], window[axis + 3]):
-                sealed |= (np.abs(ends[:, :, axis] - plane) <= slack).all(axis=1)
-        return rim[~sealed]
+                sealed |= on_plane(axis, plane)
+        for face in self.mirror_planes:
+            axis = 'xyz'.index(face[0])
+            if (on_plane(axis, window[axis + (3 if face.endswith('hi') else 0)]) & ~sealed).any():
+                raise ValueError(f"{self.label()}: its rim on the mirror plane {face} is vented (vents "
+                                 f"{self.vents!r}), but the unfolded film continues across the plane (no flow "
+                                 f"through it): set vents 'window_sealed', '{face[0]}_sealed' or 'none'")
+        return None if self.vents == 'all' else rim[~sealed]
 
     @property
     def area(self) -> float:

@@ -12,7 +12,10 @@ _FREQUENCY_RESPONSE_STUDY = 'frequency_response'   # = model.study_frequency_res
 
 class SolidRenderer(PhysicsRenderer):
     """Window-shaped float32 fields of a SolidMechanicsPhysics: displacement, strain, stress, inputs, stiffness;
-    parities of the roller (even) mirror of a model's EM mirror faces (core.mirror: shear xy flips like axial_z)."""
+    parities of the roller (even) mirror of the model's mirror planes (symmetry faces, EM mirror faces; core.mirror:
+    shear xy flips like axial_z). They also hold for the axis x_lo of geometry axisymmetric (AXIS_UNFOLD_TYPES +1:
+    the image at phi = pi has u_r and s_rz flipped, u_z, the normal and hoop components even; unfold_faces refuses an
+    azimuthal_order m != 0, whose u_z holds U_phi)."""
 
     name = 'solid'
     field_infos = {

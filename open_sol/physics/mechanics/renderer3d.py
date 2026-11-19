@@ -11,7 +11,8 @@ def _signed(name, label, unit, parity, requires_study=''):
 
 class SolidRenderer3D(PhysicsRenderer):
     """Window-shaped (wx, wy, wz) float32 fields of a SolidMechanics3DPhysics (views of the stored arrays; Session cuts
-    the plane); parities of the roller (even) mirror (shear ij flips like the axial component of the third axis). The
+    the plane); parities of the roller (even) mirror of the model's mirror planes (symmetry faces, EM mirror faces;
+    shear ij flips like the axial component of the third axis). The
     piezoelectric and energy-density fields are tetrahedra-only (fem.renderer3d over the same field_infos): zeros
     here."""
 
