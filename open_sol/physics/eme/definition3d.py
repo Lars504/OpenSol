@@ -281,8 +281,9 @@ def _create(ctx, physics_spec, settings_values):
 
 
 def _memory_estimate(settings_values, mesh, context):
-    """3 complex64 E fields + float32 q_abs on the device, the adjoint cache (run item), per-mode-solve and field-block
-    transients, one cuDSS factor at a time outside the pool (cudss eigen node); host items mostly (comments)."""
+    """float32 q_abs on the device (the 3 complex64 E fields are host), the adjoint cache (run item), per-mode-solve and
+    q_abs block transients, one cuDSS factor at a time outside the pool (cudss eigen node); host items mostly
+    (comments)."""
     nx, ny = int(mesh.nx), int(mesh.ny)
     slices = _window_slices(mesh)
     points = nx * ny
@@ -336,23 +337,23 @@ def _memory_estimate(settings_values, mesh, context):
         ('partial cascades and interfaces (8 N^2 per section)', 8 * COMPLEX128_BYTES * n_modes ** 2 * slices),
         ('field reconstruction block', 2 * 3 * COMPLEX128_BYTES * FIELD_BLOCK_SLICES * points),
         ('absorbed power block (|E|^2, Gauss mean, loss)', 2 * FLOAT64_BYTES * FIELD_BLOCK_SLICES * points),
+        # solver3d: the reconstructed E stays on the host on either backend (renderer uploads one float32 read)
+        ('EME E fields (3 x complex64, host)', 3 * COMPLEX64_BYTES * n_cells),
     )
-    # _reconstruct uploads one complex64 component block and one float32 q_abs block at a time (freed after the copy)
-    block_slices = max(min(FIELD_BLOCK_SLICES, slices), 1)
+    # _reconstruct uploads one float32 q_abs block at a time (freed after the copy)
     transient_items = [('section mode solve', label, size) for label, size in mode_solve] + [
-        ('field reconstruction', 'field block upload (complex64)', COMPLEX64_BYTES * block_slices * points),
         ('field reconstruction', 'absorbed power block upload (float32)',
          FLOAT32_BYTES * max(min(FIELD_BLOCK_SLICES // 3, slices), 1) * points)]
     run_items, features = [], [feature for feature in context.physics_spec.features if feature.enabled]
     if any(feature.type == 'adjoint_objective' for feature in features):   # one EpsSensitivity per physics
-        run_items.append(('adjoint sensitivity cache (3 x float64 + float32)',
-                          (3 * FLOAT64_BYTES + FLOAT32_BYTES) * n_cells))
-        host_items += (('host adjoint gradients and density (4 x float64)', 4 * FLOAT64_BYTES * n_cells),
+        # solver3d._cascade_sensitivity: the float64 cell gradients stay host, the float32 density is on the device
+        run_items.append(('adjoint sensitivity density (float32)', FLOAT32_BYTES * n_cells))
+        host_items += (('host adjoint gradients (kept) and density (4 x float64)', 4 * FLOAT64_BYTES * n_cells),
                        ('adjoint slice products block (complex128)',
                         3 * COMPLEX128_BYTES * FIELD_BLOCK_SLICES * points))
     host_items += length_sweep_host_items(features, n_modes)
     return MemoryEstimate.from_items(
-        (('EME E fields (3 x complex64) and q_abs (float32)', (3 * COMPLEX64_BYTES + FLOAT32_BYTES) * n_cells),),
+        (('EME absorbed power q_abs (float32)', FLOAT32_BYTES * n_cells),),
         host_items=host_items, run_items=run_items, transient_items=transient_items, external_items=external_items,
         external_extra=external_extra)
 
@@ -377,12 +378,12 @@ def _time_estimate(settings_values, mesh, context):
     layers = points * slices
     gauss = 3.0 if lossy_materials(context) else 1.0
     # per slice its rows (a download on the gpu) and their comparison; E_x, E_y, E_z of both directions per Gauss row,
-    # |E|^2 / Gauss mean / transposes, the complex64 field and float32 q_abs uploads
+    # |E|^2 / Gauss mean / transposes, the complex64 field written into its host arrays, the float32 q_abs uploads
     solve_ops = ((slices, te.Transfer(_LAYER_ROWS * FLOAT32_BYTES * points)),
                  te.HostStream(3.0 * _LAYER_ROWS * FLOAT64_BYTES * layers),
                  te.DenseFlops(8.0 * 6.0 * gauss * n_modes * layers, host=True),
                  te.HostStream(8.0 * COMPLEX128_BYTES * gauss * layers),
-                 te.Transfer((3 * COMPLEX64_BYTES + FLOAT32_BYTES) * layers),
+                 te.HostStream(3 * COMPLEX64_BYTES * layers), te.Transfer(FLOAT32_BYTES * layers),
                  te.PythonCalls(100 + 20 * slices / FIELD_BLOCK_SLICES))
     # the layer's material arrays (a download on the gpu), the operator assembly, per mode its fields and ModeSet rows
     mode_ops = (te.Transfer(6 * FLOAT32_BYTES * points),

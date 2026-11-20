@@ -85,6 +85,13 @@ KEPT_PML_CUT_FRACTION = 0.5
 # |beta^2 - shift| (n_eff ~1e-11; round-2 sweep: 1e-10 saved 20 % of eigs). Solves feeding the group-index difference
 # (mode_group_indices: error x 1 / (2 GROUP_RELATIVE_STEP)), detached, port, EME and CPU solves keep machine precision
 MODE_ARPACK_TOLERANCE_FLOOR = 1e-10
+# The device Krylov-Schur basis of these solves (gpu backend, a cuDSS or host factor) stays complex128, never
+# eigs(single_basis=True): a complex64 basis holds its Arnoldi relation only to ~1e-7 (SINGLE_BASIS_MIN_TOLERANCE 1e-6),
+# above every tolerance used here (this floor, machine precision for group-index / detached / port / EME solves),
+# and unlike fem_modes no float64 polish can recover the lost digits cheaply: the transverse-H pencil is not complex
+# symmetric (B diagonal, A not), so the one-sided Rayleigh quotient is only first-order in the vector error and a
+# two-sided one needs the left eigenvectors (a transposed solve per mode). A complex64 basis needs a symmetric Yee
+# form first (em sub file "em_modes model layer": the mixed [E_t; E_z] pencil).
 LINE_BLOCK_BOTH_PERIODIC_TEXT = ('the line_block shifted solver cannot take two periodic axes (a periodic wrap along the '
                                  'line axis is not block-tridiagonal); use the sparse_direct solver (Automatic)')
 _SIZE_REMEDY = ('coarsen the mesh or shrink the cross-section (a symmetric / antisymmetric mirror face halves it per '

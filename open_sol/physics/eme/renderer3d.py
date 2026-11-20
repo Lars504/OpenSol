@@ -4,6 +4,8 @@ materialising 3D derived fields."""
 import math
 from dataclasses import replace
 
+import numpy as np
+
 from ...core.constants import C0, DTYPE
 from ...core.renderer import FieldInfo, PhysicsRenderer
 from ...core.wavelengths import wavelength_label
@@ -74,6 +76,8 @@ class EMERenderer3D(PhysicsRenderer):
             return self.eme.q_abs[window]
         if component == _SENSITIVITY_FIELD:   # cascade adjoint of the objective features (adjoint.py)
             return self.eme.eps_sensitivity().density[window]
+        # the E phasors are host complex64 (solver3d): the window / plane is computed on the host, the float32 result
+        # uploaded once (the run backend's array, as every renderer returns)
         fields = self.eme.field_arrays
         if component in ('e_abs', 'e_intensity'):
             total = None
@@ -81,7 +85,7 @@ class EMERenderer3D(PhysicsRenderer):
                 values = fields[name][window]
                 squared = values.real * values.real + values.imag * values.imag
                 total = squared if total is None else total + squared
-            return (self.domain.xp.sqrt(total) if component == 'e_abs' else total).astype(DTYPE, copy=False)
+            return self.domain.xp.asarray(np.sqrt(total) if component == 'e_abs' else total, dtype=DTYPE)
         name, part = component.split('_')
         values = fields[name][window]
-        return (values.real if part == 're' else values.imag).astype(DTYPE)
+        return self.domain.xp.asarray(np.ascontiguousarray(values.real if part == 're' else values.imag, dtype=DTYPE))

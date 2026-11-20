@@ -76,6 +76,11 @@ class ChannelFieldStore:
     """Snapshot of every channel's field the nonlinear sources read, in one flat complex128 vector of the run backend
     (allocated at the first capture): ez E_z at the centres, hz E_x (hi-y faces), E_y (hi-x faces); version 0 = never
     captured. wrap_factors[index] = that channel's FDFDPhysics.lower_wrap_factors (Bloch k; None = all 1)."""
+    # complex128 on purpose (not complex64): the store is the pump-depleted iterate and the fields every P is built
+    # from; complex64 rounding (6e-8 relative) would move the fixed point by that much, above the default iteration
+    # tolerance 1e-8 (relative channel change), and break the ~1e-12 power_exchange_imbalance of Kleinman tensors. The
+    # cached polarisation densities / face currents follow it (complex128). Only the Anderson history and the Newton
+    # GMRES basis are complex64 (iteration.py: they choose steps, never the fixed point).
 
     def __init__(self, channels, domain, boundary_config, wrap_factors=None):
         self.channels = tuple(channels)

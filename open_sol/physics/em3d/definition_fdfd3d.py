@@ -42,7 +42,6 @@ from .fem_solver3d import FEMResonancePhysics3D
 from .renderer_fdfd3d import FDFDRenderer3D
 
 TYPE_NAME = 'em_fdfd_3d'
-_SELECT_PHASE = 'select resonance'          # run phase (MemoryEstimate.transient_items) of select_resonance's upload
 _GRIDS = ('tensor', 'tetrahedra')   # PhysicsType / FeatureType.grids: tetrahedra = FEMResonancePhysics3D (T4b)
 # tetrahedra: stored entries per Nedelec row (degree 1 ~18, degree 2 ~45; fem3d YEE_EQUIVALENT_UNKNOWNS) and Nedelec
 # unknowns per element (TetrahedronMeshEstimate counts: degree 1 = edges, degree 2 = 2 (edges + faces))
@@ -304,9 +303,9 @@ def _validate(vctx, physics_spec, settings_values):
 
 # ---- memory and run time ----
 def _memory_estimate(settings_values, mesh, context):
-    """Device: six complex64 resonance fields. Host (3 E unknowns per cell): 3D SuperLU (or a cuDSS factor: external,
-    its copies EIGEN_PHASE items; the EIGEN_ROLE job's), operators, curls, Arnoldi work, vectors, materials.
-    Tetrahedra: _tetrahedra_memory_estimate."""
+    """Device: only the eigen solve's items (the six complex64 resonance fields are host: fdfd3d header). Host (3 E
+    unknowns per cell): 3D SuperLU (or a cuDSS factor: external, its copies EIGEN_PHASE items; the EIGEN_ROLE job's),
+    operators, curls, Arnoldi work, vectors, materials, the fields. Tetrahedra: _tetrahedra_memory_estimate."""
     if mesh.kind == 'tetrahedra':
         return _tetrahedra_memory_estimate(settings_values, mesh, context)
     n_cells = int(mesh.n_cells)
@@ -353,13 +352,10 @@ def _memory_estimate(settings_values, mesh, context):
         ('system vectors (face eps, 1 / mu, mass, weights, solve vectors)', 8 * vector_bytes),
         # 3 background eps + the complex loss term + 3 complex cell eps (+ the smoothing deltas, 3 per cell)
         ('host material copies (float64 / complex128)', 12 * FLOAT64_BYTES * n_cells),
+        # fdfd3d: the selected resonance's E / H stay on the host on either backend (renderer: one float32 upload)
+        ('resonance fields (6 x complex64, host)', 6 * COMPLEX64_BYTES * n_cells),
     )
-    # select_resonance uploads one complex64 component at a time after the eigen solve (its own phase)
-    return MemoryEstimate.from_items((('resonance fields (6 x complex64)', 6 * COMPLEX64_BYTES * n_cells),),
-                                     host_items=host_items,
-                                     transient_items=((_SELECT_PHASE, 'field upload of select_resonance (complex64)',
-                                                       COMPLEX64_BYTES * n_cells),) + cudss_items
-                                     + tuple(search_transient),
+    return MemoryEstimate.from_items((), host_items=host_items, transient_items=cudss_items + tuple(search_transient),
                                      external_items=external_items, external_extra=external_extra)
 
 

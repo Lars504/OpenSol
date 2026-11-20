@@ -38,6 +38,12 @@ vocabulary, studies and refusals are in their help texts and validation, the met
   `_layer_loss`).
 - Memory estimates: adjoint_objective has no estimate of its own: the physics estimators book the one
   EpsSensitivity per physics (`EMEBase._sensitivity`) when any adjoint_objective is enabled.
+- em_eme_3d keeps the reconstructed E (`EMEPhysics3D.field_arrays`, complex64) as host numpy on either backend: only
+  the renderer (host math on the read window / plane, one float32 upload) and solution_state read it. q_abs stays on
+  the run backend (state() feeds the loss couplings). Its EpsSensitivity cell_gradients are host float64 too (only
+  the float32 density is on the device: no 3D design regions), unlike 2D em_eme's run-backend ones that
+  study_optimization gathers. A new device reader of either uploads per read, never a kept device copy; 2D em_eme
+  keeps its float32 field arrays on the device (they are state() keys).
 
 ## Meshes and cuDSS: decision (nothing implemented)
 - em_eme: tensor only (`grids = ('tensor',)`): a 2D section is a 1D line solve, so a triangle mesh has no line to solve

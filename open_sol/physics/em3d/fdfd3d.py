@@ -1,6 +1,6 @@
 """FDFDPhysics3D: the PhysicsSolver of em_fdfd_3d: the 3D Yee curl-curl operator (operators3d) on the live
 E faces of a Domain3D, materials and PML frozen at the target omega, resonances by shift-invert on a host SuperLU or
-cuDSS factor (eigenfrequency.solve_resonances, squared Cayley map) and the selected resonance's E / H on the run backend."""
+cuDSS factor (eigenfrequency.solve_resonances, squared Cayley map) and the selected resonance's E / H (host complex64)."""
 # Materials (host, at omega_t = 2 pi C0 / wavelength): per E face the width-weighted mean (yee_grid.face_shares) of its
 # two cells' complex eps of that component (eps_xx / eps_yy / eps_r - j sigma_e / (omega eps0) + every pole's chi on its
 # region) under the PEC rule of the em_fdtd_3d kernels (kernels3d.pec_face_values); per H edge its lower cell's mu_r -
@@ -14,7 +14,9 @@ cuDSS factor (eigenfrequency.solve_resonances, squared Cayley map) and the selec
 # is why the solve uses the squared Cayley map. PML share: energy weights |Re eps| x the E dual volume (half on an
 # antisymmetric plane), window = E faces of window cells and the plane faces.
 # Selected resonance: E = the prolongation of its eigenvector (mirror ghost images included), H = j h_keep curl_e E /
-# (omega mu0 mu) at the resonance's complex omega; complex64 full-grid arrays on the run backend (renderer_fdfd3d).
+# (omega mu0 mu) at the resonance's complex omega; complex64 full-grid arrays kept on the HOST on either backend: they
+# are computed on the host and read only by renderer_fdfd3d (host math per read window / plane, one float32 upload),
+# so the device holds none of their 48 B per cell beside the eigen solve's factor and Krylov basis.
 import math
 import time
 from dataclasses import dataclass
@@ -145,8 +147,8 @@ class FDFDPhysics3D(StaticEM3DContract, PhysicsSolver):
         self.host_factor_bytes = None  # L + U of the last shift-invert factor (Simulation.memory_report)
         self._system_dirty = True
         self._counters = {'assemblies': 0, 'assembly_seconds': 0.0}
-        # complex64 full-grid E / H of the selected resonance (zeros before the first selection)
-        self.fields = {name: self.xp.zeros(self.shape, dtype=np.complex64) for name in FDFD_3D_COMPONENTS}
+        # host complex64 full-grid E / H of the selected resonance (zeros before the first selection; module header)
+        self.fields = {name: np.zeros(self.shape, dtype=np.complex64) for name in FDFD_3D_COMPONENTS}
 
     @property
     def omega(self) -> float:
@@ -226,7 +228,7 @@ class FDFDPhysics3D(StaticEM3DContract, PhysicsSolver):
 
     def select_resonance(self, number):
         """Show resonance `number` (1-based) of the last solve: E from its unknowns, H from the curl at its complex
-        omega, written into the complex64 fields."""
+        omega, written into the host complex64 fields."""
         resonance = self.eigen_solve.resonances[number - 1]
         system = self.system
         e_stacked = system.live.prolongation @ resonance.field
@@ -236,7 +238,7 @@ class FDFDPhysics3D(StaticEM3DContract, PhysicsSolver):
         for index, name in enumerate(FDFD_3D_COMPONENTS):
             stacked = e_stacked if name[0] == 'e' else h_stacked
             component = stacked[(index % 3) * n_cells:(index % 3 + 1) * n_cells].reshape(self.shape)
-            self.xp.copyto(self.fields[name], self.xp.asarray(component.astype(np.complex64)))
+            self.fields[name][...] = component   # complex128 -> complex64 on assignment
         self.selected_resonance = number
 
     # ---- assembly ----

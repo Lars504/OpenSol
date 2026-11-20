@@ -20,6 +20,18 @@ import numpy as np
 from ...core.backend import array_module_of, to_host
 
 _LSTSQ_RCOND = 1e-12   # Anderson least squares: singular values below this x the largest are dropped
+# Anderson history (the (depth, N) ring buffers dX, dF): complex64 by default (AndersonMixer(single_history=True)).
+# Error argument: the history only chooses the next trial iterate x+ = x + beta f - (dX + beta dF) gamma; the store,
+# x, f = G(x) - x and the convergence test stay complex128, so rounding the differences (6e-8 relative) perturbs a step
+# by ~6e-8 of its history correction (an inexact Anderson step): no floor on the attainable residual, hence no
+# tolerance limit to refuse. The weighted Gram / rhs are summed in float64 from float32 chunks of ANDERSON_GRAM_CHUNK
+# reals (a float32 Gram, the normal equations squaring the conditioning, would turn every singular value of dF below
+# ~3e-4 of the largest into rounding noise), and the float32 history drops singular values of dF below 1e-5 of the
+# largest (Gram rcond 1e-10, not 1e-12): the 6e-8 rounding then moves each kept one by <= 6e-3 relative. Checked
+# against the complex128 history by (e) of nlfd_newton_tangent.
+ANDERSON_HISTORY_DTYPE = np.complex64
+ANDERSON_GRAM_CHUNK = 1 << 20
+_SINGLE_LSTSQ_RCOND = 1e-10
 ITERATION_METHODS = ('picard', 'newton')
 GMRES_RESTART = 20           # Krylov vectors per GMRES cycle (each a store-sized device vector)
 GMRES_MAX_ITERATIONS = 60    # Jacobian products per Newton step at most (each one solve per nonlinear channel)
@@ -174,14 +186,16 @@ def _set_continuation_sources(channel_physics, originals, step, steps, nonlinear
 
 class AndersonMixer:
     """Anderson acceleration (Walker-Ni form, depth m; 0 = relaxed Picard) of the store fixed point, least squares
-    weighted per channel by 1 / ||g_k|| of the first sweep, relaxation beta: x+ = x + beta f - (dX + beta dF) gamma."""
+    weighted per channel by 1 / ||g_k|| of the first sweep, relaxation beta: x+ = x + beta f - (dX + beta dF) gamma;
+    single_history: the differences dX, dF in ANDERSON_HISTORY_DTYPE (its comment), else complex128."""
 
-    def __init__(self, blocks, depth, relaxation):
+    def __init__(self, blocks, depth, relaxation, single_history=True):
         self.blocks = tuple(blocks)
         self.depth = int(depth)
         self.relaxation = float(relaxation)
+        self.history_dtype = np.dtype(ANDERSON_HISTORY_DTYPE if single_history else np.complex128)
         self._x = self._f = self._x_previous = self._f_previous = None
-        self._dx = self._df = None    # (depth, N) ring buffers of differences
+        self._dx = self._df = None    # (depth, N) ring buffers of differences (history_dtype)
         self._count = self._next = 0
         self._weights = None
 
@@ -210,9 +224,10 @@ class AndersonMixer:
         if self.depth > 0:
             if self._f_previous is not None:
                 if self._df is None:
-                    self._df = xp.empty((self.depth, x.size), dtype=x.dtype)
-                    self._dx = xp.empty((self.depth, x.size), dtype=x.dtype)
+                    self._df = xp.empty((self.depth, x.size), dtype=self.history_dtype)
+                    self._dx = xp.empty((self.depth, x.size), dtype=self.history_dtype)
                 column = self._next % self.depth
+                # complex128 differences, rounded on write into a complex64 history (same_kind)
                 xp.subtract(f, self._f_previous, out=self._df[column])
                 xp.subtract(x, self._x_previous, out=self._dx[column])
                 self._next += 1
@@ -223,32 +238,45 @@ class AndersonMixer:
         if self._count == 0:
             return None if self.relaxation == 1.0 else x + self.relaxation * f
         df, dx = self._df[:self._count], self._dx[:self._count]
-        gamma = xp.asarray(self._coefficients(df, f))
-        # gamma is real: the history combination is two real GEMVs on the float64 views (no (depth, N) temporary)
+        # gamma is real: the history combination is two real GEMVs on the history's real views (no (depth, N)
+        # temporary; gamma in the history's real type, so a float32 history is never copied to float64 by matmul,
+        # its (2 N) float32 product subtracted into the float64 mix elementwise)
+        real_dtype = _real_view(df, self.history_dtype).dtype
+        gamma = xp.asarray(self._coefficients(df, f), dtype=real_dtype)
         mixed = xp.multiply(f, self.relaxation)
         mixed += x
         mixed_real = _real_view(mixed)
-        mixed_real -= gamma @ _real_view(dx)
-        mixed_real -= (self.relaxation * gamma) @ _real_view(df)
+        mixed_real -= gamma @ _real_view(dx, self.history_dtype)
+        mixed_real -= (self.relaxation * gamma) @ _real_view(df, self.history_dtype)
         return mixed
 
     def _coefficients(self, df, f):
         """Real gamma of min || W (f - dF^T gamma) || (host normal equations of Re <u, v>, blockwise weighted Gram from
         real-view GEMMs, one transfer): the map conjugates fields (only real-linear), so complex gamma would mix
-        differences by phases it does not respect."""
+        differences by phases it does not respect. A complex64 history: float64 sums over float64 copies of
+        ANDERSON_GRAM_CHUNK-real column chunks, rcond _SINGLE_LSTSQ_RCOND (ANDERSON_HISTORY_DTYPE comment)."""
         xp = array_module_of(df)
         count = df.shape[0]
-        df_real, f_real = _real_view(df), _real_view(f)
+        single = self.history_dtype == np.complex64
+        df_real, f_real = _real_view(df, self.history_dtype), _real_view(f)
         gram = xp.zeros((count, count), dtype=xp.float64)
         rhs = xp.zeros(count, dtype=xp.float64)
         for block, weight in zip(self.blocks, self._weights):
-            part = slice(2 * block.start, 2 * block.stop)
-            columns = df_real if len(self.blocks) == 1 else xp.ascontiguousarray(df_real[:, part])
-            gram += (weight ** 2) * (columns @ columns.T)
-            rhs += (weight ** 2) * (columns @ f_real[part])
+            if not single:
+                part = slice(2 * block.start, 2 * block.stop)
+                columns = df_real if len(self.blocks) == 1 else xp.ascontiguousarray(df_real[:, part])
+                gram += (weight ** 2) * (columns @ columns.T)
+                rhs += (weight ** 2) * (columns @ f_real[part])
+                continue
+            for start in range(2 * block.start, 2 * block.stop, ANDERSON_GRAM_CHUNK):
+                part = slice(start, min(start + ANDERSON_GRAM_CHUNK, 2 * block.stop))
+                columns = df_real[:, part].astype(xp.float64)   # (count, chunk) float64 copy
+                gram += (weight ** 2) * (columns @ columns.T)
+                rhs += (weight ** 2) * (columns @ f_real[part])
+                del columns
         system = to_host(xp.concatenate((gram.ravel(), rhs)))
         return np.linalg.lstsq(system[:count * count].reshape(count, count), system[count * count:],
-                               rcond=_LSTSQ_RCOND)[0]
+                               rcond=_SINGLE_LSTSQ_RCOND if single else _LSTSQ_RCOND)[0]
 
 
 def solve_pump_depleted(channel_physics, channels, order, store, kerr_terms, settings, nonlinear_types,
