@@ -783,7 +783,8 @@ box_face_cb_3d = raw_twin('em3d.box_face_cb', _box_face_cb_gpu, _box_face_cb_hos
 # its two cells by their half-cell conductance, so a cell gets 0.5 sigma_cell (E_hi^2 + E_lo^2) per component (its own
 # hi face and the hi face of its lower neighbour; none below cell 0 of a non-periodic axis), half_dt = dt / 2. The
 # split sums exactly to the width-weighted face sigma of the update, except on faces next to PEC (the PEC half is 0).
-# scale = dt / 2 x e_scale^2 (stored E -> V/m).
+# scale = dt / 2 x e_scale^2 (stored E -> V/m). q lives on the engine's loss box (origin (qi, qj, qk), extents along y /
+# z qy, qz; engine3d q_box), which holds the ohmic box.
 _OHMIC_LOSS_SOURCE = r"""
 __device__ __forceinline__ float squared(float value) { return value * value; }
 
@@ -791,7 +792,8 @@ extern "C" __global__
 void ohmic_loss_3d(
     float* __restrict__ q, const field_t* __restrict__ ex, const field_t* __restrict__ ey,
     const field_t* __restrict__ ez, const mat_t* __restrict__ mat, const float* __restrict__ t_sig,
-    int i0, int j0, int k0, int bx, int by, int bz, int nx, int ny, int nz, int px, int py, int pz, float scale)
+    int i0, int j0, int k0, int bx, int by, int bz, int qi, int qj, int qk, int qy, int qz,
+    int nx, int ny, int nz, int px, int py, int pz, float scale)
 {
     int k = blockIdx.x * blockDim.x + threadIdx.x;
     int j = blockIdx.y * blockDim.y + threadIdx.y;
@@ -806,14 +808,17 @@ void ohmic_loss_3d(
     if (gi > 0 || px) { idx_t o = idx + ((gi > 0) ? -sx : (idx_t)(nx - 1) * sx); e2 += squared(FLOAD(ex[o])); }
     if (gj > 0 || py) { idx_t o = idx + ((gj > 0) ? -sy : (idx_t)(ny - 1) * sy); e2 += squared(FLOAD(ey[o])); }
     if (gk > 0 || pz) { idx_t o = idx + ((gk > 0) ? -(idx_t)1 : (idx_t)(nz - 1)); e2 += squared(FLOAD(ez[o])); }
-    q[idx] += scale * sigma * e2;
+    q[((idx_t)(gi - qi) * qy + (gj - qj)) * qz + (gk - qk)] += scale * sigma * e2;
 }
 """
 
 
-def _ohmic_loss_host(q, ex, ey, ez, mat, t_sig, i0, j0, k0, bx, by, bz, nx, ny, nz, px, py, pz, scale):
+def _ohmic_loss_host(q, ex, ey, ez, mat, t_sig, i0, j0, k0, bx, by, bz, qi, qj, qk, qy, qz, nx, ny, nz, px, py, pz,
+                     scale):
     origin, extents = (int(i0), int(j0), int(k0)), (int(bx), int(by), int(bz))
     box = tuple(slice(start, start + count) for start, count in zip(origin, extents))
+    local = tuple(slice(start - int(q_start), start - int(q_start) + count)
+                  for start, q_start, count in zip(origin, (qi, qj, qk), extents))
 
     def squared(field, key):
         values = field[key].astype(np.float32, copy=False)
@@ -831,12 +836,12 @@ def _ohmic_loss_host(q, ex, ey, ez, mat, t_sig, i0, j0, k0, bx, by, bz, nx, ny, 
         key = list(box)
         key[axis] = rows
         e2 += np.where(present.reshape(_row_shape(axis)), squared(field, tuple(key)), np.float32(0.0))
-    q[box] += scale * sigma * e2
+    q[local] += scale * sigma * e2
 
 
 def _ohmic_loss_numba(numba):
     @numba.njit(parallel=True, cache=True)
-    def kernel(q, ex, ey, ez, mat, t_sig, i0, j0, k0, bx, by, bz, nx, ny, nz, px, py, pz, scale):
+    def kernel(q, ex, ey, ez, mat, t_sig, i0, j0, k0, bx, by, bz, qi, qj, qk, qy, qz, nx, ny, nz, px, py, pz, scale):
         for prange_i in numba.prange(bx):
             i = np.int64(prange_i)   # the parfor gufunc types the prange index uint64: mixed with int64 -> float64
             gi = i0 + i
@@ -857,7 +862,7 @@ def _ohmic_loss_numba(numba):
                         e2 += ey[gi, lo_j, gk] ** 2
                     if gk > 0 or pz != 0:
                         e2 += ez[gi, gj, lo_k] ** 2
-                    q[gi, gj, gk] += scale * sigma * e2
+                    q[gi - qi, gj - qj, gk - qk] += scale * sigma * e2
     return kernel
 
 
@@ -961,33 +966,149 @@ def field_kernels(precision='single') -> dict:
 
 
 # Dispersive poles on a region box (2D leap-frog forms, materials.DrudePole / LorentzPole.ade_coefficients), the drive
-# times the face weight w (width-weighted share of the region's cells at that face): J from E^n before the Yee update;
-# the corrections E -= cb J and E -= (cb / dt) dP (fdtd_ez_2d_kernels.drude_e_correction / lorentz_e_correction) after.
-# Drude in the 2D velocity form J += damping J + drive w E (damping = c1 - 1, fdtd_ez_2d_kernels).
-def _drude_j_weighted_host(damping, drive, w, e, j):
-    j += damping * j + drive * w * e
+# times the face weight w: J / P from E^n before the Yee update, the corrections E -= cb J (Drude) and E -= (cb / dt) dP
+# (Lorentz) after (the forms of fdtd_ez_2d_kernels drude_j_update / lorentz_p_update / *_e_correction). Nothing per box
+# cell but the pole states is stored: w is read from the region's uint8 membership box mem ((bx + 1, by + 1, bz + 1):
+# box cell (i, j, k) and its hi partner along the component, engine3d _pole_region pads the last row) and the global
+# face shares, w_c = wl_c m(cell) + wu_c m(hi partner); cb is the live Yee coefficient of face_coefficients (material
+# index, tables, subpixel face overrides), so a material rebuild needs no pole refresh. One launch per pole and field
+# set covers the three components (the box origin (i0, j0, k0) indexes the full-grid E; boxes never wrap).
+_POLE_PREAMBLE = _PREAMBLE + r"""
+typedef unsigned char mem_t;
+
+__device__ __forceinline__ float pole_weight(const mem_t* __restrict__ mem, idx_t own, idx_t hi_stride, float wl,
+                                             float wu)
+{
+    return wl * (float)mem[own] + wu * (float)mem[own + hi_stride];
+}
+"""
+
+_POLE_DRIVE_SOURCE = _POLE_PREAMBLE + r"""
+extern "C" __global__
+void pole_drive_3d(
+    float* __restrict__ s0, float* __restrict__ s1, float* __restrict__ s2,
+    float* __restrict__ d0, float* __restrict__ d1, float* __restrict__ d2,
+    const float* __restrict__ ex, const float* __restrict__ ey, const float* __restrict__ ez,
+    const mem_t* __restrict__ mem,
+    const float* __restrict__ wlx, const float* __restrict__ wux,
+    const float* __restrict__ wly, const float* __restrict__ wuy,
+    const float* __restrict__ wlz, const float* __restrict__ wuz,
+    int i0, int j0, int k0, int bx, int by, int bz, int ny, int nz,
+    float damping, float restoring, float drive, int lorentz)
+{
+    int k = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    int i = blockIdx.z * blockDim.z + threadIdx.z;
+    if (i >= bx || j >= by || k >= bz) return;
+    int gi = i0 + i, gj = j0 + j, gk = k0 + k;
+    idx_t g = ((idx_t)gi * ny + gj) * nz + gk;
+    idx_t b = ((idx_t)i * by + j) * bz + k;
+    idx_t mz = bz + 1, my = (idx_t)(by + 1) * mz;
+    idx_t own = (idx_t)i * my + (idx_t)j * mz + k;
+    float w[3] = {pole_weight(mem, own, my, wlx[gi], wux[gi]), pole_weight(mem, own, mz, wly[gj], wuy[gj]),
+                  pole_weight(mem, own, (idx_t)1, wlz[gk], wuz[gk])};
+    float e[3] = {ex[g], ey[g], ez[g]};
+    float* s[3] = {s0, s1, s2};
+    float* d[3] = {d0, d1, d2};
+    for (int c = 0; c < 3; ++c) {
+        float state = s[c][b];
+        if (lorentz) {   // dP += damping dP - restoring P + drive w E; P += dP
+            float step = d[c][b];
+            step += damping * step - restoring * state + drive * w[c] * e[c];
+            d[c][b] = step;
+            s[c][b] = state + step;
+        } else {         // J += damping J + drive w E
+            s[c][b] = state + (damping * state + drive * w[c] * e[c]);
+        }
+    }
+}
+"""
+
+_POLE_CORRECT_SOURCE = _POLE_PREAMBLE + r"""
+extern "C" __global__
+void pole_correct_3d(
+    float* __restrict__ ex, float* __restrict__ ey, float* __restrict__ ez,
+    const float* __restrict__ s0, const float* __restrict__ s1, const float* __restrict__ s2,
+    const mat_t* __restrict__ mat, const float* __restrict__ t_ex, const float* __restrict__ t_ey,
+    const float* __restrict__ t_ez, const float* __restrict__ t_sig, FACE_PARAMS,
+    const float* __restrict__ wlx, const float* __restrict__ wux,
+    const float* __restrict__ wly, const float* __restrict__ wuy,
+    const float* __restrict__ wlz, const float* __restrict__ wuz,
+    int i0, int j0, int k0, int bx, int by, int bz, int nx, int ny, int nz, int px, int py, int pz, float dt,
+    float scale)
+{
+    int k = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    int i = blockIdx.z * blockDim.z + threadIdx.z;
+    if (i >= bx || j >= by || k >= bz) return;
+    int gi = i0 + i, gj = j0 + j, gk = k0 + k;
+    idx_t g = ((idx_t)gi * ny + gj) * nz + gk;
+    idx_t b = ((idx_t)i * by + j) * bz + k;
+    const float* s[3] = {s0, s1, s2};
+    float* e[3] = {ex, ey, ez};
+    for (int c = 0; c < 3; ++c) {
+        float state = s[c][b];
+        if (state == 0.0f) continue;   // outside the region (w = 0 keeps J / dP at 0): E unchanged
+        float ca, cb;
+        component_coefficients(c, gi, gj, gk, g, nx, ny, nz, px, py, pz, mat, t_ex, t_ey, t_ez, t_sig, FACE_ARGS,
+                               wlx, wux, wly, wuy, wlz, wuz, dt, &ca, &cb);
+        e[c][g] -= cb * scale * state;
+    }
+}
+"""
 
 
-drude_j_weighted = twin('em3d.drude_j_weighted', cp.ElementwiseKernel(
-    'float32 damping, float32 drive, float32 w, float32 e',
-    'float32 j',
-    'j += damping * j + drive * w * e',
-    'em3d_drude_j_weighted'), _drude_j_weighted_host)
+def pole_face_weights(mem, shares, origin, box_shape):
+    """The three float32 face weights w_c = wl_c m(cell) + wu_c m(hi partner) of a pole box (array module of mem; the
+    pole kernels' pole_weight): shares = ((wl, wu) per axis) full-grid rows, origin / box_shape of the box."""
+    weights = []
+    for axis in range(3):
+        lower_share, upper_share = (share[int(origin[axis]):int(origin[axis]) + int(box_shape[axis])]
+                                    for share in shares[axis])
+        own = mem[:box_shape[0], :box_shape[1], :box_shape[2]]
+        shifted = [slice(0, int(count)) for count in box_shape]
+        shifted[axis] = slice(1, int(box_shape[axis]) + 1)
+        weights.append(lower_share.reshape(_row_shape(axis)) * own.astype(np.float32)
+                       + upper_share.reshape(_row_shape(axis)) * mem[tuple(shifted)].astype(np.float32))
+    return weights
 
 
-def _lorentz_p_weighted_host(damping, restoring, drive, w, e, p, dp):
-    dp += damping * dp - restoring * p + drive * w * e
-    p += dp
+def _box_of(origin, extents):
+    return tuple(slice(int(start), int(start) + int(count)) for start, count in zip(origin, extents))
 
 
-lorentz_p_weighted = twin('em3d.lorentz_p_weighted', cp.ElementwiseKernel(
-    'float32 damping, float32 restoring, float32 drive, float32 w, float32 e',
-    'float32 p, float32 dp',
-    '''
-    dp += damping * dp - restoring * p + drive * w * e;
-    p += dp;
-    ''',
-    'em3d_lorentz_p_weighted'), _lorentz_p_weighted_host)
+def _pole_drive_host(s0, s1, s2, d0, d1, d2, ex, ey, ez, mem, wlx, wux, wly, wuy, wlz, wuz, i0, j0, k0, bx, by, bz,
+                     ny, nz, damping, restoring, drive, lorentz):
+    origin, extents = (int(i0), int(j0), int(k0)), (int(bx), int(by), int(bz))
+    shares = ((wlx, wux), (wly, wuy), (wlz, wuz))
+    weights = _host_cached((mem, wlx, wux, wly, wuy, wlz, wuz), ('pole weights', origin, extents),
+                           lambda: pole_face_weights(mem, shares, origin, extents))
+    box = _box_of(origin, extents)
+    for state, step, field, weight in zip((s0, s1, s2), (d0, d1, d2), (ex, ey, ez), weights):
+        values = field[box]
+        if int(lorentz):
+            step += damping * step - restoring * state + drive * weight * values
+            state += step
+        else:
+            state += damping * state + drive * weight * values
+
+
+pole_drive_3d = raw_twin('em3d.pole_drive', cp.RawKernel(_POLE_DRIVE_SOURCE, 'pole_drive_3d'), _pole_drive_host)
+
+
+def _pole_correct_host(ex, ey, ez, s0, s1, s2, mat, t_ex, t_ey, t_ez, t_sig, fid, t_face, use_face, wlx, wux, wly, wuy,
+                       wlz, wuz, i0, j0, k0, bx, by, bz, nx, ny, nz, px, py, pz, dt, scale):
+    origin, extents = (int(i0), int(j0), int(k0)), (int(bx), int(by), int(bz))
+    box = _box_of(origin, extents)
+    shares, periodic, tables = ((wlx, wux), (wly, wuy), (wlz, wuz)), (px, py, pz), (t_ex, t_ey, t_ez)
+    for comp, (field, state) in enumerate(zip((ex, ey, ez), (s0, s1, s2))):
+        _, cb = _cached_face_coefficients(mat, tables[comp], t_sig, fid, t_face, use_face, comp, origin, extents,
+                                          *shares[comp], periodic[comp], dt)
+        field[box] -= cb * scale * state
+
+
+pole_correct_3d = raw_twin('em3d.pole_correct', cp.RawKernel(_POLE_CORRECT_SOURCE, 'pole_correct_3d'),
+                           _pole_correct_host)
 
 
 # Half of the time-centred pole work on a face box [J/m^3]: scale = dt / 2 with the Drude J, 1 / 2 with the Lorentz

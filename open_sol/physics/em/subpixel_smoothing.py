@@ -112,9 +112,9 @@ class SubpixelSmoothing:
         return out
 
     def correct_fdtd(self, engine):
-        """After the engine's fused coefficient rebuild (before its PEC fold): ca / cb (and hz eps_x / eps_y [F/m]) at
-        the interface locations from the averaged eps and the width-weighted face mean of sigma_e (the shared
-        e_coefficients formula)."""
+        """After the engine's fused coefficient rebuild (before its PEC fold): ca / cb (and hz eps_x / eps_y [F/m] once
+        allocated) at the interface locations from the averaged eps and the width-weighted face mean of sigma_e (the
+        shared e_coefficients formula); a uniform ca (engine.uniform_ca: a broadcast view, never written) stays."""
         from .solvers.fdtd_ez_2d_kernels import e_coefficients
         materials = engine.materials
         if self.polarization == 'ez':
@@ -130,7 +130,10 @@ class SubpixelSmoothing:
             sigma = self.face_mean(kind, materials.sigma_e)
             _, _, ca_values, cb_values = self._buffers[kind]
             e_coefficients(sigma, eps, DTYPE(engine.dt), DTYPE(EPS0), ca_values, cb_values)
-            _SCATTER_COEFFICIENTS(locations.location, ca_values, cb_values, ca.ravel(), cb.ravel())
+            if engine.uniform_ca:   # ca is the uniform 1 (sigma_e 0 everywhere, so ca_values are 1): cb alone
+                _SCATTER_SCALED(locations.location, cb_values, cb.dtype.type(1.0), cb.ravel())
+            else:
+                _SCATTER_COEFFICIENTS(locations.location, ca_values, cb_values, ca.ravel(), cb.ravel())
             if eps_absolute is not None:
                 _SCATTER_SCALED(locations.location, eps, eps_absolute.dtype.type(EPS0), eps_absolute.ravel())
 

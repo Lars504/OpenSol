@@ -249,11 +249,22 @@ def _check_requantisation(_results):
 
 # ---- Drude velocity form of the em3d pole kernel (the 2D case's scenarios, em.selftests_operators) ----
 def _drude_3d_steppers(xp):
-    """{kernel: (shape, step)} of kernels3d.drude_j_weighted at face weight 1."""
-    from .kernels3d import drude_j_weighted
+    """{kernel: (shape, step)} of kernels3d.pole_drive_3d (Drude) on a box covering the grid: every cell a member and
+    face shares (1, 0), i.e. face weight 1 read from the uint8 membership box."""
+    from .kernels3d import launch, pole_drive_3d
     shape = (3, 3, 3)
-    weight = xp.ones(shape, dtype=np.float32)
-    return {'em3d_weighted': (shape, lambda damping, drive, e, j: drude_j_weighted(damping, drive, weight, e, j))}
+    membership = xp.ones(tuple(count + 1 for count in shape), dtype=np.uint8)
+    shares = (xp.ones(shape[0], dtype=np.float32), xp.zeros(shape[0], dtype=np.float32)) * 3
+    others = [xp.zeros(shape, dtype=np.float32) for _ in range(2)]   # J of the other two components (driven, unread)
+    grid, block = launch(shape)
+    geometry = (membership, *shares, *(np.int32(value) for value in (0, 0, 0, *shape)), np.int32(shape[1]),
+                np.int32(shape[2]))
+
+    def step(damping, drive, e, j):
+        currents = (j, *others)
+        pole_drive_3d(grid, block, (*currents, *currents, e, e, e, *geometry, np.float32(damping), np.float32(0.0),
+                                    np.float32(drive), np.int32(0)))
+    return {'em3d_pole_drive': (shape, step)}
 
 
 def _check_drude_velocity_form(_results):
@@ -262,6 +273,104 @@ def _check_drude_velocity_form(_results):
     errors = drude_velocity_form_errors(_drude_3d_steppers)
     measured = max(errors.values())
     return {'measured': measured, 'expected': 0.0, 'error': measured, 'tolerance': 1e-5, 'details': errors}
+
+
+# ---- pole kernels against the per-cell storage they replaced (stored weights and cb arrays) ----
+_POLE_GRID = (7, 6, 5)
+_POLE_BOX = ((3, 0, 1), (4, 6, 3))   # origin, shape: reaches the hi x end and spans y
+_POLE_IDS = 5
+_POLE_STEPS = 4
+_POLE_TOLERANCE = 1e-5               # relative to the peak: float32 round-off of a different operation order
+
+
+def _pole_inputs(rng, periodic):
+    """Random host inputs of one pole region: face shares, a uint8 membership box (one row longer per axis), E fields,
+    the int32 box origin / shape and the material arguments of pole_correct_3d before its scale (tables with a PEC id
+    last, no subpixel overrides)."""
+    shape = _POLE_GRID
+    origin, box = _POLE_BOX
+    mat = rng.integers(0, _POLE_IDS, shape).astype(np.uint16)
+    tables = [rng.uniform(1.0, 12.0, _POLE_IDS).astype(np.float32) for _ in range(3)]
+    for table in tables:
+        table[-1] = -1.0   # PEC id
+    sigma = rng.uniform(0.0, 1e5, _POLE_IDS).astype(np.float32)
+    lower = [rng.uniform(0.3, 0.7, count).astype(np.float32) for count in shape]
+    shares = [(share, (1.0 - share).astype(np.float32)) for share in lower]
+    membership = (rng.random(tuple(count + 1 for count in box)) < 0.7).astype(np.uint8)
+    fields = [rng.standard_normal(shape).astype(np.float32) for _ in range(3)]
+    face = (np.zeros((1, 1, 1), dtype=np.uint16), np.zeros(3, dtype=np.float32), np.int32(0))
+    box_ints = tuple(np.int32(value) for value in (*origin, *box))
+    material_args = (mat, *tables, sigma, *face, *(row for pair in shares for row in pair), *box_ints,
+                     *(np.int32(count) for count in shape), *(np.int32(flag) for flag in periodic),
+                     np.float32(2e-17))
+    return membership, shares, fields, box_ints, material_args
+
+
+def _pole_reference(membership, shares, fields, box_ints, cb, drive_args):
+    """The former engine path on the host: stored float32 weights wl m(cell) + wu m(hi partner), the elementwise
+    Lorentz drive and the stored-cb correction E -= cb inv_dt dP, _POLE_STEPS times; returns (P, dP, E) lists."""
+    box = tuple(int(count) for count in box_ints[3:])
+    window = tuple(slice(int(start), int(start) + count) for start, count in zip(box_ints[:3], box))
+    damping, restoring, drive, inverse_dt = drive_args
+    own = membership[:box[0], :box[1], :box[2]].astype(np.float32)
+    weights = []
+    for axis in range(3):
+        lower_share, upper_share = (share[window[axis]] for share in shares[axis])
+        broadcast = [1, 1, 1]
+        broadcast[axis] = -1
+        shifted = [slice(0, count) for count in box]
+        shifted[axis] = slice(1, box[axis] + 1)
+        weights.append(lower_share.reshape(broadcast) * own
+                       + upper_share.reshape(broadcast) * membership[tuple(shifted)].astype(np.float32))
+    fields = [field.copy() for field in fields]
+    polarisations = [np.zeros(box, dtype=np.float32) for _ in range(3)]
+    steps = [np.zeros(box, dtype=np.float32) for _ in range(3)]
+    for _ in range(_POLE_STEPS):
+        for weight, field, polarisation, step in zip(weights, fields, polarisations, steps):
+            step += damping * step - restoring * polarisation + drive * weight * field[window]
+            polarisation += step
+        for component, (field, step) in enumerate(zip(fields, steps)):
+            field[window] -= cb[component] * inverse_dt * step
+    return polarisations, steps, fields
+
+
+def _check_pole_kernels(_results):
+    """pole_drive_3d (Lorentz) + pole_correct_3d against _pole_reference (cb from box_face_cb_3d, the stored path) on
+    the cpu twins and, with a usable GPU, the CUDA kernels; worst error relative to each array's peak."""
+    from ...core.backend import cp, gpu_available, to_host
+    from .kernels3d import box_face_cb_3d, launch, pole_correct_3d, pole_drive_3d
+    drive_args = (np.float32(-0.02), np.float32(0.05), np.float32(3e-12), np.float32(5e16))
+    errors = {}
+    backends = (('cpu', np), ('gpu', cp)) if gpu_available() else (('cpu', np),)
+    for periodic in ((0, 0, 0), (1, 1, 0)):
+        rng = np.random.default_rng(20261120 + sum(periodic))
+        membership, shares, fields, box_ints, material_args = _pole_inputs(rng, periodic)
+        box = tuple(int(count) for count in box_ints[3:])
+        for backend, xp in backends:
+            args = tuple(xp.asarray(value) if isinstance(value, np.ndarray) else value for value in material_args)
+            grid, block = launch(box)
+            cb = []
+            for component in range(3):   # box_face_cb_3d: (out, comp, origin, box, tables..., shares, grid ints, dt)
+                out = xp.empty(box, dtype=np.float32)
+                box_face_cb_3d(grid, block, (out, np.int32(component), *args[14:20], *args[:14], *args[20:]))
+                cb.append(to_host(out))
+            expected = _pole_reference(membership, shares, fields, box_ints, cb, drive_args)
+            e_fields = [xp.asarray(field) for field in fields]
+            states = [xp.zeros(box, dtype=np.float32) for _ in range(6)]   # P, dP per component
+            geometry = (xp.asarray(membership), *args[8:14], *box_ints, args[21], args[22])
+            for _ in range(_POLE_STEPS):
+                pole_drive_3d(grid, block, (*states, *e_fields, *geometry, *drive_args[:3], np.int32(1)))
+                pole_correct_3d(grid, block, (*e_fields, *states[3:], *args, drive_args[3]))
+            measured = ([to_host(state) for state in states[:3]], [to_host(state) for state in states[3:]],
+                        [to_host(field) for field in e_fields])
+            tag = backend + ' periodic ' + ''.join(str(flag) for flag in periodic)
+            for name, values, references in zip(('P', 'dP', 'E'), measured, expected):
+                peak = max(float(np.max(np.abs(reference))) for reference in references)
+                errors[tag + ' ' + name] = max(float(np.max(np.abs(value - reference)))
+                                               for value, reference in zip(values, references)) / max(peak, 1e-30)
+    measured = max(errors.values())
+    return {'measured': measured, 'expected': 0.0, 'error': measured, 'tolerance': _POLE_TOLERANCE,
+            'details': errors}
 
 
 MATERIAL_CASES = (
@@ -311,10 +420,22 @@ MATERIAL_CASES = (
     SelfTestCase(
         name='em3d_drude_velocity_form',
         label='EM 3D: Drude velocity form of the pole kernel',
-        description=('Kernel only (no model run): the em3d drude_j_weighted update (face weight 1, float32, cpu twin '
+        description=('Kernel only (no model run): the em3d pole_drive_3d Drude update (face weight 1 from a uint8 '
+                     'membership box, float32, cpu twin '
                      'and, with a usable GPU, the CUDA kernel) in the scenarios of em_drude_velocity_form: constant E '
                      '= 1 V/m, omega_p 1.37e16 rad/s, dt 1e-17 s; gamma dt 2e-6 held at sigma_dc E for 10000 steps, '
                      'and gamma dt 1e-2 charging from J = 0 for 300 steps against the float64 leap-frog recursion. '
                      'error = the worst relative J error, tolerance 1e-5 (a float32 c1 J + c2 E drifts ~3e-4).'),
         specs=lambda: {}, check=_check_drude_velocity_form, backends=('cpu', 'gpu')),
+    SelfTestCase(
+        name='em3d_pole_kernels',
+        label='EM 3D: pole kernels against stored weights and cb',
+        description=('Kernel only (no model run): pole_drive_3d (Lorentz) and pole_correct_3d, which read the face '
+                     'weights from a uint8 membership box and cb from the material index, against the former per-cell '
+                     f'path (stored float32 weights wl m + wu m_hi, stored cb of box_face_cb_3d) for {_POLE_STEPS} '
+                     f'steps on a random {_POLE_GRID[0]} x {_POLE_GRID[1]} x {_POLE_GRID[2]} grid with PEC ids and a '
+                     'box reaching the hi x end and spanning y, periodic sets none and x, y; cpu twins and, with a '
+                     'usable GPU, the CUDA kernels. error = the worst max |kernel - reference| of P, dP, E relative to '
+                     f'its peak, tolerance {_POLE_TOLERANCE:g}.'),
+        specs=lambda: {}, check=_check_pole_kernels, backends=('cpu', 'gpu')),
 )

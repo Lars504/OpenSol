@@ -2,9 +2,9 @@
 Lorentz poles, PEC masks and J.E loss accounting."""
 import numpy as np
 
-from ....core.constants import DTYPE, EPS0
+from ....core.constants import EPS0
 from . import fdtd_ez_2d_kernels as _kernels
-from .fdtd_2d_base import _YeeEngine2DBase, _bounding_box, _union_box
+from .fdtd_2d_base import _YeeEngine2DBase, _box_overlap, _bounding_box, _union_box
 from .fdtd_conformal_kernels import conformal_h_ez, sparse_launch
 
 
@@ -14,6 +14,7 @@ class FDTDEngine2D_Ez(_YeeEngine2DBase):
     polarization = 'ez'
     _E_COEFFICIENT_MATERIALS = frozenset({'eps_r', 'sigma_e'})
     _E_COMPONENTS = frozenset({'ez'})
+    _CA_NAMES = ('ca',)
     subpixel_smoothing = None   # physics/em/subpixel_smoothing.SubpixelSmoothing (EMPhysics.set_subpixel_smoothing)
     _conformal_faces = None     # (face cell, axis, extra device arrays, launch) of set_conformal_faces, None = off
 
@@ -22,16 +23,18 @@ class FDTDEngine2D_Ez(_YeeEngine2DBase):
         # the J.E window (create_em_physics and MultiphysicsRunner switch enable_q_accum on).
         super().__init__(grid, fields, materials, boundary_manager)
 
-        # ca / cb (cb is also the Drude and Lorentz correction factor) are rewritten in place by one fused kernel, so
-        # material updates never reallocate them.
+        # cb (also the Drude and Lorentz correction factor) per cell and ca (per cell, or the uniform 1 while sigma_e is
+        # 0 everywhere: base "Coefficient storage") are rewritten in place by one fused kernel, so material updates
+        # never reallocate them.
         shape = (self.nx, self.ny)
-        self.ca = self.xp.empty(shape, dtype=self.dtype)
+        self.ca = None
         self.cb = self.xp.empty(shape, dtype=self.dtype)
-        # float32 (nx, ny), also under double (0 / 1 are exact): 0 inside any PEC mask, 1 elsewhere; None until a PEC
-        # region exists. Every E-coefficient rebuild folds it into ca / cb (Yee update, CPML psi and pole corrections
-        # leave PEC cells at 0); advance re-zeroes only _pec_box (bounding box of the PEC cells) after injection.
+        # bool on _pec_box (bounding box of the PEC cells): False inside any PEC mask; None until a PEC region exists.
+        # Every E-coefficient rebuild folds it into cb (and a per-cell ca; Yee update, CPML psi and pole corrections
+        # leave PEC cells at 0); advance re-zeroes only _pec_box after injection.
         self._pec_keep = None
         self._pec_box = None
+        self._sigma_e_changed()   # _ohmic_box; the first E rebuild checks the ca layout
         self._rebuild_e_coefficients()
         self._rebuild_h_coefficients()
 
@@ -49,7 +52,6 @@ class FDTDEngine2D_Ez(_YeeEngine2DBase):
         self._jz_totals = [None] * len(self._field_sets)
         self._drude_box = None
         # _ohmic_box: bounding box of the sigma_e > 0 cells (ohmic loss), refreshed by finalize / materials_changed.
-        self._sigma_e_changed()
 
     # --- PhysicsSolver contract -----------------------------------------------
 
@@ -112,9 +114,9 @@ class FDTDEngine2D_Ez(_YeeEngine2DBase):
             ez = field_set.fields.ez
             if repin_walls:
                 field_set.boundary_mgr.apply_ez_walls(ez)
-            if pec_box is not None:   # in place on the view (no setitem copy back)
+            if pec_box is not None:   # in place on the view (no setitem copy back); the bool keep casts in the kernel
                 pinned = ez[pec_box]
-                self.xp.multiply(pinned, self._pec_keep[pec_box], out=pinned)
+                self.xp.multiply(pinned, self._pec_keep, out=pinned)
         self._finish_step(t_full, monitors, self._probes_need_resample(
             sources, t_half, repin_walls, self._out_of_plane_source is not None))
 
@@ -174,31 +176,29 @@ class FDTDEngine2D_Ez(_YeeEngine2DBase):
         weight = (mask[box].astype(self.dtype) if cell_weight is None
                   else self.xp.asarray(cell_weight[box], dtype=self.dtype))
         if self._pec_keep is not None:
-            weight *= self._pec_keep[box]
+            self._apply_pec_keep(self._pec_keep, box, weight)
         return box, weight
 
     def add_pec_mask(self, mask):
         """Perfect electric conductor on the run-backend bool (nx, ny) `mask`: Ez and dispersive currents pinned to 0."""
         self._check_cell_mask(mask, 'PEC mask')
-        keep = (~mask).astype(DTYPE)
-        if self._pec_keep is None:
-            self._pec_keep = keep
-        else:
-            self._pec_keep *= keep
-        self._pec_box = _union_box(self._pec_box, _bounding_box(mask))
+        mask_box = _bounding_box(mask)
+        if mask_box is None:   # no cell: nothing changes
+            return
+        box = _union_box(self._pec_box, mask_box)
+        keep = ~mask[box]   # bool on the grown PEC box (a new array), the earlier keep folded in
+        if self._pec_keep is not None:
+            inside, earlier = _box_overlap(box, self._pec_box)
+            keep[inside] &= self._pec_keep[earlier]
+        self._pec_box, self._pec_keep = box, keep
         self._fold_pec_keep()
         for field_set in self._field_sets:
-            field_set.fields.ez *= keep
+            pinned = field_set.fields.ez[box]
+            self.xp.multiply(pinned, keep, out=pinned)
         for drude in self.drude_poles:
-            keep_box = keep[drude['box']]
-            drude['drive'] *= keep_box
-            for current in drude['j']:
-                current *= keep_box
+            self._apply_pec_keep(keep, drude['box'], drude['drive'], *drude['j'])
         for lorentz in self.lorentz_poles:
-            keep_box = keep[lorentz['box']]
-            lorentz['drive'] *= keep_box
-            for buffer in (*lorentz['p'], *lorentz['dp']):
-                buffer *= keep_box
+            self._apply_pec_keep(keep, lorentz['box'], lorentz['drive'], *lorentz['p'], *lorentz['dp'])
 
     def set_conformal_faces(self, face_cell, face_axis, face_extra):
         """Conformal PEC (physics/em/conformal_pec): each listed H face (host int32 lower cell, int32 axis 0 = hi-x H_y /
@@ -215,28 +215,32 @@ class FDTDEngine2D_Ez(_YeeEngine2DBase):
         self._ohmic_box = _bounding_box(self.materials.sigma_e)
 
     def _rebuild_e_coefficients(self):
-        # One fused kernel writes ca / cb in place: no allocations on the thermo-optic 'eps_r_update' path.
-        _kernels.e_coefficients(
-            self.materials.sigma_e, self.materials.eps_r,
-            self._dt_real, self._real(EPS0),
-            self.ca, self.cb)
+        # One fused kernel writes ca / cb in place (cb alone while ca is the uniform 1): no allocations on the
+        # thermo-optic 'eps_r_update' path.
+        materials = self.materials
+        ca, uniform = self._ca_layout(1)
+        if uniform:
+            _kernels.cb_coefficients(materials.sigma_e, materials.eps_r, self._dt_real, self._real(EPS0), self.cb)
+        else:
+            _kernels.e_coefficients(materials.sigma_e, materials.eps_r, self._dt_real, self._real(EPS0), ca, self.cb)
         if self.subpixel_smoothing is not None:   # averaged eps on the interface cells, before the PEC fold
             self.subpixel_smoothing.correct_fdtd(self)
         self._fold_pec_keep()
 
     def _fold_pec_keep(self):
-        """ca = cb = 0 on PEC cells (on _pec_box)."""
+        """cb = 0 (and a per-cell ca = 0) on PEC cells (on _pec_box)."""
         pec_box = self._pec_box
         if pec_box is not None:
-            keep_box = self._pec_keep[pec_box]
-            self.ca[pec_box] *= keep_box
-            self.cb[pec_box] *= keep_box
+            targets = (self.cb,) if self.uniform_ca else (self._ca_coefficients[0], self.cb)
+            for coefficient in targets:
+                folded = coefficient[pec_box]
+                self.xp.multiply(folded, self._pec_keep, out=folded)
 
     def update_h(self):
         """Yee H update + CPML / BC post of every field set (each reads only E, so the order of the sets is free): Yee,
         conformal faces, CPML and the fused outer-face rows as one step graph on the gpu (row copies after it)."""
-        conformal = self._conformal_faces
-        self._fixed_block(('h', id(conformal)), (conformal,), self._h_block)
+        conformal, coefficients = self._conformal_faces, self._h_coefficients
+        self._fixed_block(('h', id(conformal), id(coefficients)), (conformal, coefficients), self._h_block)
         for field_set in self._field_sets:
             if not field_set.boundary_mgr.fused_walls:
                 field_set.boundary_mgr.apply_h_walls(field_set.fields.hx, field_set.fields.hy)
@@ -244,18 +248,20 @@ class FDTDEngine2D_Ez(_YeeEngine2DBase):
     def _h_block(self):
         """H Yee (+ the conformal faces), the H CPML and the fused H rows of every field set: fixed arguments only
         (_fixed_block)."""
+        da, db, h_uniform = self._h_coefficients   # storage + flag (self.db: the full-grid view the CPML reads)
         for field_set in self._field_sets:
             fields, partner = field_set.fields, field_set.partner_fields
             _kernels.update_h_kernel(
                 self._k_grid, self._k_block,
-                (fields.ez, fields.hx, fields.hy, self.da, self.db,
+                (fields.ez, fields.hx, fields.hy, da, db,
                  self._inv_dx_h_1d, self._inv_dy_h_1d,
-                 self._nx_i32, self._ny_i32, self._periodic_x_i32, self._periodic_y_i32,
+                 self._nx_i32, self._ny_i32, self._periodic_x_i32, self._periodic_y_i32, h_uniform,
                  partner.ez, self._wrap_cos_x, field_set.wrap_sin_x, self._wrap_cos_y, field_set.wrap_sin_y))
             if self._conformal_faces is not None:
                 face_cell, face_axis, face_extra, (grid, block, count) = self._conformal_faces
-                conformal_h_ez(grid, block, (fields.ez, fields.hx, fields.hy, self.db, self._inv_dx_h_1d,
-                                             self._inv_dy_h_1d, face_cell, face_axis, face_extra, count, self._ny_i32))
+                conformal_h_ez(grid, block, (fields.ez, fields.hx, fields.hy, db, self._inv_dx_h_1d,
+                                             self._inv_dy_h_1d, face_cell, face_axis, face_extra, count, self._ny_i32,
+                                             h_uniform))
             self._cpml_post(field_set, 'h', fields.ez, fields.hx, fields.hy, self.db)
             if field_set.boundary_mgr.fused_walls:   # one launch, no temporary: capturable
                 field_set.boundary_mgr.apply_h_walls(fields.hx, fields.hy)
@@ -280,12 +286,14 @@ class FDTDEngine2D_Ez(_YeeEngine2DBase):
             for gain in self.gain_media:   # four-level gain: a Lorentz pole driven by N1 - N2 (fdtd_gain)
                 gain.update_polarization()
 
+        ca, ca_uniform = self._ca_coefficients   # storage + flag; its id joins the E graph key (_e_graph)
+
         def e_block():   # Yee E + E CPML (+ the fused E_z rows): fixed arguments only (_fixed_block)
             _kernels.update_e_kernel(
                 self._k_grid, self._k_block,
-                (ez, hx, hy, self.ca, self.cb,
+                (ez, hx, hy, ca, self.cb,
                  self._inv_dx_e_1d, self._inv_dy_e_1d,
-                 self._nx_i32, self._ny_i32, self._periodic_x_i32, self._periodic_y_i32,
+                 self._nx_i32, self._ny_i32, self._periodic_x_i32, self._periodic_y_i32, ca_uniform,
                  partner.hx, partner.hy, self._wrap_cos_x, field_set.wrap_sin_x, self._wrap_cos_y,
                  field_set.wrap_sin_y))
             self._cpml_post(field_set, 'e', hx, hy, ez, self.cb)
@@ -357,8 +365,9 @@ class FDTDEngine2D_Ez(_YeeEngine2DBase):
             box = lorentz['box']
             _kernels.lorentz_e_correction(lorentz['dp'][k], self.cb[box], self._inv_dt_real, ez[box])
 
-    def _nonlinear_components(self):
-        """The E component the C5 media (nonlinear, gain) act on: E_z at the cell centres, n0^2 = eps_r."""
+    def _nonlinear_components(self, with_eps=False):
+        """The E component the C5 media (nonlinear, gain) act on: E_z at the cell centres, n0^2 = eps_r (with_eps
+        changes nothing here: eps_r always exists)."""
         return [{'name': 'ez', 'axis': None, 'periodic': None, 'widths': None, 'field': self.fields.ez,
                  'cb': self.cb, 'eps': self.materials.eps_r, 'eps_scale': 1.0}]
 

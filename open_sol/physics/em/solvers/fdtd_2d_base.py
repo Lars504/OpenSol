@@ -1,5 +1,6 @@
 """_YeeEngine2DBase: shared part of the 2D FDTD Yee engines (curl spacings, field sets, solver contract, J.E window)
 plus PEC-mask and dispersive-region helpers."""
+import ctypes
 import math
 import warnings
 
@@ -55,6 +56,39 @@ def add_pec_cells(pec_cells, mask):
     return pec_cells
 
 
+def _box_overlap(box, other):
+    """(slices relative to `box`, slices relative to `other`) of the intersection of two boxes, None when disjoint."""
+    inner, outer = [], []
+    for along, across in zip(box, other):
+        low, high = max(along.start, across.start), min(along.stop, across.stop)
+        if low >= high:
+            return None
+        inner.append(slice(low - along.start, high - along.start))
+        outer.append(slice(low - across.start, high - across.start))
+    return tuple(inner), tuple(outer)
+
+
+def _single_value(*arrays) -> bool:
+    """Whether every array holds one value throughout (min == max per array; NaN counts as varying): two reductions per
+    array, no full-size temporary, one host sync (build / materials_changed time only)."""
+    uniform = None
+    for array in arrays:
+        flag = array.min() == array.max()
+        uniform = flag if uniform is None else uniform & flag
+    return bool(uniform)
+
+
+def _all_zero(array) -> bool:
+    """Whether every entry of `array` is 0 (two reductions, one host sync)."""
+    return bool((array.min() == 0) & (array.max() == 0))
+
+
+def _coefficient_view(storage, shape, xp):
+    """Full-grid read view of a coefficient storage: the (nx, ny) storage itself, or the zero-stride broadcast of a
+    uniform (1,) one (read-only by contract: numpy refuses writes, cupy does not; never ravel() it to write)."""
+    return storage if storage.shape == shape else xp.broadcast_to(storage.reshape(1, 1), shape)
+
+
 def _union_box(box_a, box_b):
     """Smallest (slice, slice) covering both boxes (either may be None)."""
     if box_a is None or box_b is None:
@@ -107,12 +141,22 @@ class _YeeEngine2DBase(PhysicsSolver):
     _update_e_set and _accumulate_e_new_half, plus the hooks _permittivity_written / _nonlinear_added / _sigma_e_changed
     where they differ (never a copy of the shared code). Field dtype (stepper precision) = the fields' (float32 single,
     float64 double): every field-side array (coefficients, spacings, CPML, poles) and kernel scalar is in it;
-    materials, PEC keep masks and q_accum stay float32."""
+    materials and q_accum stay float32, PEC keep masks bool on the PEC box (_pec_box).
+
+    Coefficient storage: da / db hold ONE value ((1,) arrays) while mu_r and sigma_m are uniform, ca (ez; hz ca_x /
+    ca_y) the value 1 while sigma_e is 0 everywhere (PEC cells then need no ca = 0: cb = 0 and the per-step keep hold
+    them at 0); otherwise (nx, ny) arrays, for good once a rebuild found varying values (_rebuild_h_coefficients,
+    _ca_layout: one host sync per check, after each mu_r / sigma_m / sigma_e change). The Yee / conformal kernels take
+    the storage and an int flag; self.da / db / ca(_x / _y) are full-grid READ views (a zero-stride broadcast when
+    uniform: ufuncs, ElementwiseKernels and numpy read them; RawKernels take the storage + flag, writers go through
+    the rebuilds). cb (and hz cb_x / cb_y) is always per cell and never reallocated (pole, media and port views)."""
 
     name = "em"
     polarization = None
     # MaterialGrid arrays the E / H update coefficients depend on (materials_changed).
     _E_COEFFICIENT_MATERIALS = frozenset()
+    # names of the full-grid ca read views (_ca_layout)
+    _CA_NAMES = ()
     _H_COEFFICIENT_MATERIALS = frozenset({'mu_r', 'sigma_m'})
     # field components the E half of a step writes (the eager work after the E graph may change them: probe re-sample)
     _E_COMPONENTS = frozenset()
@@ -184,9 +228,15 @@ class _YeeEngine2DBase(PhysicsSolver):
             fields.imag = None
             self._field_sets = (_FieldSet(0, fields, boundary_manager, fields, 0.0, 0.0),)
 
-        # da / db per cell, rewritten in place by one fused kernel (material updates never reallocate them).
-        self.da = self.xp.empty((self.nx, self.ny), dtype=self.dtype)
-        self.db = self.xp.empty((self.nx, self.ny), dtype=self.dtype)
+        # Coefficient storage (class docstring): (da, db, int32 uniform flag) of _rebuild_h_coefficients and (ca...,
+        # int32 uniform flag) of _ca_layout, rewritten in place within a layout (the tuples' ids are in the step graph
+        # keys); _h_cells / _ca_cells: per-cell layout for good; _ca_checked: sigma_e checked since its last change.
+        self._h_coefficients = None
+        self._h_cells = False
+        self.da = self.db = None
+        self._ca_coefficients = None
+        self._ca_cells = False
+        self._ca_checked = False
 
         self.n_step = 0
         # Host float64 clock: float32 accumulation quantizes CW source phase (omega ~ 1e15) once t reaches tens of ps.
@@ -197,9 +247,13 @@ class _YeeEngine2DBase(PhysicsSolver):
         self._enable_q_accum = False
         self.q_accum = None
         self.q_accum_time = 0.0
-        # Last completed accumulation window, saved by reset_q_accum (buffer allocated at the first non-empty reset).
+        # Last completed accumulation window, saved by reset_q_accum (buffer allocated at the first non-empty reset): a
+        # HOST float32 array on both backends (read only by the renderer, the end-of-run merge and snapshots). gpu: a
+        # pinned buffer filled by an async device-to-host copy on the current stream (no host sync; the zero fill of
+        # q_accum after it waits on the stream); readers go through host_last_q_accum (waits on _last_q_accum_event).
         self.last_q_accum = None
         self.last_q_accum_time = 0.0
+        self._last_q_accum_event = None
 
         # C5 Kerr / TPA / free-carrier media (fdtd_nonlinear.NonlinearMedia), created by the first add_nonlinear, and
         # four-level gain regions (fdtd_gain.GainRegion, add_gain); the subclass supplies _nonlinear_components (its E
@@ -265,22 +319,59 @@ class _YeeEngine2DBase(PhysicsSolver):
         self._rebuild_e_coefficients()
 
     def finalize(self) -> None:
+        self._sigma_e_written()
         self._rebuild_e_coefficients()
         self._rebuild_h_coefficients()
-        self._sigma_e_changed()
 
     def materials_changed(self, names) -> None:
-        """Rebuild the E and/or H update coefficients after in-place writes of the arrays they depend on."""
+        """Rebuild the E and/or H update coefficients after in-place writes of the arrays they depend on (a sigma_e
+        write first refreshes the loss boxes and marks the ca layout for a re-check at the E rebuild)."""
+        if 'sigma_e' in names:
+            self._sigma_e_written()
         if not self._E_COEFFICIENT_MATERIALS.isdisjoint(names):
             self._rebuild_e_coefficients()
         if not self._H_COEFFICIENT_MATERIALS.isdisjoint(names):
             self._rebuild_h_coefficients()
-        if 'sigma_e' in names:
-            self._sigma_e_changed()
+
+    def _sigma_e_written(self) -> None:
+        """finalize / a sigma_e write, before the E rebuild: the next one re-checks sigma_e == 0 (_ca_layout), then
+        the _sigma_e_changed hook."""
+        self._ca_checked = False
+        self._sigma_e_changed()
 
     def _sigma_e_changed(self) -> None:
         """Hook after finalize and a sigma_e write: refresh what depends on the sigma_e > 0 cells (loss boxes)."""
         return
+
+    @property
+    def uniform_ca(self) -> bool:
+        """Whether ca (hz: ca_x / ca_y) is the uniform 1 of a sigma_e that is 0 everywhere ((1,) storage)."""
+        return bool(self._ca_coefficients[-1])
+
+    def _ca_layout(self, count):
+        """Storage tuple (`count` ca arrays, int32 uniform flag) for this E rebuild: per cell for good once sigma_e is
+        non-zero somewhere (checked once after each sigma_e change: one host sync), else (1,) arrays holding 1;
+        (re)allocated on a layout change, with the read views _CA_NAMES. The caller writes ca only when per cell."""
+        if not self._ca_cells and not self._ca_checked:
+            self._ca_checked = True
+            self._ca_cells = not _all_zero(self.materials.sigma_e)
+        shape = (self.nx, self.ny)
+        stored = self._ca_coefficients
+        if stored is None or (stored[0].shape == shape) != self._ca_cells:
+            xp = self.xp
+            arrays = tuple(xp.empty(shape, dtype=self.dtype) if self._ca_cells else xp.ones(1, dtype=self.dtype)
+                           for _ in range(count))
+            self._ca_coefficients = arrays + (np.int32(not self._ca_cells),)
+            for name, array in zip(self._CA_NAMES, arrays):
+                setattr(self, name, _coefficient_view(array, shape, xp))
+        return self._ca_coefficients
+
+    def use_cell_coefficients(self) -> None:
+        """Per-cell da / db / ca arrays from now on, as after varying materials (the storage parity self-test compares
+        them with the uniform storage); rebuilds both."""
+        self._h_cells = self._ca_cells = True
+        self._rebuild_h_coefficients()
+        self._rebuild_e_coefficients()
 
     def _rebuild_e_coefficients(self):
         raise NotImplementedError
@@ -292,10 +383,24 @@ class _YeeEngine2DBase(PhysicsSolver):
         raise NotImplementedError
 
     def _rebuild_h_coefficients(self):
-        _kernels.h_coefficients(
-            self.materials.sigma_m, self.materials.mu_r,
-            self._dt_real, self._real(MU0),
-            self.da, self.db)
+        """da / db from mu_r / sigma_m: one value while both are uniform (checked per rebuild: one host sync), per cell
+        for good once they vary (class docstring "Coefficient storage")."""
+        materials = self.materials
+        if not self._h_cells:
+            self._h_cells = not _single_value(materials.mu_r, materials.sigma_m)
+        shape = (self.nx, self.ny)
+        stored = self._h_coefficients
+        if stored is None or (stored[0].shape == shape) != self._h_cells:
+            xp = self.xp
+            size = shape if self._h_cells else (1,)
+            da, db = (xp.empty(size, dtype=self.dtype) for _ in range(2))
+            self._h_coefficients = (da, db, np.int32(not self._h_cells))
+            self.da, self.db = (_coefficient_view(array, shape, xp) for array in (da, db))
+        da, db, uniform = self._h_coefficients
+        sigma_m, mu_r = materials.sigma_m, materials.mu_r
+        if uniform:   # the same kernel on one cell: bit for bit the per-cell values
+            sigma_m, mu_r = sigma_m.reshape(-1)[:1], mu_r.reshape(-1)[:1]
+        _kernels.h_coefficients(sigma_m, mu_r, self._dt_real, self._real(MU0), da, db)
 
     @property
     def precision(self) -> str:
@@ -390,24 +495,50 @@ class _YeeEngine2DBase(PhysicsSolver):
         return
 
     def reset_q_accum(self) -> None:
-        """Start a new accumulation window; a non-empty one is kept as last_q_accum / last_q_accum_time."""
+        """Start a new accumulation window; a non-empty one is parked on the host as last_q_accum / last_q_accum_time
+        (gpu: async copy into the pinned buffer, no host sync)."""
         if self.q_accum_time > 0.0:
-            if self.last_q_accum is None:
-                self.last_q_accum = self.xp.empty_like(self.q_accum)
-            self.xp.copyto(self.last_q_accum, self.q_accum)
+            buffer = self._last_q_accum_buffer()   # copies into it queue on one stream: no wait for the last one
+            if self.xp is np:
+                np.copyto(buffer, self.q_accum)
+            else:
+                stream = self.xp.cuda.get_current_stream()
+                self.q_accum.data.copy_to_host_async(ctypes.c_void_p(buffer.ctypes.data), self.q_accum.nbytes, stream)
+                self._last_q_accum_event = stream.record()
             self.last_q_accum_time = self.q_accum_time
         if self.q_accum is not None:
             self.q_accum.fill(DTYPE(0.0))
         self.q_accum_time = 0.0
 
+    def _last_q_accum_buffer(self, wait=False):
+        """The host last_q_accum buffer (allocated at the first call: pinned on the gpu), after its pending copy when
+        wait (a later async copy into it does not wait: only host reads and writes do)."""
+        if self.last_q_accum is None:
+            shape, dtype = (self.nx, self.ny), np.dtype(DTYPE)
+            if self.xp is np:
+                self.last_q_accum = np.empty(shape, dtype=dtype)
+            else:
+                memory = self.xp.cuda.alloc_pinned_memory(self.nx * self.ny * dtype.itemsize)
+                self.last_q_accum = np.frombuffer(memory, dtype=dtype, count=self.nx * self.ny).reshape(shape)
+        elif wait and self._last_q_accum_event is not None:
+            self._last_q_accum_event.synchronize()
+            self._last_q_accum_event = None
+        return self.last_q_accum
+
+    def host_last_q_accum(self):
+        """The last completed window's energy density [J/m^3] as a host float32 array (None before the first one),
+        after its device-to-host copy finished (one event wait on the gpu)."""
+        return None if self.last_q_accum is None else self._last_q_accum_buffer(wait=True)
+
     def take_absorbed_power(self, merge_previous: bool = False):
         """Mean absorbed power density [W/m^3] since the last call (new array), then a window reset; None for an empty
-        window or before accumulation was enabled. merge_previous (end-of-run flush) first folds in the last window."""
+        window or before accumulation was enabled. merge_previous (end-of-run flush) first folds in the last window
+        (one upload of the host copy)."""
         window = float(self.q_accum_time)
         if self.q_accum is None or window <= 0.0:
             return None
         if merge_previous and self.last_q_accum is not None:
-            self.q_accum += self.last_q_accum
+            self.q_accum += self.xp.asarray(self.host_last_q_accum())
             window += float(self.last_q_accum_time)
             self.q_accum_time = window
         power_density = self.q_accum * DTYPE(1.0 / window)
@@ -424,7 +555,8 @@ class _YeeEngine2DBase(PhysicsSolver):
         state['time'] = float(self.time)
         state['q_accum'] = None if self.q_accum is None else host_copy(self.q_accum)
         state['q_accum_time'] = float(self.q_accum_time)
-        state['last_q_accum'] = None if self.last_q_accum is None else host_copy(self.last_q_accum)
+        last = self.host_last_q_accum()
+        state['last_q_accum'] = None if last is None else last.copy()
         state['last_q_accum_time'] = float(self.last_q_accum_time)
         state['media'] = [host_copy(values) for values in self._rendered_media_arrays()]
         return state
@@ -442,11 +574,10 @@ class _YeeEngine2DBase(PhysicsSolver):
         self.q_accum_time = state['q_accum_time']
         last = state['last_q_accum']
         if last is None:
+            self.host_last_q_accum()   # no copy in flight into a buffer that is dropped
             self.last_q_accum = None
         else:
-            if self.last_q_accum is None:
-                self.last_q_accum = self.xp.empty(last.shape, dtype=last.dtype)
-            write_host_into(self.last_q_accum, last)
+            write_host_into(self._last_q_accum_buffer(wait=True), last)
         self.last_q_accum_time = state['last_q_accum_time']
         media = self._rendered_media_arrays()
         if len(media) != len(state['media']):
@@ -506,11 +637,13 @@ class _YeeEngine2DBase(PhysicsSolver):
             self._step_probes = self._probe_rows.next_launch()
 
     def _e_graph(self, k, key, block) -> None:
-        """_fixed_block of field set k's E launches; the real set's (k 0) ends with this step's probe record (its
-        launch id in the key, the launch kept with the entry)."""
+        """_fixed_block of field set k's E launches, the ca storage tuple's id in the key; the real set's (k 0) ends
+        with this step's probe record (its launch id in the key, the launch kept with the entry)."""
+        ca_coefficients = self._ca_coefficients
+        key = key + (id(ca_coefficients),)
         launch = self._step_probes if k == 0 else None
         if launch is None:
-            self._fixed_block(key, (), block)
+            self._fixed_block(key, (ca_coefficients,), block)
             return
         self._step_probes = None
         self._probes_recorded = True
@@ -520,7 +653,7 @@ class _YeeEngine2DBase(PhysicsSolver):
             block()
             kernel(grid, threads, args)
 
-        self._fixed_block(key + (id(launch),), (launch,), recorded_block)
+        self._fixed_block(key + (id(launch),), (launch, ca_coefficients), recorded_block)
 
     def _probes_need_resample(self, sources, t_half, repin_walls, source_array_writes_e) -> bool:
         """Whether this step's probe record (inside the E graph) may be stale: a probe reads an E component and an
@@ -559,7 +692,8 @@ class _YeeEngine2DBase(PhysicsSolver):
         """Run block() (launches with fixed arguments, no sync, no allocation): eagerly on the cpu, on the first step of
         a key and when capture failed, else replayed from its CUDA graph. key holds the ids of the replaceable inputs,
         kept alive with the entry (an id is never reused while its graph lives); fields, CPML psi, coefficients and the
-        1D spacings are rewritten in place, never reassigned (physics/em sub file "FDTD step graphs")."""
+        1D spacings are rewritten in place, never reassigned (physics/em sub file "FDTD step graphs"), except the
+        coefficient storage tuples on a layout change (their ids are in the keys)."""
         if not self.use_step_graphs:
             block()
             return
@@ -599,6 +733,16 @@ class _YeeEngine2DBase(PhysicsSolver):
         return graph
 
     # --- masks ----------------------------------------------------------------
+
+    def _apply_pec_keep(self, keep, box, *arrays) -> None:
+        """arrays (each on `box`) *= the bool keep mask `keep` (on _pec_box) where the boxes overlap (build time)."""
+        overlap = None if self._pec_box is None else _box_overlap(box, self._pec_box)
+        if overlap is None:
+            return
+        inside, keep_part = overlap
+        for array in arrays:
+            target = array[inside]
+            self.xp.multiply(target, keep[keep_part], out=target)
 
     def _set_buffers(self, shape):
         """One zeroed pole buffer of `shape` in the field dtype per field set."""

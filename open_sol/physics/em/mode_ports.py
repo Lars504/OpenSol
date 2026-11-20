@@ -12,7 +12,7 @@ import cmath
 import math
 
 import numpy as np
-from ...core.backend import array_module_of, cp, to_host
+from ...core.backend import cp, to_host
 from ...core.kernels import twin
 
 from ...core.constants import C0, DTYPE, MU0
@@ -424,15 +424,17 @@ class PortLine:
 
 
 class _LineCorrection:
-    """One TFSF correction on the port line: field += coefficient * (re * s(t) + im * s_q(t)), the coefficient a live
-    view of the engine's db / cb along the line, re / im the scaled incident phasor (float32 on the coefficient's
+    """One TFSF correction on the port line: field += coefficient * (re * s(t) + im * s_q(t)), the coefficient the
+    engine's db / cb (attribute `coefficient`) along the line, read at every injection (a uniform db is a broadcast view
+    the engine replaces when the materials start to vary), re / im the scaled incident phasor (float32 on the engine's
     backend)."""
 
-    def __init__(self, component, index, coefficient, scaled_incident):
+    def __init__(self, component, index, engine, coefficient, scaled_incident):
         self.component = component
         self.index = index
+        self.engine = engine
         self.coefficient = coefficient
-        xp = array_module_of(coefficient)
+        xp = engine.xp
         self.incident_re = xp.asarray(np.real(scaled_incident), dtype=DTYPE)
         self.incident_im = xp.asarray(np.imag(scaled_incident), dtype=DTYPE)
 
@@ -440,8 +442,8 @@ class _LineCorrection:
         in_phase, quadrature = DTYPE(temporal(time)), DTYPE(temporal.quadrature(time))
         if in_phase == 0 and quadrature == 0:   # exact no-op (a pulse past its envelope): skip the launch
             return
-        _port_correction(self.coefficient, self.incident_re, self.incident_im, in_phase, quadrature,
-                         getattr(fields, self.component)[self.index])
+        _port_correction(getattr(self.engine, self.coefficient)[self.index], self.incident_re, self.incident_im,
+                         in_phase, quadrature, getattr(fields, self.component)[self.index])
 
 
 class ModeSource:
@@ -521,16 +523,12 @@ class ModeSource:
         inv_face = float(getattr(engine, f'_inv_d{normal}_h_1d')[self.interface_face])
         transverse = _TRANSVERSE_COMPONENT[(port.polarization, normal)]
         if port.polarization == 'ez':
-            self._magnetic = _LineCorrection(transverse, face_index, engine.db[face_index],
-                                             sigma * inv_face * u_incident)
-            self._electric = _LineCorrection('ez', cell_index, engine.cb[cell_index],
-                                             sigma * inv_centre * t_incident)
+            self._magnetic = _LineCorrection(transverse, face_index, engine, 'db', sigma * inv_face * u_incident)
+            self._electric = _LineCorrection('ez', cell_index, engine, 'cb', sigma * inv_centre * t_incident)
         else:
-            face_cb = engine.cb_y if normal == 'x' else engine.cb_x
-            self._magnetic = _LineCorrection('hz', cell_index, engine.db[cell_index],
-                                             sigma * inv_centre * t_incident)
-            self._electric = _LineCorrection(transverse, face_index, face_cb[face_index],
-                                             sigma * inv_face * u_incident)
+            face_cb = 'cb_y' if normal == 'x' else 'cb_x'
+            self._magnetic = _LineCorrection('hz', cell_index, engine, 'db', sigma * inv_centre * t_incident)
+            self._electric = _LineCorrection(transverse, face_index, engine, face_cb, sigma * inv_face * u_incident)
         self.mode = mode
         self.modes = modes
         self._table = None

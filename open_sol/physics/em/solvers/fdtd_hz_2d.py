@@ -2,10 +2,10 @@
 face-averaged eps / sigma, Drude / Lorentz poles and PEC masks."""
 import numpy as np
 
-from ....core.constants import DTYPE, EPS0
+from ....core.constants import EPS0
 from ..yee_grid import face_average, face_pec, face_shares
 from . import fdtd_hz_2d_kernels as _kernels
-from .fdtd_2d_base import _YeeEngine2DBase, _bounding_box, _union_box
+from .fdtd_2d_base import _YeeEngine2DBase, _box_overlap, _bounding_box, _union_box
 from .fdtd_conformal_kernels import conformal_hz, sparse_launch
 
 
@@ -18,6 +18,7 @@ class FDTDEngine2D_Hz(_YeeEngine2DBase):
     polarization = 'hz'
     _E_COEFFICIENT_MATERIALS = frozenset({'eps_xx', 'eps_yy', 'sigma_e'})
     _E_COMPONENTS = frozenset({'ex', 'ey'})
+    _CA_NAMES = ('ca_x', 'ca_y')
     subpixel_smoothing = None   # physics/em/subpixel_smoothing.SubpixelSmoothing (EMPhysics.set_subpixel_smoothing)
     _conformal_cells = None     # (cell, extra device arrays, launch) of set_conformal_cells, None = off
 
@@ -41,19 +42,19 @@ class FDTDEngine2D_Hz(_YeeEngine2DBase):
         self._lower_share_y, self._upper_share_y = xp.asarray(lower_share_y), xp.asarray(upper_share_y)
         self._lower_share_x, self._upper_share_x = xp.asarray(lower_share_x), xp.asarray(upper_share_x)
 
-        # ca / cb / absolute face eps [F/m] per E face set, rewritten in place by one fused kernel (cb also corrects E
-        # for the Drude current, the Lorentz polarisation step and the CPML psi term; eps_x / eps_y are read only by
-        # the C5 nonlinear / gain media, _nonlinear_components: the sheet calibration recomputes from eps_xx / eps_yy).
+        # cb per E face set (also corrects E for the Drude current, the Lorentz polarisation step and the CPML psi term)
+        # and ca (per face, or the uniform 1 while sigma_e is 0 everywhere: base "Coefficient storage"), rewritten in
+        # place by one fused kernel. The absolute face eps [F/m] eps_x / eps_y is read only by the C5 nonlinear medium:
+        # allocated by face_permittivities (None before; the sheet calibration recomputes from eps_xx / eps_yy).
         shape = (self.nx, self.ny)
-        self.ca_x = xp.empty(shape, dtype=self.dtype)
+        self.ca_x = self.ca_y = None
         self.cb_x = xp.empty(shape, dtype=self.dtype)
-        self.eps_x = xp.empty(shape, dtype=self.dtype)
-        self.ca_y = xp.empty(shape, dtype=self.dtype)
         self.cb_y = xp.empty(shape, dtype=self.dtype)
-        self.eps_y = xp.empty(shape, dtype=self.dtype)
-        # float32 face keep masks, also under double (0 on faces touching a PEC cell), None until a PEC region exists.
-        # Every E-coefficient rebuild folds them into ca / cb (Yee update, CPML psi and pole corrections leave PEC faces
-        # at 0); advance re-zeroes only _pec_box (bounding box of both components' PEC faces) after injection.
+        self.eps_x = self.eps_y = None
+        self._no_face_eps = xp.zeros(1, dtype=self.dtype)   # unwritten stand-in of the rebuild kernel (write_eps 0)
+        # bool face keep masks on _pec_box (bounding box of both components' PEC faces): False on faces touching a PEC
+        # cell, None until a PEC region exists. Every E-coefficient rebuild folds them into cb (and a per-face ca; Yee
+        # update, CPML psi and pole corrections leave PEC faces at 0); advance re-zeroes only _pec_box after injection.
         self._keep_x = None
         self._keep_y = None
         self._pec_box = None
@@ -181,10 +182,10 @@ class FDTDEngine2D_Hz(_YeeEngine2DBase):
             set_fields = field_set.fields
             if repin_walls:
                 field_set.boundary_mgr.apply_exy_walls(set_fields.ex, set_fields.ey)
-            if pec_box is not None:   # in place on the views (no setitem copy back)
+            if pec_box is not None:   # in place on the views (no setitem copy back); bool keeps cast in the kernel
                 for field, keep in ((set_fields.ex, self._keep_x), (set_fields.ey, self._keep_y)):
                     pinned = field[pec_box]
-                    self.xp.multiply(pinned, keep[pec_box], out=pinned)
+                    self.xp.multiply(pinned, keep, out=pinned)
         # hz_source and the magnetic injections write H_z before the E graph: only E-side writes can stale the record
         self._finish_step(t_full, monitors, self._probes_need_resample(sources, t_half, repin_walls, False))
 
@@ -199,8 +200,8 @@ class FDTDEngine2D_Hz(_YeeEngine2DBase):
     def update_h(self):
         """Yee H_z update + CPML / BC post of every field set (each reads only E, so the order of the sets is free):
         Yee, conformal cells, CPML and the fused outer-face rows as one step graph on the gpu (row copies after it)."""
-        conformal = self._conformal_cells
-        self._fixed_block(('h', id(conformal)), (conformal,), self._h_block)
+        conformal, coefficients = self._conformal_cells, self._h_coefficients
+        self._fixed_block(('h', id(conformal), id(coefficients)), (conformal, coefficients), self._h_block)
         for field_set in self._field_sets:
             if not field_set.boundary_mgr.fused_walls:
                 field_set.boundary_mgr.apply_hz_walls(field_set.fields.hz)
@@ -208,19 +209,20 @@ class FDTDEngine2D_Hz(_YeeEngine2DBase):
     def _h_block(self):
         """H_z Yee (+ the conformal cells), the H_z CPML and the fused H_z rows of every field set: fixed arguments
         only (_fixed_block)."""
+        da, db, h_uniform = self._h_coefficients   # storage + flag (self.db: the full-grid view the CPML reads)
         for field_set in self._field_sets:
             fields, partner = field_set.fields, field_set.partner_fields
             _kernels.update_hz_kernel(
                 self._k_grid, self._k_block,
-                (fields.hz, fields.ex, fields.ey, self.da, self.db,
+                (fields.hz, fields.ex, fields.ey, da, db,
                  self._inv_dx_e_1d, self._inv_dy_e_1d,
-                 self._nx_i32, self._ny_i32, self._periodic_x_i32, self._periodic_y_i32,
+                 self._nx_i32, self._ny_i32, self._periodic_x_i32, self._periodic_y_i32, h_uniform,
                  partner.ex, partner.ey, self._wrap_cos_x, field_set.wrap_sin_x, self._wrap_cos_y,
                  field_set.wrap_sin_y))
             if self._conformal_cells is not None:
                 cell, cell_extra, (grid, block, count) = self._conformal_cells
-                conformal_hz(grid, block, (fields.hz, fields.ex, fields.ey, self.db, self._inv_dx_e_1d,
-                                           self._inv_dy_e_1d, cell, cell_extra, count, self._ny_i32))
+                conformal_hz(grid, block, (fields.hz, fields.ex, fields.ey, db, self._inv_dx_e_1d,
+                                           self._inv_dy_e_1d, cell, cell_extra, count, self._ny_i32, h_uniform))
             self._cpml_post(field_set, 'hz', fields.ex, fields.ey, fields.hz, self.db)
             if field_set.boundary_mgr.fused_walls:   # one launch, no temporary: capturable
                 field_set.boundary_mgr.apply_hz_walls(fields.hz)
@@ -249,12 +251,14 @@ class FDTDEngine2D_Hz(_YeeEngine2DBase):
             for gain in self.gain_media:   # four-level gain: a Lorentz pole driven by N1 - N2 per face set (fdtd_gain)
                 gain.update_polarization()
 
+        ca_x, ca_y, ca_uniform = self._ca_coefficients   # storage + flag; its id joins the E graph key (_e_graph)
+
         def e_block():   # Yee E_x / E_y + their CPML (+ the fused E rows): fixed arguments only (_fixed_block)
             _kernels.update_exy_kernel(
                 self._k_grid, self._k_block,
-                (ex, ey, hz, self.ca_x, self.cb_x, self.ca_y, self.cb_y,
+                (ex, ey, hz, ca_x, self.cb_x, ca_y, self.cb_y,
                  self._inv_dx_h_1d, self._inv_dy_h_1d,
-                 self._nx_i32, self._ny_i32, self._periodic_x_i32, self._periodic_y_i32,
+                 self._nx_i32, self._ny_i32, self._periodic_x_i32, self._periodic_y_i32, ca_uniform,
                  partner.hz, self._wrap_cos_x, field_set.wrap_sin_x, self._wrap_cos_y, field_set.wrap_sin_y))
             self._cpml_post(field_set, 'exy', hz, ex, ey, self.cb_x, self.cb_y)
             if boundary_mgr.fused_walls:
@@ -330,13 +334,25 @@ class FDTDEngine2D_Hz(_YeeEngine2DBase):
             self._pole_power_boxes[name] = _union_box(self._pole_power_boxes.get(name), component['box'])
         self._add_pole_cells(mask)
 
-    def _nonlinear_components(self):
+    def _nonlinear_components(self, with_eps=False):
         """The E face sets the C5 media (nonlinear, gain) act on: E_x (hi-y faces, face_average along y) and E_y (hi-x
-        faces, along x); n0^2 = the absolute face permittivity eps_x / eps_y over eps0."""
+        faces, along x); n0^2 = the absolute face permittivity eps_x / eps_y over eps0 ('eps' None unless with_eps:
+        face_permittivities allocates them)."""
+        eps_x, eps_y = self.face_permittivities() if with_eps else (None, None)
         return [{'name': 'ex', 'axis': 1, 'periodic': self._periodic_y, 'widths': self._cell_dy, 'field': self.fields.ex,
-                 'cb': self.cb_x, 'eps': self.eps_x, 'eps_scale': 1.0 / EPS0},
+                 'cb': self.cb_x, 'eps': eps_x, 'eps_scale': 1.0 / EPS0},
                 {'name': 'ey', 'axis': 0, 'periodic': self._periodic_x, 'widths': self._cell_dx, 'field': self.fields.ey,
-                 'cb': self.cb_y, 'eps': self.eps_y, 'eps_scale': 1.0 / EPS0}]
+                 'cb': self.cb_y, 'eps': eps_y, 'eps_scale': 1.0 / EPS0}]
+
+    def face_permittivities(self):
+        """(eps_x, eps_y): absolute face permittivities [F/m] in the field dtype, rewritten in place by every E rebuild;
+        allocated (and filled) at the first call: only the nonlinear medium reads them."""
+        if self.eps_x is None:
+            shape = (self.nx, self.ny)
+            self.eps_x = self.xp.empty(shape, dtype=self.dtype)
+            self.eps_y = self.xp.empty(shape, dtype=self.dtype)
+            self._rebuild_e_coefficients()
+        return self.eps_x, self.eps_y
 
     def _nonlinear_loss_target(self, name, box):
         """(face pole power total box view, 1): the nonlinear power [W/m^3] is split to the cells by q_accum_hz; None
@@ -413,28 +429,35 @@ class FDTDEngine2D_Hz(_YeeEngine2DBase):
     # --- coefficients -------------------------------------------------------------
 
     def _rebuild_e_coefficients(self):
-        """ca / cb / eps of both E face sets from the face-averaged eps_xx / eps_yy / sigma_e (one fused launch)."""
+        """cb (+ a per-face ca, + eps_x / eps_y once allocated) of both E face sets from the face-averaged eps_xx /
+        eps_yy / sigma_e (one fused launch)."""
         materials = self.materials
+        ca_x, ca_y, ca_uniform = self._ca_layout(2)
+        with_eps = self.eps_x is not None
+        eps_x, eps_y = (self.eps_x, self.eps_y) if with_eps else (self._no_face_eps, self._no_face_eps)
         _kernels.e_face_coefficients(
             self._k_grid, self._k_block,
-            (self.ca_x, self.cb_x, self.eps_x, self.ca_y, self.cb_y, self.eps_y,
+            (ca_x, self.cb_x, eps_x, ca_y, self.cb_y, eps_y,
              materials.eps_xx, materials.eps_yy, materials.sigma_e,
              self._lower_share_y, self._upper_share_y, self._lower_share_x, self._upper_share_x,
              self._nx_i32, self._ny_i32, self._periodic_x_i32, self._periodic_y_i32,
-             self._dt_real, self._real(EPS0)))
+             np.int32(not ca_uniform), np.int32(with_eps), self._dt_real, self._real(EPS0)))
         if self.subpixel_smoothing is not None:   # averaged eps on the interface faces, before the PEC fold
             self.subpixel_smoothing.correct_fdtd(self)
         self._fold_pec_keep()
         self._e_coefficients_dirty = False
 
     def _fold_pec_keep(self):
-        """ca = cb = 0 on PEC faces (on _pec_box; eps_x / eps_y stay the material values for the nonlinear media)."""
+        """cb = 0 (and a per-face ca = 0) on PEC faces (on _pec_box; eps_x / eps_y stay the material values for the
+        nonlinear media)."""
         pec_box = self._pec_box
         if pec_box is None:
             return
-        for keep, ca, cb in ((self._keep_x, self.ca_x, self.cb_x), (self._keep_y, self.ca_y, self.cb_y)):
-            ca[pec_box] *= keep[pec_box]
-            cb[pec_box] *= keep[pec_box]
+        ca_x, ca_y, ca_uniform = self._ca_coefficients
+        for keep, ca, cb in ((self._keep_x, ca_x, self.cb_x), (self._keep_y, ca_y, self.cb_y)):
+            for coefficient in ((cb,) if ca_uniform else (ca, cb)):
+                folded = coefficient[pec_box]
+                self.xp.multiply(folded, keep, out=folded)
 
     # --- EM-specific API ------------------------------------------------------
 
@@ -474,39 +497,41 @@ class FDTDEngine2D_Hz(_YeeEngine2DBase):
 
     def add_pec_mask(self, mask, keep=None):
         """Perfect electric conductor on the run-backend bool (nx, ny) cell `mask`: every E face touching it is pinned to 0;
-        keep = (keep_x, keep_y) float32 face masks instead (conformal PEC: only the faces wholly inside the metal)."""
+        keep = (keep_x, keep_y) (nx, ny) face keep masks instead, 0 = PEC face (conformal PEC: only the faces wholly
+        inside the metal)."""
         self._check_cell_mask(mask, 'PEC mask')
         xp = self.xp
         if keep is None:
-            keep_x = (~face_pec(mask, 1, self._periodic_y, xp=xp)).astype(DTYPE)
-            keep_y = (~face_pec(mask, 0, self._periodic_x, xp=xp)).astype(DTYPE)
+            pec_x = face_pec(mask, 1, self._periodic_y, xp=xp)
+            pec_y = face_pec(mask, 0, self._periodic_x, xp=xp)
         else:
-            keep_x, keep_y = (xp.asarray(array, dtype=DTYPE) for array in keep)
-        if self._keep_x is None:
-            self._keep_x, self._keep_y = keep_x, keep_y
-        else:
-            self._keep_x *= keep_x
-            self._keep_y *= keep_y
-        new_pec_box = _union_box(_bounding_box(1.0 - keep_x), _bounding_box(1.0 - keep_y))
-        self._pec_box = _union_box(self._pec_box, new_pec_box)
+            pec_x, pec_y = (xp.asarray(array) == 0 for array in keep)
+        new_pec_box = _union_box(_bounding_box(pec_x), _bounding_box(pec_y))
+        if new_pec_box is None:   # no PEC face: nothing changes
+            return
+        box = _union_box(self._pec_box, new_pec_box)
+        keep_x, keep_y = ~pec_x[box], ~pec_y[box]   # bool on the grown PEC box (new arrays), earlier keeps folded in
+        if self._keep_x is not None:
+            inside, earlier = _box_overlap(box, self._pec_box)
+            keep_x[inside] &= self._keep_x[earlier]
+            keep_y[inside] &= self._keep_y[earlier]
+        self._pec_box, self._keep_x, self._keep_y = box, keep_x, keep_y
         self._fold_pec_keep()
         for field_set in self._field_sets:
-            field_set.fields.ex *= keep_x
-            field_set.fields.ey *= keep_y
+            for field, keep_face in ((field_set.fields.ex, keep_x), (field_set.fields.ey, keep_y)):
+                pinned = field[box]
+                xp.multiply(pinned, keep_face, out=pinned)
         face_keep = {'ex': keep_x, 'ey': keep_y}
         # Shared region weights once per region, pole state once per pole and field set.
         for region_faces in self._pole_regions:
             for region_face in region_faces:
-                region_face['weight'] *= face_keep[region_face['component']][region_face['box']]
+                self._apply_pec_keep(face_keep[region_face['component']], region_face['box'], region_face['weight'])
         for drude in self.drude_poles:
             for face in drude['faces']:
-                for current in face['j']:
-                    current *= face_keep[face['component']][face['box']]
+                self._apply_pec_keep(face_keep[face['component']], face['box'], *face['j'])
         for lorentz in self.lorentz_poles:
             for face in lorentz['faces']:
-                keep_box = face_keep[face['component']][face['box']]
-                for buffer in (*face['p'], *face['dp']):
-                    buffer *= keep_box
+                self._apply_pec_keep(face_keep[face['component']], face['box'], *face['p'], *face['dp'])
 
     def set_conformal_cells(self, cell, cell_extra):
         """Conformal PEC (physics/em/conformal_pec): each listed H_z cell (host int32 flat, off the grid edge) adds db x
@@ -556,7 +581,7 @@ class FDTDEngine2D_Hz(_YeeEngine2DBase):
                           else self.xp.asarray(weight[box], dtype=self.dtype))
             keep = self._component_arrays(component)[3]
             if keep is not None:
-                weight_box *= keep[box]
+                self._apply_pec_keep(keep, box, weight_box)
             faces.append({'component': component, 'box': box, 'weight': weight_box})
         return faces
 
