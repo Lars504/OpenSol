@@ -109,11 +109,13 @@ class EMEPhysics3D(EMEBase):
                                'max_factor_device_bytes': 0})
         register_em_arrays(domain.materials, 'modes')
         shape = (grid.nx, grid.ny, grid.nz)
-        # complex64 full-grid E at the cell centres and float32 q_abs [W/m^3] (domain.xp) of the last solve (zeros
-        # before)
-        xp = domain.xp
-        self.field_arrays = {name: xp.zeros(shape, dtype=np.complex64) for name in EME_3D_COMPONENTS}
-        self.q_abs = xp.zeros(shape, dtype=DTYPE)
+        # complex64 full-grid E at the cell centres of the last solve (zeros before) on the HOST on either backend: it
+        # is written on the host (_reconstruct) and read only by the renderer (one window or plane per read, uploaded
+        # as float32) and solution_state, so the device keeps no 24 B per cell for it (a large 3D EME grid holds far
+        # more cells than its 2D section solves need). float32 q_abs [W/m^3] stays on domain.xp: state() feeds it to
+        # the loss couplings
+        self.field_arrays = {name: np.zeros(shape, dtype=np.complex64) for name in EME_3D_COMPONENTS}
+        self.q_abs = domain.xp.zeros(shape, dtype=DTYPE)
 
     def state(self) -> dict:
         """The permittivity arrays, sigma_e, q_abs [W/m^3] and 'q_accum': None (loss-protocol key, never a field)."""
@@ -305,9 +307,9 @@ class EMEPhysics3D(EMEBase):
                 fields = cross_section_fields(modes, forward, backward, offsets[block] + positions, section.length)
                 centre = fields[n_block:2 * n_block] if lossy else fields
                 layers = slice(section.first_slice + block, section.first_slice + stop)
-                for component, name in enumerate(EME_3D_COMPONENTS):
-                    values = centre[:, component, :].reshape(n_block, nx, ny).transpose(1, 2, 0)
-                    self.field_arrays[name][:, :, layers] = xp.asarray(np.ascontiguousarray(values, dtype=np.complex64))
+                for component, name in enumerate(EME_3D_COMPONENTS):   # host arrays: cast on assignment
+                    self.field_arrays[name][:, :, layers] = centre[:, component, :].reshape(n_block, nx, ny).transpose(
+                        1, 2, 0)
                 if lossy:
                     mean = gauss_mean(np.sum(np.abs(fields) ** 2, axis=1))
                     power = (0.5 * float(omega) * EPS0) * loss[None, :] * mean
