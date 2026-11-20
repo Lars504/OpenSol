@@ -159,4 +159,6 @@ Sub file of the root `structure_conventions.md`. GUI gotchas.
   (`_mesh_axis_at` / `_mesh_axis_item`: KeyError -> rebuild).
 - Solve flow window (`solve_flow_view.py`): GUI thread, nothing run: it draws `model.solve_flow` from the document's
   cached estimates; measured values (`bridge.last_build_summary` / `last_study_summary`) only while
-  `document.results_current(bridge.results_spec)` (the Results panel's out-of-date rule).
+  `document.results_current(bridge.results_spec)` (the Results panel's out-of-date rule). A box shows
+  `FlowStep.device_peak_bytes` (GPU) and `host_bytes` (CPU) apart (`_held_text`), which add up to the totals and to
+  the mesh node's memory issue; the item table marks device items outside the peak phase.

@@ -29,7 +29,7 @@ from .geometry import (DOMAIN_COORDINATES, GEOMETRY_KINDS, array_overlap, bounda
 from .meshing import (MESH_ESTIMATE_ERRORS, PHYSICS_BASE_DIVISOR, PHYSICS_OBJECT_DIVISOR,
                       backend_memory, boundary_config_difference_text, estimate_memory, estimate_mesh, estimate_meshes,
                       awaits_built_mesh, fitted_memory_estimate, has_estimated_counts, largest_adjacent_ratio,
-                      plain_roles_text, size_points_problem)
+                      memory_by_owner, memory_owner_text, plain_roles_text, size_points_problem)
 from .schema import (ADAPTATION_METHODS, BACKENDS, DERIVED_OPERATIONS, FIELD_DERIVED_OPERATIONS,
                      GLOBAL_DERIVED_OPERATION, INTERFACE_OPERATIONS, SOURCE_FREE_DERIVED_OPERATIONS,
                      INTERFACE_PROJECTIONS, INTERFACE_SIDES, INTERFACE_VARIABLES, FREE_MESH_KINDS, MESH_KIND_DEFAULTS,
@@ -1381,15 +1381,14 @@ class _Validator:
             override = ''
         if gpu_close:
             over = verdict.gpu_over
-            largest = '; '.join(f'{label} {format_bytes(size)}' for label, size in sorted(
-                estimate.device_items(), key=lambda item: -item[1])[:3])
             external = (f', cuDSS factors outside the pool {format_bytes(estimate.external_peak)}'
                         if estimate.external_peak else '')
             text = (f'estimated GPU memory {format_bytes(estimate.device_peak)} at the peak (build peak '
                     f'{format_bytes(estimate.gpu_build_peak)}, {format_bytes(estimate.gpu_steady + estimate.gpu_run)} '
                     f'while running{external}) '
-                    f"{'exceeds' if over else 'is close to'} the GPU budget {format_bytes(budget)}; largest: "
-                    f'{largest}. Reduce the cell count (mesh cell size, domain size), DFT / far-field boxes or their '
+                    f"{'exceeds' if over else 'is close to'} the GPU budget {format_bytes(budget)}; held at the peak "
+                    f'by {_memory_steps_text(estimate.peak_items(), 3)} ({_SOLVE_FLOW_HINT}). '
+                    f'Reduce the cell count (mesh cell size, domain size), DFT / far-field boxes or their '
                     f'n_wavelengths, close other GPU programs, or set the Solvers memory_check to warning (GUI: '
                     f'Override memory warning, on this mesh node) when the estimate is known to be high')
             (over_issue if over else self.warning)(path, text + (override if over else ''))
@@ -2046,11 +2045,10 @@ class _Validator:
             return f'memory estimate failed: {error_message(exc)}', 'error'
         level = memory_check_level(self.spec)
         if gpu_budget and estimate.device_peak > gpu_budget:
-            largest = '; '.join(f'{label} {format_bytes(size)}' for label, size in sorted(
-                estimate.device_items(), key=lambda item: -item[1])[:2])
             return (f'estimated GPU memory {format_bytes(estimate.device_peak)} at the peak exceeds the GPU budget '
-                    f'{format_bytes(self.memory_budget)} (largest: {largest}); narrow the sweep range or reduce the '
-                    f'cell count'), level
+                    f'{format_bytes(self.memory_budget)} (held at the peak by '
+                    f'{_memory_steps_text(estimate.peak_items())}); narrow the sweep range or reduce the cell '
+                    f'count'), level
         if self.host_budget is not None and estimate.host > self.host_budget:
             return f'{_host_memory_text(estimate, self.host_budget)}, or narrow the sweep range', level
         return None
@@ -2632,9 +2630,27 @@ def _gmsh_found():
     return os.path.isfile(configured) if configured else shutil.which('gmsh') is not None
 
 
+# where a memory issue's per-step figures can be read item by item
+_SOLVE_FLOW_HINT = 'GUI: Solvers > Show solve flow lists the items of each step'
+
+
+def _memory_steps_text(items, count=2):
+    """'<step> <bytes> (largest: <item> <bytes>); ...' of the `count` largest meshing.memory_by_owner sums of (label,
+    bytes) items: the solve flow's per-step figures (model.solve_flow books an item at its owner's step)."""
+    parts = []
+    for owner, size, held in memory_by_owner(items)[:count]:
+        item_label, item_bytes = held[0]
+        if len(held) > 1:
+            detail = f' (largest: {item_label} {format_bytes(item_bytes)})'
+        else:
+            detail = '' if item_label == owner else f' ({item_label})'
+        parts.append(f'{memory_owner_text(owner)} {format_bytes(size)}{detail}')
+    return '; '.join(parts)
+
+
 def _host_memory_text(estimate, host_budget):
     """Issue text of a large host estimate, judged against the available RAM host_budget (None: unknown)."""
-    largest = '; '.join(f'{label} {format_bytes(size)}' for label, size in estimate.largest_items(2, host=True))
+    largest = f'held by {_memory_steps_text(estimate.host_items)}'
     if host_budget is None:
         judged = ': the CPU factorisation may exhaust the RAM and swap'
     else:

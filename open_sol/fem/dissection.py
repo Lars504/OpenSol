@@ -2,8 +2,9 @@
 elements with every region either cut again or swept front by front, whichever stores less; the a-priori size of a
 sparse direct factor of a Lagrange operator on that mesh.
 
-Cut: a region's elements are split at the plane through the mean of their centroids, normal to the axis of largest
-spread: the elements lying wholly above it against the rest, so the interface is the mesh surface just above the
+Cut: a region's elements are split at the plane through the mean of their centroids, normal to the axis whose cut
+leaves the fewest separator nodes (every axis tried, as an ordering minimises its separators): the elements lying
+wholly above it against the rest, so the interface is the mesh surface just above the
 plane (a mesh line / layer where there is one) and elements stacked over one footprint stay together (the
 tetrahedra of a swept prism column share their footprint, not their centroids: a centroid split tears the column
 and its separator takes nodes of all three vertex columns). The nodes both halves share are the separator (S
@@ -23,9 +24,19 @@ MAX_LEVELS = 64      # cut levels at most (a cut leaves both halves smaller: ~lo
 _FAR = np.iinfo(np.int64).max // 4
 
 
-def element_dissection_pairs(connectivity, node_points) -> int:
+CUT_AXES = ('spread', 'smallest')   # element_dissection_pairs cut_axis choices
+
+
+def element_dissection_pairs(connectivity, node_points, cut_axis='smallest', element_lowest=None) -> int:
     """Factor entries of one triangle (diagonal included) in node pairs for the element -> node connectivity (m, local)
-    of a mesh with node coordinates (n_nodes, dim); a vector operator stores (dofs per node)^2 entries per pair."""
+    of a mesh with node coordinates (n_nodes, dim); a vector operator stores (dofs per node)^2 entries per pair.
+    cut_axis 'smallest': each region is cut normal to the axis whose cut has the fewest separator nodes (all axes
+    tried, the spread axis on ties; the sweep keeps the spread axis); 'spread': always normal to the axis of largest
+    centroid spread (counted 1.32 x cuDSS's entries on the nanobeam eighth model's Nedelec 2 dofs, 'smallest' 1.13).
+    element_lowest (m, dim): each element's lowest vertex coordinate, given when the cliques' points are not its
+    vertices (Nedelec sites: edge midpoints / face centroids lie inside it); None = the lowest of its clique points."""
+    if cut_axis not in CUT_AXES:
+        raise ValueError(f"cut_axis must be one of {', '.join(CUT_AXES)}, got {cut_axis!r}")
     connectivity = np.asarray(connectivity, dtype=np.int64)
     n_elements = int(connectivity.shape[0])
     if n_elements == 0:
@@ -35,13 +46,21 @@ def element_dissection_pairs(connectivity, node_points) -> int:
     n_nodes, dimensions = int(points.shape[0]), int(points.shape[1])
     in_mesh = np.zeros(n_nodes, dtype=bool)
     in_mesh[connectivity] = True
-    points = points - points[in_mesh].mean(axis=0)
+    shift = points[in_mesh].mean(axis=0)
+    points = points - shift
     scale = float(np.abs(points[in_mesh]).max())
     if scale > 0.0:
         points = points / scale
     element_points = points[connectivity]
     centroids = element_points.mean(axis=1)
-    lowest = element_points.min(axis=1)             # an element's lowest coordinate along every axis
+    if element_lowest is None:
+        lowest = element_points.min(axis=1)         # an element's lowest coordinate along every axis
+    else:   # the vertices: a cut then follows a mesh layer, never a zigzag through it
+        lowest = np.asarray(element_lowest, dtype=np.float64) - shift
+        if lowest.shape != (n_elements, dimensions):
+            raise ValueError(f'element_lowest must have shape ({n_elements}, {dimensions}), got {lowest.shape}')
+        if scale > 0.0:
+            lowest = lowest / scale
     del element_points
     # node -> element incidences of the mesh's nodes, in node order (reduceat segments)
     flat = connectivity.ravel()
@@ -123,25 +142,45 @@ def element_dissection_pairs(connectivity, node_points) -> int:
         sweep = np.minimum(ascending, descending)
 
         # cut: the regions above the leaf size with elements wholly above their mean plane (none: swept as a leaf)
-        element_axis = axis[region]
-        upper = (element_counts[region] > LEAF_ELEMENTS) & (lowest[cell_ids, element_axis]
-                                                            > means[region, element_axis])
-        n_upper = np.bincount(region, weights=upper, minlength=n_regions)
-        splits = (n_upper > 0) & (n_upper < element_counts)
+        def cut_along(cut_axes):
+            """(upper, splits, separator, separator sizes) of cutting each region normal to cut_axes[region]."""
+            element_axis = cut_axes[region]
+            upper = (element_counts[region] > LEAF_ELEMENTS) & (lowest[cell_ids, element_axis]
+                                                                > means[region, element_axis])
+            n_upper = np.bincount(region, weights=upper, minlength=n_regions)
+            splits = (n_upper > 0) & (n_upper < element_counts)
+            active = splits[region]
+            below = np.bincount(cells[active & ~upper].ravel(), minlength=n_nodes) > 0
+            above = np.bincount(cells[active & upper].ravel(), minlength=n_nodes) > 0
+            separator = below & above & ~marked
+            return upper, splits, separator, np.bincount(node_region[separator], minlength=n_regions)
+        if cut_axis == 'spread':
+            upper, splits, separator, separator_sizes = cut_along(axis)
+        else:   # every axis: per region the valid cut with the fewest separator nodes (ties: the spread axis first)
+            tries = [cut_along(np.full(n_regions, candidate)) for candidate in range(dimensions)]
+            scores = np.stack([np.where(splits_a, sizes_a, np.inf) for _, splits_a, _, sizes_a in tries])
+            scores[axis, np.arange(n_regions)] -= 0.5
+            chosen = np.argmin(scores, axis=0)
+            element_choice = chosen[region]
+            upper = np.zeros(cell_ids.size, dtype=bool)
+            splits = np.zeros(n_regions, dtype=bool)
+            separator = np.zeros(n_nodes, dtype=bool)
+            for candidate, (upper_a, splits_a, separator_a, _) in enumerate(tries):
+                upper |= upper_a & (element_choice == candidate)
+                splits |= splits_a & (chosen == candidate)
+                # a separator node is unmarked and touched at this level: node_region holds its current region
+                nodes_a = np.flatnonzero(separator_a)
+                separator[nodes_a[chosen[node_region[nodes_a]] == candidate]] = True
+            separator_sizes = np.bincount(node_region[separator], minlength=n_regions)
         active = splits[region]
         cut = np.zeros(n_regions)
         if active.any():
-            active_cells, active_upper = cells[active], upper[active]
-            below = np.bincount(active_cells[~active_upper].ravel(), minlength=n_nodes) > 0
-            above = np.bincount(active_cells[active_upper].ravel(), minlength=n_nodes) > 0
-            separator = below & above & ~marked
-            separator_sizes = np.bincount(node_region[separator], minlength=n_regions)
             cut = separator_sizes * (separator_sizes + 1) / 2.0 + separator_sizes * borders
             marked |= separator
         levels.append((parents, sweep, splits, cut))
         if not active.any():
             break
-        child = 2 * region[active] + active_upper
+        child = 2 * region[active] + upper[active]
         used = np.flatnonzero(np.bincount(child, minlength=2 * n_regions))
         relabel = np.zeros(2 * n_regions, dtype=np.int64)
         relabel[used] = np.arange(used.size)
@@ -187,34 +226,51 @@ class MeshDissection:
         """Lagrange nodes of the mesh at this order."""
         return self.n_points + (self.n_edges if int(order) == 2 else 0)
 
-    def node_pairs(self, order) -> int:
+    def element_lowest(self) -> np.ndarray:
+        """(m, dim) lowest vertex coordinate of every element (element_dissection_pairs element_lowest)."""
+        return np.asarray(self._points, dtype=np.float64)[np.asarray(self._cells, dtype=np.int64)].min(axis=1)
+
+    def node_cliques(self, order) -> tuple:
+        """(element -> node connectivity, node points, element_lowest) of Lagrange elements of this order (1 or 2)."""
+        cells = np.asarray(self._cells, dtype=np.int64)
+        points = np.asarray(self._points, dtype=np.float64)
+        if int(order) == 2:
+            cells = np.hstack([cells, self.n_points + np.asarray(self._element_edges, dtype=np.int64)])
+            points = np.vstack([points, points[np.asarray(self._edges, dtype=np.int64)].mean(axis=1)])
+        return cells, points, self.element_lowest()
+
+    def node_pairs(self, order, cut_axis='smallest') -> int:
         """Factor entries of one triangle in node pairs for Lagrange elements of this order (1 or 2)."""
-        order = 2 if int(order) == 2 else 1
-        if order not in self._pairs:
-            cells = np.asarray(self._cells, dtype=np.int64)
-            points = np.asarray(self._points, dtype=np.float64)
-            if order == 2:
-                cells = np.hstack([cells, self.n_points + np.asarray(self._element_edges, dtype=np.int64)])
-                points = np.vstack([points, points[np.asarray(self._edges, dtype=np.int64)].mean(axis=1)])
-            self._pairs[order] = element_dissection_pairs(cells, points)
-        return self._pairs[order]
+        key = (2 if int(order) == 2 else 1, cut_axis)
+        if key not in self._pairs:
+            cells, points, lowest = self.node_cliques(order)
+            self._pairs[key] = element_dissection_pairs(cells, points, cut_axis=cut_axis, element_lowest=lowest)
+        return self._pairs[key]
 
     def n_nedelec_sites(self, order) -> int:
         """Nedelec dof sites of the mesh: its edges (degree 1), edges and faces (degree 2)."""
         return self.n_edges + (self.n_faces if int(order) == 2 else 0)
 
-    def nedelec_pairs(self, order) -> int:
-        """Factor entries of one triangle in dof-site pairs for Nedelec elements of this degree (1: edge sites, 2: edge
-        and face sites, at edge midpoints / face centroids; dofs couple exactly when their sites share an element)."""
-        key = ('nedelec', 2 if int(order) == 2 else 1)
+    def nedelec_cliques(self, order) -> tuple:
+        """(element -> dof-site connectivity, site points, element_lowest) of Nedelec elements of this degree (1: edge
+        sites, 2: edge and face sites, at edge midpoints / face centroids; dofs couple exactly when their sites share
+        an element). The cut takes the vertices' lowest coordinate: the sites' lowest lies 1/3 - 1/2 of an element
+        above the layer below it, which split the elements of a layer apart (separators zigzagging through it: 1.77x
+        cuDSS's entries on an 87k-element nanobeam mesh while its node graph counted 0.97x)."""
+        points = np.asarray(self._points, dtype=np.float64)
+        cells = np.asarray(self._element_edges, dtype=np.int64)
+        sites = points[np.asarray(self._edges, dtype=np.int64)].mean(axis=1)
+        if int(order) == 2:
+            if self._element_faces is None:
+                raise ValueError('Nedelec degree 2 dof sites need a tetrahedron mesh (its faces)')
+            cells = np.hstack([cells, self.n_edges + np.asarray(self._element_faces, dtype=np.int64)])
+            sites = np.vstack([sites, points[np.asarray(self._faces, dtype=np.int64)].mean(axis=1)])
+        return cells, sites, self.element_lowest()
+
+    def nedelec_pairs(self, order, cut_axis='smallest') -> int:
+        """Factor entries of one triangle in dof-site pairs for Nedelec elements of this degree (nedelec_cliques)."""
+        key = ('nedelec', 2 if int(order) == 2 else 1, cut_axis)
         if key not in self._pairs:
-            points = np.asarray(self._points, dtype=np.float64)
-            cells = np.asarray(self._element_edges, dtype=np.int64)
-            sites = points[np.asarray(self._edges, dtype=np.int64)].mean(axis=1)
-            if key[1] == 2:
-                if self._element_faces is None:
-                    raise ValueError('Nedelec degree 2 dof sites need a tetrahedron mesh (its faces)')
-                cells = np.hstack([cells, self.n_edges + np.asarray(self._element_faces, dtype=np.int64)])
-                sites = np.vstack([sites, points[np.asarray(self._faces, dtype=np.int64)].mean(axis=1)])
-            self._pairs[key] = element_dissection_pairs(cells, sites)
+            cells, sites, lowest = self.nedelec_cliques(order)
+            self._pairs[key] = element_dissection_pairs(cells, sites, cut_axis=cut_axis, element_lowest=lowest)
         return self._pairs[key]

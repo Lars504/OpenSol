@@ -330,7 +330,12 @@ first bring the background physics (those without the study's hook) to a station
   build temporaries are the part's build_extra). Factors outside the pools: cuDSS an external item from
   `cudss_factor.factor_device_bytes` (`definition_helpers.cudss_external(phases=)` when released after its solve),
   MUMPS / PARDISO a host item from `host_direct.factor_host_bytes` (or SuperLU x `superlu_bytes_scale`) plus
-  `solver_host_bytes` (uncalibrated). Item kinds: `core.memory_estimate.MemoryEstimate` docstring.
+  `solver_host_bytes` (uncalibrated). Item kinds: `core.memory_estimate.MemoryEstimate` docstring. Run, transient,
+  external and host items a solver role's runtime holds while it solves (its factor and copies, a Krylov basis) are
+  tagged `solver_job_items(role, items)`, so the solve flow books them at that job; never a kept item the physics
+  create allocates (the ledger compares kept items per build stage). Memory shown per part of a model (validate's
+  memory issues, the solve flow boxes) is one breakdown: `MemoryEstimate.peak_items()` (the device items alive at
+  `device_peak`) and `host_items`, grouped by `meshing.memory_by_owner`; card and processor bytes are never added.
   A new physics / solver type adds its run-time recipe (`PhysicsType.time_estimate` / `SolverType.time_estimate`:
   machine-independent op counts, never seconds; iteration counts derived a priori, never fitted to run counters: a
   count deviation is a lead on the solver; a kernel bound by arithmetic also counts its `Elementwise.flops`, since

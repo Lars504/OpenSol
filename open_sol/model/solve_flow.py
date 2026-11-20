@@ -5,9 +5,14 @@ Steps sit on rows (ROW_KINDS order; study steps take one row each) and over lane
 role of a physics (at least one), physics grouped by mesh, so a mesh / materials step spans its physics' lanes and the
 model / couplings / study / output steps span every lane. Estimate items are matched to steps by their labels
 (meshing.estimate_memory / model.time_estimate prefixes: "[mesh '<m>': ]physics '<p>': ", "feature '<p>.<f>': ",
-"model: ", "subpixel smoothing: ", "conformal boundaries: ", "grid transfer ", "snapshots on mesh '<m>': ") and solver
-time items to their role by the summary.json counter path ('solvers', physics, 'roles', role, ...). An item no rule
-places goes to the 'unplaced' step, never dropped: a new label prefix needs a rule in _memory_step / _time_step.
+"model: ", "subpixel smoothing: ", "conformal boundaries: ", "grid transfer ", "snapshots on mesh '<m>': "); solver
+time items go to their role by the summary.json counter path ('solvers', physics, 'roles', role, ...), a physics'
+memory items tagged '<role> solver: ' (core.memory_estimate.solver_job_items: the job's factor, copies, Krylov basis)
+to that role's step, and a build item 'build of <owner>' (time_estimate.BUILD_OWNER_PREFIX) to the step of that
+owner's memory items. An item no rule places goes to the 'unplaced' step (build items: the model step), never
+dropped: a new label prefix needs a rule in _memory_step / _time_step. A step's memory figure is its device items alive
+at the estimate's device peak (MemoryEntry.at_peak) and, apart, its host items, so the steps add up to the totals and
+to the figures validate's memory issues judge and list per owner (meshing.memory_by_owner).
 
 Measured values (after a run of the same model): the build's memory ledger stages (BuildSummary gpu_breakdown /
 stage_seconds, owners as model.builder tracks them) go to their step by owner (_ledger_step); the run summary's
@@ -17,11 +22,12 @@ import math
 import re
 from dataclasses import dataclass, fields, replace
 
+from ..core.memory_estimate import solver_job_of
 from ..solvers.roles import BACKENDS, PRECISIONS, SOLVER_ROLES, resolved_precision
 from .schema import (EIGENFREQUENCY_STUDY, FREQUENCY_DOMAIN_STUDY, FREQUENCY_RESPONSE_STUDY, OPTOMECHANICS_STUDY,
                      STATIONARY_STUDY, TIME_DEPENDENT_STUDY, known_physics, resolved_solvers, solver_backend,
                      solver_grid)
-from .time_estimate import estimation_runs, study_counts
+from .time_estimate import BUILD_OWNER_PREFIX, estimation_runs, study_counts
 
 # row kind -> row label (left margin of the chart); study rows are 'study' too, one per study step
 ROW_KINDS = {'model': 'Model', 'mesh': 'Meshes', 'materials': 'Materials', 'solver': 'Solver jobs',
@@ -37,7 +43,8 @@ MEMORY_GROUPS = {
     'host': 'processor memory',
 }
 # TimeEntry.source -> where the item comes from
-TIME_SOURCES = {'run': 'one study run (time_estimate per_run)', 'build': 'build overhead (estimate_overheads)',
+TIME_SOURCES = {'run': 'one study run (time_estimate per_run)',
+                'build': 'build overhead (estimate_overheads: a generic guess from the memory items of this step)',
                 'output': 'output overhead (estimate_overheads)'}
 
 # node names are identifiers (no quotes, no dots); the rest of a physics label: ': <item>' or ' (<reason>)'
@@ -51,15 +58,19 @@ _MODEL_PREFIXES = ('model: ', 'subpixel smoothing: ', 'conformal boundaries: ')
 _EXPLANATIONS = {
     'model': 'The model is validated on the processor, the parameters are evaluated, the geometry is resolved and '
              'the memory estimate is checked against the budgets; then the build starts on the worker thread '
-             '(model.builder.build).',
-    'mesh': 'make_domain builds this mesh: the tensor grid with its PML / ghost padding, or the element mesh (the '
-            'mesher runs unless an equal mesh is still kept from an earlier build).',
+             '(model.builder.build). Its build time item is the part of the build no later step owns (validation, '
+             'estimates, passes over the build temporaries).',
+    'mesh': 'make_domain builds this mesh: the tensor grid with its PML / ghost padding (the grid plan and the 1D '
+            'grading only: its arrays are allocated by the materials step), or the element mesh (the mesher runs '
+            'unless an equal mesh is still kept from an earlier build).',
     'materials': 'Static materials are painted into the MaterialGrid arrays of the physics types on this mesh; '
                  'state-dependent material updates, coupling transfer arrays and subpixel / conformal data are '
                  'allocated here.',
     'solver': "Build stage 'solvers': the role runtime is created before its physics (one memory-ledger entry per "
-              'solver) and handed to the physics create. Its run-time items are counted here but the work runs in '
-              'the study steps below.',
+              'solver) and handed to the physics create. Its run-time items and the memory the job holds while it '
+              'solves (factor, factor copies, Krylov basis: the items its physics tags for this job) are counted '
+              'here, but the work runs and that memory is allocated in the study steps below; memory of a physics '
+              'whose estimator does not tag its solver items is listed at the physics.',
     'physics': 'The physics is created on its mesh with the solver runtimes above, its features are applied '
                '(sources, boundaries, monitors), dynamic material updates apply once, and finalize assembles its '
                'operators (some solvers factorise here).',
@@ -75,11 +86,12 @@ _EXPLANATIONS = {
 @dataclass(frozen=True)
 class MemoryEntry:
     """One memory estimate item of a step: group (MEMORY_GROUPS key), label without the step's prefix, bytes, run
-    phase (transient groups)."""
+    phase (transient groups), at_peak: a device item alive at the estimate's device_peak (MemoryEstimate.peak_items)."""
     group: str
     label: str
     bytes: int
     phase: str = ''
+    at_peak: bool = False
 
 
 @dataclass(frozen=True)
@@ -155,9 +167,20 @@ class FlowStep:
         return sum(seconds) if seconds else None
 
     @property
-    def memory_bytes(self) -> int:
-        """Bytes of its entries (every group summed: a size indicator, not a peak)."""
-        return sum(entry.bytes for entry in self.memory)
+    def device_peak_bytes(self) -> int:
+        """Device bytes of its entries alive at the estimate's device_peak: the steps add up to that peak (the figure
+        validate's memory issue judges), less the build temporaries / factorisation extra no item lists."""
+        return sum(entry.bytes for entry in self.memory if entry.at_peak)
+
+    @property
+    def host_bytes(self) -> int:
+        """Processor memory of its entries (the steps add up to the estimate's host bytes)."""
+        return sum(entry.bytes for entry in self.memory if entry.group == 'host')
+
+    @property
+    def held_bytes(self) -> int:
+        """device_peak_bytes + host_bytes: the step's share of the memory held at the peak (the chart's bar)."""
+        return self.device_peak_bytes + self.host_bytes
 
     @property
     def time_seconds(self) -> float:
@@ -259,6 +282,9 @@ def solve_flow(spec, registry, parameters, meshes, memory=None, plain_roles=froz
     measured = build_record is not None or study_summary is not None
     if measured:
         notes += builder.place_measured(build_record, study_summary, used)
+        card_note = _card_bound_note(backend, build_record, study_summary)
+        if card_note:
+            notes.append(card_note)
     builder.add_unplaced_step(lanes)
     if builder.bad_times:
         notes.append('Time items with a non-finite estimate (an estimate bug; counted as 0 s here): '
@@ -446,6 +472,9 @@ class _Builder:
     # estimate placement
 
     def place_memory(self, memory):
+        """Book every item at its step; at_peak as MemoryEstimate.peak_items: kept items and run-long factors, and
+        (unless the peak is the build's) the run items and the run_peak_phase's transients and factors."""
+        in_run, peak_phase = not memory.peak_in_build, memory.run_peak_phase
         groups = (('kept', ((label, size, '') for label, size in memory.items)),
                   ('run', ((label, size, '') for label, size in memory.run_items)),
                   ('transient', ((label, size, phase) for phase, label, size in memory.transient_items)),
@@ -456,8 +485,10 @@ class _Builder:
         for group, entries in groups:
             for label, size, phase in entries:
                 key, short = self._memory_step(label)
+                at_peak = (group in ('kept', 'external')
+                           or in_run and (group == 'run' or group != 'host' and phase == peak_phase))
                 self._target(key)['memory'].append(MemoryEntry(group, short, int(size),
-                                                               self._memory_step(phase)[1] if phase else ''))
+                                                               self._memory_step(phase)[1] if phase else '', at_peak))
 
     def place_time(self, items, source):
         for item in items:
@@ -581,7 +612,10 @@ class _Builder:
             mesh, label = match.group(1), match.group(2)
         match = _PHYSICS_PREFIX.match(label)
         if match and f'physics:{match.group(1)}' in self.steps:
-            return f'physics:{match.group(1)}', _physics_rest(match, label)
+            rest = _physics_rest(match, label)
+            role, item_label = solver_job_of(rest)   # an item the role's solver job holds: its own step when resolved
+            key = self.solver_keys.get((match.group(1), role)) if role else None
+            return (key, item_label) if key is not None else (f'physics:{match.group(1)}', rest)
         match = _FEATURE_PREFIX.match(label)
         if match and f'physics:{match.group(1)}' in self.steps:
             return f'physics:{match.group(1)}', f'feature {match.group(2)}: {match.group(3)}'
@@ -598,6 +632,9 @@ class _Builder:
         label = item.label
         if source == 'output':
             return 'output', label
+        if source == 'build' and label.startswith(BUILD_OWNER_PREFIX):   # where that owner's memory items are booked
+            key = self._memory_step(f'{label[len(BUILD_OWNER_PREFIX):]}: ')[0]
+            return ('model' if key == 'unplaced' else key), label
         match = _MESH_PREFIX.match(label)
         if match and f'mesh:{match.group(1)}' in self.steps:
             return f'mesh:{match.group(1)}', match.group(2)
@@ -837,6 +874,23 @@ def _loops(spec, builder):
     return tuple(loops)
 
 
+def _card_bound_note(backend, build_record, study_summary) -> str:
+    """'' or the note bounding the card's peak from a gpu run: the pool high-water (measured) + cuDSS's own figure for
+    its factors (its plan estimate, not measured); an upper bound, since the two marks need not fall together."""
+    from ..core.gpu_memory import format_bytes   # GUI-thread safe
+    summary = study_summary if isinstance(study_summary, dict) else {}
+    external = (summary.get('external_memory') or {}).get('measured_bytes')
+    pool_peaks = [value for value in ((summary.get('run_memory') or {}).get('measured_bytes'),
+                                      _record_value(build_record, 'gpu_peak_bytes')) if isinstance(value, (int, float))]
+    if backend == 'cpu' or not pool_peaks or not isinstance(external, (int, float)) or external <= 0:
+        return ''
+    pool = int(max(pool_peaks))
+    return (f'Card memory from the run (not measured as one figure): pool high-water {format_bytes(pool)} (measured) + '
+            f"cuDSS's own figure for its factors {format_bytes(int(external))} (its plan estimate) = "
+            f'{format_bytes(pool + int(external))}, at most the peak on the card: the two marks need not fall at the '
+            'same time.')
+
+
 def _totals(spec, backend, memory, run_time, overheads, study_time, build_record=None, study_summary=None):
     """(name, estimate text, measured text or None) rows of the totals; measured from the build record (BuildSummary
     or dict) and the run summary (run_memory, external_memory, time_check, study_seconds)."""
@@ -865,8 +919,10 @@ def _totals(spec, backend, memory, run_time, overheads, study_time, build_record
             totals.append(('  kept + added by the study', format_bytes(memory.gpu_steady + memory.gpu_run),
                            measured_bytes(run_memory)))
             if memory.external_peak or external:
+                # not measured: cuDSS's own plan estimate (cudss_factor.external_high_water_bytes)
+                factor_figure = measured_bytes(external)
                 totals.append(('  direct-solver factors (outside the pool)', format_bytes(memory.external_peak),
-                               measured_bytes(external)))
+                               factor_figure and f"{factor_figure} (cuDSS's figure)"))
             if memory.host:
                 totals.append(('Processor memory', format_bytes(memory.host), None))
 

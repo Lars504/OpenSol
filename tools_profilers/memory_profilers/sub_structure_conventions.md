@@ -15,3 +15,8 @@ structure_conventions.md.
   DirectSolver calls are), never a delta around open_sol code that allocates or frees pool blocks (`_plan_solver`
   releases the pool's cached blocks). A background memGetInfo poller was tried: 6 - 30 x slower runs, nothing beyond
   the per-call deltas.
+
+## dissection_vs_cudss.py
+- Compares `fem.dissection` counts (both `CUT_AXES`) with cuDSS's own ordering on the same clique graphs: graph
+  Laplacian + I values, so the fill depends on the pattern only. Read a ratio on the site graphs first (cheap); the
+  `--dofs` row is the run's Nedelec 2 pattern and needs its float32 factor on the GPU.

@@ -7,6 +7,7 @@ import copy
 import hashlib
 import heapq
 import math
+import re
 from dataclasses import dataclass, field, replace
 from functools import partial
 
@@ -18,7 +19,8 @@ from ..core.domain import Domain, containing_cell
 from ..core.domain3d import Domain3D
 from ..core.grid import DEFAULT_COURANT_FACTOR, courant_time_step, edges_from_widths, uniform_cell_count
 from ..core.grid3d import courant_time_step_3d
-from ..core.memory_estimate import BOOL_BYTES, FLOAT32_BYTES, MemoryEstimate, combine, grid_transfer_estimate
+from ..core.memory_estimate import (BOOL_BYTES, FLOAT32_BYTES, SOLVER_JOB_TAG, MemoryEstimate, combine,
+                                    grid_transfer_estimate, solver_job_of)
 from ..core.mesh import SEGMENT_PROFILES, MeshConfig, complete_axis_edges, has_uniform_spacing, segment_widths
 from ..materials import effective_material_data
 from ..physics.em.dispersion import complex_permittivity
@@ -2279,6 +2281,40 @@ def estimate_memory(spec, parameters, registry=None, mesh_estimate=None, by_mesh
         (f"grid transfer '{record['coupling']}' ({record['source_mesh']} -> {record['target_mesh']}, "
          f"{record['kind']})", record['bytes']) for record in transfers))
     return combine(parts, build_cache_bytes=build_cache_bytes)
+
+
+# the part of an estimate_memory item label before its item: the labelled() prefixes of estimate_memory / _mesh_memory
+_ITEM_OWNER = re.compile(r"^(?:mesh '[^']+': )?(?:physics '[^']+'|feature '[^']+'|model|subpixel smoothing|"
+                         r"conformal boundaries): (.*)$", re.S)
+
+
+def memory_item_owner(label) -> str:
+    """The label of an estimate_memory item up to its item ("physics '<p>'", "physics '<p>': <role> solver", 'model',
+    ...: _ITEM_OWNER and the solver_job_items tag); '' for a label without an owner part (a grid transfer)."""
+    match = _ITEM_OWNER.match(label)
+    if match is None:
+        return ''
+    _, item_label = solver_job_of(match.group(1))
+    return label[:len(label) - len(item_label) - 2]   # without the ': ' before the item
+
+
+def memory_by_owner(items) -> list:
+    """[(owner, bytes, ((item, bytes), ...) largest first)] of (label, bytes) items per memory_item_owner (a label
+    without one: itself), largest owner first: the solve flow's steps, which validate's memory issues name."""
+    owners = {}
+    for label, size in items:
+        owner = memory_item_owner(label)
+        item_label = label[len(owner) + 2:] if owner else label
+        owners.setdefault(owner or label, []).append((item_label, int(size)))
+    return sorted(((owner, sum(size for _, size in held), tuple(sorted(held, key=lambda item: -item[1])))
+                   for owner, held in owners.items()), key=lambda entry: -entry[1])
+
+
+def memory_owner_text(owner) -> str:
+    """Wording of a memory_item_owner in an issue: "physics '<p>': <role> solver" reads "<role> solver job of physics
+    '<p>'" (the solve flow's solver job step); any other owner as it is."""
+    holder, separator, job = owner.rpartition(': ')
+    return f'{job} job of {holder}' if separator and job.endswith(SOLVER_JOB_TAG[:-2]) else owner
 
 
 def fitted_memory_estimate(spec, parameters, registry, mesh_estimate, memory_budget, estimate=None, by_mesh=None,

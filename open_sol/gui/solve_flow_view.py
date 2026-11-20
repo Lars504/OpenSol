@@ -13,10 +13,10 @@ from ..model.solve_flow import MEMORY_GROUPS, TIME_SOURCES, op_text, solve_flow
 from .forms import hint_label, rich_tooltip
 from .helpers import ask_save_path, mesh_color
 
-BOX_WIDTH = 236
+BOX_WIDTH = 268           # fits 'estimated GPU 2.16 GiB + CPU 4.46 GiB  ·  4.66 min' at the box text size
 BOX_HEIGHT = 70
 WIDE_BOX_WIDTH = 520      # largest width of a box spanning several lanes (model, couplings, study, results)
-LANE_WIDTH = 256
+LANE_WIDTH = 288
 ROW_HEIGHT = 94
 LOOP_SPACING = 30
 _PADDING = 9.0            # box text / bar inset
@@ -49,9 +49,11 @@ _KIND_TAGS = {'model': 'MODEL', 'mesh': 'MESH', 'materials': 'MATERIALS', 'solve
 _LINK_COLOR = '#8a4fbf'
 _LOOP_COLOR = '#7a5c2e'
 _INTRO = ('Every step of a run of this model, top to bottom: the build (mesh, materials, solver jobs, physics, '
-          'couplings), the study and the results. Each box shows the memory and run time the estimates book at it '
-          '(blue bar: share of the memory items, orange bar: share of the run time); click a box for the items and '
-          'what they are computed from. Brackets on the right are repetitions (sweeps, sectors, refinement levels). '
+          'couplings), the study and the results. Each box shows the memory its items hold when the model\'s memory '
+          'use peaks (GPU: graphics card, CPU: processor; the boxes add up to the totals and to the mesh node\'s '
+          'memory warning) and the run time booked at it (blue bar: share of that memory, orange bar: share of the '
+          'run time); click a box for the items and what they are computed from. Brackets on the right are '
+          'repetitions (sweeps, sectors, refinement levels). '
           'After a Build / Compute of this model the measured values appear next to the estimates (green). The chart '
           'follows the model as you edit it; nothing is run. Mouse wheel zooms, drag pans.')
 
@@ -301,7 +303,7 @@ class _StepBox(QtWidgets.QGraphicsPathItem):
     """Rounded, selectable box of one FlowStep that paints its own texts (kind tag, title, subtitle, estimate line,
     each one elided line) and its memory / time bars; no Qt selection outline: a thicker blue border instead."""
 
-    def __init__(self, step, rect, fill, border, shares, show_measured=False):
+    def __init__(self, step, rect, fill, border, shares, show_measured=False, backend='gpu'):
         super().__init__()
         self.key = step.key
         self._rect = rect
@@ -316,7 +318,7 @@ class _StepBox(QtWidgets.QGraphicsPathItem):
         self.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         estimate = []
         if step.memory:
-            estimate.append(format_bytes(step.memory_bytes))
+            estimate.append(_held_text(step, backend, 'GPU', 'CPU', ' + '))
         if step.time:
             estimate.append(format_seconds(step.time_seconds))
         if step.not_estimated:
@@ -400,6 +402,16 @@ def _box_fonts():
     return tuple(_FONTS)
 
 
+def _held_text(step, backend, device_name, host_name, joiner) -> str:
+    """'<device_name> 2.2 GiB<joiner><host_name> 4.5 GiB' of a step's device bytes at the estimate's peak and its
+    processor memory (zero parts left out; the cpu backend holds both in processor memory: one host figure)."""
+    if backend == 'cpu':
+        return f'{host_name} {format_bytes(step.held_bytes)}'
+    parts = [f'{name} {format_bytes(size)}' for name, size in ((device_name, step.device_peak_bytes),
+                                                               (host_name, step.host_bytes)) if size]
+    return joiner.join(parts) or f'{device_name} {format_bytes(0)}'
+
+
 def _share(value, largest) -> float:
     """value / largest in [0, 1]; 0 for a zero or non-finite pair (NaN geometry can crash Qt's painter)."""
     if not largest or not math.isfinite(largest) or not math.isfinite(value):
@@ -427,7 +439,7 @@ def _draw_flow(scene, flow, spec) -> dict:
     _StepBox}."""
     extra = _MEASURED_LINE if flow.measured else 0.0
     rects = {step.key: _box_rect(step, extra) for step in flow.steps}
-    largest_bytes = max((step.memory_bytes for step in flow.steps), default=0)
+    largest_bytes = max((step.held_bytes for step in flow.steps), default=0)
     largest_seconds = max((step.time_seconds for step in flow.steps), default=0.0)
     right = max((rect.right() for rect in rects.values()), default=flow.lanes * LANE_WIDTH)
     arrow_pen = QtGui.QPen(QtGui.QColor(_BORDER_COLOR), 1.2)
@@ -444,10 +456,10 @@ def _draw_flow(scene, flow, spec) -> dict:
     for step in flow.steps:
         border = (mesh_color(spec, step.key.split(':', 1)[1]) if step.kind in ('mesh', 'materials')
                   else _BORDER_COLOR)
-        shares = tuple(_share(value, largest) for value, largest in ((step.memory_bytes, largest_bytes),
+        shares = tuple(_share(value, largest) for value, largest in ((step.held_bytes, largest_bytes),
                                                                      (step.time_seconds, largest_seconds)))
         box = _StepBox(step, rects[step.key], _KIND_COLORS.get(step.kind, '#eeeeee'), border, shares,
-                       flow.measured)
+                       flow.measured, flow.backend)
         box.setZValue(2)
         box.setToolTip(rich_tooltip(step.title, step.subtitle, step.explanation))
         scene.addItem(box)
@@ -553,7 +565,11 @@ def _overview_html(flow, measured_note='') -> str:
     if flow.notes:
         parts.append('<h4>Notes</h4><ul>' + ''.join(f'<li>{html.escape(note)}</li>' for note in flow.notes) + '</ul>')
     parts.append('<p class="note">Memory items are the arrays each step\'s estimator counts from the code '
-                 '(meshing.estimate_memory); time items are one study run priced on this computer\'s profile '
+                 '(meshing.estimate_memory). A box counts its graphics card items alive at the peak (kept arrays, '
+                 'direct-solver factors and the largest run phase: phases never overlap) and its processor memory, '
+                 'so the boxes add up to the peak and the processor memory above, the figures the memory warning on '
+                 'the mesh node judges and lists per step (build temporaries belong to no box). Time items are one '
+                 'study run priced on this computer\'s profile '
                  '(model.time_estimate, python -m open_sol profile). The whole-study time also counts every sweep '
                  'value, sector and estimation run. Measured: the build\'s memory ledger (pool change and wall time '
                  'per build stage) and the run summary\'s time check. Click a box for its items.</p>')
@@ -601,6 +617,8 @@ def _memory_html(flow, step) -> str:
         group = MEMORY_GROUPS.get(entry.group, entry.group)
         if entry.phase:
             group += f' (phase: {entry.phase})'
+        if entry.group != 'host' and not entry.at_peak:
+            group += '; not held at the memory peak, so not in this step\'s figure'
         rows.append(f'<tr><td>{html.escape(entry.label)}</td><td class="number">{format_bytes(entry.bytes)}</td>'
                     + (_measured_cell('—') if flow.measured else '')
                     + f'<td><span class="small">{html.escape(group)}</span></td></tr>')
@@ -615,7 +633,8 @@ def _memory_html(flow, step) -> str:
             if flow.backend == 'cpu' else '')
     header = ('<tr><th>Item</th><th>Estimated</th>' + ('<th>Measured</th>' if flow.measured else '')
               + '<th>Kind</th></tr>')
-    return (f'<h4>Memory items ({format_bytes(step.memory_bytes)} listed)</h4>'
+    held = _held_text(step, flow.backend, 'graphics card', 'processor', ', ')
+    return (f'<h4>Memory items (held at the memory peak: {html.escape(held)})</h4>'
             '<table class="items" width="100%" cellspacing="0">' + header + ''.join(rows) + '</table>' + note
             + ('<p class="note">Items are not measured one by one: the measured column compares the step as a whole.'
                '</p>' if flow.measured else ''))

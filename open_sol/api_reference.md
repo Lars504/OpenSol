@@ -14,92 +14,93 @@ Topics (describe(topic) or python -m open_sol describe <topic>): spec, expressio
 
 Line ranges in api_reference.md (Read with offset / limit; Grep '^## ' lists the same headings). Sections over 400 lines also list their subsections. "Help: shared `<key>`" (a line, or the end of a param line) stands for the text under "#### `<key>`" in Shared help texts (Grep it); every occurrence of a repeated long text points there.
 
-- lines 104-454: Model spec
-- lines 456-573: Expressions
-- lines 575-841: Geometry
-- lines 843-998: Materials
-- lines 1000-1046: Mesh
-- lines 1048-1184: Solvers
-- lines 1186-1872: Shared help texts
-- lines 1874-2004: Physics type `drift_diffusion` - Semiconductor (drift-diffusion, 2D)
-- lines 2006-2200: Physics type `elastic_waves` - Elastic and Acoustic Waves, time domain (2D, in-plane)
-- lines 2202-2305: Physics type `electric_currents` - Electric Currents
-- lines 2307-2462: Physics type `electrostatics` - Electrostatics
-- lines 2464-2644: Physics type `em_eme` - Electromagnetic Waves, eigenmode expansion (2D)
-- lines 2646-2801: Physics type `em_eme_3d` - Electromagnetic Waves, eigenmode expansion (3D)
-- lines 2803-2890: Physics type `em_fdfd_3d` - Electromagnetic Waves, frequency domain (3D)
-- lines 2892-3051: Physics type `em_fdfd_bor` - Electromagnetic Waves, frequency domain (axisymmetric, azimuthal order m)
-- lines 3053-3190: Physics type `em_fdfd_conical` - Electromagnetic Waves, frequency domain (out-of-plane wave number k_z)
-- lines 3192-3443: Physics type `em_fdfd_ez` - Electromagnetic Waves, frequency domain (2D, electric field out of plane)
-- lines 3445-3716: Physics type `em_fdfd_hz` - Electromagnetic Waves, frequency domain (2D, magnetic field out of plane)
-- lines 3718-4107: Physics type `em_fdfd_nonlinear` - Nonlinear optics, frequency domain (2D, harmonic channels)
-- lines 4109-4354: Physics type `em_fdtd_3d` - Electromagnetic Waves, time domain (3D)
-- lines 4356-4544: Physics type `em_fdtd_bor` - Electromagnetic Waves, time domain (axisymmetric, azimuthal order m)
-- lines 4546-4846: Physics type `em_fdtd_ez` - Electromagnetic Waves, time domain (2D, electric field out of plane)
-- lines 4848-5156: Physics type `em_fdtd_hz` - Electromagnetic Waves, time domain (2D, magnetic field out of plane)
-- lines 5158-5300: Physics type `em_modes` - Electromagnetic Waves, cross-section modes
-- lines 5302-5549: Physics type `heat` - Heat Transfer in Solids
-- lines 5551-5684: Physics type `laminar_flow` - Laminar Flow (2D)
-- lines 5686-5825: Physics type `magnetic_fields_ac` - Magnetic Fields, AC (2D)
-- lines 5827-5946: Physics type `magnetostatics` - Magnetostatics (2D)
-- lines 5948-6062: Physics type `magnetostatics_3d` - Magnetostatics (3D)
-- lines 6064-6303: Physics type `membrane` - Membrane
-- lines 6305-6498: Physics type `pressure_acoustics` - Pressure Acoustics, frequency domain
-- lines 6500-6857: Physics type `solid_mechanics` - Solid Mechanics (2D)
-- lines 6859-7283: Physics type `solid_mechanics_3d` - Solid Mechanics (3D)
-  - lines 6867-6892: Settings (PhysicsSpec.settings)
-  - lines 6894-7004: Material properties (MaterialSpec.properties)
-  - lines 7006-7047: Fields
-  - lines 7049-7054: Source slots
-  - lines 7056-7062: Feature `solid_mechanics_3d.fixed` - Fixed
-  - lines 7064-7070: Feature `solid_mechanics_3d.roller` - Roller
-  - lines 7072-7078: Feature `solid_mechanics_3d.symmetry` - Symmetry
-  - lines 7080-7088: Feature `solid_mechanics_3d.displacement` - Displacement
-  - lines 7090-7096: Feature `solid_mechanics_3d.fixed_domain` - Fixed (domain)
-  - lines 7098-7106: Feature `solid_mechanics_3d.prescribed_displacement_domain` - Prescribed displacement (domain)
-  - lines 7108-7120: Feature `solid_mechanics_3d.boundary_load` - Boundary load
-  - lines 7122-7134: Feature `solid_mechanics_3d.body_force` - Body force
-  - lines 7136-7144: Feature `solid_mechanics_3d.temperature_change` - Temperature change
-  - lines 7146-7154: Feature `solid_mechanics_3d.solid_probe` - Solid probe
-  - lines 7156-7162: Feature `solid_mechanics_3d.frequency_probe` - Frequency probe
-  - lines 7164-7170: Feature `solid_mechanics_3d.resonance_table` - Resonance table
-  - lines 7172-7180: Feature `solid_mechanics_3d.mode_shapes` - Mode shapes
-  - lines 7182-7201: Feature `solid_mechanics_3d.squeeze_film_damping` - Squeeze-film damping
-  - lines 7203-7211: Feature `solid_mechanics_3d.thermoelastic_damping` - Thermoelastic damping
-  - lines 7213-7226: Feature `solid_mechanics_3d.electrode` - Electrode
-  - lines 7228-7241: Feature `solid_mechanics_3d.electrode_domain` - Electrode (domain)
-  - lines 7243-7257: Feature `solid_mechanics_3d.admittance` - Admittance
-  - lines 7259-7283: Feature `solid_mechanics_3d.optomechanical_coupling` - Optomechanical coupling
-- lines 7285-7291: Coupling type `acoustics_em_acousto_optic` - Acousto-optic effect (elastic waves -> electromagnetic waves)
-- lines 7293-7299: Coupling type `currents_heat_joule` - Joule heating (electric currents -> heat)
-- lines 7301-7309: Coupling type `electrostatics_acoustics_piezo` - Piezoelectric coupling (electrostatics <-> elastic waves)
-- lines 7311-7319: Coupling type `electrostatics_em_pockels` - Pockels effect (electrostatics -> electromagnetic waves)
-- lines 7321-7327: Coupling type `em_acoustics_photoacoustic` - Photoacoustic heating (electromagnetic waves -> elastic waves)
-- lines 7329-7335: Coupling type `em_heat_joule` - Joule heating (electromagnetic waves -> heat)
-- lines 7337-7347: Coupling type `em_semiconductor_generation` - Photogeneration (electromagnetic waves -> semiconductor)
-- lines 7349-7355: Coupling type `em_solid_optical_force` - Optical force (electromagnetic waves -> solid mechanics)
-- lines 7357-7369: Coupling type `field_transfer` - Field transfer
-- lines 7371-7377: Coupling type `fluid_heat_convection` - Convective heat transport (laminar flow -> heat)
-- lines 7379-7385: Coupling type `heat_em_phase_change` - Phase change (heat -> electromagnetic waves)
-- lines 7387-7393: Coupling type `heat_em_thermo_optic` - Thermo-optic effect (heat -> electromagnetic waves)
-- lines 7395-7401: Coupling type `heat_solid_thermal_strain` - Thermal expansion (heat -> solid mechanics)
-- lines 7403-7409: Coupling type `magnetic_heat_induction` - Induction heating (magnetic fields AC -> heat)
-- lines 7411-7417: Coupling type `magnetic_solid_lorentz_force` - Lorentz force (magnetic fields -> solid mechanics)
-- lines 7419-7431: Coupling type `semiconductor_em_plasma_dispersion` - Free-carrier plasma dispersion (semiconductor -> electromagnetic waves)
-- lines 7433-7441: Coupling type `solid_em_strain_optic` - Strain-optic effect (solid mechanics -> electromagnetic waves)
-- lines 7443-7451: Coupling type `solid_membrane_tension` - Film prestress (solid mechanics -> membrane)
-- lines 7453-7479: Study type `eigenfrequency` - Eigenfrequency
-- lines 7481-7507: Study type `frequency_domain` - Frequency domain
-- lines 7509-7545: Study type `frequency_response` - Frequency response
-- lines 7547-7561: Study type `mode_analysis` - Mode analysis
-- lines 7563-7578: Study type `nonlinear_frequency_domain` - Nonlinear frequency domain
-- lines 7580-7596: Study type `optimization` - Optimization
-- lines 7598-7615: Study type `optomechanics` - Optomechanics
-- lines 7617-7634: Study type `stationary` - Stationary
-- lines 7636-7659: Study type `thermal_noise` - Thermal noise
-- lines 7661-7676: Study type `time_dependent` - Time dependent
-- lines 7678-7746: Templates
-- lines 7748-8003: Results, reports and files
+- lines 105-455: Model spec
+- lines 457-575: Expressions
+- lines 577-843: Geometry
+- lines 845-1001: Materials
+- lines 1003-1049: Mesh
+- lines 1051-1189: Solvers
+- lines 1191-1877: Shared help texts
+- lines 1879-2009: Physics type `drift_diffusion` - Semiconductor (drift-diffusion, 2D)
+- lines 2011-2205: Physics type `elastic_waves` - Elastic and Acoustic Waves, time domain (2D, in-plane)
+- lines 2207-2310: Physics type `electric_currents` - Electric Currents
+- lines 2312-2467: Physics type `electrostatics` - Electrostatics
+- lines 2469-2649: Physics type `em_eme` - Electromagnetic Waves, eigenmode expansion (2D)
+- lines 2651-2806: Physics type `em_eme_3d` - Electromagnetic Waves, eigenmode expansion (3D)
+- lines 2808-2895: Physics type `em_fdfd_3d` - Electromagnetic Waves, frequency domain (3D)
+- lines 2897-3056: Physics type `em_fdfd_bor` - Electromagnetic Waves, frequency domain (axisymmetric, azimuthal order m)
+- lines 3058-3195: Physics type `em_fdfd_conical` - Electromagnetic Waves, frequency domain (out-of-plane wave number k_z)
+- lines 3197-3448: Physics type `em_fdfd_ez` - Electromagnetic Waves, frequency domain (2D, electric field out of plane)
+- lines 3450-3721: Physics type `em_fdfd_hz` - Electromagnetic Waves, frequency domain (2D, magnetic field out of plane)
+- lines 3723-4112: Physics type `em_fdfd_nonlinear` - Nonlinear optics, frequency domain (2D, harmonic channels)
+- lines 4114-4218: Physics type `em_fdfd_sphere` - Electromagnetic Waves, frequency domain (spherically symmetric, multipole orders)
+- lines 4220-4465: Physics type `em_fdtd_3d` - Electromagnetic Waves, time domain (3D)
+- lines 4467-4655: Physics type `em_fdtd_bor` - Electromagnetic Waves, time domain (axisymmetric, azimuthal order m)
+- lines 4657-4957: Physics type `em_fdtd_ez` - Electromagnetic Waves, time domain (2D, electric field out of plane)
+- lines 4959-5267: Physics type `em_fdtd_hz` - Electromagnetic Waves, time domain (2D, magnetic field out of plane)
+- lines 5269-5411: Physics type `em_modes` - Electromagnetic Waves, cross-section modes
+- lines 5413-5660: Physics type `heat` - Heat Transfer in Solids
+- lines 5662-5795: Physics type `laminar_flow` - Laminar Flow (2D)
+- lines 5797-5936: Physics type `magnetic_fields_ac` - Magnetic Fields, AC (2D)
+- lines 5938-6057: Physics type `magnetostatics` - Magnetostatics (2D)
+- lines 6059-6173: Physics type `magnetostatics_3d` - Magnetostatics (3D)
+- lines 6175-6414: Physics type `membrane` - Membrane
+- lines 6416-6609: Physics type `pressure_acoustics` - Pressure Acoustics, frequency domain
+- lines 6611-6968: Physics type `solid_mechanics` - Solid Mechanics (2D)
+- lines 6970-7394: Physics type `solid_mechanics_3d` - Solid Mechanics (3D)
+  - lines 6978-7003: Settings (PhysicsSpec.settings)
+  - lines 7005-7115: Material properties (MaterialSpec.properties)
+  - lines 7117-7158: Fields
+  - lines 7160-7165: Source slots
+  - lines 7167-7173: Feature `solid_mechanics_3d.fixed` - Fixed
+  - lines 7175-7181: Feature `solid_mechanics_3d.roller` - Roller
+  - lines 7183-7189: Feature `solid_mechanics_3d.symmetry` - Symmetry
+  - lines 7191-7199: Feature `solid_mechanics_3d.displacement` - Displacement
+  - lines 7201-7207: Feature `solid_mechanics_3d.fixed_domain` - Fixed (domain)
+  - lines 7209-7217: Feature `solid_mechanics_3d.prescribed_displacement_domain` - Prescribed displacement (domain)
+  - lines 7219-7231: Feature `solid_mechanics_3d.boundary_load` - Boundary load
+  - lines 7233-7245: Feature `solid_mechanics_3d.body_force` - Body force
+  - lines 7247-7255: Feature `solid_mechanics_3d.temperature_change` - Temperature change
+  - lines 7257-7265: Feature `solid_mechanics_3d.solid_probe` - Solid probe
+  - lines 7267-7273: Feature `solid_mechanics_3d.frequency_probe` - Frequency probe
+  - lines 7275-7281: Feature `solid_mechanics_3d.resonance_table` - Resonance table
+  - lines 7283-7291: Feature `solid_mechanics_3d.mode_shapes` - Mode shapes
+  - lines 7293-7312: Feature `solid_mechanics_3d.squeeze_film_damping` - Squeeze-film damping
+  - lines 7314-7322: Feature `solid_mechanics_3d.thermoelastic_damping` - Thermoelastic damping
+  - lines 7324-7337: Feature `solid_mechanics_3d.electrode` - Electrode
+  - lines 7339-7352: Feature `solid_mechanics_3d.electrode_domain` - Electrode (domain)
+  - lines 7354-7368: Feature `solid_mechanics_3d.admittance` - Admittance
+  - lines 7370-7394: Feature `solid_mechanics_3d.optomechanical_coupling` - Optomechanical coupling
+- lines 7396-7402: Coupling type `acoustics_em_acousto_optic` - Acousto-optic effect (elastic waves -> electromagnetic waves)
+- lines 7404-7410: Coupling type `currents_heat_joule` - Joule heating (electric currents -> heat)
+- lines 7412-7420: Coupling type `electrostatics_acoustics_piezo` - Piezoelectric coupling (electrostatics <-> elastic waves)
+- lines 7422-7430: Coupling type `electrostatics_em_pockels` - Pockels effect (electrostatics -> electromagnetic waves)
+- lines 7432-7438: Coupling type `em_acoustics_photoacoustic` - Photoacoustic heating (electromagnetic waves -> elastic waves)
+- lines 7440-7446: Coupling type `em_heat_joule` - Joule heating (electromagnetic waves -> heat)
+- lines 7448-7458: Coupling type `em_semiconductor_generation` - Photogeneration (electromagnetic waves -> semiconductor)
+- lines 7460-7466: Coupling type `em_solid_optical_force` - Optical force (electromagnetic waves -> solid mechanics)
+- lines 7468-7480: Coupling type `field_transfer` - Field transfer
+- lines 7482-7488: Coupling type `fluid_heat_convection` - Convective heat transport (laminar flow -> heat)
+- lines 7490-7496: Coupling type `heat_em_phase_change` - Phase change (heat -> electromagnetic waves)
+- lines 7498-7504: Coupling type `heat_em_thermo_optic` - Thermo-optic effect (heat -> electromagnetic waves)
+- lines 7506-7512: Coupling type `heat_solid_thermal_strain` - Thermal expansion (heat -> solid mechanics)
+- lines 7514-7520: Coupling type `magnetic_heat_induction` - Induction heating (magnetic fields AC -> heat)
+- lines 7522-7528: Coupling type `magnetic_solid_lorentz_force` - Lorentz force (magnetic fields -> solid mechanics)
+- lines 7530-7542: Coupling type `semiconductor_em_plasma_dispersion` - Free-carrier plasma dispersion (semiconductor -> electromagnetic waves)
+- lines 7544-7552: Coupling type `solid_em_strain_optic` - Strain-optic effect (solid mechanics -> electromagnetic waves)
+- lines 7554-7562: Coupling type `solid_membrane_tension` - Film prestress (solid mechanics -> membrane)
+- lines 7564-7590: Study type `eigenfrequency` - Eigenfrequency
+- lines 7592-7618: Study type `frequency_domain` - Frequency domain
+- lines 7620-7656: Study type `frequency_response` - Frequency response
+- lines 7658-7672: Study type `mode_analysis` - Mode analysis
+- lines 7674-7689: Study type `nonlinear_frequency_domain` - Nonlinear frequency domain
+- lines 7691-7707: Study type `optimization` - Optimization
+- lines 7709-7726: Study type `optomechanics` - Optomechanics
+- lines 7728-7745: Study type `stationary` - Stationary
+- lines 7747-7770: Study type `thermal_noise` - Thermal noise
+- lines 7772-7787: Study type `time_dependent` - Time dependent
+- lines 7789-7857: Templates
+- lines 7859-8114: Results, reports and files
 
 ## Model spec
 
@@ -7989,11 +7990,11 @@ Registered selftest cases are not listed here: describe('selftests') (python -m 
 - Results.result(physics, feature, **options) or result('physics.feature', **options) -> result dict (dft_fields: freq_index=i adds freq_index and intensity); figure(what, path, title='', freq_index=None, series=None) -> PNG path of a field (physics.component or a unique component) or a feature result (physics.feature; series: only that series of an xy result); derived_curves() -> [(plot, xy result or None, {curve name: error text})] of the derived curves over the final results.
 - Results.scene_figure(path, field=None, physics=None, planes=None, z_stretch=1.0, view=None) -> path of a 3D run: the api scene_figure picture of its model (built parameters) with field on cut planes in one colour scale, the objects then as edges only (live: planes [(axis, position [m])], default an x, y and z cut through the structure as export_html; closed / loaded: the saved mid-height z cut plus the stored cuts of a last snapshot at the same time).
 - Results.export_html(path, what=None, physics=None, title=None, geometry=True, planes=None, figure=None, fields=None, max_bytes=None) -> the written .html path: a self-contained web page (no network, WebGL2; PNG and video export), live, closed or loaded alike; other result kinds raise ValueError.
-  - what = a field ('physics.component' or a unique component; physics narrows it): every stored snapshot holding it is a frame (time snapshots play, labelled ones get a slider; a '<base>_re' / '_im' pair is animated over one period, Re / Im[A exp(j wt)]), else the current / saved state. 2D: a map (2D Cartesian flow / current / potential / magnetostatic / heat pages can add particles or arrows of the in-plane vector; 2D solid_mechanics / membrane fields drawn on the deformed body). 3D: cut planes (live: an x, y and z cut at a mirror plane of its physics, else through the objects that do not span the window, else the window middle; snapshots and closed / loaded runs: the mid-height z cut and stored_cuts); planes [(axis, position m)]: the live state on exactly those planes, a snapshot its held cut nearest each, ValueError in 2D or for an axis no snapshot holds when not live; live Cartesian 3D Results also put the whole field on the page, up to 60 kept GUI snapshots.
+  - what = a field ('physics.component' or a unique component; physics narrows it): every stored snapshot holding it is a frame (time snapshots play, labelled ones get a slider; a '<base>_re' / '_im' pair is animated over one period, Re / Im[A exp(j wt)]), else the current / saved state. 2D: a map (2D Cartesian flow / current / potential / magnetostatic / heat pages can add arrows (the default) or moving particles of the in-plane vector; 2D solid_mechanics / membrane fields drawn on the deformed body; a map of an axisymmetric (r, z) physics or a spherical (r, theta) domain opens revolved about its rotation axis: a 3D view inside see-through surfaces of revolution of the domain and the objects, the far half its mirror image across the axis where core.mirror.unfold_faces gives one). 3D: cut planes (live: an x, y and z cut at a mirror plane of its physics, else through the objects that do not span the window, else the window middle; snapshots and closed / loaded runs: the mid-height z cut and stored_cuts); planes [(axis, position m)]: the live state on exactly those planes, a snapshot its held cut nearest each, ValueError in 2D or for an axis no snapshot holds when not live; live Cartesian 3D Results also put the whole field on the page, up to 60 kept GUI snapshots.
   - what = a dft_fields result 'physics.feature': its intensity map per frequency.
   - what = a mode_shapes result (None = the only one): the complex mode shapes animated on the solid surface beside the band diagram (a sweep: every successful value, abscissa k a / 2 pi of the Bloch wavenumber, else the swept parameter), coloured by displacement or, with the kept stress / strain, stress, strain and energy measures; fields = a list of 'stress' / 'strain' (None = every kept one, ValueError for one not kept); max_bytes: viz.mode_player.ModePageTooLarge (a ValueError with .sizes per group) when the mode data would pass it, nothing written; fields / max_bytes on another page: ValueError.
   - geometry (field and 2D dft_fields pages): the model objects at the built parameters (ValueError without the model spec: pass geometry=False); mirror planes add the mirror images. Large data is thinned (named in the page subtitle).
-  - figure (field and dft_fields pages): {setting: value} the page's Plot settings panel opens with (its Copy settings gives this dict; None / missing = automatic; ValueError on a mode_shapes page, for an unknown key, a value outside its choices / range or min >= max): font_size (px, 6 - 40, default 11), title_size (px, 8 - 72, default 26), title 'top_left' | 'top_center' | 'top_right' | 'off', color_min / color_max (field unit; a signed field with one of them stays symmetric about 0), x_min / x_max / y_min / y_max / z_min / z_max (axis limits in m; not along the normal of a single plane), colorbar 'bottom_right' | 'bottom_left' | 'top_right' | 'top_left' | 'right' | 'left' | 'top' | 'bottom' | 'off', colorbar_length (fraction of the view side, 0.1 - 1), horizontal_axis 'bottom' | 'top', vertical_axis 'left' | 'right', scale_bar 'off' | 'on' (default 'on': a true-length bar on a face-on map in place of the axes), scale_bar_length (m, > 0; default a round length near a fifth of the view), scale_bar_color 'auto' | 'white' | 'black', legend_color 'auto' | 'white' | 'black', background 'theme' | 'white', export_scale 1 | 2 | 4 (PNG pixels per screen pixel).
+  - figure (field and dft_fields pages): {setting: value} the page's Plot settings panel opens with (its Copy settings gives this dict; None / missing = automatic; ValueError on a mode_shapes page, for an unknown key, a value outside its choices / range or min >= max): font_size (px, 6 - 40, default 11), title_size (px, 8 - 72, default 26), title 'top_left' | 'top_center' | 'top_right' | 'off', color_min / color_max (field unit; a signed field with one of them stays symmetric about 0), x_min / x_max / y_min / y_max / z_min / z_max (axis limits in m; not along the normal of a single plane), colorbar 'bottom_right' | 'bottom_left' | 'top_right' | 'top_left' | 'right' | 'left' | 'top' | 'bottom' | 'off', colorbar_length (fraction of the view side, 0.1 - 1), horizontal_axis 'bottom' | 'top', vertical_axis 'left' | 'right', scale_bar 'off' | 'on' (default 'on': a true-length bar on a face-on map in place of the axes), scale_bar_length (m, > 0; default a round length near a fifth of the view), scale_bar_color 'auto' | 'white' | 'black', legend_color 'auto' | 'white' | 'black', background 'theme' | 'white', export_scale 1 | 2 | 4 (PNG pixels per screen pixel), contour_step (field unit, > 0: the interval between contour lines on a linear colour scale, as 25 m on a map; default about 12 levels over the range, the Contours density), contour_label_every 'auto' | 1 | 2 | 3 | 4 | 5 | 10 (contour lines per labelled, bolder one, as every 4th for 100 m labels on 25 m lines; 'auto': the labelled interval nearest the colour bar's tick step), contour_labels 'on' | 'off' (default 'on': the value written into a gap of the labelled lines, upright and spaced along them; none while the field animates), contour_color 'auto' | 'black' | 'white' | '#rrggbb' (one colour for every contour line and label; 'auto': black over a colour map whose middle is light, else white), contour_width (CSS px, 0.5 - 8, default 1.6: the ordinary lines; labelled ones 1.7 x as wide), materials {material name: {'color': '#rrggbb', 'alpha': 0 .. 1}} (each key optional; colour of its outlines, edges, see-through surfaces and legend swatch; alpha the opacity of its surfaces (Glass faces, 3D bodies of revolution; default see-through), 1 draws them solid, 0 hides the material; ValueError for a name not drawn on the page).
 - Stored states (live, closed and loaded alike): snapshots() -> [(time, label, [physics.component keys])] (frequency_domain: one per wavelength, field() holds only the last); snapshot_field(index, name, physics=None, plane=None) -> FieldData of one snapshot, float32 on the native window cells (x_centers / y_centers set, graded meshes included) up to 250,000 window cells, else nearest-cell resampled on a uniform grid over extent (x_centers None, native_shape set); 3D: plane None = the mid-height z cut, (axis, position [m]) = the StudySpec.stored_cuts plane on that axis nearest position, an int = that stored cut; sweep_result(physics, feature) or sweep_result('physics.feature') -> [result dict, or None for a failed value] in summary()['sweep']['values'] order; sweep_xy(physics, feature=None, column='frequency', sort=True) -> 'xy' result of a per-value 'table' result vs the swept parameter, series '<column>_<k>' = the k-th smallest value of that column per sweep value (sort=False: the k-th row), NaN where missing (e.g. the bands of a resonance_monitor over a Bloch k sweep); sweep() -> copy of the sweep table {parameter, values, derived, reference, error, converged, failed, derived_series}; sweep_field(index, name, snapshot=-1, physics=None, plane=None) -> FieldData of a kept snapshot of sweep value index (keep_fields; snapshot / name / plane as snapshot_field); sweep_figure(quantity, path, series=None, title='') -> PNG of a sweep: quantity 'physics.feature' = one curve of that result per swept value (legend '<parameter> = <value>'; series picks an xy series or a flux_spectrum power / power_per_cw; far fields in dB at their first wavelength), 'derived' = every derived value vs the swept parameter, 'derived_series:<name>' = that derived value along the study axis per swept value (run --figures writes figures/sweep_derived.png, sweep_<key>.png and sweep_series_<name>.png of a sweep, derived_series.png of a run with a derived series); sector_result(physics, feature) -> [result dict or None per parity sector] in summary()['parity_sectors']['labels'] order (combine quadratic totals, e.g. flux power, with open_sol.core.mirror.combine_sector_totals, far-field patterns per angle with open_sol.core.mirror.combine_sector_far_fields: the mean of the complex amplitude_re / amplitude_im of the far_field results, power = |mean|^2; a sweep: the last value's sectors); sector_result(physics, feature, combined=True) -> the stored result of the drawn source alone (driven studies where every sector ran: far_field combined per angle, flux_spectrum power / power_per_cw as quadratic totals when its line / plane / box reaches every mirror plane, i.e. mirror_factor = 2^k; entry combined_sectors = 2^k), KeyError otherwise.
 - Non-finite numbers in summary() derived, derived_reference, derived_error, sweep derived / reference / error, curve_error max / rms (sweep too) and fixed_point relative_change, in table rows and in the scalar entries of result dicts (e.g. resonance_monitor start_time) are floats in every state (Results.load converts the JSON strings back); digest statistics stay "nan" / "inf" strings.
 - export_field(field_data, path) and export_result(result, path) (open_sol, from open_sol.io) write a FieldData / result dict as .npz or .csv (field metadata: plane of a 3D cut, axes, resampled / native_shape; a native polar / spherical field adds x_mapped / y_mapped arrays (.npz) or x / y columns after r and the angle (.csv)); export_volume(volume_data, path) a VolumeData as .npz only.

@@ -594,6 +594,15 @@ def _clipped_segments(segments, layer):
                             segments[keep, 7:]])
 
 
+def _off_mirror_planes(rows, planes, tolerance):
+    """Segment rows without those lying in a mirror plane (both ends within tolerance (m) of it): a mirror is the
+    edge of whatever touches it, never a drawn line. planes [(axis index, position (m))]."""
+    keep = np.ones(len(rows), dtype=bool)
+    for axis, position in planes:
+        keep &= ~((np.abs(rows[:, axis] - position) <= tolerance) & (np.abs(rows[:, 3 + axis] - position) <= tolerance))
+    return rows[keep]
+
+
 def _glyph_segments(glyphs, arm, three_d):
     """Segment rows of point / line objects: a line its segment, a point a cross of half length arm (m) along x, y
     (and z in 3D)."""
@@ -651,13 +660,21 @@ def _polygon_triangles(polygon):
     return points[np.array(triangles)]
 
 
-def _geometry_data(geometry, layers, scale):
+def _geometry_data(geometry, layers, scale, mirrors=()):
     """JSON of the model objects: materials, line groups (kind 'outline' per layer, 'edge', 'glyph'; segment rows
     float32: positions and arc length in length units, then the unit direction into the object, zeros = none) and
-    surface triangles per material (3D solids)."""
+    surface triangles per material (3D solids). Outlines and edges lying in a mirror plane in the layers' axes are left
+    out (a layer cut on a mirror plane keeps its own outlines)."""
     if len(geometry.outlines) != len(layers):
         raise ValueError(f'geometry has outlines for {len(geometry.outlines)} layers, the frames have {len(layers)}')
     lines, faces, used, total = [], [], set(), 0
+    tolerance = 1e-6 * max(_layer_span(layer) for layer in layers)
+    planes = [(mirror.face[0], float(mirror.position)) for mirror in mirrors]
+
+    def layer_planes(axes):
+        return [(_AXIS_INDEX[axis], position) for axis, position in planes if axis in axes]
+
+    page_planes = layer_planes({axis for layer in layers for axis in layer.axes})
 
     def add_lines(kind, layer, material, solid, rows):
         nonlocal total
@@ -678,14 +695,15 @@ def _geometry_data(geometry, layers, scale):
             sides = _ring_sides(item.polylines, layer) if item.solid else None
             groups.setdefault((item.material, bool(item.solid)), []).append(_segments(item.polylines, sides))
         for (material, solid), rows in groups.items():
-            add_lines('outline', index, material, solid, _clipped_segments(np.vstack(rows), layer))
+            add_lines('outline', index, material, solid,
+                      _off_mirror_planes(_clipped_segments(np.vstack(rows), layer), layer_planes(layer.axes), tolerance))
     groups, triangles = {}, {}
     for solid in geometry.solids:
         groups.setdefault((solid.material, bool(solid.solid)), []).extend(solid.edges)
         if solid.solid and solid.faces:
             triangles.setdefault(solid.material, []).extend(_polygon_triangles(face) for face in solid.faces)
     for (material, solid), polylines in groups.items():
-        add_lines('edge', None, material, solid, _segments(polylines))
+        add_lines('edge', None, material, solid, _off_mirror_planes(_segments(polylines), page_planes, tolerance))
     for material, parts in triangles.items():
         corners = np.concatenate(parts).reshape(-1, 3) if parts else np.empty((0, 3))
         if len(corners):
@@ -1229,7 +1247,7 @@ def viewer_data(frames, quantity, title='', subtitle='', frame_kind='labelled', 
     if revolution is not None and frames[0].volume is not None:
         raise ValueError('a revolution turns a 2D map: a page with a volume has none')
     revolution_entry = _revolution_data(revolution, first, mirrors, scale)
-    geometry_entry = None if geometry is None else _geometry_data(geometry, first, scale)
+    geometry_entry = None if geometry is None else _geometry_data(geometry, first, scale, mirrors)
     styled = set(figure.get(FIGURE_MATERIALS, {}))
     if styled:
         shown = {entry['name'] for entry in (geometry_entry or {}).get('materials', [])}

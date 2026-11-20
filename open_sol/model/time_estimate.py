@@ -38,6 +38,10 @@ BUILD_CALLS_PER_STAGE_GUESS = 2e4
 BUILD_HOST_PASSES_GUESS = 8
 OUTPUT_CALLS_GUESS = 1e5
 OUTPUT_HOST_PASSES_GUESS = 3
+# build items of estimate_overheads: one per owner of the memory items (meshing.memory_item_owner), labelled
+# 'build of <owner>' (the solve flow books it at the step holding that owner's memory items), and the rest of the build
+BUILD_OWNER_PREFIX = 'build of '
+BUILD_SETUP_LABEL = 'build set-up (validation, estimates, build temporaries)'
 # making a 'triangles' mesh (E3; UNCALIBRATED: set from romero e2c, 302k triangles of a mirror_x half window in a ~20 s
 # 'domain' stage, priced at ~40 GB/s host stream; recalibrate from the triangulate log line "mesher ..., element
 # tagging ..."): the built-in mesher (PSLG, refinement rounds, smoothing, layer ring, quality, mesh arrays; compute
@@ -552,8 +556,9 @@ def snapshot_read_items(spec, meshes, study) -> tuple:
 def estimate_overheads(spec, parameters, registry=None, mesh_estimate=None, profile=None, save_arrays=True,
                        per_run=False, kept_mesh_keys=None, shapes=None, runs=None, memory=None) -> dict:
     """{'build': TimeEstimate, 'output': TimeEstimate} of the work around the study, priced on `profile` (None: the
-    stored machine profile; {} without one). Generic guesses from the memory estimate plus the triangle mesh items
-    (mesh_build_items): physics work at build (port mode solves, kernel compiles) is not counted. A sweep builds once
+    stored machine profile; {} without one). Generic guesses from the memory estimate, one item per owner of its items
+    (_build_owner_items), plus the mesh items (mesh_build_items): physics work at build (port mode solves, kernel
+    compiles) is not counted. A sweep builds once
     per value, once with reuse_build (on its own mesh; an unchanged element_mesh_key is meshed once: run_study keeps it) and
     writes once (the last value's arrays). per_run: the spec as one run (the builder's log); kept_mesh_keys: {mesh
     name: key} kept before the first run (meshing.kept_element_mesh_keys); shapes: the per_run spec's resolved geometry
@@ -579,14 +584,9 @@ def estimate_overheads(spec, parameters, registry=None, mesh_estimate=None, prof
                   else meshing.estimate_meshes(run_spec, run_parameters, registry, run_shapes))
         memory = (given_memory if given_memory is not None
                   else meshing.estimate_memory(run_spec, run_parameters, registry, meshes, shapes=run_shapes))
-        stages = float(len(memory.items) + len(memory.host_items) + 1)
         kept_bytes = float(memory.gpu_steady)   # the last run's arrays are the ones written
         prefix = f'{run_label}: ' if run_label else ''
-        build_items += [
-            TimeItem(f'{prefix}build stage', 'stage', stages, 'guess', (PythonCalls(BUILD_CALLS_PER_STAGE_GUESS),)),
-            TimeItem(f'{prefix}build array pass', 'pass', float(BUILD_HOST_PASSES_GUESS), 'guess',
-                     (HostStream(float(memory.gpu_build_peak + memory.host)),)),
-            TimeItem(f'{prefix}build upload', 'upload', 1.0, 'exact', (Transfer(kept_bytes),))]
+        build_items += _build_owner_items(memory, prefix)
         build_items += mesh_build_items(run_spec, run_parameters, meshes, kept_keys, prefix, run_shapes)
     build = TimeEstimate(tuple(build_items))
     if not per_run:   # one build per estimation run (its mesh items too: an upper bound)
@@ -599,8 +599,39 @@ def estimate_overheads(spec, parameters, registry=None, mesh_estimate=None, prof
     return {'build': build.priced(profile, backend), 'output': TimeEstimate(tuple(output_items)).priced(profile, backend)}
 
 
+def _build_owner_items(memory, prefix='') -> list:
+    """Generic build TimeItems of one run: '<prefix>build of <owner>' per owner of the MemoryEstimate's kept and host
+    items (meshing.memory_item_owner; a label without one is its own owner) and BUILD_SETUP_LABEL for the rest."""
+    # per owner: a stage of BUILD_CALLS_PER_STAGE_GUESS Python calls per item, BUILD_HOST_PASSES_GUESS host passes over
+    # the items' bytes and the upload of the kept ones; the set-up item: one more stage and the passes over the
+    # build's temporaries (gpu_build_peak - gpu_steady), so the sum is the former whole-build guess
+    owners = {}   # owner -> [items, bytes, kept bytes]
+    for group, kept in ((memory.items, True), (memory.host_items, False)):
+        for label, size in group:
+            totals = owners.setdefault(meshing.memory_item_owner(label) or label, [0, 0.0, 0.0])
+            totals[0] += 1
+            totals[1] += float(size)
+            totals[2] += float(size) if kept else 0.0
+    owned_bytes = sum(totals[1] for totals in owners.values())
+    owned_kept = sum(totals[2] for totals in owners.values())
+    setup = [1, max(float(memory.gpu_build_peak + memory.host) - owned_bytes, 0.0),
+             max(float(memory.gpu_steady) - owned_kept, 0.0)]
+    items = []
+    for label, (stages, passed_bytes, uploaded_bytes) in (
+            *((f'{BUILD_OWNER_PREFIX}{owner}', totals) for owner, totals in owners.items()),
+            (BUILD_SETUP_LABEL, setup)):
+        ops = [(float(stages), PythonCalls(BUILD_CALLS_PER_STAGE_GUESS))]
+        if passed_bytes > 0.0:
+            ops.append((float(BUILD_HOST_PASSES_GUESS), HostStream(passed_bytes)))
+        if uploaded_bytes > 0.0:
+            ops.append(Transfer(uploaded_bytes))
+        items.append(TimeItem(f'{prefix}{label}', 'build', 1.0, 'guess', tuple(ops)))
+    return items
+
+
 def mesh_build_items(spec, parameters, meshes, kept_keys, prefix='', shapes=None) -> list:
-    """TimeItems of making one run's element meshes, labelled "<prefix>mesh '<name>': ...": per 'triangles' estimate
+    """TimeItems of making one run's meshes, labelled "<prefix>mesh '<name>': ...": per 'tensor' estimate its grid
+    set-up (one generic build stage: the grid plan and 1D grading, no arrays); per 'triangles' estimate
     the mesher and element tagging (left out when kept_keys {mesh name: element_mesh_key} holds its key, as
     meshing.element_mesh reuses it; kept_keys updated in place) and the TriangleDomain set-up (every build); per swept
     'tetrahedra' estimate (sweep_axis 'z') only the footprint triangle mesher (same key rule). shapes: the resolved
@@ -608,6 +639,10 @@ def mesh_build_items(spec, parameters, meshes, kept_keys, prefix='', shapes=None
     items = []
     for name, mesh in meshes.items():
         kind = getattr(mesh, 'kind', 'tensor')
+        if kind == 'tensor':   # make_domain: _plan and the graded axes; the MaterialGrid arrays are the materials'
+            items.append(TimeItem(f"{prefix}mesh '{name}': tensor grid set-up", 'setup', 1.0, 'guess',
+                                  (PythonCalls(BUILD_CALLS_PER_STAGE_GUESS),)))
+            continue
         swept = kind == 'tetrahedra' and bool(getattr(mesh.sizing, 'sweep_axis', ''))
         if kind != 'triangles' and not swept:
             continue

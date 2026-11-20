@@ -124,7 +124,13 @@ file ("Triangle meshes"). Error indicators: section "Error indicators" (users: g
 - Method and why: module header (cut at the elements wholly above the plane, never by centroid: a centroid split tears
   swept prism columns, 1.56x cuDSS's entries on sin_square_membrane_modes_3d). The count bounds a good ordering from
   above and fits nothing: a count below cudss_lu_entries / eigen_lu_entries (summary.json) means cuDSS orders worse,
-  a lead on its ordering options.
+  a lead on its ordering options. The cut axis is the one with the fewest separator nodes (`cut_axis='smallest'`):
+  the spread axis alone counted Nedelec 2 at 1.32x cuDSS's lu_nnz on the nanobeam eighth model (smallest 1.13x, nodes
+  0.92x either way). "Wholly above" is judged from the element's vertices (`element_lowest`), never from clique
+  points inside it: Nedelec sites (edge midpoints, face centroids) split a mesh layer's elements apart and the
+  separator zigzagged through the layer (87k-element nanobeam mesh: Nedelec 2 at 1.77x cuDSS, its nodes 0.97x). A
+  new clique cover whose points are not the vertices passes `element_lowest`. Compare a change of the cut rule with
+  `tools_profilers/memory_profilers/dissection_vs_cudss.py`.
 - "Elements" may be any clique cover of an operator's pattern with a point per unknown (physics/em/memory_estimates
   `_bor_factor_entries`: curl points of the tensor BOR operator).
 - `MeshDissection` (counted on first use, equal per digest) reaches estimates as `estimate.dissection` through

@@ -240,14 +240,22 @@ class _PencilMass:
             return out
         return self.diagonal.reshape((-1,) + (1,) * (np.ndim(vectors) - 1)) * vectors
 
-    def device_times(self):
-        """Callable v -> B v on cupy vectors (B uploaded once)."""
+    def device_matrix(self):
+        """cupyx complex128 CSR copy of a sparse B (None for a diagonal B): one upload the device solves and the
+        resonance filter share."""
+        if self.matrix is None:
+            return None
+        import cupyx.scipy.sparse
+        return cupyx.scipy.sparse.csr_matrix(self.matrix)
+
+    def device_times(self, device_matrix=None):
+        """Callable v -> B v on cupy vectors (B uploaded once; device_matrix: a sparse B's device_matrix already
+        uploaded)."""
         import cupy as cp
         if self.matrix is None:
             diagonal = cp.asarray(self.diagonal)
             return lambda vector: diagonal * vector
-        import cupyx.scipy.sparse
-        matrix = cupyx.scipy.sparse.csr_matrix(self.matrix)
+        matrix = self.device_matrix() if device_matrix is None else device_matrix
         return lambda vector: matrix @ vector
 
 
@@ -334,8 +342,11 @@ def solve_resonances(host_operator, mass, omega_target, energy_weights, in_windo
     start_vector = (random.standard_normal(n_unknowns) + 1j * random.standard_normal(n_unknowns))
     start_vector[~free] = 0.0
     target_wavelength = 2.0 * math.pi * C0 / omega_target
+    # a sparse B (FEM) goes to the device once: the device solves and the resonance filter read the same copy (two
+    # copies held ~0.58 GB beside the factor on the 690k-unknown nanobeam eighth model)
+    device_mass = b_mass.device_matrix() if on_device and scaled_b is b_mass else None
     if on_device:
-        b_times = scaled_b.device_times()
+        b_times = scaled_b.device_times(device_mass)
         solves_before = (factorization.n_solves, factorization.solve_seconds)
 
         def solve(vector):   # cudss_mixed: MIXED_EIGS_REFINEMENTS steps when polished, else to full accuracy
@@ -356,7 +367,7 @@ def solve_resonances(host_operator, mass, omega_target, energy_weights, in_windo
             return scaled + shift * solve(b_times(scaled))
     resonance_filter = _ResonanceFilter(host_operator, b_mass, energy_weights, in_window, in_region,
                                         row_scale if polish else None, on_gpu=on_device or eigen_solver.device_arnoldi,
-                                        quotients=spectral_map != 'shift_invert' or polish)
+                                        quotients=spectral_map != 'shift_invert' or polish, device_mass=device_mass)
 
     def eigen_passes(n_wanted, start_vector):
         """_EigenPasses of eigs on the current solves from n_wanted eigenpairs, doubled while the PML filter leaves
@@ -513,11 +524,12 @@ def _energy_weights(energy_weights, n_unknowns):
 class _ResonanceFilter:
     """A, B = -M, the energy weights W, the window / region rows and the polish row scale D of solve_resonances, on the
     device (on_gpu) or the host: per-column measures of a pass's Ritz vectors by one sparse product per operator;
-    quotients False (plain shift-invert, no polish): A and B are neither stored nor applied, their measures are 0."""
+    quotients False (plain shift-invert, no polish): A and B are neither stored nor applied, their measures are 0;
+    device_mass: the solves' device copy of a sparse B (on_gpu), read instead of a second upload."""
     _MEASURES = ('mass', 'operator', 'scaled_operator', 'scaled_mass', 'energy', 'window', 'region')
 
     def __init__(self, host_operator, b_mass, energy_weights, in_window, in_region, row_scale, on_gpu,
-                 quotients=True):
+                 quotients=True, device_mass=None):
         if on_gpu:
             import cupy as xp
             import cupyx.scipy.sparse
@@ -534,7 +546,8 @@ class _ResonanceFilter:
         self.operator = stored(host_operator) if self.quotients else None
         self.mass_diagonal = b_mass.matrix is None
         self.mass = (None if not self.quotients else
-                     xp.asarray(b_mass.diagonal)[:, None] if self.mass_diagonal else stored(b_mass.matrix))
+                     xp.asarray(b_mass.diagonal)[:, None] if self.mass_diagonal else
+                     device_mass if on_gpu and device_mass is not None else stored(b_mass.matrix))
         self.weights_diagonal = isinstance(energy_weights, np.ndarray)
         self.weights = (xp.asarray(energy_weights)[:, None] if self.weights_diagonal else stored(energy_weights))
         self.window = xp.asarray(in_window, dtype=np.float64)[:, None]

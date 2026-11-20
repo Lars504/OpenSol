@@ -11,7 +11,8 @@ from ...core import time_estimate as te
 from ...core.backend import to_host
 from ...core.constants import FACE_LABELS, FACES_3D
 from ...core.memory_estimate import (COMPLEX64_BYTES, COMPLEX128_BYTES, COMPLEX128_CSR_ENTRY_BYTES, FLOAT64_BYTES,
-                                     INT32_BYTES, MemoryEstimate, host_counted_lu_bytes, host_lu_bytes)
+                                     INT32_BYTES, MemoryEstimate, host_counted_lu_bytes, host_lu_bytes,
+                                     solver_job_items)
 from ...model.definition_helpers import (DISCRETIZATION_PARAM, eigen_factorization, eigen_role, eigen_subspace_size,
                                          element_order)
 from ...model.schema import DomainRequirements, FeatureType, Issue, Param, PhysicsType, solver_backend
@@ -26,8 +27,8 @@ from ..em.definition_fdfd import (MIN_REGION_FRACTION_PARAM, resonance_region_me
                                   validate_resonance_table)
 from ..em.eigenfrequency import (REGION_COLUMN, ResonanceRegion, ResonanceTable, resonance_filter_time_item,
                                  resonance_table_result)
-from ..em.memory_estimates import (EIGEN_PHASE, _study_values, cudss_factor_items, cudss_own_factor_bytes, eigen_mixed,
-                                   host_factor_items, resonance_search_items)
+from ..em.memory_estimates import (EIGEN_PHASE, EIGEN_ROLE, _study_values, cudss_factor_items, cudss_own_factor_bytes,
+                                   eigen_mixed, host_factor_items, resonance_search_items)
 from .boundaries3d import AXES, FACE_TYPES_3D, MIRROR_TYPES_3D
 from .definition import (_BC_CHOICE_LABELS, _BC_TIP, _MATERIAL_PROPERTIES, _MATERIAL_SCHEMA,
                          _OPTIONAL_MATERIAL_SCHEMA, _PML_VISIBLE_3D, _SLOT_ARRAYS, _apply_pec, _boundary_config,
@@ -71,7 +72,7 @@ MIXED_APPLICATIONS_PER_BASIS = 3.0
 # orders by MMD, so its real factor is larger) of a tetrahedral Nedelec operator from which its host SuperLU factor
 # takes tens of seconds: the cpu default warns, and a gpu 'auto' runtime raises with the remedy instead of falling
 # back to SuperLU after a cuDSS refusal (em3d_fdfd_tetrahedra, 44k unknowns: gstrf 47.5 s; Mie examples 35-48 s).
-# Uncalibrated: compare the check's counted 'eigen SuperLU L + U factors' item with a measured @cpu factor time
+# Uncalibrated: compare the check's counted 'eigen solver: SuperLU L + U factors' item with a measured @cpu factor time
 NEDELEC_SUPERLU_SLOW_BYTES = 256 * 2 ** 20
 
 # ---- settings ----
@@ -303,7 +304,8 @@ def _validate(vctx, physics_spec, settings_values):
 # ---- memory and run time ----
 def _memory_estimate(settings_values, mesh, context):
     """Device: six complex64 resonance fields. Host (3 E unknowns per cell): 3D SuperLU (or a cuDSS factor: external,
-    its copies EIGEN_PHASE items), operators, curls, Arnoldi work, vectors, materials. Tetrahedra: _tetrahedra_..."""
+    its copies EIGEN_PHASE items; the EIGEN_ROLE job's), operators, curls, Arnoldi work, vectors, materials.
+    Tetrahedra: _tetrahedra_memory_estimate."""
     if mesh.kind == 'tetrahedra':
         return _tetrahedra_memory_estimate(settings_values, mesh, context)
     n_cells = int(mesh.n_cells)
@@ -322,10 +324,11 @@ def _memory_estimate(settings_values, mesh, context):
     grid_shape = (int(mesh.nx), int(mesh.ny), int(mesh.nz))
     counted = _box_fill(grid_shape, unknowns / max(n_cells, 1))
     cudss_counted = _box_fill(grid_shape, unknowns / max(n_cells, 1), True)
-    factor_items = () if factorization in CUDSS_FACTORIZATIONS else tuple(host_factor_items(
-        factorization, 'eigen SuperLU L + U factors (3D curl-curl, counted box nested dissection)',
-        host_counted_lu_bytes(counted, unknowns), unknowns, _ROW_ENTRIES * unknowns, symmetric=not general,
-        eigen=True))
+    factor_items = () if factorization in CUDSS_FACTORIZATIONS else tuple(solver_job_items(
+        EIGEN_ROLE, host_factor_items(
+            factorization, 'SuperLU L + U factors (3D curl-curl, counted box nested dissection)',
+            host_counted_lu_bytes(counted, unknowns), unknowns, _ROW_ENTRIES * unknowns, symmetric=not general,
+            eigen=True)))
     from ...solvers.cudss_factor import FactorFill
     cudss_items, external_items, external_extra = _cudss_eigen_items(factorization, unknowns, _ROW_ENTRIES * unknowns,
                                                                      general, 'the curl-curl operator',
@@ -399,20 +402,24 @@ def _arnoldi_sizes(context, unknowns):
     return n_resonances, n_wanted, n_basis
 
 
-def _cudss_eigen_items(factorization, unknowns, entries, general, label, fill=3):
+def _cudss_eigen_items(factorization, unknowns, entries, general, label, fill=3, sparse_mass=False):
     """(EIGEN_PHASE items, external items, external extra) of solve_resonances' own cuDSS factor (freed after the
-    solve): CSR copies (LDL^T lower triangle; Bloch: the whole LU matrix) and solve vectors; nothing without cuDSS.
-    fill: the 3D growth law (3) or a counted cudss_factor.FactorFill."""
+    solve; the EIGEN_ROLE job's): CSR copies (LDL^T lower triangle; Bloch: the whole LU matrix) and solve vectors;
+    nothing without cuDSS. fill: the 3D growth law (3) or a counted cudss_factor.FactorFill. sparse_mass (FEM): B is
+    the resonance filter's device copy (booked there), the solves add only the B v vector."""
     if factorization not in CUDSS_FACTORIZATIONS:
         return (), [], 0
     mixed = eigen_mixed(factorization, unknowns)
     vector_bytes = COMPLEX128_BYTES * unknowns
-    items = ((EIGEN_PHASE, 'cuDSS operator copies, rhs buffer, row scale and one solve\'s vectors',
-              cudss_own_factor_bytes(unknowns, entries, mixed, symmetric=not general)),
-             (EIGEN_PHASE, 'eigen B diagonal and applied vector (complex128)', 2 * vector_bytes))
+    b_item = ((EIGEN_PHASE, 'B v vector (complex128; the sparse B is the resonance filter\'s device copy)',
+               vector_bytes) if sparse_mass else
+              (EIGEN_PHASE, 'B diagonal and applied vector (complex128)', 2 * vector_bytes))
+    items = tuple(solver_job_items(EIGEN_ROLE, (
+        (EIGEN_PHASE, 'cuDSS operator copies, rhs buffer, row scale and one solve\'s vectors',
+         cudss_own_factor_bytes(unknowns, entries, mixed, symmetric=not general)), b_item)))
     external_items, external_extra = cudss_factor_items(label, unknowns, entries, dimensions=fill, mixed=mixed,
                                                         general=general)
-    return items, external_items, external_extra
+    return items, solver_job_items(EIGEN_ROLE, external_items), external_extra
 
 
 def nedelec_factor_entries(mesh, order, unknowns):
@@ -471,22 +478,23 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
     if factorization in CUDSS_FACTORIZATIONS:
         factor_items = ()
     elif counted is not None:
-        factor_items = tuple(host_factor_items(
-            factorization, 'eigen SuperLU L + U factors (counted on the built mesh: nested dissection of the Nedelec '
-            'dof sites)', host_counted_lu_bytes(counted, unknowns), unknowns, row_entries * unknowns,
-            symmetric=symmetric, eigen=True))
+        factor_items = tuple(solver_job_items(EIGEN_ROLE, host_factor_items(
+            factorization, 'SuperLU L + U factors (counted on the built mesh: nested dissection of the Nedelec dof '
+            'sites)', host_counted_lu_bytes(counted, unknowns), unknowns, row_entries * unknowns,
+            symmetric=symmetric, eigen=True)))
     else:
-        factor_items = tuple(host_factor_items(
-            factorization, 'eigen SuperLU L + U factors (3D heuristic at the Yee-equivalent unknowns)',
+        factor_items = tuple(solver_job_items(EIGEN_ROLE, host_factor_items(
+            factorization, 'SuperLU L + U factors (3D heuristic at the Yee-equivalent unknowns)',
             host_lu_bytes(int(unknowns * YEE_EQUIVALENT_UNKNOWNS[order]), dimensions=3), unknowns,
-            row_entries * unknowns, symmetric=symmetric, eigen=True))
+            row_entries * unknowns, symmetric=symmetric, eigen=True)))
     fill = 3
     if counted is not None:
         from ...solvers.cudss_factor import FactorFill
         fill = FactorFill(counted)
     # a Bloch phase makes A nonsymmetric: the LU keeps the whole matrix, not the LDL^T lower triangle
     cudss_items, external_items, external_extra = _cudss_eigen_items(
-        factorization, unknowns, row_entries * unknowns, not symmetric, 'the Nedelec curl-curl operator', fill)
+        factorization, unknowns, row_entries * unknowns, not symmetric, 'the Nedelec curl-curl operator', fill,
+        sparse_mass=True)
     # the Arnoldi basis (device Krylov-Schur where it runs, first pass only) and the filter's A, M, W copies
     search_host, search_transient = resonance_search_items(solver_backend(context.spec), unknowns, n_wanted, n_basis,
                                                            own_cudss=factorization in CUDSS_FACTORIZATIONS,

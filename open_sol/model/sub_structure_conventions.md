@@ -403,17 +403,35 @@ templates, describe. Current state, no changelog.
   (re-solves on change, counted 'bounded'). Items counted from another module's code (those helpers from fem.dofs /
   elements / assembly / harmonic, `snapshot_read_items` from fem.sampling's PointLocator) change with that code.
   `estimate_overheads` (build and output) stays outside estimate_time, so time_check and study totals never include
-  it; calibrate its guesses from the selftest time split. Counter-timed study work done at build (a factorisation in
+  it; calibrate its guesses from the selftest time split. Its build part is one generic item per owner of the memory
+  items ('build of <owner>', `meshing.memory_item_owner`: a stage per kept / host item, passes over their bytes), so a
+  host item a physics allocates only in the study is still priced as build work there (a lead when the ledger's stage
+  seconds of that step disagree). Counter-timed study work done at build (a factorisation in
   finalize) reaches time_check as `seconds_at_build` (counters at `solvers_at_study_start`); api
   `_study_work_at_build` moves it out of the build seconds, else the 'study' rest group is short by that work.
-- Build estimate of element meshes (`mesh_build_items`, `build_time_text`): its labels keep the "mesh '<name>': "
-  prefix, which `build_time_text` sums into that mesh's 'domain' stage (the "Build estimate: ..." log line) and the
-  solve flow places. Constants are UNCALIBRATED; `triangulate(log=)` logs the mesher split to calibrate them.
+- Build estimate of meshes (`mesh_build_items`, `build_time_text`): its labels keep the "mesh '<name>': " prefix,
+  which `build_time_text` sums into that mesh's 'domain' stage (the "Build estimate: ..." log line) and the solve
+  flow places; no other build item may start with it (the owner items start with 'build of '). A tensor mesh is one
+  generic stage (no arrays); the element-mesh constants are UNCALIBRATED; `triangulate(log=)` logs the mesher split
+  to calibrate them. Unswept tetrahedra have no item yet.
 - Solve flow (`solve_flow.py`; layout and placing rules in its module docstring): estimate item labels, role
   recipes' `work.counter(...)` paths and the builder's `ledger.track` owner names are its interface. A new label
-  prefix needs a rule in `_Builder._memory_step` / `_time_step`, a new or renamed owner one in `_ledger_step`, a new
-  study type its steps in `_study_steps` (else a generic step with a note): unmatched items land in the red
-  'Unplaced estimate items' step, never dropped.
+  prefix needs a rule in `_Builder._memory_step` / `_time_step` and in `meshing.memory_item_owner`, a new or renamed
+  owner one in `_ledger_step`, a new study type its steps in `_study_steps` (else a generic step with a note):
+  unmatched items land in the red 'Unplaced estimate items' step, never dropped. Memory goes to a solver job's box
+  only for items its physics estimator tags (`core.memory_estimate.solver_job_items(role, items)`; so far the EM
+  resonance searches: em_fdfd_3d and the `em.memory_estimates` eigen branches); untagged factors show at the physics.
+  A step's memory figure is its device items alive at the estimate's peak (`MemoryEntry.at_peak`, the rule of
+  `MemoryEstimate.peak_items`) and, apart, its host items: the steps add up to `device_peak` and `host`. Never sum a
+  step's listed items (card + processor memory and phases that never overlap: a figure no total matches). The
+  Measured column holds measurements only, with one marked exception: the outside-pool row shows cuDSS's own plan
+  estimate ("cuDSS's figure"; nothing measures memory outside the pool during a run). Sums of a measurement and an
+  estimate (`_card_bound_note`: pool high-water + cuDSS's figure, an upper bound of the card's peak) go in the
+  notes, never in that column.
+- Memory issues (`validate.check_memory`, the sweep value check, `_host_memory_text`) name the same steps:
+  `meshing.memory_by_owner` of `estimate.peak_items()` / `host_items` (owner = `memory_item_owner`, the label part
+  the solve flow places by). Judge and list from that one estimate; a second count of the model's memory in an issue
+  drifts from the chart.
 
 ## Registry, templates, describe
 - A loop over `spec.physics` that skips unregistered types (validate reports them) takes

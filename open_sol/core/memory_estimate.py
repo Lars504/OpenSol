@@ -21,6 +21,24 @@ LU_3D_ENTRIES_PER_UNKNOWN_4_3 = 30.0
 # (uncalibrated guess: compare with the eigen solve's factor_host_bytes in the study log)
 LU_VECTOR_3D_ENTRIES_PER_UNKNOWN_4_3 = 60.0
 FLOAT64_CSR_ENTRY_BYTES = FLOAT64_BYTES + INT32_BYTES
+# label tag of an item a solver job (role runtime) holds: '<role> solver: <item>' (solver_job_items / solver_job_of)
+SOLVER_JOB_TAG = ' solver: '
+# MemoryEstimate.peak_items labels of the device bytes no item lists: the build's temporaries on top of the kept
+# arrays, and the largest factorisation's bytes on top of its factor (external_extra)
+BUILD_TEMPORARIES_LABEL = 'build temporaries (build caches and the largest build step)'
+FACTORISATION_EXTRA_LABEL = 'direct-solver factorisation, on top of its factor'
+
+
+def solver_job_items(role, items) -> list:
+    """Copies of (label, bytes) / (phase, label, bytes) items labelled '<role> solver: <label>': memory the role's
+    solver job holds while it solves (factor, factor copies, Krylov basis); the solve flow books it at that job."""
+    return [(*item[:-2], f'{role}{SOLVER_JOB_TAG}{item[-2]}', item[-1]) for item in items]
+
+
+def solver_job_of(label) -> tuple:
+    """(role, item label) of a solver_job_items label; ('', label) of any other."""
+    role, tag, item_label = str(label).partition(SOLVER_JOB_TAG)
+    return (role, item_label) if tag and role.isidentifier() else ('', label)
 
 
 def phase_before_items(phase_bytes, later_bytes) -> int:
@@ -116,11 +134,39 @@ class MemoryEstimate:
         """Device high-water mark the GPU budget is checked against: the build peak, or steady + run items + per run
         phase its pool transients and the factors alive in it (the largest phase), + the run-long factors and
         external_extra."""
+        return max(self.gpu_build_peak, self._run_peak()) + self.gpu_external + self.external_extra
+
+    @property
+    def run_peak_phase(self) -> str:
+        """The run phase device_peak counts: its pool transients + phase-bound factors sum largest (the first of equal
+        ones; '' without phases)."""
         pool, external = phase_totals(self.transient_items), phase_totals(self.external_transient_items)
-        run_phase = max((pool.get(phase, 0) + external.get(phase, 0) for phase in set(pool) | set(external)),
-                        default=0)
-        run = self.gpu_steady + sum(size for _, size in self.run_items) + run_phase
-        return max(self.gpu_build_peak, run) + self.gpu_external + self.external_extra
+        return max(dict.fromkeys((*pool, *external)), key=lambda phase: pool.get(phase, 0) + external.get(phase, 0),
+                   default='')
+
+    def _run_peak(self) -> int:
+        """gpu_steady + the run items + the run_peak_phase's pool transients and phase-bound factors."""
+        phase = self.run_peak_phase
+        return (self.gpu_steady + sum(size for _, size in self.run_items)
+                + sum(size for name, _, size in self.transient_items + self.external_transient_items if name == phase))
+
+    @property
+    def peak_in_build(self) -> bool:
+        """True when device_peak is reached in the build (its high-water mark above the run's), not in the study."""
+        return self.gpu_build_peak > self._run_peak()
+
+    def peak_items(self) -> tuple:
+        """(label, bytes) device items alive at device_peak, summing to it (from_items / combine totals): kept items,
+        run-long factors, run + run_peak_phase (peak_in_build: BUILD_TEMPORARIES_LABEL), FACTORISATION_EXTRA_LABEL."""
+        if self.peak_in_build:
+            pool_items = self.items + ((BUILD_TEMPORARIES_LABEL, self.build_extra),)
+        else:
+            phase = self.run_peak_phase
+            pool_items = self.items + self.run_items + tuple(
+                (label, size) for name, label, size in self.transient_items + self.external_transient_items
+                if name == phase)
+        extra = ((FACTORISATION_EXTRA_LABEL, self.external_extra),) if self.external_extra else ()
+        return pool_items + self.external_items + extra
 
     def labelled(self, prefix):
         """Copy with every item label (and transient phase) prefixed by '<prefix>: '."""
@@ -133,30 +179,6 @@ class MemoryEstimate:
                        run_items=prefixed(self.run_items), external_items=prefixed(self.external_items),
                        transient_items=phased(self.transient_items),
                        external_transient_items=phased(self.external_transient_items))
-
-    def largest_items(self, count=3, host=False, run=False, external=False):
-        """The `count` largest (label, bytes) items (host / run (transient items included) / external items with host
-        / run / external), largest first."""
-        group = (self.host_items if host else self.run_items + tuple((label, size) for _, label, size in
-                                                                     self.transient_items) if run
-                 else self.external_items + self._external_transient_once() if external else self.items)
-        return sorted(group, key=lambda item: -item[1])[:count]
-
-    def _external_transient_once(self):
-        """(label, bytes) of every phase-bound factor once (a factor listed in several phases: its largest entry)."""
-        sizes = {}
-        for _, label, size in self.external_transient_items:
-            sizes[label] = max(sizes.get(label, 0), size)
-        return tuple(sizes.items())
-
-    def device_items(self):
-        """Every device item (kept, run, transient and outside the pool) as (label, bytes), a factor of several
-        phases once."""
-        transient = {}
-        for _, label, size in self.transient_items:   # an item listed in several phases (the pencil) once
-            transient[label] = max(transient.get(label, 0), size)
-        return (self.items + self.run_items + tuple(transient.items()) + self.external_items
-                + self._external_transient_once())
 
     def as_dict(self) -> dict:
         """JSON-ready record (check.json memory_estimate): byte totals and the items, largest first."""
