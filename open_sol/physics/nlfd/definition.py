@@ -35,7 +35,8 @@ from ..em.memory_estimates import fdfd_memory_estimate
 from ..em.placement import PERMITTIVITY_SLOTS
 from .adjoint import ADJOINT_MAX_PRODUCTS
 from .definition_sheets import SHEET_NONLINEARITY, SURFACE_CHI2, sheet_mixing_tensors
-from .iteration import GMRES_MAX_ITERATIONS, GMRES_RESTART, ITERATION_METHODS, NEWTON_BUFFERS
+from .iteration import (ANDERSON_GRAM_CHUNK, GMRES_MAX_ITERATIONS, GMRES_RESTART, ITERATION_METHODS,
+                        NEWTON_BUFFERS)
 from .media import CarrierModel
 from .mixing import (POLARIZATIONS, ChannelSpec, MediumTensor, build_mixing_table, describe_mixing,
                      inexact_term_issues, resolve_channels, source_text)
@@ -54,7 +55,8 @@ _CHI2_FEATURE = 'chi2_medium'
 _CHI3_FEATURE = 'chi3_medium'
 _MEDIUM_ORDERS = {_CHI2_FEATURE: 2, _CHI3_FEATURE: 3}
 _PORT_FEATURES = ('mode_source', 'mode_monitor')   # their slab modes miss the Kerr permittivity
-_ANDERSON_BUFFERS = 5   # stacked store-size vectors besides the 2 x depth history: x, f, previous x / f, the mix
+_ANDERSON_BUFFERS = 5   # complex128 store-size vectors besides the complex64 2 x depth history (iteration
+#                         ANDERSON_HISTORY_DTYPE): x, f, previous x / f, the mix; + one float32 (2 N) history product
 _KERR_ARRAYS = {'ez': 2, 'hz': 8}   # full-grid complex128 arrays of one KerrOperatorTerm update (upper bound)
 _ADJOINT_BUFFERS = 5   # store-size vectors of adjoint.depleted_cotangents besides the GMRES basis: rhs, solution,
 #                        the scaled product copy, its pack and the difference
@@ -1397,7 +1399,11 @@ def _time_estimate(settings_values, mesh, context):
     elif pump_depleted:
         count, limit = _over(outer, passes, passes_limit)
         depth = int(settings_values['anderson_depth'])
-        anderson = (te.elementwise(store, 2 * depth + 4, 3, COMPLEX128_BYTES, launches=10), te.Sync(2),
+        # iteration.AndersonMixer in complex64 units: dF read into the float64 Gram chunk copies (written, read: 2 units
+        # per row) and dX, dF by the two combinations, their two float32 products and the two new history columns;
+        # complex128 x / f / differences / mix
+        anderson = (te.elementwise(store, 5 * depth + 2, 2 * depth + 4, COMPLEX64_BYTES, launches=6 + 2 * n_channels),
+                    te.elementwise(store, 5, 2, COMPLEX128_BYTES, launches=6), te.Sync(2),
                     te.PythonCalls(20 + 4 * n_channels))
         items.append(te.TimeItem('Anderson mixing sweeps', 'sweep', count, 'guess', anderson, limit=limit,
                                  counter=physics_counter + ('sweeps',) if single else ()))
@@ -1495,13 +1501,19 @@ def _memory_estimate(settings_values, mesh, context):
                               (f'Newton tangent fields ({tangent_arrays} x complex128)',
                                tangent_arrays * COMPLEX128_BYTES * n_cells)]
             elif pump_depleted:
-                buffers = 2 * int(settings_values['anderson_depth']) + _ANDERSON_BUFFERS
+                # iteration.AndersonMixer: the complex64 dX / dF history, the complex128 iterate buffers, the float32
+                # history product and (depth > 0) the float64 Gram chunk of _coefficients
+                depth = int(settings_values['anderson_depth'])
+                store_elements = store_arrays * n_cells
+                gram_chunk = depth * FLOAT64_BYTES * min(2 * store_elements, ANDERSON_GRAM_CHUNK) if depth else 0
                 kerr_targets = {term.target for term in table.terms if term.kerr}
                 if any(_raw_flag(feature, 'free_carriers') for feature in _enabled_features(physics_spec, _CHI3_FEATURE)):
                     kerr_targets = set(range(len(channels)))   # carriers: an operator term on every channel
                 kerr_arrays = sum(_KERR_ARRAYS[channels[target].polarization] for target in kerr_targets)
-                run_items += [(f'Anderson mixing ({buffers} x the store)',
-                               buffers * store_arrays * COMPLEX128_BYTES * n_cells),
+                run_items += [(f'Anderson mixing (history {2 * depth} x the store, complex64; {_ANDERSON_BUFFERS} '
+                               'complex128 buffers)',
+                               (2 * depth * COMPLEX64_BYTES + _ANDERSON_BUFFERS * COMPLEX128_BYTES
+                                + (COMPLEX64_BYTES if depth else 0)) * store_elements + gram_chunk),
                               (f'Kerr operator terms ({kerr_arrays} x complex128)',
                                kerr_arrays * COMPLEX128_BYTES * n_cells)]
             if _enabled_features(physics_spec, 'adjoint_objective'):   # one EpsSensitivity per physics (eps_r,

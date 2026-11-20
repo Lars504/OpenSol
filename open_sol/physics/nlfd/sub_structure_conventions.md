@@ -46,6 +46,11 @@ carriers read a phasor's `bulk_terms` only; absorption and the adjoint read the 
   operands (a float64 operand makes matmul copy the basis to float64); the estimator (`definition._memory_estimate`
   Newton items, the adjoint's excess over them) and the time recipe (`krylov`) count the complex64 rows. Checked by
   (d) of nlfd_newton_tangent and the newton model cases.
+- Picard's Anderson history (dX, dF) is complex64 (`iteration.ANDERSON_HISTORY_DTYPE`, error argument there); x, f,
+  the store and the residual stay complex128, so no tolerance floor follows. The history meets only float32 operands
+  (gamma cast first) and its Gram is summed in float64 from chunk copies (`ANDERSON_GRAM_CHUNK`, own rcond): a change
+  of the mixer's buffers changes the 'Anderson mixing' item and recipe of `definition` (checked by (e) of
+  nlfd_newton_tangent).
 
 ## Self-tests
 - selftests_sheets / selftests_backend import private spec builders and checks of selftests / selftests_sheets /

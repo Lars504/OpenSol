@@ -374,6 +374,14 @@ _TANGENT_TOLERANCE = 1e-8   # relative: round-off of the 4-point formula (exact 
 # the map's condition ~2)
 _SINGLE_GMRES_TOLERANCE = 1e-5
 _SINGLE_GMRES_SIZE = 400
+# (e) of nlfd_newton_tangent: AndersonMixer's complex64 history vs complex128 on a contraction (|M|, |N| ~0.2: Picard
+# rate ~0.5, so Anderson's history matters), converged to 1e-11 (far below the 6e-8 history rounding: the float64
+# residual decides) and at the exact fixed point to 1e-9 (residual / (1 - rate)); a few sweeps more allowed
+_SINGLE_ANDERSON_SIZE = 300
+_SINGLE_ANDERSON_TOLERANCE = 1e-11
+_SINGLE_ANDERSON_SOLUTION_TOLERANCE = 1e-9
+_SINGLE_ANDERSON_EXTRA_SWEEPS = 3
+_SINGLE_ANDERSON_SWEEPS = 200
 
 
 class _TangentStore:
@@ -479,8 +487,10 @@ def _check_newton_tangent(results):
     if worst > _TANGENT_TOLERANCE:
         violations.append(f'tangent != finite difference: {errors}')
     gmres_errors = _single_gmres_errors(rng, violations)
+    anderson_errors = _single_anderson_errors(rng, violations)
     return _result(violations, {'relative_errors': errors, 'peak_carrier_density': peak,
-                                'single_gmres': gmres_errors}, measured=worst, tolerance=_TANGENT_TOLERANCE)
+                                'single_gmres': gmres_errors, 'single_anderson': anderson_errors}, measured=worst,
+                   tolerance=_TANGENT_TOLERANCE)
 
 
 def _single_gmres_errors(rng, violations) -> dict:
@@ -513,6 +523,59 @@ def _single_gmres_errors(rng, violations) -> dict:
         pass
     else:
         violations.append(f'single-basis GMRES accepted a tolerance below {GMRES_SINGLE_MIN_TOLERANCE:g}')
+    return errors
+
+
+def _single_anderson_errors(rng, violations) -> dict:
+    """(e) of nlfd_newton_tangent: iteration.AndersonMixer on its complex64 history (the picard default) against the
+    complex128 one, depth 5, on a random real-linear contraction x -> M x + N conj(x) + b over two channel blocks:
+    both converge (max channel ||g - x|| / ||g|| <= _SINGLE_ANDERSON_TOLERANCE), both land on the exact fixed point
+    (the real 2n linear solve) within _SINGLE_ANDERSON_SOLUTION_TOLERANCE, the complex64 run takes at most
+    _SINGLE_ANDERSON_EXTRA_SWEEPS more sweeps and its history is complex64; violations appended."""
+    from .iteration import ANDERSON_HISTORY_DTYPE, AndersonMixer
+    size = _SINGLE_ANDERSON_SIZE
+    first, second = (0.15 / math.sqrt(size) * _random_complex(rng, (size, size)) for _ in range(2))
+    rhs = _random_complex(rng, size)
+    blocks = (slice(0, size // 2), slice(size // 2, size))
+
+    def sweep_map(vector):
+        return first @ vector + second @ np.conj(vector) + rhs
+
+    # exact fixed point: (I - R) y = [Re b; Im b], R the real 2n form of v -> M v + N conj(v)
+    real_map = np.block([[first.real + second.real, second.imag - first.imag],
+                         [first.imag + second.imag, first.real - second.real]])
+    stacked = np.linalg.solve(np.eye(2 * size) - real_map, np.concatenate((rhs.real, rhs.imag)))
+    exact = stacked[:size] + 1j * stacked[size:]
+
+    def run(single_history):
+        mixer = AndersonMixer(blocks, 5, 1.0, single_history=single_history)
+        values, residual, sweep = np.zeros(size, dtype=np.complex128), math.inf, 0
+        for sweep in range(1, _SINGLE_ANDERSON_SWEEPS + 1):
+            mixer.begin(values)
+            swept = sweep_map(values)
+            residual = mixer.residual(swept)
+            if residual <= _SINGLE_ANDERSON_TOLERANCE:
+                return swept, sweep, residual, mixer
+            mixed = mixer.update()
+            values = swept if mixed is None else mixed
+        return swept, sweep, residual, mixer
+
+    single, single_sweeps, single_residual, single_mixer = run(True)
+    double, double_sweeps, double_residual, _ = run(False)
+    norm = float(np.linalg.norm(exact))
+    errors = {'single_solution': float(np.linalg.norm(single - exact)) / norm,
+              'double_solution': float(np.linalg.norm(double - exact)) / norm,
+              'single_residual': float(single_residual), 'double_residual': float(double_residual),
+              'single_sweeps': int(single_sweeps), 'double_sweeps': int(double_sweeps)}
+    history_dtype = None if single_mixer._df is None else single_mixer._df.dtype
+    expected = np.dtype(ANDERSON_HISTORY_DTYPE)
+    if history_dtype != expected:
+        violations.append(f'single-history Anderson kept a {history_dtype} history, not {expected}')
+    if not (single_residual <= _SINGLE_ANDERSON_TOLERANCE and double_residual <= _SINGLE_ANDERSON_TOLERANCE
+            and errors['single_solution'] <= _SINGLE_ANDERSON_SOLUTION_TOLERANCE
+            and errors['double_solution'] <= _SINGLE_ANDERSON_SOLUTION_TOLERANCE
+            and single_sweeps <= double_sweeps + _SINGLE_ANDERSON_EXTRA_SWEEPS):
+        violations.append(f'complex64-history Anderson vs complex128: {errors}')
     return errors
 
 
@@ -692,7 +755,11 @@ NLFD_CPU_SELFTESTS = (
                     'adjoint transpose adjoint.carrier_cotangents: Re(c . dP[V]) = Re(sum_m g_m . V_m) for a random '
                     'cotangent c, and (d) iteration.real_gmres on the complex64 basis of the Newton steps against the '
                     'complex128 one on a random real-linear map v + M v + N conj(v) (solution and true residual within '
-                    f'{_SINGLE_GMRES_TOLERANCE:g}, refused below its tolerance floor). measured = worst relative '
+                    f'{_SINGLE_GMRES_TOLERANCE:g}, refused below its tolerance floor), and (e) the Anderson mixing '
+                    'of the picard sweeps on its complex64 history against the complex128 one on a random real-linear '
+                    f'contraction (both converged to {_SINGLE_ANDERSON_TOLERANCE:g} and at the exact fixed point '
+                    f'within {_SINGLE_ANDERSON_SOLUTION_TOLERANCE:g}, at most {_SINGLE_ANDERSON_EXTRA_SWEEPS} more '
+                    'sweeps). measured = worst relative '
                     f'deviation of (a)-(c); error = measured + failed checks; tolerance {_TANGENT_TOLERANCE:g}.',
         specs=lambda: {},
         check=_check_newton_tangent,
