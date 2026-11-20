@@ -349,7 +349,8 @@ def _check_arpack_cudss(results_by_name):
     import scipy.sparse.linalg
     from .arpack_shift_invert import (SINGLE_BASIS_MIN_TOLERANCE, ArpackShiftInvertSolver, backend_misfit,
                                       device_arnoldi_fits, device_factor_matvec)
-    from .cudss_factor import ACCEPT_RESIDUAL, BACKWARD_ERROR_TOLERANCE, MIXED_MAX_REFINEMENTS, CudssFactorization
+    from .cudss_factor import (ACCEPT_RESIDUAL, BACKWARD_ERROR_TOLERANCE, MIXED_MAX_REFINEMENTS, CudssFactorization,
+                               operator_copy_bytes, solve_buffer_bytes)
     skipped = skip_without_cudss()
     if skipped is not None:
         return skipped
@@ -503,6 +504,14 @@ def _check_arpack_cudss(results_by_name):
         errors['cudss_mixed_ldlt_solve'] = norm_relative_error(mixed.solve_host(rhs), symmetric_reference)
         details.update(mixed_unrefined_residual=mixed.single_residual, mixed_refinement_steps=mixed.refinement_steps,
                        mixed_device_bytes=mixed.device_bytes)
+        # the pool copies of a host-route plan are what the estimators book (the mixed factor copy on the double copy's
+        # index arrays: one index set)
+        for name, planned, is_mixed in (('ldlt', ldlt, False), ('mixed_ldlt', mixed, True)):
+            booked = (operator_copy_bytes(n_unknowns, complex_symmetric.nnz, 16, symmetric=True, mixed=is_mixed)
+                      + solve_buffer_bytes(n_unknowns, 16, mixed=is_mixed))
+            details[f'{name}_pool_bytes'] = {'held': planned.device_bytes - planned.permanent_bytes, 'booked': booked}
+            if planned.device_bytes - planned.permanent_bytes != booked:
+                failed.append(f'cudss_{name}_pool_bytes_booked')
         if mixed.factor_precision != 'mixed':   # the double fallback must not hide a mixed factor that stopped working
             failed.append('cudss_mixed_ldlt_kept_mixed')
         resonant, resonant_rhs = _resonant_operator(nx, ny)   # GMRES refinement removes the near-null mode
@@ -2659,7 +2668,9 @@ SOLVER_SELFTEST_CASES = (
                     'device_factor_matvec of that mass (symmetric) against SuperLU, with single_basis within '
                     f'{_SINGLE_BASIS_EIGEN_TOLERANCE:g} (refused on host ARPACK at machine precision); eigs_shifted '
                     'of the complex symmetric pencil (L + complex diagonal, that mass) on a DevicePencil (real M term '
-                    'float64, M on the device as its float64 lower triangle) against SuperLU; cudss_mixed below '
+                    'float64, M on the device as its float64 lower triangle) against SuperLU; the pool bytes of the '
+                    'complex symmetric LDL^T plans (double, mixed) equal to operator_copy_bytes + '
+                    'solve_buffer_bytes; cudss_mixed below '
                     'mixed_min_unknowns resolved to cudss; every solve converged, the probe '
                     'residual within the cuDSS accept tolerance, the device bytes counted, no solve after release, '
                     'cudss and cudss_mixed misfits on the cpu backend only. Passes as skipped without nvmath-python.',

@@ -2160,7 +2160,10 @@ class CudssFactorization(ProbedFactor):
         transpose: complex symmetric)."""
         if self._diagonal is None:
             return self._operator @ vector
-        return self._operator @ vector + self._operator_transpose @ vector - self._diagonal * vector
+        product = self._operator @ vector   # summed in place: one temporary beside it at a time
+        product += self._operator_transpose @ vector
+        product -= self._diagonal * vector
+        return product
 
     def _cudss_solve(self):
         """cuDSS solve of the rhs buffer, timed and counted (RAW_SOLVE: the kept solution buffer, read before the next
