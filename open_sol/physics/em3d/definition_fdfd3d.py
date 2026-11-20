@@ -559,11 +559,10 @@ def _time_estimate(settings_values, mesh, context):
                     * max(unknowns / CURL_CURL_LU_GROWTH_FROM, 1.0) ** CURL_CURL_LU_GROWTH_EXPONENT)
     config = _boundary_config(settings_values)
     factorization = eigen_factorization(context.solvers)
-    # the polished path (ARPACK floor 1e-6): a mixed factor (small operators factor in double, S5c) or, with cpml (a
-    # complex A, floored), any LDL^T of D A (solve_resonances polishes a double one there too)
-    if not config.has_bloch_phase and (
-            (factorization in MIXED_FACTORIZATIONS and unknowns >= MIXED_EIGEN_MIN_UNKNOWNS)
-            or (factorization in LDLT_FACTORIZATIONS and config.needs_cpml)):
+    # the polished path (ARPACK floor 1e-6, complex64 device basis): a mixed factor (small operators factor in double,
+    # S5c) or, with cpml (a complex A, floored), any LDL^T of D A (solve_resonances polishes a double one there too)
+    polished = _polished_search(factorization, unknowns, not config.has_bloch_phase, config)
+    if polished:
         applications_per_basis = MIXED_APPLICATIONS_PER_BASIS
     else:
         applications_per_basis = (APPLICATIONS_PER_BASIS_PER_AXIS_CELL * float(mesh.n_cells) ** (1.0 / 3.0)
@@ -582,7 +581,8 @@ def _time_estimate(settings_values, mesh, context):
                                            rhs=2.0, default_basis=ARNOLDI_BASIS_PER_WANTED * eigenpairs,
                                            factor_scale=factor_scale,
                                            applications_per_basis=applications_per_basis,
-                                           device_arnoldi=factorization in CUDSS_FACTORIZATIONS)))
+                                           device_arnoldi=factorization in CUDSS_FACTORIZATIONS,
+                                           single_basis=polished)))
 
 
 # ---- type ----
