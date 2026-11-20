@@ -123,17 +123,14 @@ def _bor_factor_entries(nr, nz, coupled) -> int:
 def _arnoldi_item(host_items, transient_items, unknowns, basis, context, device_matvec, real=False,
                   single_basis=False):
     """Append an eigs caller's Arnoldi basis: a device EIGEN_PHASE item where the gpu backend runs the device
-    Krylov-Schur (arpack_shift_invert.arnoldi_basis_bytes; device_matvec: a cuDSS factor; single_basis: complex64 rows,
-    eigs(single_basis=True), the 2 work vectors stay complex128), else a host item (real: the float64 basis of real
-    ARPACK)."""
+    Krylov-Schur (arpack_shift_invert.arnoldi_basis_bytes; device_matvec: a cuDSS factor; single_basis: complex64 rows
+    and work vectors, eigs(single_basis=True)), else a host item (real: the float64 basis of real ARPACK)."""
     on_device, basis_bytes = arnoldi_basis_bytes(unknowns, basis, solver_backend(context.spec),
-                                                 device_matvec=device_matvec, real=real)
+                                                 device_matvec=device_matvec, real=real, single_basis=single_basis)
     if on_device:
         row_type = 'complex64' if single_basis else 'complex128'
-        if single_basis:   # arnoldi_basis_bytes counts complex128 rows
-            basis_bytes -= (int(basis) + 1) * (COMPLEX128_BYTES - COMPLEX64_BYTES) * int(unknowns)
-        transient_items.append((EIGEN_PHASE, f'device Krylov-Schur basis ({basis + 1} {row_type} rows + 2 complex128 '
-                                             'work vectors)', basis_bytes))
+        transient_items.append((EIGEN_PHASE, f'device Krylov-Schur basis ({basis + 1} {row_type} rows + work '
+                                             'vectors)', basis_bytes))
     else:
         host_items.append((f'Arnoldi basis ({basis} {"float64" if real else "complex128"} vectors)', basis_bytes))
 
@@ -664,7 +661,8 @@ def modes_memory_estimate(settings_values, mesh, context):
             (EIGEN_PHASE, f'cuDSS operator copy ({value_type}), rhs buffer, row scale and solve vectors',
              cudss_kept_bytes(unknowns, 9 * unknowns, mixed, symmetric=False, value_bytes=value_bytes)
              + solve_peak_bytes(unknowns, COMPLEX128_BYTES, mixed)),
-            (EIGEN_PHASE, f'device mass diagonal B ({value_type} vector)', value_bytes * unknowns)]
+            (EIGEN_PHASE, f'device mass diagonal B ({value_type} vector) and B x (complex128)',
+             (value_bytes + COMPLEX128_BYTES) * unknowns)]
         external_items, external_extra = cudss_factor_items('the shifted mode operator', unknowns, 9 * unknowns,
                                                             mixed=mixed, general=True, value_bytes=value_bytes)
     if line_block:   # ModePhysics line-block batches
@@ -694,7 +692,7 @@ def modes_memory_estimate(settings_values, mesh, context):
 def _modes_fem_memory_estimate(settings_values, mesh, context):
     """em_modes on a triangles mesh (solvers/modes_fem, fem_modes): 2 float32 per-element state fields; host SuperLU
     (or a per-solve cuDSS LDL^T: external), blocks, Arnoldi basis, sample bases, mode candidates, display fields."""
-    from ...solvers.device_matrices import device_matrix_bytes
+    from ...solvers.device_matrices import device_matrix_bytes, device_product_bytes
     from .fem_modes import (DISCRETIZATION_ORDERS, FEM_ENTRIES_PER_ROW, SAMPLE_POINTS, cudss_operator_bytes,
                             estimated_unknowns, fem_lu_bytes, operator_bytes, sample_basis_bytes)
     order = DISCRETIZATION_ORDERS[settings_values.get('discretization', 'quadratic')]
@@ -721,7 +719,9 @@ def _modes_fem_memory_estimate(settings_values, mesh, context):
                         (EIGEN_PHASE, f'device mass B ({"float64" if real_mass else "complex128"} lower triangle + '
                                       'diagonal)',
                          device_matrix_bytes(unknowns, FEM_ENTRIES_PER_ROW[order] * unknowns, symmetric=True,
-                                             real=real_mass))] if on_device else [])
+                                             real=real_mass)),
+                        (EIGEN_PHASE, 'B x of one application (product temporaries)',
+                         device_product_bytes(unknowns, symmetric=True, real=real_mass))] if on_device else [])
     external_items, external_extra = (cudss_factor_items('the shifted mode operator', unknowns,
                                                          FEM_ENTRIES_PER_ROW[order] * unknowns, mixed=mixed)
                                       if on_device else ([], 0))
