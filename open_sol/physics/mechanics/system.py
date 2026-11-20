@@ -103,7 +103,11 @@ class ElasticPattern:
         inside = ((neighbour_i >= 0) & (neighbour_i < nx_nodes) & (neighbour_j >= 0) & (neighbour_j < ny_nodes))
         inside = xp.broadcast_to(inside, layout).ravel()   # copies the broadcast view
         columns = xp.broadcast_to(components * (neighbour_i * ny_nodes + neighbour_j) + component, layout).ravel()
-        self.stencil_positions = xp.flatnonzero(inside)    # stencil slot of every CSR entry, in CSR order
+        # stencil slot of every CSR entry, in CSR order: int32 while the stencil has fewer slots than 2^31 (the largest
+        # pattern array: 4 B per entry less than flatnonzero's int64)
+        positions = xp.flatnonzero(inside)
+        self.stencil_positions = positions.astype(xp.int32) if inside.size < 2 ** 31 else positions
+        del positions
         self.indices = columns[self.stencil_positions].astype(xp.int32)
         del columns
         row_counts = inside.reshape(-1, row_length).sum(axis=1)
@@ -115,7 +119,8 @@ class ElasticPattern:
         block_slots = ((components * xp.arange(n_nodes, dtype=xp.int64)[:, None, None]
                         + xp.arange(components, dtype=xp.int64)[None, :, None]) * row_length
                        + _CENTRE_NEIGHBOUR * components + xp.arange(components, dtype=xp.int64)[None, None, :])
-        self.block_positions = xp.searchsorted(self.stencil_positions, block_slots)
+        self.block_positions = xp.searchsorted(self.stencil_positions,
+                                               block_slots.astype(self.stencil_positions.dtype))
 
     def matches(self, nx_nodes, ny_nodes):
         return self.node_shape == (nx_nodes, ny_nodes)
@@ -345,12 +350,12 @@ class ElasticSystem(ElasticSystemBase):
         self._solution = xp.zeros(self.n_dofs, dtype=dtype)              # CG unknown w = u - u_fix
 
         self.pattern = None
-        self.operator_full = None   # assembled stiffness, rows of held dofs included
+        self._held_rows = None      # (held dofs, float64 CSR of their K rows) of the last assembly (reactions)
         self.load_full = None       # nodal load of the last build_rhs (flat)
         self.A_solve = None
         self.free = None
         self.fixed_values = None    # prescribed values on held / pinned dofs, 0 on free ones (flat)
-        self.fixed_coupling = None  # operator_full . fixed_values
+        self.fixed_coupling = None  # K . fixed_values
         self.inverse_blocks = None  # (inverse_xx, inverse_xy, inverse_yy) per node
         self._single_products = None   # pcg 'mixed': (float64 apply, float32 apply, float32 inverse blocks)
         self._factor_stale = False     # sparse_direct: A_solve changed since its factor (the next solve factorises)
@@ -488,6 +493,10 @@ class ElasticSystem(ElasticSystemBase):
         solve_data[diagonal_positions] += fixed.astype(dtype)
         self.A_solve = sparse.csr_matrix((solve_data, pattern.indices, pattern.indptr), shape=(n_dofs, n_dofs))
         self.fixed_coupling = operator.dot(fixed_values)
+        # the full K is not kept beside A_solve (one value array per stored entry less): reactions read only the rows
+        # of the held dofs (held_rows)
+        self._held_rows = self._held_row_block(data, held)
+        del operator, data
 
         block_xx = solve_data[pattern.block_positions[:, 0, 0]]
         block_xy = solve_data[pattern.block_positions[:, 0, 1]]
@@ -502,9 +511,23 @@ class ElasticSystem(ElasticSystemBase):
         xp.copyto(self.unknown, fixed_values, where=fixed)
         self.fixed_values = fixed_values
         self.free = free
-        self.operator_full = operator
         self._bind_linear_solver()
         self.operator_dirty = False
+
+    def _held_row_block(self, data, held) -> tuple:
+        """(int64 held dofs ascending, backend float64 CSR (n_held, n_dofs) of their K rows, or None without held dofs)
+        of an assembly's stiffness values: the reactions' rows (float64: K u - f cancels)."""
+        xp, pattern = self.xp, self.pattern
+        rows = xp.flatnonzero(held)
+        if not rows.size:
+            return rows, None
+        entries = xp.flatnonzero(held[pattern.entry_rows])   # CSR order: rows ascending, each row contiguous
+        counts = (pattern.indptr[1:] - pattern.indptr[:-1])[rows]
+        indptr = xp.zeros(rows.size + 1, dtype=pattern.indptr.dtype)
+        indptr[1:] = xp.cumsum(counts)
+        block = self.sparse.csr_matrix((data[entries].astype(np.float64), pattern.indices[entries], indptr),
+                                       shape=(int(rows.size), self.n_dofs))
+        return rows, block
 
     def _bind_linear_solver(self) -> None:
         """Factorize the PCGSolver on the new A_solve with gpu check blocks captured as CUDA graphs (a factorize starts
@@ -658,13 +681,19 @@ class ElasticSystem(ElasticSystemBase):
         if self.load_full is None or self.n_solves == 0:
             raise RuntimeError(f'{self.label()}: reactions need a solve first')
         xp = self.xp
-        operator = self.operator_full   # K u - f cancels: a single-precision product would lose digits before the sum
-        if operator.dtype != np.float64:
-            operator = operator.astype(np.float64)
-        nodal_reaction = (operator.dot(self.unknown.astype(np.float64))
-                          - self.load_full.astype(np.float64)).reshape(*self.node_shape, 2)
-        masked = xp.where(xp.asarray(dof_mask), nodal_reaction, 0.0)
-        totals = to_host(masked.sum(axis=(0, 1)))
+        mask = xp.asarray(dof_mask).reshape(-1)
+        if bool(xp.any(mask & (self.free > 0))):   # only the held rows of K are kept (_held_row_block)
+            raise ValueError(f'{self.label()}: a reaction is read only at held dofs, the mask covers free dofs')
+        # K u - f cancels: float64 rows and vectors (a single-precision product would lose digits before the sum)
+        load = xp.where(mask, self.load_full.astype(np.float64), 0.0).reshape(-1, 2)
+        totals = -load.sum(axis=0)
+        rows, block = self._held_rows
+        if block is not None:
+            product = block.dot(self.unknown.astype(np.float64))
+            kept = mask[rows]
+            for component in (0, 1):
+                totals[component] += xp.where(kept & (rows % 2 == component), product, 0.0).sum()
+        totals = to_host(totals)
         return float(totals[0]), float(totals[1])
 
     def element_kinematics(self, nodes=None):

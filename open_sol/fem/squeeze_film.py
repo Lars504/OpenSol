@@ -207,7 +207,11 @@ class SqueezeFilm:
                 getattr(self._fixed_factor[1], 'release', lambda: None)()
                 self._fixed_factor = None
             try:
-                factor = system.linear_solver.factorize_host(system.operator(0.0), symmetric=system.symmetric)
+                # the incompressible operator is K alone (no damping / mass term): its own dtype, so a real
+                # conductance gives a real factor (operator(0.0) would be a complex copy; solve_host splits the rhs)
+                stiffness = pencil.part('stiffness')
+                factor = system.linear_solver.factorize_host(stiffness, real=not np.iscomplexobj(stiffness.data),
+                                                             symmetric=system.symmetric)
             except RuntimeError as exc:
                 raise ValueError(f'{self.label()}: the film pressure operator is singular ({exc}): a closed '
                                  'incompressible film or a film region without a vent') from None

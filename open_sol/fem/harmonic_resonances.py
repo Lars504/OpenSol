@@ -156,7 +156,8 @@ def solve_harmonic_resonances(stiffness, mass, target_frequency, n_resonances, *
     settings), pencil of PENCIL_KINDS, in_window / in_region bool per row (None: no PML filter / no region),
     energy_weights (module header), field_of(vector) -> HarmonicResonance.field (None: the vector), label names the
     resonances in the summary ('membrane')."""
-    from ..solvers.arpack_shift_invert import EIGSH_SHIFT_RELATIVE_OFFSET, ArpackShiftInvertSolver, device_factor_matvec
+    from ..solvers.arpack_shift_invert import (EIGSH_SHIFT_RELATIVE_OFFSET, SINGLE_BASIS_MIN_TOLERANCE,
+                                               ArpackShiftInvertSolver, device_factor_matvec)
     started = time.perf_counter()
     eigen_solver = ArpackShiftInvertSolver() if eigen_solver is None else eigen_solver
     target_frequency = float(target_frequency)
@@ -192,8 +193,8 @@ def solve_harmonic_resonances(stiffness, mass, target_frequency, n_resonances, *
         start_vector = np.random.default_rng(_START_VECTOR_SEED).standard_normal(n_free)
         try:
             eigenvalues, vectors, _, converged, factorization = eigen_solver.eigsh_shifted(
-                stiffness.astype(np.float64), mass.astype(np.float64), omega_target ** 2, n_wanted,
-                start_vector=start_vector)
+                stiffness.astype(np.float64, copy=False), mass.astype(np.float64, copy=False), omega_target ** 2,
+                n_wanted, start_vector=start_vector)
         except RuntimeError as exc:
             raise ValueError(_singular_text(target_frequency, exc)) from None
         sigma = omega_target ** 2 * (1.0 + EIGSH_SHIFT_RELATIVE_OFFSET)
@@ -203,20 +204,32 @@ def solve_harmonic_resonances(stiffness, mass, target_frequency, n_resonances, *
     else:
         sigma = omega_target ** 2 * (1.0 + SHIFT_RELATIVE_OFFSET)
         try:
-            factorization = eigen_solver.factorize_host((stiffness - sigma * mass).tocsc().astype(np.complex128),
-                                                        symmetric=pencil == 'complex_symmetric')
+            factorization = eigen_solver.factorize_host(
+                (stiffness - sigma * mass).tocsc().astype(np.complex128, copy=False),
+                symmetric=pencil == 'complex_symmetric')
         except RuntimeError as exc:
             raise ValueError(_singular_text(target_frequency, exc)) from None
-        mass_complex = mass.astype(np.complex128)
         random = np.random.default_rng(_START_VECTOR_SEED)
         start_vector = random.standard_normal(n_free) + 1j * random.standard_normal(n_free)
         n_wanted = min(2 * n_resonances + EXTRA_EIGENVALUES, n_free - 2)
         widenings, previous_count = 0, -1
-        device_apply = device_factor_matvec(factorization, mass_complex)   # cuDSS: the device Krylov-Schur
+        # cuDSS: the device Krylov-Schur on the device M (device_matrix: a real M stays float64, applied to Re / Im of
+        # the vectors; a complex symmetric pencil keeps M as its lower triangle, symmetry probed); the host products
+        # take a complex copy of a real M only when they run (scipy would upcast M on every product)
+        device_apply = device_factor_matvec(factorization, mass, symmetric=pencil == 'complex_symmetric')
+        host_mass = []
+
+        def host_apply(vector):
+            if not host_mass:
+                host_mass.append(mass.astype(np.complex128, copy=False))
+            return factorization.solve_host(host_mass[0] @ vector)
+        # a loose eigen tolerance: complex64 Krylov basis rows (SINGLE_BASIS_MIN_TOLERANCE: the fp32 Arnoldi relation
+        # holds to ~1e-7 |H|, so the Ritz values of the wanted, largest |theta| keep the asked relative accuracy; H and
+        # the matvec stay complex128), half the basis bytes
+        single_basis = device_apply is not None and eigen_solver.tolerance >= SINGLE_BASIS_MIN_TOLERANCE
         while True:
-            theta, vectors, _, converged = eigen_solver.eigs(
-                lambda vector: factorization.solve_host(mass_complex @ vector), n_free, n_wanted, start_vector,
-                device_matvec=device_apply)
+            theta, vectors, _, converged = eigen_solver.eigs(host_apply, n_free, n_wanted, start_vector,
+                                                             device_matvec=device_apply, single_basis=single_basis)
             theta = np.asarray(theta, dtype=np.complex128)
             usable = np.isfinite(theta) & (np.abs(theta) > _THETA_FLOOR * float(np.max(np.abs(theta), initial=0.0)))
             eigenvalues = np.full(theta.shape, np.nan, dtype=np.complex128)

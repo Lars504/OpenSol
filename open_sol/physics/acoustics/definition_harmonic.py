@@ -761,9 +761,19 @@ def _memory_estimate(settings_values, mesh, context):
     fill = FEM_FILL_FACTOR_3D[order] if three_d else FEM_FILL_FACTOR
     back_end = resolved_back_end(context.solvers)
     cudss = back_end in CUDSS_BACK_ENDS
+    # fem.harmonic keeps each pencil term in its own dtype: K and M complex only with a PML stretch, a damping term C
+    # (real: Robin 1 / Z edges) only with an impedance boundary; a real pencil (no PML, no impedance) combines real
+    # values every frequency, so its factor is real
+    physics_spec = getattr(context, 'physics_spec', None)
+    impedance = physics_spec is not None and any(feature.enabled and feature.type == 'impedance'
+                                                 for feature in physics_spec.features)
+    stretched = bool(_pml_faces(settings_values, three_d))
+    term_bytes = COMPLEX128_BYTES if stretched else FLOAT64_BYTES
+    term_value_bytes = (term_bytes, term_bytes) + ((FLOAT64_BYTES,) if impedance else ())
+    factor_value_bytes = COMPLEX128_BYTES if stretched or impedance else FLOAT64_BYTES
     # the HarmonicSystem's factor, refreshed per frequency on one plan and kept for the session (no CSR copies in the
     # pool beside the DevicePencil: pressure_acoustics_rigid_disk measured within 4 %)
-    factors = ((('cuDSS factor of K + j omega C - omega^2 M', dofs, entries, COMPLEX128_BYTES, 3 if three_d else 2,
+    factors = ((('cuDSS factor of K + j omega C - omega^2 M', dofs, entries, factor_value_bytes, 3 if three_d else 2,
                  back_end == 'cudss_mixed'),) if cudss else ())
     local = _LOCAL_DOFS[(3 if three_d else 2, order)]
     factor = 0 if cudss else int(fill * host_lu_bytes(dofs, dimensions=3 if three_d else 2))
@@ -789,7 +799,7 @@ def _memory_estimate(settings_values, mesh, context):
         background = physics_spec is not None and any(
             feature.enabled and feature.type == 'background_pressure_field' for feature in physics_spec.features)
         run_items = [('device pencil terms, index maps and per-frequency transients',
-                      device_pencil_bytes(entries, (COMPLEX128_BYTES,) * 3, symmetric=True)),
+                      device_pencil_bytes(entries, term_value_bytes, symmetric=True)),
                      ('kept device solution (complex128 + int64 ids per full dof)', KEPT_SOLUTION_BYTES_PER_DOF * dofs),
                      # the device publish (R6): int64 element dofs, active dof / element masks, the centroid basis
                      ('device publish maps (element dofs, active masks, centroid basis)',

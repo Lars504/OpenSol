@@ -56,6 +56,9 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
 - Reactions are K u - f of the last solve (`load_full` of the last `_build_rhs`): every load change sets
   `_loads_dirty` (it also drops the frequency response's kept `_harmonic_drive`), so loads never change between a solve
   and a read. n_solves doubles as the couplings' revision counter.
+- 2D ElasticSystem keeps no full K on the device, only A_solve and the float64 K rows of the held dofs
+  (`_held_row_block`, the reactions' rows; `reaction` refuses a mask over free dofs): a new reader of K rows or K u
+  extends that block or rebuilds from the stencil, never re-keeps the full operator (one value array per entry).
 
 ## Mirror planes (feature symmetry, both types)
 - `symmetry` (`definition_common.SYMMETRY_FEATURE`) = the Roller apply / result whose faces are model mirror planes
@@ -105,6 +108,11 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   `frequency_response.py` header and `HarmonicSystem`. 2D tensor solids use a private SuperLU outside the roles
   (counters harmonic_* / piezo_harmonic_*; the 'linear' pcg assembled, unused); triangles and tetrahedra their
   'linear' sparse_direct runtime (3D operator class 'spd' is nominal there).
+- Real stays real: HarmonicSystem keeps K real without a loss term, so a lossless pencil without a resistive load
+  factors real (half the factor, the complex rhs split by solve_host / solve): a new per-frequency term adds out of
+  place (never `+=` a complex term into the real values), and the estimators book complex terms / factor only with
+  `LOSS_ARRAYS` set or a resistive_load (definition3d `_lossy_response`). Its pencil terms are vouched symmetric
+  (`symmetric_known`): a new unsymmetric term must drop the vouch.
 - Shown fields are the real parts with dT = 0 and no sigma0 (`_write_outputs(thermal=False)` on every mesh kind;
   solid_frequency_response_bar's 'heated' run pins it on the tensor mesh). On the tensor mesh support reactions and
   electrode tables raise and probes record nothing (FEM meshes: section "Prestress, damped modes, complex records").
@@ -228,7 +236,9 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
 - Device tangents (3D: gpu backend and a cuDSS 'linear' back end): held `policy.data` is device data, so code using the
   assembler's data goes through its methods (`full_product`, `solve_tangent_device`), never
   `assembler.full(data) @ host_vector`. Memory and the shared K / tangent block pattern (counted once, under the
-  stiffness): fem sub file "Device tangents", "Block patterns".
+  stiffness): fem sub file "Device tangents", "Block patterns". `newton_proposer` drops the held tangent as soon as an
+  iteration refactorises, before the new tangent is assembled: never two tangents beside the factor (the estimate
+  books one device tangent; a new use of the held data keeps that order).
 - Case gotcha: prescribed_displacement_domain on every node of a 3D selection locks cross-section rotation; a deflection
   hold on a whole end face of a thin structure adds a spurious quartic energy (Duffing alpha + 2 .. 5 %): the Duffing
   self-tests hold mid-plane / mid-line nodes through the API and take k from a linear-load solve (fitting k too trades
@@ -265,7 +275,8 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   `eigen_device_items` (the ModalPencil phases in the order arpack_shift_invert allocates), `harmonic_pencil_items`,
   `factor_fill`; definition3d `host_factor_items` / `eigen_host_direct` (MUMPS / PARDISO). What each item holds and
   why: their comments. definition imports definition3d at module level, so definition3d imports these inside its
-  estimators.
+  estimators. Term dtypes follow the code: ShiftPencil keeps a real M float64 in a complex pencil (`mass_bytes`: 16
+  only with a PML stretch or a Bloch phase), its device M is `device_matrix_bytes`.
 - Unverified against counters (no gpu run in selftest_out): the static 'linear' cuDSS items, the solid
   frequency-response HarmonicSystem, solid DevicePencils, device Newton tangents.
 

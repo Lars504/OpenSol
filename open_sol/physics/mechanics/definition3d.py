@@ -1074,6 +1074,13 @@ def _lossy_pencil(settings_values, context) -> bool:
     return not settings_values.get('piezoelectric') and bool(context.material_sets(LOSS_ARRAYS[0]))
 
 
+def _lossy_response(settings_values, context) -> bool:
+    """A loss in the frequency response (frequency_response.HarmonicSystem keeps K + j L complex): a
+    mechanical_loss_factor, piezoelectric also a dielectric_loss_tangent (a material set to 0 counts: an upper figure)."""
+    return bool(context.material_sets(LOSS_ARRAYS[0])
+                or (settings_values.get('piezoelectric') and context.material_sets(LOSS_ARRAYS[1])))
+
+
 def _resistive_load(settings_values, physics_spec) -> bool:
     """Piezoelectric with an enabled electrode feature on connection resistive_load: ModalPencil's 'loaded' pencil
     K + (j / omega_t) B - sigma M (three real terms, a complex factor)."""
@@ -1322,9 +1329,15 @@ def _tetrahedra_time_estimate(settings_values, mesh, context):
     if context.study.type == FREQUENCY_RESPONSE_STUDY:   # the study's harmonic_factorizations (sweep_method)
         from ...model.definition_helpers import frequency_sweep_counts, reduced_sweep_time_items
         sweep = frequency_sweep_counts(context)
-        work = context.solver_work('linear', unknowns=unknowns, solves=sweep['solves'], solves_kind=sweep['solves_kind'],
+        # HarmonicSystem keeps a lossless pencil without a resistive load real: a real factor, the complex rhs as two
+        # real solves
+        complex_response = (_lossy_response(settings_values, context)
+                            or _resistive_load(settings_values, context.physics_spec))
+        work = context.solver_work('linear', unknowns=unknowns, solves=sweep['solves'],
+                                   solves_kind=sweep['solves_kind'], rhs=1.0 if complex_response else 2.0,
                                    factorizations=sweep['factorizations'],
-                                   factorizations_kind=sweep['factorizations_kind'], **complex_scales)
+                                   factorizations_kind=sweep['factorizations_kind'],
+                                   **(complex_scales if complex_response else scales))
         if sweep['method'] == 'direct':
             return work
         missing = ('modal basis shift-invert (private eigen solver)',) if sweep['eigenpairs'] else ()
@@ -1485,10 +1498,13 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
         run_items += held
         transient_items += passing
     if frequency_response and linear_back_end in CUDSS_BACK_ENDS:   # the kept HarmonicSystem: K + j L, M (+ load)
+        # a lossless pencil without a resistive load keeps K real: real terms and a real factor
+        lossy = _lossy_response(settings_values, context)
         run_items += harmonic_pencil_items(factored, factored_entries, linear_back_end,
-                                           (_COMPLEX_BYTES, FLOAT64_BYTES, FLOAT64_BYTES))
-        factors.append(('frequency response cuDSS factor', factored, factored_entries, _COMPLEX_BYTES, fill,
-                        linear_back_end == 'cudss_mixed'))
+                                           (_COMPLEX_BYTES if lossy else FLOAT64_BYTES, FLOAT64_BYTES)
+                                           + ((FLOAT64_BYTES,) if loaded else ()))
+        factors.append(('frequency response cuDSS factor', factored, factored_entries,
+                        _COMPLEX_BYTES if lossy or loaded else FLOAT64_BYTES, fill, linear_back_end == 'cudss_mixed'))
     coupled_csr = (FLOAT64_CSR_ENTRY_BYTES * factored_entries + INT32_BYTES * factored)
     # Newton tangents on the GPU: system_fem3d.device_tangent = gpu backend and a cuDSS 'linear' back end
     device_tangent = (bool(settings_values.get('geometric_nonlinearity')) and static_solve
@@ -1545,7 +1561,9 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
                             + 2 * INT32_BYTES * entries),
                            ('Newton tangent free restriction build (a run item)',
                             (2 * _INT64_BYTES + 3) * entries)])
-        if settings_values.get('tangent_update') == 'when_slow':   # modified Newton keeps the factor's tangent values
+        # modified Newton keeps the factor's tangent values: device tangents keep them on the GPU (the full values of
+        # _device_tangent_items: the held tangent is dropped before the next one is assembled, never two at a time)
+        if settings_values.get('tangent_update') == 'when_slow' and not device_tangent:
             host_items.append(('modified Newton: values of the held tangent', FLOAT64_BYTES * entries))
     if eigenfrequency:
         pencil = 'coupled A - sigma M' if piezoelectric else 'K - sigma M'
@@ -1580,7 +1598,10 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
             symmetric=_trivial_bloch_phase(settings_values), checked=not _trivial_bloch_phase(settings_values),
             dimensions=fill, complex_eigs=complex_eigs, n_basis=n_basis,
             # the elastic mass couples one component per row (piezoelectric: the pencil's count, an upper bound)
-            mass_entries=None if piezoelectric else factored_entries // 3)
+            mass_entries=None if piezoelectric else factored_entries // 3,
+            # ShiftPencil keeps a real M float64 in a complex pencil (loss, resistive load); a PML stretch or a Bloch
+            # phase makes M complex
+            mass_bytes=_COMPLEX_BYTES if _complex_pencil(settings_values) else FLOAT64_BYTES)
         host_items.extend((name, complex_factor * value) for name, value in _eigen_host_items(
             context, factored, rigid_motions, pml, basis_on_device))
         host_items.extend(eigen_host_items)
@@ -1601,10 +1622,13 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
                            ('frequency response summed pattern and its aligned complex / mass values', 2 * complex_csr),
                            ('frequency response solution, rhs and product vectors (complex)',
                             6 * _COMPLEX_BYTES * factored)])
-        if host_factor:
-            host_items.extend(host_factor_items(linear_back_end, 'complex SuperLU factor of the pencil (heuristic)',
-                                                2 * factor_bytes, factored, factored_entries, complex_values=True,
-                                                fill=fill))
+        if host_factor:   # real for a lossless pencil without a resistive load (HarmonicSystem keeps K real)
+            complex_factor = _lossy_response(settings_values, context) or loaded
+            host_items.extend(host_factor_items(linear_back_end,
+                                                ('complex' if complex_factor else 'real')
+                                                + ' SuperLU factor of the pencil (heuristic)',
+                                                (2 if complex_factor else 1) * factor_bytes, factored,
+                                                factored_entries, complex_values=complex_factor, fill=fill))
         host_items.extend(reduced_sweep_memory_items(context, factored, factored_entries))   # adaptive / modal
     elif host_factor:
         what = 'the coupled operator' if piezoelectric else 'K'

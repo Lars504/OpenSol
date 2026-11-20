@@ -1098,7 +1098,9 @@ def _fem_memory_estimate(settings_values, mesh, context):
         # runs eigs_shifted (the device Krylov-Schur on a DevicePencil), a real one eigsh_shifted
         eigen_transient, eigen_host_items, eigen_factors, eigen_phases, basis_on_device = eigen_device_items(
             context, vector_dofs, entries, 16 if complex_pencil else FLOAT64_BYTES, dimensions=fill,
-            complex_eigs=complex_pencil, n_basis=n_basis, mass_entries=entries // components)
+            complex_eigs=complex_pencil, n_basis=n_basis, mass_entries=entries // components,
+            # a loss factor leaves M real (float64 in the complex pencil); a PML stretch or a Bloch reduction does not
+            mass_bytes=16 if pml or complex_bloch_pencil_2d(settings_values) else FLOAT64_BYTES)
         host_items.extend((name, (2 if complex_pencil else 1) * value) for name, value in _eigen_host_items(
             context, vector_dofs, entries, rigid_motions, pml, basis_on_device))
         transient_items += eigen_transient
@@ -1114,14 +1116,18 @@ def _fem_memory_estimate(settings_values, mesh, context):
         host_items.extend((('frequency response loss and mass CSR (float64)', 2 * csr_entry_bytes * entries),
                            ('frequency response complex operator copies', 3 * (16 + INT32_BYTES) * entries),
                            ('frequency response solution vectors (complex)', 4 * 16 * vector_dofs)))
+        # HarmonicSystem keeps K real without a loss: a lossless pencil has real terms and a real factor
+        lossy = bool(context.material_sets(LOSS_ARRAYS[0]))
+        kind = 'complex' if lossy else 'real'
         if host_factor:
             host_items.extend(host_factor_items(linear_back_end,
-                                                'frequency response complex SuperLU L + U (heuristic)',
-                                                2 * _FEM_FILL_FACTOR * host_real_lu_bytes(vector_dofs), vector_dofs,
-                                                entries, complex_values=True))
+                                                f'frequency response {kind} SuperLU L + U (heuristic)',
+                                                (2 if lossy else 1) * _FEM_FILL_FACTOR * host_real_lu_bytes(vector_dofs),
+                                                vector_dofs, entries, complex_values=lossy))
         else:   # the kept HarmonicSystem: cuDSS LDL^T refreshed from the DevicePencil (K + j L, M)
-            run_items += harmonic_pencil_items(vector_dofs, entries, linear_back_end, (16, FLOAT64_BYTES))
-            factors.append(('frequency response cuDSS factor', vector_dofs, entries, 16, 2,
+            run_items += harmonic_pencil_items(vector_dofs, entries, linear_back_end,
+                                               (16 if lossy else FLOAT64_BYTES, FLOAT64_BYTES))
+            factors.append(('frequency response cuDSS factor', vector_dofs, entries, 16 if lossy else FLOAT64_BYTES, 2,
                             linear_back_end == 'cudss_mixed'))
         host_items.extend(reduced_sweep_memory_items(context, vector_dofs, entries))
     else:
@@ -1192,9 +1198,16 @@ def _memory_estimate(settings_values, mesh, context):
                                    csr_entries=entries if mixed else 0)
     if mixed:   # float32 inverse blocks (3 per node), the two CSR product outputs (float64 + float32)
         vectors += 3 * FLOAT32_BYTES * (dofs // 2) + (FLOAT64_BYTES + FLOAT32_BYTES) * dofs
-    # stencil positions (int64), indices / entry rows (int32) per entry; indptr per dof, diagonal-block positions
-    pattern = (_INT64_BYTES + 2 * INT32_BYTES) * entries + (INT32_BYTES + 2 * _INT64_BYTES) * dofs
-    operators = 2 * value_bytes * entries   # operator_full and A_solve data
+    # stencil positions (int32 below 2^31 stencil slots, else int64), indices / entry rows (int32) per entry; indptr per
+    # dof, diagonal-block positions
+    pattern = ((INT32_BYTES if entries < 2 ** 31 else _INT64_BYTES) + 2 * INT32_BYTES) * entries + (
+        INT32_BYTES + 2 * _INT64_BYTES) * dofs
+    # A_solve data (the full K is not kept) and the float64 K rows of the held dofs for reactions (held_rows: booked
+    # for every outer face held in both components; a fixed_domain region adds its own rows)
+    n_x_nodes, n_y_nodes = n_x + 1, n_y + 1
+    held_dofs = 4 * (n_x_nodes + n_y_nodes)
+    operators = value_bytes * entries + held_dofs * (_STENCIL_ENTRIES_PER_DOF * (FLOAT64_BYTES + INT32_BYTES)
+                                                     + INT32_BYTES + _INT64_BYTES)
     # fixed values, free, fixed coupling, kept load, 3 inverse-block entries per node; element area, applied body force
     # (2), the ten kept stiffness coefficients (stiffness.ElementStiffness); solid mask and its rigid-check copy
     assembly = int(5.5 * value_bytes * dofs) + (13 * value_bytes + 2 * BOOL_BYTES) * elements
@@ -1211,7 +1224,7 @@ def _memory_estimate(settings_values, mesh, context):
         run_items.append(('generalized plane strain unit solves',
                           (2 * n_terms + 1) * value_bytes * dofs + value_bytes * elements))
     if stiffness_follows_state(context):
-        # stencil, gathered data, product temporary and the new operator pair while the old pair is alive
+        # stencil, gathered data, product temporary and the new A_solve while the old one is alive
         transient_items.append(('stiffness re-assembly', 'stiffness re-assembly (state-dependent stiffness)',
                                 4 * value_bytes * entries))
     host_items = ()
@@ -1239,7 +1252,8 @@ def _memory_estimate(settings_values, mesh, context):
             transient_items += eigen_transient
             host_items += eigen_host_items
         if study == FREQUENCY_RESPONSE_STUDY:
-            host_items += frequency_response_host_items(PIEZO_COMPONENTS * (dofs // 2))
+            host_items += frequency_response_host_items(PIEZO_COMPONENTS * (dofs // 2), complex_factor=bool(
+                context.material_sets(LOSS_ARRAYS[0]) or context.material_sets(LOSS_ARRAYS[1])))
     elif study in MODAL_STUDIES:
         # mass stencil, its gathered data and CSR copy, density temporaries: freed once M is on the host
         transient_items.append(('eigen assembly', 'eigen mass assembly',
@@ -1250,7 +1264,7 @@ def _memory_estimate(settings_values, mesh, context):
         host_items = (*_eigen_host_items(context, dofs, entries), *eigen_host_items)
     elif study == FREQUENCY_RESPONSE_STUDY:   # host stencils of K, loss, M and the complex factor per frequency
         host_items = (('frequency response host stencils', 3 * _GUIDED_ASSEMBLY_BYTES_PER_ENTRY * entries),
-                      *frequency_response_host_items(dofs))
+                      *frequency_response_host_items(dofs, complex_factor=bool(context.material_sets(LOSS_ARRAYS[0])))))
     elif host_back_end:   # the static solid's host factor of A_solve (gpu backend: of a downloaded copy)
         host_items = (('A_solve CSR copy for the host factor (float64)', (FLOAT64_BYTES + INT32_BYTES) * entries),
                       *host_factor_items(host_back_end, 'SuperLU L + U factors of A_solve (float64, heuristic)',
@@ -1340,19 +1354,24 @@ EIGEN_PHASE = 'eigen solve'
 
 
 def eigen_device_items(context, dofs, entries, value_bytes, terms=2, term_bytes=None, symmetric=True, checked=False,
-                       dimensions=2, complex_eigs=False, n_basis=0, mass_entries=None) -> tuple:
+                       dimensions=2, complex_eigs=False, n_basis=0, mass_entries=None, mass_bytes=None) -> tuple:
     """(transient items by phase, host items, cuDSS factors, {factor label: its phases}, basis_on_device) of the eigen
     ShiftPencil (modal.ModalPencil) on a cuDSS factorization; ((), (), (), {}, False) on SuperLU. complex_eigs: the
     eigs_shifted path (a complex pencil: PML, loss, loaded electrodes; else eigsh_shifted), whose device matvec runs the
     device Krylov-Schur on n_basis vectors when device_arnoldi_fits; mass_entries: stored entries of M itself (None:
-    the pencil's, an upper bound; a vector Lagrange mass: entries / components; also used by definition3d)."""
+    the pencil's, an upper bound; a vector Lagrange mass: entries / components; also used by definition3d);
+    term_bytes: value bytes of each stiffness term (None: value_bytes), mass_bytes: of the M term (None: term_bytes;
+    ShiftPencil keeps a real M float64 in a complex pencil, a loss-only pencil: 8)."""
     from ...solvers.arpack_shift_invert import (DEVICE_PENCIL_MIN_ENTRIES, MIXED_EIGEN_MIN_UNKNOWNS,
                                                 arnoldi_basis_bytes)
     from ...solvers.cudss_factor import index_map_bytes, operator_copy_bytes, solve_buffer_bytes, solve_peak_bytes
+    from ...solvers.device_matrices import device_matrix_bytes, device_product_bytes
     factorization = eigen_factorization(context.solvers)
     if factorization not in CUDSS_FACTORIZATIONS:
         return (), (), (), {}, False
     term_bytes = value_bytes if term_bytes is None else term_bytes
+    mass_bytes = term_bytes if mass_bytes is None else mass_bytes
+    term_total = (terms - 1) * term_bytes + mass_bytes   # value bytes of every stored term together
     # S5c (ArpackShiftInvertSolver.factorization_for): a small cudss_mixed pencil factors in double on the host route
     switched = factorization == 'cudss_mixed' and dofs < MIXED_EIGEN_MIN_UNKNOWNS
     mixed = factorization == 'cudss_mixed' and not switched
@@ -1360,7 +1379,7 @@ def eigen_device_items(context, dofs, entries, value_bytes, terms=2, term_bytes=
     solve_vectors = ('eigen cuDSS one solve\'s vectors', solve_peak_bytes(dofs, value_bytes, mixed))
     factor_label = 'eigen cuDSS factor of K - sigma M'
     factors = ((factor_label, dofs, entries, value_bytes, dimensions, mixed),)
-    host_items = (('eigen shift pencil term values and diagonals', terms * term_bytes * (entries + dofs)),)
+    host_items = (('eigen shift pencil term values and diagonals', term_total * (entries + dofs)),)
     if not (entries >= DEVICE_PENCIL_MIN_ENTRIES and not switched):
         # a factor of the host K - sigma M: its lower-triangle (LU: full) CSR copies in the pool; host ARPACK
         copies = ('eigen cuDSS lower-triangle CSR copies',
@@ -1372,10 +1391,10 @@ def eigen_device_items(context, dofs, entries, value_bytes, terms=2, term_bytes=
     # symmetric pencil on the host (nothing beyond the stored terms), else it holds the full terms, the int64 lower
     # take and the new lower terms together
     lower = (entries + dofs) // 2 if symmetric else entries
-    stored = ('eigen DevicePencil stored terms', terms * term_bytes * lower)
+    stored = ('eigen DevicePencil stored terms', term_total * lower)
     upload = ('eigen DevicePencil upload transients (full terms, lower take, symmetry check)',
               0 if symmetric and not checked else
-              terms * term_bytes * entries + (8 * lower if symmetric else 0)
+              term_total * entries + (8 * lower if symmetric else 0)
               + (int((_SYMMETRY_CHECK_BYTES + 2 * term_bytes) * entries) if checked else 0))
     # the CudssFactorization planned from the pencil's device values (refactorize_device_lower: the lower triangle's
     # index maps alone; refactorize_device_values of a full-pattern pencil: rows, columns and diagonal slots; the
@@ -1389,11 +1408,16 @@ def eigen_device_items(context, dofs, entries, value_bytes, terms=2, term_bytes=
     # float64 row-scale gathers and their product of its equilibration, if larger)
     combined = ('eigen combined pencil values of one factorisation',
                 value_bytes * lower if symmetric else max(value_bytes, 3 * FLOAT64_BYTES) * entries)
-    # ShiftPencil.device_mass: the host M uploaded on its own pattern (values of the pencil dtype, int32 indices /
-    # indptr); the product vectors
+    # ShiftPencil.device_mass: the host M uploaded on its own pattern by device_matrices.device_matrix (float64 when
+    # real, also in a complex pencil; on a symmetric DevicePencil its strict lower triangle + diagonal); the product's
+    # vectors (eigs: complex operands; eigsh: the pencil dtype) and the solve input
     mass_entries = entries if mass_entries is None else int(mass_entries)
-    mass = ('eigen device mass product (M on its own pattern: values, int32 indices, vectors)',
-            (value_bytes + INT32_BYTES) * mass_entries + INT32_BYTES * (dofs + 1) + 3 * value_bytes * dofs)
+    real_mass = mass_bytes == FLOAT64_BYTES
+    mass = ('eigen device mass product (M on its own pattern, device_matrix; product vectors)',
+            device_matrix_bytes(dofs, mass_entries, symmetric, real_mass)
+            + device_product_bytes(dofs, symmetric=symmetric, real=real_mass,
+                                   complex_operand=complex_eigs or value_bytes > FLOAT64_BYTES)
+            + value_bytes * dofs)
     basis_on_device, basis_bytes = (arnoldi_basis_bytes(dofs, n_basis, solver_backend(context.spec),
                                                         device_matvec=True) if complex_eigs else (False, 0))
     basis = (f'eigen device Krylov-Schur basis ({n_basis} + 3 x complex128)', basis_bytes if basis_on_device else 0)
@@ -1488,20 +1512,23 @@ def _frequency_response_time_estimate(context, dofs, entries, assembly_ops, io_o
     sweep = frequency_sweep_counts(context)
     factorizations, kind = sweep['factorizations'], sweep['factorizations_kind']
     complex_bytes = 2 * FLOAT64_BYTES
+    # a lossless pencil keeps K real (HarmonicSystem): a real SuperLU, the complex rhs as its two real columns
+    lossy = bool(context.material_sets(LOSS_ARRAYS[0]))
+    solve = te.HostSolve(dofs, 2, True) if lossy else te.HostSolve(dofs, 2, False, rhs=2)
     per_factor = (te.HostStream(_HARMONIC_HOST_PASSES * (complex_bytes + INT32_BYTES) * entries),
-                  te.HostSolve(dofs, 2, True), te.Transfer(2 * complex_bytes * dofs), te.PythonCalls(40))
+                  solve, te.Transfer(2 * complex_bytes * dofs), te.PythonCalls(40))
     counter = ('solvers', context.name, 'counters', 'harmonic_factorizations')
     estimate = te.TimeEstimate((
         te.TimeItem('stiffness assembly', 'assembly', 1.0, 'exact', assembly_ops),
         te.TimeItem('harmonic host stencils', 'assembly', 1.0, 'exact',
                     (te.HostStream(3 * _GUIDED_ASSEMBLY_BYTES_PER_ENTRY * entries), te.PythonCalls(60))),
-        te.TimeItem('complex SuperLU factorisations', 'factorisation', factorizations, kind,
-                    (te.HostLU(dofs, 2, True),), counter=counter),
+        te.TimeItem(f"{'complex' if lossy else 'real'} SuperLU factorisations", 'factorisation', factorizations, kind,
+                    (te.HostLU(dofs, 2, lossy),), counter=counter),
         te.TimeItem('harmonic operator, solve and load', 'factorisation', factorizations, kind, per_factor,
                     counter=counter),
         te.TimeItem('outputs', 'frequency', sweep['field_points'], 'exact', io_ops),
         *reduced_sweep_time_items(sweep, dofs)))
-    return te.combine((estimate, *_reduced_sweep_extra_time(sweep, (te.HostSolve(dofs, 2, True),))))
+    return te.combine((estimate, *_reduced_sweep_extra_time(sweep, (solve,))))
 
 
 def _reduced_sweep_extra_time(sweep, host_solve_ops) -> tuple:
@@ -1651,12 +1678,16 @@ def _fem_time_estimate(settings_values, mesh, context):
                  te.TimeItem('outputs (full solution products)', 'frequency', sweep['field_points'], 'exact',
                              io_ops + host_rhs),
                  *reduced_sweep_time_items(sweep, unknowns))
-        work = context.solver_work('linear', unknowns=unknowns, nnz=entries, value_bytes=2 * FLOAT64_BYTES,
-                                   dimensions=2, solves=sweep['solves'], solves_kind=sweep['solves_kind'],
+        # a lossless pencil keeps K real (HarmonicSystem): a real factor, the complex rhs as two real solves
+        lossy = bool(context.material_sets(LOSS_ARRAYS[0]))
+        work = context.solver_work('linear', unknowns=unknowns, nnz=entries,
+                                   value_bytes=(2 if lossy else 1) * FLOAT64_BYTES,
+                                   dimensions=2, solves=sweep['solves'], rhs=1.0 if lossy else 2.0,
+                                   solves_kind=sweep['solves_kind'],
                                    factorizations=sweep['factorizations'],
                                    factorizations_kind=sweep['factorizations_kind'], device_values=True, **scales)
         return te.combine((te.TimeEstimate(items), work, *prestress(with_loads=False), *_reduced_sweep_extra_time(
-            sweep, (te.HostSolve(unknowns, 2, True, scale=_FEM_FILL_FACTOR),))))
+            sweep, (te.HostSolve(unknowns, 2, lossy, rhs=1 if lossy else 2, scale=_FEM_FILL_FACTOR),))))
     per_step, follows, outer_solves, kind, assemblies, assemblies_kind, solves = _static_counts(settings_values, context)
     items = (te.TimeItem('stiffness assembly', 'assembly', assemblies, assemblies_kind, assembly_ops,
                          per_step=per_step and follows),
