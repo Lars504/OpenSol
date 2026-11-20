@@ -1,6 +1,8 @@
 """Tangent refresh rule and Newton proposal of the total-Lagrangian solids (2D triangles, 3D tetrahedra): full Newton
 or modified Newton that keeps the factorised tangent while the residual falls fast. Tangent data of a device
-TangentAssembler3D go to the system's device solve. numpy only."""
+TangentAssembler3D go to the system's device solve. The full tangent data are dropped before each factorisation:
+only its free-free values reach the factor, and modified Newton keeps the held-dof rows of the factor's tangent on the
+host (`HeldRows`: enough for the lift onto a load step's held values, the tangent being symmetric). numpy only."""
 import math
 
 import numpy as np
@@ -24,7 +26,7 @@ class TangentPolicy:
 
     def reset(self) -> None:
         """Drop the held factor (a new solve or a cold-ramp restart: the runtime may hold another factor by now)."""
-        self.data = None            # tangent values (fixed-pattern data) of the held factor, None = none held
+        self.data = None            # host HeldRows values of the held factor's tangent, None = no factor held
         self._previous = None       # max |free residual| of the previous iteration of this load step
         self._ratio = math.inf      # residual ratio of the latest iteration that had a previous one
 
@@ -59,19 +61,63 @@ def _full_product(assembler, data, vector) -> np.ndarray:
     return assembler.full_product(data, vector) if _device(assembler) else assembler.full(data) @ vector
 
 
-def _solve_tangent(system, assembler, data, rhs) -> np.ndarray:
-    """Free-dof solution on a new factor of the tangent data: device data refresh the cuDSS factor on the device, host
-    data hand the reduced host CSR over."""
+def _free_tangent(assembler, data):
+    """Free-free part of tangent data, an own copy: device values on the host reduced pattern (device data) or the host
+    reduced CSR, so the full data can be dropped before the factorisation."""
+    return assembler.reduced_values(data) if _device(assembler) else assembler.reduced(data)
+
+
+def _solve_tangent(system, assembler, free_tangent, rhs) -> np.ndarray:
+    """Free-dof solution on a new factor of a _free_tangent: device values refresh the cuDSS factor on the device, a
+    host reduced CSR is handed over."""
     if _device(assembler):
         pattern = assembler.pattern
-        return system.solve_tangent_device(assembler.reduced_values(data), pattern.reduced_indptr,
-                                           pattern.reduced_indices, rhs)
-    return system.solve_tangent_reduced(assembler.reduced(data), rhs)
+        return system.solve_tangent_device(free_tangent, pattern.reduced_indptr, pattern.reduced_indices, rhs)
+    return system.solve_tangent_reduced(free_tangent, rhs)
+
+
+class HeldRows:
+    """Rows of the held dofs of the assembler's fixed tangent pattern (host CSR index arrays, built once per Newton
+    solve): `values(data)` takes the host values of those rows from tangent data (device data: gathered on the device
+    by a kept device take, only the held entries cross), `lift(values, correction)` = T[:, held] correction[held] =
+    rows^T correction[held] (T symmetric: the 'linear' factor vouches it), the full (n,) host product of a correction
+    that is 0 off the held dofs."""
+
+    def __init__(self, assembler, held):
+        pattern = assembler.pattern
+        self.n = int(pattern.n)
+        self.rows = np.flatnonzero(np.asarray(held, dtype=bool))
+        indptr = np.asarray(pattern.indptr, dtype=np.int64)
+        starts = indptr[self.rows]
+        self._counts = indptr[self.rows + 1] - starts   # entries per held row
+        row_starts = np.zeros(len(self.rows) + 1, dtype=np.int64)
+        np.cumsum(self._counts, out=row_starts[1:])
+        index = np.int32 if int(pattern.nnz) < 2 ** 31 else np.int64
+        take = (np.repeat(starts - row_starts[:-1], self._counts)
+                + np.arange(int(row_starts[-1]), dtype=np.int64)).astype(index)
+        self.columns = np.asarray(pattern.indices)[take]
+        self._device = _device(assembler)
+        self._xp = assembler.xp if self._device else np
+        self._take = self._xp.asarray(take)   # device data: on the device (the held entries' only device array)
+
+    def values(self, data) -> np.ndarray:
+        """Host float64 values (held entries,) of the held rows of tangent data (host or device)."""
+        if self._device:
+            return self._xp.asnumpy(data[self._take])
+        return data[self._take]
+
+    def lift(self, values, correction) -> np.ndarray:
+        """Host (n,) T correction for a correction that is 0 off the held dofs (values: `values` of T)."""
+        weights = values * np.repeat(np.asarray(correction, dtype=np.float64)[self.rows], self._counts)
+        return np.bincount(self.columns, weights=weights, minlength=self.n)
 
 
 def newton_proposer(policy, assembler, system, fixed_stress, held, free, scale, floor, latest):
     """propose_for(load, held_values) -> propose(current) of the Newton loop on the fixed-pattern tangent assembler:
-    tangent + force (or the force alone on a reused factor), the held dofs lifted onto the step's values, one solve."""
+    tangent + force (or the force alone on a reused factor), the held dofs lifted onto the step's values, one solve.
+    The full tangent data are dropped before the factorisation (its free-free copy and, modified Newton, the host
+    HeldRows values live on)."""
+    held_rows = HeldRows(assembler, held) if policy.tangent_update == 'when_slow' else None
 
     def propose_for(load, held_values):
         policy.start_step()
@@ -85,22 +131,26 @@ def newton_proposer(policy, assembler, system, fixed_stress, held, free, scale, 
             latest.update(state=current.copy(), force=force)
             residual = force - load
             reuse = policy.reuse(residual[free])
-            if not reuse:   # the held tangent is dead: freed before a new one is assembled (never two beside the factor)
+            if not reuse:   # the held rows of a dead factor: freed before a new tangent is assembled
                 policy.data = None
             if not reuse and data is None:   # the residual fell too slowly: the tangent at this state after all
                 _, data = assembler.force_and_tangent(current, initial_stress=fixed_stress)
             correction = np.where(held, held_values - current, 0.0)   # the held dofs onto this step's values
-            if correction.any():   # first iteration of a load step (a reused factor lifts with its own tangent)
-                residual += _full_product(assembler, policy.data if reuse else data, correction)
+            if correction.any():   # first iteration of a load step (a reused factor lifts with its own held rows)
+                residual += (held_rows.lift(policy.data, correction) if reuse
+                             else _full_product(assembler, data, correction))
             proposal = current + correction
             if reuse:
                 policy.n_reuses += 1
                 proposal[free] -= system.solve_last_tangent(residual[free])
             else:
-                policy.data = None   # a failed factorisation leaves nothing reusable
+                kept = None if held_rows is None else held_rows.values(data)   # full Newton holds nothing
+                free_tangent = _free_tangent(assembler, data)
+                data = None   # the full tangent never lives beside the factorisation
                 policy.n_factorizations += 1
-                proposal[free] -= _solve_tangent(system, assembler, data, residual[free])
-                policy.data = data if policy.tangent_update == 'when_slow' else None   # full Newton holds nothing
+                proposal[free] -= _solve_tangent(system, assembler, free_tangent, residual[free])
+                del free_tangent
+                policy.data = kept   # set after a successful solve: a failed factorisation leaves nothing reusable
             scale[...] = max(floor, float(np.abs(proposal).max()))
             return proposal
         return propose

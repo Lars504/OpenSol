@@ -1438,9 +1438,29 @@ def _newton_time(settings_values, mesh, context, unknowns, scales, solves, kind,
         **scales)))
 
 
+def held_tangent_rows(boundary_dofs, components, entries_per_row, device) -> tuple:
+    """(host bytes, device bytes) of modified Newton's tangent_update.HeldRows (also used by definition) over every
+    outer-face dof (an upper figure for face holds; a fixed_domain hold of an inner volume holds more): float64 values
+    and int32 columns per held entry, its int32 take on the host or (device tangents) on the device, int64 row ids and
+    entry counts per held row."""
+    rows = components * int(boundary_dofs)
+    held_entries = int(round(rows * entries_per_row))
+    host = (FLOAT64_BYTES + INT32_BYTES + (0 if device else INT32_BYTES)) * held_entries + 2 * _INT64_BYTES * rows
+    return host, INT32_BYTES * held_entries if device else 0
+
+
+def _outer_face_dofs(mesh, order) -> int:
+    """Scalar dofs on the outer boundary of a tetrahedron mesh: boundary faces b = 2 n_faces - 4 n_elements (each
+    element has 4 faces, an inner face is shared by 2); a closed triangulated surface has ~b / 2 nodes and 3 b / 2
+    edges (P2: + one dof per edge)."""
+    boundary = max(2 * int(getattr(mesh, 'n_faces', 0)) - 4 * int(mesh.n_elements), 0)
+    return boundary // 2 + (3 * boundary // 2 if order == 2 else 0)
+
+
 def _device_tangent_items(order, elements, scalar_dofs, entries, reduced_entries, factored):
     """(run items, transient items) of the device Newton tangents (uncalibrated): the kept TangentAssembler3D
-    caches, values, vectors and cuDSS index maps; one chunk's temporaries per tangent assembly."""
+    caches, the factor's values, vectors and cuDSS index maps; one chunk's temporaries and the full tangent values per
+    tangent assembly (newton_proposer drops them before the factorisation)."""
     local = 10 if order == 2 else 4
     points = _TANGENT_RULE_POINTS[order]
     columns = 3 * local
@@ -1450,16 +1470,17 @@ def _device_tangent_items(order, elements, scalar_dofs, entries, reduced_entries
               + INT32_BYTES * elements * (columns ** 2 + 4 * local)
               + FLOAT64_BYTES * elements * (36 + 6)
               + INT32_BYTES * (entries + 3 * scalar_dofs) + 2 * INT32_BYTES * reduced_entries + INT32_BYTES * factored)
-    values = FLOAT64_BYTES * (entries + 3 * reduced_entries) + 4 * FLOAT64_BYTES * 3 * scalar_dofs
+    values = FLOAT64_BYTES * 3 * reduced_entries + 4 * FLOAT64_BYTES * 3 * scalar_dofs
     # one chunk of TangentAssembler3D's device size (the byte cap; a tighter pool gives smaller chunks) on the element
     # kernel: forces, blocks and gathered displacements
     chunk = (min(elements, device_tangent_chunk_elements(local, points, element_kernel=True))
              * tangent_chunk_element_bytes(local, points, element_kernel=True))
     maps = INT32_BYTES * (2 * reduced_entries + (reduced_entries + factored) // 2) + (_INT64_BYTES + 1) * factored
     return ([('device Newton tangent assembler caches (gradients, scatter slots, dofs, C, S0, pattern)', caches),
-             ('device Newton tangent values (full, reduced, equilibrated) and vectors', values),
+             ('device Newton tangent factor values (reduced, equilibrated) and vectors', values),
              ('cuDSS device index maps of the tangent pattern (rows, columns, diagonal, lower take)', maps)],
-            [('Newton tangent assembly', 'device Newton tangent chunk temporaries', chunk)])
+            [('Newton tangent assembly', 'device Newton tangent chunk temporaries', chunk),
+             ('Newton tangent assembly', 'device Newton full tangent values (float64)', FLOAT64_BYTES * entries)])
 
 
 def _tetrahedra_memory_estimate(settings_values, mesh, context):
@@ -1576,10 +1597,14 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
                             + 2 * INT32_BYTES * entries),
                            ('Newton tangent free restriction build (a run item)',
                             (2 * _INT64_BYTES + 3) * entries)])
-        # modified Newton keeps the factor's tangent values: device tangents keep them on the GPU (the full values of
-        # _device_tangent_items: the held tangent is dropped before the next one is assembled, never two at a time)
-        if settings_values.get('tangent_update') == 'when_slow' and not device_tangent:
-            host_items.append(('modified Newton: values of the held tangent', FLOAT64_BYTES * entries))
+        # modified Newton keeps only the held-dof rows of the factor's tangent on the host (tangent_update.HeldRows;
+        # device tangents: its take on the GPU); the full values are dropped before each factorisation
+        if settings_values.get('tangent_update') == 'when_slow':
+            held_host, held_device = held_tangent_rows(_outer_face_dofs(mesh, order), 3, 3 * scalar_entries,
+                                                       device_tangent)
+            host_items.append(('modified Newton: held-dof rows of the held tangent (outer-face dofs)', held_host))
+            if held_device:
+                run_items.append(('modified Newton: device take of the held-dof tangent rows', held_device))
     if eigenfrequency:
         pencil = 'coupled A - sigma M' if piezoelectric else 'K - sigma M'
         complex_factor = 2 if eigen_bytes == _COMPLEX_BYTES else 1

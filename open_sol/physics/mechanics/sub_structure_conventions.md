@@ -246,9 +246,11 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
 - Device tangents (3D: gpu backend and a cuDSS 'linear' back end): held `policy.data` is device data, so code using the
   assembler's data goes through its methods (`full_product`, `solve_tangent_device`), never
   `assembler.full(data) @ host_vector`. Memory and the shared K / tangent block pattern (counted once, under the
-  stiffness): fem sub file "Device tangents", "Block patterns". `newton_proposer` drops the held tangent as soon as an
-  iteration refactorises, before the new tangent is assembled: never two tangents beside the factor (the estimate
-  books one device tangent; a new use of the held data keeps that order).
+  stiffness): fem sub file "Device tangents", "Block patterns". `newton_proposer` drops the full tangent data before
+  each factorisation (only the free-free copy reaches the factor) and modified Newton holds only the host held-dof
+  rows (`tangent_update.HeldRows`), dropped as soon as an iteration refactorises: the estimate books the full values
+  in the 'Newton tangent assembly' phase. The reused factor's lift is rows^T correction, exact only for a symmetric
+  tangent: a non-symmetric term (follower loads) must keep the held columns instead.
 - Case gotcha: prescribed_displacement_domain on every node of a 3D selection locks cross-section rotation; a deflection
   hold on a whole end face of a thin structure adds a spurious quartic energy (Duffing alpha + 2 .. 5 %): the Duffing
   self-tests hold mid-plane / mid-line nodes through the API and take k from a linear-load solve (fitting k too trades
