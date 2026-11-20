@@ -156,7 +156,8 @@ def real_cross_section_operator(settings_values, context):
 
 
 def resonance_search_items(backend, unknowns, n_wanted, n_basis, own_cudss, filter_entries, scaled_block=None,
-                           sparse_mass_entries=0, symmetric_mass=True, single_basis=False, symmetric_operator=None):
+                           sparse_mass_entries=0, symmetric_mass=True, single_basis=False, symmetric_operator=None,
+                           real_values=False):
     """(host items, transient items) of eigenfrequency.solve_resonances: EIGEN_PHASE the device Krylov-Schur basis
     (first pass; no widening reserve; single_basis: complex64 rows, polished_mixed_search) or ARPACK's host basis (the
     EIGEN_ROLE job's); FILTER_PHASE on the gpu the resonance filter between passes (the basis parked on the host): its
@@ -165,11 +166,13 @@ def resonance_search_items(backend, unknowns, n_wanted, n_basis, own_cudss, filt
     column blocks (scaled_block: the D v block of a polished search, None = own_cudss); in both its window / weight
     vectors and, an own cuDSS factor with a sparse B, the B copy the solves and the filter share; the host eigenvectors.
     symmetric_mass: B, W stored as lower triangles (solve_resonances(symmetric=True)); symmetric_operator: A too (None:
-    = symmetric_mass when B is sparse, the FEM searches). Complex values are booked for A and B (a lossless, PML-free
-    model holds 12 of their 20 B per entry: the estimate cannot see the materials). The own factor's copies:
-    own_cudss_search_items."""
+    = symmetric_mass when B is sparse, the FEM searches). real_values: A and B have no imaginary part (a lossless,
+    PML-free model: float64, 12 of 20 B per entry; the caller's materials test), else complex values are booked. The
+    own factor's copies: own_cudss_search_items."""
     if symmetric_operator is None:
         symmetric_operator = bool(sparse_mass_entries) and bool(symmetric_mass)
+    real_values = bool(real_values)
+    value_type = 'float64' if real_values else 'complex'
     gpu = backend == 'gpu'
     vector_bytes = COMPLEX128_BYTES * int(unknowns)
     host_items = [(f'eigenvectors ({n_wanted} x complex128)', n_wanted * vector_bytes)]
@@ -191,18 +194,18 @@ def resonance_search_items(backend, unknowns, n_wanted, n_basis, own_cudss, filt
         return 'lower triangle + diagonal' if symmetric else 'full CSR'
     if own_cudss and sparse_mass_entries:   # eigenfrequency: device_mass, uploaded once for both
         transient_items += solver_job_items(EIGEN_ROLE, [
-            (phase, f'B = -M on the device (complex {stored(symmetric_mass)}; the solves and the resonance filter share '
-                    'it)', device_matrix_bytes(unknowns, sparse_mass_entries, symmetric_mass, False))
+            (phase, f'B = -M on the device ({value_type} {stored(symmetric_mass)}; the solves and the resonance filter '
+                    'share it)', device_matrix_bytes(unknowns, sparse_mass_entries, symmetric_mass, real_values))
             for phase in (EIGEN_PHASE, FILTER_PHASE)])
     # one operator at a time (_ResonanceFilter.measures): the largest of A, the FEM W and an unshared B
-    uploads = [(f'A complex {stored(symmetric_operator)}',
-                device_matrix_bytes(unknowns, filter_entries, symmetric_operator, False))]
+    uploads = [(f'A {value_type} {stored(symmetric_operator)}',
+                device_matrix_bytes(unknowns, filter_entries, symmetric_operator, real_values))]
     if sparse_mass_entries:
         uploads.append((f'W float64 {stored(symmetric_mass)}',
                         device_matrix_bytes(unknowns, sparse_mass_entries, symmetric_mass, True)))
         if not own_cudss:
-            uploads.append((f'B complex {stored(symmetric_mass)}',
-                            device_matrix_bytes(unknowns, sparse_mass_entries, symmetric_mass, False)))
+            uploads.append((f'B {value_type} {stored(symmetric_mass)}',
+                            device_matrix_bytes(unknowns, sparse_mass_entries, symmetric_mass, real_values)))
     upload_label, upload_bytes = max(uploads, key=lambda upload: upload[1])
     columns = min(FILTER_DEVICE_BLOCK_COLUMNS, max(int(n_wanted), 1))
     blocks = _FILTER_BLOCKS + (1 if (own_cudss if scaled_block is None else scaled_block) else 0)
@@ -227,8 +230,9 @@ def own_cudss_search_items(label, unknowns, entries, mixed, symmetric=True) -> l
 
 def _resonance_search(context, n_resonances, unknowns, own_cudss, filter_entries, basis_per_wanted=0,
                       scaled_block=None, sparse_mass_entries=0, symmetric_search=False, ldlt=None,
-                      polished_double=False):
-    """resonance_search_items on the run backend of a search for n_resonances: 2 n_resonances + 10 wanted (within 1 ..
+                      polished_double=False, real_values=False):
+    """resonance_search_items (real_values passed on) on the run backend of a search for n_resonances: 2 n_resonances
+    + 10 wanted (within 1 ..
     unknowns - 2), the Arnoldi basis of the eigen subspace_size, else basis_per_wanted x wanted, else scipy's;
     symmetric_search (solve_resonances(symmetric=True): A itself complex symmetric, FEM and the BOR FIT operator): the
     filter's lower triangles; ldlt (None = symmetric_search; True also for a symmetrized D A without Bloch phase /
@@ -243,7 +247,8 @@ def _resonance_search(context, n_resonances, unknowns, own_cudss, filter_entries
     return resonance_search_items(solver_backend(context.spec), unknowns, n_wanted, n_basis, own_cudss=own_cudss,
                                   filter_entries=filter_entries, scaled_block=scaled_block,
                                   sparse_mass_entries=sparse_mass_entries, symmetric_mass=symmetric_search,
-                                  single_basis=single_basis, symmetric_operator=symmetric_search)
+                                  single_basis=single_basis, symmetric_operator=symmetric_search,
+                                  real_values=real_values)
 
 
 def cudss_factor_items(label, n_unknowns, entries, dimensions=2, mixed=False, general=False, value_bytes=16):
@@ -588,7 +593,9 @@ def _fdfd_fem_memory_estimate(settings_values, mesh, context):
         n_resonances = int(_study_values(context).get('n_resonances') or 1)
         search_host, transient_items = _resonance_search(context, n_resonances, unknowns, on_device, entries,
                                                          sparse_mass_entries=entries,   # A, B, W: one pattern
-                                                         symmetric_search=True)
+                                                         symmetric_search=True,   # lossless, no PML ring: real
+                                                         real_values=real_cross_section_operator(settings_values,
+                                                                                                 context))
         host_items += [*search_host,
                        (f'resonance vectors ({n_resonances} x complex128)', n_resonances * vector_bytes),
                        ('shifted operator copy (sparse complex128)', entries * COMPLEX128_CSR_ENTRY_BYTES)]
