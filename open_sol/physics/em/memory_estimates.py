@@ -472,8 +472,9 @@ def fdtd_memory_estimate(polarization):
 
 def fdfd_memory_estimate(polarization):
     """PhysicsType.memory_estimate of em_fdfd_<polarization> (solvers/fdfd_2d, harmonic, operators; the resolved
-    sparse_direct back end of context.solvers): the system and solution are run items, its assembly an ASSEMBLY_PHASE
-    item; a cuDSS factor (+ the transpose's LU of an adjoint solve with a Bloch phase) is external. Triangles:
+    sparse_direct back end of context.solvers): the system and solution are run items (an eigen search on the gpu:
+    the system an ASSEMBLY_PHASE item, parked during the search), its assembly an ASSEMBLY_PHASE item; a cuDSS factor
+    is external. Triangles:
     _fdfd_fem_memory_estimate."""
     def estimate(settings_values, mesh, context):
         if getattr(mesh, 'kind', 'tensor') == 'triangles':
@@ -485,13 +486,15 @@ def fdfd_memory_estimate(polarization):
                  ('dispersive pole masks', sum((n_drude + n_lorentz) * BOOL_BYTES * box_cells
                                                for box_cells, n_drude, n_lorentz in _pole_regions(context)))]
         solution_bytes = 3 * COMPLEX128_BYTES * n_cells
-        run_items = [('solution and face fields (3 x complex128)', solution_bytes),
-                     ('Yee operators (4 sparse complex128) and their kept kron entry maps (int32)',
-                      4 * (2 * (COMPLEX128_CSR_ENTRY_BYTES + INT32_BYTES) + sparse_row) * n_cells),
-                     ('kept Helmholtz term plan (int32; polar grids have none)', _FDFD_PLAN_BYTES * n_cells),
-                     ('Helmholtz operator (sparse complex128)',
-                      (5 * COMPLEX128_CSR_ENTRY_BYTES + sparse_row) * n_cells),
-                     (f'system arrays ({n_system_arrays} x complex128)', n_system_arrays * COMPLEX128_BYTES * n_cells)]
+        run_items = [('solution and face fields (3 x complex128)', solution_bytes)]
+        # the device HarmonicSystem: run items, or ASSEMBLY_PHASE items where the eigen search parks it
+        system_items = [('Yee operators (4 sparse complex128) and their kept kron entry maps (int32)',
+                         4 * (2 * (COMPLEX128_CSR_ENTRY_BYTES + INT32_BYTES) + sparse_row) * n_cells),
+                        ('kept Helmholtz term plan (int32; polar grids have none)', _FDFD_PLAN_BYTES * n_cells),
+                        ('Helmholtz operator (sparse complex128)',
+                         (5 * COMPLEX128_CSR_ENTRY_BYTES + sparse_row) * n_cells),
+                        (f'system arrays ({n_system_arrays} x complex128)',
+                         n_system_arrays * COMPLEX128_BYTES * n_cells)]
         # _assemble: the old system is dropped first; a single solve assembles before its solution and factor exist
         assembly_bytes = _FDFD_ASSEMBLY_BYTES * n_cells
         single_solve = not later_factorisations(context)
@@ -506,7 +509,11 @@ def fdfd_memory_estimate(polarization):
         operator_copy = (5 * COMPLEX128_CSR_ENTRY_BYTES + sparse_row) * n_cells
         back_end = resolved_back_end(context.solvers)
         superlu_host = False   # host items with a SuperLU factor: the eps_xy fill below adds to them
-        if eigen_solved(context.spec, context.physics_spec.name):   # no driven solve: the shift-invert factor instead
+        eigen = eigen_solved(context.spec, context.physics_spec.name)
+        # fdfd_2d._park_device_system: on the gpu without a line_block solver the eigen search frees the device system
+        # (and its eps_xy couplings) and reassembles it afterwards, so it is alive only around the assemblies
+        parked = eigen and solver_backend(context.spec) == 'gpu' and not line_block_items
+        if eigen:   # no driven solve: the shift-invert factor instead
             from .cross_section_modes import cpml_cross_section
             bloch = bool(bloch_active_axes(settings_values))
             host_items, eigen_transient, external_items, external_extra = _eigen_items(   # fdfd_2d._symmetrizer: D A
@@ -551,7 +558,13 @@ def fdfd_memory_estimate(polarization):
                            2 * operator_copy)]
         else:
             run_items += line_block_items
-        run_items += off_diagonal_run
+        if parked:   # all but the physics' own eps_xy change array live on the system
+            system_items += [item for item in off_diagonal_run if not item[0].startswith('eps_xy coupled change')]
+            run_items += [item for item in off_diagonal_run if item[0].startswith('eps_xy coupled change')]
+            transient_items += [(ASSEMBLY_PHASE, f'{label} (freed during the eigen search)', size)
+                                for label, size in system_items]
+        else:
+            run_items += system_items + off_diagonal_run
         host_items += off_diagonal_host if superlu_host else []
         transient_items.append((ASSEMBLY_PHASE, 'Helmholtz assembly (term plan build sort / term buffer)'
                                 + (' before the solution and factor exist' if single_solve else ''),

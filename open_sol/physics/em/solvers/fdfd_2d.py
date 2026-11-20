@@ -294,28 +294,56 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
         cell_areas = np.outer(*(np.asarray(factor, dtype=np.float64) for factor in area_factors))
         in_window = np.zeros(shape, dtype=bool)
         in_window[self.domain.physical_window()] = True
-        arguments = (_host_sparse(system.operator), mass, system.omega, cell_areas, in_window, n_resonances)
+        host_operator = _host_sparse(system.operator)
+        arguments = (host_operator, mass, system.omega, cell_areas, in_window, n_resonances)
         # E2: D A measured complex symmetric (none with a Bloch phase or eps_xy): ARPACK to 1e-6 + float64 Rayleigh
         # quotients on any factor when A is complex (PML / loss)
         options = {'field_of': lambda vector: vector.reshape(shape), 'eigen_solver': self.eigen_solver,
                    'symmetrizer': self._eigen_symmetrizer(system.omega),
-                   'rayleigh_symmetrizer': self._adjoint_symmetrizer()}
+                   'rayleigh_symmetrizer': self._adjoint_symmetrizer(host_operator)}
         if self.resonance_region is not None:
             options.update(in_region=self.resonance_region.cells.ravel(),
                            min_region_fraction=self.resonance_region.min_fraction)
         kept = self._system_line_factor() if self._line_block is not None else None
         factorization = (None if kept is None else
                          LineBlockFactorization(kept[0], kept[1], f'{self._line_block.label()} (shift-invert)'))
+        size_warnings = self._eigen_size_warnings() if factorization is None else ()
+        # gpu, the eigen role's own factor: the search runs on host copies, so the device system waits freed
+        parked = factorization is None and self._park_device_system()
+        del system, pinned, cell_mass
         try:
             self.eigen_solve = solve_resonances(*arguments, factorization=factorization, **options,
-                                                warnings=self._eigen_size_warnings() if factorization is None else ())
+                                                warnings=size_warnings)
         except RejectedLineBlockSolve as exc:
             self.n_line_block_fallbacks += 1
             self.runtime_warnings.append(f'{exc}; shift-invert by host SuperLU instead')
             self._drop_line_factor()
             self._line_factor = _REJECTED
             self.eigen_solve = solve_resonances(*arguments, **options, warnings=self._eigen_size_warnings())
+        if parked:   # the same system again (materials and omega unchanged): select_resonance reads it
+            del arguments, host_operator, options
+            self._refresh_system(check_driven_size=False)
         return self.eigen_solve
+
+    def _park_device_system(self) -> bool:
+        """Free the device HarmonicSystem (Helmholtz operator, system arrays, the Yee operators of the omega and the kept
+        Yee entry maps / Helmholtz term plan: ~0.6 kB per cell) for an eigen search on its host copies, the freed
+        blocks returned to the device (the own cuDSS factor lies outside the pool); the system is marked dirty, so the
+        next _refresh_system reassembles it (one first assembly with its plan build: tens of ms per 1e6 cells beside
+        a search of seconds). True when parked: the gpu backend without a line_block solver (whose factor is kept)."""
+        if self.xp is np or self._line_block is not None:
+            return False
+        from ....core.gpu_memory import release_cached_blocks
+        self._refresh_pending_state()   # it reads this system's face fields
+        self.system = None
+        self._face_fields = None
+        self._adjoint_symmetry = None
+        self._yee_ops = None
+        self._kept_yee = None
+        self._system_solved = False
+        self._mark_system_dirty(ports=False, omega_only=True)   # materials unchanged: no new serial, ports kept
+        release_cached_blocks()
+        return True
 
     def _eigen_symmetrizer(self, omega):
         """_symmetrizer for an eigen solver whose own factorization is an LDL^T (cuDSS, MUMPS, PARDISO), else None."""
@@ -698,9 +726,10 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
         self._line_factor = _REJECTED
         return None
 
-    def _adjoint_symmetrizer(self):
+    def _adjoint_symmetrizer(self, host_operator=None):
         """Host D of the current system when D A is complex symmetric (so A^T = D A D^-1), else None (Bloch phase,
-        eps_xy, or a measured asymmetry above cudss_factor.SYMMETRY_TOLERANCE); checked once per system."""
+        eps_xy, or a measured asymmetry above cudss_factor.SYMMETRY_TOLERANCE); checked once per system (host_operator:
+        a host copy of system.operator the caller holds, else one is downloaded)."""
         system = self.system
         if self._adjoint_symmetry is not None and self._adjoint_symmetry[0] is system:
             return self._adjoint_symmetry[1]
@@ -708,8 +737,7 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
         if symmetrizer is not None:
             import scipy.sparse
             from ....solvers.cudss_factor import SYMMETRY_TOLERANCE, relative_asymmetry
-            operator = system.operator
-            host = operator.get() if hasattr(operator, 'get') else operator
+            host = host_operator if host_operator is not None else _host_sparse(system.operator)
             if relative_asymmetry(scipy.sparse.diags(symmetrizer) @ host) > SYMMETRY_TOLERANCE:
                 symmetrizer = None
         self._adjoint_symmetry = (system, symmetrizer)
