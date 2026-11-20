@@ -1,5 +1,5 @@
 {
-  "title": "Analytic: line-current Green's function, E_z (FDFD)",
+  "title": "Line-current Green's function, E_z (FDFD, analytic)",
   "description": "A z-directed filament current I in vacuum (all-CPML 4 x 4 um box, stationary study at 1 um, the source in a cell centre), swept over dx_cell.\nAnalytic: E_z = (omega mu0 I / 4) H0^(2)(k r).\nLine profile tab: pick the analytic curve 'hankel_axis' to plot |E_z| along +x from the source with the exact Hankel modulus dashed.\nDerived values tab: |E_z| (E_axis, E_diag) and phase (phase_axis, phase_diag = arg H0^(2)(k r)) at r = 1 um along x and r = 0.99 um along the diagonal vs their analytic references.\nSweep tab: each derived value vs dx_cell with the reference dashed; the error should fall roughly 4x per halving (2nd order).\nField tab: |E_z| and Re E_z of the last (finest) run.",
   "version": 1,
   "parameters": [

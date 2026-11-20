@@ -1,5 +1,5 @@
 {
-  "title": "Analytic: lowest TM and TE modes of a PEC sphere cavity (spherical multipoles, eigenfrequency)",
+  "title": "Lowest TM and TE modes of a PEC sphere cavity (spherical multipoles, eigenfrequency, analytic)",
   "description": "A vacuum sphere of radius a = 1 um with a perfect-metal wall (bc_x_hi pec) on the spherical (r, theta) half disc of em_fdfd_sphere, 2 nm radial cells, 90 theta cells (display only), multipole_order 1, both families, eigenfrequency study near 1.8 um with one resonance per term: row 0 = the electric family (er, TM_101: E_r != 0), row 1 = the magnetic family (hr, TE_101: H_r != 0). A closed cavity: real resonances, Q = inf.\nAnalytic: TM_l: (x j_l(x))' = 0, TE_l: j_l(x) = 0 at x = k a; l = 1: x_TM = 2.743707, x_TE = 4.493409, so lambda = 2 pi a / x = 2.29004 um and 1.39831 um.\nDerived values tab: lambda_TM101 (row 0) and lambda_TE101 (row 1) vs those values (second order: ~1e-5 at 2 nm).\nField tab (Snapshot slider): resonance 1 has |E_r| and |E_t| (E_t vanishes on the wall), resonance 2 only |E_t| (zero on the wall) and |H_r|, |H_t|.",
   "version": 2,
   "parameters": [

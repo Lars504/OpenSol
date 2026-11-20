@@ -70,13 +70,14 @@ validate.
 
 Naming: this file lists examples by file stem, the GUI by `title`. Menu path: Examples -> folder label (one folder
 per physics area, 2D, 3D and axisymmetric models together: `em` = Electromagnetics, `mechanics` = Solid mechanics, ...)
--> space (2D, 3D, Axisymmetric: cylinder symmetry, from the domain and the physics settings; the models with several
+-> space (1D, 2D, 3D, Axisymmetric: cylinder symmetry, Spherical: a 2D domain with coordinates 'spherical'; from the
+domain and the physics settings; folders without a model file are not listed; the models with several
 physics types follow after a separator under Multiphysics -> space; the `multiphysics` folder opens on the spaces
-directly) -> physics type label (only when the space holds several, e.g. 'Electromagnetic Waves, frequency domain
-(2D, electric field out of plane)' for em_fdfd_ez; models with several types under 'label + label') -> title, sorted
-alphabetically. Titles: analytic benchmarks start with
-'Analytic: ', then what the model shows, then the method / study in parentheses, e.g. `analytic_fdfd_eigen_slab_q` =
-'Analytic: leaky Fabry-Perot slab resonance and Q (FDFD eigenfrequency)'; models without a reference drop the prefix.
+directly) -> physics type label (only when the space holds several; under Electromagnetics without the leading
+'Electromagnetic Waves, ', e.g. 'Frequency domain (2D, electric field out of plane)' for em_fdfd_ez; models with
+several types under the full 'label + label') -> title, sorted alphabetically. Titles: what the model shows, then the
+method / study in parentheses, analytic benchmarks ending it with 'analytic', e.g. `analytic_fdfd_eigen_slab_q` =
+'Leaky Fabry-Perot slab resonance and Q (FDFD eigenfrequency, analytic)'; models without a reference drop it.
 The tooltip ends with the relative file path, so hovering a title gives the stem.
 
 ## Analytic benchmarks (GUI model files)

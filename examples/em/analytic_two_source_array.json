@@ -1,5 +1,5 @@
 {
-  "title": "Analytic: two line-source array far field and Hankel near field",
+  "title": "Two line-source array far field and Hankel near field (analytic)",
   "description": "Two in-phase cw E_z line sources, d_src = 1.5 lambda0 apart along x, in a CPML-bounded vacuum box (FDTD).\nAnalytic: array factor cos^2(pi d cos(angle) / lambda) with lobes at 90, +-48.2 deg and nulls at 0, +-70.5 deg; steady probe amplitude E_amp = (omega mu0 I / 4) |H0^(2)(k r1) + H0^(2)(k r2)|.\nFar field tab: em.far vs the dashed array_factor (both peak-normalised).\nProbes tab: em.probe between the dashed +-E_amp lines. Derived values tab: E_steady vs its reference.",
   "version": 1,
   "parameters": [

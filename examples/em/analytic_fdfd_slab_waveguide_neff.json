@@ -1,5 +1,5 @@
 {
-  "title": "Analytic: slab waveguide n_eff, E_z and H_z (FDFD)",
+  "title": "Slab waveguide n_eff, E_z and H_z (FDFD, analytic)",
   "description": "A 280 nm silicon slab in silica; physics 'em' (E_z = TE slab mode) and 'em_hz' (H_z = TM), each with a mode source launching mode 1 toward +x and two mode monitors; one stationary solve per sweep value of lambda0.\nAnalytic: E_z tan(u) = w / u, H_z tan(u) = (eps_si / eps_sio2) w / u, with u = kappa d / 2, w = gamma d / 2, u^2 + w^2 = V^2; neff_te and neff_tm are solved in the parameters by 5 Newton steps.\nSweep tab: neff_ez / neff_hz (downstream monitor n_eff) vs lambda0 with the analytic dispersion dashed, and T_ez / T_hz (downstream fraction_positive, 1 for a lossless straight guide).\nDerived values tab: the same for the current run with reference and relative error (n_eff ~1e-3 expected, H_z worse: face-averaged eps at the slab edges).\nSpectra tab: the port results. Field tab: |E_z| and |H_z| of the last run.",
   "version": 1,
   "parameters": [

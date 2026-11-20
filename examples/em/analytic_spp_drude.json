@@ -1,5 +1,5 @@
 {
-  "title": "Analytic: surface plasmon polariton on a Drude metal (H_z)",
+  "title": "Surface plasmon polariton on a Drude metal (H_z, analytic)",
   "description": "An H_z mode source launches the surface plasmon polariton along a Drude metal / air interface toward +x; two mode monitors downstream (FDTD).\nAnalytic: n_spp = sqrt(eps_m / (eps_m + 1)); the mode power decays as exp(-4 pi |Im n| d / lambda), 1/e length L_spp.\nDerived values tab: n_eff_source, n_eff_imag_source, fraction_near / fraction_far and L_measured vs their references.\nSpectra tab: em.near_monitor / em.far_monitor quantity fraction_positive vs the dashed exp(-4 pi |Im n| d / lambda). The curve errors are relative to the curve's range over 520-580 nm (0.7 % near, 6 % far), so a ~0.5 % absolute deviation at the band ends (likely the off-centre mode-source launch) shows as ~0.8 (near) and ~0.08 (far); a lossless metal would give ~4 for both.\nFields tab: hz bound to the interface.",
   "version": 1,
   "parameters": [

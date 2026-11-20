@@ -1,5 +1,5 @@
 {
-  "title": "Analytic: Fabry-Perot slab transmission (FDFD)",
+  "title": "Fabry-Perot slab transmission (FDFD, analytic)",
   "description": "A normally incident plane wave (line source spanning the periodic y period) crosses a lossless slab; frequency_domain study 800-1600 nm.\nAnalytic (Airy): P_trans = P_inc / (1 + F sin^2(2 pi n d / lambda)); peaks T = 1 at lambda = 2 n d / m, dips T = 1/(1 + F) = 0.64 at 4 n d / (2m + 1).\nSpectra tab: 'trans' power (W/m) vs the dashed analytic Airy curve.\nDerived values tab: T_peak and T_dip with their analytic reference and relative error (~1e-3 expected).\nField tab: the Snapshot slider steps through |E_z| per wavelength.",
   "version": 1,
   "parameters": [

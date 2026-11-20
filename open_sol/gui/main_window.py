@@ -1356,8 +1356,8 @@ class MainWindow(QtWidgets.QMainWindow):
             placeholder.setEnabled(False)
 
     def _populate_example_folder_menu(self, folder_menu, folder_name):
-        """Scan one example folder into its submenu: a submenu per space (2D / 3D / Axisymmetric, those present) of
-        its single-physics models, then, after a separator, a Multiphysics submenu of its models with several physics
+        """Scan one example folder into its submenu: a submenu per space (EXAMPLE_SPACES, those present) of its
+        single-physics models, then, after a separator, a Multiphysics submenu of its models with several physics
         types split the same way (the multiphysics folder: its spaces directly); unreadable files are logged, none is
         validated."""
         examples, newly_unreadable = self._example_catalog.scan(folder_name)
@@ -1394,7 +1394,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _add_example_spaces(self, menu, examples):
         """A submenu per space present among examples (EXAMPLE_SPACES order), even a single one: the menu always
-        says 2D / 3D / Axisymmetric."""
+        says 2D / 3D / Axisymmetric / Spherical."""
         for space, tooltip in EXAMPLE_SPACES.items():
             in_space = [example for example in examples if example.space == space]
             if in_space:

@@ -1,5 +1,5 @@
 {
-  "title": "Analytic: Bragg stack band diagram (Bloch FDTD)",
+  "title": "Bragg stack band diagram (Bloch FDTD, analytic)",
   "description": "One unit cell of a 1D quarter-wave Bragg stack (n1 = 2 / d1 = 150 nm, n2 = 1.5 / d2 = 200 nm, a = 350 nm, n1 d1 = n2 d2 = 300 nm), every face periodic, Bloch wave vector bloch_kx = k_fraction 2 pi / a swept over 0.05-0.5 (Gamma to X). A point-source pulse rings the cell (E_z) and a resonance finder lists the band frequencies at each k.\nAnalytic (Rytov, quarter-wave cell, phase phi = n1 d1 omega / c in both layers): cos(K a) = cos^2(phi) - rho sin^2(phi), rho = (n1/n2 + n2/n1)/2, so cos^2(phi) = (cos(K a) + rho) / (1 + rho); band 1 f = c phi / (2 pi n1 d1), band 2 uses pi - phi. Gap at K = pi / a between lambda_gap_lo = 1.0996 um and lambda_gap_hi = 1.3205 um (centre f_mid, 1.2 um).\nSweep tab: 'Table column vs k_fraction: em.bands frequency' shows frequency_1 (band 1) and frequency_2 (band 2) with the dashed analytic bands (wavelength: wavelength_1 = band 2, wavelength_2 = band 1); derived band1_f / band2_f (the band below / above f_mid) carry the same references.\nExpected agreement: ~0.1 % (FDTD numerical dispersion at >= 60 cells per wavelength in the n = 2 layer; 5 nm cells put every interface on a cell face).",
   "version": 1,
   "parameters": [
