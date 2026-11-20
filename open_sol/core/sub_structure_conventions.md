@@ -56,7 +56,8 @@ A new accepted sync joins this list.
 - EM: the FDFD solve (scipy_splu: one rhs / solution transfer each); one HarmonicModeMonitor transfer per solve; one
   grid-row transfer per FDFD port mode re-solve (per reassembly) and per FDTD mode-port recalibration after the first
   step (material drift check, re-solve above `mode_ports._RESOLVE_DRIFT`); the E_z ohmic-box refresh per
-  `materials_changed` of sigma_e.
+  `materials_changed` of sigma_e; the 2D FDTD coefficient layout checks (sigma_e == 0 at the first E rebuild after a
+  sigma_e change, mu_r / sigma_m uniform per H rebuild, none once per cell).
 - laminar_flow: the velocity check once per lattice check interval (>= 100 steps).
 - Mechanics: per Newton iteration of a device tangent (fem.elasticity3d.TangentAssembler3D(device=True)) the
   displacement up / force down and the operator norm of `CudssFactorization.refactorize_device_values` (its scatter
