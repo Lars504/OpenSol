@@ -1125,9 +1125,10 @@ def fdtd_bor_memory_estimate(settings_values, mesh, context):
     radial_rows = 6 * npml * (shape[1] + 1) if settings_values.get('bc_x_hi') == 'cpml' else 0   # ~6 per layer cell
     device, host = stepper_bytes(shape, order, z_pml_rows, radial_rows)
     items = [(f'stepper fields, coefficients, CPML psi and curl products ({n_members} stepper(s))', n_members * device)]
-    pole_bytes = mask_bytes = 0   # per pole ~3 E points per box cell: J (+ dP), drive, correction float32, int64 index
+    pole_bytes = mask_bytes = 0   # per pole ~3 E points per box cell: J (+ dP), drive, correction float32, int32 index
     for box_cells, n_drude, n_lorentz in _pole_regions(context):
-        pole_bytes += 3 * box_cells * (n_drude * (3 * FLOAT32_BYTES + 8) + n_lorentz * (4 * FLOAT32_BYTES + 8))
+        pole_bytes += 3 * box_cells * (n_drude * (3 * FLOAT32_BYTES + INT32_BYTES)
+                                       + n_lorentz * (4 * FLOAT32_BYTES + INT32_BYTES))
         mask_bytes += (n_drude + n_lorentz) * BOOL_BYTES * box_cells   # dispersive_regions cropped masks
     if pole_bytes:
         items.append((f'dispersive poles ({n_members} stepper(s), E points of their cells; region masks)',

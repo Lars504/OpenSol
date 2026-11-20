@@ -333,7 +333,7 @@ _UPDATE_PML = twin('em.bor_fdtd_update_pml', cp.ElementwiseKernel(
     'psi = b * psi + a * drive; field = decay * field + gain * (curl + psi)', 'bor_fdtd_update_pml'),
     _update_pml_host)
 _RADIAL_POLES = twin('em.bor_fdtd_radial_poles', cp.ElementwiseKernel(
-    'int64 row, float32 inner, float32 integral, float32 order, float32 a_inner, float32 b_inner, float32 a_outer, '
+    'int32 row, float32 inner, float32 integral, float32 order, float32 a_inner, float32 b_inner, float32 a_outer, '
     'float32 b_outer',
     'float32 psi_inner, float32 psi_outer, raw float32 curl',
     'float total = inner + integral; psi_inner = b_inner * psi_inner + a_inner * total; '
@@ -341,36 +341,57 @@ _RADIAL_POLES = twin('em.bor_fdtd_radial_poles', cp.ElementwiseKernel(
     'curl[row] += term + psi_outer',
     'bor_fdtd_radial_poles'), _radial_poles_host)
 _RADIAL_INTEGRATE = twin('em.bor_fdtd_radial_integrate', cp.ElementwiseKernel(
-    'int64 column, float32 interval, raw float32 source', 'float32 integrated',
+    'int32 column, float32 interval, raw float32 source', 'float32 integrated',
     'integrated += interval * source[column]', 'bor_fdtd_radial_integrate'), _radial_integrate_host)
 _DRUDE_STEP = twin('em.bor_fdtd_drude_step', cp.ElementwiseKernel(
-    'int64 point, float32 damping, float32 drive, raw float32 field', 'float32 current',
+    'int32 point, float32 damping, float32 drive, raw float32 field', 'float32 current',
     'current += damping * current + drive * field[point]', 'bor_fdtd_drude_step'), _drude_step_host)
 _LORENTZ_STEP = twin('em.bor_fdtd_lorentz_step', cp.ElementwiseKernel(
-    'int64 point, float32 damping, float32 restoring, float32 drive, raw float32 field',
+    'int32 point, float32 damping, float32 restoring, float32 drive, raw float32 field',
     'float32 polarization, float32 change',
     'change += damping * change - restoring * polarization + drive * field[point]; polarization += change',
     'bor_fdtd_lorentz_step'), _lorentz_step_host)
 _POLE_CORRECT = twin('em.bor_fdtd_pole_correct', cp.ElementwiseKernel(
-    'int64 point, float32 weight, float32 value', 'raw float32 field', 'field[point] -= weight * value',
+    'int32 point, float32 weight, float32 value', 'raw float32 field', 'field[point] -= weight * value',
     'bor_fdtd_pole_correct'), _pole_correct_host)
 _FIELD_INJECT = twin('em.bor_fdtd_field_inject', cp.ElementwiseKernel(
-    'int64 point, float32 weight_re, float32 weight_im, float32 signal, float32 quadrature', 'raw float32 field',
+    'int32 point, float32 weight_re, float32 weight_im, float32 signal, float32 quadrature', 'raw float32 field',
     'field[point] += weight_re * signal + weight_im * quadrature', 'bor_fdtd_field_inject'), _field_inject_host)
 _POINT_ADD = twin('em.bor_fdtd_point_add', cp.ElementwiseKernel(
-    'int64 point, float32 weight, float32 value', 'raw float32 field', 'field[point] += weight * value',
+    'int32 point, float32 weight, float32 value', 'raw float32 field', 'field[point] += weight * value',
     'bor_fdtd_point_add'), _point_add_host)
 _AXIS_COPY = twin('em.bor_fdtd_axis_copy', cp.ElementwiseKernel(
-    'int64 target, int64 source, float32 factor', 'raw float32 field', 'field[target] = factor * field[source]',
+    'int32 target, int32 source, float32 factor', 'raw float32 field', 'field[target] = factor * field[source]',
     'bor_fdtd_axis_copy'), _axis_copy_host)
 # DFT of stacked member rows: total (k, n_f, n) += phase (1, n_f, 1) x values[offset (k, 1, 1) + point (1, 1, n)]
 # (values = the flat stacked rows)
 _ACCUMULATE_DOUBLE = twin('em.bor_fdtd_dft_double', cp.ElementwiseKernel(
-    'complex128 phase, int64 point, int64 offset, raw float32 values', 'complex128 total',
+    'complex128 phase, int32 point, int32 offset, raw float32 values', 'complex128 total',
     'total += phase * (double)values[offset + point]', 'bor_fdtd_dft_double'), _accumulate_host)
 _ACCUMULATE_SINGLE = twin('em.bor_fdtd_dft_single', cp.ElementwiseKernel(
-    'complex128 phase, int64 point, int64 offset, raw float32 values', 'complex64 total',
+    'complex128 phase, int32 point, int32 offset, raw float32 values', 'complex64 total',
     'total += complex<float>(phase * (double)values[offset + point])', 'bor_fdtd_dft_single'), _accumulate_host)
+# 0.5 sum w v^2 of field_energy: the weights 0.5 eps0 eps V (mu0 mu V_a) are kept float32 over their largest value
+# (raw ~1e-35 sits near the float32 underflow), the products and the sum in float64 (a decay measure, read per study
+# chunk). core.kernels twin: the numpy twin returns a 0-d float64 array.
+def _weighted_square_sum_host(weight, values):
+    return np.asarray(np.dot(weight.astype(np.float64), values.astype(np.float64) ** 2))
+
+
+_WEIGHTED_SQUARE_SUM = twin('em.bor_fdtd_weighted_square_sum', cp.ReductionKernel(
+    'float32 weight, float32 value', 'float64 total',
+    '(double)weight * (double)value * (double)value', 'a + b', 'total = a', '0', 'bor_fdtd_weighted_square_sum'),
+    _weighted_square_sum_host)
+
+
+def _device_index(xp, index, extent):
+    """int32 run-backend copy of the host flat indices `index` into arrays of `extent` entries (the kernels' index
+    type: half the int64 bytes); ValueError when extent does not fit in int32."""
+    if int(extent) >= 2 ** 31:
+        raise ValueError(f'BOR FDTD: {int(extent)} stacked field entries exceed the int32 point index')
+    return xp.asarray(np.asarray(index, dtype=np.int32))
+
+
 _CSR_PRODUCT = cp.RawKernel(r'''
 extern "C" __global__ void bor_fdtd_csr_product(const int* row_starts, const int* columns, const float* values,
                                                  const float* vector, float* out, const int n_rows) {
@@ -495,8 +516,8 @@ class _BatchRadial:
         self.rows = np.concatenate(rows).astype(np.int64)
         self.columns = np.concatenate(columns).astype(np.int64)
         self._integral = _SparseProduct(_block_diagonal(blocks, shapes), xp) if self.columns.size else None
-        self.device_rows = xp.asarray(self.rows)
-        self.device_columns = xp.asarray(self.columns)
+        self.device_rows = _device_index(xp, self.rows, len(plans) * size)
+        self.device_columns = _device_index(xp, self.columns, len(plans) * source_size)
         self.values = (derivative_values, xp.zeros(self.rows.size, dtype=DTYPE), order_values)
         self.integrated = xp.zeros(self.columns.size, dtype=DTYPE)   # int source dt up to the previous sample's end
         self.coefficients = tuple(xp.asarray(np.concatenate(store), dtype=DTYPE) for store in coefficients)
@@ -602,7 +623,7 @@ class _BatchPole:
         self._members = member_points
         self.xp = xp
         self.indices = np.concatenate([position * n_e + points.indices for position, points in member_points])
-        self.device_index = xp.asarray(self.indices)
+        self.device_index = _device_index(xp, self.indices, (member_points[-1][0] + 1) * n_e)
         self.drive = xp.asarray(np.concatenate([points.drive for _, points in member_points]), dtype=DTYPE)
         self.current = xp.zeros(self.indices.size, dtype=DTYPE)                              # J or P
         self.change = None if self.drude else xp.zeros(self.indices.size, dtype=DTYPE)      # dP
@@ -715,8 +736,9 @@ class _SpectraGroup:
             points = np.arange(size, dtype=np.int64) if host_index is None else host_index
             stack = xp.zeros((self.positions.size, omega.size, points.size), dtype=dtype)
             stacks.append(stack)
-            self._sides.append([stack, None, xp.asarray(points)[None, None, :],
-                                xp.asarray(self.positions * size)[:, None, None]])
+            extent = (int(self.positions.max()) + 1) * size
+            self._sides.append([stack, None, _device_index(xp, points, extent)[None, None, :],
+                                _device_index(xp, self.positions * size, extent)[:, None, None]])
         # complex128 phases of the next samples (device recursion: ~1e-16 per step): row 0 x, row 1 h
         self._phases = xp.asarray(np.stack((np.exp(-1j * omega * next_step * dt) * dt,
                                             np.exp(-1j * omega * (next_step - 0.5) * dt) * dt)))
@@ -784,8 +806,9 @@ class _LockstepBatch:
                 store[1].append(position * size + sources)
                 store[2].append(np.full(targets.size, factor))
         xp = self.xp
-        return {kind: None if not store[0] else (xp.asarray(np.concatenate(store[0])),
-                                                 xp.asarray(np.concatenate(store[1])),
+        extents = {'e': len(self.members) * n_e, 'a': len(self.members) * n_a}
+        return {kind: None if not store[0] else (_device_index(xp, np.concatenate(store[0]), extents[kind]),
+                                                 _device_index(xp, np.concatenate(store[1]), extents[kind]),
                                                  xp.asarray(np.concatenate(store[2]), dtype=DTYPE))
                 for kind, store in parts.items()}
 
@@ -816,13 +839,15 @@ class _LockstepBatch:
         for temporal, indices, weights in groups.values():
             points, inverse = np.unique(np.concatenate(indices), return_inverse=True)
             summed = np.bincount(inverse.ravel(), weights=np.concatenate(weights), minlength=points.size)
-            merged.append((temporal, xp.asarray(points), xp.asarray(summed, dtype=DTYPE)))
+            merged.append((temporal, _device_index(xp, points, len(self.members) * n_e),
+                           xp.asarray(summed, dtype=DTYPE)))
         self._injection_groups = tuple(merged)
         field = []
         for position, stepper in enumerate(self.members):
             for injection in stepper._field_injections:
                 offset = position * (n_a if injection.side == 'h' else n_e)
-                field.append((injection, xp.asarray(offset + injection.indices),
+                size = n_a if injection.side == 'h' else n_e
+                field.append((injection, _device_index(xp, offset + injection.indices, len(self.members) * size),
                               xp.asarray(injection.weights.real, dtype=DTYPE),
                               xp.asarray(injection.weights.imag, dtype=DTYPE)))
         self._field_injections = tuple(field)
@@ -1062,8 +1087,11 @@ class BORTimeStepper:
         magnetic_loss = magnetic * dt / (2.0 * MU0 * mu)
         self._gain_h = -dt / (MU0 * mu * (1.0 + magnetic_loss)) * self.a_active
         self._decay = {'e': (1.0 - loss) / (1.0 + loss), 'h': (1.0 - magnetic_loss) / (1.0 + magnetic_loss)}
-        self._energy_e = xp.asarray(0.5 * EPS0 * eps * self.e_volumes * self.e_active)
-        self._energy_a = xp.asarray(0.5 * MU0 * mu * self.a_volumes * self.a_active)
+        energies = (0.5 * EPS0 * eps * self.e_volumes * self.e_active, 0.5 * MU0 * mu * self.a_volumes * self.a_active)
+        self._energy_scales = tuple(float(np.max(values)) if values.size and np.max(values) > 0.0 else 1.0
+                                    for values in energies)
+        self._energy_e, self._energy_a = (xp.asarray(values / scale, dtype=DTYPE)
+                                          for values, scale in zip(energies, self._energy_scales))
         for injection in self._injections:
             self._set_weights(injection)
         for injection in self._field_injections:
@@ -1152,9 +1180,9 @@ class BORTimeStepper:
 
     def field_energy(self) -> float:
         """0.5 sum (eps0 eps V x^2 + mu0 mu V_a h^2) [J per radian] over every point (a decay measure; h lags dt / 2)."""
-        xp = self.xp
-        return float(xp.dot(self._energy_e, self.x.astype(np.float64) ** 2)
-                     + xp.dot(self._energy_a, self.h.astype(np.float64) ** 2))
+        scale_e, scale_a = self._energy_scales
+        return (scale_e * float(_WEIGHTED_SQUARE_SUM(self._energy_e, self.x))
+                + scale_a * float(_WEIGHTED_SQUARE_SUM(self._energy_a, self.h)))
 
 
 # ---- driven order sums (module header) ----
@@ -1389,8 +1417,8 @@ def stepper_bytes(shape, order, z_pml_rows, radial_rows):
     products = 2 * curl_nnz * csr_entry + (n_e + n_a + 2) * index
     if z_pml_rows:   # two drivers: full row pointers, ~2 entries per stretched row
         products += (n_e + n_a + 4) * index + 2 * z_pml_rows * csr_entry
-    # r_hi layer: 9 float32 + int64 row per row, ~4 CSR entries + 3 row pointers (derivative, integral, order products)
-    radial = radial_rows * (9 * 4 + 8 + 4 * csr_entry + 3 * index + 2 * 4)   # + the integral and its column (~1 / 3)
-    device = 4 * vectors + products + radial + 8 * (n_e + n_a)   # + float64 energy weights
+    # r_hi layer: 9 float32 + int32 row per row, ~4 CSR entries + 3 row pointers (derivative, integral, order products)
+    radial = radial_rows * (9 * 4 + 4 + 4 * csr_entry + 3 * index + 2 * 4)   # + the integral and its column (~1 / 3)
+    device = 4 * vectors + products + radial + 4 * (n_e + n_a)   # + float32 energy weights
     host = 40 * 24 * n_e + 16 * (n_e + n_a)   # kept assembly (complex128 curl split, class operators; rough)
     return device, host
