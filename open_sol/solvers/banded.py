@@ -39,6 +39,8 @@ class BandedSolver(ExactSolveRecord):
     exact solves; gpu backend: one transfer of the CSR per factorisation and of rhs / solution per solve. Refuses an
     operator whose bandwidth exceeds max_bandwidth (a 2D window: use pcg or sparse_direct)."""
 
+    ignores_preconditioner = True   # factorize ignores it: a DiffusionSystem keeps no Jacobi diagonal for it
+
     def __init__(self, label=None, backend='gpu', max_bandwidth=8):
         if backend not in ('gpu', 'cpu'):
             raise ValueError(f"backend must be 'gpu' or 'cpu', got {backend!r}")

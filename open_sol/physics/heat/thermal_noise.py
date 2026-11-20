@@ -245,7 +245,7 @@ class HarmonicHeatOperator(_HarmonicDiffusionOperator):
         system = heat.system
         if system.dimensions != 2 or system.axisymmetric:
             raise ValueError(f"heat '{heat.name}': thermal noise needs a planar 2D heat physics (z-invariant cross-section)")
-        if system.operator_dirty or system.operator_full is None:
+        if system.operator_dirty or not system.assembled:
             heat.rebuild_operator()
         window = system.window
         materials = heat.domain.materials
@@ -253,8 +253,9 @@ class HarmonicHeatOperator(_HarmonicDiffusionOperator):
         self.capacity_density = to_host(materials.rho[window].astype(np.float64)
                                         * materials.cp[window].astype(np.float64)).ravel()
         self.axial_conductivity = to_host(materials.k_zz[window]).astype(np.float64).ravel()
-        operator_full = system.operator_full   # cupyx CSR on the GPU backend, scipy CSR on the CPU backend
+        operator_full = system.full_operator()   # a transient cupyx CSR on the GPU backend, scipy CSR on the CPU one
         operator = (operator_full.get() if hasattr(operator_full, 'get') else operator_full).tocsr().astype(np.float64)
+        del operator_full
         self.held = to_host(system.fixed_user).ravel()
         self.solved = ~self.held & ((operator.diagonal() > 0.0) | (self.capacity_density > 0.0))
         index = np.flatnonzero(self.solved)

@@ -1398,6 +1398,8 @@ class DiffusionDirectSolver(ExactSolveRecord):
     Cholesky (LDL^T if it fails; mixed: a float32 LDL^T) refactorised on the kept analysis, solves on the host;
     cusolver_qr is refused."""
 
+    ignores_preconditioner = True   # factorize ignores it: a DiffusionSystem keeps no Jacobi diagonal for it
+
     def __init__(self, runtime):
         if not isinstance(runtime, SparseDirectSolver):
             raise TypeError(f'DiffusionDirectSolver needs a SparseDirectSolver, got {type(runtime).__name__}')

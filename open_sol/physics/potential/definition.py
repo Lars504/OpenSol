@@ -9,7 +9,7 @@ from ...core.memory_estimate import (BOOL_BYTES, FLOAT32_BYTES, FLOAT64_BYTES, M
 from ...core import time_estimate as te
 from ...core.time_estimate import diffusion_time_estimate
 from ...fem.diffusion import (cudss_back_end, cudss_diffusion_estimate, fem_diffusion_estimate, fem_time_system,
-                              painted_fraction)
+                              painted_fraction, pcg_linear_solver)
 from ...fem.diffusion3d import fem_diffusion_estimate_3d
 from ...model.definition_helpers import (AXISYMMETRIC_SPACE_SETTINGS, AZIMUTHAL_ORDER_PARAM, CG_DIFFUSION_LINEAR_ROLE,
                                          DISCRETIZATION_PARAM,
@@ -912,6 +912,7 @@ def _make_memory_estimate(kind):
                                            mixed=linear_solver_mixed(context),
                                            multigrid=linear_solver_multigrid(context),
                                            direct=linear_solver_direct(context),
+                                           pcg=pcg_linear_solver(context.solvers),
                                            azimuthal=azimuthal_order_of(settings_values) != 0,
                                            wrap=mesh.domain_map is not None and mesh.domain_map.angle_wrap != 'none',
                                            flux=True, dissipation=spec.with_joule,   # _update_derived_fields per solve
