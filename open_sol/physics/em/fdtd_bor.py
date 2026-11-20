@@ -273,13 +273,10 @@ def _update_host(decay, gain, curl, field):
     field += gain * curl
 
 
-def _update_pml_host(decay, gain, curl, drive, a, b, psi, field):
+def _pml_psi_host(rows, a, b, drive, psi, curl):
     psi *= b
     psi += a * drive
-    term = curl + psi
-    term *= gain
-    field *= decay
-    field += term
+    curl[rows] += psi   # rows unique: no add.at
 
 
 def _radial_poles_host(rows, inner, integral, order, a_inner, b_inner, a_outer, b_outer, psi_inner, psi_outer, curl):
@@ -328,10 +325,11 @@ def _accumulate_host(phase, points, offsets, values, total):
 _UPDATE = twin('em.bor_fdtd_update', cp.ElementwiseKernel(
     'float32 decay, float32 gain, float32 curl', 'float32 field', 'field = decay * field + gain * curl',
     'bor_fdtd_update'), _update_host)
-_UPDATE_PML = twin('em.bor_fdtd_update_pml', cp.ElementwiseKernel(
-    'float32 decay, float32 gain, float32 curl, float32 drive, float32 a, float32 b', 'float32 psi, float32 field',
-    'psi = b * psi + a * drive; field = decay * field + gain * (curl + psi)', 'bor_fdtd_update_pml'),
-    _update_pml_host)
+# z CPML psi on its stretched rows only (a != 0; elsewhere psi would stay 0): curl[row] += psi before _UPDATE, the
+# former fused decay field + gain (curl + psi) in two launches
+_PML_PSI = twin('em.bor_fdtd_pml_psi', cp.ElementwiseKernel(
+    'int32 row, float32 a, float32 b, float32 drive', 'float32 psi, raw float32 curl',
+    'psi = b * psi + a * drive; curl[row] += psi', 'bor_fdtd_pml_psi'), _pml_psi_host)
 _RADIAL_POLES = twin('em.bor_fdtd_radial_poles', cp.ElementwiseKernel(
     'int32 row, float32 inner, float32 integral, float32 order, float32 a_inner, float32 b_inner, float32 a_outer, '
     'float32 b_outer',
@@ -549,8 +547,12 @@ class _BatchSide:
             raise ValueError('BOR FDTD lockstep batch members need the same z CPML faces')
         main_shapes = [(size, source_size)] * len(plans)
         blocks = [_block_diagonal([plan.main for plan in plans], main_shapes)]
-        if z_pml:
-            blocks.append(_block_diagonal([plan.z_pml[0] for plan in plans], main_shapes))
+        # z CPML: driver rows, a, b and psi only on each member's stretched rows (a != 0), not the full layout
+        pml_rows = [np.flatnonzero(plan.z_pml[1] != 0.0) for plan in plans] if z_pml else []
+        n_pml = sum(rows.size for rows in pml_rows)
+        if n_pml:
+            blocks.append(_block_diagonal([plan.z_pml[0].tocsr()[rows] for plan, rows in zip(plans, pml_rows)],
+                                          [(rows.size, source_size) for rows in pml_rows]))
         radial_plans = [plan.radial for plan in plans]
         layer_shapes = [(0 if radial is None else radial.rows.size, source_size) for radial in radial_plans]
         n_layer = sum(rows for rows, _ in layer_shapes)
@@ -561,17 +563,18 @@ class _BatchSide:
                                           layer_shapes))
         self._product = _SparseProduct(scipy.sparse.vstack(blocks, format='csr'), xp)
         n_main = len(plans) * size
-        self._out = xp.zeros(n_main * (1 + int(z_pml)) + 2 * n_layer, dtype=DTYPE)
+        self._out = xp.zeros(n_main + n_pml + 2 * n_layer, dtype=DTYPE)
         self.curl = self._out[:n_main]
         self.decay = xp.ones(n_main, dtype=DTYPE)
         self.gain = xp.zeros(n_main, dtype=DTYPE)
         offset = n_main
         self.pml = None
-        if z_pml:
-            a, b = (np.concatenate([plan.z_pml[part] for plan in plans]) for part in (1, 2))
-            self.pml = (self._out[offset:offset + n_main], xp.asarray(a, dtype=DTYPE), xp.asarray(b, dtype=DTYPE),
-                        xp.zeros(n_main, dtype=DTYPE))
-            offset += n_main
+        if n_pml:
+            a, b = (np.concatenate([plan.z_pml[part][rows] for plan, rows in zip(plans, pml_rows)]) for part in (1, 2))
+            stacked = np.concatenate([position * size + rows for position, rows in enumerate(pml_rows)])
+            self.pml = (_device_index(xp, stacked, n_main), xp.asarray(a, dtype=DTYPE), xp.asarray(b, dtype=DTYPE),
+                        self._out[offset:offset + n_pml], xp.zeros(n_pml, dtype=DTYPE))
+            offset += n_pml
         self.radial = None
         if n_layer:
             self.radial = _BatchRadial(radial_plans, size, source_size, self._out[offset:offset + n_layer],
@@ -582,10 +585,9 @@ class _BatchSide:
         self._product.apply(source, self._out)
         if self.radial is not None:
             self.radial.add(source, self.curl)
-        if self.pml is None:
-            _UPDATE(self.decay, self.gain, self.curl, field)
-        else:
-            _UPDATE_PML(self.decay, self.gain, self.curl, *self.pml, field)
+        if self.pml is not None:
+            _PML_PSI(*self.pml, self.curl)
+        _UPDATE(self.decay, self.gain, self.curl, field)
 
 
 class _PolePoints:
@@ -1411,12 +1413,12 @@ def stepper_bytes(shape, order, z_pml_rows, radial_rows):
     rows (radial_rows = E + a rows, 0 without), host assembly."""
     e_sizes, a_sizes = layout_sizes(shape)
     n_e, n_a = sum(e_sizes), sum(a_sizes)
-    vectors = (4 + 4 * bool(z_pml_rows)) * (n_e + n_a)   # field, decay, gain, curl (+ drive, a, b, psi)
+    vectors = 4 * (n_e + n_a) + 4 * z_pml_rows   # field, decay, gain, curl (+ z CPML rows: drive, a, b, psi)
     curl_nnz = 2 * a_sizes[0] + 2 * a_sizes[1] + 4 * a_sizes[2] + (a_sizes[0] + a_sizes[1]) * (order != 0)
     csr_entry, index = 8, 4   # float32 data + int32 column; int32 row pointer
     products = 2 * curl_nnz * csr_entry + (n_e + n_a + 2) * index
-    if z_pml_rows:   # two drivers: full row pointers, ~2 entries per stretched row
-        products += (n_e + n_a + 4) * index + 2 * z_pml_rows * csr_entry
+    if z_pml_rows:   # two drivers on the stretched rows: row pointers + int32 row, ~2 entries per row
+        products += (2 * z_pml_rows + 4) * index + 2 * z_pml_rows * csr_entry
     # r_hi layer: 9 float32 + int32 row per row, ~4 CSR entries + 3 row pointers (derivative, integral, order products)
     radial = radial_rows * (9 * 4 + 4 + 4 * csr_entry + 3 * index + 2 * 4)   # + the integral and its column (~1 / 3)
     device = 4 * vectors + products + radial + 4 * (n_e + n_a)   # + float32 energy weights
