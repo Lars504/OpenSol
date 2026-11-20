@@ -426,7 +426,12 @@ class MagneticFEMSystem:
         return np.float32 if getattr(self.linear_solver, 'precision', 'double') == 'single' else np.float64
 
     def _factorize(self, reduced) -> None:
-        self.linear_solver.factorize(sparse_module(self.backend).csr_matrix(reduced.astype(self._solve_dtype())))
+        from ...solvers.pcg import PCGSolver
+        if isinstance(self.linear_solver, PCGSolver):   # the previous run-backend operator goes before the new copy
+            self.linear_solver.release_operator()
+        # gpu: one device copy (no host cast copy of a float64 operator first); cpu: an owned copy for the solver
+        self.linear_solver.factorize(sparse_module(self.backend).csr_matrix(
+            reduced.astype(self._solve_dtype(), copy=self.backend != 'gpu')))
 
     def _solve_factorized(self, rhs, initial) -> np.ndarray:
         """Host float64 solution of the factorised reduced system (iterative solvers start from `initial`)."""

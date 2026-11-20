@@ -348,16 +348,21 @@ type's vocabulary and refusals are in its help texts and validation.
   returned, one sparse operator uploaded at a time, narrow column blocks); estimators book them as `EIGEN_PHASE` and
   `FILTER_PHASE` through `resonance_search_items` (`filter_entries` = the largest single operator, not the sum) and
   `own_cudss_search_items` (the factor's copies in both). A sparse B (FEM) goes up once (`_PencilMass.device_matrix`),
-  shared by the own-cuDSS solves and the filter (`sparse_mass_entries`); a `symmetric` search keeps only its strict
-  lower triangle + diagonal (`_DeviceSymmetricMass`, B's symmetry probed first; estimators pass `symmetric_mass`, sized
-  by `device_mass_bytes`). The filter's B measures use its `bilinear` (untransposed L products, no transposed block
-  product) and W stays float64 (applied to Re v, Im v). A polished mixed search runs a complex64 Krylov basis
-  (`eigs_device(single_basis=refine)`; estimators pass `single_basis` / `symmetric_search`). Fields are 1 at the first argmax |u|: mirror-equal peaks leave the
-  sign to round-off. `select_resonance(k)` sets `selected_resonance` (hz `face_fields` skips source currents);
+  shared by the own-cuDSS solves and the filter (`sparse_mass_entries`). Every device copy (B, the filter's A and W)
+  goes through `solvers.device_matrices.device_matrix`: a `symmetric` search stores A, B and a sparse W as lower
+  triangles (probed: `symmetric=True` promises all three symmetric, so a caller passing it with an unsymmetric W
+  fails loudly) measured by `bilinear`, real values float64 (a real B stays float64 on the host too: `_PencilMass`,
+  host products through `_host_product`, never `real_csr @ complex`). Estimators: `symmetric_search` (filter storage),
+  `ldlt` / `polished_double` (complex64 basis rows), `real_values` (materials test), sized by `device_matrix_bytes`.
+  Every polished search (mixed, a floored complex A on a double LDL^T, E2) runs a complex64 Krylov basis
+  (`eigs_device(single_basis=polish)`; argument at MIXED_ARPACK_TOLERANCE): a new polish path or a tolerance below
+  SINGLE_BASIS_MIN_TOLERANCE changes `_resonance_search`'s single-basis rule too. An eigen solve releases the
+  physics' driven cuDSS factors first (`_release_device_factors`): two factors never share the device. Fields are 1
+  at the first argmax |u|: mirror-equal peaks leave the sign to round-off. `select_resonance(k)` sets `selected_resonance` (hz `face_fields` skips source currents);
   `_solution_dirty` stays True so a later step() re-solves the driven problem. Region (P2): on tensor grids
   `ctx.domain_mask`, so an object touching the window edge counts the PML cells beyond it (clamped centres; example
   dbr_cavity_q stops its gaps one cell short). Self-tests em_fdfd_eigenfrequency_pec_cavity,
-  em_resonance_region_fraction, em_fdfd_resonance_region, em_eigen_sparse_mass; template disk_resonator_eigenmodes.
+  em_resonance_region_fraction, em_fdfd_resonance_region, em_eigen_sparse_mass, em_resonance_filter_device_storage (gpu); template disk_resonator_eigenmodes.
 - Adjoint (C7, `adjoint.py`, derivation in its header): objectives subclass the flux / mode monitors; J = sum weight
   * value (flux unfolded by `mirror_factor`, mode power raw). `eps_sensitivity()` is lazy, cached per (n_solves,
   objectives), zeros while a resonance is shown; `solve_adjoint` refuses a system reassembled since the last driven

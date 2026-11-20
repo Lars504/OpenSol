@@ -115,7 +115,7 @@ class ConicalPhysics(HostFDFDBase, PhysicsSolver):
         """eigenfrequency study hook: up to n_resonances resonances at k_z nearest the wavelength setting
         (conical.solve_conical_resonances on the current materials), kept as eigen_solve."""
         self.eigen_solve = None
-        self._release_kept_cudss()   # the eigen-solve's own factor needs the device memory
+        self._release_device_factors()   # the eigen-solve's own factor needs the device memory
         self._eigen_materials = self._conical_materials(self.omega)
         self.eigen_solve = solve_conical_resonances(self._cell_widths, self.boundary_config, self.pml_dx,
                                                     self._eigen_materials, self.k_z, int(n_resonances), self.omega,

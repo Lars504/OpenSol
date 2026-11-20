@@ -245,6 +245,15 @@ class HostFDFDBase:
             self._cudss_previous.release()
             self._cudss_previous = None
 
+    def _release_device_factors(self):
+        """Release the driven cuDSS factors (the current one and the one kept for its plan; a host SuperLU / MUMPS /
+        PARDISO factor stays) before the eigen solve's own factorisation needs the device memory."""
+        if is_cudss(self._factorization):
+            self._factorization.release()
+            self._factorization = None
+            self._factorization_current = False
+        self._release_kept_cudss()
+
     def _keep_cudss_plan(self, factorization):
         """Keep a cuDSS factor no longer solved with as _cudss_previous (an older kept one released); others: no-op."""
         if not is_cudss(factorization) or factorization is self._cudss_previous:

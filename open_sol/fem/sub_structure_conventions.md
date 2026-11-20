@@ -119,6 +119,8 @@ file ("Triangle meshes"). Error indicators: section "Error indicators" (users: g
   triangles ~11.5, measured 11.2 on heat_fem_cpu_gpu), never a constant; time estimates take `fem_time_system` (real
   unknowns x entries per row), never inflated "equivalent cells" (LU costs grow ~n^1.5 / ~n^2). The cuDSS first plan
   peak was measured at ~39 B per entry (heat_fem_cpu_gpu).
+- `_factorize` unbinds a pcg (`release_operator`) before the new run-backend copy, so a re-assembly never holds two
+  device operators: the refactorisation transient books no second CSR (multigrid: the setup transients only).
 
 ## Factor entry count (`dissection.py`)
 - Method and why: module header (cut at the elements wholly above the plane, never by centroid: a centroid split tears

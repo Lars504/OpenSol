@@ -15,12 +15,13 @@ from ...solvers.arpack_shift_invert import (CUDSS_FACTORIZATIONS, MIXED_EIGEN_MI
                                             arnoldi_basis_size, device_arnoldi_fits)
 from ...solvers.cudss_factor import (CUDSS_SOLVE_PHASE, FactorFill, factor_device_bytes, index_map_bytes,
                                      operator_copy_bytes, refresh_peak_bytes, solve_buffer_bytes, solve_peak_bytes)
+from ...solvers.device_matrices import device_matrix_bytes
 from ...solvers.host_direct import (HOST_DIRECT_FACTORIZATIONS, factor_label, host_direct_precision, solver_host_bytes,
                                     superlu_bytes_scale)
 from ...solvers.sparse_direct import CUDSS_BACK_ENDS, HOST_FACTOR_BACK_ENDS
 from .definition_bloch import bloch_active_axes
 from .definition_common import FREQUENCY_DOMAIN_STUDY, _q_accum_referenced, _study_wavelengths, eigen_solved
-from .eigenfrequency import FILTER_DEVICE_BLOCK_COLUMNS, device_mass_bytes
+from .eigenfrequency import FILTER_DEVICE_BLOCK_COLUMNS
 from .materials import GYRATION_Z
 
 # FDFD kept Helmholtz term plan (operators._HelmholtzPlan): per cell 9 terms (4 per x / y product + the cell term) into
@@ -155,16 +156,23 @@ def real_cross_section_operator(settings_values, context):
 
 
 def resonance_search_items(backend, unknowns, n_wanted, n_basis, own_cudss, filter_entries, scaled_block=None,
-                           sparse_mass_entries=0, symmetric_mass=True, single_basis=False):
+                           sparse_mass_entries=0, symmetric_mass=True, single_basis=False, symmetric_operator=None,
+                           real_values=False):
     """(host items, transient items) of eigenfrequency.solve_resonances: EIGEN_PHASE the device Krylov-Schur basis
     (first pass; no widening reserve; single_basis: complex64 rows, polished_mixed_search) or ARPACK's host basis (the
-    EIGEN_ROLE job's); FILTER_PHASE on the gpu the
-    resonance filter between passes (the basis parked on the host): its largest single operator upload (filter_entries
-    stored entries of A, complex128; a sparse float64 W / B of the FEM pattern no larger) and its column blocks
-    (scaled_block: the D v block of a polished search, None = own_cudss); in both its window / weight vectors and, an own
-    cuDSS factor with a sparse B (sparse_mass_entries stored entries), the B copy the solves and the filter share
-    (symmetric_mass: a symmetric search's lower triangle, eigenfrequency.device_mass_bytes); the host eigenvectors. The
+    EIGEN_ROLE job's); FILTER_PHASE on the gpu the resonance filter between passes (the basis parked on the host): its
+    largest single operator upload (solvers.device_matrices storage: A of filter_entries stored entries, complex; with
+    a sparse B of sparse_mass_entries the FEM W of that pattern, float64, and B itself without an own factor) and its
+    column blocks (scaled_block: the D v block of a polished search, None = own_cudss); in both its window / weight
+    vectors and, an own cuDSS factor with a sparse B, the B copy the solves and the filter share; the host eigenvectors.
+    symmetric_mass: B, W stored as lower triangles (solve_resonances(symmetric=True)); symmetric_operator: A too (None:
+    = symmetric_mass when B is sparse, the FEM searches). real_values: A and B have no imaginary part (a lossless,
+    PML-free model: float64, 12 of 20 B per entry; the caller's materials test), else complex values are booked. The
     own factor's copies: own_cudss_search_items."""
+    if symmetric_operator is None:
+        symmetric_operator = bool(sparse_mass_entries) and bool(symmetric_mass)
+    real_values = bool(real_values)
+    value_type = 'float64' if real_values else 'complex'
     gpu = backend == 'gpu'
     vector_bytes = COMPLEX128_BYTES * int(unknowns)
     host_items = [(f'eigenvectors ({n_wanted} x complex128)', n_wanted * vector_bytes)]
@@ -182,18 +190,28 @@ def resonance_search_items(backend, unknowns, n_wanted, n_basis, own_cudss, filt
     vectors_label = 'resonance filter: window, region and diagonal weight / mass / row-scale vectors'
     transient_items += [(phase, vectors_label, _FILTER_VECTOR_BYTES * int(unknowns))
                         for phase in (EIGEN_PHASE, FILTER_PHASE)]
+    def stored(symmetric):
+        return 'lower triangle + diagonal' if symmetric else 'full CSR'
     if own_cudss and sparse_mass_entries:   # eigenfrequency: device_mass, uploaded once for both
-        stored = 'strict lower triangle + diagonal' if symmetric_mass else 'full CSR'
         transient_items += solver_job_items(EIGEN_ROLE, [
-            (phase, f'B = -M on the device (complex128 {stored}; the solves and the resonance filter share it)',
-             device_mass_bytes(unknowns, sparse_mass_entries, symmetric_mass))
+            (phase, f'B = -M on the device ({value_type} {stored(symmetric_mass)}; the solves and the resonance filter '
+                    'share it)', device_matrix_bytes(unknowns, sparse_mass_entries, symmetric_mass, real_values))
             for phase in (EIGEN_PHASE, FILTER_PHASE)])
-    # one operator at a time: A complex128 the largest (a sparse W stays float64, B: the shared copy or no larger)
+    # one operator at a time (_ResonanceFilter.measures): the largest of A, the FEM W and an unshared B
+    uploads = [(f'A {value_type} {stored(symmetric_operator)}',
+                device_matrix_bytes(unknowns, filter_entries, symmetric_operator, real_values))]
+    if sparse_mass_entries:
+        uploads.append((f'W float64 {stored(symmetric_mass)}',
+                        device_matrix_bytes(unknowns, sparse_mass_entries, symmetric_mass, True)))
+        if not own_cudss:
+            uploads.append((f'B {value_type} {stored(symmetric_mass)}',
+                            device_matrix_bytes(unknowns, sparse_mass_entries, symmetric_mass, real_values)))
+    upload_label, upload_bytes = max(uploads, key=lambda upload: upload[1])
     columns = min(FILTER_DEVICE_BLOCK_COLUMNS, max(int(n_wanted), 1))
     blocks = _FILTER_BLOCKS + (1 if (own_cudss if scaled_block is None else scaled_block) else 0)
     transient_items += [
-        (FILTER_PHASE, 'resonance filter: one sparse operator uploaded at a time (A complex128, W float64 or B)',
-         int(filter_entries) * COMPLEX128_CSR_ENTRY_BYTES + INT32_BYTES * (int(unknowns) + 1)),
+        (FILTER_PHASE, f'resonance filter: one sparse operator uploaded at a time (the largest: {upload_label})',
+         upload_bytes),
         (FILTER_PHASE, f'resonance filter: {blocks} column blocks of {columns} Ritz vectors', blocks * columns
          * vector_bytes)]
     return host_items, transient_items
@@ -211,17 +229,26 @@ def own_cudss_search_items(label, unknowns, entries, mixed, symmetric=True) -> l
 
 
 def _resonance_search(context, n_resonances, unknowns, own_cudss, filter_entries, basis_per_wanted=0,
-                      scaled_block=None, sparse_mass_entries=0, symmetric_search=False):
-    """resonance_search_items on the run backend of a search for n_resonances: 2 n_resonances + 10 wanted (within 1 ..
+                      scaled_block=None, sparse_mass_entries=0, symmetric_search=False, ldlt=None,
+                      polished_double=False, real_values=False):
+    """resonance_search_items (real_values passed on) on the run backend of a search for n_resonances: 2 n_resonances
+    + 10 wanted (within 1 ..
     unknowns - 2), the Arnoldi basis of the eigen subspace_size, else basis_per_wanted x wanted, else scipy's;
-    symmetric_search (an LDL^T of the pencil itself, FEM): complex64 basis rows on a polished_mixed_search."""
+    symmetric_search (solve_resonances(symmetric=True): A itself complex symmetric, FEM and the BOR FIT operator): the
+    filter's lower triangles; ldlt (None = symmetric_search; True also for a symmetrized D A without Bloch phase /
+    gyration): the own factor is an LDL^T. Complex64 basis rows (every polished search, eigenfrequency
+    MIXED_ARPACK_TOLERANCE) on a polished_mixed_search or when polished_double (the caller's test that the search is
+    polished on a double factor too: E2, or a floored complex A of an LDL^T)."""
     n_wanted = max(min(2 * n_resonances + 10, unknowns - 2), 1)
     n_basis = arnoldi_basis_size(n_wanted, unknowns, eigen_subspace_size(context.solvers), basis_per_wanted * n_wanted)
-    single_basis = own_cudss and symmetric_search and polished_mixed_search(eigen_factorization(context.solvers),
-                                                                             unknowns)
+    ldlt = symmetric_search if ldlt is None else ldlt
+    single_basis = bool(polished_double) or (own_cudss and polished_mixed_search(eigen_factorization(context.solvers),
+                                                                                 unknowns, symmetric=ldlt))
     return resonance_search_items(solver_backend(context.spec), unknowns, n_wanted, n_basis, own_cudss=own_cudss,
                                   filter_entries=filter_entries, scaled_block=scaled_block,
-                                  sparse_mass_entries=sparse_mass_entries, single_basis=single_basis)
+                                  sparse_mass_entries=sparse_mass_entries, symmetric_mass=symmetric_search,
+                                  single_basis=single_basis, symmetric_operator=symmetric_search,
+                                  real_values=real_values)
 
 
 def cudss_factor_items(label, n_unknowns, entries, dimensions=2, mixed=False, general=False, value_bytes=16):
@@ -480,8 +507,14 @@ def fdfd_memory_estimate(polarization):
         back_end = resolved_back_end(context.solvers)
         superlu_host = False   # host items with a SuperLU factor: the eps_xy fill below adds to them
         if eigen_solved(context.spec, context.physics_spec.name):   # no driven solve: the shift-invert factor instead
-            host_items, eigen_transient, external_items, external_extra = _eigen_items(
-                context, n_cells, sparse_row, superlu=not line_block_items)
+            from .cross_section_modes import cpml_cross_section
+            bloch = bool(bloch_active_axes(settings_values))
+            host_items, eigen_transient, external_items, external_extra = _eigen_items(   # fdfd_2d._symmetrizer: D A
+                context, n_cells, sparse_row, superlu=not line_block_items,              # unless Bloch / gyration_z
+                ldlt=not bloch and not context.material_sets(GYRATION_Z),
+                # E2 (_adjoint_symmetrizer: no Bloch phase, eps_xy or gyration_z) polishes a complex A on any factor:
+                # an open model (a lossy closed one is booked unpolished)
+                polished_double=not bloch and not off_diagonal_run and cpml_cross_section(settings_values))
             superlu_host = not line_block_items and eigen_factorization(context.solvers) not in CUDSS_FACTORIZATIONS
             transient_items += eigen_transient
             run_items += line_block_items
@@ -560,7 +593,9 @@ def _fdfd_fem_memory_estimate(settings_values, mesh, context):
         n_resonances = int(_study_values(context).get('n_resonances') or 1)
         search_host, transient_items = _resonance_search(context, n_resonances, unknowns, on_device, entries,
                                                          sparse_mass_entries=entries,   # A, B, W: one pattern
-                                                         symmetric_search=True)
+                                                         symmetric_search=True,   # lossless, no PML ring: real
+                                                         real_values=real_cross_section_operator(settings_values,
+                                                                                                 context))
         host_items += [*search_host,
                        (f'resonance vectors ({n_resonances} x complex128)', n_resonances * vector_bytes),
                        ('shifted operator copy (sparse complex128)', entries * COMPLEX128_CSR_ENTRY_BYTES)]
@@ -594,10 +629,11 @@ def _line_block_run_items(settings_values, mesh, context, polarization):
     return [(f'line_block operator ({precision})', operator), (f'line_block factor ({precision})', factor)]
 
 
-def _eigen_items(context, n_cells, sparse_row, superlu=True):
+def _eigen_items(context, n_cells, sparse_row, superlu=True, ldlt=True, polished_double=False):
     """(host items, EIGEN_PHASE items, external items, external extra) of eigenfrequency.solve_resonances: its own
     factor (superlu: no line_block solver; SuperLU on the host, a cudss eigen factorization outside the pool with its
-    pool copies), the operator copy, the Arnoldi work (resonance_search_items), the resonance fields and vectors."""
+    pool copies; ldlt: the LDL^T of D A, so a polished mixed one keeps a complex64 basis, as any search when
+    polished_double), the operator copy, the Arnoldi work (resonance_search_items), the resonance fields and vectors."""
     values = _study_values(context)
     n_resonances = int(values.get('n_resonances', values.get('n_optical_resonances')) or 1)
     vector_bytes = COMPLEX128_BYTES * n_cells
@@ -609,7 +645,7 @@ def _eigen_items(context, n_cells, sparse_row, superlu=True):
         symmetric=True, eigen=True)) if superlu and not own_cudss else [])
     # any factor may be Rayleigh-polished (E2: a complex A with a measured symmetrizer): the D v block booked always
     search_host, transient_items = _resonance_search(context, n_resonances, n_cells, own_cudss, 5 * n_cells,
-                                                     scaled_block=True)
+                                                     scaled_block=True, ldlt=ldlt, polished_double=polished_double)
     external_items, external_extra = [], 0
     if own_cudss:
         mixed = eigen_mixed(factorization, n_cells)
@@ -840,7 +876,12 @@ def conical_memory_estimate(settings_values, mesh, context):
                                      'complex128)', 3 * COMPLEX128_BYTES * n_cells)]
     if eigen:   # conical.solve_conical_resonances
         n_resonances = int(_study_values(context).get('n_resonances') or 1)
-        search_host, search_transient = _resonance_search(context, n_resonances, unknowns, on_device, 13 * unknowns)
+        from ...solvers.arpack_shift_invert import LDLT_FACTORIZATIONS
+        from .cross_section_modes import cpml_cross_section
+        ldlt = not bloch_active_axes(settings_values)   # an LDL^T of D A unless a Bloch phase makes it an LU
+        search_host, search_transient = _resonance_search(   # an own LDL^T of a complex (open) A: polished (floored)
+            context, n_resonances, unknowns, on_device, 13 * unknowns, ldlt=ldlt,
+            polished_double=ldlt and factorization in LDLT_FACTORIZATIONS and cpml_cross_section(settings_values))
         transient_items += search_transient
         host_items += [*search_host,
                        (f'resonance fields ({n_resonances} x 6 components complex128)',
@@ -956,8 +997,8 @@ def bor_memory_estimate(settings_values, mesh, context):
                                      'complex128)', 3 * COMPLEX128_BYTES * n_cells)]
     if eigen:   # body_of_revolution.solve_bor_resonances, one per order of azimuthal_orders
         n_resonances = int(_study_values(context).get('n_resonances') or 1)
-        search_host, search_transient = _resonance_search(   # one order's search at a time
-            context, n_resonances, unknowns, on_device, entries)
+        search_host, search_transient = _resonance_search(   # one order's search at a time (symmetric=True)
+            context, n_resonances, unknowns, on_device, entries, symmetric_search=True)
         transient_items += search_transient
         host_items += [*search_host,
                        (f'resonance fields ({n_orders} x {n_resonances} x complex128)',

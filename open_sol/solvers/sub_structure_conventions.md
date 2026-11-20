@@ -85,6 +85,11 @@ Root rules: structure_conventions.md "Solver roles".
   is empty, the solution vector is physics-owned, a matrix-free mixed caller counts its own float32 operator):
   `core.memory_estimate.diffusion_system_estimate`, `fem.diffusion.fem_system_estimate` and the mechanics
   estimators; a workspace change updates them.
+- A caller re-assembling a CSR calls `release_operator()` BEFORE it builds or uploads the successor (DiffusionSystem
+  `_release_assembly`, FEM `_factorize`, magnetic system_fem / KeptPreconditionerSolver), else the old operator, its
+  Jacobi diagonal or mixed float32 copy stay bound beside the new one through the setup (estimates book one). It
+  keeps the workspace and the own hierarchy (the lagged setup compares against the operator that hierarchy holds);
+  solve raises until the next factorize.
 - Residual reads (`check_interval`) follow the BOUND preconditioner: a callback bound under the setting 'multigrid'
   reads every 2 (gpu) / 1 (cpu) iterations, everything else every 16 / 4 (a Jacobi bind of 'multigrid' too);
   cg_iterations and the time estimate round up to that block. magnetic `kept_preconditioner._bind_callback` relies on
@@ -113,10 +118,16 @@ Root rules: structure_conventions.md "Solver roles".
   keeps its own outside them): the summary still names 'multigrid' (counters multigrid_jacobi_binds / _fallbacks /
   _lagged_*); the time recipe prices only the small-model bind as Jacobi (`bound_preconditioner`), the memory estimate
   always books the hierarchy; a mid-solve setup counts as factorize seconds.
-- Memory constants (`hierarchy_bytes`, `setup_extra_bytes`, `aggregation_host_bytes`; booked by
-  `diffusion_system_estimate(multigrid=)` and `fem_system_estimate`) follow the hierarchy layout: a layout change
-  updates them; the work counters of `_record_size` measure them. Setup seconds are machine-dependent: never pin them
-  in a selftest.
+- Memory constants (`hierarchy_bytes`, `setup_extra_bytes`, `tentative_bytes`, `kept_host_bytes`,
+  `aggregation_host_bytes`; booked by `diffusion_system_estimate(multigrid=)` and `fem_system_estimate`) follow the
+  hierarchy layout: a layout change updates them; the work counters of `_record_size` measure them (device arrays
+  only). Setup seconds are machine-dependent: never pin them in a selftest.
+- Device between setups: P, R, coarse operators, level vectors, the coarsest solver and the nonzero mask only. The
+  tentative prolongators T stay on the host (`_host_tentatives`, rebuilt with the aggregates) and are uploaded per
+  level build, freed before the Galerkin products; a setup drops the old levels and coarsest solver before building.
+  The cached pattern takes the current operator's index arrays (a kept first-operator copy would pin its indices).
+  Kept as is (speed / determinism): R = P^T stored explicitly and full (not lower-triangle) coarse operators, since
+  the capturable CSR row kernels gather without atomics.
 - Measured: 3D iterations to 1e-8 (20-35 at 40^3-60^3) exceed the ~12 of MULTIGRID_RESIDUAL_REDUCTION (3D run-time
   estimates run low: level-1 aggregates hold ~3 rows, most level-1 P rows unsmoothed). Rejected: threshold 0 below the
   finest level, |a_ij| strength, smoother weight, V(2,2), float64 hierarchy, a larger coarsest level.
@@ -130,7 +141,8 @@ Root rules: structure_conventions.md "Solver roles".
 - Memory: consumers estimate `operator_bytes` (run item) + ONE `shift_bytes`: chunks grow only into free memory at run
   time, so min(n_shifts, MAX_CHUNK_SHIFTS) x shift_bytes over-books and refuses runs that fit. Kept factors
   (`factorize`, `factorize_operators`) hold three block stacks per shift: every estimate and sizing of one passes
-  `kept=True` (batches: `batch_size`).
+  `kept=True` (batches: `batch_size`). A real K keeps its residual CSR float64 (`_times_complex` on the float64 view
+  of the complex columns; `operator_bytes(complex_operator=False)` books it so); matrix terms stay complex128.
 - Rejected shifts (above ACCEPT_TOLERANCE or non-finite) are the consumer's to re-solve with its reference solver:
   solve_shifted flags them, `LineBlockFactorization.solve_host` raises `RejectedLineBlockSolve`, which every
   shift-invert consumer (em_fdfd_ez / _hz eigenfrequency, em_modes, em_fdfd_bor) catches to redo that eigen-solve on

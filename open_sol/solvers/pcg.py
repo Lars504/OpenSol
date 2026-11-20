@@ -870,6 +870,20 @@ class PCGSolver:
         if self._block_graphs is not None:
             self._block_graphs.clear()
 
+    def release_operator(self) -> None:
+        """Unbind the operator before the caller assembles its successor: drops this solver's references to it, its
+        preconditioner (Jacobi inverse diagonal, a callback), the mixed float32 copy and the block graphs, so a re-
+        assembly never holds the old and the new operator together (solve raises until the next factorize). The
+        workspace stays (same size), and so does an own multigrid hierarchy: its lagged setup still compares the next
+        operator's pattern with the one it holds."""
+        self._operator = None
+        self._inner_operator = None
+        self._preconditioner = None
+        self._fused = None
+        self._block_graphs = None
+        self._multigrid_bound = False
+        self._binding, self._binding_solves = None, 0
+
     def _factorize(self, operator, preconditioner, n_unknowns, single_operator, single_preconditioner, fused_iteration,
                    single_fused_iteration):
         if not callable(operator):

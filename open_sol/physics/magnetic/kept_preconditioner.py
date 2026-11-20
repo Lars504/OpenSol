@@ -130,6 +130,9 @@ class KeptPreconditionerSolver:
         if self.kind == 'direct':
             self.inner.factorize(operator)
             return
+        # the pcg's binding of the previous operator goes before the setup (its peak): the system already dropped its
+        # own references, the setup drops the old hierarchy
+        self.inner.release_operator()
         start = time.perf_counter()
         self._multigrid.setup(operator)
         self.inner.total_factorize_seconds += time.perf_counter() - start

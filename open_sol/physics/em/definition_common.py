@@ -913,7 +913,7 @@ def fem_resonance_time_estimate(settings_values, mesh, context, label, bytes_per
     assembly = te.TimeEstimate((te.TimeItem(label, 'assembly', 1.0, 'exact',
                                             (te.HostStream(bytes_per_entry * nnz), te.PythonCalls(calls))),
                                 resonance_filter_time_item(context.backend, unknowns, 3.0 * nnz,
-                                                           eigenpairs * n_orders)))
+                                                           eigenpairs * n_orders, symmetric=True)))
     return te.combine((assembly, context.solver_work(
         'eigen', unknowns=unknowns, nnz=nnz, value_bytes=16, solves=n_orders, factorizations=n_orders, rhs=2,
         eigenpairs=eigenpairs, factor_scale=FEM_LU_FILL_FACTOR, solve_scale=FEM_LU_FILL_FACTOR, **eigen_work,

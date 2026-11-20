@@ -226,7 +226,7 @@ class BORPhysics(HostFDFDBase, PhysicsSolver):
         axis class when the shifted solver is one) -> one EigenSolve (order by order), kept as eigen_solve."""
         self.eigen_solve = None
         system = self._refresh_system()
-        self._release_kept_cudss()   # the eigen-solve's own factor needs the device memory
+        self._release_device_factors()   # the eigen-solve's own factor needs the device memory
         assembly = self.assembly
         orders = self.azimuthal_orders
         factorizations = self._order_factorizations(assembly, orders)
