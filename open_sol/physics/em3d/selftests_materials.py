@@ -249,11 +249,22 @@ def _check_requantisation(_results):
 
 # ---- Drude velocity form of the em3d pole kernel (the 2D case's scenarios, em.selftests_operators) ----
 def _drude_3d_steppers(xp):
-    """{kernel: (shape, step)} of kernels3d.drude_j_weighted at face weight 1."""
-    from .kernels3d import drude_j_weighted
+    """{kernel: (shape, step)} of kernels3d.pole_drive_3d (Drude) on a box covering the grid: every cell a member and
+    face shares (1, 0), i.e. face weight 1 read from the uint8 membership box."""
+    from .kernels3d import launch, pole_drive_3d
     shape = (3, 3, 3)
-    weight = xp.ones(shape, dtype=np.float32)
-    return {'em3d_weighted': (shape, lambda damping, drive, e, j: drude_j_weighted(damping, drive, weight, e, j))}
+    membership = xp.ones(tuple(count + 1 for count in shape), dtype=np.uint8)
+    shares = (xp.ones(shape[0], dtype=np.float32), xp.zeros(shape[0], dtype=np.float32)) * 3
+    others = [xp.zeros(shape, dtype=np.float32) for _ in range(2)]   # J of the other two components (driven, unread)
+    grid, block = launch(shape)
+    geometry = (membership, *shares, *(np.int32(value) for value in (0, 0, 0, *shape)), np.int32(shape[1]),
+                np.int32(shape[2]))
+
+    def step(damping, drive, e, j):
+        currents = (j, *others)
+        pole_drive_3d(grid, block, (*currents, *currents, e, e, e, *geometry, np.float32(damping), np.float32(0.0),
+                                    np.float32(drive), np.int32(0)))
+    return {'em3d_pole_drive': (shape, step)}
 
 
 def _check_drude_velocity_form(_results):
@@ -311,7 +322,8 @@ MATERIAL_CASES = (
     SelfTestCase(
         name='em3d_drude_velocity_form',
         label='EM 3D: Drude velocity form of the pole kernel',
-        description=('Kernel only (no model run): the em3d drude_j_weighted update (face weight 1, float32, cpu twin '
+        description=('Kernel only (no model run): the em3d pole_drive_3d Drude update (face weight 1 from a uint8 '
+                     'membership box, float32, cpu twin '
                      'and, with a usable GPU, the CUDA kernel) in the scenarios of em_drude_velocity_form: constant E '
                      '= 1 V/m, omega_p 1.37e16 rad/s, dt 1e-17 s; gamma dt 2e-6 held at sigma_dc E for 10000 steps, '
                      'and gamma dt 1e-2 charging from J = 0 for 300 steps against the float64 leap-frog recursion. '

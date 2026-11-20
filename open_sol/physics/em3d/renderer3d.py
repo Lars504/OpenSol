@@ -120,11 +120,15 @@ class EMRenderer3D(YeeRenderer3D):
         """Mean absorbed power density [W/m^3] of the current window, else the last completed one, else zeros."""
         engine = self.em.engine
         engine.deposit_pole_work()
-        if engine.q_accum_time > 0.0:
-            return engine.q_accum[window] * DTYPE(1.0 / float(engine.q_accum_time))
-        if engine.last_q_accum is not None:
-            return engine.last_q_accum[window] * DTYPE(1.0 / float(engine.last_q_accum_time))
-        return self.xp.zeros(engine.material_id[window].shape, dtype=DTYPE)
+        if engine.q_accum_time > 0.0:   # loss-box arrays: q_selection fills 0 outside the box
+            values, seconds = engine.q_accum, engine.q_accum_time
+        elif engine.last_q_accum is not None:
+            values, seconds = engine.last_q_accum, engine.last_q_accum_time
+        else:
+            return self.xp.zeros(engine.material_id[window].shape, dtype=DTYPE)
+        power = engine.q_selection(values, window)
+        power *= DTYPE(1.0 / float(seconds))
+        return power
 
     def _centre(self, component, cut):
         """float32 raw component averaged to the cell centres (cell 0 of a non-periodic axis takes its own face): one

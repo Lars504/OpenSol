@@ -39,7 +39,7 @@ TYPE_NAME = 'em_fdtd_3d'
 _SLOT_ARRAYS = dict(PERMITTIVITY_SLOTS)   # eps_xx_update / eps_yy_update only when those arrays are allocated
 _INDEX_UNIFORM_BYTES_PER_CELL = 12     # every array uniform: cp.unique's float32 copy, sort scratch and mask per chunk
 _INDEX_VARYING_BYTES_PER_CELL = 40     # int64 stage codes, bin numbers, searchsorted and unique temporaries per chunk
-_POLE_ITEM_LABEL = 'dispersive poles (weights, cb, J / P)'
+_POLE_ITEM_LABEL = 'dispersive poles (uint8 membership, J / P)'
 # run-time recipe (calibrate from the selftest time_check of em3d_fdtd_cpu_gpu*, em3d_conformal_pec_cavity): a field
 # kernel launch (~40 arguments) costs ~3 profile launches of host overhead (gpu ~20 us vs the 6.7 us fused floor)
 _FIELD_LAUNCH_WEIGHT = 3
@@ -48,7 +48,8 @@ _FIELD_LAUNCH_WEIGHT = 3
 _FEATURE_LAUNCHES = {'flux_plane': 5, 'flux_box': 30, 'far_field': 30, 'mode_monitor': 5, 'mode_source': 3,
                      'plane_wave_source': 10, 'dft_plane': 4, 'pec_domain': 0}
 _DEFAULT_FEATURE_LAUNCHES = 2
-_POLE_LAUNCHES = 6                     # per field set with poles: 3 drive + 3 correction kernels (one pole assumed)
+_POLE_LAUNCHES = 2                     # per field set with poles: one drive + one correction kernel per pole (three
+                                       # components each, kernels3d pole section; one pole assumed)
 # numpy field twins (cpu backend without numba), counted from kernels3d with the cached coefficients: numpy passes
 # per field set and step over the grid (update_h ~31, update_e ~34) and per CPML layer cell (their layer passes:
 # H ~19, E ~21)
@@ -226,7 +227,8 @@ _Q_ACCUM_INFO = FieldInfo('q_accum', 'Absorbed energy density', unit='J/m^3', cm
 _TRACK_ABSORPTION = next(param for param in settings_params(_BC_HELP, 'unused', (
     'Accumulate J.E losses also without an em_heat_joule coupling: output absorbed_power [W/m^3], state q_accum '
     '[J/m^3] (face sigma_e split between the two cells by half-cell conductance, pole work time-centred and split to '
-    'the dispersive cells). Costs a pass over the conducting-cell and pole boxes per step plus 8 B per cell.'))
+    'the dispersive cells). Costs a pass over the conducting-cell and pole boxes per step plus 8 B per cell of their '
+    'bounding box (the loss box; outside it the state reads 0), and each transfer to a coupling a full-grid copy.'))
                          if param.name == 'track_absorption')
 
 
@@ -576,15 +578,47 @@ def _materials_vary(context, n_cells):
     return False
 
 
-def _pole_box_cells(region, shape, periodic):
+def _pole_box_cells(region, shape, periodic, padded=False):
     """Cells of engine3d's pole box of a material region: its bounding box one cell longer on the lo side, the whole
-    axis on a periodic axis it starts at cell 0 of (box_cells when the bounds are unknown)."""
+    axis on a periodic axis it starts at cell 0 of (box_cells when the bounds are unknown); padded: of its membership
+    box, one row longer per axis (_pole_region)."""
     if len(region.box_bounds) != 3:
         return region.box_cells
     cells = 1
     for (first, last), count, wraps in zip(region.box_bounds, shape, periodic):
-        cells *= count if wraps and first == 0 else last - first + 1 + (1 if first > 0 else 0)
+        cells *= (count if wraps and first == 0 else last - first + 1 + (1 if first > 0 else 0)) + (1 if padded else 0)
     return cells
+
+
+def _sets_value(value) -> bool:
+    """True for a material property value other than None or a literal 0 (MemoryContext.material_sets)."""
+    return value is not None and not (isinstance(value, (int, float)) and value == 0)
+
+
+def _loss_box_cells(context, n_cells):
+    """Cells of engine3d's loss box q_box (q_accum, last window): the union bounding box of the materials with a
+    sigma_e other than a literal 0 or with poles (an upper bound: the engine fits the cells with sigma_e > 0); n_cells
+    when such a material has no 3D box, 0 without any."""
+    from ...materials import effective_material_data
+    regions = {region.name: region for region in context.material_regions}
+    boxes = []
+    for material in context.spec.materials:
+        region = regions.get(material.name)
+        if region is None:
+            continue
+        try:
+            properties, _ = effective_material_data(material.library, material.properties, material.dispersion)
+        except (ValueError, TypeError):   # reported by validate
+            continue
+        if not (region.n_drude or region.n_lorentz or _sets_value(properties.get('sigma_e'))):
+            continue
+        if len(region.box_bounds) != 3:
+            return n_cells
+        boxes.append(region.box_bounds)
+    cells = 1 if boxes else 0
+    for axis in range(3) if boxes else ():
+        cells *= max(bounds[axis][1] for bounds in boxes) - min(bounds[axis][0] for bounds in boxes) + 1
+    return min(cells, n_cells)
 
 
 def _step_launches(settings_values, context, n_sets):
@@ -669,18 +703,23 @@ def _memory_estimate(settings_values, mesh, context):
     pole_bytes = 0
     periodic = tuple(settings_values[f'bc_{axis}_lo'] == 'periodic' for axis in AXES)
     for region in context.material_regions:
-        if region.n_drude or region.n_lorentz:   # weights, cb (+ face work while accumulating), J / P, dP
-            per_cell = 6 + (3 if q_accum else 0) + n_sets * (3 * region.n_drude + 6 * region.n_lorentz)
-            pole_bytes += per_cell * FLOAT32_BYTES * _pole_box_cells(region, shape, periodic)
+        if region.n_drude or region.n_lorentz:   # J / P, dP (+ face work while accumulating), membership (padded)
+            per_cell = (3 if q_accum else 0) + n_sets * (3 * region.n_drude + 6 * region.n_lorentz)
+            pole_bytes += (per_cell * FLOAT32_BYTES * _pole_box_cells(region, shape, periodic)
+                           + _pole_box_cells(region, shape, periodic, padded=True))
     items.append((_POLE_ITEM_LABEL, pole_bytes))
+    loss_cells = _loss_box_cells(context, n_cells) if q_accum else 0
     if q_accum:
-        items.append(('absorption accumulator (q_accum, float32)', FLOAT32_BYTES * n_cells))
+        items.append(('absorption accumulator (q_accum, float32 on the loss box)', FLOAT32_BYTES * loss_cells))
     trace_items, run_items, host_items = _point_trace_items(context, mesh)
     transient_items = []
-    if q_accum:   # reset_q_accum allocates the last window lazily; take_absorbed_power returns a new array per transfer
-        run_items.append(('last absorption window (float32)', FLOAT32_BYTES * n_cells))
-        transient_items.append(('absorbed power transfer', 'mean power density of one transfer (float32)',
-                                FLOAT32_BYTES * n_cells))
+    if q_accum:   # reset_q_accum allocates the last window lazily; a transfer reads the full-grid state()['q_accum']
+        # copy and take_absorbed_power returns a new full-grid mean (a coupling out of this physics reads both)
+        run_items.append(('last absorption window (float32 on the loss box)', FLOAT32_BYTES * loss_cells))
+        name = context.physics_spec.name
+        transfers = any(coupling.enabled and coupling.source == name for coupling in context.spec.couplings)
+        transient_items.append(('absorbed power transfer', 'full-grid q_accum copy and mean power density (float32)',
+                                (2 if transfers else 1) * FLOAT32_BYTES * n_cells))
     n_wavelengths = _harmonic_wavelength_count(context)
     if n_wavelengths:
         window = plane_cells(mesh, 2, window=True) * (shape[2] - mesh.npml_sides.get('z_lo', 0) - mesh.npml_sides.get('z_hi', 0))
@@ -706,8 +745,9 @@ EM_FDTD_3D = PhysicsType(
                  'imaginary field set). Outputs the raw components, e_abs, e_intensity, h_abs (cell centres), eps_r '
                  '(the eps_zz array) and absorbed_power, shown as z cut planes. Couplings: heat_em_thermo_optic (index '
                  'slots of the allocated permittivity arrays), em_heat_joule into 3D heat. Memory ~26 B per cell plus '
-                 '12 B of material arrays (+8 B with eps_xx / eps_yy, +4 B with sigma_m, +8 B tracking absorption). A '
-                 'stepper solver with precision half_storage stores fp16 fields (14 B per cell; gpu and '
+                 '12 B of material arrays (+8 B with eps_xx / eps_yy, +4 B with sigma_m, +8 B per cell of the lossy '
+                 "cells' bounding box tracking absorption). A stepper solver with precision half_storage stores fp16 "
+                 'fields (14 B per cell; gpu and '
                  'time_dependent only; no poles, plane wave, mode ports or resonance finder; ~1e-3 relative noise '
                  'floor). One 3D Courant step per runner tick (every must be 1). cpu backend: numpy twins of every '
                  'kernel (numba for the Yee updates, CPML and ohmic loss when installed), far slower: small models and '
