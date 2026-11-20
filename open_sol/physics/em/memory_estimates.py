@@ -242,8 +242,8 @@ def _resonance_search(context, n_resonances, unknowns, own_cudss, filter_entries
     n_wanted = max(min(2 * n_resonances + 10, unknowns - 2), 1)
     n_basis = arnoldi_basis_size(n_wanted, unknowns, eigen_subspace_size(context.solvers), basis_per_wanted * n_wanted)
     ldlt = symmetric_search if ldlt is None else ldlt
-    single_basis = bool(polished_double) or (own_cudss and polished_mixed_search(eigen_factorization(context.solvers),
-                                                                                 unknowns, symmetric=ldlt))
+    single_basis = search_single_basis(eigen_factorization(context.solvers), unknowns, own_cudss, ldlt,
+                                       polished_double)
     return resonance_search_items(solver_backend(context.spec), unknowns, n_wanted, n_basis, own_cudss=own_cudss,
                                   filter_entries=filter_entries, scaled_block=scaled_block,
                                   sparse_mass_entries=sparse_mass_entries, symmetric_mass=symmetric_search,
@@ -289,6 +289,14 @@ def eigen_mixed(factorization, unknowns) -> bool:
     """Whether an eigen runtime's own cuDSS factor of `unknowns` rows is mixed (ArpackShiftInvertSolver.factorization_for:
     a cudss_mixed request below MIXED_EIGEN_MIN_UNKNOWNS factors in double)."""
     return factorization == 'cudss_mixed' and int(unknowns) >= MIXED_EIGEN_MIN_UNKNOWNS
+
+
+def search_single_basis(factorization, unknowns, own_cudss, ldlt, polished_double=False) -> bool:
+    """Whether solve_resonances keeps a complex64 Krylov basis (every polished search: eigenfrequency
+    MIXED_ARPACK_TOLERANCE): polished_double (the caller's test of a polish on a double factor too: E2, a floored
+    complex A of an LDL^T), else an own cuDSS factor (own_cudss) that is a mixed LDL^T (ldlt; polished_mixed_search).
+    The memory items (_resonance_search) and the eigen role's time recipe (SolverWork.single_basis) read it."""
+    return bool(polished_double) or bool(own_cudss and polished_mixed_search(factorization, unknowns, symmetric=ldlt))
 
 
 def polished_mixed_search(factorization, unknowns, symmetric=True) -> bool:

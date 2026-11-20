@@ -1357,7 +1357,8 @@ def time_estimate(values, work):
     (2D the profile's cudss curves, 3D the fitted recipe above), other dimensions not estimated. work.plan_reused
     marks a ShiftPencil caller (its set-up once, host M products, per-shift combination; work.nnz = the pencil's
     entries); the device Krylov-Schur wherever eigs runs it (gpu backend, device_arnoldi_fits; work.device_arnoldi
-    forces it: solve_resonances' own factor); cudss_mixed below MIXED_EIGEN_MIN_UNKNOWNS priced as cudss (S5c); the
+    forces it: solve_resonances' own factor; work.single_basis: its complex64 basis, half the CGS2 bytes, single-rate
+    flops); cudss_mixed below MIXED_EIGEN_MIN_UNKNOWNS priced as cudss (S5c); the
     host direct factorizations on the SuperLU items x sparse_direct.HOST_DIRECT_* (uncalibrated)."""
     from dataclasses import replace
     from ..core import time_estimate as te
@@ -1428,8 +1429,10 @@ def time_estimate(values, work):
         wanted = max(int(work.eigenpairs), 1)
         keep = min(basis - 1, max(wanted + (basis - wanted) // 2, wanted + 1))
         reads = 1.0 / max(basis - keep, 1) if device_matvec else 1.0
-        arnoldi = (te.Elementwise(3.0 * 16.0 * n_unknowns * basis, 3.0 * 16.0 * n_unknowns, launches=9),
-                   te.DenseFlops(4.0 * complex_factor * n_unknowns * basis), te.Sync(reads))
+        row_bytes = 8.0 if work.single_basis else 16.0   # a complex64 basis (eigs_device single_basis): cgemv rows
+        arnoldi = (te.Elementwise(3.0 * row_bytes * n_unknowns * basis, 3.0 * row_bytes * n_unknowns, launches=9),
+                   te.DenseFlops(4.0 * complex_factor * n_unknowns * basis, single=bool(work.single_basis)),
+                   te.Sync(reads))
         if not on_device:
             arnoldi += ((2.0, te.Transfer(16.0 * n_unknowns)),)
     else:   # host ARPACK: the n x basis vectors streamed ~twice per application (Gram-Schmidt and update; memory-bound,

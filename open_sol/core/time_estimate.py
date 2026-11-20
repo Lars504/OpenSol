@@ -195,7 +195,9 @@ class SolverWork:
                                    # role after the driven role): sparse_direct.cudss_plan_fraction
     device_arnoldi: bool = False   # eigen role on a cuDSS factor: the device Krylov-Schur of solve_resonances (no host
                                    # ARPACK basis, no vector transfers; arpack_shift_invert.eigs_device)
-    run_backend: str = 'gpu'       # the run's backend even where `backend` says 'cpu' for host solves (TimeContext
+    single_basis: bool = False     # eigen role: that device Krylov-Schur keeps a complex64 basis (eigs_device
+                                   # single_basis: half the CGS2 bytes, gemm_single flops)
+    run_backend: str = 'gpu'      # the run's backend even where `backend` says 'cpu' for host solves (TimeContext
                                    # fills it): the eigen role's device Krylov-Schur around a host SuperLU
 
     @property

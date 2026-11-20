@@ -30,7 +30,7 @@ from .definition_feature_validation import _box_issues, _line_cells, _selected_s
 from .eigenfrequency import resonance_filter_time_item
 from ...solvers.line_block import factor_solve_ops
 from .materials import EM_MATERIAL_SCHEMAS
-from .memory_estimates import bor_memory_estimate, pec_memory_estimate
+from .memory_estimates import bor_memory_estimate, pec_memory_estimate, search_single_basis
 from .renderer_bor import BORRenderer
 from .selftests_bor import MICRODISK_DESCRIPTION, MICRODISK_LABEL, MICRODISK_SUMMARY, microdisk_bor_eigenmodes_spec
 from .solvers.fdfd_bor import (BOR_MATERIAL_SCHEMA_KEY, BOR_PERMITTIVITY_ARRAYS, BOR_PERMITTIVITY_SLOTS, BORPhysics,
@@ -701,8 +701,10 @@ def _time_estimate(settings_values, mesh, context):
                                context.solver_work('eigen', product_ops=scaled_ops(
                                    factor_solve_ops(unknowns, block, nnz, shifted.values.get('precision', 'mixed')),
                                    2.0), **common)))
-        if eigen_factorization(context.solvers) in CUDSS_FACTORIZATIONS:
-            return te.combine((assembly, context.solver_work('eigen', factorizations=n_orders, rhs=2, **common)))
+        if eigen_factorization(context.solvers) in CUDSS_FACTORIZATIONS:   # complex64 basis on a polished mixed one
+            single_basis = search_single_basis(eigen_factorization(context.solvers), unknowns, True, True)
+            return te.combine((assembly, context.solver_work('eigen', factorizations=n_orders, rhs=2,
+                                                             single_basis=single_basis, **common)))
         factors = te.TimeItem('shift-invert factorisations', 'factorisation', n_orders, 'exact',
                               (te.HostLU(unknowns, 2, True, scale=BOR_LU_SCALE),),
                               counter=role_counter(context, 'eigen', 'eigen_factorizations'),

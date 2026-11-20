@@ -907,6 +907,7 @@ def fem_resonance_time_estimate(settings_values, mesh, context, label, bytes_per
     SuperLU priced at FEM_LU_FILL_FACTOR x the 2D curve, uncalibrated; cuDSS on the profile's 2D cudss curves at the
     same scale); eigen_work: further solver_work kwargs."""
     from .fem_modes import DISCRETIZATION_ORDERS, FEM_ENTRIES_PER_ROW, FEM_LU_FILL_FACTOR, estimated_unknowns
+    from .memory_estimates import search_single_basis   # (memory_estimates imports this module)
     order = DISCRETIZATION_ORDERS[settings_values['discretization']]
     unknowns = float(estimated_unknowns(int(mesh.n_elements), int(mesh.n_edges), int(mesh.n_nodes), order))
     nnz = FEM_ENTRIES_PER_ROW[order] * unknowns
@@ -916,8 +917,11 @@ def fem_resonance_time_estimate(settings_values, mesh, context, label, bytes_per
                                                            eigenpairs * n_orders, symmetric=True)))
     return te.combine((assembly, context.solver_work(
         'eigen', unknowns=unknowns, nnz=nnz, value_bytes=16, solves=n_orders, factorizations=n_orders, rhs=2,
-        eigenpairs=eigenpairs, factor_scale=FEM_LU_FILL_FACTOR, solve_scale=FEM_LU_FILL_FACTOR, **eigen_work,
-        **eigen_backend_kwargs(context))))
+        eigenpairs=eigenpairs, factor_scale=FEM_LU_FILL_FACTOR, solve_scale=FEM_LU_FILL_FACTOR,
+        single_basis=search_single_basis(   # an own polished mixed LDL^T of the complex symmetric pencil
+            eigen_factorization(context.solvers), unknowns,
+            eigen_factorization(context.solvers) in CUDSS_FACTORIZATIONS, True),
+        **eigen_work, **eigen_backend_kwargs(context))))
 
 
 def create_em_physics(ctx, physics_spec, settings_values, polarization, background_targets):

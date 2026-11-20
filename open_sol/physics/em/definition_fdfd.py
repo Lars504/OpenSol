@@ -46,6 +46,7 @@ from .eigenfrequency import (REGION_COLUMN, ResonanceRegion, ResonanceTable, res
 from .fdfd_line_block import BOTH_PERIODIC_TEXT, fdfd_block_axis
 from .fem_fdfd import FEM_FDFD_ENTRIES_PER_ROW, FEM_FDFD_LU_FILL, fem_fdfd_size_issue, scalar_unknowns
 from .fem_modes import DISCRETIZATION_ORDERS, PERIODIC_TEXT
+from ...solvers.arpack_shift_invert import CUDSS_FACTORIZATIONS
 from ...solvers.sparse_direct import CUDSS_BACK_ENDS, expected_back_end, scipy_available, size_issue
 from .fdfd_monitors import harmonic_far_field_result, harmonic_flux_result, harmonic_probe_result
 from .fdfd_ports import harmonic_mode_monitor_result, harmonic_mode_source_result
@@ -53,7 +54,7 @@ from .index_reference import OFF_DIAGONAL_ARRAY, OFF_DIAGONAL_SLOT
 from .definition_effective_index import effective_index_feature
 from .definition_phase_change import phase_change_medium_feature
 from .materials import EM_MATERIAL_SCHEMAS, GYRATION_Z
-from .memory_estimates import fdfd_memory_estimate, pec_memory_estimate
+from .memory_estimates import fdfd_memory_estimate, pec_memory_estimate, search_single_basis
 from .placement import PERMITTIVITY_SLOTS
 from .renderer import FDFDRendererEz, FDFDRendererHz
 from .solvers.fdfd_2d import FDFDPhysics
@@ -947,11 +948,16 @@ def _fdfd_time_estimate(settings_values, mesh, context):
     sources = _source_count(context)
     assembly_ops = (te.HostStream(ASSEMBLY_BYTES_PER_ENTRY * nnz), te.PythonCalls(200))
     if eigen_solved(context.spec, context.name):
+        from .cross_section_modes import cpml_cross_section
         eigenpairs = resonance_eigenpairs(context)
+        factorization = eigen_factorization(context.solvers)
+        bloch = bool(bloch_active_axes(settings_values))   # memory_estimates.fdfd_memory_estimate's basis rule
+        single_basis = search_single_basis(factorization, unknowns, factorization in CUDSS_FACTORIZATIONS, not bloch,
+                                           not bloch and cpml_cross_section(settings_values))
         return te.combine((te.TimeEstimate((te.TimeItem('Helmholtz assembly', 'assembly', 1.0, 'exact', assembly_ops),
                                             resonance_filter_time_item(context.backend, unknowns, nnz, eigenpairs))),
                            context.solver_work('eigen', unknowns=unknowns, nnz=nnz, value_bytes=16, solves=1.0,
-                                               factorizations=1.0, eigenpairs=eigenpairs)))
+                                               factorizations=1.0, eigenpairs=eigenpairs, single_basis=single_basis)))
     per_step, rhs = context.time_dependent, float(max(sources, 1))
     if context.study.type == OPTIMIZATION_STUDY:
         (points, kind, limit), rhs = optimization_evaluations(context), 2.0 * rhs   # + the adjoint solve
@@ -993,7 +999,10 @@ def _triangle_time_estimate(settings_values, mesh, context):
                                                                        eigenpairs, symmetric=True))),   # A, M and W
                            context.solver_work('eigen', unknowns=unknowns, nnz=nnz, value_bytes=16, solves=1.0,
                                                factorizations=1.0, eigenpairs=eigenpairs,
-                                               factor_scale=FEM_FDFD_LU_FILL[order], **host)))
+                                               factor_scale=FEM_FDFD_LU_FILL[order],
+                                               single_basis=search_single_basis(   # a polished mixed LDL^T
+                                                   eigen_factorization(context.solvers), unknowns, not host, True),
+                                               **host)))
     per_step = context.time_dependent
     points, kind, limit = _driven_points(context)
     assembly = te.TimeItem('FEM Helmholtz assembly', 'assembly', points, kind, assembly_ops, limit=limit,

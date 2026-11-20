@@ -3,7 +3,7 @@ fixed out-of-plane wave number k_z) on definition_common, with its self-tests; d
 from dataclasses import replace
 
 from ...core import time_estimate as te
-from ...model.definition_helpers import CUDSS_LINEAR_ROLE, eigen_role, linear_solver_cudss
+from ...model.definition_helpers import CUDSS_LINEAR_ROLE, eigen_factorization, eigen_role, linear_solver_cudss
 from ...model.schema import FeatureType, Issue, Param, PhysicsType, feature_path
 from ...solvers.arpack_shift_invert import CUDSS_FACTORIZATIONS, MIXED_FACTORIZATIONS
 from ...solvers.sparse_direct import MIXED_BACK_ENDS
@@ -25,7 +25,7 @@ from .definition_common import (BOTH_GRIDS, CPML_BC_HELP, DEFAULT_WAVELENGTH, EI
 from .definition_feature_validation import _line_cells, _selected_shapes, validate_line_feature
 from .eigenfrequency import resonance_filter_time_item, resonance_table_result
 from .materials import EM_MATERIAL_SCHEMAS
-from .memory_estimates import conical_memory_estimate, host_factorization, pec_memory_estimate
+from .memory_estimates import conical_memory_estimate, host_factorization, pec_memory_estimate, search_single_basis
 from .renderer_conical import ConicalRenderer
 from .solvers.fdfd_conical import (CONICAL_MATERIAL_SCHEMA_KEY, CONICAL_PERMITTIVITY_ARRAYS,
                                    CONICAL_PERMITTIVITY_SLOTS, ConicalPhysics, conical_flux_result,
@@ -383,12 +383,20 @@ def _time_estimate(settings_values, mesh, context):
     nnz = _CONICAL_ENTRIES_PER_ROW * unknowns
     assembly_ops = (te.HostStream(CONICAL_ASSEMBLY_BYTES_PER_ENTRY * nnz), te.PythonCalls(200))
     if context.study.type == EIGENFREQUENCY_STUDY:
+        from ...solvers.arpack_shift_invert import LDLT_FACTORIZATIONS
+        from .cross_section_modes import cpml_cross_section
         host = eigen_backend_kwargs(context)
         eigenpairs = resonance_eigenpairs(context, optical=False)
+        factorization = eigen_factorization(context.solvers)
+        ldlt = not bloch_active_axes(settings_values)   # memory_estimates.conical_memory_estimate's basis rule
+        single_basis = search_single_basis(factorization, unknowns, factorization in CUDSS_FACTORIZATIONS, ldlt,
+                                           ldlt and factorization in LDLT_FACTORIZATIONS
+                                           and cpml_cross_section(settings_values))
         return te.combine((te.TimeEstimate((te.TimeItem('conical assembly', 'assembly', 1.0, 'exact', assembly_ops),
                                             resonance_filter_time_item(context.backend, unknowns, nnz, eigenpairs))),
                            context.solver_work('eigen', unknowns=unknowns, nnz=nnz, value_bytes=16, solves=1.0,
-                                               factorizations=1.0, rhs=2, eigenpairs=eigenpairs, **host)))
+                                               factorizations=1.0, rhs=2, eigenpairs=eigenpairs,
+                                               single_basis=single_basis, **host)))
     points = float(context.count('harmonic_points', 1)) if context.study.type == FREQUENCY_DOMAIN_STUDY else 1.0
     solves, kind, limit = context.static_solves()
     assembly = te.TimeItem('conical assembly', 'solve', points * solves, kind, assembly_ops,
