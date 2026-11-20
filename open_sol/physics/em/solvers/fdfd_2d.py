@@ -37,8 +37,9 @@ from ..harmonic import (HarmonicSystem, absorbed_power_ez, absorbed_power_hz, ce
 from ..index_reference import OFF_DIAGONAL_ARRAY
 from ..materials import (GYRATION_Z, DrudePole, LorentzPole, material_solution_state, register_em_arrays,
                          restore_material_solution, tfsf_outline_warnings)
-from ..operators import (KeptYeeOperators, active_coupling_faces, bloch_wrap_phases, helmholtz_operator,
-                         off_diagonal_face_couplings, pin_image_cells, stretched_cell_areas, yee_operators)
+from ..operators import (EDifference, KeptYeeOperators, active_coupling_faces, bloch_wrap_phases,
+                         helmholtz_operator, off_diagonal_face_couplings, pin_image_cells, stretched_cell_areas,
+                         yee_e_differences, yee_operators)
 from ..placement import (PERMITTIVITY_ARRAYS, box_window_faces, electric_dipole_faces,
                          flux_line_cells, line_mirror_factor, mirror_planes, near_to_far_box_cells, point_source_cell,
                          port_cells, probe_cell, require_polarization, sheet_line, tfsf_box_cells, tfsf_open_faces)
@@ -954,8 +955,8 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
         bc = self.boundary_config
         periodic_x, periodic_y = bool(bc.periodic_x), bool(bc.periodic_y)
         cell_dx, cell_dy = grid_cell_widths(domain.grid)
-        # an ez system keeps no e differences (below): a reassembly at its omega gathers them again
-        if self._yee_ops is None or self._yee_ops[0] != omega or self._yee_ops[1].dx_e is None:
+        # a system keeps its e differences matrix-free (below): a reassembly at its omega gathers the CSR again
+        if self._yee_ops is None or self._yee_ops[0] != omega or isinstance(self._yee_ops[1].dx_e, EDifference):
             self._yee_ops = None   # free the previous omega's operators first
             polar = self.metric is not None   # polar: PML cells graded on the outermost r width (no mesh_config)
             if polar:
@@ -989,10 +990,7 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
             operator = self._helmholtz(ops, weight_hi_x_faces, weight_hi_y_faces, cell_term)
             del cell_term
             operator = self._pin_outer_cells(operator, pec_cells)
-            # ez reads dx_e / dy_e only in this assembly (face curls, sources and the adjoint take dx_h / dy_h): the
-            # system and the omega cache drop their values (2 x 32 B per cell; None fails loudly in a new reader)
-            ops = replace(ops, dx_e=None, dy_e=None)
-            self._yee_ops = (omega, ops)
+            ops = self._drop_e_operators(ops, omega)
             return HarmonicSystem(
                 polarization='ez', omega=omega, ops=ops, operator=operator, weight_hi_x_faces=weight_hi_x_faces,
                 weight_hi_y_faces=weight_hi_y_faces, cell_eps=cell_eps, cell_eps_xx=None, cell_eps_yy=None,
@@ -1061,6 +1059,7 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
             operator = (operator - ops.dx_e @ x_faces_from_y_faces @ ops.dy_h
                         - ops.dy_e @ y_faces_from_x_faces @ ops.dx_h).tocsr()
         operator = self._pin_outer_cells(operator, None)
+        ops = self._drop_e_operators(ops, omega)
         return HarmonicSystem(
             polarization='hz', omega=omega, ops=ops, operator=operator, weight_hi_x_faces=weight_hi_x_faces,
             weight_hi_y_faces=weight_hi_y_faces, cell_eps=None, cell_eps_xx=cell_eps_xx, cell_eps_yy=cell_eps_yy,
@@ -1068,6 +1067,22 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
             pec_cells=pec_cells,
             periodic_x=periodic_x, periodic_y=periodic_y, off_diagonal=off_diagonal, cell_eps_xy=cell_eps_xy,
             cell_gyration=cell_gyration, face_fractions=face_fractions, cell_area_fractions=cell_area_fractions)
+
+    def _drop_e_operators(self, ops, omega):
+        """ops with dx_e / dy_e as matrix-free operators.EDifference (yee_e_differences at omega), also in the omega
+        cache: only the assembly reads the e CSR (Helmholtz plan, eps_xy couplings); the hz face-current rhs and the
+        adjoints apply the e differences per solve without them (88 B per cell less on the device)."""
+        domain = self.domain
+        cell_widths = grid_cell_widths(domain.grid)
+        if self.metric is not None:   # as the polar yee_operators of the assembly
+            e_differences = yee_e_differences(cell_widths, self.boundary_config, float(cell_widths[0][-1]), omega,
+                                              xp=self.xp, polar_radius_min=domain.coordinates.radius_min)
+        else:
+            e_differences = yee_e_differences(cell_widths, self.boundary_config, cpml_grading_cell_size(domain), omega,
+                                              xp=self.xp)
+        ops = replace(ops, dx_e=e_differences[0], dy_e=e_differences[1])
+        self._yee_ops = (omega, ops)
+        return ops
 
     def assembly_eps_xy(self):
         """hz float64 (nx, ny) eps_xy the assembly uses = the material eps_xy + the eps_xy_update change, 0 in PEC cells

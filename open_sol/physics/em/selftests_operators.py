@@ -230,6 +230,46 @@ def _kept_yee_matches(operators, boundaries, cell_widths, omega):
         matches.append(np.shares_memory(kept_patterns[0][0], kept_patterns[1][0])
                        and np.shares_memory(kept_patterns[0][1], kept_patterns[1][1]))
         matches.extend(_parked_kept_yee_matches(operators, config, cell_widths, omega, weights, face_index))
+    y_bloch = boundaries.BoundaryConfig('cpml', 'cpml', 'bloch', 'bloch')
+    y_bloch.cpml_npml = _GRADED_NPML
+    y_bloch.bloch_ky = -0.45 * math.pi / float(np.sum(cell_widths[1]))
+    matches.extend(_e_difference_matches(operators, (boundaries.BoundaryConfig.all_pml(_GRADED_NPML),
+                                                     boundaries.BoundaryConfig.with_periodic_x(_GRADED_NPML), bloch,
+                                                     y_bloch), cell_widths, omega))
+    return matches
+
+
+def _e_difference_matches(operators, configs, cell_widths, omega):
+    """[bool]: yee_e_differences (the FDFD systems' matrix-free dx_e / dy_e, operators.EDifference) applies yee_operators'
+    dx_e / dy_e and their transposes to 1e-14 relative on a random complex vector, per config and on a polar grid
+    (radius_min 0.4 um, the first config), on numpy and (usable gpu) on cupy; a sparse operand raises TypeError."""
+    from ...core.backend import cp, gpu_available
+    rng = np.random.default_rng(_GRADED_SEED + 1)
+    n_unknowns = len(cell_widths[0]) * len(cell_widths[1])
+    vector = rng.standard_normal(n_unknowns) + 1j * rng.standard_normal(n_unknowns)
+
+    def close(reference, value):
+        return bool(np.abs(reference - value).max() <= 1e-14 * np.abs(reference).max())
+
+    matches = []
+    for config, radius_min in [(config, None) for config in configs] + [(configs[0], 0.4e-6)]:
+        direct = operators.yee_operators(cell_widths, config, _GRADED_BASE_CELL, omega=omega,
+                                         polar_radius_min=radius_min)
+        free = operators.yee_e_differences(cell_widths, config, _GRADED_BASE_CELL, omega,
+                                           polar_radius_min=radius_min)
+        device = (operators.yee_e_differences(cell_widths, config, _GRADED_BASE_CELL, omega, xp=cp,
+                                              polar_radius_min=radius_min) if gpu_available() else None)
+        for index, (matrix, difference) in enumerate(((direct.dx_e, free[0]), (direct.dy_e, free[1]))):
+            for reference, operator in ((matrix @ vector, difference), (matrix.T @ vector, difference.T)):
+                matches.append(close(reference, operator @ vector))
+                if device is not None:
+                    applied = device[index] if operator is difference else device[index].T
+                    matches.append(close(reference, (applied @ cp.asarray(vector)).get()))
+    try:
+        free[0] @ direct.dx_h
+        matches.append(False)
+    except TypeError:
+        matches.append(True)
     return matches
 
 
@@ -595,7 +635,9 @@ OPERATOR_SELFTEST_CASES = (
                     'ring of an all-pmc graded grid keeps constants in the interior null space of the Laplacian '
                     '(relative row sums < 1e-12); KeptYeeOperators at two omegas gives yee_operators\' CSR bit for '
                     'bit and helmholtz_operator\'s values to 1e-14, on numpy and on cupy with its entry maps and term '
-                    'plan parked in pinned host memory between calls. (D) face_average (width-weighted on graded '
+                    'plan parked in pinned host memory between calls, and yee_e_differences (the systems\' '
+                    'matrix-free dx_e / dy_e) applies yee_operators\' dx_e / dy_e and their transposes to 1e-14 '
+                    '(CPML, periodic x, Bloch x / y, a polar grid; numpy and cupy). (D) face_average (width-weighted on graded '
                     'widths, the plain mean bit for bit on uniform ones) / face_pec against explicit loops. (E) On the H_z engines of '
                     'B with random eps_xx / eps_yy (1-12) and sigma_e (0-3e5 S/m): the fused face eps / ca / cb '
                     'rebuild must equal face_average followed by the E_z cell-coefficient kernel (relative 1e-6). (F) '

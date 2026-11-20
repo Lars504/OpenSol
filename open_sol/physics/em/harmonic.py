@@ -163,7 +163,9 @@ class HarmonicSystem:
     """One assembled FDFD system at omega: Helmholtz operator plus the material values sources / monitors need."""
     polarization: str            # 'ez' | 'hz'
     omega: float                 # rad/s
-    ops: object                  # YeeOperators2D at omega (CSR complex128 of the backend: cupyx / scipy)
+    # YeeOperators2D at omega: dx_h / dy_h CSR complex128 of the backend (cupyx / scipy), dx_e / dy_e matrix-free
+    # operators.EDifference (`@` a flat vector, `.T`; the e CSR exists only inside FDFDPhysics._assemble)
+    ops: object
     operator: object             # A (CSR complex128, PEC pinning for ez, outermost wall / mirror cells pinned)
     weight_hi_x_faces: object    # complex128 (nx, ny): ez 1/mu_face, hz 1/eps_yy (0 on PEC / even-wall faces; hz
     weight_hi_y_faces: object    # ez 1/mu_face, hz 1/eps_xx   conducting sheets included, unlike eps_hi_*_faces)

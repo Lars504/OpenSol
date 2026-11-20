@@ -34,9 +34,13 @@ _FDFD_PRODUCT_TERM_BYTES = INT32_BYTES * 3 * _FDFD_PRODUCT_TERMS
 _FDFD_PLAN_TERM_BYTES = (_FDFD_PRODUCT_TERM_BYTES
                          + INT32_BYTES * (_FDFD_OPERATOR_ROW + 2 * (_FDFD_PLAN_TERMS - _FDFD_OPERATOR_ROW)))
 _FDFD_PLAN_PATTERN_BYTES = INT32_BYTES * (_FDFD_OPERATOR_ROW + 1)
-# KeptYeeOperators: the int32 2D entry -> 1D entry map of each of the 4 Yee operators (2 entries per row), parked
-# beside the plan's terms and uploaded by every `at`
+# KeptYeeOperators: the int32 2D entry -> 1D entry map of each of the 4 Yee operators (2 entries per row) and the
+# indices + indptr of dx_e / dy_e, parked beside the plan's terms and uploaded by every `at` (the systems keep the e
+# differences matrix-free: operators.EDifference)
 _YEE_ENTRY_MAP_BYTES = 4 * 2 * INT32_BYTES
+_YEE_E_PATTERN_BYTES = 2 * (2 + 1) * INT32_BYTES
+# the dx_e / dy_e CSR of one assembly: values + indices + indptr (2 entries per row)
+_YEE_E_CSR_BYTES = 2 * (2 * COMPLEX128_CSR_ENTRY_BYTES + INT32_BYTES)
 # assembly peak per cell: the plan build's sort (int32 rows / columns, int64 order + argsort result, the gathered rows
 # per term; first assembly) over a later omega's term buffer (complex128 per term + one gathered 4-per-row factor);
 # gpu: the build's product terms beside the sort, the uploaded plan terms beside the term buffer
@@ -45,9 +49,9 @@ _FDFD_TERM_BUFFER_BYTES = (_FDFD_PLAN_TERMS + 4) * COMPLEX128_BYTES
 _FDFD_ASSEMBLY_BYTES = {'cpu': max(_FDFD_SORT_BYTES, _FDFD_TERM_BUFFER_BYTES),
                         'gpu': max(_FDFD_SORT_BYTES + _FDFD_PRODUCT_TERM_BYTES,
                                    _FDFD_TERM_BUFFER_BYTES + _FDFD_PLAN_TERM_BYTES)}
-# host transfer per cell of one gpu assembly (definition_fdfd's time recipe): the plan terms and Yee entry maps up, the
-# host system arrays (cell mu; hz also the two E-face eps) down
-FDFD_ASSEMBLY_UPLOAD_BYTES = _FDFD_PLAN_TERM_BYTES + _YEE_ENTRY_MAP_BYTES
+# host transfer per cell of one gpu assembly (definition_fdfd's time recipe): the plan terms, Yee entry maps and e
+# patterns up, the host system arrays (cell mu; hz also the two E-face eps) down
+FDFD_ASSEMBLY_UPLOAD_BYTES = _FDFD_PLAN_TERM_BYTES + _YEE_ENTRY_MAP_BYTES + _YEE_E_PATTERN_BYTES
 FDFD_HOST_SYSTEM_ARRAYS = {'ez': 1, 'hz': 3}
 # Run phases (MemoryEstimate.transient_items) of the frequency-domain engines; never alive at the same time
 ASSEMBLY_PHASE = 'assembly'                 # operator assembly temporaries (the system itself is a run item)
@@ -537,21 +541,22 @@ def fdfd_memory_estimate(polarization):
         run_items = [('solution and face fields (3 x complex128)', solution_bytes)]
         # the device HarmonicSystem: run items, or ASSEMBLY_PHASE items where the eigen search parks it; the plan's
         # terms and the Yee entry maps wait on the host between assemblies on the gpu (operators._ParkedInt32)
-        parked_bytes = (_FDFD_PLAN_TERM_BYTES + _YEE_ENTRY_MAP_BYTES) * n_cells
-        # ez keeps the h differences only (fdfd_2d._assemble: dx_e / dy_e values live in the assembly, their kept
-        # kron indices stay); hz all four (face-current rhs, adjoint, eps_xy couplings)
-        e_value_bytes = 2 * 2 * COMPLEX128_BYTES   # dx_e, dy_e: 2 entries per row
-        assembly_only = e_value_bytes if polarization == 'ez' else 0
-        yee_label = '2 sparse complex128 + the e index arrays' if polarization == 'ez' else '4 sparse complex128'
-        system_items = [(f'Yee operators ({yee_label})',
-                         (4 * (2 * COMPLEX128_CSR_ENTRY_BYTES + sparse_row) - assembly_only) * n_cells),
+        parked_bytes = (_FDFD_PLAN_TERM_BYTES + _YEE_ENTRY_MAP_BYTES + _YEE_E_PATTERN_BYTES) * n_cells
+        # the systems keep dx_h / dy_h as CSR, dx_e / dy_e matrix-free (fdfd_2d._drop_e_operators: O(nx + ny)); the
+        # e CSR values live in the assembly, their indices on the kept host patterns (cpu) or views of the uploaded
+        # park, held by them through the assembly (gpu: entry maps + e patterns)
+        assembly_only = _YEE_E_CSR_BYTES - _YEE_E_PATTERN_BYTES
+        if gpu:
+            assembly_only += _YEE_ENTRY_MAP_BYTES + _YEE_E_PATTERN_BYTES
+        system_items = [('Yee operators (dx_h, dy_h sparse complex128; dx_e, dy_e matrix-free)',
+                         2 * (2 * COMPLEX128_CSR_ENTRY_BYTES + sparse_row) * n_cells),
                         ('kept Helmholtz pattern (int32; polar grids have none)', _FDFD_PLAN_PATTERN_BYTES * n_cells),
                         ('Helmholtz operator (sparse complex128)',
                          (5 * COMPLEX128_CSR_ENTRY_BYTES + sparse_row) * n_cells),
                         (f'system arrays ({n_system_arrays} x complex128)',
                          n_system_arrays * COMPLEX128_BYTES * n_cells)]
         if not gpu:
-            system_items.append(('kept Helmholtz term plan and Yee kron entry maps (int32)', parked_bytes))
+            system_items.append(('kept Helmholtz term plan, Yee kron entry maps and e patterns (int32)', parked_bytes))
         # _assemble: the old system is dropped first; a single solve assembles before its solution and factor exist
         assembly_bytes = (_FDFD_ASSEMBLY_BYTES['gpu' if gpu else 'cpu'] + assembly_only) * n_cells
         single_solve = not later_factorisations(context)
@@ -629,8 +634,8 @@ def fdfd_memory_estimate(polarization):
         host_items.append((f'system arrays on the host ({n_host_arrays} x complex128: {host_label})',
                            n_host_arrays * COMPLEX128_BYTES * n_cells))
         if gpu:
-            host_items.append(('Helmholtz term plan and Yee kron entry maps (int32, pinned between assemblies)',
-                               parked_bytes))
+            host_items.append(('Helmholtz term plan, Yee kron entry maps and e patterns (int32, pinned between '
+                               'assemblies)', parked_bytes))
         transient_items.append((ASSEMBLY_PHASE, 'Helmholtz assembly (term plan build sort / term buffer)'
                                 + (' before the solution and factor exist' if single_solve else ''),
                                 phase_before_items(assembly_bytes, later_bytes if single_solve else 0)))

@@ -227,6 +227,125 @@ def yee_operators(cell_widths, boundary_config, pml_dx, omega=None, xp=np, spars
     return YeeOperators2D(nx=nx, ny=ny, omega=omega, dx_e=dx_e, dx_h=dx_h, dy_e=dy_e, dy_h=dy_h)
 
 
+class EDifference:
+    """Matrix-free dx_e / dy_e of yee_operators (hi-face samples -> cell centres) on the flat index i*ny + j, from O(nx +
+    ny) coefficients instead of a full-grid CSR: along `axis` row k = diagonal[k] v[k] + lower[k] v[k-1] (row 0 of a
+    periodic axis: + lower[0] v[n-1], the Bloch wrap in it), times other_scale along the other axis (polar dy_e: 1 /
+    r~_c; None = 1). The entries are those of the CSR (yee_e_differences; polar dy_e applies its row scale after the
+    sum: equal to rounding; checked by em_operators_consistency); `@` takes one flat (nx*ny,) vector and allocates its
+    result, `.T` is the transpose. Anything else (a sparse product, .data)
+    fails loudly: such readers take the assembled CSR of yee_operators / KeptYeeOperators.at."""
+
+    def __init__(self, axis, grid_shape, diagonal, lower, periodic, other_scale=None, transposed=False):
+        if axis not in (0, 1):
+            raise ValueError(f'EDifference axis must be 0 (x) or 1 (y), got {axis!r}')
+        self.axis = axis
+        self.grid_shape = tuple(int(size) for size in grid_shape)
+        n_unknowns = self.grid_shape[0] * self.grid_shape[1]
+        self.shape = (n_unknowns, n_unknowns)
+        if diagonal.shape != (self.grid_shape[axis],) or lower.shape != diagonal.shape:
+            raise ValueError(f'EDifference coefficients need shape ({self.grid_shape[axis]},), got {diagonal.shape} / '
+                             f'{lower.shape}')
+        self.diagonal, self.lower = diagonal, lower
+        self.periodic = bool(periodic)
+        self.other_scale = other_scale
+        self.transposed = bool(transposed)
+        self.dtype = np.result_type(diagonal.dtype, lower.dtype,
+                                    diagonal.dtype if other_scale is None else other_scale.dtype)
+
+    @property
+    def T(self):
+        return EDifference(self.axis, self.grid_shape, self.diagonal, self.lower, self.periodic, self.other_scale,
+                           not self.transposed)
+
+    def _along(self, start, stop):
+        """Index tuple of entries start:stop along the difference axis (all along the other)."""
+        index = [slice(None), slice(None)]
+        index[self.axis] = slice(start, stop)
+        return tuple(index)
+
+    def __matmul__(self, vector):
+        if getattr(vector, 'ndim', None) != 1 or vector.shape[0] != self.shape[1]:
+            raise TypeError(f'EDifference @ takes one flat ({self.shape[1]},) vector, got '
+                            f'{type(vector).__name__} of shape {getattr(vector, "shape", None)}')
+        axis, n_cells = self.axis, self.diagonal.size
+        coefficient_shape, other_shape = [1, 1], [1, 1]
+        coefficient_shape[axis], other_shape[1 - axis] = n_cells, self.grid_shape[1 - axis]
+        diagonal, lower = self.diagonal.reshape(coefficient_shape), self.lower.reshape(coefficient_shape)
+        other = None if self.other_scale is None else self.other_scale.reshape(other_shape)
+        values = vector.reshape(self.grid_shape)
+        if self.transposed and other is not None:   # (diag(rho) D)^T = D^T diag(rho)
+            values = values * other
+        result = values * diagonal
+        head, tail = self._along(0, n_cells - 1), self._along(1, n_cells)
+        first, last = self._along(0, 1), self._along(n_cells - 1, n_cells)
+        if not self.transposed:
+            result[tail] += lower[tail] * values[head]
+            if self.periodic and n_cells > 1:
+                result[first] += lower[first] * values[last]
+        else:
+            result[head] += lower[tail] * values[tail]
+            if self.periodic and n_cells > 1:
+                result[last] += lower[first] * values[first]
+        if not self.transposed and other is not None:
+            result *= other
+        return result.ravel()
+
+
+def _e_difference_coefficients(inverse_spacing, periodic, stretch, wrap_phase):
+    """Host (diagonal, lower) of difference_matrix_1d(inverse_spacing, 'e', periodic, stretch, wrap_phase=...): the
+    same arithmetic, entry for entry (lower[0] = the periodic wrap entry, 0 otherwise)."""
+    weights = np.asarray(inverse_spacing, dtype=np.float64)
+    if stretch is not None:
+        stretch = np.asarray(stretch)
+        weights = weights / stretch.astype(np.complex128 if np.iscomplexobj(stretch) else np.float64)
+    n_cells = weights.size
+    wrap_phase = float(wrap_phase)
+    dtype = np.complex128 if wrap_phase != 0.0 else weights.dtype
+    diagonal = weights.astype(dtype)
+    lower = (-weights).astype(dtype)
+    if not periodic:
+        lower[0] = 0.0
+    elif n_cells == 1:   # (0, 0) holds both entries (tocsr sums them)
+        wrap = lower[0] * np.exp(1j * wrap_phase) if wrap_phase != 0.0 else lower[0]
+        diagonal = diagonal + wrap
+        lower[0] = 0.0
+    elif wrap_phase != 0.0:
+        lower[0] *= np.exp(1j * wrap_phase)
+    return diagonal, lower
+
+
+def yee_e_differences(cell_widths, boundary_config, pml_dx, omega=None, xp=np, polar_radius_min=None):
+    """(dx_e, dy_e) EDifference of yee_operators(cell_widths, boundary_config, pml_dx, omega, xp,
+    polar_radius_min=...) without its full-grid CSR: the systems' e differences between assemblies."""
+    if omega is not None:
+        omega = float(omega)
+    spacings = yee_inverse_spacings(*cell_widths)
+    nx, ny = spacings.inv_dx_e.size, spacings.inv_dy_e.size
+    stretch_x_e, _ = axis_stretch(cpml_axis_profiles(boundary_config, nx, 'x', pml_dx), omega)
+    stretch_y_e, _ = axis_stretch(cpml_axis_profiles(boundary_config, ny, 'y', pml_dx), omega)
+    phase_x, phase_y = bloch_wrap_phases(cell_widths, boundary_config)
+    x_diagonal, x_lower = _e_difference_coefficients(spacings.inv_dx_e, boundary_config.periodic_x, stretch_x_e,
+                                                     phase_x)
+    y_diagonal, y_lower = _e_difference_coefficients(spacings.inv_dy_e, boundary_config.periodic_y, stretch_y_e,
+                                                     phase_y)
+    other_scale = None
+    if polar_radius_min is not None:   # yee_operators' _scaled: (entry x 1 / r~_c[row]) x r~_f[column + 1]
+        if boundary_config.periodic_x:
+            raise ValueError('a polar grid has no periodic r axis')
+        radius_faces, radius_centres = stretched_radii(cell_widths[0], stretch_x_e, polar_radius_min)
+        inverse_centre_radii = 1.0 / radius_centres
+        column_radii = radius_faces[1:]
+        dtype = np.result_type(x_diagonal.dtype, inverse_centre_radii.dtype, column_radii.dtype)
+        x_diagonal = x_diagonal.astype(dtype) * inverse_centre_radii.astype(dtype) * column_radii.astype(dtype)
+        x_lower = x_lower.astype(dtype) * inverse_centre_radii.astype(dtype)
+        x_lower[1:] *= column_radii[:-1].astype(dtype)   # the lo neighbour's face; lower[0] = 0 (not periodic)
+        other_scale = xp.asarray(inverse_centre_radii)
+    return (EDifference(0, (nx, ny), xp.asarray(x_diagonal), xp.asarray(x_lower), boundary_config.periodic_x),
+            EDifference(1, (nx, ny), xp.asarray(y_diagonal), xp.asarray(y_lower), boundary_config.periodic_y,
+                        other_scale))
+
+
 class _ParkedInt32:
     """int32 arrays (xp, or numpy built on the host) read only once per assembly: on the gpu parked in one pinned host
     buffer (the device copies dropped) and uploaded as one device array per use; on the cpu kept as they are."""
@@ -288,12 +407,18 @@ def _difference_matrices_1d(cell_widths, boundary_config, pml_dx, omega, xp=np, 
             stretch_x_e)
 
 
+_E_PARTS = (0, 2)   # dx_e, dy_e in the KeptYeeOperators part order (dx_e, dx_h, dy_e, dy_h)
+
+
 class KeptYeeOperators:
     """Cartesian yee_operators of one grid at any omega on kept kron patterns: per omega only the four host 1D
     differences are rebuilt and gathered into the kept 2D CSR (same pattern and values as yee_operators, no kron)."""
-    # Kept per part (dx_e, dx_h, dy_e, dy_h): the 1D (indptr, indices) host pattern and the xp 2D indices / indptr,
+    # Kept per part (dx_e, dx_h, dy_e, dy_h): the 1D (indptr, indices) host pattern and the 2D indices / indptr,
     # shared by the ops of every omega (never modified in place: consumers copy); the int32 maps 2D entry -> 1D entry
-    # (read by `at` only) in one _ParkedInt32 (gpu: pinned host, uploaded per call), as the term plan's terms.
+    # (read by `at` only) in one _ParkedInt32 (gpu: pinned host, uploaded per call), as the term plan's terms. The e
+    # parts' 2D indices / indptr join that park (their xp slots None): only an assembly reads the e CSR, the systems
+    # keep EDifference (yee_e_differences), so on the gpu their 24 B per cell wait on the host; the h parts' stay on
+    # xp (face curls, adjoint and the eps_xy couplings read dx_h / dy_h every solve).
     # Ops of the current parts are recognised by identity of the YeeOperators2D (_issued_ops), never of their index
     # arrays: scipy's csr constructor re-slices indices (prune), so `ops.dx_e.indices is kept` never holds on the host.
 
@@ -303,8 +428,8 @@ class KeptYeeOperators:
         self.pml_dx = float(pml_dx)
         self.xp = xp
         self.nx, self.ny = (len(widths) for widths in self.cell_widths)
-        self._parts = None        # ((1D host pattern, xp 2D indices, xp 2D indptr) per part)
-        self._entry_maps = None   # _ParkedInt32 of the four xp int32 entry maps
+        self._parts = None        # ((1D host pattern, xp 2D indices, xp 2D indptr) per part; e parts: None, None)
+        self._entry_maps = None   # _ParkedInt32 of the four int32 entry maps + the e parts' 2D indices / indptr
         self._issued_ops = weakref.WeakSet()   # YeeOperators2D that `at` gathered on the current parts
         self._helmholtz_plan = None   # _HelmholtzPlan of the current parts (first helmholtz call)
 
@@ -321,16 +446,23 @@ class KeptYeeOperators:
             self._issued_ops = weakref.WeakSet()       # ops of the old parts no longer match the plan
             parts = [self._kron_part(matrix, identity_first) for matrix, identity_first in
                      zip(differences, (False, False, True, True))]
-            self._entry_maps = _ParkedInt32([part[1] for part in parts], self.xp)   # read here only: parked
-            self._parts = tuple((pattern, indices, indptr) for pattern, _, indices, indptr in parts)
+            # read here only: parked (the entry maps, then the e parts' indices / indptr)
+            self._entry_maps = _ParkedInt32([part[1] for part in parts]
+                                            + [array for index in _E_PARTS for array in parts[index][2:]], self.xp)
+            self._parts = tuple((pattern, None, None) if index in _E_PARTS
+                                else (pattern, self.xp.asarray(indices), self.xp.asarray(indptr))
+                                for index, (pattern, _, indices, indptr) in enumerate(parts))
             del parts
         n_unknowns = self.nx * self.ny
         csr_matrix = _sparse_module(self.xp).csr_matrix
-        entry_maps = self._entry_maps.upload()
+        parked = self._entry_maps.upload()   # gpu: one device copy, alive while the e CSR built on it are
+        entry_maps, e_patterns = parked[:4], iter(parked[4:])
+        patterns = [(next(e_patterns), next(e_patterns)) if index in _E_PARTS else part[1:]
+                    for index, part in enumerate(self._parts)]
         matrices = [csr_matrix((self.xp.asarray(matrix.data)[entry_map], indices, indptr),
                                shape=(n_unknowns, n_unknowns))
-                    for matrix, entry_map, (_, indices, indptr) in zip(differences, entry_maps, self._parts)]
-        del entry_maps
+                    for matrix, entry_map, (indices, indptr) in zip(differences, entry_maps, patterns)]
+        del parked, entry_maps, e_patterns, patterns
         ops = YeeOperators2D(self.nx, self.ny, omega, *matrices)
         self._issued_ops.add(ops)
         return ops
@@ -347,16 +479,16 @@ class KeptYeeOperators:
         return self._helmholtz_plan.operator(ops, weight_hi_x_faces, weight_hi_y_faces, cell_term)
 
     def _kron_part(self, matrix_1d, identity_first):
-        """(1D host pattern, host int32 entry map, xp indices, xp indptr) of kron(I, D) / kron(D, I): the kron of D's
-        entry numbers + 1 (never 0, so no entry drops) gives the 2D pattern and which D entry each 2D entry copies."""
+        """(1D host pattern, host int32 entry map, host int32 indices, indptr) of kron(I, D) / kron(D, I): the kron of
+        D's entry numbers + 1 (never 0, so no entry drops) gives the 2D pattern and which D entry each 2D entry
+        copies."""
         import scipy.sparse
         numbered = scipy.sparse.csr_matrix((np.arange(1, matrix_1d.nnz + 1, dtype=np.float64), matrix_1d.indices,
                                             matrix_1d.indptr), shape=matrix_1d.shape)
         kron = _kron_identity(numbered, self.nx if identity_first else self.ny, identity_first, np, True)
         entry_map = (kron.data - 1.0).astype(np.int32)
-        xp = self.xp
-        return ((matrix_1d.indptr.copy(), matrix_1d.indices.copy()), entry_map,
-                xp.asarray(kron.indices.astype(np.int32)), xp.asarray(kron.indptr.astype(np.int32)))
+        return ((matrix_1d.indptr.copy(), matrix_1d.indices.copy()), entry_map, kron.indices.astype(np.int32),
+                kron.indptr.astype(np.int32))
 
 
 def _product_terms(left, right, xp):
