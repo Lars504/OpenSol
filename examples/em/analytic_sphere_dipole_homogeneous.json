@@ -1,5 +1,5 @@
 {
-  "title": "Analytic: radial and tangential dipole emission in a homogeneous medium (spherical multipoles)",
+  "title": "Radial and tangential dipole emission in a homogeneous medium (spherical multipoles, analytic)",
   "description": "Two current elements (moment 1e-12 A m) at r = 0.3 um in a homogeneous dielectric of n = 1.5, one radial, one tangential (em_fdfd_sphere dipole_source; each is the sum of its multipole terms: the radial one excites only the electric family with m = 0, the tangential one both families with m = +-1, and the two are solved apart since their m sets are orthogonal). Half disc to 0.6 um, 1 nm radial cells, 90 theta cells, the medium continued to infinity by the exact outgoing condition, multipole orders 1..16 (n k r ~ 2.8: the terms fall off fast beyond l ~ 6), frequency_domain study at 0.8, 1.0 and 1.2 um.\nAnalytic: an element in an unbounded medium emits P = eta k^2 (I d)^2 / (12 pi), eta = eta0 / n, k = n k0, i.e. n times its vacuum power, wherever it sits and whatever its orientation; the Purcell factor (power over that of the same medium) is 1.\nDerived values tab: P_radial / P_tangential at 1 um vs n eta0 k0^2 (I d)^2 / (12 pi) and their purcell series vs 1 (pins the angular couplings and the source normalisation; ~1e-4). Put a sphere of another index around the origin (a circle material) to see the Purcell factor change with the distance to its surface.",
   "version": 2,
   "parameters": [
@@ -34,13 +34,13 @@
       "description": "reference wavelength of the derived values"
     },
     {
-      "name": "k0",
+      "name": "k_vac",
       "expression": "2*pi/lambda0",
-      "description": "vacuum wave number at lambda0"
+      "description": "vacuum wave number at lambda0 (k0 is the Bessel function K_0)"
     },
     {
       "name": "P_ref",
-      "expression": "n_m*sqrt(mu0_const/eps0_const)*k0**2*Id**2/(12*pi)",
+      "expression": "n_m*sqrt(mu0_const/eps0_const)*k_vac**2*Id**2/(12*pi)",
       "description": "power in the unbounded medium at lambda0"
     }
   ],

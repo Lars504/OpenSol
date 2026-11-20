@@ -125,6 +125,13 @@ def is_reserved_name(name):
     describe lists): a parameter or alias named so would be read as the reserved name."""
     return name in RESERVED_NAMES or name in _NAME_ALIASES
 
+
+def reserved_name_message(name):
+    """Reserved-name error text naming what the name is (k0 / i0 / j0 meant as wave number or current are traps)."""
+    meaning = (FUNCTION_DESCRIPTIONS.get(name) or CONSTANT_DESCRIPTIONS.get(name)
+               or (f'spelling of {_NAME_ALIASES[name]!r}' if name in _NAME_ALIASES else None))
+    return f"'{name}' is a reserved name" + (f' ({meaning}): choose another name' if meaning else '')
+
 _FUNCTION_SPELLINGS = {'ln': 'log'}   # common spelling -> expression function (unknown-function hint)
 _SYNTAX_HINTS = {   # disallowed AST node / operator class -> actionable message
     'BitXor': "'^' is not allowed: use ** for powers",
@@ -451,7 +458,7 @@ def evaluate_parameters(parameter_specs, errors=None):
         if not is_identifier(name):
             failures[name] = f'{name!r} is not a valid name'
         elif is_reserved_name(name):
-            failures[name] = f"'{name}' is a reserved name"
+            failures[name] = reserved_name_message(name)
         else:
             try:
                 dependencies[name] = referenced_names(raw)

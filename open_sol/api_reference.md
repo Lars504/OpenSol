@@ -14,91 +14,92 @@ Topics (describe(topic) or python -m open_sol describe <topic>): spec, expressio
 
 Line ranges in api_reference.md (Read with offset / limit; Grep '^## ' lists the same headings). Sections over 400 lines also list their subsections. "Help: shared `<key>`" (a line, or the end of a param line) stands for the text under "#### `<key>`" in Shared help texts (Grep it); every occurrence of a repeated long text points there.
 
-- lines 103-453: Model spec
-- lines 455-572: Expressions
-- lines 574-840: Geometry
-- lines 842-997: Materials
-- lines 999-1045: Mesh
-- lines 1047-1183: Solvers
-- lines 1185-1871: Shared help texts
-- lines 1873-1995: Physics type `drift_diffusion` - Semiconductor (drift-diffusion, 2D)
-- lines 1997-2191: Physics type `elastic_waves` - Elastic and Acoustic Waves, time domain (2D, in-plane)
-- lines 2193-2288: Physics type `electric_currents` - Electric Currents
-- lines 2290-2437: Physics type `electrostatics` - Electrostatics
-- lines 2439-2619: Physics type `em_eme` - Electromagnetic Waves, eigenmode expansion (2D)
-- lines 2621-2776: Physics type `em_eme_3d` - Electromagnetic Waves, eigenmode expansion (3D)
-- lines 2778-2865: Physics type `em_fdfd_3d` - Electromagnetic Waves, frequency domain (3D)
-- lines 2867-3026: Physics type `em_fdfd_bor` - Electromagnetic Waves, frequency domain (axisymmetric, azimuthal order m)
-- lines 3028-3165: Physics type `em_fdfd_conical` - Electromagnetic Waves, frequency domain (out-of-plane wave number k_z)
-- lines 3167-3418: Physics type `em_fdfd_ez` - Electromagnetic Waves, frequency domain (2D, electric field out of plane)
-- lines 3420-3691: Physics type `em_fdfd_hz` - Electromagnetic Waves, frequency domain (2D, magnetic field out of plane)
-- lines 3693-4082: Physics type `em_fdfd_nonlinear` - Nonlinear optics, frequency domain (2D, harmonic channels)
-- lines 4084-4329: Physics type `em_fdtd_3d` - Electromagnetic Waves, time domain (3D)
-- lines 4331-4519: Physics type `em_fdtd_bor` - Electromagnetic Waves, time domain (axisymmetric, azimuthal order m)
-- lines 4521-4821: Physics type `em_fdtd_ez` - Electromagnetic Waves, time domain (2D, electric field out of plane)
-- lines 4823-5131: Physics type `em_fdtd_hz` - Electromagnetic Waves, time domain (2D, magnetic field out of plane)
-- lines 5133-5275: Physics type `em_modes` - Electromagnetic Waves, cross-section modes
-- lines 5277-5524: Physics type `heat` - Heat Transfer in Solids
-- lines 5526-5651: Physics type `laminar_flow` - Laminar Flow (2D)
-- lines 5653-5792: Physics type `magnetic_fields_ac` - Magnetic Fields, AC (2D)
-- lines 5794-5913: Physics type `magnetostatics` - Magnetostatics (2D)
-- lines 5915-6029: Physics type `magnetostatics_3d` - Magnetostatics (3D)
-- lines 6031-6270: Physics type `membrane` - Membrane
-- lines 6272-6449: Physics type `pressure_acoustics` - Pressure Acoustics, frequency domain
-- lines 6451-6800: Physics type `solid_mechanics` - Solid Mechanics (2D)
-- lines 6802-7218: Physics type `solid_mechanics_3d` - Solid Mechanics (3D)
-  - lines 6810-6835: Settings (PhysicsSpec.settings)
-  - lines 6837-6947: Material properties (MaterialSpec.properties)
-  - lines 6949-6990: Fields
-  - lines 6992-6997: Source slots
-  - lines 6999-7005: Feature `solid_mechanics_3d.fixed` - Fixed
-  - lines 7007-7013: Feature `solid_mechanics_3d.roller` - Roller
-  - lines 7015-7023: Feature `solid_mechanics_3d.displacement` - Displacement
-  - lines 7025-7031: Feature `solid_mechanics_3d.fixed_domain` - Fixed (domain)
-  - lines 7033-7041: Feature `solid_mechanics_3d.prescribed_displacement_domain` - Prescribed displacement (domain)
-  - lines 7043-7055: Feature `solid_mechanics_3d.boundary_load` - Boundary load
-  - lines 7057-7069: Feature `solid_mechanics_3d.body_force` - Body force
-  - lines 7071-7079: Feature `solid_mechanics_3d.temperature_change` - Temperature change
-  - lines 7081-7089: Feature `solid_mechanics_3d.solid_probe` - Solid probe
-  - lines 7091-7097: Feature `solid_mechanics_3d.frequency_probe` - Frequency probe
-  - lines 7099-7105: Feature `solid_mechanics_3d.resonance_table` - Resonance table
-  - lines 7107-7115: Feature `solid_mechanics_3d.mode_shapes` - Mode shapes
-  - lines 7117-7136: Feature `solid_mechanics_3d.squeeze_film_damping` - Squeeze-film damping
-  - lines 7138-7146: Feature `solid_mechanics_3d.thermoelastic_damping` - Thermoelastic damping
-  - lines 7148-7161: Feature `solid_mechanics_3d.electrode` - Electrode
-  - lines 7163-7176: Feature `solid_mechanics_3d.electrode_domain` - Electrode (domain)
-  - lines 7178-7192: Feature `solid_mechanics_3d.admittance` - Admittance
-  - lines 7194-7218: Feature `solid_mechanics_3d.optomechanical_coupling` - Optomechanical coupling
-- lines 7220-7226: Coupling type `acoustics_em_acousto_optic` - Acousto-optic effect (elastic waves -> electromagnetic waves)
-- lines 7228-7234: Coupling type `currents_heat_joule` - Joule heating (electric currents -> heat)
-- lines 7236-7244: Coupling type `electrostatics_acoustics_piezo` - Piezoelectric coupling (electrostatics <-> elastic waves)
-- lines 7246-7254: Coupling type `electrostatics_em_pockels` - Pockels effect (electrostatics -> electromagnetic waves)
-- lines 7256-7262: Coupling type `em_acoustics_photoacoustic` - Photoacoustic heating (electromagnetic waves -> elastic waves)
-- lines 7264-7270: Coupling type `em_heat_joule` - Joule heating (electromagnetic waves -> heat)
-- lines 7272-7282: Coupling type `em_semiconductor_generation` - Photogeneration (electromagnetic waves -> semiconductor)
-- lines 7284-7290: Coupling type `em_solid_optical_force` - Optical force (electromagnetic waves -> solid mechanics)
-- lines 7292-7304: Coupling type `field_transfer` - Field transfer
-- lines 7306-7312: Coupling type `fluid_heat_convection` - Convective heat transport (laminar flow -> heat)
-- lines 7314-7320: Coupling type `heat_em_phase_change` - Phase change (heat -> electromagnetic waves)
-- lines 7322-7328: Coupling type `heat_em_thermo_optic` - Thermo-optic effect (heat -> electromagnetic waves)
-- lines 7330-7336: Coupling type `heat_solid_thermal_strain` - Thermal expansion (heat -> solid mechanics)
-- lines 7338-7344: Coupling type `magnetic_heat_induction` - Induction heating (magnetic fields AC -> heat)
-- lines 7346-7352: Coupling type `magnetic_solid_lorentz_force` - Lorentz force (magnetic fields -> solid mechanics)
-- lines 7354-7366: Coupling type `semiconductor_em_plasma_dispersion` - Free-carrier plasma dispersion (semiconductor -> electromagnetic waves)
-- lines 7368-7376: Coupling type `solid_em_strain_optic` - Strain-optic effect (solid mechanics -> electromagnetic waves)
-- lines 7378-7386: Coupling type `solid_membrane_tension` - Film prestress (solid mechanics -> membrane)
-- lines 7388-7414: Study type `eigenfrequency` - Eigenfrequency
-- lines 7416-7442: Study type `frequency_domain` - Frequency domain
-- lines 7444-7480: Study type `frequency_response` - Frequency response
-- lines 7482-7496: Study type `mode_analysis` - Mode analysis
-- lines 7498-7513: Study type `nonlinear_frequency_domain` - Nonlinear frequency domain
-- lines 7515-7531: Study type `optimization` - Optimization
-- lines 7533-7550: Study type `optomechanics` - Optomechanics
-- lines 7552-7569: Study type `stationary` - Stationary
-- lines 7571-7594: Study type `thermal_noise` - Thermal noise
-- lines 7596-7611: Study type `time_dependent` - Time dependent
-- lines 7613-7681: Templates
-- lines 7683-7938: Results, reports and files
+- lines 104-454: Model spec
+- lines 456-574: Expressions
+- lines 576-842: Geometry
+- lines 844-1000: Materials
+- lines 1002-1048: Mesh
+- lines 1050-1188: Solvers
+- lines 1190-1876: Shared help texts
+- lines 1878-2000: Physics type `drift_diffusion` - Semiconductor (drift-diffusion, 2D)
+- lines 2002-2196: Physics type `elastic_waves` - Elastic and Acoustic Waves, time domain (2D, in-plane)
+- lines 2198-2293: Physics type `electric_currents` - Electric Currents
+- lines 2295-2442: Physics type `electrostatics` - Electrostatics
+- lines 2444-2624: Physics type `em_eme` - Electromagnetic Waves, eigenmode expansion (2D)
+- lines 2626-2781: Physics type `em_eme_3d` - Electromagnetic Waves, eigenmode expansion (3D)
+- lines 2783-2870: Physics type `em_fdfd_3d` - Electromagnetic Waves, frequency domain (3D)
+- lines 2872-3031: Physics type `em_fdfd_bor` - Electromagnetic Waves, frequency domain (axisymmetric, azimuthal order m)
+- lines 3033-3170: Physics type `em_fdfd_conical` - Electromagnetic Waves, frequency domain (out-of-plane wave number k_z)
+- lines 3172-3423: Physics type `em_fdfd_ez` - Electromagnetic Waves, frequency domain (2D, electric field out of plane)
+- lines 3425-3696: Physics type `em_fdfd_hz` - Electromagnetic Waves, frequency domain (2D, magnetic field out of plane)
+- lines 3698-4087: Physics type `em_fdfd_nonlinear` - Nonlinear optics, frequency domain (2D, harmonic channels)
+- lines 4089-4193: Physics type `em_fdfd_sphere` - Electromagnetic Waves, frequency domain (spherically symmetric, multipole orders)
+- lines 4195-4440: Physics type `em_fdtd_3d` - Electromagnetic Waves, time domain (3D)
+- lines 4442-4630: Physics type `em_fdtd_bor` - Electromagnetic Waves, time domain (axisymmetric, azimuthal order m)
+- lines 4632-4932: Physics type `em_fdtd_ez` - Electromagnetic Waves, time domain (2D, electric field out of plane)
+- lines 4934-5242: Physics type `em_fdtd_hz` - Electromagnetic Waves, time domain (2D, magnetic field out of plane)
+- lines 5244-5386: Physics type `em_modes` - Electromagnetic Waves, cross-section modes
+- lines 5388-5635: Physics type `heat` - Heat Transfer in Solids
+- lines 5637-5762: Physics type `laminar_flow` - Laminar Flow (2D)
+- lines 5764-5903: Physics type `magnetic_fields_ac` - Magnetic Fields, AC (2D)
+- lines 5905-6024: Physics type `magnetostatics` - Magnetostatics (2D)
+- lines 6026-6140: Physics type `magnetostatics_3d` - Magnetostatics (3D)
+- lines 6142-6381: Physics type `membrane` - Membrane
+- lines 6383-6560: Physics type `pressure_acoustics` - Pressure Acoustics, frequency domain
+- lines 6562-6911: Physics type `solid_mechanics` - Solid Mechanics (2D)
+- lines 6913-7329: Physics type `solid_mechanics_3d` - Solid Mechanics (3D)
+  - lines 6921-6946: Settings (PhysicsSpec.settings)
+  - lines 6948-7058: Material properties (MaterialSpec.properties)
+  - lines 7060-7101: Fields
+  - lines 7103-7108: Source slots
+  - lines 7110-7116: Feature `solid_mechanics_3d.fixed` - Fixed
+  - lines 7118-7124: Feature `solid_mechanics_3d.roller` - Roller
+  - lines 7126-7134: Feature `solid_mechanics_3d.displacement` - Displacement
+  - lines 7136-7142: Feature `solid_mechanics_3d.fixed_domain` - Fixed (domain)
+  - lines 7144-7152: Feature `solid_mechanics_3d.prescribed_displacement_domain` - Prescribed displacement (domain)
+  - lines 7154-7166: Feature `solid_mechanics_3d.boundary_load` - Boundary load
+  - lines 7168-7180: Feature `solid_mechanics_3d.body_force` - Body force
+  - lines 7182-7190: Feature `solid_mechanics_3d.temperature_change` - Temperature change
+  - lines 7192-7200: Feature `solid_mechanics_3d.solid_probe` - Solid probe
+  - lines 7202-7208: Feature `solid_mechanics_3d.frequency_probe` - Frequency probe
+  - lines 7210-7216: Feature `solid_mechanics_3d.resonance_table` - Resonance table
+  - lines 7218-7226: Feature `solid_mechanics_3d.mode_shapes` - Mode shapes
+  - lines 7228-7247: Feature `solid_mechanics_3d.squeeze_film_damping` - Squeeze-film damping
+  - lines 7249-7257: Feature `solid_mechanics_3d.thermoelastic_damping` - Thermoelastic damping
+  - lines 7259-7272: Feature `solid_mechanics_3d.electrode` - Electrode
+  - lines 7274-7287: Feature `solid_mechanics_3d.electrode_domain` - Electrode (domain)
+  - lines 7289-7303: Feature `solid_mechanics_3d.admittance` - Admittance
+  - lines 7305-7329: Feature `solid_mechanics_3d.optomechanical_coupling` - Optomechanical coupling
+- lines 7331-7337: Coupling type `acoustics_em_acousto_optic` - Acousto-optic effect (elastic waves -> electromagnetic waves)
+- lines 7339-7345: Coupling type `currents_heat_joule` - Joule heating (electric currents -> heat)
+- lines 7347-7355: Coupling type `electrostatics_acoustics_piezo` - Piezoelectric coupling (electrostatics <-> elastic waves)
+- lines 7357-7365: Coupling type `electrostatics_em_pockels` - Pockels effect (electrostatics -> electromagnetic waves)
+- lines 7367-7373: Coupling type `em_acoustics_photoacoustic` - Photoacoustic heating (electromagnetic waves -> elastic waves)
+- lines 7375-7381: Coupling type `em_heat_joule` - Joule heating (electromagnetic waves -> heat)
+- lines 7383-7393: Coupling type `em_semiconductor_generation` - Photogeneration (electromagnetic waves -> semiconductor)
+- lines 7395-7401: Coupling type `em_solid_optical_force` - Optical force (electromagnetic waves -> solid mechanics)
+- lines 7403-7415: Coupling type `field_transfer` - Field transfer
+- lines 7417-7423: Coupling type `fluid_heat_convection` - Convective heat transport (laminar flow -> heat)
+- lines 7425-7431: Coupling type `heat_em_phase_change` - Phase change (heat -> electromagnetic waves)
+- lines 7433-7439: Coupling type `heat_em_thermo_optic` - Thermo-optic effect (heat -> electromagnetic waves)
+- lines 7441-7447: Coupling type `heat_solid_thermal_strain` - Thermal expansion (heat -> solid mechanics)
+- lines 7449-7455: Coupling type `magnetic_heat_induction` - Induction heating (magnetic fields AC -> heat)
+- lines 7457-7463: Coupling type `magnetic_solid_lorentz_force` - Lorentz force (magnetic fields -> solid mechanics)
+- lines 7465-7477: Coupling type `semiconductor_em_plasma_dispersion` - Free-carrier plasma dispersion (semiconductor -> electromagnetic waves)
+- lines 7479-7487: Coupling type `solid_em_strain_optic` - Strain-optic effect (solid mechanics -> electromagnetic waves)
+- lines 7489-7497: Coupling type `solid_membrane_tension` - Film prestress (solid mechanics -> membrane)
+- lines 7499-7525: Study type `eigenfrequency` - Eigenfrequency
+- lines 7527-7553: Study type `frequency_domain` - Frequency domain
+- lines 7555-7591: Study type `frequency_response` - Frequency response
+- lines 7593-7607: Study type `mode_analysis` - Mode analysis
+- lines 7609-7624: Study type `nonlinear_frequency_domain` - Nonlinear frequency domain
+- lines 7626-7642: Study type `optimization` - Optimization
+- lines 7644-7661: Study type `optomechanics` - Optomechanics
+- lines 7663-7680: Study type `stationary` - Stationary
+- lines 7682-7705: Study type `thermal_noise` - Thermal noise
+- lines 7707-7722: Study type `time_dependent` - Time dependent
+- lines 7724-7792: Templates
+- lines 7794-8049: Results, reports and files
 
 ## Model spec
 
@@ -556,6 +557,7 @@ Not usable as parameter names: every function and constant above and t, value, x
 - `em_fdfd_ez`: state fields ez_re, ez_im, q_abs, eps_r, sigma_e; output fields: the state fields except q_abs, plus ez_abs, ez_phase, e_abs, e_intensity, h_abs, absorbed_power, eps_sensitivity, design_density, crystallinity
 - `em_fdfd_hz`: state fields hz_re, hz_im, q_abs, eps_xx, eps_yy, sigma_e; output fields: the state fields except q_abs, plus hz_abs, hz_phase, ex_re, ex_im, ey_re, ey_im, e_abs, e_intensity, h_abs, absorbed_power, eps_sensitivity, design_density, crystallinity, eps_xy, eps_xy_sensitivity
 - `em_fdfd_nonlinear`: state fields ez_re, ez_im, hz_re, hz_im, q_abs, eps_r, eps_xx, eps_yy, sigma_e; output fields: the state fields except q_abs, plus ez_abs, ez_phase, e_abs, e_intensity, h_abs, absorbed_power, eps_sensitivity, design_density, hz_abs, hz_phase, ex_re, ex_im, ey_re, ey_im, eps_xy, nonlinear_polarization_abs, poling, carrier_density
+- `em_fdfd_sphere`: state fields e_intensity, eps_r, sigma_e, q_abs; output fields: the state fields except q_abs, plus er, et, hr, ht, e_abs, h_abs, absorbed_power
 - `em_fdtd_3d`: state fields ex, ey, ez, hx, hy, hz, eps_r, q_accum; output fields: the state fields except q_accum, plus e_abs, e_intensity, h_abs, absorbed_power, e_abs_harmonic, e_intensity_harmonic, absorbed_power_harmonic, ex_re, ex_im, ex_abs, ex_phase, ey_re, ey_im, ey_abs, ey_phase, ez_re, ez_im, ez_abs, ez_phase
 - `em_fdtd_bor`: state fields e_intensity, eps_r, eps_xx, eps_yy, sigma_e; output fields: the state fields, plus er, ephi, ez, hr, hphi, hz, e_abs, h_abs, er_re, er_abs, ephi_re, ephi_abs, ez_re, ez_abs, hr_re, hr_abs, hphi_re, hphi_abs, hz_re, hz_abs, e_abs_harmonic
 - `em_fdtd_ez`: state fields ez, hx, hy, eps_r, sigma_e, jz_total, q_accum; output fields: the state fields except jz_total, q_accum, plus e_abs, e_intensity, h_abs, absorbed_power, carrier_density, population_inversion, crystallinity, ez_re, ez_im, ez_abs, ez_phase, e_abs_harmonic, e_intensity_harmonic, absorbed_power_harmonic
@@ -952,6 +954,7 @@ Liquid water at 20 C, n = 1.3154, its absorption (extinction 1.49e-4, ~12 /cm) a
 - `em_fdfd_ez`: eps_r, eps_zz (eps_r), sigma_e, mu_r, sigma_m
 - `em_fdfd_hz`: eps_r (eps_xx, eps_yy), eps_xx, eps_yy, sigma_e, mu_r, sigma_m, eps_xy, gyration_z
 - `em_fdfd_nonlinear`: eps_r (eps_r, eps_xx, eps_yy), eps_zz (eps_r), eps_xx, eps_yy, sigma_e, mu_r, sigma_m
+- `em_fdfd_sphere`: eps_r, sigma_e, mu_r, sigma_m
 - `em_fdtd_3d`: eps_r (eps_r, eps_xx, eps_yy), eps_zz (eps_r), eps_xx, eps_yy, sigma_e, mu_r, sigma_m
 - `em_fdtd_bor`: eps_r (eps_r, eps_xx, eps_yy), eps_zz (eps_r), eps_xx, eps_yy, sigma_e, mu_r, sigma_m
 - `em_fdtd_ez`: eps_r, eps_zz (eps_r), sigma_e, mu_r, sigma_m
@@ -1163,6 +1166,8 @@ Params (SolverSpec.settings):
 - `em_fdfd_hz` linear: operator general, Automatic `sparse_direct`, precisions double, mixed; back_end auto, scipy_splu, cusolver_qr, cudss, cudss_mixed, mumps, mumps_mixed, pardiso, pardiso_mixed only
 - `em_fdfd_hz` eigen: operator general, Automatic `arpack_shift_invert`, studies eigenfrequency, optomechanics, precisions double; factorization auto, superlu, cudss, mumps, pardiso, cudss_mixed, mumps_mixed, pardiso_mixed only
 - `em_fdfd_nonlinear` linear: operator general, Automatic `sparse_direct`, precisions double; back_end auto, scipy_splu, cusolver_qr, cudss, cudss_mixed, mumps, mumps_mixed, pardiso, pardiso_mixed only
+- `em_fdfd_sphere` linear: operator general, Automatic `sparse_direct`, precisions double; back_end auto, scipy_splu, cusolver_qr, cudss, cudss_mixed, mumps, mumps_mixed, pardiso, pardiso_mixed only
+- `em_fdfd_sphere` eigen: operator general, Automatic `arpack_shift_invert`, studies eigenfrequency, precisions double; factorization auto, superlu, cudss, mumps, pardiso only
 - `em_fdtd_3d` stepper: operator general, Automatic `explicit_kernels`, precisions single, half_storage
 - `em_fdtd_ez` stepper: operator general, Automatic `explicit_kernels`, precisions single, double
 - `em_fdtd_hz` stepper: operator general, Automatic `explicit_kernels`, precisions single, double
@@ -4080,6 +4085,112 @@ Params:
 - `mode_number` (int; default 1; >= 1; visible when quantity in (mode_power_positive, mode_power_negative)) - Mode number. Help: shared `em_fdfd_ez.adjoint_objective.mode_number`
 - `weight` [1] (default 1) - Weight
   Factor in J = sum of weight * quantity over the enabled objectives of the physics: 1 maximises the quantity, -1 minimises it, 0 only records it.
+
+## Physics type `em_fdfd_sphere` - Electromagnetic Waves, frequency domain (spherically symmetric, multipole orders)
+
+Spherically symmetric finite-difference frequency-domain solver: on a spherical domain (DomainSpec coordinates spherical, radius_min 0 for a full sphere or > 0 for a shell region): a 2D (r, theta) window over the whole theta = 0 .. pi (size_y pi, angle_min 0; the drawing is the meridional half disc) or a 1D radial line (size_y null), the structure eps(r), mu(r) is a stack of concentric shells, and Maxwell's equations separate into multipole terms (vector spherical harmonics of order l and family er / hr), each a 1D radial equation for y = r H_t (er) or r E_t (hr) solved on the radial cell edges (second order, complex symmetric tridiagonal operator, host SuperLU or the opt-in cuDSS / MUMPS / PARDISO back ends of the 'linear' role). Fields vary as exp(+j omega t). Every multipole term (order l >= 1, family er or hr, all its 2 l + 1 degenerate m) is one radial solve; the shown fields are sphere-RMS radial profiles: |E_r|, |E_t| (tangential), |H_r|, |H_t| = the square root of the mean over the sphere of radius r of the component squared, summed over every solved term and source class (different terms are orthogonal on the sphere, so this is the exact sphere mean of the total field); e_intensity = |E_r|^2 + |E_t|^2 and absorbed_power are sphere means, so their integral over the whole shells (the spherical metric volumes, 4 pi r^2 dr per radial cell) is the 3D integral (field energy, absorbed power in W). On an (r, theta) window the profiles are drawn along every theta (the fields of a spherically symmetric structure averaged over the sphere do not depend on the angle), so the angle cells only serve the picture: a few tens are plenty (mesh mode nonuniform with a mesh axis 'y' of segments, e.g. 90 cells). The outer end 'radiation' is the exact outgoing spherical wave of each term (no PML). True 3D results of layered spheres at the cost of one radial line: Mie scattering (plane_wave: extinction, scattering and absorption cross sections of coated / graded / plasmonic spheres), emitters near or inside spheres (dipole_source: emitted power and Purcell factor), resonances (eigenfrequency: complex omega and Q of whispering-gallery modes, Mie and cavity resonances per order and family; shift-invert of the 'eigen' role about the target with the radiation term frozen there, then each resonance refined with the exact radiation condition at its own complex frequency by Rayleigh-functional iteration, so Q carries no PML or target error; materials stay at the target, as in the other EM eigen-solves). Studies: stationary (one driven solve at the wavelength setting; with heat through heat_em_thermo_optic / em_heat_joule: the heat physics should share the spherical domain, it gets the sphere-mean absorbed power), frequency_domain (one driven solve per wavelength), eigenfrequency. Features: plane_wave, dipole_source, field_probe, pec_domain, resonance_table. Materials: isotropic eps_r, sigma_e, mu_r, sigma_m and dispersion poles (no anisotropy), constant on every shell (a material varying along theta is a run error: draw circles about the origin). Cannot share a model with other EM types. heat_em_thermo_optic writes eps_r (slot eps_r_update). The instance is usually named 'em'.
+
+- Default instance name `em`; studies frequency_domain, stationary, eigenfrequency (default {"type": "frequency_domain"})
+- Backends gpu, cpu; mesh kinds tensor; refinement indicator fields e_intensity; dispersion poles used
+- Features: plane_wave, dipole_source, field_probe, pec_domain, resonance_table
+
+### Settings (PhysicsSpec.settings)
+
+- `geometry` (default "axisymmetric"; choice axisymmetric only) - Geometry
+  Always axisymmetric: on a spherical domain (coordinates spherical: the (r, theta) half disc over the whole 0 .. pi, or a 1D radial line) the drawing rotates about its vertical axis and every radial cell is a whole spherical shell. The setting exists so that the spherical-domain rule and coupled physics with a geometry setting (heat, electric_currents, electrostatics) see a consistent spherical partner.
+- `bc_x_lo` (default "centre"; centre | pec | pmc) - Inner end
+  Inner end of the radial line: 'centre' when radius_min = 0 (the sphere centre, fields regular: y = r x field = 0; required there and only there), else 'pec' (tangential E = 0 on the sphere r = radius_min) or 'pmc' (tangential H = 0).
+- `bc_x_hi` (default "radiation"; radiation | pec | pmc) - Outer end
+  Outer end r = R of the radial line: 'radiation' (default) continues the last cell's medium to infinity with the exact outgoing spherical wave of each multipole term (Riccati-Hankel xi_l(k r), a Dirichlet-to-Neumann condition: no PML, no reflection at any l, so the domain may end just outside the structure; the last cell must not be pec_domain; a plane wave needs it and a lossless last cell); 'pec' / 'pmc' close a spherical metal / magnetic cavity at R.
+- `wavelength` [m] (default 1.55e-06; > 0) - Wavelength
+  Vacuum wavelength lambda0 of the solve in a stationary study (omega = 2 pi C0 / lambda0); an eigenfrequency study searches the resonances nearest it (the target; materials are evaluated there); a frequency_domain study solves its own wavelengths. The radial mesh needs >= 10 (better 20) cells per lambda0 / |n| in every material and >= 2 per skin depth (validation warns).
+- `multipole_order` (int; default 1; [1, 100000]) - Multipole order
+  Multipole (angular) order l >= 1 of the fields (each l carries 2 l + 1 degenerate m, all solved at once): l = 1 dipole, 2 quadrupole, ...; whispering-gallery modes of a sphere of radius a have l ~ 2 pi a n / lambda. For a plane wave (Mie series) or a dipole source list every order 1..L in multipole_orders instead (L above k a + 4 (k a)^(1/3) + 2 for a sphere of radius a, k the exterior wave number; a dipole at a distance d from a surface needs l up to a few a / d).
+- `multipole_orders` [1] (float_list; [1, 100000]; nullable) - Multipole order list
+  Distinct integer orders l >= 1 solved in one run; a non-empty list replaces multipole_order. Driven studies sum the terms of every listed order (plane-wave cross sections, dipole powers and the shown sphere-RMS fields: list 1..L); an eigenfrequency study searches n_resonances resonances per order and family, order by order (er before hr), resonance labels 'resonance k: l = <l> <family>, lambda = ...' and resonance_table columns multipole_order, family (a curve of lambda versus multipole_order gives the free spectral range of whispering-gallery modes). null or [] = multipole_order alone.
+- `multipole_family` (default "both"; both | er | hr) - Multipole family
+  Multipole families solved: 'er' = electric multipoles (radial E, no radial H; Mie a_l; the radial function y = r H_t solves -(y' / eps)' + l (l + 1) y / (eps r^2) = k0^2 mu y), 'hr' = magnetic multipoles (radial H, no radial E; Mie b_l; y = r E_t solves -(y' / mu)' + l (l + 1) y / (mu r^2) = k0^2 eps y), 'both' (default) = every term of both families (a plane wave and tangential dipoles excite both; a radial dipole only er). One radial solve per family and listed order.
+
+### Material properties (MaterialSpec.properties)
+
+- `eps_r` [1] (default 1; >= 1) - Relative permittivity
+  Isotropic relative permittivity of the shell (>= 1; n^2 of a lossless dielectric); may depend on r (x) and physics fields. Cell values; the tangential fields see the dual-cell mean, the radial ones the mean of 1 / eps (normal D_r continuous). The solve uses this value - j sigma_e / (omega eps0) plus every Drude / Lorentz pole chi(omega) (exp(+j omega t): loss has Im < 0). The last radial cell is the exterior medium of a 'radiation' end.
+- `sigma_e` [S/m] (default 0; >= 0) - Electric conductivity
+  Ohmic loss in S/m, default 0: eps gains -j sigma_e / (omega eps0). Model metals with a Drude pole (a plasmonic nanosphere) or pec_domain.
+- `mu_r` [1] (default 1; >= 1) - Relative permeability
+  Real relative permeability (>= 1), 1 for optical materials; the solve uses mu_r - j sigma_m / (omega mu0).
+- `sigma_m` [Ohm/m] (default 0; >= 0) - Magnetic conductivity
+  Magnetic loss in Ohm/m, default 0 (artificial absorbers only).
+
+### Fields
+
+Output fields (primary e_intensity; [state] = also a state field):
+- `er` - |E_r| (rms over the sphere) (V/m)
+- `et` - |E_t| tangential (rms over the sphere) (V/m)
+- `hr` - |H_r| (rms over the sphere) (A/m)
+- `ht` - |H_t| tangential (rms over the sphere) (A/m)
+- `e_abs` - |E| (rms over the sphere) (V/m)
+- `e_intensity` - |E|^2 (mean over the sphere) (V^2/m^2) [state]
+- `h_abs` - |H| (rms over the sphere) (A/m)
+- `absorbed_power` - Absorbed power density (mean over the sphere) (W/m^3)
+- `eps_r` - Relative permittivity (1) [state]
+- `sigma_e` - Electric conductivity (S/m) [state]
+State fields that are no output field:
+- `q_abs` - Absorbed power density (mean over the sphere) (W/m^3)
+
+### Source slots
+
+- `eps_r_update` (1): Relative permittivity eps_r: each transfer replaces the whole array (PML ring included); index couplings (heat_em_thermo_optic) add dn: eps = (n0 + sum dn)^2.
+
+### Feature `em_fdfd_sphere.plane_wave` - Plane wave
+
+Incident plane wave of amplitude E0 (x-polarised, along +z) in the exterior medium (the last radial cell, continued to infinity; needs bc_x_hi 'radiation' and a lossless last cell): per listed order and family its regular multipole wave (both m = +-1) enters through the outgoing condition, and the outgoing coefficient gives the Mie coefficient (a_l: er, b_l: hr; the complex conjugate of Bohren and Huffman's, since fields go as exp(+j omega t)). Result 'xy' versus wavelength: sigma_ext, sigma_sca, sigma_abs [m^2] = sums over the solved terms of 2 pi / k^2 (2 l + 1) Re(a) and |a|^2 (k the exterior wave number), sigma_abs their difference; extras frequency, wavelength, multipole_orders, a_real / a_imag and b_real / b_imag (n_wavelengths x n_orders, NaN for a family not solved). List every order 1..L (see multipole_order). At most one per physics, not together with a dipole_source (validation error).
+
+- Category source; selection none (a selection is ignored with a warning); result kind `xy`
+
+Params:
+- `amplitude` [V/m] (default 1; > 0) - Amplitude
+  Electric field amplitude E0 [V/m] of the incident plane wave (x-polarised, travelling along +z in the exterior medium); fields scale linearly with it, the cross sections do not depend on it.
+
+### Feature `em_fdfd_sphere.dipole_source` - Dipole source
+
+Point current element at the radius of the point object (x = r, y = 0; on the polar axis in 3D), radial or tangential (see orientation); every listed order and family it couples to is solved and summed (dipoles of one orientation interfere coherently; radial and tangential ones excite orthogonal m and are solved apart). Result 'xy' versus wavelength: power [W] = -1/2 Re(E . (I d)*) at the element (radiated plus absorbed; keep its cell lossless), power_homogeneous [W] = eta k^2 (I d)^2 / (12 pi) in the medium of its cell, purcell = their ratio (the decay-rate enhancement of an emitter there); extras frequency, wavelength, radius, orientation, multipole_orders, power_orders (n_wavelengths x n_orders). Not together with a plane_wave.
+
+- Category source; selection point entities, object kinds point, exactly 1; result kind `xy`
+
+Params:
+- `orientation` (default "radial"; radial | tangential) - Orientation
+  'radial' excites the electric multipoles (er) only, every l with m = 0; 'tangential' both families with m = +-1 (the dipole is on the polar axis, parallel to the plane-wave polarisation).
+- `current_moment` [A m] (default 1e-12; > 0) - Current moment
+  Current moment I d [A m] of the point current element (= j omega times its dipole moment p); in an unbounded medium it radiates eta k^2 (I d)^2 / (12 pi) (eta = eta0 sqrt(mu / eps), k = n k0); powers scale with its square.
+- `phase` [deg] (default 0) - Phase
+  Phasor phase of the current moment in degrees; it matters only between several dipoles of one orientation (they interfere).
+
+### Feature `em_fdfd_sphere.field_probe` - Field probe
+
+Sphere-RMS amplitude of one field component in the radial cell containing the point at every driven solve. Result 'xy' versus wavelength: series abs (unit of the component) and phase (rad; NaN unless one term and source class was solved); extras frequency, wavelength, component, unit.
+
+- Category probe; selection point entities, object kinds point, exactly 1; result kind `xy`
+
+Params:
+- `component` (default "et"; er | et | hr | ht) - Field component
+  Component recorded: its sphere-RMS amplitude in the radial cell containing the point (a point object at x = r, y = 0), per driven solve; the phase only when the solve had exactly one term and source class (one order, one family), else NaN.
+
+### Feature `em_fdfd_sphere.pec_domain` - Perfect electric conductor
+
+Perfect electric conductor shells: every radial cell whose centre lies in the selected domains (circles about the origin select shells) holds tangential E = 0 on its outline (er: its cells leave the operator, hr: y = 0 on its nodes); not on the last cell of a 'radiation' end.
+
+- Category domain_condition; selection domain entities, at least 1; result none
+
+Params: none
+
+### Feature `em_fdfd_sphere.resonance_table` - Resonance table
+
+Resonances of the last eigenfrequency study solve, term by term (orders in list order, er before hr), nearest the target (the wavelength setting) first within each term. Result 'table', one row per resonance: resonance_number, wavelength = 2 pi C0 / Re(omega) in m, frequency / frequency_imag = Re / Im(omega) / (2 pi) in Hz (> 0 decays), q_factor = Re(omega) / (2 Im(omega)) (radiation through the exact outgoing condition and material loss; inf when lossless and closed), pml_fraction (always 0: no PML), multipole_order, family; extras target_wavelength (m), selected_resonance, multipole_orders and families.
+
+- Category monitor; selection none (a selection is ignored with a warning); result kind `table`
+
+Params: none
 
 ## Physics type `em_fdtd_3d` - Electromagnetic Waves, time domain (3D)
 
@@ -7247,7 +7358,7 @@ Params (CouplingSpec.params):
 
 Each transfer writes, per permittivity component ii of the EM type (E_z: zz via eps_r_update; H_z: xx and yy via eps_xx_update / eps_yy_update; em_modes: all three), dn_ii = -1/2 n0_ii^3 r_ii E_k (E = -grad V; r_xx / r_yy / r_zz the material Pockels coefficients of the electrostatics vocabulary, isotropic r sets all three, 0 where unset; dispersive cells: n0 from eps_inf, the poles never change: validation warning). An E13 index contributor: the slot gets eps = (n0 + the sum of dn of every index coupling into it)^2, n0 the shared reference index recorded before the first transfer, all with one every (validation error otherwise); no overwriting field_transfer or state-dependent permittivity property on the slot. This is the Pockels diagonal for one applied direction: x-cut lithium niobate in top view (crystal z along model x, electrodes either side of a waveguide along y, field_component x) has r_xx = r33 = 30.8e-12 (E_x of the H_z types sees n_e) and r_yy = r_zz = r13 = 8.6e-12 (clamped r^S, library lithium_niobate_x_cut); a positive E_k with r > 0 lowers n. A crystal (a {"model": "crystal"} entry: clamped r^S in model axes, pockels_r11 .. _r62) adds -1/2 n0_ii^3 (r_i1 E_x + r_i2 E_y) from both components, so a rotated cut's opposite-sign r22 terms are included; clamped because a piezoelectric elastic_waves run adds its strain index change via acoustics_em_acousto_optic (a slow drive of a free crystal sees the larger r^T). em_fdfd_hz also gets Delta eps_xy = -n0_xx^2 n0_yy^2 (r_61 E_x + r_62 E_y) in eps_xy_update (r51 of YZ lithium niobate); other in-plane types drop it, every type drops the anti-plane change (validation warns for crystals). The field is that of the last electrostatics solve: stationary per fixed-point iteration (one behind, as thermo-optic); frequency_domain / mode_analysis once after the background solve. eps_dc matters: a high-eps_dc core (lithium niobate eps_c 28) between low-eps_dc cladding (silica 3.9) takes only a small share of the voltage.
 
-- Source physics type electrostatics; target physics type em_eme or em_eme_3d or em_fdfd_3d or em_fdfd_bor or em_fdfd_conical or em_fdfd_ez or em_fdfd_hz or em_fdfd_nonlinear or em_fdtd_3d or em_fdtd_bor or em_fdtd_ez or em_fdtd_hz or em_modes; across meshes: not allowed (one mesh)
+- Source physics type electrostatics; target physics type em_eme or em_eme_3d or em_fdfd_3d or em_fdfd_bor or em_fdfd_conical or em_fdfd_ez or em_fdfd_hz or em_fdfd_nonlinear or em_fdfd_sphere or em_fdtd_3d or em_fdtd_bor or em_fdtd_ez or em_fdtd_hz or em_modes; across meshes: not allowed (one mesh)
 
 Params (CouplingSpec.params):
 - `field_component` (default "x"; x | y) - Applied field direction
@@ -7265,7 +7376,7 @@ Params (CouplingSpec.params): none
 
 The absorbed power density J.E [W/m^3] (sigma_e conduction plus Drude / Lorentz currents) of the EM physics (take_absorbed_power: the mean over the EM steps since the last transfer; FDFD: the time average of its last solve) becomes the heat source Q, e.g. E_z plus H_z physics for unpolarised light. Additive heat source (volumetric_power): every em_heat_joule / currents_heat_joule / fluid_heat_convection / magnetic_heat_induction coupling into one heat physics sums, all with the same every (validation error otherwise); no field_transfer into volumetric_power beside them. FDFD: a stationary study for one wavelength, a frequency_domain study for a list (each wavelength a stationary fixed point of every physics, continued from the previous one; no em_modes or time-domain physics beside it). em_fdtd_hz puts each E_x / E_y face loss into its lossy neighbour cells (sigma_e by conductivity, poles to the dispersive cells); em_fdfd_hz uses each cell's loss with |E_x|^2, |E_y|^2 averaged over its two faces. Time-stepped EM: leave every null or equal to the heat every (validation warns otherwise); the final flush sends the last partial window merged with the previous full one (a study shorter than every * dt_EM delivers its power only there). A cw window W = every * dt_EM averages cos^2 exactly only over whole half optical periods, else up to T_opt / (2 pi W) off, varying per cell (validation warns above 1 % naming the nearest whole-half-period every). Transient heat lags one window: its step over [kW, (k+1)W] uses the power of [(k-1)W, kW] (no source in the first, the last window never stepped). Pulsed EM sources feeding steady heat, transient heat or such a short study: validation warning. A second reader of the absorbed power of the same time-stepped EM physics (em_heat_joule, em_semiconductor_generation): validation error (each transfer resets the window).
 
-- Source physics type em_eme or em_eme_3d or em_fdfd_bor or em_fdfd_conical or em_fdfd_ez or em_fdfd_hz or em_fdfd_nonlinear or em_fdtd_3d or em_fdtd_ez or em_fdtd_hz; target physics type heat; across meshes: its result moves to the target mesh (conservative)
+- Source physics type em_eme or em_eme_3d or em_fdfd_bor or em_fdfd_conical or em_fdfd_ez or em_fdfd_hz or em_fdfd_nonlinear or em_fdfd_sphere or em_fdtd_3d or em_fdtd_ez or em_fdtd_hz; target physics type heat; across meshes: its result moves to the target mesh (conservative)
 
 Params (CouplingSpec.params): none
 
@@ -7273,7 +7384,7 @@ Params (CouplingSpec.params): none
 
 G = quantum_efficiency * q_abs / (hbar omega) [1/(m^3 s)], q_abs the absorbed power density via take_absorbed_power (em_fdfd: the time average of the last solve; em_fdtd: the mean since the last transfer, which a second reader of the same source would reset: validation error). Overwrites the drift_diffusion slot 'generation' (one writer; generation features add separately), only on free semiconductor cells (n_intrinsic > 0, not held by an ohmic contact). Every absorbing cell counts: give the semiconductor its band-to-band loss (sigma_e / Im eps) at the wavelength (library silicon is lossless). Use a stationary study (with a plasma-dispersion coupling back it iterates to the fixed point); frequency_domain is a validation error.
 
-- Source physics type em_eme or em_eme_3d or em_fdfd_bor or em_fdfd_conical or em_fdfd_ez or em_fdfd_hz or em_fdfd_nonlinear or em_fdtd_3d or em_fdtd_ez or em_fdtd_hz; target physics type drift_diffusion; across meshes: its result moves to the target mesh (conservative)
+- Source physics type em_eme or em_eme_3d or em_fdfd_bor or em_fdfd_conical or em_fdfd_ez or em_fdfd_hz or em_fdfd_nonlinear or em_fdfd_sphere or em_fdtd_3d or em_fdtd_ez or em_fdtd_hz; target physics type drift_diffusion; across meshes: its result moves to the target mesh (conservative)
 
 Params (CouplingSpec.params):
 - `photon_wavelength` [m] (> 0; nullable) - Photon wavelength
@@ -7323,7 +7434,7 @@ Params (CouplingSpec.params): none
 
 Each transfer rewrites the EM permittivity from the heat temperature: dT = T - T0 (T0 of the heat physics), n0 = sqrt of the built permittivity component (dispersive: of eps_inf). An E13 index contributor: the slot gets eps = (n0 + the sum of dn of every index coupling into it)^2, n0 the shared reference index recorded before the first transfer, all with one every (validation error otherwise); no overwriting field_transfer or state-dependent permittivity property on the slot. Alone: E_z types eps_zz = (n0_zz + dndT_zz dT)^2 (1 + alpha_xx dT)(1 + alpha_yy dT) (eps_r_update); H_z types eps_xx and eps_yy likewise with n0_xx / dndT_xx and n0_yy / dndT_yy (eps_xx_update / eps_yy_update); em_modes all three, the alpha factor on eps_zz only (eps_xx = (n0_xx + dndT_xx dT)^2; transverse to the propagation the exact stretch image also scales mu_zz, which cannot be held, so the transverse expansion is only partly counted; the axial path term n_eff alpha_zz dT is post-processing). The alpha factor maps the in-plane expansion onto the fixed grid (a structure stretched by s_x s_y is a medium with eps_zz s_x s_y), so the optical path grows as the real one; H_z: only the phase index matches (the exact image scales mu_zz). Per cell it is first order, exact only for alpha uniform over the mode: cells with alpha 0 (cladding, air) miss their share, under-counting the expansion shift by the mode energy fraction outside the expanding material. An enabled solid_em_strain_optic (deformation on) into the same EM physics drops the alpha factor (the solid strain supplies the deformation). Dispersive materials: the pole susceptibility never changes, so dndT shifts eps by 2 n0 dndT dT instead of 2 n(omega) dndT dT (scale dndT by n(omega) / n0) and alpha scales only the background; validation warns for a dndT on them or an alpha with a Lorentz pole. An isotropic dndT sets dndT_xx, _yy and _zz; no off-diagonal dndT / alpha. time_dependent (every = the heat every): right after each heat step, so one heat interval's EM steps see the temperature of the previous interval's power; stationary: per fixed-point iteration; frequency_domain: once after the heat solve, before the wavelengths (a coupled wavelength scan: per iteration of each wavelength); mode_analysis: once before the mode solve.
 
-- Source physics type heat; target physics type em_eme or em_eme_3d or em_fdfd_3d or em_fdfd_bor or em_fdfd_conical or em_fdfd_ez or em_fdfd_hz or em_fdfd_nonlinear or em_fdtd_3d or em_fdtd_bor or em_fdtd_ez or em_fdtd_hz or em_modes; across meshes: the source field is interpolated onto the target mesh
+- Source physics type heat; target physics type em_eme or em_eme_3d or em_fdfd_3d or em_fdfd_bor or em_fdfd_conical or em_fdfd_ez or em_fdfd_hz or em_fdfd_nonlinear or em_fdfd_sphere or em_fdtd_3d or em_fdtd_bor or em_fdtd_ez or em_fdtd_hz or em_modes; across meshes: the source field is interpolated onto the target mesh
 
 Params (CouplingSpec.params): none
 
@@ -7355,7 +7466,7 @@ Params (CouplingSpec.params): none
 
 dn = -(electron_coefficient N + hole_coefficient P^hole_exponent) from the electron / hole densities of the last drift_diffusion solve (0 outside the semiconductor; edge-extended into the PML ring), the same for every permittivity component (E_z: eps_r_update; H_z: eps_xx_update / eps_yy_update; em_modes: all three). An E13 index contributor: the slot gets eps = (n0 + the sum of dn of every index coupling into it)^2, n0 the shared reference index recorded before the first transfer, all with one every (validation error otherwise); no overwriting field_transfer or state-dependent permittivity property on the slot. Densities are absolute (dn relative to carrier-free material; library silicon is undoped). Free-carrier absorption (Soref-Bennett dalpha = 8.5e-18 N + 6.0e-18 P [1/cm], N, P in 1/cm^3) is not included (no loss slot): give the material a state-dependent sigma_e = n eps0 c0 dalpha, for silicon at 1.55 um sigma_e = 7.85e-24 * semiconductor_N + 5.54e-24 * semiconductor_P [S/m] (N, P in 1/m^3; plus any background loss). Stationary study: one fixed-point iteration behind; mode_analysis / frequency_domain: once after the background solve.
 
-- Source physics type drift_diffusion; target physics type em_eme or em_eme_3d or em_fdfd_3d or em_fdfd_bor or em_fdfd_conical or em_fdfd_ez or em_fdfd_hz or em_fdfd_nonlinear or em_fdtd_3d or em_fdtd_bor or em_fdtd_ez or em_fdtd_hz or em_modes; across meshes: the source field is interpolated onto the target mesh
+- Source physics type drift_diffusion; target physics type em_eme or em_eme_3d or em_fdfd_3d or em_fdfd_bor or em_fdfd_conical or em_fdfd_ez or em_fdfd_hz or em_fdfd_nonlinear or em_fdfd_sphere or em_fdtd_3d or em_fdtd_bor or em_fdtd_ez or em_fdtd_hz or em_modes; across meshes: the source field is interpolated onto the target mesh
 
 Params (CouplingSpec.params):
 - `electron_coefficient` [m^3] (default 8.8e-28; >= 0) - Electron index coefficient
@@ -7369,7 +7480,7 @@ Params (CouplingSpec.params):
 
 Strain-optic effect: each transfer writes, per permittivity component ii of the EM type (E_z types: zz; H_z types: xx, yy; em_modes: all three), dn_ii = (n0_ii + dn_pe) sqrt(1 + w (strain_xx + strain_yy)) - n0_ii, dn_pe = -1/2 n0_ii^3 (photoelastic_p11 e_ii + photoelastic_p12 (e_jj + e_kk)) of the elastic strain e = elastic_strain_* (strain - alpha dT, e_zz = -alpha_zz dT: a measured dn/dT already contains the free thermal expansion), w = 1 with deformation (void cells: 0). Isotropic or cubic (axes along x, y, z) p11 / p12; the shear term p44 strain_xy is not modelled. An E13 index contributor: with heat_em_thermo_optic / electrostatics_em_pockels on the same physics the slot gets eps = (n0 + sum of dn)^2, all with one every. Plane strain is exact for a cross-section (em_modes); an in-plane EM target gets a validation info. Stationary: after the solid solve; frequency_domain / mode_analysis: once after the background solve. Source solid_mechanics only (solid_mechanics_3d: not modelled).
 
-- Source physics type solid_mechanics; target physics type em_eme or em_eme_3d or em_fdfd_3d or em_fdfd_bor or em_fdfd_conical or em_fdfd_ez or em_fdfd_hz or em_fdtd_3d or em_fdtd_bor or em_fdtd_ez or em_fdtd_hz or em_modes; across meshes: not allowed (one mesh)
+- Source physics type solid_mechanics; target physics type em_eme or em_eme_3d or em_fdfd_3d or em_fdfd_bor or em_fdfd_conical or em_fdfd_ez or em_fdfd_hz or em_fdfd_sphere or em_fdtd_3d or em_fdtd_bor or em_fdtd_ez or em_fdtd_hz or em_modes; across meshes: not allowed (one mesh)
 
 Params (CouplingSpec.params):
 - `deformation` (bool; default true) - Include deformation
@@ -7387,7 +7498,7 @@ Params (CouplingSpec.params):
 
 ## Study type `eigenfrequency` - Eigenfrequency
 
-Source-free resonances of every eigen-capable physics (em_fdfd_ez, em_fdfd_hz, em_fdfd_bor, em_fdfd_conical, em_fdfd_3d, solid_mechanics, solid_mechanics_3d or membrane; StudySpec.solved_physics restricts them, the others then run as stationary background physics). Background physics iterate to a stationary fixed point, then their couplings into the eigen-solved physics apply once; couplings or material properties reading an eigen-solved physics: validation error. Results: complex omega, Im > 0 decaying (exp(+j omega t)), Q = Re(omega) / (2 Im(omega)) (radiation into the PML plus material loss), the resonance_table feature, one snapshot per resonance k (several physics: names and values joined; mirror faces add the parity), nearest the target first; afterwards each physics shows resonance 1; ticks = the resonance snapshots. Sources and monitors play no part (their results stay empty). Q or the wavelength versus a parameter: a sweep with a derived value of resonance_table. em_fdfd_ez / _hz: near omega_t = 2 pi C0 / lambda_t of the wavelength setting, L u = -(omega / C0)^2 M u (M = eps cells for E_z, mu cells for H_z) by host shift-invert Arnoldi (scipy eigs on SuperLU, the eigen role arpack_shift_invert whatever the linear back end: ~1e6 unknowns at most; the shift sits 1e-4 above the target). Accuracy: dispersion (sigma_e, poles) and the PML stretch are frozen at omega_t, so a resonance far from the target errs to first order in |omega / omega_t - 1| (exact only without dispersion and PML): set the wavelength near the resonance and re-run (one or two steps converge). Each field is scaled to 1 (V/m E_z, A/m H_z) real at its peak, in-plane fields from the curl at omega_t. em_fdfd_bor: at its azimuthal order m, or n_resonances per order of azimuthal_orders from one assembly (labels "resonance k: m = <m>, lambda = ..."), on the full-vector (r, z) curl-curl operator (M = eps ring volumes). em_fdfd_conical: at its k_z on the three-component operator; at k_z = beta the resonances are the guided modes of propagation constant beta. em_fdfd_3d: the 3D Yee curl-curl operator (M = face eps), snapshots its z cut planes, host factor ~ n^(4/3) (size rule 1e6 / 4e6 E unknowns). These three drop static gradient solutions (|k^2| < 1e-6 k_t^2) and scale each resonance to 1 V/m real at its largest component. solid_mechanics (plane strain): undamped K u = omega^2 M u (consistent mass) nearest target_frequency (0 = the lowest) by host shift-invert Lanczos, exact for the discretisation, Q infinite; with axial_wavenumber k_z the guided (2.5D) modes u ~ exp(i (k_z z - omega t)); labels "resonance k: f = <Hz> Hz", shapes scaled to a peak |u| of 1 m; loads and thermal strain play no part unless stress_stiffening (triangles, tetrahedra: the geometric stiffness K_sigma of the static state joins K; a free body, Bloch cell or elastic PML takes initial_stress alone). Triangles / tetrahedra: a mechanical_loss_factor eta makes K_el (1 + j eta) complex (K_sigma stays real). solid_mechanics_3d: tensor mesh the n_resonances lowest only (matrix-free shift-invert Lanczos at 0 on PCG solves of its double 'linear' solver, accuracy by the CG tolerance); tetrahedra nearest target_frequency (> 0 also for a free body, its 0 Hz modes dropped). membrane: -div(T (1 + j eta) grad w) = rho_s omega^2 w nearest target_frequency (complex with loss_factor / PML), labels "resonance k: f = <Hz> Hz[, Q = ...]", scaled to 1 m real at the peak; clamps held at 0, loads ignored.
+Source-free resonances of every eigen-capable physics (em_fdfd_ez, em_fdfd_hz, em_fdfd_bor, em_fdfd_conical, em_fdfd_sphere, em_fdfd_3d, solid_mechanics, solid_mechanics_3d or membrane; StudySpec.solved_physics restricts them, the others then run as stationary background physics). Background physics iterate to a stationary fixed point, then their couplings into the eigen-solved physics apply once; couplings or material properties reading an eigen-solved physics: validation error. Results: complex omega, Im > 0 decaying (exp(+j omega t)), Q = Re(omega) / (2 Im(omega)) (radiation into the PML plus material loss), the resonance_table feature, one snapshot per resonance k (several physics: names and values joined; mirror faces add the parity), nearest the target first; afterwards each physics shows resonance 1; ticks = the resonance snapshots. Sources and monitors play no part (their results stay empty). Q or the wavelength versus a parameter: a sweep with a derived value of resonance_table. em_fdfd_ez / _hz: near omega_t = 2 pi C0 / lambda_t of the wavelength setting, L u = -(omega / C0)^2 M u (M = eps cells for E_z, mu cells for H_z) by host shift-invert Arnoldi (scipy eigs on SuperLU, the eigen role arpack_shift_invert whatever the linear back end: ~1e6 unknowns at most; the shift sits 1e-4 above the target). Accuracy: dispersion (sigma_e, poles) and the PML stretch are frozen at omega_t, so a resonance far from the target errs to first order in |omega / omega_t - 1| (exact only without dispersion and PML): set the wavelength near the resonance and re-run (one or two steps converge). Each field is scaled to 1 (V/m E_z, A/m H_z) real at its peak, in-plane fields from the curl at omega_t. em_fdfd_bor: at its azimuthal order m, or n_resonances per order of azimuthal_orders from one assembly (labels "resonance k: m = <m>, lambda = ..."), on the full-vector (r, z) curl-curl operator (M = eps ring volumes). em_fdfd_conical: at its k_z on the three-component operator; at k_z = beta the resonances are the guided modes of propagation constant beta. em_fdfd_3d: the 3D Yee curl-curl operator (M = face eps), snapshots its z cut planes, host factor ~ n^(4/3) (size rule 1e6 / 4e6 E unknowns). These three drop static gradient solutions (|k^2| < 1e-6 k_t^2) and scale each resonance to 1 V/m real at its largest component. solid_mechanics (plane strain): undamped K u = omega^2 M u (consistent mass) nearest target_frequency (0 = the lowest) by host shift-invert Lanczos, exact for the discretisation, Q infinite; with axial_wavenumber k_z the guided (2.5D) modes u ~ exp(i (k_z z - omega t)); labels "resonance k: f = <Hz> Hz", shapes scaled to a peak |u| of 1 m; loads and thermal strain play no part unless stress_stiffening (triangles, tetrahedra: the geometric stiffness K_sigma of the static state joins K; a free body, Bloch cell or elastic PML takes initial_stress alone). Triangles / tetrahedra: a mechanical_loss_factor eta makes K_el (1 + j eta) complex (K_sigma stays real). solid_mechanics_3d: tensor mesh the n_resonances lowest only (matrix-free shift-invert Lanczos at 0 on PCG solves of its double 'linear' solver, accuracy by the CG tolerance); tetrahedra nearest target_frequency (> 0 also for a free body, its 0 Hz modes dropped). membrane: -div(T (1 + j eta) grad w) = rho_s omega^2 w nearest target_frequency (complex with loss_factor / PML), labels "resonance k: f = <Hz> Hz[, Q = ...]", scaled to 1 m real at the peak; clamps held at 0, loads ignored. em_fdfd_sphere (1D spherical): shift-invert per multipole term (each listed order, er before hr) on its radial operator with the outgoing-wave term frozen at the target, then every resonance refined with the exact outgoing condition at its own complex omega (no PML; materials at the target), labels "resonance k: l = <l> <family>, lambda = ...", fields scaled to a peak sphere-RMS |E| of 1 V/m.
 
 - Needs a physics that steps in time: no; background study stationary; StudySpec.adaptation allowed
 
@@ -7893,7 +8004,7 @@ Produced by: em_fdfd_bor.far_field, em_fdfd_ez.far_field, em_fdfd_hz.far_field, 
 
 #### Result kind `xy`
 
-Produced by: em_eme.eme_length_sweep, em_eme.adjoint_objective, em_eme.design_region, em_eme_3d.eme_length_sweep, em_eme_3d.adjoint_objective, em_fdfd_bor.field_probe, em_fdfd_bor.mode_monitor, em_fdfd_conical.field_probe, em_fdfd_ez.field_probe, em_fdfd_ez.mode_monitor, em_fdfd_ez.adjoint_objective, em_fdfd_ez.design_region, em_fdfd_hz.field_probe, em_fdfd_hz.mode_monitor, em_fdfd_hz.adjoint_objective, em_fdfd_hz.design_region, em_fdfd_nonlinear.design_region, em_fdfd_nonlinear.field_probe, em_fdfd_nonlinear.mode_monitor, em_fdfd_nonlinear.adjoint_objective, em_fdtd_3d.mode_monitor, em_fdtd_bor.mode_monitor, em_fdtd_ez.mode_monitor, em_fdtd_hz.mode_monitor, em_modes.mode_dispersion, em_modes.shg_overlap, heat.thermorefractive_noise, heat.particle_noise, membrane.field_probe, membrane.port, membrane.mode_projection, pressure_acoustics.frequency_probe, pressure_acoustics.surface_pressure, solid_mechanics.frequency_probe, solid_mechanics.admittance, solid_mechanics_3d.frequency_probe, solid_mechanics_3d.admittance
+Produced by: em_eme.eme_length_sweep, em_eme.adjoint_objective, em_eme.design_region, em_eme_3d.eme_length_sweep, em_eme_3d.adjoint_objective, em_fdfd_bor.field_probe, em_fdfd_bor.mode_monitor, em_fdfd_conical.field_probe, em_fdfd_ez.field_probe, em_fdfd_ez.mode_monitor, em_fdfd_ez.adjoint_objective, em_fdfd_ez.design_region, em_fdfd_hz.field_probe, em_fdfd_hz.mode_monitor, em_fdfd_hz.adjoint_objective, em_fdfd_hz.design_region, em_fdfd_nonlinear.design_region, em_fdfd_nonlinear.field_probe, em_fdfd_nonlinear.mode_monitor, em_fdfd_nonlinear.adjoint_objective, em_fdfd_sphere.plane_wave, em_fdfd_sphere.dipole_source, em_fdfd_sphere.field_probe, em_fdtd_3d.mode_monitor, em_fdtd_bor.mode_monitor, em_fdtd_ez.mode_monitor, em_fdtd_hz.mode_monitor, em_modes.mode_dispersion, em_modes.shg_overlap, heat.thermorefractive_noise, heat.particle_noise, membrane.field_probe, membrane.port, membrane.mode_projection, pressure_acoustics.frequency_probe, pressure_acoustics.surface_pressure, solid_mechanics.frequency_probe, solid_mechanics.admittance, solid_mechanics_3d.frequency_probe, solid_mechanics_3d.admittance
 
 - `kind`: 'xy', str; the producing feature may add further keys, listed in its description
 - `x`: abscissa shared by every series, float64 (n,), in x_unit
@@ -7905,7 +8016,7 @@ Produced by: em_eme.eme_length_sweep, em_eme.adjoint_objective, em_eme.design_re
 
 #### Result kind `table`
 
-Produced by: drift_diffusion.ohmic_contact, drift_diffusion.gate, elastic_waves.resonance_monitor, electric_currents.voltage, electric_currents.terminal, electrostatics.voltage, electrostatics.terminal, em_eme.eme_ports, em_eme.eme_section_table, em_eme.eme_periodic, em_eme_3d.eme_ports, em_eme_3d.eme_section_table, em_eme_3d.eme_periodic, em_fdfd_3d.resonance_table, em_fdfd_bor.mode_source, em_fdfd_bor.resonance_table, em_fdfd_conical.resonance_table, em_fdfd_ez.mode_source, em_fdfd_ez.resonance_table, em_fdfd_hz.mode_source, em_fdfd_hz.resonance_table, em_fdfd_nonlinear.mode_source, em_fdtd_3d.resonance_monitor, em_fdtd_3d.mode_source, em_fdtd_bor.resonance_monitor, em_fdtd_bor.mode_source, em_fdtd_ez.mode_source, em_fdtd_ez.resonance_monitor, em_fdtd_hz.mode_source, em_fdtd_hz.resonance_monitor, em_modes.mode_table, em_modes.bend_overlap, magnetic_fields_ac.coil, magnetostatics.coil, magnetostatics_3d.coil, membrane.resonance_table, membrane.squeeze_film_damping, solid_mechanics.fixed, solid_mechanics.roller, solid_mechanics.displacement, solid_mechanics.fixed_domain, solid_mechanics.prescribed_displacement_domain, solid_mechanics.resonance_table, solid_mechanics.thermoelastic_damping, solid_mechanics.optomechanical_coupling, solid_mechanics.electrode, solid_mechanics.electrode_domain, solid_mechanics_3d.fixed, solid_mechanics_3d.roller, solid_mechanics_3d.displacement, solid_mechanics_3d.fixed_domain, solid_mechanics_3d.prescribed_displacement_domain, solid_mechanics_3d.resonance_table, solid_mechanics_3d.squeeze_film_damping, solid_mechanics_3d.thermoelastic_damping, solid_mechanics_3d.electrode, solid_mechanics_3d.electrode_domain, solid_mechanics_3d.optomechanical_coupling
+Produced by: drift_diffusion.ohmic_contact, drift_diffusion.gate, elastic_waves.resonance_monitor, electric_currents.voltage, electric_currents.terminal, electrostatics.voltage, electrostatics.terminal, em_eme.eme_ports, em_eme.eme_section_table, em_eme.eme_periodic, em_eme_3d.eme_ports, em_eme_3d.eme_section_table, em_eme_3d.eme_periodic, em_fdfd_3d.resonance_table, em_fdfd_bor.mode_source, em_fdfd_bor.resonance_table, em_fdfd_conical.resonance_table, em_fdfd_ez.mode_source, em_fdfd_ez.resonance_table, em_fdfd_hz.mode_source, em_fdfd_hz.resonance_table, em_fdfd_nonlinear.mode_source, em_fdfd_sphere.resonance_table, em_fdtd_3d.resonance_monitor, em_fdtd_3d.mode_source, em_fdtd_bor.resonance_monitor, em_fdtd_bor.mode_source, em_fdtd_ez.mode_source, em_fdtd_ez.resonance_monitor, em_fdtd_hz.mode_source, em_fdtd_hz.resonance_monitor, em_modes.mode_table, em_modes.bend_overlap, magnetic_fields_ac.coil, magnetostatics.coil, magnetostatics_3d.coil, membrane.resonance_table, membrane.squeeze_film_damping, solid_mechanics.fixed, solid_mechanics.roller, solid_mechanics.displacement, solid_mechanics.fixed_domain, solid_mechanics.prescribed_displacement_domain, solid_mechanics.resonance_table, solid_mechanics.thermoelastic_damping, solid_mechanics.optomechanical_coupling, solid_mechanics.electrode, solid_mechanics.electrode_domain, solid_mechanics_3d.fixed, solid_mechanics_3d.roller, solid_mechanics_3d.displacement, solid_mechanics_3d.fixed_domain, solid_mechanics_3d.prescribed_displacement_domain, solid_mechanics_3d.resonance_table, solid_mechanics_3d.squeeze_film_damping, solid_mechanics_3d.thermoelastic_damping, solid_mechanics_3d.electrode, solid_mechanics_3d.electrode_domain, solid_mechanics_3d.optomechanical_coupling
 
 - `kind`: 'table', str; the producing feature may add further keys, listed in its description
 - `columns`: column names, list of str

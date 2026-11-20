@@ -33,8 +33,9 @@ dipole sources, field recovery and the resonance search; host numpy, scipy insid
 # (along the plane-wave polarisation) to both families m = +-1 (sum_m |Psi^ . t|^2 = sum_m |Phi^ . t|^2 = (2 l + 1) /
 # 2); one solve per family and orientation with the coupling g = sqrt of that sum is the sphere-RMS sum of its m terms.
 # Weak right-hand sides: 'hr' -j w mu0 I d g v(r_s) / (4 pi r_s); 'er' (I d / (4 pi eps_s)) l(v), l(v) = -g sqrt(L)
-# v(r_s) / r_s^2 (radial) or -g v'(r_s) / r_s (tangential), v(r_s) / v'(r_s) by the P1 interpolation of the cell holding
-# r_s. Emitted power -1/2 Re(E . (I d)*) with E . n = g y(r_s) / r_s ('hr') or l(y) / (j w eps0 eps_s) ('er', the
+# v(r_s) / r_s^2 (radial) or -g v'(r_s) / r_s (tangential), v(r_s) by the P1 interpolation of the cell holding r_s,
+# v'(r_s) by the linear interpolation of the two nearest cell slopes (three nodes: second order anywhere, the central
+# difference on a node; the one-cell slope would be first order). Emitted power -1/2 Re(E . (I d)*) with E . n = g y(r_s) / r_s ('hr') or l(y) / (j w eps0 eps_s) ('er', the
 # self-field -J / (j w eps0 eps) dropped: reactive in a lossless source cell); for a lossless model it equals the
 # outgoing power 2 pi Im(y y'*) / (w mu0 mu) ('hr') or / (w eps0 eps) ('er') exactly (the discrete Poynting theorem of
 # the complex symmetric A).
@@ -304,15 +305,40 @@ def assemble_sphere(grid, materials, family, order, omega, inner='centre', outer
 
 
 # ---- sources ----
-def _source_cell(grid, radius, label):
-    """(cell, interpolation weights (lo, hi), derivative weights (lo, hi)) of a point at radius [m] inside the grid."""
+@dataclass(frozen=True, eq=False)
+class _SourcePoint:
+    """A point at radius [m]: the cell holding it, P1 value weights on its two nodes, and second-order y' weights on
+    three nodes (the two nearest cell slopes, which live at the cell midpoints, interpolated linearly to the radius)."""
+    cell: int
+    value_nodes: tuple
+    value_weights: tuple
+    slope_nodes: tuple
+    slope_weights: tuple
+
+    def value(self, node_values) -> complex:
+        return sum(weight * node_values[node] for node, weight in zip(self.value_nodes, self.value_weights))
+
+    def slope(self, node_values) -> complex:
+        return sum(weight * node_values[node] for node, weight in zip(self.slope_nodes, self.slope_weights))
+
+
+def _source_point(grid, radius, label) -> _SourcePoint:
+    """_SourcePoint of a point at radius [m] inside the grid. The one-cell P1 slope would sit the source at that cell's
+    midpoint, a first-order error h / (2 r_s) in the tangential 'er' coupling (2e-3 at 1 nm, r_s 0.2 um)."""
     edges = grid.edges
     if not edges[0] < radius <= edges[-1] or radius <= 0.0:
         raise ValueError(f'{label}: radius {radius:.6g} m must lie in ({edges[0]:.6g}, {edges[-1]:.6g}] m and be > 0')
     cell = int(np.clip(np.searchsorted(edges, radius, side='right') - 1, 0, grid.n_cells - 1))
-    width = edges[cell + 1] - edges[cell]
-    upper = (radius - edges[cell]) / width
-    return cell, (1.0 - upper, upper), (-1.0 / width, 1.0 / width)
+    widths = grid.widths
+    upper = (radius - edges[cell]) / widths[cell]
+    midpoints = grid.centres
+    # slope cells (lo, lo + 1) with midpoints bracketing the radius; clamped at the ends (linear extrapolation)
+    lo = int(np.clip(np.searchsorted(midpoints, radius, side='right') - 1, 0, grid.n_cells - 2))
+    share = (radius - midpoints[lo]) / (midpoints[lo + 1] - midpoints[lo])
+    slope_lo, slope_hi = (1.0 - share) / widths[lo], share / widths[lo + 1]
+    return _SourcePoint(cell=cell, value_nodes=(cell, cell + 1), value_weights=(1.0 - upper, upper),
+                        slope_nodes=(lo, lo + 1, lo + 2),
+                        slope_weights=(-slope_lo, slope_lo - slope_hi, slope_hi))
 
 
 def multipole_coupling(order, orientation) -> float:
@@ -338,22 +364,21 @@ class SphereDipole:
         rhs = np.zeros(system.grid.edges.size, dtype=np.complex128)
         if system.family == 'hr' and self.orientation == 'radial':
             return rhs
-        cell, weights, slopes = _source_cell(system.grid, self.radius, 'dipole source')
+        point = _source_point(system.grid, self.radius, 'dipole source')
         coupling = multipole_coupling(system.order, self.orientation)
+        nodes, weights = point.value_nodes, point.value_weights
         if system.family == 'hr':
             factor = -1j * system.omega * MU0 * self.moment * coupling / (4.0 * math.pi * self.radius)
-            local = weights
         else:
-            eps_source = _source_permittivity(system, cell)
+            eps_source = _source_permittivity(system, point.cell)
             if self.orientation == 'radial':
                 factor = (-self.moment * coupling * math.sqrt(system.angular)
                           / (4.0 * math.pi * eps_source * self.radius ** 2))
-                local = weights
             else:
                 factor = -self.moment * coupling / (4.0 * math.pi * eps_source * self.radius)
-                local = slopes
-        rhs[cell] += factor * local[0]
-        rhs[cell + 1] += factor * local[1]
+                nodes, weights = point.slope_nodes, point.slope_weights
+        for node, weight in zip(nodes, weights):
+            rhs[node] += factor * weight
         return rhs
 
     def emitted_power(self, system, node_values) -> float:
@@ -361,18 +386,16 @@ class SphereDipole:
         header)."""
         if system.family == 'hr' and self.orientation == 'radial':
             return 0.0
-        cell, weights, slopes = _source_cell(system.grid, self.radius, 'dipole source')
+        point = _source_point(system.grid, self.radius, 'dipole source')
         coupling = multipole_coupling(system.order, self.orientation)
-        value = weights[0] * node_values[cell] + weights[1] * node_values[cell + 1]
         if system.family == 'hr':
-            field = coupling * value / self.radius
+            field = coupling * point.value(node_values) / self.radius
         else:
-            eps_source = _source_permittivity(system, cell)
+            eps_source = _source_permittivity(system, point.cell)
             if self.orientation == 'radial':
-                curl = -coupling * math.sqrt(system.angular) * value / self.radius ** 2
+                curl = -coupling * math.sqrt(system.angular) * point.value(node_values) / self.radius ** 2
             else:
-                slope = slopes[0] * node_values[cell] + slopes[1] * node_values[cell + 1]
-                curl = -coupling * slope / self.radius
+                curl = -coupling * point.slope(node_values) / self.radius
             field = curl / (1j * system.omega * EPS0 * eps_source)
         return float(-0.5 * (np.conj(self.moment) * field).real)
 
