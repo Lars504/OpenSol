@@ -9,9 +9,10 @@ from dataclasses import dataclass, replace
 import numpy as np
 
 from ..core import gpu_memory, host_memory
-from ..core.backend import array_module_of, to_host
+from ..core.backend import array_module_of, cp, to_host
 from ..core.box_values import BoxValues
 from ..core.constants import DTYPE
+from ..core.kernels import axis_first_reduce
 from ..coupling.material_update import DynamicMaterialUpdate, TimeDependentUpdate
 from ..materials import effective_material_data
 from ..simulation import Simulation
@@ -1086,11 +1087,45 @@ def _dynamic_update(ctx, region, property_param, expression, grid_properties):
 
 
 def _masked_extremes(values, mask):
-    """Device 0-d (lowest, highest) of values under the bool mask (all cells when None); NaN propagates."""
-    if mask is None:
-        return values.min(), values.max()
+    """Device 0-d (lowest, highest) of values under the bool mask (all cells when None; values and mask broadcast);
+    NaN propagates; no cells: (inf, -inf). cupy: fused masked reductions, axis-first (no full-grid temporaries: a
+    dynamic material update runs this at every evaluation)."""
     xp = array_module_of(values)
-    return xp.where(mask, values, math.inf).min(), xp.where(mask, values, -math.inf).max()
+    if xp is np:
+        if mask is None:
+            return values.min(), values.max()
+        return xp.where(mask, values, math.inf).min(), xp.where(mask, values, -math.inf).max()
+    if mask is None:
+        return (axis_first_reduce(_nan_lowest, values, combine=_lowest_of),
+                axis_first_reduce(_nan_highest, values, combine=_highest_of))
+    values, mask = cp.broadcast_arrays(values, mask)   # zero-stride views (a 0-d value of t under a full mask)
+    return (axis_first_reduce(_masked_lowest, values, mask, combine=_lowest_of),
+            axis_first_reduce(_masked_highest, values, mask, combine=_highest_of))
+
+
+# the range reductions of _masked_extremes: NaN-keeping min / max (a NaN must fail the range check), +-inf identity
+_POSITIVE_INFINITY = '(T)__longlong_as_double(0x7ff0000000000000LL)'
+_NAN_KEEPING_MIN = '(a < b || a != a) ? a : b'
+_NAN_KEEPING_MAX = '(a > b || a != a) ? a : b'
+_nan_lowest = cp.ReductionKernel('T values', 'T lowest', 'values', _NAN_KEEPING_MIN, 'lowest = a', _POSITIVE_INFINITY,
+                                 'open_sol_nan_lowest')
+_nan_highest = cp.ReductionKernel('T values', 'T highest', 'values', _NAN_KEEPING_MAX, 'highest = a',
+                                  f'-{_POSITIVE_INFINITY}', 'open_sol_nan_highest')
+_masked_lowest = cp.ReductionKernel('T values, bool mask', 'T lowest', f'mask ? values : {_POSITIVE_INFINITY}',
+                                    _NAN_KEEPING_MIN, 'lowest = a', _POSITIVE_INFINITY, 'open_sol_masked_lowest')
+_masked_highest = cp.ReductionKernel('T values, bool mask', 'T highest', f'mask ? values : -{_POSITIVE_INFINITY}',
+                                     _NAN_KEEPING_MAX, 'highest = a', f'-{_POSITIVE_INFINITY}',
+                                     'open_sol_masked_highest')
+
+
+def _lowest_of(partials):
+    """NaN-keeping min of axis-first partial minima (axis-first again while they are large: 3D grids)."""
+    return axis_first_reduce(_nan_lowest, partials, combine=_lowest_of)
+
+
+def _highest_of(partials):
+    """NaN-keeping max of axis-first partial maxima."""
+    return axis_first_reduce(_nan_highest, partials, combine=_highest_of)
 
 
 def _new_running_extremes(xp):
