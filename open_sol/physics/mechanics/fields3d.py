@@ -18,12 +18,12 @@ HARMONIC_IMAG_FIELDS_3D = ('u_x_im', 'u_y_im', 'u_z_im')
 
 
 class MechanicsFields3D:
-    """(nx, ny, nz) float32 displacement [m], total / elastic tensor strain [1], stress [Pa] and von Mises [Pa] at the
-    cell centres (0 in void cells), coupled temperature rise [K], body force [N/m^3] and applied temperature change [K];
-    arrays of xp (numpy or cupy)."""
+    """(nx, ny, nz) float32 coupled temperature rise [K], body force [N/m^3] and applied temperature change [K]
+    (INPUT_ARRAYS_3D) on xp (numpy or cupy). The outputs (displacement, strains, stresses, von Mises at the cell
+    centres) are no arrays here: SolidMechanics3DPhysics.output computes one on read."""
 
     def __init__(self, nx: int, ny: int, nz: int, xp):
         self.nx, self.ny, self.nz = nx, ny, nz
         self.shape = (nx, ny, nz)
-        for name in OUTPUT_ARRAYS_3D + INPUT_ARRAYS_3D:
+        for name in INPUT_ARRAYS_3D:
             setattr(self, name, xp.zeros(self.shape, dtype=DTYPE))

@@ -1151,8 +1151,13 @@ def _fem_memory_estimate(settings_values, mesh, context):
                             6 * FLOAT64_BYTES * vector_dofs),
                            ('Newton tangent assembler: rule gradients, scatter map, pattern and free take',
                             assembler_bytes)])
-        if settings_values.get('tangent_update') == 'when_slow':   # modified Newton keeps the factor's tangent values
-            host_items.append(('modified Newton: values of the held tangent', FLOAT64_BYTES * entries))
+        if settings_values.get('tangent_update') == 'when_slow':   # modified Newton keeps the held-dof rows only
+            # outer-edge dofs: boundary edges 2 n_edges - 3 n_elements (a closed loop: as many nodes as edges; P2: +
+            # one dof per edge)
+            boundary = max(2 * int(mesh.n_edges) - 3 * elements, 0)
+            held_host, _ = definition3d.held_tangent_rows((2 if discretization == 'quadratic' else 1) * boundary,
+                                                          components, entries / max(vector_dofs, 1), device=False)
+            host_items.append(('modified Newton: held-dof rows of the held tangent (outer-edge dofs)', held_host))
         if not static and host_factor:   # the static state of the pencil is factorised too
             host_items.extend(host_factor_items(linear_back_end,
                                                 'SuperLU L + U factors of the Newton tangent (float64, heuristic)',

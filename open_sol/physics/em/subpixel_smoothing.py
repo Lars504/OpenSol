@@ -126,8 +126,9 @@ class SubpixelSmoothing:
             locations = self.geometry.kind(kind)
             if not locations.size:
                 continue
-            eps = self.smoothed(kind, getattr(materials, _array_of(self.polarization, kind)))
-            sigma = self.face_mean(kind, materials.sigma_e)
+            # device_array: a parked (host) array is uploaded whole for the gathers (MaterialGrid.park)
+            eps = self.smoothed(kind, materials.device_array(_array_of(self.polarization, kind)))
+            sigma = self.face_mean(kind, materials.device_array('sigma_e'))
             _, _, ca_values, cb_values = self._buffers[kind]
             e_coefficients(sigma, eps, DTYPE(engine.dt), DTYPE(EPS0), ca_values, cb_values)
             if engine.uniform_ca:   # ca is the uniform 1 (sigma_e 0 everywhere, so ca_values are 1): cb alone
@@ -147,8 +148,9 @@ class SubpixelSmoothing:
         flat[locations.location] += self.delta(kind, materials)
 
     def delta(self, kind, materials):
-        """float32 buffer of averaged - standard eps at the kind's locations of the current materials."""
-        eps_cells = getattr(materials, _array_of(self.polarization, kind))
+        """float32 buffer of averaged - standard eps at the kind's locations of the current materials (a parked array
+        uploaded whole: MaterialGrid.device_array)."""
+        eps_cells = materials.device_array(_array_of(self.polarization, kind))
         smoothed = self.smoothed(kind, eps_cells)
         standard = self.face_mean(kind, eps_cells, out_index=2)
         standard -= smoothed

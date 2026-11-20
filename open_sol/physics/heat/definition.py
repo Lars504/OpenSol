@@ -956,7 +956,7 @@ def _memory_estimate(settings_values, mesh, context):
         row_entries = 7 if context.spec.is_3d else 9 if cross_term else 5
         parts.append(cudss_diffusion_estimate(window_cells, row_entries * window_cells,
                                               3 if context.spec.is_3d else 2, cudss, input_copy=False,
-                                              refactorizes=refactorizes))
+                                              refactorizes=refactorizes, symmetric_known=True))
     return combine(parts)
 
 

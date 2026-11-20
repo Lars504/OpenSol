@@ -87,12 +87,12 @@ BLOCK_EIGEN_PARTS = tuple((f'{BLOCK_EIGEN}:{target}', f'block_eigen: {target}') 
 PARTS = STUDY_PARTS + SOLVER_ROLE_PARTS + tuple((f'{PHYSICS}.{method}', f'physics: {method}') for method in (
     'prepare', 'finalize', 'step', '_assemble', '_element_lame', '_build_rhs', '_solve_system', '_write_outputs',
     'solve_eigenfrequencies', 'select_resonance', 'reaction', 'state', 'add_body_force', 'add_temperature_change',
-    'work_counters',
+    'work_counters', 'output',
 )) + tuple((f'{SYSTEM}.{method}', f'system: {method}') for method in (
-    'prepare', 'assemble', '_check_rigid_modes', '_rigid_mode_gram', 'build_rhs', 'solve', 'reaction', 'write_outputs',
+    'prepare', 'assemble', '_check_rigid_modes', '_rigid_mode_gram', 'build_rhs', 'solve', 'reaction', 'write_output',
     'lowest_modes', 'hold_face', 'add_face_traction',
 )) + tuple((f'{KERNELS}.{method}', f'kernels: {method}') for method in (
-    'diagonal_blocks', 'reduce_invert_blocks', 'load', 'outputs', 'mass_product',
+    'diagonal_blocks', 'reduce_invert_blocks', 'load', 'output', 'mass_product',
 )) + tuple((f'{MULTIGRID}.{method}', f'multigrid: {method}') for method in (
     'build', '_largest_eigenvalue', '_dense_inverse', 'precondition',
 )) + (

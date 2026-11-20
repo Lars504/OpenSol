@@ -65,6 +65,19 @@ type's vocabulary and refusals are in its help texts and validation.
   scatters cb alone while `uniform_ca`). A reader that keeps a view across steps reads it again per use (mode-port line
   corrections): the view is replaced when the layout turns per cell. cb / cb_x / cb_y are per cell and never
   reallocated (pole, media and port box views). Selftest em_operators_consistency part F: both layouts bit for bit.
+- Parked material arrays (model path, gpu; core sub file "GPU memory"): `definition_common.
+  fdtd_parked_material_arrays` (the shared `parkable_material_arrays` rule over `EMPhysics.PARKABLE_ARRAYS`: every
+  material array; the permittivity arrays and sigma_e stay with a nonlinear / gain / phase-change medium, hz sigma_e
+  while accumulating, an array whose state field a material expression or field_transfer reads: `state_arrays_read`)
+  lists what `EMPhysics(park_arrays=)` moves to the host at create, before the engine allocates (the build peak never
+  holds both). Readers of such an array go through `MaterialGrid.device_array(name, index)` (renderer windows, mode
+  port rows, TFSF outline region, harmonic energy window, subpixel gathers: whole array), `materials.material_state`
+  (state(): a device copy per read), `xp.asarray` of a line (sheet calibrations), a host reduction (`_single_value`,
+  `_all_zero`, `_bounding_box`, `material_values`: the Courant check) or uploaded x-row blocks
+  (`material_row_blocks`: H and ez E rebuilds; the hz E rebuild reads neighbours: whole uploads); per-step readers
+  keep their own device copy (ez sigma_e on the ohmic box, hz sigma_e for q_accum_hz). A new reader of a PARKABLE
+  array does the same, else it breaks on the gpu model path only (the cpu backend never parks). Estimate:
+  `_parked_fdtd_items`; the `em_fdtd_cpu_gpu*` parity cases compare parked (gpu) with unparked (cpu) runs.
 - Yee edge: on a non-periodic axis the last face row is never updated and cell 0 reads its missing lo face as 0, so
   the grid edge is PMC (ez) / PEC (hz) half a cell beyond the outermost centres (only cpml sides see it).
 - Times: a source injects at the centre time of the update it follows (E: t+dt/2; H: t), never the new field time
@@ -507,7 +520,10 @@ type's vocabulary and refusals are in its help texts and validation.
 - ModePhysics has the FDFDPhysics attribute set (class comment; polarization 'modes', no sources). Every solve re-reads
   the MaterialGrid; `_material_serial` only stales a kept line-block batch, so a new way to change the solved system
   bumps it (`__init__` comment). `select_mode` writes `mode_fields` in place: ModeRenderer and `state()` hold those
-  arrays. Line-block 'shifted' batches and the detached solves (shg_overlap, bend_overlap): the class comment.
+  arrays; only `DEVICE_MODE_FIELDS` (the state() keys e_intensity, sz) are run-backend arrays, the seven rendered-only
+  ones are host numpy (`CentreFieldRenderer` uploads the read window): a new device reader of them takes
+  `xp.asarray(window)`, a new state() key joins DEVICE_MODE_FIELDS (and the estimate's device item). Line-block
+  'shifted' batches and the detached solves (shg_overlap, bend_overlap): the class comment.
 - A cudss eigen node skips the host SuperLU size rule in `_solve_at` / `solve_detached` (check_size), `finalize` and
   `_solver_issues`: change them together. Not done: a symmetric Yee form (the mixed [E_t; E_z] pencil), which would
   allow LDL^T and the _mixed factorizations on tensor meshes (`_solver_issues` says why they are refused).

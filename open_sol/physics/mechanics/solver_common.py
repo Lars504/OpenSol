@@ -400,8 +400,12 @@ class SolidMechanicsBase(PhysicsSolver):
             self._show_outputs()
             self._loads_dirty = False
         if re_solve or dt is None or not math.isfinite(dt):
-            for probe in self.probes:
-                probe.record(self.fields, t)
+            self._record_probes(t)
+
+    def _record_probes(self, t) -> None:
+        """Record every probe at time t from the output fields (the 3D solid computes its outputs on read)."""
+        for probe in self.probes:
+            probe.record(self.fields, t)
 
     def dt_limit(self) -> float:
         return math.inf

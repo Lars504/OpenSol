@@ -1208,7 +1208,7 @@ def _memory_estimate(settings_values, mesh, context):
             run_items = [solve_vectors,
                          ('device pencil terms, index maps and per-frequency transients',
                           device_pencil_bytes(entries, (COMPLEX128_BYTES, 8, 8), symmetric=True)),
-                         ('kept device solution (complex128 + int64 ids per full dof)',
+                         ('kept device solution (complex128 + int32 ids per full dof)',
                           KEPT_SOLUTION_BYTES_PER_DOF * dofs)]
         elif not complex_pencil and not switched and entries >= DEVICE_PENCIL_MIN_ENTRIES:
             # eigsh_shifted's ShiftPencil: K, M as a lower-stored DevicePencil, M products on the device

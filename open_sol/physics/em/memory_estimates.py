@@ -20,9 +20,12 @@ from ...solvers.host_direct import (HOST_DIRECT_FACTORIZATIONS, factor_label, ho
                                     superlu_bytes_scale)
 from ...solvers.sparse_direct import CUDSS_BACK_ENDS, HOST_FACTOR_BACK_ENDS
 from .definition_bloch import bloch_active_axes
-from .definition_common import FREQUENCY_DOMAIN_STUDY, _q_accum_referenced, _study_wavelengths, eigen_solved
+from .definition_common import (FREQUENCY_DOMAIN_STUDY, _q_accum_referenced, _study_wavelengths, eigen_solved,
+                                fdtd_parked_material_arrays)
+from .solvers.fdtd_2d_base import PARKED_BLOCK_CELLS
 from .eigenfrequency import FILTER_DEVICE_BLOCK_COLUMNS
 from .materials import GYRATION_Z
+from .placement import PERMITTIVITY_ARRAYS
 
 # FDFD kept Helmholtz term plan (operators._HelmholtzPlan): per cell 9 terms (4 per x / y product + the cell term) into
 # 5 operator entries; int32: 3 per product term, the first term of each entry, (entry, term) of the other terms (the
@@ -514,10 +517,68 @@ def fdtd_memory_estimate(polarization):
                               n_spectra * n_wavelengths * COMPLEX64_BYTES * window_cell_count(mesh)))
         # finalize's float32 Courant check (requirement, ratio; hz min(eps)) and two pole weight temporaries (field
         # dtype: the cell weight and its face average); the coefficient layout checks reduce without temporaries
-        return MemoryEstimate.from_items(items + trace_items,
-                                         build_extra=(3 * FLOAT32_BYTES + 2 * real_bytes) * n_cells,
-                                         host_items=host_items, run_items=run_items, transient_items=transient_items)
+        build_extra = (3 * FLOAT32_BYTES + 2 * real_bytes) * n_cells
+        parked = fdtd_parked_material_arrays(polarization, context.spec, context.registry, context.physics_spec,
+                                             context.parameters)
+        if parked:   # EMPhysics(park_arrays=): on the device through the material painting, on the host from create
+            build_extra, extra_items = _parked_fdtd_items(polarization, parked, context, mesh, build_extra,
+                                                          3 * real_bytes * n_cells, q_accum)
+            items += extra_items
+            host_items = list(host_items) + [(f"material arrays parked on the host ({', '.join(parked)}, float32)",
+                                              FLOAT32_BYTES * len(parked) * n_cells)]
+            window_arrays = [name for name in (*PERMITTIVITY_ARRAYS[polarization], 'mu_r') if name in parked]
+            if n_wavelengths and window_arrays:   # the pulse's energy check uploads their windows per chunk
+                transient_items.append(('harmonic energy check', f"parked {', '.join(window_arrays)} window uploads "
+                                        '(float32)', FLOAT32_BYTES * len(window_arrays) * window_cell_count(mesh)))
+        return MemoryEstimate.from_items(items + trace_items, build_extra=build_extra, host_items=host_items,
+                                         run_items=run_items, transient_items=transient_items)
     return estimate
+
+
+def _parked_fdtd_items(polarization, parked, context, mesh, build_extra, field_bytes, q_accum):
+    """(build extra, kept items) of em_fdtd_<polarization> with the MaterialGrid arrays `parked` on the host
+    (fdtd_2d_base readers): the Courant check's device copies of a varying parked eps_r (ez, any eps counts: poles
+    write their background) / mu_r on top of its temporaries, the painted arrays before the fields exist, the hz E
+    rebuild's whole-array uploads (the subpixel gathers upload one array at a time after it), the x-row block uploads
+    (ez E, both H); kept: ez's sigma_e copy on the conducting cells' box while accumulating (the ohmic loss)."""
+    n_cells = int(mesh.n_cells)
+    copies = int(polarization == 'ez' and 'eps_r' in parked)
+    copies += int('mu_r' in parked and context.material_sets('mu_r', default=1))
+    rebuild_uploads = (sum(1 for name in ('eps_xx', 'eps_yy', 'sigma_e') if name in parked)
+                       if polarization == 'hz' else 0)
+    build_extra = max(build_extra + FLOAT32_BYTES * copies * n_cells,
+                      FLOAT32_BYTES * len(parked) * n_cells - field_bytes,
+                      FLOAT32_BYTES * max(rebuild_uploads, 1) * n_cells,
+                      FLOAT32_BYTES * len(parked) * min(n_cells, PARKED_BLOCK_CELLS))
+    items = []
+    if polarization == 'ez' and q_accum and 'sigma_e' in parked and context.material_sets('sigma_e'):
+        items.append(('sigma_e copy on the box of the conducting cells (float32, ohmic loss)',
+                      FLOAT32_BYTES * _property_box_cells(context, 'sigma_e', n_cells)))
+    return build_extra, items
+
+
+def _property_box_cells(context, property_name, n_cells):
+    """Full-grid cells of the union bounding box of the material regions setting property_name to a non-zero value
+    (n_cells when a region's box does not resolve; 0 without such a region)."""
+    from ...materials import effective_material_data   # lazy: materials imports physics.em
+    bounds = None
+    regions = {region.name: region for region in context.material_regions}
+    for material in context.spec.materials:
+        try:
+            properties, _ = effective_material_data(material.library, material.properties, material.dispersion)
+        except (ValueError, TypeError):   # reported by validate
+            continue
+        value = properties.get(property_name)
+        if value is None or (isinstance(value, (int, float)) and value == 0):
+            continue
+        region = regions.get(material.name)
+        if region is None or not region.box_bounds:
+            return n_cells
+        bounds = (region.box_bounds if bounds is None else
+                  tuple((min(a[0], b[0]), max(a[1], b[1])) for a, b in zip(bounds, region.box_bounds)))
+    if bounds is None:
+        return 0
+    return min(n_cells, math.prod(last - first + 1 for first, last in bounds))
 
 
 def fdfd_memory_estimate(polarization):
@@ -751,8 +812,9 @@ def _eigen_items(context, n_cells, sparse_row, superlu=True, ldlt=True, polished
 
 
 def modes_memory_estimate(settings_values, mesh, context):
-    """PhysicsType.memory_estimate of em_modes (solvers/modes_2d, cross_section_modes): 9 float32 mode fields; host
-    SuperLU, operators, Arnoldi basis, modes; a line_block batch or a per-solve cuDSS LU (external) instead of SuperLU."""
+    """PhysicsType.memory_estimate of em_modes (solvers/modes_2d, cross_section_modes): 9 float32 mode fields (the
+    two of state() on the device, the rendered seven host); host SuperLU, operators, Arnoldi basis, modes; a line_block
+    batch or a per-solve cuDSS LU (external) instead of SuperLU."""
     if getattr(mesh, 'kind', 'tensor') == 'triangles':
         return _modes_fem_memory_estimate(settings_values, mesh, context)
     n_cells = int(mesh.n_cells)
@@ -766,7 +828,8 @@ def modes_memory_estimate(settings_values, mesh, context):
     on_device = factorization in CUDSS_FACTORIZATIONS
     operator_bytes = 2 * 9 * COMPLEX128_CSR_ENTRY_BYTES * unknowns
     host_items = [('operators A, B (sparse complex128)', operator_bytes),
-                  (f'mode fields ({n_modes} modes x 6 components)', 6 * n_modes * COMPLEX128_BYTES * n_cells)]
+                  (f'mode fields ({n_modes} modes x 6 components)', 6 * n_modes * COMPLEX128_BYTES * n_cells),
+                  ('rendered fields of the selected mode (7 x float32: E, H, h_abs)', 7 * FLOAT32_BYTES * n_cells)]
     run_items, external_items, external_extra = [], [], 0
     # ModePhysics._cross_section_materials: device eps / mu cells per solve before to_host (BOR books the same); the
     # mode solve after them (Krylov basis, an own cuDSS factor) never overlaps
@@ -811,7 +874,8 @@ def modes_memory_estimate(settings_values, mesh, context):
                                            else 'SuperLU L + U factors (heuristic)',
                                            host_real_lu_bytes(unknowns) if real_superlu else host_lu_bytes(unknowns),
                                            unknowns, 9 * unknowns, symmetric=False, eigen=True)
-    return MemoryEstimate.from_items((('mode fields (9 x float32)', 9 * FLOAT32_BYTES * n_cells),),
+    return MemoryEstimate.from_items((('state fields of the selected mode (e_intensity, sz: 2 x float32)',
+                                       2 * FLOAT32_BYTES * n_cells),),
                                      host_items=host_items, run_items=run_items, transient_items=transient_items,
                                      external_items=external_items, external_extra=external_extra)
 

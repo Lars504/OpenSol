@@ -51,11 +51,11 @@ class FDFDRenderer3D(YeeRenderer3D):
 
     def _field(self, component, cut):
         """The read window / plane computed on the host from the host complex64 fields (fdfd3d), uploaded once as
-        float32 (the run backend's array); eps_r is the MaterialGrid view."""
+        float32 (the run backend's array); eps_r is the MaterialGrid view (of a parked array: the window uploaded)."""
         self.field_info(component)
         xp = self.xp
         if component == 'eps_r':
-            return self.domain.materials.eps_r[self._window(cut)]
+            return self.domain.materials.device_array('eps_r', self._window(cut))
         if component in ('e_abs', 'e_intensity', 'h_abs'):
             names = ('hx', 'hy', 'hz') if component == 'h_abs' else ('ex', 'ey', 'ez')
             values = sum(np.abs(self._centre(name, cut)) ** 2 for name in names)

@@ -320,11 +320,11 @@ def diffusion_system_estimate(window_cells, precision, cross_term=False, transie
     value_bytes = FLOAT64_BYTES if precision == 'float64' else FLOAT32_BYTES
     entries_per_row = 9 if cross_term else 5
     cells = int(window_cells)
-    # prepare: cell_area, rhs, unknown, extra_diag / _rhs, fixed values, rhs_full buffer, CG solution (+ pcg: the
-    # PCGSolver residual / direction / CSR product, solvers.pcg.workspace_bytes) + fixed mask + the cached uint8 anchor
-    # code (face-area divisors are separable 1D factors)
+    # prepare: cell_area, rhs, unknown (the CG iterates on it: no solution vector), extra_diag / _rhs, fixed values,
+    # rhs_full buffer (+ pcg: the PCGSolver residual / direction / CSR product, solvers.pcg.workspace_bytes) + fixed
+    # mask + the cached uint8 anchor code (face-area divisors are separable 1D factors)
     workspace = 3 if pcg else 0
-    buffers = ((8 + workspace) * value_bytes + BOOL_BYTES + 1) * cells
+    buffers = ((7 + workspace) * value_bytes + BOOL_BYTES + 1) * cells
     # (pcg) inverse diagonal, free, rhs_offset, fixed_values, rhs_drive, 2 face conductances, assembled c_xx / c_yy,
     # the conduction diagonal (+ C/dt); the loss-anchor mask (bool); the kept c_xy quad coefficients and their bool mask
     assembly = ((9 + int(pcg) + (1 if transient else 0) + (1 if azimuthal else 0) + (1 if cross_term else 0))
@@ -337,9 +337,9 @@ def diffusion_system_estimate(window_cells, precision, cross_term=False, transie
                    + 4 * (BOOL_BYTES + 2 * INT32_BYTES) + 30) * cells
     if dimensions == 3:   # 7-point operator (core.fv_diffusion_3d), no cross term, no face-length arrays
         entries_per_row = 7
-        # cell volume, rhs, unknown, extra_diag / _rhs, fixed values, rhs_full buffer, CG solution (+ pcg: 3 CG
-        # vectors) + fixed mask, the cached uint8 anchor code
-        buffers = ((8 + workspace) * value_bytes + BOOL_BYTES + 1) * cells
+        # cell volume, rhs, unknown, extra_diag / _rhs, fixed values, rhs_full buffer (+ pcg: 3 CG vectors) + fixed
+        # mask, the cached uint8 anchor code
+        buffers = ((7 + workspace) * value_bytes + BOOL_BYTES + 1) * cells
         # as 2D with 3 face conductances and c_zz
         assembly = (11 + int(pcg) + (1 if transient else 0)) * value_bytes * cells + BOOL_BYTES * cells
         # pattern build (slot mask, int64 flatnonzero), dense slot array and the A_eff values, anchor check at 2x

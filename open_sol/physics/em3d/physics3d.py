@@ -12,7 +12,7 @@ from ...core.cut_cells import union_test
 from ...core.mirror import MIRROR_SIGNS, plane_wave_mirror_issue
 from ...core.solver_base import PhysicsSolver
 from ..em import _make_temporal, _pole_label, _pole_step_term, _resolve_frequencies, _resolve_frequency
-from ..em.materials import DrudePole, LorentzPole
+from ..em.materials import DrudePole, LorentzPole, material_state
 from ..em.monitors import dft_sample_interval
 from .boundaries3d import AXES, solver_boundary_config_3d
 from .conformal_pec3d import STABILITY_BAND_CELLS, build_conformal_pec_3d
@@ -79,13 +79,14 @@ class StaticEM3DContract(EM3DSlots):
     def dt_limit(self) -> float:
         return math.inf
 
-    def state(self) -> dict:
-        """The permittivity arrays, sigma_e and 'q_accum': None (loss-protocol key, never a field)."""
+    def state(self):
+        """The permittivity arrays, sigma_e and 'q_accum': None (loss-protocol key, never a field); parked arrays
+        (em_fdfd_3d definition _parked_material_arrays) read as device copies (em.materials.material_state)."""
         materials = self.domain.materials
         state = {name: getattr(materials, name) for name in self.permittivity_arrays}
         state['sigma_e'] = materials.sigma_e
         state['q_accum'] = None
-        return state
+        return material_state(state, materials)
 
 
 def complex_cell_materials(materials, omega, pole_regions) -> tuple:

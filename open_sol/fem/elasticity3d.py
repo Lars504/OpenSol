@@ -25,7 +25,7 @@ from .assembly3d import (CHUNK_ELEMENTS, _element_list, _rule_degree, _volume_we
                          assemble_lagrange_load_3d, assemble_lagrange_mass_3d, element_chunks_3d)
 from .elasticity import _fixed_field, as_stress_field, component_dofs, fixed_stress_at, stress_degree
 from .elements3d import LOCAL_EDGES, REFERENCE_VERTICES_3D, lagrange_basis_3d, piola_vectors_3d, tetrahedron_geometry
-from .fixed_pattern import kept_pattern, kept_pattern_if_any, scatter_add
+from .fixed_pattern import device_pattern_bytes, kept_pattern, kept_pattern_if_any, scatter_add
 from .quadrature3d import tetrahedron_rule
 from .tangent_kernel3d import element_bytes, element_force_tangent_3d, kernel_fits
 
@@ -356,33 +356,25 @@ def _module_name(xp) -> str:
 
 
 def element_inverse_jacobians_3d(dofs, xp=np):
-    """(n_elements, 3, 3) float64 J^-1 of every mesh element on module xp (numpy / cupy), cached on the dof map
-    (DofMap3D.element_geometry; host copy read-only)."""
-    key = ('inverse_jacobians', _module_name(xp))
+    """(n_elements, 3, 3) float64 J^-1 of every mesh element: the host array cached on the dof map
+    (DofMap3D.element_geometry, read-only); on another module (cupy: only self-tests evaluate points on the device,
+    the physics outputs stay on the host) an upload per call, never kept beside the dof map."""
+    key = ('inverse_jacobians', _module_name(np))
     found = dofs.element_geometry.get(key)
     if found is None:
-        if xp is np:
-            mesh = dofs.mesh
-            found = np.empty((mesh.n_elements, 3, 3))
-            for start in range(0, mesh.n_elements, POINT_CHUNK_ELEMENTS):
-                chunk = np.arange(start, min(start + POINT_CHUNK_ELEMENTS, mesh.n_elements))
-                found[chunk] = tetrahedron_geometry(mesh, chunk).inverse
-            found.flags.writeable = False
-        else:
-            found = xp.asarray(element_inverse_jacobians_3d(dofs))
+        mesh = dofs.mesh
+        found = np.empty((mesh.n_elements, 3, 3))
+        for start in range(0, mesh.n_elements, POINT_CHUNK_ELEMENTS):
+            chunk = np.arange(start, min(start + POINT_CHUNK_ELEMENTS, mesh.n_elements))
+            found[chunk] = tetrahedron_geometry(mesh, chunk).inverse
+        found.flags.writeable = False
         dofs.element_geometry[key] = found
-    return found
+    return found if xp is np else xp.asarray(found)
 
 
 def _element_dofs_on(dofs, xp):
-    """dofs.element_dofs on module xp (a device copy cached on the dof map)."""
-    if xp is np:
-        return dofs.element_dofs
-    key = ('element_dofs', _module_name(xp))
-    found = dofs.element_geometry.get(key)
-    if found is None:
-        found = dofs.element_geometry[key] = xp.asarray(dofs.element_dofs)
-    return found
+    """dofs.element_dofs on module xp (another module than numpy: an upload per call, element_inverse_jacobians_3d)."""
+    return dofs.element_dofs if xp is np else xp.asarray(dofs.element_dofs)
 
 
 def _point_derivative_chunks(dofs, field, reference_points, elements):
@@ -758,9 +750,9 @@ class TangentAssembler3D:
         self.chunk_elements = CHUNK_ELEMENTS   # host; device: from the pool budget (T3 a)
         if self.device:
             available = _available_pool_bytes()
-            if available is not None:   # less the kept J^-1 / |det J| and int32 scatter slots allocated below
+            if available is not None:   # less the kept J^-1 / |det J| and the device pattern's element maps below
                 available -= (8 * TANGENT_DEVICE_GEOMETRY_VALUES * len(elements)
-                              + 4 * len(elements) * (COMPONENTS * dofs.n_local) ** 2)
+                              + device_pattern_bytes(dofs.n_local, len(elements)))
             self.chunk_elements = device_tangent_chunk_elements(dofs.n_local, points, available, self.element_kernel)
         step = self.chunk_elements
         self.chunks = [elements[start:start + step] for start in range(0, len(elements), step)]
@@ -935,8 +927,8 @@ class TangentAssembler3D:
 
     def full_product(self, data, vector) -> np.ndarray:
         """Host (3 n,) full tangent of data times a host vector (device data: the product on the device)."""
-        if self._on_device(data):
-            return self.xp.asnumpy(self.full(data) @ self.xp.asarray(vector, dtype=np.float64))
+        if self._on_device(data):   # the row kernel on the device pattern (no index upload)
+            return self.xp.asnumpy(self.device_pattern.product(data, self.xp.asarray(vector, dtype=np.float64)))
         return self.full(data) @ vector
 
     def tangent(self, displacement, initial_stress=None):

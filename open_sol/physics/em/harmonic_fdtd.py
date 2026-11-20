@@ -104,15 +104,17 @@ class HarmonicAccumulator:
         materials = physics.domain.materials
         energy = None
         field_sets = (physics.fields,) if physics.fields.imag is None else (physics.fields, physics.fields.imag)
+        # parked material arrays (MaterialGrid.park): window copies uploaded per call
+        permittivity = [materials.device_array(name, window) for name in physics.permittivity_arrays]
+        mu_r = materials.device_array('mu_r', window)
         for fields in field_sets:
             if self.polarization == 'ez':
-                set_energy = axis_first_reduce(_FIELD_ENERGY_EZ, materials.eps_r[window], materials.mu_r[window],
+                set_energy = axis_first_reduce(_FIELD_ENERGY_EZ, *permittivity, mu_r,
                                                fields.ez[window], fields.hx[window], fields.hy[window],
                                                self._x_widths, self._y_widths)
             else:
-                set_energy = axis_first_reduce(_FIELD_ENERGY_HZ, materials.eps_xx[window], materials.eps_yy[window],
-                                               materials.mu_r[window], fields.hz[window], fields.ex[window],
-                                               fields.ey[window], self._x_widths, self._y_widths)
+                set_energy = axis_first_reduce(_FIELD_ENERGY_HZ, *permittivity, mu_r, fields.hz[window],
+                                               fields.ex[window], fields.ey[window], self._x_widths, self._y_widths)
             energy = set_energy if energy is None else energy + set_energy
         return energy
 

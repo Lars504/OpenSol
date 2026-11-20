@@ -1,9 +1,10 @@
 """EM MaterialGrid arrays per polarisation (register_em_arrays), the DrudePole / LorentzPole dispersion poles and the
 TFSF box outline warnings."""
 import math
+from collections.abc import Mapping
 
 import numpy as np
-from ...core.backend import array_module_of, host_copy, write_host_into
+from ...core.backend import host_copy, write_host_into
 
 from ...core.constants import DTYPE, EPS0
 
@@ -24,14 +25,47 @@ EM_MATERIAL_SCHEMAS = {
 }
 
 
+class LazyState(Mapping):
+    """A state() dict whose entries named in `readers` are made on access (`readers[name]()` per read: e.g. a device
+    copy of a parked MaterialGrid array), the others as stored; keys and order those of `state`."""
+
+    def __init__(self, state, readers):
+        self._state = state
+        self._readers = readers
+
+    def __getitem__(self, name):
+        value = self._state[name]   # KeyError for an unknown key
+        reader = self._readers.get(name)
+        return value if reader is None else reader()
+
+    def __contains__(self, name):
+        return name in self._state
+
+    def __iter__(self):
+        return iter(self._state)
+
+    def __len__(self):
+        return len(self._state)
+
+
+def material_state(state, materials) -> Mapping:
+    """`state` itself, or a LazyState reading its parked MaterialGrid entries (MaterialGrid.park) through
+    device_array (a full-grid device copy per read)."""
+    parked = [name for name in state if name in materials.parked]
+    if not parked:
+        return state
+    return LazyState(state, {name: (lambda name=name: materials.device_array(name)) for name in parked})
+
+
 def register_em_arrays(materials, polarization):
     """Register EM_MATERIAL_SCHEMAS[polarization] on a MaterialGrid (existing arrays kept); new hz / modes eps_xx /
     eps_yy start from eps_r when an E_z physics or script registered it."""
     registered = materials.property_names()
     if polarization in ('hz', 'modes') and 'eps_r' in registered:
         for name in ('eps_xx', 'eps_yy'):
-            if name not in registered:
-                array_module_of(materials.eps_r).copyto(materials.add_property(name, 1.0), materials.eps_r)
+            if name not in registered:   # assign: eps_r may be parked on the host (MaterialGrid.park)
+                materials.add_property(name, 1.0)
+                materials.assign(name, None, materials.eps_r)
     materials.add_properties(EM_MATERIAL_SCHEMAS[polarization])
 
 
@@ -84,7 +118,7 @@ def tfsf_outline_warnings(physics, boxes, uniform=False):
         reference = (0, y0 - row_start)   # outline cell (x0 - 1, y0) in the region
         outline = xp.zeros((x1 - x0 + 2, region[1].stop - row_start), dtype=xp.bool_)
         for name, vacuum_value in EM_MATERIAL_SCHEMAS[physics.polarization].items():
-            values = getattr(materials, name)[region]
+            values = materials.device_array(name, region)   # a parked (host) array: the region moves
             if uniform:
                 target = values[reference]
                 tolerance = DTYPE(1e-6) * xp.abs(target) + DTYPE(1e-12)

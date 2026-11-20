@@ -9,8 +9,8 @@ from ...core import time_estimate as te
 from ...core.constants import C0, EPS0, FACE_LABELS, FACES, MU0
 from ...core.sources import GaussianPulse, RickerWavelet
 from ...core.wavelengths import resolved_wavelengths, wavelength_range
-from ...model.definition_helpers import (dynamic_material_values, eigen_factorization, evaluates_to, study_duration,
-                                         validate_points_inside)
+from ...model.definition_helpers import (dynamic_material_values, eigen_factorization, evaluates_to,
+                                         parkable_material_arrays, study_duration, validate_points_inside)
 from ...model.expressions import (FIELD_COORDINATE_NAMES, ExpressionError, evaluate_scalar,
                                   referenced_names)
 from ...model.geometry import line_orientation, preview_pixel_centers
@@ -24,11 +24,12 @@ from ...model.schema import (EIGENFREQUENCY_STUDY, FREQUENCY_DOMAIN_STUDY, GYRAT
                              OPTOMECHANICS_STUDY, PERMITTIVITY_PROPERTY_NAMES, DomainRequirements, Issue, Param,
                              array_owner, coupling_reads_absorbed_power, coupling_writes, feature_path, known_physics,
                              output_field_names, permittivity_arrays, resolve_values, state_field_names)
-from . import EMPhysics
+from . import PARKABLE_ARRAYS, EMPhysics
 from .boundaries import BoundaryConfig
 from .eigenfrequency import ResonanceTable, resonance_filter_time_item
 from .material_fit import MAX_LORENTZ_POLES, NK_FIT_DEFAULTS, NK_FIT_MODEL
 from .materials import DrudePole, LorentzPole
+from .placement import PERMITTIVITY_ARRAYS
 from .results import (dft_result, far_field_result, flux_result, mode_monitor_result, mode_source_result,
                       probe_result)
 
@@ -924,12 +925,58 @@ def fem_resonance_time_estimate(settings_values, mesh, context, label, bytes_per
         **eigen_work, **eigen_backend_kwargs(context))))
 
 
+# features whose media read the permittivity / sigma_e arrays as device arrays (C5 media, phase-change writes)
+_DEVICE_PERMITTIVITY_FEATURES = frozenset({'nonlinear_medium', 'gain_medium', 'phase_change_medium'})
+
+
+def fdtd_parked_material_arrays(polarization, spec, registry, physics_spec, parameters) -> tuple:
+    """PhysicsType.parked_material_arrays of em_fdtd_<polarization>: the EMPhysics PARKABLE_ARRAYS under the shared
+    rule (definition_helpers.parkable_material_arrays over the type's material properties), moved to the host at
+    create, before the engine allocates (physics/em sub file "Parked material arrays"); the permittivity arrays and
+    sigma_e stay on the device with a nonlinear / gain / phase-change medium, hz sigma_e also while it accumulates
+    absorption (q_accum_hz reads it every step); so does an array whose state field a material expression reads (a
+    dynamic update would upload it per step) or a field_transfer takes."""
+    try:
+        physics_type = registry.physics_type(physics_spec.type)
+        own_properties = {param.name for param in physics_type.material_properties}
+        arrays = set(PARKABLE_ARRAYS[polarization])
+        if any(feature.enabled and feature.type in _DEVICE_PERMITTIVITY_FEATURES for feature in physics_spec.features):
+            arrays -= {*PERMITTIVITY_ARRAYS[polarization], 'sigma_e'}
+        if polarization == 'hz' and 'sigma_e' in arrays:
+            settings = physics_spec.settings if isinstance(physics_spec.settings, dict) else {}
+            values = resolve_values(physics_type.settings, settings, parameters)
+            if values.get('track_absorption') or _q_accum_referenced(spec, physics_spec.name, registry):
+                arrays.discard('sigma_e')
+        arrays -= state_arrays_read(spec, registry, physics_spec.name, arrays)
+    except (KeyError, ValueError, TypeError, ExpressionError):   # reported by validate
+        return ()
+    return parkable_material_arrays(spec, registry, physics_spec, parameters, own_properties, tuple(sorted(arrays)))
+
+
+def state_arrays_read(spec, registry, physics_name, arrays) -> set:
+    """The names of `arrays` whose state field of physics_name a material expression references or an enabled
+    field_transfer out of it takes."""
+    names = {name: field for name, (physics, field) in state_field_names(spec, registry).items()
+             if physics == physics_name and field in arrays}
+    read = {field for name, field in names.items()
+            if any(_references_any(value, {name}) for material in spec.materials
+                   if isinstance(material.properties, dict) for value in material.properties.values())}
+    for coupling in spec.couplings:
+        if (coupling.enabled and coupling.source == physics_name and coupling.type == 'field_transfer'
+                and isinstance(coupling.params, dict) and coupling.params.get('source_field') in arrays):
+            read.add(coupling.params['source_field'])
+    return read
+
+
 def create_em_physics(ctx, physics_spec, settings_values, polarization, background_targets):
     """EMPhysics of `polarization` at the 'stepper' solver's precision (single / double) with dispersive poles, the
     dispersive background written into the MaterialGrid arrays background_targets (e.g. ('eps_r',) or ('eps_xx',
-    'eps_yy')) and absorption tracking; never finalizes."""
+    'eps_yy')), absorption tracking and the material arrays it parks on the host (fdtd_parked_material_arrays);
+    never finalizes."""
     em = EMPhysics(ctx.domain, polarization, boundary_config=ctx.domain.boundary_config,
-                   precision=stepper_precision(ctx.solvers(physics_spec.name)))
+                   precision=stepper_precision(ctx.solvers(physics_spec.name)),
+                   park_arrays=fdtd_parked_material_arrays(polarization, ctx.spec, ctx.registry, physics_spec,
+                                                           ctx.parameters))
     write_dispersive_materials(ctx, physics_spec, em, background_targets)
     if settings_values['track_absorption'] or _q_accum_referenced(ctx.spec, physics_spec.name, ctx.registry):
         em.engine.enable_q_accum = True

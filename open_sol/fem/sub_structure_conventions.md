@@ -82,6 +82,11 @@ file ("Triangle meshes"). Error indicators: section "Error indicators" (users: g
   no device twin. The device assembler keeps only float64 J^-1 / |det J| and S0 element rows per element and expands
   gradients, weights and per-point S0 per chunk (`_device_geometry`): a new per-point input is expanded there and
   counted in `tangent_chunk_element_bytes`, never kept per rule point.
+- DevicePatternCsr keeps no block-pattern indices or slots on the device: per group the scalar element dofs and uint16
+  column ranks (the scatter kernel recomputes each slot by the `_block_slots` rule: a slot-rule change edits both),
+  the scalar pattern and the free take; the Newton loop reads `product` / `reduced_values` only. `full()` /
+  `reduced()` upload the host indices per call (checks, pencils): never per Newton iteration. Estimates:
+  `device_pattern_bytes` (mechanics `_device_tangent_items`, the chunk sizing).
 - Element kernels (`tangent_kernel3d`: CUDA / numba / batched numpy-cupy; `tangent_kernel2d`: numba / numpy, planar
   groups only; module headers): a formula change edits the CUDA source, the numba twin and the batched elasticity
   helpers together (fem3d_tangent_assembler[_gpu], fem3d_tangent_kernel_numba, solid_fem_tangent_kernel_numba compare
@@ -120,7 +125,10 @@ file ("Triangle meshes"). Error indicators: section "Error indicators" (users: g
   docstrings; all uncalibrated): entries per row only from `lagrange_entries_per_dof` (mesh-estimate counts; P2
   triangles ~11.5, measured 11.2 on heat_fem_cpu_gpu), never a constant; time estimates take `fem_time_system` (real
   unknowns x entries per row), never inflated "equivalent cells" (LU costs grow ~n^1.5 / ~n^2). The cuDSS first plan
-  peak was measured at ~39 B per entry (heat_fem_cpu_gpu).
+  peak was measured at ~39 B per entry (heat_fem_cpu_gpu, before the symmetry vouching: re-measure).
+- `cudss_diffusion_estimate(symmetric_known=)` follows `DiffusionDirectSolver.symmetric_known` of the system it books
+  (True: DiffusionSystem, FEMDiffusionSystemCommon; False, the default: the 2D ElasticSystem, MagneticFEMSystem, so
+  `fem_diffusion_estimate(symmetric_known=False)` there): a new owner that vouches sets both in the same edit.
 - `_factorize` unbinds a pcg (`release_operator`) before the new run-backend copy, so a re-assembly never holds two
   device operators: the refactorisation transient books no second CSR (multigrid: the setup transients only).
 
@@ -185,8 +193,8 @@ file ("Triangle meshes"). Error indicators: section "Error indicators" (users: g
 
 ## Vector elasticity on tetrahedra (`elasticity3d.py`)
 - Numbering, Voigt rows, patterns, PML stretch: module header. Point evaluations (`element_strains_3d`,
-  `element_gradients_3d`) run on the displacement's module (cupy: J^-1 and element dofs uploaded once per map); physics
-  outputs stay on the host.
+  `element_gradients_3d`) run on the displacement's module (cupy, self-tests only: J^-1 and element dofs uploaded per
+  call, never kept on the dof map); physics outputs stay on the host, so a new device caller pays the uploads per call.
 - `elements3d.lagrange_basis_3d` returns memoised READ-ONLY arrays: never write into a basis / gradient table; the
   memo lookup stays inside the function (root "Selftest reuse"). Callers that need no gradients pass
   `gradients=False` (the P2 (p, 10, 3) table cost most of a located-sample evaluation).
