@@ -193,8 +193,8 @@ file ("Triangle meshes"). Error indicators: section "Error indicators" (users: g
 
 ## Vector elasticity on tetrahedra (`elasticity3d.py`)
 - Numbering, Voigt rows, patterns, PML stretch: module header. Point evaluations (`element_strains_3d`,
-  `element_gradients_3d`) run on the displacement's module (cupy: J^-1 and element dofs uploaded once per map); physics
-  outputs stay on the host.
+  `element_gradients_3d`) run on the displacement's module (cupy, self-tests only: J^-1 and element dofs uploaded per
+  call, never kept on the dof map); physics outputs stay on the host, so a new device caller pays the uploads per call.
 - `elements3d.lagrange_basis_3d` returns memoised READ-ONLY arrays: never write into a basis / gradient table; the
   memo lookup stays inside the function (root "Selftest reuse"). Callers that need no gradients pass
   `gradients=False` (the P2 (p, 10, 3) table cost most of a located-sample evaluation).

@@ -356,33 +356,25 @@ def _module_name(xp) -> str:
 
 
 def element_inverse_jacobians_3d(dofs, xp=np):
-    """(n_elements, 3, 3) float64 J^-1 of every mesh element on module xp (numpy / cupy), cached on the dof map
-    (DofMap3D.element_geometry; host copy read-only)."""
-    key = ('inverse_jacobians', _module_name(xp))
+    """(n_elements, 3, 3) float64 J^-1 of every mesh element: the host array cached on the dof map
+    (DofMap3D.element_geometry, read-only); on another module (cupy: only self-tests evaluate points on the device,
+    the physics outputs stay on the host) an upload per call, never kept beside the dof map."""
+    key = ('inverse_jacobians', _module_name(np))
     found = dofs.element_geometry.get(key)
     if found is None:
-        if xp is np:
-            mesh = dofs.mesh
-            found = np.empty((mesh.n_elements, 3, 3))
-            for start in range(0, mesh.n_elements, POINT_CHUNK_ELEMENTS):
-                chunk = np.arange(start, min(start + POINT_CHUNK_ELEMENTS, mesh.n_elements))
-                found[chunk] = tetrahedron_geometry(mesh, chunk).inverse
-            found.flags.writeable = False
-        else:
-            found = xp.asarray(element_inverse_jacobians_3d(dofs))
+        mesh = dofs.mesh
+        found = np.empty((mesh.n_elements, 3, 3))
+        for start in range(0, mesh.n_elements, POINT_CHUNK_ELEMENTS):
+            chunk = np.arange(start, min(start + POINT_CHUNK_ELEMENTS, mesh.n_elements))
+            found[chunk] = tetrahedron_geometry(mesh, chunk).inverse
+        found.flags.writeable = False
         dofs.element_geometry[key] = found
-    return found
+    return found if xp is np else xp.asarray(found)
 
 
 def _element_dofs_on(dofs, xp):
-    """dofs.element_dofs on module xp (a device copy cached on the dof map)."""
-    if xp is np:
-        return dofs.element_dofs
-    key = ('element_dofs', _module_name(xp))
-    found = dofs.element_geometry.get(key)
-    if found is None:
-        found = dofs.element_geometry[key] = xp.asarray(dofs.element_dofs)
-    return found
+    """dofs.element_dofs on module xp (another module than numpy: an upload per call, element_inverse_jacobians_3d)."""
+    return dofs.element_dofs if xp is np else xp.asarray(dofs.element_dofs)
 
 
 def _point_derivative_chunks(dofs, field, reference_points, elements):

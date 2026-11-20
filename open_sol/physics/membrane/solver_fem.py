@@ -447,8 +447,15 @@ class MembraneFEMPhysics(MembraneBase):
         maps = self._phasor_maps
         if maps is None or maps[0] is not coefficients or maps[1] is not self.full_dofs:
             solved = self._default_elements() & ~coefficients.hole
-            maps = self._phasor_maps = (coefficients, self.full_dofs, xp.asarray(self.full_dofs.element_dofs),
-                                               xp.asarray(self._centroid_basis, dtype=np.float64), xp.asarray(solved))
+            self._phasor_maps = None   # the previous maps go first
+            element_dofs = self.full_dofs.element_dofs
+            if xp is not np:   # int32 device element dofs (the host keeps its int64 map)
+                if self.full_dofs.n_dofs >= 2 ** 31:
+                    raise ValueError(f'membrane: {self.full_dofs.n_dofs} dofs exceed the int32 device element dofs '
+                                     '(< 2^31)')
+                element_dofs = element_dofs.astype(np.int32)
+            maps = self._phasor_maps = (coefficients, self.full_dofs, xp.asarray(element_dofs),
+                                        xp.asarray(self._centroid_basis, dtype=np.float64), xp.asarray(solved))
         _, _, element_dofs, basis, solved = maps
         values = self._device_values if self._device_values is not None else xp.asarray(self.values)
         phasors = xp.where(solved, values[element_dofs] @ basis, 0.0)

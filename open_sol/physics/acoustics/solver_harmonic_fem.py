@@ -860,8 +860,12 @@ class AcousticHarmonicBase(PhysicsSolver):
         xp = self.xp
         maps = self._device_centroid_maps
         if maps is None or maps[0] is not self.system:
+            self._device_centroid_maps = None   # the previous system's maps go first
+            if self.full.n_dofs >= 2 ** 31:
+                raise ValueError(f'pressure acoustics: {self.full.n_dofs} dofs exceed the int32 device element dofs '
+                                 '(< 2^31)')
             maps = self._device_centroid_maps = (self.system, xp.asarray(self._active_dofs),
-                                                 xp.asarray(self.full.element_dofs),
+                                                 xp.asarray(self.full.element_dofs.astype(np.int32)),
                                                  xp.asarray(self._centroid_basis(), dtype=np.float64),
                                                  xp.asarray(self._active))
         _, active_dofs, element_dofs, basis, active = maps
