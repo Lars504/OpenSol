@@ -2240,15 +2240,16 @@ class MemoryContext:
     solvers: dict = field(default_factory=dict)   # schema.resolved_solvers of the physics: {role: ResolvedSolver}
     mesh: object = None         # the estimate of the physics' own mesh (S7.2; the estimator's mesh argument)
 
-    def material_sets(self, property_name) -> bool:
-        """True when a material (library data merged) sets property_name to anything but None or a literal 0."""
+    def material_sets(self, property_name, default=0) -> bool:
+        """True when a material (library data merged) sets property_name to anything but None or a literal `default`
+        (an expression counts)."""
         for material in self.spec.materials:
             try:
                 properties, _ = effective_material_data(material.library, material.properties, material.dispersion)
             except (ValueError, TypeError):   # reported by validate
                 continue
             value = properties.get(property_name)
-            if value is not None and not (isinstance(value, (int, float)) and value == 0):
+            if value is not None and not (isinstance(value, (int, float)) and value == default):
                 return True
         return False
 
