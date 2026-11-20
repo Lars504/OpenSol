@@ -1731,8 +1731,9 @@ class Results:
         animated over one period, Re / Im[A exp(j wt)]), else the current (live) or saved state; a 2D Cartesian page
         of a steady-flow physics (_FLOW_TYPES) carries the in-plane vector of its field (_viewer_flow, from the same
         snapshot / state) for flow arrows (the default) or moving particles; a 2D map of an axisymmetric (r, z)
-        physics or a spherical (r, theta) domain can be turned about its rotation axis into a 3D view inside
-        see-through surfaces of revolution of the domain and the objects (_viewer_revolution; Revolve); a field of a
+        physics or a spherical (r, theta) domain opens on the drawn half, then mirrors and turns about its rotation
+        axis into a 3D view inside see-through surfaces of revolution of the domain and the objects
+        (_viewer_revolution; Revolve, remembered by the browser); a field of a
         2D solid_mechanics / membrane physics is drawn on
         the deformed body (its displacement u_x / u_y or w_re, plus the imaginary parts when held, per frame; a Deform
         magnification; the solid's void cells, youngs_modulus <= 0, hidden and cropped away; modes and frequency

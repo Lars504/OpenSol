@@ -499,6 +499,10 @@ const CAN_MIRROR = MIRROR_IMAGES.length > 1;
 const REVOLUTION = DATA.revolution && PLANAR && is2d ? DATA.revolution : null;
 let revolveFade = 0;                          // 0 .. 1: the surfaces of revolution fade in / out as the view turns
 const REV_PROFILES = REVOLUTION ? REVOLUTION.profiles.map(f32) : [];   // per profile (u, v) pairs, length units
+// a revolution page opens flat on the drawn half (Mirror off), then shows its mirror images and turns into the
+// revolved view (the intro at the end of the page), unless this browser turned Revolve off or the page has a view
+const REVOLVE_AT_OPEN = !!REVOLUTION && !DATA.view && store('revolve') !== 'off';
+const MIRROR_AT_OPEN = CAN_MIRROR && !REVOLVE_AT_OPEN;
 let revGlass = (() => { const v = Number(store('glass')); return store('glass') !== null && v >= 0 && v <= 1 ? v : 0.5; })();
 
 // bounds of the simulated part (hmin, hmax), and of what is shown with or without its images (setBounds)
@@ -583,13 +587,13 @@ function setBounds(mirrored) {
       for (const k of keys) if (rememberedLimits.has(k)) fig[k] = null;
   }
 }
-setBounds(CAN_MIRROR);
+setBounds(MIRROR_AT_OPEN);
 
 // ---------- state ----------
 const state = {
   // colour limits: shared over time frames; per frame for labelled ones (modes, wavelengths: independent states)
   frame: 0, playing: false, fps: 8, scale: KIND === 'time' ? 'all' : 'frame', log: false, decades: 3, range: 1, relief: 0,
-  lines: false, box: !PLANAR, spin: false, axes: !scaleBarOffered(), stretch: true, mirror: CAN_MIRROR,   // a scale bar stands in for the axes
+  lines: false, box: !PLANAR, spin: false, axes: !scaleBarOffered(), stretch: true, mirror: MIRROR_AT_OPEN,   // a scale bar stands in for the axes
   revolve: false,                              // the revolution block's 3D view (never at open)
   cmap: store(cmapStoreKey()) || (DIVERGING ? 'coolwarm' : KIND_CMAP[SCALAR_KIND]),
 };
@@ -1566,7 +1570,8 @@ syncGeometry();
 // the axis: core.mirror.unfold_faces), shown by Mirror like every image; the bodies are whole revolutions, so they
 // take only the other images (a y symmetry plane reflects them). While revolved the camera orbits about the rotation
 // axis (setOrbitFrame: UP = the map's v, azimuth 0 = face-on), the normal axis takes the u stretch (stretch()) and
-// the fit covers the whole body (fitDistance); the relief and the revolution exclude each other.
+// the fit covers the whole body (fitDistance); the relief and the revolution exclude each other. Pages open flat on
+// the drawn half, then mirror and revolve (REVOLVE_AT_OPEN, runRevolveIntro; the user's last Revolve is remembered).
 const REV_STEPS = 96, REV_MIN_STEPS = 24, REV_MAX_TRIANGLES = 1500000, REV_CORNER = 0.42;   // ring lines past 24 deg turns
 const MAP_FRAME = { up: UP, e1: E1, e2: E2 };
 const REV_FRAME = (() => { const unit = (c) => { const e = [0, 0, 0]; e[c] = 1; return e; };
@@ -1706,6 +1711,7 @@ void main() {
   outColor = vec4(col, clamp(alpha, 0.0, 0.9));
 }`;
 let revGL = null;                             // null: not set up yet, false: failed; else programs and bodies
+let revolveIntro = REVOLVE_AT_OPEN;           // the opening sequence is still due (runRevolveIntro)
 function setupRevolution() {
   const tolerance = 1e-6 * LARGEST, domain = [], objects = new Map(), [iu, iv] = PLANE_AXES;
   for (const P of REV_PROFILES) domain.push(...revolveSegments(P, tolerance * 10));
@@ -1823,13 +1829,30 @@ if (REVOLUTION) {
   $('revolve').title = 'Turn the map about its rotation axis (' + REVOLUTION.label + ') into a 3D view inside see-through '
     + 'surfaces of revolution of the domain and the objects; drag turns the body about its axis; again: back to the flat '
     + 'map (O)';
-  $('revolve').onclick = () => setRevolve(!revolveOn());
+  $('revolve').onclick = userRevolve;
   $('glass').oninput = (e) => { revGlass = +e.target.value; store('glass', String(revGlass)); };
   window.addEventListener('keydown', (e) => {
     if (e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT' && e.target.type !== 'range') return;
     if (e.ctrlKey || e.metaKey || e.altKey) return;
-    if (e.key === 'o' || e.key === 'O') $('revolve').click();
+    if (e.key === 'o' || e.key === 'O') userRevolve();
   });
+  // anything the user does before the intro runs keeps the page as it is
+  for (const [el, type] of [[canvas, 'pointerdown'], [canvas, 'wheel'], [document.querySelector('.controls'), 'pointerdown'],
+                            [window, 'keydown']]) el.addEventListener(type, () => { revolveIntro = false; });
+}
+function userRevolve() {
+  // the Revolve button / O: remembered, so a page opens revolved (or stays flat) as this browser left the last one
+  revolveIntro = false;
+  const on = !revolveOn(); store('revolve', on ? 'on' : 'off'); setRevolve(on);
+}
+function runRevolveIntro() {
+  // REVOLVE_AT_OPEN: the drawn half, then its mirror images, then the turn into the revolved view
+  if (!revolveIntro) return;
+  setTimeout(() => {
+    if (!revolveIntro) return;
+    if (CAN_MIRROR && !state.mirror) $('mirror').click();
+    setTimeout(() => { if (revolveIntro && !state.revolve && !tween && state.relief === 0) setRevolve(true); revolveIntro = false; }, 650);
+  }, 700);
 }
 // ---- end revolution ----
 
@@ -3900,6 +3923,7 @@ if (mq.addEventListener) mq.addEventListener('change', () => readTheme());
 window.addEventListener('resize', () => { resize(); });
 if (gl) { try { setupGL(); } catch (err) { $('empty').hidden = false; $('empty').textContent = 'WebGL error: ' + err.message; } }
 resize(); resetCamera(); syncControls(); syncSettings(); select(0);
+runRevolveIntro();
 window.fieldViewer = { state, select, draw, cam, limits, figure: fig, wave, motion };
 requestAnimationFrame(tick);
 })();

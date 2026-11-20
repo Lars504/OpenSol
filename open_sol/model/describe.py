@@ -1305,7 +1305,7 @@ _RESULTS_NOTES = (
         'over one period, Re / Im[A exp(j wt)]), else the current / saved state. 2D: a map (2D Cartesian flow / '
         'current / potential / magnetostatic / heat pages can add arrows (the default) or moving particles of the '
         'in-plane vector; 2D solid_mechanics / membrane fields drawn on the deformed body; a map of an axisymmetric '
-        '(r, z) physics or a spherical (r, theta) domain can be turned about its rotation axis into a 3D view inside '
+        '(r, z) physics or a spherical (r, theta) domain opens revolved about its rotation axis: a 3D view inside '
         'see-through surfaces of revolution of the domain and the objects, the far half its mirror image across the '
         'axis where core.mirror.unfold_faces gives one). 3D: cut planes (live: an x, y and z cut at '
         'a mirror plane of its physics, else through the objects that do not span the window, else the window '

@@ -53,7 +53,9 @@ plot, imports of `viz.common` / `DARK_CMAPS`, canvas cell edges) live in the gui
 - Key bindings live in each block's own keydown listener; taken: V flow, Shift+V arrows / particles (2D flow pages)
   and view cycling (3D volume pages; never on the same page), C contours, R terrain, D deform animation, G objects,
   M mirror, O revolve.
-- Pages open flat (no automatic terrain). Flow opens as arrows; its browser memory is `FLOW_STORE` (renamed when the
+- Pages open flat (no automatic terrain). A revolution page opens on the drawn half (Mirror off), then mirrors and
+  revolves (`REVOLVE_AT_OPEN`, `runRevolveIntro`; skipped with a page view, after any user input, or when this browser
+  last turned Revolve off: store key 'revolve'). Flow opens as arrows; its browser memory is `FLOW_STORE` (renamed when the
   defaults change, so stored untouched defaults do not pin the old ones).
 - Revolution (field_viewer `// ---- revolution ----`, api `_viewer_revolution`): the page's mirror faces are
   `unfold_faces` (api `_page_mirror_faces`, also the `_hide_void` crop), so an axisymmetric map's far half is the x_lo
