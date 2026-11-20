@@ -21,9 +21,17 @@ from ...core.backend import array_module_of, to_host
 
 _LSTSQ_RCOND = 1e-12   # Anderson least squares: singular values below this x the largest are dropped
 ITERATION_METHODS = ('picard', 'newton')
-GMRES_RESTART = 20           # Krylov vectors per GMRES cycle (each a store-sized complex128 device vector)
+GMRES_RESTART = 20           # Krylov vectors per GMRES cycle (each a store-sized device vector)
 GMRES_MAX_ITERATIONS = 60    # Jacobian products per Newton step at most (each one solve per nonlinear channel)
 NEWTON_BUFFERS = 12          # store-sized vectors of the Newton loop besides the Krylov basis (memory estimate)
+# real_gmres(single_basis=True), the Newton steps: complex64 basis rows (half the GMRES_RESTART + 1 store vectors of
+# the largest Newton buffer), projections by float32 GEMVs on a complex64 copy of the float64 work vector, which keeps
+# its float64 subtraction and norm; apply gets complex128 rows. The Arnoldi relation then holds to ~1e-7 of |H| (fp32
+# rows and coefficients), so the computed residual is trusted only above this tolerance (ValueError below): the
+# Newton forcing term is raised to it. An inexact Newton step needs eta < 1 only and the float64 F decides
+# convergence (||F|| still drops >= 1e6-fold per step near the root). The adjoint GMRES (tolerance = the iteration
+# tolerance, 1e-8) keeps complex128.
+GMRES_SINGLE_MIN_TOLERANCE = 1e-6
 _FORCING_INITIAL, _FORCING_MAX, _FORCING_GAMMA = 0.1, 0.5, 0.9   # Eisenstat-Walker choice 2 (eta_0, eta_max, gamma)
 _ARMIJO = 1e-4               # sufficient decrease of the scaled ||F|| per unit step length
 _MAX_BACKTRACKS = 8          # step halvings before a step is taken anyway
@@ -107,13 +115,14 @@ class ScaledSource:
                      for faces in self._source.face_currents(physics, system))
 
 
-def _real_view(vector):
-    """float64 view (real, imaginary parts interleaved) of a contiguous complex128 vector: Re <u, v> = view dot;
-    TypeError for any other dtype (a complex64 view would silently pair the wrong numbers)."""
+def _real_view(vector, dtype=np.complex128):
+    """Real view (real, imaginary parts interleaved) of a contiguous complex128 vector (float64; dtype complex64: of a
+    complex64 one, float32, the single GMRES basis): Re <u, v> = view dot; TypeError for any other dtype (a view of the
+    wrong width would silently pair the wrong numbers)."""
     xp = array_module_of(vector)
-    if vector.dtype != xp.complex128:
-        raise TypeError(f'store-vector algebra needs complex128 vectors, got {vector.dtype}')
-    return vector.view(xp.float64)
+    if vector.dtype != np.dtype(dtype):
+        raise TypeError(f'store-vector algebra needs {np.dtype(dtype)} vectors, got {vector.dtype}')
+    return vector.view(xp.float32 if np.dtype(dtype) == np.complex64 else xp.float64)
 
 
 def block_norms(vectors, blocks):
@@ -304,35 +313,50 @@ def _real_dot(first, second):
 
 
 def real_gmres(apply, rhs, relative_tolerance, restart=GMRES_RESTART, max_iterations=GMRES_MAX_ITERATIONS,
-               rhs_norm=None):
+               rhs_norm=None, single_basis=False):
     """Restarted GMRES from 0 for a real-linear `apply` (complex128 vectors of the rhs' module, real inner product Re
-    <u, v> = dots of the float64 views, real Hessenberg; classical Gram-Schmidt twice, one host transfer per column;
-    rhs_norm = sqrt Re <rhs, rhs> when the caller has it, else one sync) -> (solution, products, relative residual)."""
+    <u, v> = dots of the real views, real Hessenberg; classical Gram-Schmidt twice, one host transfer per column;
+    rhs_norm = sqrt Re <rhs, rhs> when the caller has it, else one sync; single_basis: complex64 basis rows,
+    relative_tolerance >= GMRES_SINGLE_MIN_TOLERANCE, else ValueError) -> (solution, products, relative residual)."""
     xp = array_module_of(rhs)
+    if single_basis and not relative_tolerance >= GMRES_SINGLE_MIN_TOLERANCE:
+        raise ValueError(f'real_gmres: a complex64 basis needs a relative tolerance >= {GMRES_SINGLE_MIN_TOLERANCE:g}, '
+                         f'got {relative_tolerance!r}')
     if rhs_norm is None:
         rhs_norm = math.sqrt(max(_real_dot(rhs, rhs), 0.0))
     rhs_norm = float(rhs_norm)
     solution = xp.zeros_like(rhs)
     if rhs_norm == 0.0:
         return solution, 0, 0.0
-    basis = xp.empty((restart + 1, rhs.size), dtype=xp.complex128)
-    basis_real = _real_view(basis)   # (restart + 1, 2 N): Re <v_i, w> = basis_real[i] . w_real
+    basis_dtype = np.dtype(np.complex64 if single_basis else np.complex128)
+    basis = xp.empty((restart + 1, rhs.size), dtype=basis_dtype)
+    # (restart + 1, 2 N): Re <v_i, w> = basis_real[i] . w_real; float32 rows meet only float32 operands (a float64
+    # operand would make matmul copy the rows to float64)
+    basis_real = _real_view(basis, basis_dtype)
+    coefficient_dtype = basis_real.dtype
     residual_vector, products, relative = rhs, 0, 1.0
     while products < max_iterations:
         # the first cycle starts from the rhs (its norm known); a restart measures its Arnoldi residual vector
         beta = rhs_norm if residual_vector is rhs else math.sqrt(max(_real_dot(residual_vector, residual_vector), 0.0))
-        xp.multiply(residual_vector, 1.0 / beta, out=basis[0])
+        xp.multiply(residual_vector, 1.0 / beta, out=basis[0])   # complex64 rows: cast on write (same_kind)
         hessenberg = np.zeros((restart + 1, restart))
         columns, finished, least_squares = 0, False, np.zeros(0)
         for column in range(restart):
-            work = xp.ascontiguousarray(apply(basis[column]), dtype=xp.complex128)
+            row = basis[column] if not single_basis else basis[column].astype(np.complex128)
+            work = xp.ascontiguousarray(apply(row), dtype=xp.complex128)
+            del row
             products += 1
             work_real = _real_view(work)
             projections = None
             for _ in range(2):   # CGS2: re-orthogonalise once (row-major basis: GEMVs without transpose copies)
-                projection = basis_real[:column + 1] @ work_real   # Re <v_i, w>
+                # single: the projection reads a complex64 copy of w, the subtraction stays float64 (mixed elementwise)
+                operand = work_real if not single_basis else work.astype(np.complex64).view(coefficient_dtype)
+                projection = basis_real[:column + 1] @ operand   # Re <v_i, w>
+                del operand
                 work_real -= projection @ basis_real[:column + 1]
                 projections = projection if projections is None else projections + projection
+            if single_basis:
+                projections = projections.astype(np.float64)
             coefficients = to_host(xp.concatenate((projections, xp.reshape(work_real @ work_real, (1,)))))
             hessenberg[:column + 1, column] = coefficients[:-1]
             norm = math.sqrt(max(float(coefficients[-1]), 0.0))
@@ -348,14 +372,17 @@ def real_gmres(apply, rhs, relative_tolerance, restart=GMRES_RESTART, max_iterat
                 break
             xp.multiply(work, 1.0 / norm, out=basis[column + 1])
             del work, work_real
-        # real coefficients: real GEMVs on the float64 views (no complex cast of y)
+        # real coefficients: real GEMVs on the real views (no complex cast of y; single: float32 y, the float32 step
+        # added into the float64 solution elementwise)
         solution_real = _real_view(solution)
-        solution_real += xp.asarray(least_squares) @ basis_real[:columns]
+        solution_real += xp.asarray(least_squares, dtype=coefficient_dtype) @ basis_real[:columns]
         del solution_real
         if finished:
             break
         # restart: r = V_{m+1} (beta e1 - H y) (Arnoldi relation, no extra product)
-        residual_vector = (xp.asarray(remainder) @ basis_real[:columns + 1]).view(xp.complex128)
+        residual_real = xp.asarray(remainder, dtype=coefficient_dtype) @ basis_real[:columns + 1]
+        residual_vector = residual_real.astype(np.float64, copy=False).view(xp.complex128)
+        del residual_real
     return solution, products, relative
 
 
@@ -471,9 +498,11 @@ def solve_newton_krylov(channel_physics, channels, order, store, linearization, 
                     return _scale_blocks(jacobian_product(_scale_blocks(scaled.copy(), blocks, inverse)), blocks,
                                          weights)
 
+                # complex64 Krylov basis (GMRES_SINGLE_MIN_TOLERANCE): the forcing term raised to its floor
                 scaled_step, step_products, _ = real_gmres(scaled_product,
-                                                           _scale_blocks(update.copy(), blocks, weights), eta,
-                                                           rhs_norm=norm)   # ||W update|| = the scaled ||F||
+                                                           _scale_blocks(update.copy(), blocks, weights),
+                                                           max(eta, GMRES_SINGLE_MIN_TOLERANCE), rhs_norm=norm,
+                                                           single_basis=True)   # ||W update|| = the scaled ||F||
                 products += step_products
                 direction = _scale_blocks(scaled_step, blocks, inverse)
                 del scaled_step
