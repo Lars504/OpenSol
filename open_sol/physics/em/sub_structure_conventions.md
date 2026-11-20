@@ -359,8 +359,12 @@ type's vocabulary and refusals are in its help texts and validation.
   `ldlt` / `polished_double` (complex64 basis rows), `real_values` (materials test), sized by `device_matrix_bytes`.
   Every polished search (mixed, a floored complex A on a double LDL^T, E2) runs a complex64 Krylov basis
   (`eigs_device(single_basis=polish)`; argument at MIXED_ARPACK_TOLERANCE): a new polish path or a tolerance below
-  SINGLE_BASIS_MIN_TOLERANCE changes `_resonance_search`'s single-basis rule too. An eigen solve releases the
-  physics' driven cuDSS factors first (`_release_device_factors`): two factors never share the device. Fields are 1
+  SINGLE_BASIS_MIN_TOLERANCE changes `memory_estimates.search_single_basis` too (memory items and the eigen time
+  recipe's `SolverWork.single_basis`). An eigen solve releases the physics' driven cuDSS factors first
+  (`_release_device_factors`): two factors never share the device. 2D tensor FDFD on the gpu (no line_block) parks
+  its device system during the search (`_park_device_system`: freed, reassembled after it, estimated as
+  ASSEMBLY_PHASE items): a new consumer of `self.system` inside solve_eigenfrequencies reads it before the park, a new
+  device array kept on the system or the kept Yee operators is freed with them. Fields are 1
   at the first argmax |u|: mirror-equal peaks leave the sign to round-off. `select_resonance(k)` sets `selected_resonance` (hz `face_fields` skips source currents);
   `_solution_dirty` stays True so a later step() re-solves the driven problem. Region (P2): on tensor grids
   `ctx.domain_mask`, so an object touching the window edge counts the PML cells beyond it (clamped centres; example
