@@ -180,8 +180,9 @@ def _values_on_pattern(base, matrix):
 
 
 class ShiftPencil:
-    """Host terms (K_1, ..., K_m, M) of K - sigma M = sum_i a_i K_i - sigma M on one canonical CSR pattern, their
-    diagonals, M itself (dtype, for products) and, on a cuDSS factorization with at least device_min_entries stored
+    """Host terms (K_1, ..., K_m, M) of K - sigma M = sum_i a_i K_i - sigma M on one canonical CSR pattern (a real term
+    float64 in a complex pencil too), their diagonals, M itself (dtype, for host products) and, on a cuDSS
+    factorization with at least device_min_entries stored
     entries, their DevicePencil (else device None: the host route); symmetric_known: the caller vouches that every term
     is (complex) symmetric, so no symmetry check is made (device or host route)."""
 
@@ -193,14 +194,20 @@ class ShiftPencil:
         self.n_stiffness_terms = len(stiffness_terms)
         self.mass = mass.tocsr().astype(self.dtype, copy=False)
         self.n_rows = int(self.mass.shape[0])
-        matrices = [canonical_csr(term, self.dtype) for term in stiffness_terms] + [canonical_csr(self.mass,
-                                                                                                    self.dtype)]
+        # real terms stay float64 in a complex pencil (a real M or K: half the DevicePencil term bytes); the
+        # combination, its diagonals and the device refresh promote per shift
+        sources = list(stiffness_terms) + [mass]
+        dtypes = [self.dtype if self.dtype.kind != 'c' or np.iscomplexobj(term.data) else np.dtype(np.float64)
+                  for term in sources]
+        matrices = [canonical_csr(term, dtype) for term, dtype in zip(sources, dtypes)]
         base = matrices[0]
         term_values = [base.data] + [_values_on_pattern(base, matrix) for matrix in matrices[1:]]
         if any(values is None for values in term_values):   # an entry outside the first term's pattern: merge them all
             terms = [pattern_combination(matrices, [float(index == position) for index in range(len(matrices))])
                      for position in range(len(matrices))]   # the same COO entries: one pattern, explicit zeros kept
-            base, term_values = terms[0], [term.data for term in terms]
+            base = terms[0]
+            term_values = [term.data if dtype.kind == 'c' else np.ascontiguousarray(term.data.real, dtype=np.float64)
+                           for term, dtype in zip(terms, dtypes)]   # the merge promoted every term to one dtype
         # own index arrays: cuDSS matches a refreshed pattern by their identity (never modified in place), so a caller
         # changing its K afterwards cannot alias them; base.data is read, never modified
         self.indptr, self.indices = base.indptr.copy(), base.indices.copy()
@@ -232,12 +239,14 @@ class ShiftPencil:
         return out
 
     def device_mass(self):
-        """cupyx CSR of M on its own pattern (the host M uploaded once): a vector FEM mass stores a third of the pencil
-        pattern's entries, and mirroring the lower-stored M term to the full pencil pattern (DevicePencil.full_term)
-        costs six int64 arrays of that pattern while it is built."""
+        """M on its own pattern on the device (the host M uploaded once, device_matrices.device_matrix: a real M float64
+        also in a complex pencil, applied to complex vectors without a complex copy; on a symmetric DevicePencil its
+        strict lower triangle + diagonal; a diagonal M its vector; memory: device_matrix_bytes): a vector FEM mass
+        stores a third of the pencil pattern's entries, and mirroring the lower-stored M term to the full pencil
+        pattern (DevicePencil.full_term) costs six int64 arrays of that pattern while it is built."""
         if self._device_mass is None:
-            import cupyx.scipy.sparse
-            self._device_mass = cupyx.scipy.sparse.csr_matrix(self.mass)
+            symmetric = self.device.symmetric if self.device is not None else self.symmetric_known
+            self._device_mass = device_matrix(self.mass, symmetric=symmetric)
         return self._device_mass
 
     def mass_operator(self):
