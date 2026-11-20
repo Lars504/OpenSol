@@ -1363,7 +1363,7 @@ def eigen_device_items(context, dofs, entries, value_bytes, terms=2, term_bytes=
     term_bytes: value bytes of each stiffness term (None: value_bytes), mass_bytes: of the M term (None: term_bytes;
     ShiftPencil keeps a real M float64 in a complex pencil, a loss-only pencil: 8)."""
     from ...solvers.arpack_shift_invert import (DEVICE_PENCIL_MIN_ENTRIES, MIXED_EIGEN_MIN_UNKNOWNS,
-                                                arnoldi_basis_bytes)
+                                                SINGLE_BASIS_MIN_TOLERANCE, arnoldi_basis_bytes)
     from ...solvers.cudss_factor import index_map_bytes, operator_copy_bytes, solve_buffer_bytes, solve_peak_bytes
     from ...solvers.device_matrices import device_matrix_bytes, device_product_bytes
     factorization = eigen_factorization(context.solvers)
@@ -1418,9 +1418,15 @@ def eigen_device_items(context, dofs, entries, value_bytes, terms=2, term_bytes=
             + device_product_bytes(dofs, symmetric=symmetric, real=real_mass,
                                    complex_operand=complex_eigs or value_bytes > FLOAT64_BYTES)
             + value_bytes * dofs)
+    # modal.ModalPencil._shift_solve: a complex64 basis on a node tolerance >= SINGLE_BASIS_MIN_TOLERANCE
+    eigen = (context.solvers or {}).get('eigen')
+    tolerance = float(eigen.values.get('tolerance', 0.0)) if eigen is not None else 0.0
+    single_basis = tolerance >= SINGLE_BASIS_MIN_TOLERANCE
     basis_on_device, basis_bytes = (arnoldi_basis_bytes(dofs, n_basis, solver_backend(context.spec),
-                                                        device_matvec=True) if complex_eigs else (False, 0))
-    basis = (f'eigen device Krylov-Schur basis ({n_basis} + 3 x complex128)', basis_bytes if basis_on_device else 0)
+                                                        device_matvec=True, single_basis=single_basis)
+                                    if complex_eigs else (False, 0))
+    basis = (f"eigen device Krylov-Schur basis ({n_basis} + 3 x {'complex64' if single_basis else 'complex128'})",
+             basis_bytes if basis_on_device else 0)
     phases = {EIGEN_SETUP_PHASE: [stored, upload],
               EIGEN_PHASE: [stored, maps, values, buffers, solve_vectors, mass, basis]}
     factor_phases = [EIGEN_PHASE]
