@@ -270,9 +270,13 @@ type's vocabulary and refusals are in its help texts and validation.
 - Dirty flags: `_system_dirty` (materials_changed of a read array, slots, PEC, poles, new omega) reassembles and
   refactorises; `_solution_dirty` (that or a new source) re-solves. A recyclable factor at an unchanged omega (Picard
   step) preconditions host GMRES instead (`_solve_linear`); A1 operators cached per omega (`_yee_ops`).
-- Where the system lives (gpu): `HarmonicSystem.cell_mu` and the hz `eps_hi_*_faces` are host numpy on both backends
-  (read as lines, cells or whole on the host only): device code takes its xp from `weight_hi_*_faces`, never from
-  them, and a new device consumer of them uploads what it reads. The KeptYeeOperators entry maps and the Helmholtz
+- Where the system lives (gpu): `HarmonicSystem.cell_mu`, the cell eps (`cell_eps`, hz `cell_eps_xx / _yy`) and the
+  hz `eps_hi_*_faces` are host numpy on both backends (read as lines, cells or whole on the host only): device code
+  takes its xp from `weight_hi_*_faces`, never from them, and a new device consumer of them uploads what it reads
+  (the eps_xy adjoint per gradient; optomechanics' staircase eps subtracts its float32 deltas on the host). q_abs
+  reads `loss_eps_imag` (float32 Im eps on the device; `absorbed_power_*` take Im eps and refuse a complex array):
+  the assembly refuses a non-zero |Im eps| outside float32's normal range. The KeptYeeOperators entry maps and the
+  Helmholtz
   plan's terms wait in pinned host memory between assemblies (`operators._ParkedInt32`, one upload per `at` /
   `operator` call); an array read only per assembly joins that park, never the run-resident set. A system's `ops`
   (and the `_yee_ops` cache) hold dx_e / dy_e as matrix-free `operators.EDifference` (`@` one flat vector, `.T`;

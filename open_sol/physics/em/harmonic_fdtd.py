@@ -181,7 +181,7 @@ class HarmonicAccumulator:
         regions = physics.dispersive_regions
         if self.polarization == 'ez':
             cell_eps = cell_permittivity(materials, 'eps_r', regions, omega, xp=self._xp)[self.window]
-            return absorbed_power_ez(omega, cell_eps, self.phasor('ez'))
+            return absorbed_power_ez(omega, cell_eps.imag, self.phasor('ez'))
         power_density = None
         for component, array_name in (('ex', 'eps_xx'), ('ey', 'eps_yy')):
             modulus = self._xp.abs(self.phasor(component)).astype(np.float64)

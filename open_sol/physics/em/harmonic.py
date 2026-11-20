@@ -131,28 +131,40 @@ def face_mean_at_centres(face_values, axis, periodic, xp=cp, wrap_factor=1.0):
     return 0.5 * (face_values + lower_face_partner(face_values, axis, periodic, xp, wrap_factor))
 
 
-def absorbed_power_ez(omega, cell_eps, ez):
-    """float32 (nx, ny) [W/m^3] 1/2 omega eps0 (-Im eps) |E_z|^2."""
+def _real_imaginary_part(eps_imag, label):
+    """eps_imag itself; TypeError for a complex array (the callers pass Im eps: a complex eps would read as 0 loss)."""
+    if np.iscomplexobj(eps_imag):
+        raise TypeError(f'{label} takes Im(eps) (a real array, e.g. HarmonicSystem.loss_eps_imag), got a complex '
+                        f'{eps_imag.dtype} array')
+    return eps_imag
+
+
+def absorbed_power_ez(omega, eps_imag, ez):
+    """float32 (nx, ny) [W/m^3] 1/2 omega eps0 (-Im eps) |E_z|^2 of the real Im(eps) cells eps_imag (any float dtype
+    on ez's backend)."""
     xp = array_module_of(ez)
     power_density = _squared_modulus(ez, xp)
-    power_density *= (-0.5 * float(omega) * EPS0) * xp.asarray(cell_eps).imag
+    power_density *= (-0.5 * float(omega) * EPS0) * _real_imaginary_part(eps_imag, 'absorbed_power_ez')
     return power_density.astype(DTYPE)
 
 
-def absorbed_power_hz(omega, cell_eps_xx, cell_eps_yy, ex_faces, ey_faces, periodic_x, periodic_y,
+def absorbed_power_hz(omega, eps_xx_imag, eps_yy_imag, ex_faces, ey_faces, periodic_x, periodic_y,
                       face_fractions=None):
-    """float32 (nx, ny) [W/m^3]: per cell 1/2 omega eps0 [(-Im eps_xx) mean|E_x|^2 + (-Im eps_yy) mean|E_y|^2], each
-    mean over the cell's two faces (cell 0: wrapped last face if periodic, else its own hi face); |E|^2 x the conformal
-    (hi-x, hi-y) face_fractions when given (the operator's face loss)."""
+    """float32 (nx, ny) [W/m^3]: per cell 1/2 omega eps0 [(-Im eps_xx) mean|E_x|^2 + (-Im eps_yy) mean|E_y|^2] of the
+    real Im(eps) cells (any float dtype on the faces' backend), each mean over the cell's two faces (cell 0: wrapped
+    last face if periodic, else its own hi face); |E|^2 x the conformal (hi-x, hi-y) face_fractions when given (the
+    operator's face loss)."""
     xp = array_module_of(ex_faces)
+    eps_xx_imag = _real_imaginary_part(eps_xx_imag, 'absorbed_power_hz')
+    eps_yy_imag = _real_imaginary_part(eps_yy_imag, 'absorbed_power_hz')
     ex_squared, ey_squared = _squared_modulus(ex_faces, xp), _squared_modulus(ey_faces, xp)
     if face_fractions is not None:
         ey_squared *= face_fractions[0]
         ex_squared *= face_fractions[1]
     power_density = face_mean_at_centres(ex_squared, 1, periodic_y, xp)   # E_x on hi-y faces
-    power_density *= xp.asarray(cell_eps_xx).imag
+    power_density *= eps_xx_imag
     ey_power = face_mean_at_centres(ey_squared, 0, periodic_x, xp)        # E_y on hi-x faces
-    ey_power *= xp.asarray(cell_eps_yy).imag
+    ey_power *= eps_yy_imag
     power_density += ey_power
     power_density *= -0.5 * float(omega) * EPS0
     return power_density.astype(DTYPE)
@@ -169,11 +181,12 @@ class HarmonicSystem:
     operator: object             # A (CSR complex128, PEC pinning for ez, outermost wall / mirror cells pinned)
     weight_hi_x_faces: object    # complex128 (nx, ny): ez 1/mu_face, hz 1/eps_yy (0 on PEC / even-wall faces; hz
     weight_hi_y_faces: object    # ez 1/mu_face, hz 1/eps_xx   conducting sheets included, unlike eps_hi_*_faces)
+    # Host numpy on every backend (FDFDPhysics._assemble): read only as lines (sheet sources), single cells (TFSF) or
+    # whole on the host (eigen mass, optomechanics, error indicator), so they never wait on the device beside the
+    # factor; a device reader uploads what it reads (the eps_xy adjoint: em.adjoint.permittivity_gradients)
     cell_eps: object             # ez: complex eps_r(omega) (nx, ny), no conducting sheet; hz: None
     cell_eps_xx: object          # hz: complex eps_xx(omega) cells; ez: None
     cell_eps_yy: object          # hz: complex eps_yy(omega) cells; ez: None
-    # Host numpy on every backend (FDFDPhysics._assemble): read only as lines (sheet sources), single cells (TFSF) or
-    # whole on the host (eigen mass, optomechanics), so they never wait on the device beside the factor
     cell_mu: object              # complex mu cells (nx, ny)
     eps_hi_x_faces: object       # hz: face_average(cell_eps_yy, axis 0) at E_y (with eps_xy: of eps_yy - eps_xy^2 /
     eps_hi_y_faces: object       # eps_xx); hz: face_average(cell_eps_xx, axis 1) at E_x (eps_xx - eps_xy^2 / eps_yy)
@@ -189,3 +202,7 @@ class HarmonicSystem:
     # rhs, q_abs, adjoint) multiply the weights by, and the free-area fractions of the k0^2 mu mass; else None
     face_fractions: object = None
     cell_area_fractions: object = None
+    # float32 (nx, ny) Im of the cell eps on the run backend, what q_abs reads every solve (ez: (Im eps,), hz: (Im
+    # eps_xx, Im eps_yy)): absorbed_power_* rounds its result to float32 anyway (6e-8 relative); the assembly refuses
+    # a non-zero |Im eps| outside float32's normal range (fdfd_2d._loss_imaginary_part)
+    loss_eps_imag: tuple = None

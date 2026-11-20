@@ -50,9 +50,10 @@ _FDFD_ASSEMBLY_BYTES = {'cpu': max(_FDFD_SORT_BYTES, _FDFD_TERM_BUFFER_BYTES),
                         'gpu': max(_FDFD_SORT_BYTES + _FDFD_PRODUCT_TERM_BYTES,
                                    _FDFD_TERM_BUFFER_BYTES + _FDFD_PLAN_TERM_BYTES)}
 # host transfer per cell of one gpu assembly (definition_fdfd's time recipe): the plan terms, Yee entry maps and e
-# patterns up, the host system arrays (cell mu; hz also the two E-face eps) down
+# patterns up, the host system arrays (cell eps and mu; hz eps_xx / eps_yy and the two E-face eps) down
 FDFD_ASSEMBLY_UPLOAD_BYTES = _FDFD_PLAN_TERM_BYTES + _YEE_ENTRY_MAP_BYTES + _YEE_E_PATTERN_BYTES
-FDFD_HOST_SYSTEM_ARRAYS = {'ez': 1, 'hz': 3}
+FDFD_HOST_SYSTEM_ARRAYS = {'ez': 2, 'hz': 5}
+FDFD_LOSS_ARRAYS = {'ez': 1, 'hz': 2}   # float32 Im(cell eps) on the device (HarmonicSystem.loss_eps_imag, q_abs)
 # Run phases (MemoryEstimate.transient_items) of the frequency-domain engines; never alive at the same time
 ASSEMBLY_PHASE = 'assembly'                 # operator assembly temporaries (the system itself is a run item)
 SOLVE_PHASE = 'solve'                       # one solve's material temporaries, an own (not kept) factor's copies
@@ -531,8 +532,10 @@ def fdfd_memory_estimate(polarization):
         n_cells = int(mesh.n_cells)
         sparse_row = INT32_BYTES   # CSR indptr entry per row
         gpu = solver_backend(context.spec) == 'gpu'
-        # complex128 face weights and cell eps on the run backend; cell mu (hz: and the E-face eps) on the host
+        # complex128 face weights and the float32 Im(cell eps) on the run backend; cell eps, cell mu (hz: and the
+        # E-face eps) on the host
         n_host_arrays = FDFD_HOST_SYSTEM_ARRAYS[polarization]
+        n_loss_arrays = FDFD_LOSS_ARRAYS[polarization]
         n_system_arrays = (4 if polarization == 'ez' else 7) - n_host_arrays
         items = [('state re / im / q_abs (3 x float32)', 3 * FLOAT32_BYTES * n_cells),
                  ('dispersive pole masks', sum((n_drude + n_lorentz) * BOOL_BYTES * box_cells
@@ -554,7 +557,8 @@ def fdfd_memory_estimate(polarization):
                         ('Helmholtz operator (sparse complex128)',
                          (5 * COMPLEX128_CSR_ENTRY_BYTES + sparse_row) * n_cells),
                         (f'system arrays ({n_system_arrays} x complex128)',
-                         n_system_arrays * COMPLEX128_BYTES * n_cells)]
+                         n_system_arrays * COMPLEX128_BYTES * n_cells),
+                        (f'Im(cell eps) of q_abs ({n_loss_arrays} x float32)', n_loss_arrays * FLOAT32_BYTES * n_cells)]
         if not gpu:
             system_items.append(('kept Helmholtz term plan, Yee kron entry maps and e patterns (int32)', parked_bytes))
         # _assemble: the old system is dropped first; a single solve assembles before its solution and factor exist
@@ -630,7 +634,7 @@ def fdfd_memory_estimate(polarization):
         else:
             run_items += system_items + off_diagonal_run
         host_items += off_diagonal_host if superlu_host else []
-        host_label = 'cell mu' if polarization == 'ez' else 'cell mu, E-face eps'
+        host_label = 'cell eps, cell mu' if polarization == 'ez' else 'cell eps_xx / eps_yy, cell mu, E-face eps'
         host_items.append((f'system arrays on the host ({n_host_arrays} x complex128: {host_label})',
                            n_host_arrays * COMPLEX128_BYTES * n_cells))
         if gpu:

@@ -24,11 +24,11 @@ def extra_permittivity_loss(physics):
     box, values = extra
     shape = physics.solution.shape
     xp = physics.xp
-    full = []
+    full = []   # Im of the change (the q_abs formula reads nothing else)
     for part in values:
-        array = xp.zeros(shape, dtype=xp.complex128)
+        array = xp.zeros(shape, dtype=xp.float64)
         if part is not None:
-            array[(...,) if box is None else box] = part
+            array[(...,) if box is None else box] = xp.asarray(part).imag
         full.append(array)
     system = physics.system
     if system.polarization == 'ez':

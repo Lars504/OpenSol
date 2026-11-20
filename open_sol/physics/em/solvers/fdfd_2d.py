@@ -52,6 +52,24 @@ from .fdtd_2d_base import add_pec_cells, record_dispersive_region
 from .harmonic_shell import COMPONENT_UNITS, HarmonicEMShell
 from .host_fdfd import fell_back_to_superlu
 
+def _loss_imaginary_part(cell_eps, host_eps, name):
+    """float32 Im(cell eps) on the run backend (HarmonicSystem.loss_eps_imag, q_abs's only per-solve read of the cell
+    eps) from the assembly's complex128 cells; ValueError naming `name` when the host copy holds a non-zero |Im eps|
+    outside float32's normal range (it would flush to 0 or overflow: those cells' q_abs lost). One host pass per
+    assembly over the copy it already made, no device sync."""
+    magnitude = np.abs(host_eps.imag)
+    limits = np.finfo(np.float32)
+    lost = (magnitude != 0.0) & ((magnitude < limits.tiny) | (magnitude > limits.max))
+    if lost.any():
+        largest, smallest = float(magnitude[lost].max()), float(magnitude[lost].min())
+        raise ValueError(f'FDFD: Im({name}) of {int(lost.sum())} cell(s) lies outside the float32 range of the '
+                         f'absorbed-power density (|Im eps| {smallest:.3g} .. {largest:.3g}, float32 normal range '
+                         f'{float(limits.tiny):.3g} .. {float(limits.max):.3g}); set sigma_e / the pole damping to 0 '
+                         'for a lossless material or to a value inside that range')
+    del magnitude, lost
+    return cell_eps.imag.astype(DTYPE)
+
+
 # Wall / mirror faces (boundaries.WALL_SIGNS, shared with the FDTD rows): outermost cell = sign x its inner neighbour
 # (sign 0: pinned to 0). Even faces (sign +1) also get face weight 0 on the inner face: zero flux, and a face current
 # there drops.
@@ -607,10 +625,10 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
             return
         self._pending_state_system = None
         if system.polarization == 'ez':
-            power_density = absorbed_power_ez(system.omega, system.cell_eps, self.solution)
+            power_density = absorbed_power_ez(system.omega, system.loss_eps_imag[0], self.solution)
         else:
             ex_faces, ey_faces = self.face_fields()
-            power_density = absorbed_power_hz(system.omega, system.cell_eps_xx, system.cell_eps_yy, ex_faces, ey_faces,
+            power_density = absorbed_power_hz(system.omega, *system.loss_eps_imag, ex_faces, ey_faces,
                                               system.periodic_x, system.periodic_y, system.face_fractions)
         xp = self.xp
         xp.copyto(self._q_abs, power_density)
@@ -991,11 +1009,13 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
             del cell_term
             operator = self._pin_outer_cells(operator, pec_cells)
             ops = self._drop_e_operators(ops, omega)
+            host_eps = to_host(cell_eps)
             return HarmonicSystem(
                 polarization='ez', omega=omega, ops=ops, operator=operator, weight_hi_x_faces=weight_hi_x_faces,
-                weight_hi_y_faces=weight_hi_y_faces, cell_eps=cell_eps, cell_eps_xx=None, cell_eps_yy=None,
+                weight_hi_y_faces=weight_hi_y_faces, cell_eps=host_eps, cell_eps_xx=None, cell_eps_yy=None,
                 cell_mu=to_host(cell_mu), eps_hi_x_faces=None, eps_hi_y_faces=None, pec_cells=pec_cells,
-                periodic_x=periodic_x, periodic_y=periodic_y)
+                periodic_x=periodic_x, periodic_y=periodic_y,
+                loss_eps_imag=(_loss_imaginary_part(cell_eps, host_eps, 'eps_r'),))
 
         cell_eps_xx = cell_permittivity(materials, 'eps_xx', self.dispersive_regions, omega, xp=xp)
         cell_eps_yy = cell_permittivity(materials, 'eps_yy', self.dispersive_regions, omega, xp=xp)
@@ -1060,13 +1080,17 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
                         - ops.dy_e @ y_faces_from_x_faces @ ops.dx_h).tocsr()
         operator = self._pin_outer_cells(operator, None)
         ops = self._drop_e_operators(ops, omega)
+        host_eps_xx, host_eps_yy = to_host(cell_eps_xx), to_host(cell_eps_yy)
+        loss_eps_imag = (_loss_imaginary_part(cell_eps_xx, host_eps_xx, 'eps_xx'),
+                         _loss_imaginary_part(cell_eps_yy, host_eps_yy, 'eps_yy'))
         return HarmonicSystem(
             polarization='hz', omega=omega, ops=ops, operator=operator, weight_hi_x_faces=weight_hi_x_faces,
-            weight_hi_y_faces=weight_hi_y_faces, cell_eps=None, cell_eps_xx=cell_eps_xx, cell_eps_yy=cell_eps_yy,
+            weight_hi_y_faces=weight_hi_y_faces, cell_eps=None, cell_eps_xx=host_eps_xx, cell_eps_yy=host_eps_yy,
             cell_mu=to_host(cell_mu), eps_hi_x_faces=to_host(eps_hi_x_faces), eps_hi_y_faces=to_host(eps_hi_y_faces),
             pec_cells=pec_cells,
             periodic_x=periodic_x, periodic_y=periodic_y, off_diagonal=off_diagonal, cell_eps_xy=cell_eps_xy,
-            cell_gyration=cell_gyration, face_fractions=face_fractions, cell_area_fractions=cell_area_fractions)
+            cell_gyration=cell_gyration, face_fractions=face_fractions, cell_area_fractions=cell_area_fractions,
+            loss_eps_imag=loss_eps_imag)
 
     def _drop_e_operators(self, ops, omega):
         """ops with dx_e / dy_e as matrix-free operators.EDifference (yee_e_differences at omega), also in the omega

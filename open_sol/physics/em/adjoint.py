@@ -335,7 +335,9 @@ def permittivity_gradients(physics, adjoint, wall_rows, face_currents=None, face
     del residual_pieces, cotangent_pieces
     cotangent_xy, cotangent_yx = _eta_cotangents(physics, system, x_from_y_pairs, y_from_x_pairs)
     del x_from_y_pairs, y_from_x_pairs
-    eps_xx, eps_yy, eps_xy = system.cell_eps_xx, system.cell_eps_yy, system.cell_eps_xy
+    # the cell eps live on the host (HarmonicSystem): one upload of 2 x 16 B per cell per gradient, coupled systems only
+    xp = physics.domain.xp
+    eps_xx, eps_yy, eps_xy = xp.asarray(system.cell_eps_xx), xp.asarray(system.cell_eps_yy), system.cell_eps_xy
     gyration = system.cell_gyration
     if eps_xy is None and gyration is None:
         # eps_xy = g = 0: the diagonal terms decouple, d eta_xy / d eps_xy = d eta_yx / d eps_xy = -1 / (eps_xx eps_yy)

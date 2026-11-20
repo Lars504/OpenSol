@@ -15,7 +15,7 @@ import cmath
 import math
 
 import numpy as np
-from ...core.backend import array_module_of, to_host
+from ...core.backend import array_module_of
 
 from ...core.constants import C0, EPS0, ETA0, MU0
 from ...core.mesh import has_uniform_spacing
@@ -215,7 +215,7 @@ class SheetCurrentPhasor:
             rhs += face_current_rhs(system, *self.face_currents(physics, system))
             return
         line = self.line
-        line_eps = np.asarray(to_host(system.cell_eps[line]))   # one line from the device per solve
+        line_eps = np.asarray(system.cell_eps[line])   # a line of the host cell eps
         sheet_current = self._line_currents(line_eps, system.cell_mu[line], system.omega)
         rhs[line] += array_module_of(rhs).asarray((-1j * system.omega * MU0) * sheet_current)
 

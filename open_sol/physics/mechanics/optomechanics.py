@@ -373,10 +373,11 @@ def _unsmoothed_cell_eps(optical, cell_eps):
     smoothing = getattr(optical, 'subpixel_smoothing', None)
     if smoothing is None:
         return None
-    from ...core.backend import array_module_of
-    deltas = array_module_of(cell_eps).zeros_like(cell_eps)
+    # the system's cell eps is a host array; the deltas (float32, as SubpixelSmoothing.delta) on the materials' backend
+    xp = optical.domain.xp
+    deltas = xp.zeros(cell_eps.shape, dtype=np.float32)
     smoothing.add_deltas('cells', deltas, optical.domain.materials)
-    return _host(cell_eps - deltas)
+    return _host(cell_eps) - _host(deltas)
 
 
 def _cross_section_mode(optical, number):
