@@ -85,6 +85,8 @@ def newton_proposer(policy, assembler, system, fixed_stress, held, free, scale, 
             latest.update(state=current.copy(), force=force)
             residual = force - load
             reuse = policy.reuse(residual[free])
+            if not reuse:   # the held tangent is dead: freed before a new one is assembled (never two beside the factor)
+                policy.data = None
             if not reuse and data is None:   # the residual fell too slowly: the tangent at this state after all
                 _, data = assembler.force_and_tangent(current, initial_stress=fixed_stress)
             correction = np.where(held, held_values - current, 0.0)   # the held dofs onto this step's values

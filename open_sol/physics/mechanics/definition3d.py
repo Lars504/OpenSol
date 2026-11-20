@@ -1561,7 +1561,9 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
                             + 2 * INT32_BYTES * entries),
                            ('Newton tangent free restriction build (a run item)',
                             (2 * _INT64_BYTES + 3) * entries)])
-        if settings_values.get('tangent_update') == 'when_slow':   # modified Newton keeps the factor's tangent values
+        # modified Newton keeps the factor's tangent values: device tangents keep them on the GPU (the full values of
+        # _device_tangent_items: the held tangent is dropped before the next one is assembled, never two at a time)
+        if settings_values.get('tangent_update') == 'when_slow' and not device_tangent:
             host_items.append(('modified Newton: values of the held tangent', FLOAT64_BYTES * entries))
     if eigenfrequency:
         pencil = 'coupled A - sigma M' if piezoelectric else 'K - sigma M'
