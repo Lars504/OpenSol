@@ -90,7 +90,8 @@ templates, describe. Current state, no changelog.
   Expressions, `schema._number`). The builder range-checks material properties instead (`eval_field(bounds_param=)`
   under the region, one sync); a DynamicMaterialUpdate keeps device running extremes, read at the moments of
   `builder._check_dynamic_range` and once more at the study end (`BuildContext.check_dynamic_ranges`); other
-  field-dependent params are checked only for finite values.
+  field-dependent params are checked only for finite values. The masked extremes are fused NaN-keeping reductions on
+  the gpu (`builder._masked_extremes`: no where() temporaries per evaluation); a NaN must keep failing the check.
 - Param kind 'table' as a material property writes no array: the type's `create` reads `ctx.material_regions` (2D
   `region.mask` until `release_caches`) and resolves the rows with `resolve_values` (magnetostatics `bh_curve`).
 - 3D prisms (root file "3D models"; optional z params of the 2D kinds: `geometry.Z_PARAM_NAMES`, axis /

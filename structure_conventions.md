@@ -433,8 +433,9 @@ first bring the background physics (those without the study's hook) to a station
   tetrahedra), factor entry count, error indicators, tetrahedra, vector elasticity on tetrahedra, complex scalar
   harmonic systems, squeeze film, reduced sweeps, line elements, prestress, self-tests.
 - `open_sol/core/`: backends, GPU memory, accepted host syncs, kernel twins (numba traps), half storage, graded meshes,
-  grid transfers, mirror planes, cut geometry, coordinate metric, 3D contracts, harmonic probe record, resonance
-  finder, run-time estimate, damped iteration, DiffusionSystem (`fv_diffusion`; heat, potential, magnetic).
+  grid transfers, mirror planes, cut geometry, coordinate metric, 3D contracts, harmonic probe record, probe tables
+  (host parking), resonance finder, run-time estimate, damped iteration, DiffusionSystem (`fv_diffusion`; heat,
+  potential, magnetic).
 - `open_sol/solvers/`: layout and imports, the model path (spec -> resolution -> build -> summary), pcg, multigrid,
   line_block, sparse_direct (entry points, cuDSS opt-in and 'auto', defer_check, ordering reuse), banded,
   arpack_shift_invert, block_eigen, tried and dropped, host_direct, explicit_kernels.

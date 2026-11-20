@@ -1,7 +1,8 @@
 """uint16 material index of em_fdtd_3d: per MaterialGrid array a set of value levels (its exact distinct values, or
 bins of a continuous array re-quantised to a level budget, representative = member mean), the joint level combinations
 ranked stage by stage over x-slab chunks (no full-grid temporaries) and per-id value tables. Array module = the
-input arrays' (numpy or cupy)."""
+input arrays' chunks' (numpy or cupy); an input is only ever read as array[chunk], so a chunk reader of a host array
+works too."""
 import math
 
 import numpy as np
@@ -89,7 +90,7 @@ def _binned_levels(array, chunks, budget, delta_hint=None):
             upper = middle
     bins = _occupied_bins(array, chunks, minimum, upper, budget)
     n_levels = int(bins.size)
-    xp = array_module_of(array)
+    xp = array_module_of(bins)   # the chunks' module (array may be a chunk reader: engine3d _UploadedChunks)
     sums = xp.zeros(n_levels, dtype=np.float64)
     counts = xp.zeros(n_levels, dtype=np.float64)
     for chunk in chunks:

@@ -31,7 +31,8 @@ poles on region boxes and the J.E loss accounting (q_accum) of the EM loss proto
 # joins them, with the angular Floquet phase bloch_ky = azimuthal order m [1/rad] (F(phi + span) = F(phi) e^{-j m
 # span}, the FDFD polar rule); a phase of 0 or pi mod 2 pi steps the real set alone (c = +-1, s = 0).
 # Backends: every array lives on the Domain's xp (cupy on 'gpu', numpy on 'cpu') and every kernel is
-# a core.kernels twin (kernels3d, the shared 2D pole corrections), so this one code path runs on both.
+# a core.kernels twin (kernels3d), so this one code path runs on both.
+import ctypes
 import math
 import warnings
 from dataclasses import replace
@@ -45,11 +46,11 @@ from ...core.half_storage import half_bits
 from ...core.metric import yee_radii
 from ...core.monitors import FieldProbe, FieldProbeRows
 from ..em.solvers.fdtd_conformal_kernels import sparse_launch
-from ..em.solvers.fdtd_ez_2d_kernels import drude_e_correction, lorentz_e_correction
 from ..em.materials import DrudePole, LorentzPole
 from ..em.yee_grid import face_shares
 from .boundaries3d import AXES, MIRROR_TYPES_3D, along, cpml_slabs, mirror_planes, pec_wall_layers
-from .kernels3d import (box_face_cb_3d, drude_j_weighted, field_kernels, launch, lorentz_p_weighted, pole_work_half)
+from .kernels3d import (box_face_cb_3d, field_kernels, launch, pole_correct_3d, pole_drive_3d, pole_face_weights,
+                        pole_work_half)
 from .material_index3d import build_material_index
 
 MAX_MATERIAL_IDS = 65535       # uint16 index; the last id is the PEC entry
@@ -129,25 +130,59 @@ def _mirror_rows(domain, config):
 class Fields3D:
     """Six (nx, ny, nz) Yee components (layout in the module header): float32, or float16 under half_storage (stored
     in the engine's field units: FDTDEngine3D.field_scale) of array module xp; `imag` = the imaginary set under Bloch k
-    != 0, else None."""
+    != 0, else None. allocate False: the components are None until allocate() (an engine parking its material
+    arrays allocates them after the first index build)."""
 
-    def __init__(self, shape, dtype, xp):
+    def __init__(self, shape, dtype, xp, allocate=True):
+        self._layout = (shape, dtype, xp)
         for name in ('ex', 'ey', 'ez', 'hx', 'hy', 'hz'):
-            setattr(self, name, xp.zeros(shape, dtype=dtype))
+            setattr(self, name, None)
         self.imag = None
+        if allocate:
+            self.allocate()
+
+    def allocate(self):
+        """Zero components (this set and the imaginary one) where not yet allocated."""
+        shape, dtype, xp = self._layout
+        for name in ('ex', 'ey', 'ez', 'hx', 'hy', 'hz'):
+            if getattr(self, name) is None:
+                setattr(self, name, xp.zeros(shape, dtype=dtype))
+        if self.imag is not None:
+            self.imag.allocate()
+
+    @property
+    def allocated(self) -> bool:
+        return self.ex is not None
+
+
+class _UploadedChunks:
+    """A parked (host) material array read chunk by chunk onto the device: material_index3d reads its arrays only as
+    array[chunk], so an index rebuild never holds a whole parked array on the device."""
+
+    def __init__(self, host, xp):
+        self.host = host
+        self.xp = xp
+
+    def __getitem__(self, key):
+        return self.xp.asarray(self.host[key])
 
 
 class _PoleRegion:
     """Poles of one material region on its box extended one cell to the lo side (or spanning a periodic axis,
-    _pole_region): per E component the face weight and live cb (box arrays), Drude J / Lorentz P, dP, face work."""
+    _pole_region): a uint8 membership box (one row longer per axis: the hi partners) from which the pole kernels read
+    the face weights, Drude J / Lorentz P, dP and the face work per E component; the cb of the corrections is computed
+    in the kernel from the material index (kernels3d pole section), so nothing else per box cell is stored."""
 
-    def __init__(self, box, weights, window, mask):
+    def __init__(self, box, membership, window, mask):
         self.box = box              # (slice x, slice y, slice z) of the extended box
-        self.weights = weights      # 3 float32 box arrays
+        self.shape = tuple(cells.stop - cells.start for cells in box)
+        self.origin = tuple(cells.start for cells in box)
+        self.membership = membership   # uint8 (bx + 1, by + 1, bz + 1): 1 in the region (hi row: the partners)
         self.window = window        # the region's own window and cropped bool mask (kept alive by the physics)
         self.mask = mask
-        self.cb = [array_module_of(weight).zeros_like(weight) for weight in weights]
-        self.drude = []             # [(damping, drive, [j_x, j_y, j_z])]
+        self.box_ints = tuple(np.int32(value) for value in (*self.origin, *self.shape))
+        self.launch = launch(self.shape)
+        self.drude = []             # [(damping, drive, [j_x, j_y, j_z])], coefficients float32
         self.lorentz = []           # [(damping, restoring, drive, [p...], [dp...])]
         self.imag_drude = []        # Bloch k != 0: [j_x, j_y, j_z] of the imaginary field set per drude entry
         self.imag_lorentz = []      # likewise ([p...], [dp...]) per lorentz entry
@@ -157,9 +192,11 @@ class _PoleRegion:
 class FDTDEngine3D:
     """Yee stepping on a Domain3D (BoundaryConfig3D faces cpml / pec / pmc / periodic / mirrors); materials from the
     MaterialGrid arrays eps_r, sigma_e, mu_r (+ eps_xx, eps_yy, sigma_m when allocated) through the material index
-    (rebuild_materials after any change). precision 'single' | 'half_storage' (fp16 fields, see set_field_scale)."""
+    (rebuild_materials after any change). precision 'single' | 'half_storage' (fp16 fields, see set_field_scale).
+    park_arrays: MaterialGrid arrays to park on the host after the first index build (MaterialGrid.park; the field
+    arrays are allocated only then, so the build peak never holds both; em3d definition _parked_material_arrays)."""
 
-    def __init__(self, domain, config, precision='single'):
+    def __init__(self, domain, config, precision='single', park_arrays=()):
         if precision not in FIELD_DTYPES:
             raise ValueError(f"em_fdtd_3d stepper precision must be one of {', '.join(FIELD_DTYPES)}, got "
                              f'{precision!r}')
@@ -202,14 +239,15 @@ class FDTDEngine3D:
         self.shares = tuple(tuple(xp.asarray(share) for share in face_shares(widths, periodic, np.float32))
                             for widths, periodic in zip(self.widths, self.periodic))
         self._radial_h, self._radial_e = self._radial_factors()
-        self.fields = Fields3D(self.shape, FIELD_DTYPES[precision], xp)
+        self.park_arrays = tuple(park_arrays)
+        self.fields = Fields3D(self.shape, FIELD_DTYPES[precision], xp, allocate=not self.park_arrays)
         # Bloch k != 0 (symmetry 2.8): the imaginary set (own CPML psi, pole states), wraps mixing the two (kernels3d);
         # a sector whose phases are all 0 or pi steps the real set alone
         self.bloch_angles = config.bloch_phase_angles(tuple(float(np.sum(widths)) for widths in self.widths))
         real_wrap = self.polar and _real_phases(self.bloch_angles)
         self.cpml_imag = []
         if config.has_bloch_phase and not real_wrap:
-            self.fields.imag = Fields3D(self.shape, FIELD_DTYPES[precision], xp)
+            self.fields.imag = Fields3D(self.shape, FIELD_DTYPES[precision], xp, allocate=not self.park_arrays)
             self.cpml_imag = [replace(layer, psi_first=xp.zeros_like(layer.psi_first),
                                       psi_second=xp.zeros_like(layer.psi_second)) for layer in self.cpml]
         self._wrap_args = {set_sign: _wrap_arguments(self.bloch_angles, set_sign, real=real_wrap)
@@ -228,13 +266,18 @@ class FDTDEngine3D:
         self.region_by_mask = {}     # id(cropped mask) -> _PoleRegion (the physics keeps the masks alive)
         self.time = 0.0
         self.n_step = 0
-        # J.E accounting (EM loss protocol): q_accum [J/m^3] over the current window (allocated at the first enable),
-        # the last completed window, the box of the sigma_e > 0 cells (refreshed per rebuild) and pending pole work
+        # J.E accounting (EM loss protocol): q_accum [J/m^3] over the current window and the last completed window (a
+        # host float32 array, pinned on the gpu and filled by an async copy: read only through host_last_q_accum by a
+        # render, the end-of-run merge and snapshots), both on the loss box q_box (origin, shape: the bounding box of the sigma_e > 0 cells and the pole region windows,
+        # grown, never shrunk, when a rebuild or a new pole reaches outside it; allocated at the first enable), the box
+        # of the sigma_e > 0 cells (refreshed per rebuild) and pending pole work
         self._enable_q_accum = False
         self.q_accum = None
+        self.q_box = None
         self.q_accum_time = 0.0
         self.last_q_accum = None
         self.last_q_accum_time = 0.0
+        self._last_q_accum_event = None
         self._ohmic_box = None       # (origin, shape, launch) of the conducting cells, None without any
         self._pole_work_pending = False
         self._ints = tuple(np.int32(value) for value in (self.nx, self.ny, self.nz))
@@ -336,10 +379,13 @@ class FDTDEngine3D:
 
     def rebuild_materials(self):
         """Material index + tables (material_index3d: continuous values re-quantised to fit the uint16 index, errors
-        in quantisation_errors), PEC regions and pec walls, the subpixel face overrides, then the pole cb arrays and
-        the ohmic loss box."""
+        in quantisation_errors), PEC regions and pec walls, the subpixel face overrides, then the ohmic loss box (the
+        pole corrections read the new index and tables directly). Parked arrays are read chunk by chunk from the
+        host; after the first build the park_arrays go to the host and the field arrays are allocated."""
         materials = self.domain.materials
-        arrays = {name: getattr(materials, name) for name in self.material_arrays}
+        parked = materials.parked
+        arrays = {name: _UploadedChunks(getattr(materials, name), self.xp) if name in parked
+                  else getattr(materials, name) for name in self.material_arrays}
         tables, self.quantisation_errors, deltas = build_material_index(
             arrays, self._x_chunks(), self.material_id, MAX_MATERIAL_IDS - 1, self._quantisation_deltas)
         self._quantisation_deltas.update(deltas)
@@ -360,13 +406,16 @@ class FDTDEngine3D:
             xp.copyto(self.material_id[window], pec_id, where=mask)
         for window in self._pec_wall_layers():
             self.material_id[window] = pec_id
-        if self.subpixel_smoothing is not None:   # averaged face eps of the new tables (the pole cb reads them)
+        if self.subpixel_smoothing is not None:   # averaged face eps of the new tables
             self.subpixel_smoothing.refresh(self)
             if self.subpixel_smoothing.quantisation_error is not None:
                 self.quantisation_errors['subpixel-smoothed face eps'] = self.subpixel_smoothing.quantisation_error
-        self._refresh_pole_cb()
         if self._enable_q_accum:
             self._refresh_ohmic_box()
+        del arrays
+        if not self.fields.allocated:
+            materials.park([name for name in self.park_arrays if name in materials.property_names()])
+            self.fields.allocate()
 
     def _x_chunks(self):
         per_chunk = max(1, _INDEX_CHUNK_CELLS // (self.ny * self.nz))
@@ -439,33 +488,37 @@ class FDTDEngine3D:
             region = self._pole_region(window, mask)
             self.region_by_mask[id(mask)] = region
             self.pole_regions.append(region)
-        box_shape = region.weights[0].shape
+        box_shape = region.shape
         bloch = self.fields.imag is not None
         xp = self.xp
 
         def box_arrays():
             return [xp.zeros(box_shape, dtype=DTYPE) for _ in range(3)]
+        coefficients = tuple(DTYPE(value) for value in pole.ade_coefficients(self.dt))
         if isinstance(pole, DrudePole):
-            region.drude.append((*pole.ade_coefficients(self.dt), box_arrays()))
+            region.drude.append((*coefficients, box_arrays()))
             if bloch:
                 region.imag_drude.append(box_arrays())
         elif isinstance(pole, LorentzPole):
-            region.lorentz.append((*pole.ade_coefficients(self.dt), box_arrays(), box_arrays()))
+            region.lorentz.append((*coefficients, box_arrays(), box_arrays()))
             if bloch:
                 region.imag_lorentz.append((box_arrays(), box_arrays()))
         else:
             raise TypeError(f'add_pole needs a DrudePole or LorentzPole, got {type(pole).__name__}')
         if self._enable_q_accum and region.work is None:
             region.work = box_arrays()
+            self._fit_q_box()
 
     def _pole_region(self, window, mask):
         """_PoleRegion on the window extended one cell to the lo side (the whole axis on a periodic axis the window
-        starts at cell 0 of: its lo face is the wrap face); weight_c = wl_c m(cell) + wu_c m(hi face partner)."""
+        starts at cell 0 of: its lo face is the wrap face); its uint8 membership box is one row longer per axis, the
+        hi partner of the last grid face holding cell 0 (periodic) or the cell itself (weight_c = wl_c m(cell) + wu_c
+        m(hi face partner): kernels3d pole_face_weights)."""
         box = tuple(slice(0, count) if periodic and cells.start == 0 else slice(max(cells.start - 1, 0), cells.stop)
                     for cells, count, periodic in zip(window, self.shape, self.periodic))
         box_shape = tuple(cells.stop - cells.start for cells in box)
         xp = self.xp
-        membership = xp.zeros(tuple(count + 1 for count in box_shape), dtype=DTYPE)
+        membership = xp.zeros(tuple(count + 1 for count in box_shape), dtype=np.uint8)
         offset = tuple(cells.start - box_cells.start for cells, box_cells in zip(window, box))
         membership[tuple(slice(start, start + count) for start, count in zip(offset, mask.shape))] = mask
         for axis_index, cells in enumerate(box):   # partner of the last grid face: cell 0 (periodic) or the cell itself
@@ -475,23 +528,12 @@ class FDTDEngine3D:
             pad[axis_index] = box_shape[axis_index]
             partner[axis_index] = 0 if self.periodic[axis_index] else box_shape[axis_index] - 1
             membership[tuple(pad)] = membership[tuple(partner)]
-        weights = []
-        for axis_index in range(3):
-            lower_share, upper_share = (share[box[axis_index]] for share in self.shares[axis_index])
-            broadcast = [1, 1, 1]
-            broadcast[axis_index] = -1
-            own = membership[:box_shape[0], :box_shape[1], :box_shape[2]]
-            shifted = [slice(0, count) for count in box_shape]
-            shifted[axis_index] = slice(1, box_shape[axis_index] + 1)
-            weights.append(xp.ascontiguousarray(lower_share.reshape(broadcast) * own
-                                                + upper_share.reshape(broadcast) * membership[tuple(shifted)]))
-        return _PoleRegion(box, weights, window, mask)
+        return _PoleRegion(box, membership, window, mask)
 
-    def _refresh_pole_cb(self):
-        for region in self.pole_regions:
-            origin = tuple(cells.start for cells in region.box)
-            for component, cb in enumerate(region.cb):
-                self.face_cb_into(cb, component, origin, cb.shape)
+    def pole_weights(self, region):
+        """The region's three float32 face weight box arrays (new temporaries: the stability check and the work
+        deposit; the pole kernels read the membership)."""
+        return pole_face_weights(region.membership, self.shares, region.origin, region.shape)
 
     # ---- stepping ----
     def advance(self, sources, monitors):
@@ -660,11 +702,11 @@ class FDTDEngine3D:
         return [fields.ex[region.box], fields.ey[region.box], fields.ez[region.box]]
 
     def _pole_sets(self, region):
-        """[(E views, drude [(damping, drive, J)], lorentz [(damping, restoring, drive, P, dP)])] of the real set and,
+        """[(field set, drude [(damping, drive, J)], lorentz [(damping, restoring, drive, P, dP)])] of the real set and,
         under Bloch k != 0, of the imaginary set (its own pole states, same coefficients)."""
-        sets = [(self._e_views(region), region.drude, region.lorentz)]
+        sets = [(self.fields, region.drude, region.lorentz)]
         if self.fields.imag is not None:
-            sets.append((self._e_views(region, self.fields.imag),
+            sets.append((self.fields.imag,
                          [(damping, drive, currents) for (damping, drive, _), currents
                           in zip(region.drude, region.imag_drude)],
                          [(damping, restoring, drive, polarisations, steps) for (damping, restoring, drive, _, _),
@@ -672,25 +714,35 @@ class FDTDEngine3D:
         return sets
 
     def _pole_drive(self, region):
-        """J^{n+1/2} / P^{n+1} of every pole of the region from E^n (before the Yee update), per field set."""
-        for views, drude, lorentz in self._pole_sets(region):
-            for damping, drive, currents in drude:
-                for weight, e, current in zip(region.weights, views, currents):
-                    drude_j_weighted(damping, drive, weight, e, current)
+        """J^{n+1/2} / P^{n+1} of every pole of the region from E^n (before the Yee update), per field set: one
+        kernels3d pole_drive_3d launch per pole (three components; the face weights from the membership box)."""
+        grid, block = region.launch
+        geometry = (region.membership, *self.shares[0], *self.shares[1], *self.shares[2], *region.box_ints,
+                    self._ints[1], self._ints[2])
+        zero = DTYPE(0.0)
+        for field_set, drude, lorentz in self._pole_sets(region):
+            e_fields = (field_set.ex, field_set.ey, field_set.ez)
+            for damping, drive, currents in drude:   # dP slots unread (lorentz 0): the J arrays stand in
+                pole_drive_3d(grid, block, (*currents, *currents, *e_fields, *geometry, damping, zero, drive,
+                                            np.int32(0)))
             for damping, restoring, drive, polarisations, steps in lorentz:
-                for weight, e, polarisation, step in zip(region.weights, views, polarisations, steps):
-                    lorentz_p_weighted(damping, restoring, drive, weight, e, polarisation, step)
+                pole_drive_3d(grid, block, (*polarisations, *steps, *e_fields, *geometry, damping, restoring, drive,
+                                            np.int32(1)))
 
     def _pole_correct(self, region):
-        """E^{n+1} -= cb J^{n+1/2} (Drude), -= (cb / dt) (P^{n+1} - P^n) (Lorentz) after the Yee + CPML update."""
+        """E^{n+1} -= cb J^{n+1/2} (Drude), -= (cb / dt) (P^{n+1} - P^n) (Lorentz) after the Yee + CPML update: one
+        kernels3d pole_correct_3d launch per pole (cb of the live material index, cells with a zero state skipped)."""
+        grid, block = region.launch
+        materials = (self.material_id, self.table_eps_x, self.table_eps_y, self.table_eps_z, self.table_sigma,
+                     *self._face_args(), *self.shares[0], *self.shares[1], *self.shares[2], *region.box_ints,
+                     *self._ints, *self._periodic_ints, self._dt32)
         inverse_dt = DTYPE(1.0 / self.dt)
-        for views, drude, lorentz in self._pole_sets(region):
+        for field_set, drude, lorentz in self._pole_sets(region):
+            e_fields = (field_set.ex, field_set.ey, field_set.ez)
             for _, _, currents in drude:
-                for cb, e, current in zip(region.cb, views, currents):
-                    drude_e_correction(current, cb, e)
+                pole_correct_3d(grid, block, (*e_fields, *currents, *materials, DTYPE(1.0)))
             for _, _, _, _, steps in lorentz:
-                for cb, e, step in zip(region.cb, views, steps):
-                    lorentz_e_correction(step, cb, inverse_dt, e)
+                pole_correct_3d(grid, block, (*e_fields, *steps, *materials, inverse_dt))
 
     # ---- loss accounting (EM loss protocol) ----
     @property
@@ -706,16 +758,18 @@ class FDTDEngine3D:
         self._enable_q_accum = bool(enabled)
         if not self._enable_q_accum:
             return
-        if self.q_accum is None:
-            self.q_accum = self.xp.zeros(self.shape, dtype=DTYPE)
+        if self.q_accum is None:   # an empty box until the first rebuild fits it
+            self.q_box = ((0, 0, 0), (0, 0, 0))
+            self.q_accum = self.xp.zeros((0, 0, 0), dtype=DTYPE)
         for region in self.pole_regions:
             if region.work is None:
-                region.work = [self.xp.zeros_like(weight) for weight in region.weights]
+                region.work = [self.xp.zeros(region.shape, dtype=DTYPE) for _ in range(3)]
         if self.table_sigma is not None:
             self._refresh_ohmic_box()
 
     def _refresh_ohmic_box(self):
-        """Bounding box of the cells with sigma_e > 0 (x-slab chunks, a few host syncs), None without any."""
+        """Bounding box of the cells with sigma_e > 0 (x-slab chunks, a few host syncs), None without any; then the
+        loss box grows to hold it (_fit_q_box)."""
         any_x = self.xp.zeros(self.nx, dtype=bool)
         any_y = self.xp.zeros(self.ny, dtype=bool)
         any_z = self.xp.zeros(self.nz, dtype=bool)
@@ -727,10 +781,102 @@ class FDTDEngine3D:
         extents = [np.flatnonzero(to_host(flags)) for flags in (any_x, any_y, any_z)]
         if any(indices.size == 0 for indices in extents):
             self._ohmic_box = None
+        else:
+            origin = tuple(int(indices[0]) for indices in extents)
+            shape = tuple(int(indices[-1]) - start + 1 for indices, start in zip(extents, origin))
+            self._ohmic_box = (tuple(np.int32(value) for value in (*origin, *shape)), launch(shape))
+        self._fit_q_box()
+
+    def _loss_boxes(self):
+        """[(origin, shape)] of what accumulates into q_accum: the ohmic box and every pole region window."""
+        boxes = [(tuple(cells.start for cells in region.window),
+                  tuple(cells.stop - cells.start for cells in region.window)) for region in self.pole_regions]
+        if self._ohmic_box is not None:
+            box_ints = tuple(int(value) for value in self._ohmic_box[0])
+            boxes.append((box_ints[:3], box_ints[3:]))
+        return [(origin, shape) for origin, shape in boxes if all(count > 0 for count in shape)]
+
+    def _fit_q_box(self):
+        """Grow q_box (with q_accum and last_q_accum, their values kept) to the union of itself and _loss_boxes when one
+        reaches outside it (a material change, a new pole: outside the step loop); nothing before accumulation."""
+        if self.q_accum is None:
             return
-        origin = tuple(int(indices[0]) for indices in extents)
-        shape = tuple(int(indices[-1]) - start + 1 for indices, start in zip(extents, origin))
-        self._ohmic_box = (tuple(np.int32(value) for value in (*origin, *shape)), launch(shape))
+        boxes = self._loss_boxes()
+        origin, shape = self.q_box
+        if all(count > 0 for count in shape):
+            boxes.append((origin, shape))
+        if not boxes:
+            return
+        lower = tuple(min(box[0][axis] for box in boxes) for axis in range(3))
+        upper = tuple(max(box[0][axis] + box[1][axis] for box in boxes) for axis in range(3))
+        new_shape = tuple(stop - start for start, stop in zip(lower, upper))
+        if (lower, new_shape) == (origin, shape):
+            return
+        self.q_accum = self._regrid(self.q_accum, (origin, shape), (lower, new_shape))
+        if self.last_q_accum is not None:
+            last = self._host_buffer(new_shape)
+            last[...] = self._regrid(self.host_last_q_accum(), (origin, shape), (lower, new_shape))
+            self.last_q_accum = last
+        self.q_box = (lower, new_shape)
+
+    def _regrid(self, values, old_box, new_box):
+        """A zero array of new_box (origin, shape) holding `values` of old_box where they overlap (values' module)."""
+        out = array_module_of(values).zeros(new_box[1], dtype=DTYPE)
+        selection = tuple(slice(start, start + count) for start, count in zip(*old_box))
+        target, source = self._box_overlap(new_box, selection)
+        if target is not None:
+            out[source] = values[target]
+        return out
+
+    @staticmethod
+    def _box_overlap(box, selection):
+        """(index into the selection's array, index into the box array) of the overlap of a full-grid selection
+        (slices with explicit bounds or ints per axis) with box (origin, shape); (None, None) when they do not
+        meet. An int axis drops from both."""
+        target, source = [], []
+        for wanted, start, count in zip(selection, *box):
+            if isinstance(wanted, slice):
+                if wanted.start is None or wanted.stop is None or wanted.step not in (None, 1):
+                    raise ValueError(f'q_accum selections need explicit unit-step slices, got {wanted!r}')
+                lower, upper = max(wanted.start, start), min(wanted.stop, start + count)
+                if lower >= upper:
+                    return None, None
+                target.append(slice(lower - wanted.start, upper - wanted.start))
+                source.append(slice(lower - start, upper - start))
+            else:
+                index = int(wanted)
+                if not start <= index < start + count:
+                    return None, None
+                source.append(index - start)
+        return tuple(target), tuple(source)
+
+    def q_selection(self, values, selection):
+        """float32 device values of a q_box array (q_accum, the host last_q_accum) over a full-grid selection (explicit
+        slices or ints per axis; ints drop): a new array, 0 outside the loss box."""
+        shape = tuple(int(wanted.stop) - int(wanted.start) for wanted in selection if isinstance(wanted, slice))
+        out = self.xp.zeros(shape, dtype=DTYPE)
+        target, source = self._box_overlap(self.q_box, selection)
+        if target is not None:
+            out[target] = self.xp.asarray(values[source])
+        return out
+
+    def q_grid(self, values):
+        """Full-grid float32 copy of a q_box array (0 outside the loss box); None for None."""
+        if values is None:
+            return None
+        return self.q_selection(values, tuple(slice(0, count) for count in self.shape))
+
+    def set_q_box(self, box, fill):
+        """Reallocate q_accum (and a present last_q_accum) on box (origin, shape) when it differs, write them by fill()
+        (restore_solution), then grow the box to the current loss cells (_fit_q_box)."""
+        box = (tuple(int(value) for value in box[0]), tuple(int(value) for value in box[1]))
+        if box != self.q_box:
+            self.q_box = box
+            self.q_accum = self.xp.zeros(box[1], dtype=DTYPE)
+        if self.last_q_accum is not None and self.host_last_q_accum().shape != box[1]:
+            self.last_q_accum = self._host_buffer(box[1])
+        fill()
+        self._fit_q_box()
 
     def _pole_work(self, region):
         """E^n half of the time-centred pole work, right after the pole drive (E not yet updated)."""
@@ -749,12 +895,14 @@ class FDTDEngine3D:
             self._pole_work(region)
         if self.pole_regions:
             self._pole_work_pending = True
-        if self._ohmic_box is not None:
+        if self._ohmic_box is not None:   # inside q_box (_refresh_ohmic_box fits it)
             box_ints, (grid, block) = self._ohmic_box
             fields = self.fields
+            (q_i, q_j, q_k), (_, q_ny, q_nz) = self.q_box
             self.kernels['ohmic_loss_3d'](
                 grid, block, (self.q_accum, fields.ex, fields.ey, fields.ez, self.material_id, self.table_sigma,
-                              *box_ints, *self._ints, *self._periodic_ints, DTYPE(0.5 * self.dt * self.e_scale ** 2)))
+                              *box_ints, np.int32(q_i), np.int32(q_j), np.int32(q_k), np.int32(q_ny), np.int32(q_nz),
+                              *self._ints, *self._periodic_ints, DTYPE(0.5 * self.dt * self.e_scale ** 2)))
         self.q_accum_time += self.dt
 
     def deposit_pole_work(self):
@@ -768,7 +916,7 @@ class FDTDEngine3D:
             members = region.mask.astype(DTYPE)
             deposit = xp.zeros(region.mask.shape, dtype=DTYPE)
             own = tuple(slice(start, start + count) for start, count in zip(offset, region.mask.shape))
-            for axis_index, (work, weight) in enumerate(zip(region.work, region.weights)):
+            for axis_index, (work, weight) in enumerate(zip(region.work, self.pole_weights(region))):
                 ratio = xp.where(weight > 0, work / xp.maximum(weight, DTYPE(1e-30)), DTYPE(0.0))
                 deposit += ratio[own]
                 count = region.mask.shape[axis_index]
@@ -790,33 +938,65 @@ class FDTDEngine3D:
                     target[axis_index] = slice(0, 1)
                     deposit[tuple(target)] += ratio[tuple(lower)]
                 work.fill(DTYPE(0.0))
-            self.q_accum[region.window] += DTYPE(0.5) * members * deposit
+            target, local = self._box_overlap(self.q_box, region.window)
+            if target is None or any(part.stop - part.start != count for part, count in zip(local, deposit.shape)):
+                raise RuntimeError('em_fdtd_3d: a pole region window lies outside the absorption box q_box '
+                                   '(_fit_q_box was skipped)')
+            self.q_accum[local] += DTYPE(0.5) * members * deposit
         self._pole_work_pending = False
 
     def reset_q_accum(self) -> None:
-        """Start a new accumulation window; a non-empty one is kept as last_q_accum / last_q_accum_time."""
+        """Start a new accumulation window; a non-empty one is parked on the host as last_q_accum / last_q_accum_time
+        (gpu: an async copy of the loss box into the pinned buffer on the current stream, no host sync; the zero fill
+        of q_accum after it queues behind it)."""
         self.deposit_pole_work()
         if self.q_accum_time > 0.0:
-            if self.last_q_accum is None:
-                self.last_q_accum = self.xp.empty_like(self.q_accum)
-            self.xp.copyto(self.last_q_accum, self.q_accum)
+            if self.last_q_accum is None or self.last_q_accum.shape != self.q_accum.shape:
+                self.host_last_q_accum()   # nothing in flight into a buffer that is dropped
+                self.last_q_accum = self._host_buffer(self.q_accum.shape)
+            if self.xp is np:
+                np.copyto(self.last_q_accum, self.q_accum)
+            elif self.q_accum.size:
+                stream = self.xp.cuda.get_current_stream()
+                self.q_accum.data.copy_to_host_async(ctypes.c_void_p(self.last_q_accum.ctypes.data),
+                                                     self.q_accum.nbytes, stream)
+                self._last_q_accum_event = stream.record()
             self.last_q_accum_time = self.q_accum_time
         if self.q_accum is not None:
             self.q_accum.fill(DTYPE(0.0))
         self.q_accum_time = 0.0
 
+    def _host_buffer(self, shape):
+        """A host float32 array of shape: pinned on the gpu (async device-to-host copies), plain numpy on the cpu."""
+        dtype = np.dtype(DTYPE)
+        count = math.prod(shape)
+        if self.xp is np or count == 0:
+            return np.zeros(shape, dtype=dtype)
+        memory = self.xp.cuda.alloc_pinned_memory(count * dtype.itemsize)
+        return np.frombuffer(memory, dtype=dtype, count=count).reshape(shape)
+
+    def host_last_q_accum(self):
+        """The last completed window [J/m^3] on the loss box as a host float32 array (None before the first one),
+        after its device-to-host copy finished (one event wait on the gpu)."""
+        if self._last_q_accum_event is not None:
+            self._last_q_accum_event.synchronize()
+            self._last_q_accum_event = None
+        return self.last_q_accum
+
     def take_absorbed_power(self, merge_previous: bool = False):
-        """Mean absorbed power density [W/m^3] since the last call (new full-grid array), then a window reset; None for
-        an empty window or before accumulation; merge_previous (end-of-run flush) first folds in the last window."""
+        """Mean absorbed power density [W/m^3] since the last call (new full-grid array, 0 outside the loss box), then a
+        window reset; None for an empty window or before accumulation; merge_previous (end-of-run flush) first folds
+        in the last window."""
         window = float(self.q_accum_time)
         if self.q_accum is None or window <= 0.0:
             return None
         self.deposit_pole_work()
         if merge_previous and self.last_q_accum is not None:
-            self.q_accum += self.last_q_accum
+            self.q_accum += self.xp.asarray(self.host_last_q_accum())
             window += float(self.last_q_accum_time)
             self.q_accum_time = window
-        power_density = self.q_accum * DTYPE(1.0 / window)
+        power_density = self.q_grid(self.q_accum)
+        power_density *= DTYPE(1.0 / window)
         self.reset_q_accum()
         return power_density
 
@@ -836,7 +1016,8 @@ class FDTDEngine3D:
                     f'{requirement:.4g}')
         for region, pole_term in pole_terms:
             ids = self.material_id[region.box]
-            covered = (region.weights[0] + region.weights[1] + region.weights[2]) > 0
+            weights = self.pole_weights(region)
+            covered = (weights[0] + weights[1] + weights[2]) > 0
             eps, mu = table_eps[ids], self.table_mu[ids]
             ratio = xp.where(covered & (eps > 0), eps * mu / (requirement + mu * DTYPE(pole_term)), np.inf)
             region_worst = float(ratio.min())

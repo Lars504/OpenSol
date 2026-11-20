@@ -267,6 +267,14 @@ def _check_harmonic_probe_record(results_by_name):
     return checks.result()
 
 
+def _check_probe_rows_parking(results_by_name):
+    """core.monitors ProbeRows host parking bookkeeping (the check lives in core, which imports no model)."""
+    from ..core.selftests_monitors import check_probe_rows_parking
+    checks = SubChecks()
+    check_probe_rows_parking(checks.add)
+    return checks.result()
+
+
 # operation 'expression': a 1D slab (100 cells) with a uniform heat source Q_in, swept; N_int / rho_int = Q_in exactly
 _GLOBAL_RUN = 'global_expression'
 _SLAB_LENGTH, _SLAB_CELL = 1e-3, 1e-5          # m
@@ -400,11 +408,24 @@ ANALYTIC_SELFTEST_CASES = (
         description='CPU check of core.harmonic_probe (no model run): records out of frequency order, a repeated '
                     'frequency replaced (replace_same_frequency) or kept in record order, series <component>_re / '
                     '_im / _abs / _phase vs ascending frequency [Hz] rebuilding the phasors (round-off), units, and '
-                    'the refusals (missing component, bare value for two components, frequency <= 0, vector '
+                    'a park of every value to host complex numbers keeping them, the refusals (missing component, bare '
+                    'value for two components, frequency <= 0, vector '
                     'value, non-identifier name, recorded() before the first record). error = number of failed '
                     'sub-checks, tolerance 0.',
         specs=lambda: {},
         check=_check_harmonic_probe_record,
+        max_wall_time=10.0),
+    SelfTestCase(
+        name='probe_rows_parking',
+        label='Probe tables: device rows parked on the host',
+        description='CPU check of core.monitors.ProbeRows (no model run; a numpy table parked as the gpu study loops '
+                    'park device tables at chunk boundaries): 1500 rows (the table doubles), a park (device counter '
+                    'rewound, the same launch kept), 700 rows, a second column, 3000 rows (doubles again), a park '
+                    'refused below min_rows then done, 10 rows; every column read (whole, from inside a parked block, '
+                    'device rows only) equals the recorded float32 values, times kept, and a numpy table is not '
+                    'parked by default. error = number of failed sub-checks, tolerance 0.',
+        specs=lambda: {},
+        check=_check_probe_rows_parking,
         max_wall_time=10.0),
     SelfTestCase(
         name='derived_global_expression',

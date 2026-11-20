@@ -191,13 +191,13 @@ def _validate(vctx, physics_spec, feature_spec, values):
 
 
 def _memory_estimate(values, n_selected_cells, mesh):
-    """theta (float64), crystallinity (float32), mask and mean weights on the selection's box; build / update: the
-    full-grid domain mask and the complex mixing temporaries on the box."""
+    """theta (float64), crystallinity (float32) and mask on the selection's box; build / update: the full-grid domain
+    mask and the complex mixing temporaries on the box (+ the masked float32 product of the recorded mean)."""
     n_cells = int(n_selected_cells)
-    per_cell = FLOAT64_BYTES + FLOAT32_BYTES + BOOL_BYTES + FLOAT64_BYTES
-    temporaries = n_cells * (3 * COMPLEX128_BYTES + 4 * FLOAT64_BYTES + 2 * FLOAT32_BYTES)
+    per_cell = FLOAT64_BYTES + FLOAT32_BYTES + BOOL_BYTES
+    temporaries = n_cells * (3 * COMPLEX128_BYTES + 4 * FLOAT64_BYTES + 3 * FLOAT32_BYTES)
     return MemoryEstimate.from_items(
-        (('phase-change medium (theta, crystallinity, mask, mean weights)', per_cell * n_cells),),
+        (('phase-change medium (theta, crystallinity, mask)', per_cell * n_cells),),
         build_extra=int(mesh.n_cells) * BOOL_BYTES + temporaries)
 
 

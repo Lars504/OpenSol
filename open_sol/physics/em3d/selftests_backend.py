@@ -138,9 +138,11 @@ class _RandomGrid:
                 *(np.int32(flag) for flag in periodic), self.dt, DTYPE(1.0), *self.wrap_args(),
                 *self.cpml('e', cpml_axes))
 
-    def ohmic(self, periodic, origin, extents):
-        q = (self.rng.random(self.shape) * 1e-12).astype(np.float32)
-        return (q, *self.fields(), self.mat, self.t_sig, *(np.int32(n) for n in (*origin, *extents)), *self.ints,
+    def ohmic(self, periodic, origin, extents, q_origin, q_shape):
+        """q on the loss box (q_origin, q_shape) holding the ohmic box (origin, extents), as engine3d q_box."""
+        q = (self.rng.random(q_shape) * 1e-12).astype(np.float32)
+        return (q, *self.fields(), self.mat, self.t_sig, *(np.int32(n) for n in (*origin, *extents)),
+                *(np.int32(n) for n in q_origin), np.int32(q_shape[1]), np.int32(q_shape[2]), *self.ints,
                 *(np.int32(flag) for flag in periodic), DTYPE(0.5 * self.dt))
 
 
@@ -162,14 +164,16 @@ def _check_kernels_numba(results_by_name):
                                                                                                 cpml_axes))
     for periodic in _NUMBA_PERIODIC_SETS:
         tag = ''.join(str(flag) for flag in periodic)
-        comparisons[f'ohmic_loss_3d:{tag}'] = (*twins['ohmic_loss_3d'], grid.ohmic(periodic, (0, 1, 2), (9, 6, 4)))
+        comparisons[f'ohmic_loss_3d:{tag}'] = (*twins['ohmic_loss_3d'], grid.ohmic(periodic, (0, 1, 2), (9, 6, 4),
+                                                                                    (0, 0, 1), (9, 8, 6)))
         for use_face in (0, 1):   # CPML layers on every axis (their rows never wrap, also on a periodic axis)
             comparisons[f'update_e_3d:{tag}:face{use_face}:cpml_xyz'] = (*twins['update_e_3d'],
                                                                          grid.update_e(periodic, use_face))
     speed = _RandomGrid(np.random.default_rng(1), _NUMBA_SPEED_SHAPE)
     periodic = (0, 0, 0)
     timed_arguments = {'update_h_3d': speed.update_h(), 'update_e_3d': speed.update_e(periodic, 0),
-                       'ohmic_loss_3d': speed.ohmic(periodic, (0, 0, 0), _NUMBA_SPEED_SHAPE)}
+                       'ohmic_loss_3d': speed.ohmic(periodic, (0, 0, 0), _NUMBA_SPEED_SHAPE, (0, 0, 0),
+                                                    _NUMBA_SPEED_SHAPE)}
     timings = {name: (*twins[name], arguments, *_NUMBA_TIMED_CALLS) for name, arguments in timed_arguments.items()}
     result = numba_twin_result(comparisons, timings, _NUMBA_TOLERANCE, numba)
     result['details']['speed_shape'] = list(_NUMBA_SPEED_SHAPE)
@@ -186,7 +190,7 @@ _KERNELS_NUMBA_CASE = SelfTestCase(
                  'none / all / x and z (update_h_3d, which takes no periodic flag, once per CPML set), Bloch wrap '
                  'scalars, random cylindrical curl factors (also weighting the x CPML psi), subpixel face overrides '
                  'off and on, CPML layers at both ends of every axis (edge and corner cells in 2 or 3 layers), on z '
-                 'only and off, and an ohmic box; measured = error = the worst max |numba - numpy| over every '
+                 'only and off, and an ohmic box accumulating into a larger loss box; measured = error = the worst max |numba - numpy| over every '
                  f'written array relative to its peak, tolerance {_NUMBA_TOLERANCE:g}. Details: ms per call of both '
                  f'on a {_NUMBA_SPEED_SHAPE[0]}^3 grid. Without numba nothing is compared (error 0).'),
     specs=lambda: {}, check=_check_kernels_numba, max_wall_time=600.0, backends=('cpu',))

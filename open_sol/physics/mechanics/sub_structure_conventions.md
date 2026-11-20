@@ -173,6 +173,16 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
 - Matrix-free (no CSR): `kernels3d.BrickKernels` products, every CG step a `FusedBrickIteration` and the gpu check
   blocks CUDA graphs; captured arrays and the reaction scratch: `ElasticSystem3D` comments (`_fused_operator`,
   `_reaction_key`). CG iterations scale with the longest edge: keep 3D self-test strips short.
+- ElasticSystem3D keeps no u_fix / K u_fix vectors: `held_values` exists only once a hold writes a value other than a
+  scalar 0 (`_held_values_for`; None = every held value 0), K u_fix is one product per `build_rhs` on the CG unknown
+  (`_solution`, which also resets `_reaction_key`), and `solve` rewrites the fixed dofs of unknown
+  (`_write_fixed_values`). `applied_body_force` / `applied_load` likewise wait for the first body force
+  (`body_force_target`) / traction (the load kernel's has_applied_* flags skip them). A new
+  writer of held values goes through `_held_values_for`; the estimate books both by feature (`_PRESCRIBING_FEATURES`,
+  body_force). The reduced inverse node blocks are float32 at every solve precision (`kernels3d.PRECONDITIONER_DTYPE`,
+  its error argument at the constant): formed / inverted in the solve dtype in a transient, every kernel reading them
+  takes `const float*` (a new one too; block_precondition3 takes its real type from the residual, `_DTYPE_ARGUMENTS`),
+  and the mixed / block-eigen float32 operator sets share the array.
 - pcg preconditioner 'multigrid' (opt-in): design and known weakness in the `multigrid3d.py` header, the fallback guard
   in `_guarded_solve`. Self-tests `solid_3d_multigrid` and `solid_3d_multigrid_void` fail on a fallback, so the guard
   cannot hide a weak cycle.

@@ -679,14 +679,19 @@ def subpixel_memory_estimate(spec, registry, shapes, mesh) -> MemoryEstimate:
 
 _FACE_INDEX_BYTES_PER_CELL = 2        # em_fdtd_3d uint16 face override index (physics/em3d/subpixel_smoothing3d;
                                       # em_fdfd_3d, which has none, is counted alike: a small overestimate)
-_FACE_BYTES_PER_LOCATION = 30         # its per-location kind positions (int64), values (3 x float32), ids, cells
+_FACE_BYTES_PER_LOCATION = 30         # its refresh buffers per location: uploaded kind positions (int64), values (3 x
+                                      # float32), ids, uploaded cells (int64); host between refreshes
+_HOST_FACE_BYTES_PER_LOCATION = BYTES_PER_LOCATION_3D + 16   # host copy per honouring physics: the geometry arrays,
+                                      # (em_fdtd_3d) kind positions and override cells
 _REFRESH_BYTES_PER_LOCATION = 48      # re-quantisation temporaries of a refresh (material_index3d on 1D arrays)
 
 
 def _memory_estimate_3d(n_locations, mesh, n_physics) -> MemoryEstimate:
-    """3D: interface geometry + per honouring physics the full-grid face index and its per-location arrays; build extra =
+    """3D: per honouring physics the full-grid face index kept on the device and a host copy of the geometry (both 3D
+    types copy it to the host: the device geometry lives through the build only); build extra = the device geometry,
     one cross-section's 2D geometry build (its gather batch: one kind's locations of every run, at most
-    _batch_locations), both runs' z-sample fractions, the lifted candidates, a refresh."""
+    _batch_locations), both runs' z-sample fractions, the lifted candidates, a refresh (its buffers and one face
+    kind's geometry upload)."""
     n_plane = int(mesh.nx) * int(mesh.ny)
     samples_per_cell = SAMPLES_FINE * SAMPLES_COARSE
     strip_samples = min(STRIP_SAMPLES + 2 * _HALO_CELLS * samples_per_cell * int(mesh.ny), n_plane * samples_per_cell)
@@ -697,9 +702,13 @@ def _memory_estimate_3d(n_locations, mesh, n_physics) -> MemoryEstimate:
                        * samples_per_cell)
                    + 4 * n_plane + 6 * FLOAT32_BYTES * n_plane
                    + 2 * (BYTES_PER_LOCATION_3D + FLOAT32_BYTES) * n_locations
-                   + _REFRESH_BYTES_PER_LOCATION * n_locations)
-    face_bytes = _FACE_INDEX_BYTES_PER_CELL * int(mesh.n_cells) + _FACE_BYTES_PER_LOCATION * n_locations
+                   + BYTES_PER_LOCATION_3D * n_locations
+                   + (_REFRESH_BYTES_PER_LOCATION + _FACE_BYTES_PER_LOCATION + BYTES_PER_LOCATION_3D // 3)
+                   * n_locations)
     return MemoryEstimate.from_items((
-        ('interface geometry 3D (approximate)', BYTES_PER_LOCATION_3D * n_locations),
-        (f'face override index ({n_physics} physics, approximate)', face_bytes * n_physics),
-    ), build_extra=build_extra).labelled('subpixel smoothing')
+        (f'face override index ({n_physics} physics, uint16 full grid)',
+         _FACE_INDEX_BYTES_PER_CELL * int(mesh.n_cells) * n_physics),
+    ), build_extra=build_extra, host_items=(
+        (f'interface geometry 3D host copies ({n_physics} physics, approximate)',
+         _HOST_FACE_BYTES_PER_LOCATION * n_locations * n_physics),
+    )).labelled('subpixel smoothing')

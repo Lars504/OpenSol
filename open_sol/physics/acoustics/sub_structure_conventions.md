@@ -16,6 +16,12 @@ solver_harmonic_fem.py header and the fem sub file "Complex scalar harmonic syst
   through `_velocity_arguments` / `_stress_arguments`); the kernel's coefficient precedence and
   `definition._material_moduli`; `kernels.stability_stiffness` and `definition.stability_stiffness` /
   `piezo_stiffening`; the axisymmetric dt factor and `definition._cell_weights`.
+- Coefficient storage (`AcousticPhysics._set_storage`, mirrored by the memory estimate through `material_sets`): va_x /
+  va_y exist only while a cell has acoustic_damping (None: the '_lossless' velocity kernels imply va from vb != 0), and
+  c22 IS the c11 array while no cell sets c11 / c22. `_choose_storage` decides from the values at every
+  `_update_time_step` (build time), `materials_changed` only upgrades (no sync). A new reader of va / c22 checks the
+  layout (`va_x is None`, `c22 is c11`; the coefficients kernel writes neither then), and a new cached launch holding
+  c22 is dropped with `_launch_cache` / `_pulse_tables` when the layout changes. The rigid keep mask is bool.
 - Adjoint pairs (energy conservation; their checks fail otherwise): the monoclinic corner / cell means
   (elastic_monoclinic_plane_waves Q = inf), the axisymmetric velocity / stress updates (ring-volume energy), the piezo
   stress / bound charge (coupling/selftests_piezo piezo_stiffened_bar_resonance Q = inf).
