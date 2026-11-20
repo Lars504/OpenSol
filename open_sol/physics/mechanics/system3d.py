@@ -480,13 +480,23 @@ class ElasticSystem3D(ElasticSystemBase):
         totals = to_host(xp.bincount(dofs % 3, weights=nodal, minlength=3)) if dofs.size else np.zeros(3)
         return float(totals[0]), float(totals[1]), float(totals[2])
 
-    def write_outputs(self, output_arrays, alphas, temperature_rise, temperature_rise_ext, thermal=True) -> None:
-        """Cell-centre outputs of the unknown into full-grid float32 arrays (kernels3d.OUTPUT_ARRAYS_3D order; window
-        cells only, 0 in void cells); thermal False: dT = 0 (a mode shape)."""
-        if self.lame_lambda is None:
-            raise RuntimeError('assemble before write_outputs')
-        self.kernels.outputs(output_arrays, self.unknown, self.lame_lambda, self.mu, alphas, temperature_rise,
-                             temperature_rise_ext, self.widths_device, thermal=thermal)
+    def write_output(self, out, name, unknown, lame_lambda, mu, thermal_strain) -> None:
+        """Cell-centre output `name` (kernels3d.OUTPUT_ARRAYS_3D) of a nodal displacement on an assembly's (lambda, mu)
+        into a full-grid float32 array (window cells only, 0 in void cells); thermal_strain: thermal_strains of the
+        solve, None = dT = 0 (a mode shape)."""
+        self.kernels.output(out, name, unknown, lame_lambda, mu, thermal_strain, self.widths_device)
+
+    def thermal_strains(self, alphas, temperature_rise, temperature_rise_ext):
+        """(3, *element_shape) free thermal strains alpha_i dT of the window cells in the solve dtype (the products the
+        output kernel formed from the full-grid float32 alphas and dT = rise + rise_ext): the outputs' only thermal
+        input, so later in-place changes of the inputs or alphas never reach the shown outputs."""
+        xp, window = self.xp, self.window
+        change = temperature_rise[window].astype(self.dtype)
+        change += temperature_rise_ext[window]
+        strains = xp.empty((3, *self.element_shape), dtype=self.dtype)
+        for component, alpha in enumerate(alphas):
+            xp.multiply(alpha[window], change, out=strains[component])
+        return strains
 
     # --- vibration modes (eigenfrequency study) ----------------------------------
 

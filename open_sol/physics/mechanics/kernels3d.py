@@ -16,7 +16,7 @@ from ...core.kernels import real_raw_twin
 # float64 solve still reaches its tolerance; half the block bytes (24 B / node) and their per-iteration reads.
 PRECONDITIONER_DTYPE = np.dtype(np.float32)
 
-# Cell-centre outputs in the argument order of elastic_outputs (the 3D field class keeps this order).
+# Cell-centre outputs, indexed by elastic_output's which (computed on read: SolidMechanics3DPhysics.output).
 OUTPUT_ARRAYS_3D = ('u_x', 'u_y', 'u_z', 'u_abs',
                     'strain_xx', 'strain_yy', 'strain_zz', 'strain_xy', 'strain_xz', 'strain_yz',
                     'elastic_strain_xx', 'elastic_strain_yy', 'elastic_strain_zz',
@@ -602,32 +602,26 @@ void elastic_load(
     for (int a = 0; a < 3; ++a) load[3 * node + a] = acc[a];
 }
 """,
-    # Per element: centre u (8-corner mean), centre gradients, strain, elastic strain, stress, von Mises into the
-    # full-grid float32 outputs (OUTPUT_ARRAYS_3D order); 0 in void elements.
-    'elastic_outputs': r"""
+    # Per element: ONE cell-centre output (OUTPUT_ARRAYS_3D index `which`; outputs are computed on read) of centre u
+    # (8-corner mean), centre gradients, strain, elastic strain, stress or von Mises into a full-grid float32 array; 0 in
+    # void elements. thermal_strain (3, elements) = alpha_i dT of the shown solve (read only when has_thermal).
+    'elastic_output': r"""
 extern "C" __global__
-void elastic_outputs(
+void elastic_output(
     const real_t* __restrict__ u, const real_t* __restrict__ lam, const real_t* __restrict__ mu,
-    const float* __restrict__ alpha_xx, const float* __restrict__ alpha_yy, const float* __restrict__ alpha_zz,
-    const float* __restrict__ rise, const float* __restrict__ rise_ext,
+    const real_t* __restrict__ thermal_strain, int has_thermal,
     const real_t* __restrict__ wx, const real_t* __restrict__ wy, const real_t* __restrict__ wz,
-    float* u_x, float* u_y, float* u_z, float* u_abs,
-    float* strain_xx, float* strain_yy, float* strain_zz, float* strain_xy, float* strain_xz, float* strain_yz,
-    float* elastic_xx, float* elastic_yy, float* elastic_zz,
-    float* stress_xx, float* stress_yy, float* stress_zz, float* stress_xy, float* stress_xz, float* stress_yz,
-    float* von_mises, int thermal,
+    float* out, int which,
     int ex, int ey, int ez, int ox, int oy, int oz, int ny_full, int nz_full)
 {
+    const int n_elements = ex * ey * ez;
     const int e = blockIdx.x * blockDim.x + threadIdx.x;
-    if (e >= ex * ey * ez) return;
+    if (e >= n_elements) return;
     const int ek = e % ez, rest = e / ez, ej = rest % ey, ei = rest / ey;
     const idx_t g = full_index(ei, ej, ek, ox, oy, oz, ny_full, nz_full);
-    float* outputs[20] = {u_x, u_y, u_z, u_abs, strain_xx, strain_yy, strain_zz, strain_xy, strain_xz, strain_yz,
-                          elastic_xx, elastic_yy, elastic_zz, stress_xx, stress_yy, stress_zz, stress_xy, stress_xz,
-                          stress_yz, von_mises};
     const real_t m = mu[e];
     if (m <= (real_t)0) {
-        for (int n = 0; n < 20; ++n) outputs[n][g] = 0.0f;
+        out[g] = 0.0f;
         return;
     }
     const int nyn = ey + 1, nzn = ez + 1;
@@ -655,27 +649,40 @@ void elastic_outputs(
     const real_t eps_xz = (real_t)0.5 * (grad[0][2] + grad[2][0]);
     const real_t eps_yz = (real_t)0.5 * (grad[1][2] + grad[2][1]);
     const real_t l = lam[e];
-    const real_t alpha[3] = {(real_t)alpha_xx[g], (real_t)alpha_yy[g], (real_t)alpha_zz[g]};
-    const real_t alpha_sum = alpha[0] + alpha[1] + alpha[2];
-    const real_t dT = thermal ? (real_t)rise[g] + (real_t)rise_ext[g] : (real_t)0;   // 0: a mode shape
+    real_t t[3] = {(real_t)0, (real_t)0, (real_t)0};   // free thermal strain alpha_i dT (0: a mode shape)
+    if (has_thermal)
+        for (int a = 0; a < 3; ++a) t[a] = thermal_strain[a * n_elements + e];
+    const real_t t_sum = t[0] + t[1] + t[2];
     const real_t volumetric = l * (eps_xx + eps_yy + eps_zz);
-    const real_t thermal_x = ((real_t)2 * m * alpha[0] + l * alpha_sum) * dT;
-    const real_t thermal_y = ((real_t)2 * m * alpha[1] + l * alpha_sum) * dT;
-    const real_t thermal_z = ((real_t)2 * m * alpha[2] + l * alpha_sum) * dT;
-    const real_t s_xx = volumetric + (real_t)2 * m * eps_xx - thermal_x;
-    const real_t s_yy = volumetric + (real_t)2 * m * eps_yy - thermal_y;
-    const real_t s_zz = volumetric + (real_t)2 * m * eps_zz - thermal_z;
+    const real_t s_xx = volumetric + (real_t)2 * m * eps_xx - ((real_t)2 * m * t[0] + l * t_sum);
+    const real_t s_yy = volumetric + (real_t)2 * m * eps_yy - ((real_t)2 * m * t[1] + l * t_sum);
+    const real_t s_zz = volumetric + (real_t)2 * m * eps_zz - ((real_t)2 * m * t[2] + l * t_sum);
     const real_t s_xy = (real_t)2 * m * eps_xy, s_xz = (real_t)2 * m * eps_xz, s_yz = (real_t)2 * m * eps_yz;
-    const real_t mises = sqrt((real_t)0.5 * ((s_xx - s_yy) * (s_xx - s_yy) + (s_yy - s_zz) * (s_yy - s_zz)
-                                             + (s_zz - s_xx) * (s_zz - s_xx))
-                              + (real_t)3 * (s_xy * s_xy + s_xz * s_xz + s_yz * s_yz));
-    const real_t values[20] = {
-        centre[0], centre[1], centre[2],
-        sqrt(centre[0] * centre[0] + centre[1] * centre[1] + centre[2] * centre[2]),
-        eps_xx, eps_yy, eps_zz, eps_xy, eps_xz, eps_yz,
-        eps_xx - alpha[0] * dT, eps_yy - alpha[1] * dT, eps_zz - alpha[2] * dT,
-        s_xx, s_yy, s_zz, s_xy, s_xz, s_yz, mises};
-    for (int n = 0; n < 20; ++n) outputs[n][g] = (float)values[n];
+    real_t value;
+    switch (which) {
+        case 0: case 1: case 2: value = centre[which]; break;
+        case 3: value = sqrt(centre[0] * centre[0] + centre[1] * centre[1] + centre[2] * centre[2]); break;
+        case 4: value = eps_xx; break;
+        case 5: value = eps_yy; break;
+        case 6: value = eps_zz; break;
+        case 7: value = eps_xy; break;
+        case 8: value = eps_xz; break;
+        case 9: value = eps_yz; break;
+        case 10: value = eps_xx - t[0]; break;
+        case 11: value = eps_yy - t[1]; break;
+        case 12: value = eps_zz - t[2]; break;
+        case 13: value = s_xx; break;
+        case 14: value = s_yy; break;
+        case 15: value = s_zz; break;
+        case 16: value = s_xy; break;
+        case 17: value = s_xz; break;
+        case 18: value = s_yz; break;
+        default:
+            value = sqrt((real_t)0.5 * ((s_xx - s_yy) * (s_xx - s_yy) + (s_yy - s_zz) * (s_yy - s_zz)
+                                        + (s_zz - s_xx) * (s_zz - s_xx))
+                         + (real_t)3 * (s_xy * s_xy + s_xz * s_xz + s_yz * s_yz));   // von Mises
+    }
+    out[g] = (float)value;
 }
 """,
 }
@@ -1113,41 +1120,41 @@ def _elastic_load_host(out, applied_load, has_applied_load, lame_lambda, mu, alp
     out[...] = load.reshape(-1)
 
 
-def _elastic_outputs_host(u, lame_lambda, mu, alpha_xx, alpha_yy, alpha_zz, rise, rise_ext, wx, wy, wz, *rest):
-    outputs = rest[:len(OUTPUT_ARRAYS_3D)]
-    thermal, ex, ey, ez, ox, oy, oz, _, _ = (int(value) for value in rest[len(OUTPUT_ARRAYS_3D):])
-    dtype = u.dtype
+def _elastic_output_host(u, lame_lambda, mu, thermal_strain, has_thermal, wx, wy, wz, out, which, ex, ey, ez, ox, oy,
+                         oz, ny_full, nz_full):
+    ex, ey, ez, ox, oy, oz, which = (int(value) for value in (ex, ey, ez, ox, oy, oz, which))
     nodes = u.reshape(ex + 1, ey + 1, ez + 1, 3)
     window = (slice(ox, ox + ex), slice(oy, oy + ey), slice(oz, oz + ez))
     solid, lam, shear = _element_lame_host(lame_lambda, mu, (ex, ey, ez))
+    if which < 4:   # 8-corner mean (u_abs its magnitude)
+        centre = nodes
+        for axis in range(3):
+            centre = _interpolate(centre, axis, 0.5)
+        value = (centre[..., which] if which < 3 else
+                 np.sqrt(centre[..., 0] ** 2 + centre[..., 1] ** 2 + centre[..., 2] ** 2))
+        out[window] = np.where(solid, value, 0).astype(np.float32)
+        return
     widths = (wx, wy, wz)
-    centre = nodes
-    for axis in range(3):
-        centre = _interpolate(centre, axis, 0.5)   # 8-corner mean
     differences = [(_upper(nodes, axis) - _lower(nodes, axis)) / _along(widths[axis], axis, 4) for axis in range(3)]
     gx, gy, gz = _gradients_at(differences, (0.5, 0.5, 0.5))   # mean of the 4 edge differences
-    eps_xx, eps_yy, eps_zz = gx[..., 0], gy[..., 1], gz[..., 2]
-    eps_xy = 0.5 * (gy[..., 0] + gx[..., 1])   # tensor shear strains
-    eps_xz = 0.5 * (gz[..., 0] + gx[..., 2])
-    eps_yz = 0.5 * (gz[..., 1] + gy[..., 2])
-    alphas = tuple(_window_values_host(alpha, window, dtype) for alpha in (alpha_xx, alpha_yy, alpha_zz))
-    alpha_sum = alphas[0] + alphas[1] + alphas[2]
-    temperature_change = (_window_values_host(rise, window, dtype) + _window_values_host(rise_ext, window, dtype)
-                          if thermal else dtype.type(0))   # 0: a mode shape
-    volumetric = lam * (eps_xx + eps_yy + eps_zz)
-    s_xx, s_yy, s_zz = (volumetric + 2.0 * shear * strain - (2.0 * shear * alpha + lam * alpha_sum) * temperature_change
-                        for strain, alpha in zip((eps_xx, eps_yy, eps_zz), alphas))
-    s_xy, s_xz, s_yz = 2.0 * shear * eps_xy, 2.0 * shear * eps_xz, 2.0 * shear * eps_yz
-    mises = np.sqrt(0.5 * ((s_xx - s_yy) ** 2 + (s_yy - s_zz) ** 2 + (s_zz - s_xx) ** 2)
-                    + 3.0 * (s_xy ** 2 + s_xz ** 2 + s_yz ** 2))
-    values = (centre[..., 0], centre[..., 1], centre[..., 2],
-              np.sqrt(centre[..., 0] ** 2 + centre[..., 1] ** 2 + centre[..., 2] ** 2),
-              eps_xx, eps_yy, eps_zz, eps_xy, eps_xz, eps_yz,
-              eps_xx - alphas[0] * temperature_change, eps_yy - alphas[1] * temperature_change,
-              eps_zz - alphas[2] * temperature_change,
-              s_xx, s_yy, s_zz, s_xy, s_xz, s_yz, mises)
-    for output, value in zip(outputs, values):
-        output[window] = np.where(solid, value, 0).astype(np.float32)
+    strains = (gx[..., 0], gy[..., 1], gz[..., 2], 0.5 * (gy[..., 0] + gx[..., 1]),   # tensor shear strains
+               0.5 * (gz[..., 0] + gx[..., 2]), 0.5 * (gz[..., 1] + gy[..., 2]))
+    # free thermal strain alpha_i dT (0: a mode shape)
+    free = (tuple(thermal_strain.reshape(3, ex, ey, ez)) if int(has_thermal) else (u.dtype.type(0),) * 3)
+    if which < 10:
+        value = strains[which - 4]
+    elif which < 13:
+        value = strains[which - 10] - free[which - 10]
+    else:
+        free_sum = free[0] + free[1] + free[2]
+        volumetric = lam * (strains[0] + strains[1] + strains[2])
+        s_xx, s_yy, s_zz = (volumetric + 2.0 * shear * strains[axis] - (2.0 * shear * free[axis] + lam * free_sum)
+                            for axis in range(3))
+        s_xy, s_xz, s_yz = (2.0 * shear * strain for strain in strains[3:])
+        value = ((s_xx, s_yy, s_zz, s_xy, s_xz, s_yz)[which - 13] if which < 19 else
+                 np.sqrt(0.5 * ((s_xx - s_yy) ** 2 + (s_yy - s_zz) ** 2 + (s_zz - s_xx) ** 2)
+                         + 3.0 * (s_xy ** 2 + s_xz ** 2 + s_yz ** 2)))
+    out[window] = np.where(solid, value, 0).astype(np.float32)
 
 
 _HOST_TWINS = {'elastic_product': _elastic_product_host, 'elastic_mass_product': _elastic_mass_product_host,
@@ -1155,7 +1162,7 @@ _HOST_TWINS = {'elastic_product': _elastic_product_host, 'elastic_mass_product':
                'reduce_invert_blocks': _reduce_invert_blocks_host, 'block_precondition3': _block_precondition3_host,
                'elastic_update_precondition': _elastic_update_precondition_host,
                'elastic_direction_product': _elastic_direction_product_host,
-               'elastic_load': _elastic_load_host, 'elastic_outputs': _elastic_outputs_host}
+               'elastic_load': _elastic_load_host, 'elastic_output': _elastic_output_host}
 # name -> numba factory: the kernels of every CG iteration / Lanczos step (the rest runs per assembly / solve)
 _NUMBA_TWINS = {'elastic_product': _elastic_product_numba, 'elastic_mass_product': _elastic_mass_product_numba,
                 'block_precondition3': _block_precondition3_numba,
@@ -1293,20 +1300,20 @@ class BrickKernels:
                       lame_lambda, mu, *full, applied_body_force if has_body else lame_lambda,
                       _MASK_ON if has_body else _MASK_OFF, *widths, *self._element_args, *self._window_args))
 
-    def outputs(self, output_arrays, unknown, lame_lambda, mu, alphas, temperature_rise, temperature_rise_ext,
-                widths, thermal=True):
-        """Write the 20 cell-centre outputs (full-grid float32, OUTPUT_ARRAYS_3D order) of the window elements;
-        thermal False: dT = 0 (a mode shape)."""
-        if len(output_arrays) != len(OUTPUT_ARRAYS_3D):
-            raise ValueError(f'need {len(OUTPUT_ARRAYS_3D)} output arrays ({", ".join(OUTPUT_ARRAYS_3D)}), got '
-                             f'{len(output_arrays)}')
-        outputs = [self._full_grid(array, name) for array, name in zip(output_arrays, OUTPUT_ARRAYS_3D)]
-        inputs = [self._full_grid(array, label) for array, label in zip(
-            (*alphas, temperature_rise, temperature_rise_ext),
-            ('alpha_xx', 'alpha_yy', 'alpha_zz', 'temperature_rise', 'temperature_rise_ext'))]
-        self._launch('elastic_outputs', self._element_blocks,
-                     (unknown, lame_lambda, mu, *inputs, *widths, *outputs, _MASK_ON if thermal else _MASK_OFF,
-                      *self._element_args, *self._window_args))
+    def output(self, out, name, unknown, lame_lambda, mu, thermal_strain, widths):
+        """Write the cell-centre output `name` (OUTPUT_ARRAYS_3D) of the window elements into the full-grid float32
+        out (the ring untouched); thermal_strain: (3, *element_shape) alpha_i dT in the solve dtype, None = dT = 0."""
+        if name not in OUTPUT_ARRAYS_3D:
+            raise ValueError(f"unknown 3D solid output {name!r}; expected one of {', '.join(OUTPUT_ARRAYS_3D)}")
+        has_thermal = thermal_strain is not None
+        if has_thermal and (thermal_strain.dtype != self.dtype or thermal_strain.size != 3 * self.n_elements
+                            or not thermal_strain.flags.c_contiguous):
+            raise ValueError(f'thermal_strain must be a C-contiguous {self.dtype} (3, {self.n_elements}) array, got '
+                             f'{thermal_strain.dtype} {tuple(thermal_strain.shape)}')
+        self._launch('elastic_output', self._element_blocks,
+                     (unknown, lame_lambda, mu, thermal_strain if has_thermal else lame_lambda,
+                      _MASK_ON if has_thermal else _MASK_OFF, *widths, self._full_grid(out, name),
+                      np.int32(OUTPUT_ARRAYS_3D.index(name)), *self._element_args, *self._window_args))
 
 
 class FusedBrickIteration:

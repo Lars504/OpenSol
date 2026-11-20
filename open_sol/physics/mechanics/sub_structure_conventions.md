@@ -183,6 +183,13 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   its error argument at the constant): formed / inverted in the solve dtype in a transient, every kernel reading them
   takes `const float*` (a new one too; block_precondition3 takes its real type from the residual, `_DTYPE_ARGUMENTS`),
   and the mixed / block-eigen float32 operator sets share the array.
+- Outputs are computed on read (`SolidMechanics3DPhysics.output`; state() is a Mapping, probes and the renderer read
+  through it; MechanicsFields3D holds the inputs only): `_write_outputs` only records the shown solution
+  (`_ShownSolution`: the live unknown, the assembly's lambda / mu, and once a temperature input was written its free
+  thermal strains alpha_i dT, so later in-place changes of dT / alphas never reach the shown outputs). Code that
+  changes the unknown without a new show calls `_freeze_unknown()` first (assembly, warm start) or `_drop_shown()`
+  (a solve, a selected mode); a new temperature input writer sets `_thermal_inputs`. One computed output is kept (the
+  latest); a reader of several keeps its own references. The elastic_output kernel and its numpy twin change together.
 - pcg preconditioner 'multigrid' (opt-in): design and known weakness in the `multigrid3d.py` header, the fallback guard
   in `_guarded_solve`. Self-tests `solid_3d_multigrid` and `solid_3d_multigrid_void` fail on a fallback, so the guard
   cannot hide a weak cycle.

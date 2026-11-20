@@ -1,7 +1,8 @@
 """SolidRenderer3D: window-shaped (wx, wy, wz) displacement, strain and stress fields of a SolidMechanics3DPhysics."""
 from ...core.renderer import FieldInfo, PhysicsRenderer
 from ...model.schema import FREQUENCY_RESPONSE_STUDY
-from .fields3d import ELECTRIC_OUTPUT_ARRAYS_3D, ENERGY_OUTPUT_ARRAYS_3D, HARMONIC_IMAG_FIELDS_3D
+from .fields3d import (ELECTRIC_OUTPUT_ARRAYS_3D, ENERGY_OUTPUT_ARRAYS_3D, HARMONIC_IMAG_FIELDS_3D,
+                       OUTPUT_ARRAYS_3D)
 
 
 def _signed(name, label, unit, parity, requires_study=''):
@@ -9,9 +10,9 @@ def _signed(name, label, unit, parity, requires_study=''):
 
 
 class SolidRenderer3D(PhysicsRenderer):
-    """Window-shaped (wx, wy, wz) float32 fields of a SolidMechanics3DPhysics (views of the stored arrays; Session cuts
-    the plane); parities of the roller (even) mirror of the model's mirror planes (symmetry faces, EM mirror faces;
-    shear ij flips like the axial component of the third axis). The
+    """Window-shaped (wx, wy, wz) float32 fields of a SolidMechanics3DPhysics (views of the inputs and of the outputs
+    physics.output computes on read; Session cuts the plane); parities of the roller (even) mirror of the model's
+    mirror planes (symmetry faces, EM mirror faces; shear ij flips like the axial component of the third axis). The
     piezoelectric and energy-density fields are tetrahedra-only (fem.renderer3d over the same field_infos): zeros
     here."""
 
@@ -76,10 +77,12 @@ class SolidRenderer3D(PhysicsRenderer):
         if component in ('youngs_modulus', 'poisson_ratio'):
             return getattr(physics.domain.materials, component)[window]
         if component in ELECTRIC_OUTPUT_ARRAYS_3D or component in ENERGY_OUTPUT_ARRAYS_3D:
-            return physics.domain.xp.zeros_like(physics.fields.u_x[window])
+            return physics.domain.xp.zeros_like(physics.fields.temperature_rise[window])
         if component in HARMONIC_IMAG_FIELDS_3D:
             raise ValueError(f"field '{component}' exists on a tetrahedron mesh only (the rectangular-cell solid has no "
                              'frequency response)')
+        if component in OUTPUT_ARRAYS_3D:
+            return physics.output(component)[window]
         return getattr(physics.fields, component)[window]
 
     def time_label(self):

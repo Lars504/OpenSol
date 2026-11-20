@@ -1695,9 +1695,20 @@ def _memory_estimate(settings_values, mesh, context):
     value_bytes = FLOAT64_BYTES if precision == 'float64' else FLOAT32_BYTES
     elements, nodes = _window_counts(mesh)
     dofs = 3 * nodes
-    n_fields = len(OUTPUT_ARRAYS_3D) + len(INPUT_ARRAYS_3D)
-    fields = MemoryEstimate.from_items(((f'fields ({n_fields} x float32)',
-                                         n_fields * FLOAT32_BYTES * int(mesh.n_cells)),))
+    # MechanicsFields3D keeps the inputs only; the outputs are computed on read (solver3d output: one full-grid float32
+    # array at a time, its window temporary of the thermal strains at the show), and with a temperature input (a
+    # temperature_change feature or the thermal-strain coupling) the shown solve's free thermal strains are kept
+    n_fields = len(INPUT_ARRAYS_3D)
+    thermal = (any(feature.enabled and feature.type == 'temperature_change'
+                   for feature in context.physics_spec.features)
+               or any(coupling.enabled and coupling.type == THERMAL_STRAIN_COUPLING
+                      and coupling.target == context.physics_spec.name for coupling in context.spec.couplings))
+    fields = MemoryEstimate.from_items(
+        ((f'input fields ({n_fields} x float32)', n_fields * FLOAT32_BYTES * int(mesh.n_cells)),),
+        run_items=(('shown free thermal strains (3 x solve dtype per window cell)',
+                    3 * value_bytes * elements),) if thermal else (),
+        transient_items=(('solid output read', 'one cell-centre output computed on read (float32, full grid)',
+                          FLOAT32_BYTES * int(mesh.n_cells)),))
     # unknown, load, rhs, CG unknown (+ applied load with a boundary_load, + held values with a prescribed displacement
     # other than 0: no u_fix or K u_fix vectors, system3d builds K u_fix per rhs on the CG unknown); the matrix-free
     # PCGSolver workspace
