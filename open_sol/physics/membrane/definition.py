@@ -1131,6 +1131,12 @@ def _complex_pencil(settings_values, context) -> bool:
     return bool(_pml_faces(settings_values)) or bloch or context.material_sets('loss_factor')
 
 
+def _eigen_tolerance(context) -> float:
+    """tolerance of the resolved 'eigen' solver (0 = machine precision; also without one)."""
+    resolved = (context.solvers or {}).get('eigen')
+    return 0.0 if resolved is None else float(resolved.values.get('tolerance', 0.0) or 0.0)
+
+
 def _cudss_factor(settings_values, context):
     """(back end / factorization name, value bytes) of the cuDSS factor the study uses (frequency_response: the
     'linear' back end, eigenfrequency: the 'eigen' factorization), None for a host SuperLU factor."""
@@ -1232,8 +1238,21 @@ def _memory_estimate(settings_values, mesh, context):
                                   else arnoldi_basis_bytes(dofs, basis, solver_backend(context.spec),
                                                            device_matvec=cudss is not None))
         if on_device:
-            eigen_items.append((f'device Krylov-Schur basis ({basis + 1} complex128 rows + 2 work vectors)',
-                                basis_bytes))
+            # fem.harmonic_resonances on a cuDSS factor: complex64 rows at an eigen tolerance >=
+            # SINGLE_BASIS_MIN_TOLERANCE, and the device M of its matvec (device_matrix: float64 unless a PML / Bloch
+            # phase makes it complex, its lower triangle unless a Bloch reduction makes the pencil general)
+            from ...solvers.arpack_shift_invert import SINGLE_BASIS_MIN_TOLERANCE
+            single = cudss is not None and _eigen_tolerance(context) >= SINGLE_BASIS_MIN_TOLERANCE
+            row_type, row_bytes = ('complex64', COMPLEX128_BYTES // 2) if single else ('complex128', COMPLEX128_BYTES)
+            eigen_items.append((f'device Krylov-Schur basis ({basis + 1} {row_type} rows + 2 complex128 work vectors)',
+                                ((basis + 1) * row_bytes + 2 * COMPLEX128_BYTES) * dofs))
+            if cudss is not None:
+                from ...solvers.device_matrices import device_matrix_bytes
+                bloch = any(_bloch_wavenumber(settings_values, axis) != 0.0
+                            for axis in _periodic_axes(settings_values))
+                eigen_items.append(('eigen device mass of the Krylov-Schur matvec',
+                                    device_matrix_bytes(dofs, entries, symmetric=not bloch,
+                                                        real=not (bloch or _pml_faces(settings_values)))))
         else:
             host_items.append(('ARPACK basis (complex128)', basis_bytes))
     host_items.extend(reduced_sweep_memory_items(context, dofs, entries))
