@@ -40,10 +40,10 @@ coordinate rules stay in the root file.
   heuristics uncalibrated: refit from summary.json host_direct_lu_entries / host_direct_peak_bytes); a cuDSS 'linear'
   back end is the caller's `fem.diffusion.cudss_diffusion_estimate(input_copy=False)` (core may not import
   solvers.cudss_factor).
-- `MaterialGrid.park(names)` (em3d sub file "Parked material arrays"): parked arrays are host numpy; `assign` /
-  `assign_window` write them there and `device_array(name, index)` uploads (a view when not parked). Code reading a
-  MaterialGrid array as a device array (`getattr(materials, name)` into a kernel or xp expression) breaks on a parked
-  one: a parking solver's rule excludes the meshes where such readers run. The rule is shared:
+- `MaterialGrid.park(names)` (em3d / acoustics sub files "Parked material arrays"): parked arrays are host numpy;
+  `assign` / `assign_window` write them there and `device_array(name, index)` uploads (a view when not parked). Code
+  reading a MaterialGrid array as a device array (`getattr(materials, name)` into a kernel or xp expression) breaks on
+  a parked one: a parking solver's rule excludes the meshes where such readers run. The rule is shared:
   `model.definition_helpers.parkable_material_arrays` (a new parking type calls it, never a copy).
 - `release_all`'s full `gc.collect` walks every tracked object (~25 ms): a sweep (`study._run_sweep`) freezes the gc
   after its first value (`freeze_collect_baseline` / `thaw_collect_baseline`), never undoing a freeze of its caller
@@ -63,7 +63,8 @@ A new accepted sync joins this list.
   step (material drift check, re-solve above `mode_ports._RESOLVE_DRIFT`); the E_z ohmic-box refresh per
   `materials_changed` of sigma_e; the 2D FDTD coefficient layout checks (sigma_e == 0 at the first E rebuild after a
   sigma_e change, mu_r / sigma_m uniform per H rebuild, none once per cell); em_fdtd_3d: the chunk uploads of parked
-  material arrays per index rebuild, one face kind's geometry upload per subpixel refresh.
+  material arrays per index rebuild, one face kind's geometry upload per subpixel refresh; elastic_waves with parked
+  materials: the host coefficient rebuild (downloads, uploads) per rebuild (build, a new runner dt).
 - laminar_flow: the velocity check once per lattice check interval (>= 100 steps).
 - Probe tables: `monitors.park_probe_rows` right after the time loops' per-chunk sync (study `_run_time_dependent`,
   `_run_harmonic_pulse`; `Simulation.run` per chunk), one transfer per table holding >= PROBE_PARK_ROWS rows; a HarmonicProbeRecord's stacked
@@ -342,7 +343,9 @@ A new accepted sync joins this list.
   when `cross_term_dirty` is set (heat / potential `materials_changed` of the xy array): a script writing the xy array
   in place must call `materials_changed` too.
 - CG solves for u - u_fix, so b holds only [c u] drives: never put held values [u] into b (against eps0-scaled rows the
-  tolerance then stops CG after a few iterations). Script constructors keep max_iter = 5000; the model's 0 = auto
+  tolerance then stops CG after a few iterations). It iterates in place on `unknown` (no solution vector): during
+  `linear_solver.solve` the unknown holds w = u - u_fix, so a solver wrapper or callback never reads the system's
+  unknown (or fields derived from it) inside the solve. Script constructors keep max_iter = 5000; the model's 0 = auto
   (`pcg.resolve_max_iterations`, Jacobi needs ~10 iterations per cell of the longest window axis; 'multigrid' needs
   nothing from the system).
 - Anchors: `assemble(check_anchors=False)` only for a caller that changed coefficient values but not which c are > 0,

@@ -25,7 +25,7 @@ from .assembly3d import (CHUNK_ELEMENTS, _element_list, _rule_degree, _volume_we
                          assemble_lagrange_load_3d, assemble_lagrange_mass_3d, element_chunks_3d)
 from .elasticity import _fixed_field, as_stress_field, component_dofs, fixed_stress_at, stress_degree
 from .elements3d import LOCAL_EDGES, REFERENCE_VERTICES_3D, lagrange_basis_3d, piola_vectors_3d, tetrahedron_geometry
-from .fixed_pattern import kept_pattern, kept_pattern_if_any, scatter_add
+from .fixed_pattern import device_pattern_bytes, kept_pattern, kept_pattern_if_any, scatter_add
 from .quadrature3d import tetrahedron_rule
 from .tangent_kernel3d import element_bytes, element_force_tangent_3d, kernel_fits
 
@@ -758,9 +758,9 @@ class TangentAssembler3D:
         self.chunk_elements = CHUNK_ELEMENTS   # host; device: from the pool budget (T3 a)
         if self.device:
             available = _available_pool_bytes()
-            if available is not None:   # less the kept J^-1 / |det J| and int32 scatter slots allocated below
+            if available is not None:   # less the kept J^-1 / |det J| and the device pattern's element maps below
                 available -= (8 * TANGENT_DEVICE_GEOMETRY_VALUES * len(elements)
-                              + 4 * len(elements) * (COMPONENTS * dofs.n_local) ** 2)
+                              + device_pattern_bytes(dofs.n_local, len(elements)))
             self.chunk_elements = device_tangent_chunk_elements(dofs.n_local, points, available, self.element_kernel)
         step = self.chunk_elements
         self.chunks = [elements[start:start + step] for start in range(0, len(elements), step)]
@@ -935,8 +935,8 @@ class TangentAssembler3D:
 
     def full_product(self, data, vector) -> np.ndarray:
         """Host (3 n,) full tangent of data times a host vector (device data: the product on the device)."""
-        if self._on_device(data):
-            return self.xp.asnumpy(self.full(data) @ self.xp.asarray(vector, dtype=np.float64))
+        if self._on_device(data):   # the row kernel on the device pattern (no index upload)
+            return self.xp.asnumpy(self.device_pattern.product(data, self.xp.asarray(vector, dtype=np.float64)))
         return self.full(data) @ vector
 
     def tangent(self, displacement, initial_stress=None):

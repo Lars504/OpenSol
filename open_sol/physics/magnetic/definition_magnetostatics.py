@@ -646,11 +646,12 @@ def _bh_curve_material_count(spec):
 
 
 def _memory_estimate(settings_values, mesh, context):
-    """MagneticFields2D (float32 full grid) + the window DiffusionSystem + |B| (solve dtype window; nu_xx / nu_yy and
-    mu_dc_xx / _yy kept only while saturating: MagneticPhysics._coefficients) + one bool window mask per bh_curve
-    material; run items: the remanence face terms and rhs when a material sets remanence, the saturation loop state,
-    J_s, proposal temporaries and the Anderson history when one sets saturation_polarization or a bh_curve; a cuDSS
-    'linear' factor (fem.diffusion.cudss_diffusion_estimate). Triangles: _triangle_memory_estimate."""
+    """MagneticFields2D (float32 full grid) + the window DiffusionSystem + |B| (solve dtype window; the assembled nu of
+    the saturating cells kept only while saturating, mu_dc as views: MagneticPhysics._coefficients) + one bool window
+    mask per bh_curve material; run items: the remanence face terms and rhs when a material sets remanence, the
+    saturation loop state, J_s, proposal temporaries and the Anderson history when one sets saturation_polarization or
+    a bh_curve; a cuDSS 'linear' factor (fem.diffusion.cudss_diffusion_estimate). Triangles:
+    _triangle_memory_estimate."""
     if mesh.kind == 'triangles':
         return _triangle_memory_estimate(settings_values, mesh, context)
     window_cells = window_cell_count(mesh)
@@ -665,8 +666,8 @@ def _memory_estimate(settings_values, mesh, context):
     own = MemoryEstimate.from_items(
         ((f'fields ({_N_FIELDS} x float32)', _N_FIELDS * FLOAT32_BYTES * int(mesh.n_cells)),
          ('|B| (window)', value_bytes * window_cells),
-         ('kept reluctivities and permeabilities of the saturation loop (window)',
-          4 * value_bytes * window_cells * int(saturation)),
+         ('assembled reluctivities of the saturating cells (2 x solve dtype, compact: window bound)',
+          2 * value_bytes * window_cells * int(saturation)),
          ('B-H curve masks (bool window)', BOOL_BYTES * window_cells * n_curves)),
         run_items=(('remanence face terms and rhs (window)', 3 * value_bytes * window_cells * int(remanence)),
                    ('saturation state, J_s, proposal and Anderson history (float64 window)',
@@ -682,7 +683,7 @@ def _memory_estimate(settings_values, mesh, context):
     cudss = cudss_back_end(context.solvers)
     if cudss:   # DiffusionDirectSolver on the kept A_solve, refactorised per saturation iteration
         parts.append(cudss_diffusion_estimate(window_cells, 5 * window_cells, 2, cudss, input_copy=False,
-                                              refactorizes=bool(saturation)))
+                                              refactorizes=bool(saturation), symmetric_known=True))
     return combine(parts)
 
 
@@ -752,7 +753,7 @@ def _triangle_memory_estimate(settings_values, mesh, context):
                                     direct=linear_solver_direct(context), multigrid=linear_solver_multigrid(context),
                                     cudss=cudss_back_end(context.solvers), refactorizes=bool(saturation),
                                     kept_terms=False, precision=linear_solver_precision(context),
-                                    mixed=linear_solver_mixed(context))
+                                    mixed=linear_solver_mixed(context), symmetric_known=False)
     own = MemoryEstimate.from_items(host_items=(
         ('curl quadrature cache (float64)', (2 * local + 3) * points * FLOAT64_BYTES * elements),
         ('quadrature point state of one evaluation (float64)', _FEM_POINT_STATE * points * FLOAT64_BYTES * elements)))

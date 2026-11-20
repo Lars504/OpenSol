@@ -898,10 +898,11 @@ def lagrange_entries_per_dof(mesh, order) -> float:
 
 def fem_diffusion_estimate(mesh, order, element_fields, nodal_fields=1, direct=False, multigrid=False, cudss=None,
                            refactorizes=False, active_fraction=1.0, kept_terms=True, *, precision,
-                           mixed) -> MemoryEstimate:
+                           mixed, symmetric_known=True) -> MemoryEstimate:
     """FEMDiffusionSystem + its physics on a TriangleMeshEstimate (fem_system_estimate; SuperLU fill FEM_FILL_FACTOR on
     the 2D heuristic; direct: direct_factor_item); cudss = the 'linear' cuDSS back end (cudss_back_end) or None;
-    kept_terms False: a system of its own without KeptTerms / SlotSum / ReducedSplit (magnetostatics on triangles)."""
+    kept_terms False: a system of its own without KeptTerms / SlotSum / ReducedSplit (magnetostatics on triangles);
+    symmetric_known False: a system whose cuDSS factor checks symmetry (cudss_diffusion_estimate)."""
     n_dofs = int(mesh.n_nodes) + (int(mesh.n_edges) if order == 2 else 0)
     n_active = active_dofs(n_dofs, active_fraction)
     direct_factor = direct_factor_item(direct, FEM_FILL_FACTOR * host_real_lu_bytes(n_active),
@@ -911,7 +912,7 @@ def fem_diffusion_estimate(mesh, order, element_fields, nodal_fields=1, direct=F
                                element_fields, nodal_fields, 2, direct_factor=direct_factor, multigrid=multigrid,
                                cudss=cudss, refactorizes=refactorizes, active_fraction=active_fraction,
                                host_direct=host_direct_name(direct), kept_terms=kept_terms, precision=precision,
-                               mixed=mixed)
+                               mixed=mixed, symmetric_known=symmetric_known)
 
 
 def host_direct_name(direct):
@@ -954,13 +955,15 @@ def painted_fraction(mesh, material_names) -> float:
 def fem_system_estimate(n_dofs, entries_per_dof, local_dofs, n_elements, element_fields, nodal_fields, dimensions,
                         direct_factor=None, multigrid=False, cudss=None, refactorizes=False,
                         active_fraction=1.0, host_direct=None, kept_terms=True, *, precision,
-                        mixed) -> MemoryEstimate:
+                        mixed, symmetric_known=True) -> MemoryEstimate:
     """FEMDiffusionSystem[3D] and physics: float32 element state, host nodal arrays, the operator and linear solver on
     the active dofs (pcg keeps its run-backend copy, SuperLU / cuDSS / MUMPS / PARDISO take it as a temporary);
     refactorizes: per change; host_direct: the MUMPS / PARDISO back end of direct_factor (its own arrays beside the
     library factor, host_direct.solver_host_bytes) or None; kept_terms: the system keeps its terms and slot maps across
     re-assemblies (FEMDiffusionSystem[3D]; False for a caller's own system class); precision / mixed: the pcg's dtype
-    name and whether it runs 'mixed' (as diffusion_system_estimate; its workspace from solvers.pcg.workspace_bytes)."""
+    name and whether it runs 'mixed' (as diffusion_system_estimate; its workspace from solvers.pcg.workspace_bytes);
+    symmetric_known: the cuDSS factor skips its symmetry check (FEMDiffusionSystemCommon vouches; a caller's own
+    system class whose DiffusionDirectSolver is not vouched passes False)."""
     n_active = active_dofs(n_dofs, active_fraction)
     entries = int(round(float(entries_per_dof) * n_active))
     csr_bytes = FLOAT64_CSR_ENTRY_BYTES * entries + INT32_BYTES * (n_active + 1)
@@ -978,7 +981,7 @@ def fem_system_estimate(n_dofs, entries_per_dof, local_dofs, n_elements, element
         items.append(('FEM solution vector (run backend)', FLOAT64_BYTES * n_active))
         own = MemoryEstimate.from_items(items, host_items=host_items)
         return combine((own, cudss_diffusion_estimate(n_active, entries, dimensions, cudss, input_copy=True,
-                                                      refactorizes=refactorizes)))
+                                                      refactorizes=refactorizes, symmetric_known=symmetric_known)))
     build_extra, transient_items = 0, []
     if direct_factor is not None:   # DiffusionDirectSolver: the run-backend copy goes to the host and is dropped
         items.append(('FEM solution vector (run backend)', FLOAT64_BYTES * n_active))
@@ -1038,37 +1041,41 @@ def cudss_back_end(solvers):
 
 
 def cudss_diffusion_estimate(n_unknowns, entries, dimensions, back_end='cudss', input_copy=True,
-                             refactorizes=False) -> MemoryEstimate:
+                             refactorizes=False, symmetric_known=False) -> MemoryEstimate:
     """DiffusionDirectSolver on cuDSS (real Cholesky of a device CSR, factorize_device_csr): pool copies, index maps and
     vectors (kept), the plan's peak (build extra; input_copy: the device CSR is a caller temporary), solve /
-    refactorisation peaks (transient), the factor outside the pool (dimensions 2 / 3)."""
+    refactorisation peaks (transient), the factor outside the pool (dimensions 2 / 3). symmetric_known: the owner
+    vouches for symmetry (DiffusionDirectSolver.symmetric_known: a DiffusionSystem, FEMDiffusionSystem[3D]), so no
+    transpose map is kept and no int64 key peak taken; False (the 2D ElasticSystem, MagneticFEMSystem): checked."""
     from ..solvers.cudss_factor import (factor_device_bytes, index_map_bytes, operator_copy_bytes, refresh_peak_bytes,
                                         solve_peak_bytes)
     n_unknowns, entries = int(n_unknowns), int(entries)
     mixed = back_end == 'cudss_mixed'
+    check = not symmetric_known
     lower = (entries + n_unknowns) // 2
-    maps = index_map_bytes(n_unknowns, entries)
+    maps = index_map_bytes(n_unknowns, entries, symmetry_check=check)
     # the device plan's CSR copies (double, + the float32 values when mixed: one index set) share the maps' lower
     # indices / indptr
     values = operator_copy_bytes(n_unknowns, entries, FLOAT64_BYTES, symmetric=True, mixed=mixed) - (
         INT32_BYTES * (lower + n_unknowns + 1))
     rhs_buffer = (FLOAT32_BYTES if mixed else FLOAT64_BYTES) * n_unknowns   # the factor dtype
-    items = (('cuDSS index maps (rows, columns, lower take, diagonal slots, transpose map)', maps),
+    items = (('cuDSS index maps (rows, columns, lower take, diagonal slots' + (', transpose map)' if check else ')'),
+              maps),
              ('cuDSS lower-triangle values, diagonal, rhs buffer and row scale',
               values + rhs_buffer + FLOAT64_BYTES * n_unknowns))
     # refresh_peak_bytes counts the uploaded values: a temporary input CSR adds its index arrays, a kept one (the
     # DiffusionSystem's A_solve) is no new allocation
     input_bytes = INT32_BYTES * (entries + n_unknowns + 1) if input_copy else -FLOAT64_BYTES * entries
-    refresh = refresh_peak_bytes(entries, FLOAT64_BYTES, symmetry_check=True) + input_bytes
-    # first plan: the peak is the transpose map's int64 keys; the kept transpose map, lower values (+ their float32
-    # copy), diagonal and rhs buffer come after it
-    plan_peak = (refresh - 4 * entries - FLOAT64_BYTES * (lower + n_unknowns) - rhs_buffer
+    refresh = refresh_peak_bytes(entries, FLOAT64_BYTES, symmetry_check=check) + input_bytes
+    # first plan: the peak is the transpose map's int64 keys (checked) or the equilibration's gathers (vouched); the
+    # kept transpose map (checked only), lower values (+ their float32 copy), diagonal and rhs buffer come after it
+    plan_peak = (refresh - (INT32_BYTES * entries if check else 0) - FLOAT64_BYTES * (lower + n_unknowns) - rhs_buffer
                  - (FLOAT32_BYTES * lower if mixed else 0))
     transient_items = [('linear solve', 'cuDSS solve vectors (mixed: the GMRES basis)',
                         solve_peak_bytes(n_unknowns, FLOAT64_BYTES, mixed))]
     if refactorizes:   # a refresh, or its probe solve on the uploaded / equilibrated values, whichever is larger
         transient_items.append(('refactorisation', 'cuDSS refactorisation (input CSR, refresh or probe peak)',
-                                refresh_peak_bytes(entries, FLOAT64_BYTES, symmetry_check=True, n_unknowns=n_unknowns,
+                                refresh_peak_bytes(entries, FLOAT64_BYTES, symmetry_check=check, n_unknowns=n_unknowns,
                                                    mixed=mixed) + input_bytes))
     permanent, extra = factor_device_bytes(n_unknowns, entries, FLOAT64_BYTES, dimensions, mixed)
     return MemoryEstimate.from_items(items, build_extra=plan_peak, transient_items=transient_items,

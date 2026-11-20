@@ -489,7 +489,8 @@ class MagneticPhysics3D(MirrorTotals, DiffusionPhysicsBase):
         """ln of the secant mu_r (float64 (k,)) of the curves on the saturating cells at their float64 centre |H| =
         field_magnitude (k,) (J_s curve with mu_dc_xx, isotropic there; each B-H table on its cells)."""
         xp = self.xp
-        permeability = self._permeability[0].ravel()[self._nonlinear_flat].astype(np.float64)
+        cells = xp.unravel_index(self._nonlinear_flat, self.system.window_shape)   # a window view: ravel would copy it
+        permeability = self._permeability[0][cells].astype(np.float64)
         secant = (permeability if self._saturation is None
                   else saturation_permeability(field_magnitude, permeability, self._saturation, xp))
         for mask, curve in self._compact_curves:

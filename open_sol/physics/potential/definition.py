@@ -921,7 +921,7 @@ def _make_memory_estimate(kind):
         parts = [fields, system]
         if cudss:   # DiffusionDirectSolver factorises the kept A_solve
             parts.append(cudss_diffusion_estimate(window_cells, (9 if cross_term else 5) * window_cells, 2, cudss,
-                                                  input_copy=False, refactorizes=refactorizes))
+                                                  input_copy=False, refactorizes=refactorizes, symmetric_known=True))
         return combine(parts)
     return estimate
 

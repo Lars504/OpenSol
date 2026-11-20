@@ -18,7 +18,7 @@ from ...core.kernels import numba_available
 from ...fem.elasticity3d import (TANGENT_DEVICE_GEOMETRY_VALUES, TANGENT_GRADIENT_CACHE_BYTES,
                                  device_tangent_chunk_elements, tangent_chunk_element_bytes)
 from ...fem.tangent_kernel3d import element_flops
-from ...fem.fixed_pattern import EXPAND_ENTRIES
+from ...fem.fixed_pattern import EXPAND_ENTRIES, device_pattern_bytes
 from ...fem.squeeze_film import GAS_TABLE_COLUMNS, GAS_TABLE_UNITS, gas_damping_totals
 from ...model.definition_helpers import (CG_ELASTIC_3D_LINEAR_ROLE, DISCRETIZATION_PARAM, SQUEEZE_FILM_GAS_PARAMS,
                                          cg_solver_issues, cudss_external, eigen_factorization, eigen_role,
@@ -100,9 +100,11 @@ _TET_ELECTRIC_NODAL_OUTPUTS = 7
 _NEWTON_ITERATIONS_PER_STEP = 5
 _TANGENT_BYTES_PER_COO = {1: 400.0, 2: 6000.0}
 # the element kernel (fem.tangent_kernel3d; device, or numba on the host): its flops priced as dense flops, the block
-# sum per COO entry (host bincount / device scatter_add: value + slot read, the data entry updated) and the launches
-# (gather, kernel, force and block sums) per chunk; uncalibrated
-_TANGENT_SCATTER_BYTES_PER_COO = 24.0
+# sum per COO entry (the block value read, the data entry read and written by the atomic add, and the device's uint16
+# column rank of a scalar dof pair shared by its 3 x 3 block entries: DevicePatternCsr recomputes the slot; the host
+# bincount reads a 4 B slot instead, within this round figure) and the launches (gather, kernel, force and block sums)
+# per chunk; uncalibrated
+_TANGENT_SCATTER_BYTES_PER_COO = 8.0 + 16.0 + 2.0 / 9.0
 _ELEMENT_KERNEL_LAUNCHES = 6
 _TANGENT_RULE_POINTS = {1: 1, 2: 14}   # tetrahedron_rule(4 (order - 1)): TangentAssembler3D's rule and gradient cache
 # tensor bricks (kernels3d elastic_product / elastic_mass_product, a priori counts of the gpu Walsh-basis gather): each
@@ -1463,20 +1465,21 @@ def _device_tangent_items(order, elements, scalar_dofs, entries, reduced_entries
     tangent assembly (newton_proposer drops them before the factorisation)."""
     local = 10 if order == 2 else 4
     points = _TANGENT_RULE_POINTS[order]
-    columns = 3 * local
     # kept per element: J^-1 and |det J| (TANGENT_DEVICE_GEOMETRY_VALUES; the rule gradients / weights are expanded
-    # per chunk, inside tangent_chunk_element_bytes), int32 scatter slots and dofs, C (36) and the S0 element rows (6)
+    # per chunk, inside tangent_chunk_element_bytes), int32 element / scatter dofs, C (36) and the S0 element rows (6);
+    # the DevicePatternCsr's dof ranks, scalar pattern and free take (the full / reduced indices stay on the host)
     caches = (FLOAT64_BYTES * elements * TANGENT_DEVICE_GEOMETRY_VALUES
-              + INT32_BYTES * elements * (columns ** 2 + 4 * local)
+              + INT32_BYTES * elements * 4 * local
               + FLOAT64_BYTES * elements * (36 + 6)
-              + INT32_BYTES * (entries + 3 * scalar_dofs) + 2 * INT32_BYTES * reduced_entries + INT32_BYTES * factored)
+              + device_pattern_bytes(local, elements, 3 * scalar_dofs, entries, block=3,
+                                     reduced_entries=reduced_entries))
     values = FLOAT64_BYTES * 3 * reduced_entries + 4 * FLOAT64_BYTES * 3 * scalar_dofs
     # one chunk of TangentAssembler3D's device size (the byte cap; a tighter pool gives smaller chunks) on the element
     # kernel: forces, blocks and gathered displacements
     chunk = (min(elements, device_tangent_chunk_elements(local, points, element_kernel=True))
              * tangent_chunk_element_bytes(local, points, element_kernel=True))
     maps = INT32_BYTES * (2 * reduced_entries + (reduced_entries + factored) // 2) + (_INT64_BYTES + 1) * factored
-    return ([('device Newton tangent assembler caches (gradients, scatter slots, dofs, C, S0, pattern)', caches),
+    return ([('device Newton tangent assembler caches (geometry, dofs, dof ranks, C, S0, scalar pattern)', caches),
              ('device Newton tangent factor values (reduced, equilibrated) and vectors', values),
              ('cuDSS device index maps of the tangent pattern (rows, columns, diagonal, lower take)', maps)],
             [('Newton tangent assembly', 'device Newton tangent chunk temporaries', chunk),
