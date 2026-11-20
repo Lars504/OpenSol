@@ -10,6 +10,7 @@ import numpy as np
 
 from .core import gpu_memory
 from .core.domain import Domain
+from .core.monitors import PROBE_PARK_ROWS, park_probe_rows
 from .physics.em import EMPhysics, BoundaryConfig
 from .coupling.runner import MultiphysicsRunner
 from .viz import Visualizer
@@ -271,8 +272,10 @@ class Simulation:
 
     def run(self, duration: float = None, n_steps: int = None, print_every: int = 500, flush: bool = True):
         """finalize() new physics (warns their finalize_warnings), runner.prepare() (warns its prepare_warnings),
-        advance by `duration` [s] or `n_steps` ticks, then runner.flush() and warn new runtime_warnings; pass
-        flush=False for all but the last chunk of a chunked run (each flush is an extra end-of-run transfer)."""
+        advance by `duration` [s] or `n_steps` ticks in chunks of at most PROBE_PARK_ROWS ticks (gpu probe tables
+        parked on the host at each chunk boundary: core.monitors.park_probe_rows), then runner.flush() and warn new
+        runtime_warnings; pass flush=False for all but the last chunk of a chunked run (each flush is an extra
+        end-of-run transfer)."""
         if (duration is None) == (n_steps is None):
             raise ValueError("Simulation.run needs exactly one of duration [s] or n_steps")
         if n_steps is not None and int(n_steps) < 0:
@@ -308,10 +311,13 @@ class Simulation:
                 chunk = print_every - ticks_done % print_every
             else:
                 chunk = tick_budget - ticks_done
-            n_advanced = runner.advance(min(chunk, tick_budget - ticks_done), t_end)
+            # at most PROBE_PARK_ROWS ticks per chunk (a tick records at most one row per probe table), so the device
+            # part of a probe table stays below 2 x PROBE_PARK_ROWS rows
+            n_advanced = runner.advance(min(chunk, tick_budget - ticks_done, PROBE_PARK_ROWS), t_end)
             if n_advanced == 0:
                 break
             ticks_done += n_advanced
+            park_probe_rows()   # chunk boundary (as the study loops): long traces wait on the host, not on the device
             for callback in callbacks:
                 callback(runner)
             if print_every > 0 and ticks_done % print_every == 0:
