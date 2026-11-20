@@ -82,6 +82,11 @@ file ("Triangle meshes"). Error indicators: section "Error indicators" (users: g
   no device twin. The device assembler keeps only float64 J^-1 / |det J| and S0 element rows per element and expands
   gradients, weights and per-point S0 per chunk (`_device_geometry`): a new per-point input is expanded there and
   counted in `tangent_chunk_element_bytes`, never kept per rule point.
+- DevicePatternCsr keeps no block-pattern indices or slots on the device: per group the scalar element dofs and uint16
+  column ranks (the scatter kernel recomputes each slot by the `_block_slots` rule: a slot-rule change edits both),
+  the scalar pattern and the free take; the Newton loop reads `product` / `reduced_values` only. `full()` /
+  `reduced()` upload the host indices per call (checks, pencils): never per Newton iteration. Estimates:
+  `device_pattern_bytes` (mechanics `_device_tangent_items`, the chunk sizing).
 - Element kernels (`tangent_kernel3d`: CUDA / numba / batched numpy-cupy; `tangent_kernel2d`: numba / numpy, planar
   groups only; module headers): a formula change edits the CUDA source, the numba twin and the batched elasticity
   helpers together (fem3d_tangent_assembler[_gpu], fem3d_tangent_kernel_numba, solid_fem_tangent_kernel_numba compare
