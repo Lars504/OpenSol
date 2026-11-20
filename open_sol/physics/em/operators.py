@@ -15,6 +15,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from ...core.backend import array_module_of
 from ...core.constants import EPS0
 from .boundaries import cpml_axis_profiles
 from .yee_grid import yee_inverse_spacings
@@ -755,3 +756,42 @@ def pin_image_cells(operator, pinned, image_signs, xp=np):
     n_unknowns = operator.shape[0]
     folded = _diagonal_matrix(operator @ image_signs, n_unknowns, operator.dtype, xp, 'pin_image_cells image_signs')
     return pin_cells((operator + folded).tocsr(), pinned, xp)
+
+
+def operator_reach_rows(cells, grid_shape, periodic):
+    """Host int64 sorted unique flat indices i*ny + j of the cells within one cell (Chebyshev) of the host flat `cells`,
+    wrapped on the periodic (x, y) axes, clipped on the others: every row where A v can be non-zero for a v supported
+    on `cells`. Every FDFD operator reaches that far only (5 points, 9 with the eps_xy / gyration couplings;
+    pin_image_cells adds diagonals and drops entries; Bloch / periodic wraps are the wrapped neighbours), checked by
+    em_operators_consistency; a wider stencil must widen this."""
+    nx, ny = (int(size) for size in grid_shape)
+    i_cells, j_cells = np.divmod(np.asarray(cells, dtype=np.int64).ravel(), ny)
+    rows = []
+    for di in (-1, 0, 1):
+        for dj in (-1, 0, 1):
+            i_rows, j_rows = i_cells + di, j_cells + dj
+            inside = np.ones(i_rows.shape, dtype=bool)
+            if periodic[0]:
+                i_rows %= nx
+            else:
+                inside &= (i_rows >= 0) & (i_rows < nx)
+            if periodic[1]:
+                j_rows %= ny
+            else:
+                inside &= (j_rows >= 0) & (j_rows < ny)
+            rows.append((i_rows * ny + j_rows)[inside])
+    return np.unique(np.concatenate(rows))
+
+
+def csr_row_entries(operator, rows):
+    """(columns, values) (n_rows, width) of the stored entries of CSR (scipy / cupyx) rows `rows` (int64 of the
+    operator's backend), width = the longest of them, padding value 0 at column 0: a row-sized gather instead of a
+    full-grid product (one host sync for the width)."""
+    xp = array_module_of(operator.indptr)
+    starts = operator.indptr[rows].astype(xp.int64)
+    counts = operator.indptr[rows + 1].astype(xp.int64) - starts
+    width = int(counts.max()) if rows.size else 0
+    rank = xp.arange(width, dtype=xp.int64)
+    stored = rank[None, :] < counts[:, None]
+    entries = xp.where(stored, starts[:, None] + rank[None, :], 0)
+    return operator.indices[entries], xp.where(stored, operator.data[entries], 0)

@@ -357,6 +357,10 @@ type's vocabulary and refusals are in its help texts and validation.
   (hi face of line cell - 1 for 'positive', of the line cell for 'negative') or on / across a TFSF outline; a far-field
   box around a TFSF box needs >= 2 cells on the lo sides and its x1 / y1 edges past it (FDTD: 1 cell). Validation
   warns (`_total_field_regions`, `_mixed_region_texts`); hz q_abs beside such a face is wrong in lossy cells, unchecked.
+- TFSF and mode-source rhs: summed from the stored operator entries of the rows the outline / line pair reaches
+  (`operators.operator_reach_rows` + `csr_row_entries`), no full-grid u_inc or SpMV: the reach is one cell
+  (Chebyshev), the widest FDFD stencil (eps_xy 9 points; pin_image_cells only adds diagonals), checked by
+  em_operators_consistency; an operator reaching further must widen operator_reach_rows.
 - TFSF (`PlaneWavePhasor`): b += (1 - Q) A (Q u_inc) - Q A ((1 - Q) u_inc) through `system.operator`; exact whenever
   u_inc solves the background rows (medium of outline cell (x0 - 1, y0), read per solve), so only with that one
   medium around the box. Bloch ky needs uniform y cells; uniform columns use the discrete-dispersion wave, graded ones

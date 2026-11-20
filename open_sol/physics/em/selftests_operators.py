@@ -236,6 +236,52 @@ def _kept_yee_matches(operators, boundaries, cell_widths, omega):
     matches.extend(_e_difference_matches(operators, (boundaries.BoundaryConfig.all_pml(_GRADED_NPML),
                                                      boundaries.BoundaryConfig.with_periodic_x(_GRADED_NPML), bloch,
                                                      y_bloch), cell_widths, omega))
+    matches.extend(_outline_product_matches(operators, y_bloch, cell_widths, omega))
+    return matches
+
+
+def _outline_product_matches(operators, config, cell_widths, omega):
+    """[bool]: for v supported on a box outline (the FDFD TFSF rhs; a full-period box of the Bloch y axis too) and on
+    a mode-source line pair, operator_reach_rows + csr_row_entries give A v on every row it can reach and A v = 0
+    elsewhere, A the widest FDFD operator: the Helmholtz sum + the eps_xy face couplings (9 points) on a Bloch y axis,
+    pin_image_cells walls on both x faces (the box touches the x_lo wall row's neighbour)."""
+    rng = np.random.default_rng(_GRADED_SEED + 2)
+    shape = (len(cell_widths[0]), len(cell_widths[1]))
+    n_unknowns = shape[0] * shape[1]
+
+    def noise():
+        return rng.standard_normal(shape) + 1j * rng.standard_normal(shape)
+
+    ops = operators.yee_operators(cell_widths, config, _GRADED_BASE_CELL, omega=omega)
+    operator = operators.helmholtz_operator(ops, 1.0 + 0.1 * noise(), 1.0 + 0.1 * noise(), 4.0 + noise())
+    active = (np.ones(shape, dtype=bool), np.ones(shape, dtype=bool))
+    wraps = (1.0, np.exp(1j * operators.bloch_wrap_phases(cell_widths, config)[1]))
+    y_from_x, x_from_y = operators.off_diagonal_face_couplings(cell_widths, (False, True), wraps, 0.1 * noise(),
+                                                               *active)
+    operator = (operator - ops.dx_e @ x_from_y @ ops.dy_h - ops.dy_e @ y_from_x @ ops.dx_h).tocsr()
+    pinned, signs = np.zeros(shape, dtype=bool), np.zeros(shape)
+    pinned[0, :] = pinned[-1, :] = True
+    signs[0, :], signs[-1, :] = 1.0, -1.0
+    operator = operators.pin_image_cells(operator, pinned, signs)
+    x0, x1, y0, y1 = 1, shape[0] - 3, 2, shape[1] - 4
+    box = np.zeros(shape, dtype=bool)
+    box[x0:x1, y0:y1] = True
+    outline = box & ~(np.roll(box, 1, 0) & np.roll(box, -1, 0) & np.roll(box, 1, 1) & np.roll(box, -1, 1))
+    full_period = np.zeros(shape, dtype=bool)
+    full_period[[x0, x1 - 1], :] = True
+    line_pair = np.zeros(shape, dtype=bool)
+    line_pair[4:6, 1:shape[1] - 2] = True
+    matches = []
+    for support in (outline, full_period, line_pair):
+        vector = np.where(support, noise(), 0.0).ravel()
+        full = operator @ vector
+        rows = operators.operator_reach_rows(np.flatnonzero(support), shape, (False, True))
+        columns, values = operators.csr_row_entries(operator, rows)
+        gathered = (values * vector[columns]).sum(axis=1)
+        beyond = full.copy()
+        beyond[rows] = 0.0
+        matches.append(bool(np.all(beyond == 0.0) and rows.size < n_unknowns
+                            and np.abs(full[rows] - gathered).max() <= 1e-14 * np.abs(full).max()))
     return matches
 
 
@@ -637,7 +683,10 @@ OPERATOR_SELFTEST_CASES = (
                     'bit and helmholtz_operator\'s values to 1e-14, on numpy and on cupy with its entry maps and term '
                     'plan parked in pinned host memory between calls, and yee_e_differences (the systems\' '
                     'matrix-free dx_e / dy_e) applies yee_operators\' dx_e / dy_e and their transposes to 1e-14 '
-                    '(CPML, periodic x, Bloch x / y, a polar grid; numpy and cupy). (D) face_average (width-weighted on graded '
+                    '(CPML, periodic x, Bloch x / y, a polar grid; numpy and cupy), and the FDFD TFSF / mode-source '
+                    'rhs rows (operator_reach_rows + csr_row_entries) give A v of a v on a box outline, a full-period '
+                    'box edge pair or a line pair on every row it reaches and 0 elsewhere (1e-14), A = Helmholtz + '
+                    'eps_xy couplings on a Bloch y axis with pin_image_cells x walls. (D) face_average (width-weighted on graded '
                     'widths, the plain mean bit for bit on uniform ones) / face_pec against explicit loops. (E) On the H_z engines of '
                     'B with random eps_xx / eps_yy (1-12) and sigma_e (0-3e5 S/m): the fused face eps / ca / cb '
                     'rebuild must equal face_average followed by the E_z cell-coefficient kernel (relative 1e-6). (F) '

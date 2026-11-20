@@ -15,6 +15,7 @@ from ...core.backend import array_module_of, to_host
 from ...core.constants import C0
 from .fdfd_monitors import _ascending_wavelength
 from .fdfd_sources import phase_factor
+from .operators import csr_row_entries, operator_reach_rows
 from .mode_ports import _DIRECTIONS, PortLine, _check_mode_number, mode_table_rows
 from .results import _MODE_TABLE_COLUMNS, _MODE_TABLE_UNITS, mode_power_series
 from .slab_modes import align_phase, mode_amplitudes, track_mode
@@ -32,8 +33,8 @@ def _check_bloch_line(physics, port):
 
 
 def _total_field_mask(port, n_normal, periodic_normal, direction_sign, xp):
-    """xp bool Q along the normal, shaped to broadcast over the (nx, ny) grid: the line cell and the cells downstream
-    of it (toward +normal for direction_sign +1)."""
+    """xp bool (n_normal,) Q along the normal: the line cell and the cells downstream of it (toward +normal for
+    direction_sign +1)."""
     downstream_distance = (np.arange(n_normal) - port.line_cell) * int(direction_sign)
     if periodic_normal:
         # A periodic normal axis has no half plane: Q = the half period downstream of the line cell (distance < n/2, up
@@ -46,8 +47,7 @@ def _total_field_mask(port, n_normal, periodic_normal, direction_sign, xp):
         inside = 2 * downstream_distance < n_normal
     else:
         inside = downstream_distance >= 0
-    shape = (n_normal, 1) if port.normal == 'x' else (1, n_normal)
-    return xp.asarray(inside.reshape(shape))
+    return xp.asarray(inside)
 
 
 class ModeSourcePhasor:
@@ -95,10 +95,10 @@ class ModeSourcePhasor:
             self._upstream_wrap = wrap_factor
         else:
             self._upstream_wrap = 1.0
-        self._line = port.line_index(self.position)
-        self._upstream_line = port.line_index(upstream_cell)
+        self._upstream_cell = upstream_cell
         self._xp = physics.domain.xp
         self._total_field_mask = _total_field_mask(port, n_normal, periodic_normal, 1 if positive else -1, self._xp)
+        self._reach = None   # ((nx, ny, periodic), xp int64 rows the source reaches) of add_to_rhs
         self._line_incident = None       # complex128 u_inc (run backend) on the line cells (solve range) once solved
         self._upstream_incident = None   # and on the upstream cells
         self._table = None
@@ -139,15 +139,40 @@ class ModeSourcePhasor:
         if self.mode is None or self.solved_omega != omega:
             raise ValueError(f"mode not solved yet: {self.port.label} has no mode at omega = {omega:.6g} rad/s "
                              f"(FDFDPhysics solves port modes at finalize and after every reassembly)")
-        operator = system.operator
-        incident = self._xp.zeros(rhs.shape, dtype=self._xp.complex128)
-        incident[self._line] = self._line_incident   # Q u_inc: the line cells are the incident cells inside Q
-        inside_product = (operator @ incident.ravel()).reshape(rhs.shape)
-        incident[self._upstream_line] = self._upstream_incident
-        masked_product = (operator @ incident.ravel()).reshape(rhs.shape)
-        masked_product *= self._total_field_mask
-        rhs += inside_product
-        rhs -= masked_product
+        # b = (1 - Q) A u_line - Q A u_upstream (Q u_inc = u_line: the line cells are the incident cells inside Q) on
+        # the rows the two lines reach, from their stored entries (line-sized: no full-grid u_inc or products)
+        xp = self._xp
+        nx, ny = rhs.shape
+        rows = self._reach_rows(nx, ny, system)
+        columns, values = csr_row_entries(system.operator, rows)
+        column_x, column_y = xp.divmod(columns, ny)
+        normal, along = (column_x, column_y) if self.port.normal == 'x' else (column_y, column_x)
+        del columns, column_x, column_y
+        start, stop = self.span
+        on_span = (along >= start) & (along < stop)
+        offset = xp.clip(along - start, 0, stop - start - 1)
+        del along
+        row_x, row_y = xp.divmod(rows, ny)
+        row_inside = self._total_field_mask[row_x if self.port.normal == 'x' else row_y][:, None]
+        line_values = xp.where(on_span & (normal == self.position), self._line_incident[offset], 0)
+        upstream_values = xp.where(on_span & (normal == self._upstream_cell), self._upstream_incident[offset], 0)
+        del on_span, offset, normal
+        values *= xp.where(row_inside, -upstream_values, line_values)
+        del line_values, upstream_values
+        rhs[row_x, row_y] += values.sum(axis=1)   # unique rows
+
+    def _reach_rows(self, nx, ny, system):
+        """xp int64 rows of operators.operator_reach_rows of the line and upstream cells (every row of a non-zero b),
+        cached per grid and periodicity."""
+        key = (nx, ny, bool(system.periodic_x), bool(system.periodic_y))
+        if self._reach is None or self._reach[0] != key:
+            along = np.arange(*self.span)
+            if self.port.normal == 'x':   # line cells (normal cell, along j)
+                cells = [cell * ny + along for cell in (self.position, self._upstream_cell)]
+            else:
+                cells = [along * ny + cell for cell in (self.position, self._upstream_cell)]
+            self._reach = (key, self._xp.asarray(operator_reach_rows(np.concatenate(cells), (nx, ny), key[2:])))
+        return self._reach[1]
 
     def mode_table(self):
         """Rows [mode number, Re n_eff, Im n_eff, loss dB/cm, Re n_group, edge field, selected] of the last solve's

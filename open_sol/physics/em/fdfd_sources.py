@@ -20,7 +20,7 @@ from ...core.backend import array_module_of
 from ...core.constants import C0, EPS0, ETA0, MU0
 from ...core.mesh import has_uniform_spacing
 from .harmonic import face_current_rhs
-from .operators import axis_difference_weights
+from .operators import axis_difference_weights, csr_row_entries, operator_reach_rows
 from .yee_grid import cpml_grading_cell_size, grid_cell_widths, sheet_launch_factor
 
 
@@ -276,6 +276,7 @@ class PlaneWavePhasor:
         self.row_spacing = float(dy_cells[0])   # lambda_y of an oblique wave (uniform y then)
         self._row_centres = np.cumsum(dy_cells) - 0.5 * dy_cells   # from the grid lo edge, as sources.bloch_line_phase
         self._line_weights = None   # (omega, w_e, w_h) of columns x0 - 1 .. x1 (axis_difference_weights)
+        self._outline_rows = None   # ((nx, ny, periodic, xp), xp int64 rows the correction can reach) of add_to_rhs
         self.set_amplitude(amplitude, phase)
 
     def set_amplitude(self, amplitude, phase):
@@ -361,13 +362,35 @@ class PlaneWavePhasor:
         incident_columns = xp.zeros(nx, dtype=xp.complex128)
         incident_columns[self.x0 - 1:self.x1 + 1] = xp.asarray(reference_phasor * line)
         row_phases = xp.asarray(np.exp(-1j * self.bloch_ky * self._row_centres))
-        incident = xp.outer(incident_columns, row_phases)
-        box = (slice(self.x0, self.x1), slice(self.y0, self.y1))
-        inside_incident = xp.zeros((nx, ny), dtype=xp.complex128)   # Q u_inc
-        inside_incident[box] = incident[box]
-        incident -= inside_incident
-        outside_incident = incident   # (1 - Q) u_inc, in place (no extra full-grid temporary)
-        operator = system.operator
-        correction = (operator @ inside_incident.ravel()).reshape(nx, ny)   # kept on the scattered-field rows
-        correction[box] = -(operator @ outside_incident.ravel()).reshape(nx, ny)[box]
-        rhs += correction
+        # (1 - Q) A (Q u_inc) - Q A ((1 - Q) u_inc) on the rows the box outline reaches, from their stored entries
+        # (outline-sized: no full-grid u_inc or products): a scattered-field row sums its entries in the box, a
+        # total-field row minus those outside it
+        rows = self._reach_rows(nx, ny, system, xp)
+        columns, values = csr_row_entries(system.operator, rows)
+        column_x, column_y = xp.divmod(columns, ny)
+        row_x, row_y = xp.divmod(rows, ny)
+        row_inside = self._in_box(row_x, row_y)
+        values = xp.where(self._in_box(column_x, column_y) != row_inside[:, None], values, 0)
+        values *= incident_columns[column_x]
+        values *= row_phases[column_y]
+        del columns, column_x, column_y
+        correction = values.sum(axis=1)
+        correction[row_inside] *= -1.0
+        rhs[row_x, row_y] += correction   # unique rows
+
+    def _in_box(self, i_cells, j_cells):
+        """Bool of the cells (i, j) inside the total-field box Q."""
+        return (i_cells >= self.x0) & (i_cells < self.x1) & (j_cells >= self.y0) & (j_cells < self.y1)
+
+    def _reach_rows(self, nx, ny, system, xp):
+        """xp int64 rows of operators.operator_reach_rows of the box outline cells (the cells with a neighbour across
+        Q's edge: all a non-zero correction row reaches), cached per grid, periodicity and backend."""
+        key = (nx, ny, bool(system.periodic_x), bool(system.periodic_y), xp)
+        if self._outline_rows is None or self._outline_rows[0] != key:
+            columns, rows = np.arange(self.x0, self.x1), np.arange(self.y0, self.y1)
+            edges = [np.add.outer(np.array([self.x0, self.x1 - 1]) * ny, rows).ravel()]   # x edges, every box row
+            if not self.full_period_y:   # a full-period box has no y edges
+                edges.append(np.add.outer(columns * ny, np.array([self.y0, self.y1 - 1])).ravel())
+            reach = operator_reach_rows(np.concatenate(edges), (nx, ny), key[2:4])
+            self._outline_rows = (key, xp.asarray(reach))
+        return self._outline_rows[1]
