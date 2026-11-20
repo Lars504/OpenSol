@@ -13,6 +13,12 @@ and docstrings; settings: their help texts.
 - The float32 steady state is biased: per-step rounding (~1e-7 of u) acts as a source the slowest decay integrates, up
   to ~eps32 x decay steps (falling_film u_surface at 10 / 20 / 40 cells: ~1.4e-5 / 4e-5 / 2.3e-4, growing ~(H/dx)^2,
   unchanged by a longer march); reference tolerances below that cannot pass.
+- Device lattice (gpu): per-cell relaxation rates exist only for several fluid viscosities, per-cell lattice forces
+  only while a force is present and not (steady) uniform on the fluid (stride 0 reads the 1-element arrays), the saved
+  velocity only in a steady march (the transient health check passes the macros as saved), and the float64 kinematic
+  viscosity is rebuilt from the materials at each use: ~32 of ~150 bytes per window cell fewer in a plain transient
+  run. Code that frees one of these goes through `_drop_cell_arrays` (step graphs hold their pointers); the cpu keeps
+  them all (host twins: one numba signature). `definition._memory_estimate` books the same conditions.
 - Transient: the published velocity lags the probe time by ~half a lattice step (`selftests_time.py` tolerances).
 - Symmetry feature = the slip face (kind 'slip' in `_FACE_FEATURE_KINDS`) as a model mirror plane; slip is the exact
   even mirror of the lattice (halfway bounce-back where the mirrored upstream cell is solid). Corner diagonals beside a
