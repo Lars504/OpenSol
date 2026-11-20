@@ -102,7 +102,10 @@ contracts"). em_fdtd_3d (B2) and the eigensolver em_fdfd_3d (tensor Yee and tetr
   Nothing else of em_fdfd_3d lives on the device: the tensor resonance fields (`FDFDPhysics3D.fields`, complex64) are
   host numpy on either backend, and `renderer_fdfd3d` does its math on the host per read window / plane and uploads
   the float32 result (tetrahedra likewise, `renderer_fem3d`). A new reader of them works on the host or uploads per
-  read, never a kept device copy.
+  read, never a kept device copy. Its MaterialGrid arrays are parked on the host at create (tensor grids, gpu model
+  path: `definition_fdfd3d._parked_material_arrays`, the shared rule minus arrays whose state field a material
+  expression or field_transfer reads): the assembly reads them through `to_host`, the renderer's eps_r window and
+  `StaticEM3DContract.state()` (`em.materials.material_state`) through `device_array`; a new reader does too.
 - Cost: direct factor time ~ n^2; host SuperLU > 10 min at ~1e5 unknowns, gpu cudss_mixed ~1 s at 2.2e5. Study
   convergence by perturbing downward (thinner PML, coarser cells), never by larger grids.
 - Band diagrams: a parameter sweep over bloch_k<axis> (fresh factor per k). The Bloch period is the meshed one and a

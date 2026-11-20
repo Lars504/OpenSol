@@ -86,8 +86,8 @@ class _FDTDRendererBase(_EMRendererBase):
         if self.field_info(component).requires_study:
             return self._harmonic_field(component)
         window = self.domain.physical_window()
-        if component in self.material_names:
-            return getattr(self.domain.materials, component)[window]
+        if component in self.material_names:   # a parked (host) array: only the window moves
+            return self.domain.materials.device_array(component, window)
         if component == 'carrier_density':
             return self._carrier_density(window)
         if component == 'population_inversion':
@@ -414,9 +414,9 @@ def centre_component_infos(texts, parity=True) -> dict:
 
 
 class CentreFieldRenderer(_EMRendererBase):
-    """Window-shaped float32 centre fields a physics keeps in a dict (attribute `centre_fields`), its materials, e_abs
-    from e_intensity and absorbed_power from 'q_abs'; time label = the physics' selection_label (ModeRenderer,
-    BORRenderer, ConicalRenderer)."""
+    """Window-shaped float32 centre fields a physics keeps in a dict (attribute `centre_fields`; run-backend arrays or
+    host numpy ones, whose read window is uploaded), its materials, e_abs from e_intensity and absorbed_power from
+    'q_abs'; time label = the physics' selection_label (ModeRenderer, BORRenderer, ConicalRenderer)."""
 
     material_names = ('eps_r', 'eps_xx', 'eps_yy', 'sigma_e')
     centre_fields = 'fields'
@@ -424,14 +424,13 @@ class CentreFieldRenderer(_EMRendererBase):
     def device_field(self, component: str):
         self.field_info(component)
         window = self.domain.physical_window()
-        if component in self.material_names:
-            return getattr(self.domain.materials, component)[window]
+        xp = self.domain.xp
+        if component in self.material_names:   # a parked (host) array: only the window moves
+            return self.domain.materials.device_array(component, window)
         fields = getattr(self.em, self.centre_fields)
-        if component == 'absorbed_power':
-            return fields['q_abs'][window]
         if component == 'e_abs':
-            return self.domain.xp.sqrt(fields['e_intensity'][window])
-        return fields[component][window]
+            return xp.sqrt(xp.asarray(fields['e_intensity'][window]))
+        return xp.asarray(fields['q_abs' if component == 'absorbed_power' else component][window])
 
     def time_label(self):
         return self.em.selection_label()
