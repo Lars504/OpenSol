@@ -914,8 +914,10 @@ class MultigridPreconditioner:
             reuse = False
         if not reuse:
             self._aggregates, self._host_tentatives = [], []
-            self._pattern = (operator.indptr, operator.indices, nonzero)
             self.n_aggregations += 1
+        # the current operator's arrays (equal ones on reuse): a caller uploading fresh index arrays per factorize (FEM)
+        # never keeps the first operator's indices alive through the cached pattern
+        self._pattern = (operator.indptr, operator.indices, nonzero)
         # drop the old hierarchy before building the new one: its levels and its coarsest solver (a dense inverse of up
         # to COARSEST_DENSE_LIMIT^2, or the smoother-only level holding the previous fine operator)
         self._levels = []

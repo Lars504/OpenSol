@@ -933,8 +933,10 @@ def _memory_estimate(settings_values, mesh, context):
     # flux: heat_flux_magnitude (renderer reads, snapshots, error_indicator) after a solve; backend: where a multigrid
     # setup aggregates
     from ...model.schema import solver_backend
+    # conformal: cut cells keep the assembly maps (an upper bound where the domain's coordinates refuse them)
     solver_options = dict(mixed=linear_solver_mixed(context), multigrid=linear_solver_multigrid(context),
-                          direct=linear_solver_direct(context), flux=True, backend=solver_backend(context.spec))
+                          direct=linear_solver_direct(context), flux=True, backend=solver_backend(context.spec),
+                          conformal=bool(context.spec.solver_defaults.conformal_boundaries))
     wrap = mesh.domain_map is not None and mesh.domain_map.angle_wrap != 'none'   # phi wrap: 2 more build slots
     cross_term = not context.spec.is_3d and context.material_sets('k_xy')
     if context.spec.is_3d:

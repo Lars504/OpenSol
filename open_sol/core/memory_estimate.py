@@ -290,11 +290,12 @@ _FACTORIZE_ALIVE_MASKS = 3
 def diffusion_system_estimate(window_cells, precision, cross_term=False, transient=False,
                               dimensions=2, mixed=False, multigrid=False, direct=False,
                               azimuthal=False, wrap=False, flux=False, dissipation=False,
-                              backend=None) -> MemoryEstimate:
+                              backend=None, conformal=False) -> MemoryEstimate:
     """DiffusionSystem (core.fv_diffusion) on window_cells (3D: all window voxels, dimensions=3): prepare buffers, CSR
     pattern, assembled operators and vectors (steady; azimuthal: the kept azimuthal diagonal of an (r, z) order
-    m != 0); build extra: the larger of the pattern build + anchor check and (multigrid) the setup while assemble's
-    locals live; mixed
+    m != 0; ONE assembly: a re-assembly drops its predecessor first, DiffusionSystem._release_assembly); build extra:
+    the larger of the pattern build + anchor check and (multigrid) the setup while assemble's locals live; conformal
+    (solver_defaults.conformal_boundaries reaching a 2D system: cut cells) keeps the assembly maps; mixed
     (a 'mixed' pcg, precision 'float64'): its float32 operator copy and refinement vectors; multigrid (the pcg
     multigrid preconditioner): its hierarchy, setup products and the host aggregation (not on backend 'gpu', which
     aggregates on the device inside the setup's transients; None: booked); direct (a host SuperLU
@@ -312,8 +313,6 @@ def diffusion_system_estimate(window_cells, precision, cross_term=False, transie
     # residual / direction / CSR product (solvers.pcg.workspace_bytes) + fixed mask + the cached uint8 anchor code
     # (face-area divisors are separable 1D factors)
     buffers = (11 * value_bytes + BOOL_BYTES + 1) * cells
-    # indptr + diagonal positions per row, indices / entry_rows / slot_positions per entry (int32)
-    pattern = (2 * INT32_BYTES + 3 * INT32_BYTES * entries_per_row) * cells
     operators = 2 * entries_per_row * value_bytes * cells   # operator_full and A_solve data (shared indices)
     # inverse diagonal, free, rhs_offset, fixed_values, rhs_drive, 2 face conductances, assembled c_xx / c_yy, the
     # conduction diagonal (+ C/dt); the loss-anchor mask (bool); the kept c_xy quad coefficients and their bool mask
@@ -329,7 +328,6 @@ def diffusion_system_estimate(window_cells, precision, cross_term=False, transie
         # cell volume, rhs, unknown, extra_diag / _rhs, fixed values, rhs_full buffer, 4 CG vectors + fixed mask, the
         # cached uint8 anchor code
         buffers = (11 * value_bytes + BOOL_BYTES + 1) * cells
-        pattern = (2 * INT32_BYTES + 3 * INT32_BYTES * entries_per_row) * cells   # slot_positions instead of csr_order
         operators = 2 * entries_per_row * value_bytes * cells
         # as 2D with 3 face conductances and c_zz
         assembly = (12 + (1 if transient else 0)) * value_bytes * cells + BOOL_BYTES * cells
@@ -338,6 +336,15 @@ def diffusion_system_estimate(window_cells, precision, cross_term=False, transie
         n_slots = 9 if wrap else entries_per_row   # fv_diffusion_3d._SlotLayout
         build_extra = (n_slots * (BOOL_BYTES + FLOAT64_BYTES) + (n_slots + 6) * value_bytes
                        + 8 * (BOOL_BYTES + 2 * INT32_BYTES) + 30) * cells
+    # indptr + diagonal positions per row, indices per entry (int32); the per-entry assembly maps (slot_positions,
+    # entry_rows: int32) stay only where re-assemblies run build_laplacian (c_xy, phi wrap, 2D cut cells:
+    # DiffusionSystem._fused_pattern), else they live through the first assembly's build only
+    pattern = (2 * INT32_BYTES + INT32_BYTES * entries_per_row) * cells
+    assembly_maps = 2 * INT32_BYTES * entries_per_row * cells
+    if cross_term or wrap or (conformal and dimensions != 3):
+        pattern += assembly_maps
+    else:
+        build_extra += assembly_maps
     items = [('solver buffers', buffers), ('sparse pattern (int32)', pattern), ('assembled operators', operators),
              ('assembly vectors', assembly)]
     if mixed:

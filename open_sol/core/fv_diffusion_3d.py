@@ -126,10 +126,13 @@ class FaceGeometry:
 class LaplacianPattern:
     """CSR index structure of the window operator (5 / 7 slots, + 4 corners of a 2D c_xy term, + 2 with a phi wrap;
     columns sorted per row); slot_positions picks the existing entries out of a dense (n_cells, n_slots) slot array,
-    so assembly needs no sort. xp: numpy or cupy."""
+    so assembly needs no sort. The two per-entry assembly maps (slot_positions, entry_rows: int32 each) are kept from
+    the construction until release_assembly_maps (DiffusionSystem: after each build_laplacian assembly, since its
+    re-assemblies mostly run the fused kernels, which read only indptr / indices); afterwards each access rebuilds a
+    transient copy (a build_laplacian re-assembly: one pass of the size of its dense slot array). xp: numpy or cupy."""
 
-    __slots__ = ("shape", "wrap", "cross", "layout", "indptr", "indices", "entry_rows", "slot_positions",
-                 "diagonal_positions")
+    __slots__ = ("shape", "wrap", "cross", "layout", "indptr", "indices", "diagonal_positions", "_xp",
+                 "_slot_positions", "_entry_rows")
 
     def __init__(self, shape, xp=None, wrap=False, cross=False):
         from .backend import cp
@@ -146,10 +149,24 @@ class LaplacianPattern:
         self.wrap = bool(wrap)
         self.cross = bool(cross)
         self.layout = layout
+        self._xp = xp
+        present = self._present()
+        self.indptr = xp.zeros(n_cells + 1, dtype=xp.int32)
+        self.indptr[1:] = xp.cumsum(present.sum(axis=1, dtype=xp.int32))
+        self.diagonal_positions = self.indptr[:-1] + present[:, :layout.diagonal].sum(axis=1, dtype=xp.int32)
+        self._slot_positions = xp.flatnonzero(present).astype(xp.int32)   # int32 (nnz,) into the (n_cells * n) slots
+        del present
+        self._entry_rows = self._slot_positions // n_slots
+        column_offsets = xp.asarray(layout.column_offsets(shape), dtype=xp.int32)
+        self.indices = self._entry_rows + column_offsets[self._slot_positions % n_slots]
+
+    def _present(self):
+        """(n_cells, n_slots) bool: which slots of each row exist on the window (outer faces, phi wrap)."""
+        xp, shape, layout = self._xp, self.shape, self.layout
         ndim = len(shape)
         axis_index = [xp.arange(count, dtype=xp.int32).reshape([-1 if other == axis else 1 for other in range(ndim)])
                       for axis, count in enumerate(shape)]
-        present = xp.ones(shape + (n_slots,), dtype=xp.bool_)
+        present = xp.ones(shape + (layout.n_slots,), dtype=xp.bool_)
         for slot, displacement in enumerate(layout.displacements):
             if slot == layout.wrap_to_first:
                 present[..., slot] = axis_index[1] == shape[1] - 1
@@ -162,15 +179,27 @@ class LaplacianPattern:
                     present[..., slot] &= axis_index[axis] > 0
                 elif step > 0:
                     present[..., slot] &= axis_index[axis] < shape[axis] - 1
-        present = present.reshape(n_cells, n_slots)
-        self.indptr = xp.zeros(n_cells + 1, dtype=xp.int32)
-        self.indptr[1:] = xp.cumsum(present.sum(axis=1, dtype=xp.int32))
-        self.diagonal_positions = self.indptr[:-1] + present[:, :layout.diagonal].sum(axis=1, dtype=xp.int32)
-        self.slot_positions = xp.flatnonzero(present).astype(xp.int32)   # int32 (nnz,) into the (n_cells * n) slots
-        del present
-        self.entry_rows = self.slot_positions // n_slots
-        column_offsets = xp.asarray(layout.column_offsets(shape), dtype=xp.int32)
-        self.indices = self.entry_rows + column_offsets[self.slot_positions % n_slots]
+        return present.reshape(int(np.prod(shape)), layout.n_slots)
+
+    @property
+    def slot_positions(self):
+        """int32 (nnz,) position of every stored entry in the (n_cells * n_slots) slot array (kept, or rebuilt)."""
+        if self._slot_positions is not None:
+            return self._slot_positions
+        return self._xp.flatnonzero(self._present()).astype(self._xp.int32)
+
+    @property
+    def entry_rows(self):
+        """int32 (nnz,) row of every stored entry (kept, or rebuilt from indptr)."""
+        if self._entry_rows is not None:
+            return self._entry_rows
+        xp = self._xp
+        rows = xp.searchsorted(self.indptr[1:], xp.arange(self.indices.size, dtype=self.indptr.dtype), side='right')
+        return rows.astype(xp.int32)
+
+    def release_assembly_maps(self) -> None:
+        """Drop the kept slot_positions / entry_rows (8 bytes per stored entry); later accesses rebuild them."""
+        self._slot_positions = self._entry_rows = None
 
     def matches(self, shape, wrap=False, cross=False):
         return (self.shape == tuple(int(count) for count in shape) and self.wrap == bool(wrap)
