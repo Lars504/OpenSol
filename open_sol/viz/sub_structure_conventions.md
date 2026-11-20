@@ -36,13 +36,28 @@ plot, imports of `viz.common` / `DARK_CMAPS`, canvas cell edges) live in the gui
   (`CMAPS` / `CMAP_CHOICES`), recording (`// ---------- video` block) and `.empty[hidden]` CSS: change both (the head
   comment of each page says so).
 - Plot settings (field_viewer only): the page takes the keys and checks from `DATA.figure_rules` (`FIGURE_CHOICES` /
-  `_RANGES` / `_LIMITS` / `_LENGTHS` of field_viewer.py); a new setting also needs its default in the page's
+  `_RANGES` / `_LIMITS` / `_LENGTHS` / `_VALUES` / `_COLORS` of field_viewer.py; `_COLORS` keys take a word or '#rrggbb'
+  (a select with 'Custom' beside a colour picker); `_VALUES` and colour limits are in the field unit
+  and remembered per file only for the same quantity, `fieldUnitKey`; a numeric choice ('auto' | 4) is read back from
+  its select by `FIGURE_CHOICES`); a new setting also needs its default in the page's
   `FIGURE_STYLE`, an `fs_<key>` panel input and a line in describe's export_html entry (choices and ranges there are
-  read from `FIGURE_*`; defaults are prose).
+  read from `FIGURE_*`; defaults are prose). `FIGURE_MATERIALS` ({name: {color, alpha}}) is the exception: no
+  `FIGURE_STYLE` entry or fs_<key> input; the page keeps it in `matStyle` (geometry block: per-file memory, Materials
+  rows built in the Plot settings block, `changedSettings` adds it) and every material colour / opacity is read through
+  `materialRgb` / `materialCss` / `materialAlpha` / `materialHidden` / `materialSolid`, never `GEOM.materials[i].color`
+  directly. Opacity 1 is solid: `drawGeometry` / `drawRevolution(view, proj, solid=true)` draw those surfaces opaque
+  with depth writes (polygon offset, so edges and rings stay on top) before flow and everything see-through; the
+  see-through passes skip them.
+- Contours: the labelled lines are the bold (major) ones of `contourLevels`; their labels are traced on the CPU
+  (`contourLines`, cached on the shown values) and placed per draw (`placeContourLabels`, before the field pass and
+  after `setMotionUniforms`, so they follow the deformed shape); the field shader cuts each label's box out of the
+  lines (`uLab[CONTOUR_LABEL_MAX]`: the GLSL array size must match) and `drawContourLabels` writes the text. Lines and
+  labels share one colour, `contourRgb` (Plot settings contour_color), never a per-pixel contrast ink. A new
+  way of changing the shown values (mix, scale) also enters `shownLayerValues` and the cache key, or the labels sit
+  off their lines; anything animating them belongs in `contourLabelsAnimating`.
 - Per-sample arrays of a `ViewerLayer` follow every layer rebuild (the class docstring lists them): a new one joins all.
 - One page shows one animation clock per thing: api drops the phasor partner when the deformed shape oscillates
-  (`ViewerMotion.oscillate`) or a volume is attached, `viewer_data` refuses a phasor page with volumes, and the page's
-  terrain does not open on phasor, motion or volume pages.
+  (`ViewerMotion.oscillate`) or a volume is attached, and `viewer_data` refuses a phasor page with volumes.
 - Page start-up runs top to bottom and a block's top-level code may call shared functions (limits, syncControls,
   updateReadout) that read another block's state: such state is declared with the page constants near the top (as
   the waves `PHASOR` / `SMOOTH_OK` / `wave`), never inside a later block (a `const` read before its line throws and
@@ -50,6 +65,20 @@ plot, imports of `viz.common` / `DARK_CMAPS`, canvas cell edges) live in the gui
 - Everything a picture must hold is drawn on the overlay canvas (`drawOverlay`), never as DOM over the view (PNG and
   recordings take the canvases only); a new overlay part also reserves its room in `viewInsets`, a new movable part
   is a `MOVABLE` entry plus a `placePart` call in its draw function.
-- Key bindings live in each block's own keydown listener; taken: V flow, Shift+V particles / arrows (2D flow pages)
-  and view cycling (3D volume pages; never on the same page), C contours, R terrain, D deform animation, G objects,
-  M mirror.
+- Key bindings live in each block's own keydown listener; taken: V flow, Shift+V arrows / particles (2D flow pages)
+  and view cycling (3D volume pages; never on the same page), C contours, R 3D (revolution pages), D deform animation,
+  G objects, M mirror.
+- Planar maps have no value relief (removed: it never earned its place); the only lifted / lit planar map is the
+  deformed shape (motion: Deform amplitude, an out-of-plane membrane lit by `uShade`). The 3D button exists only on
+  revolution pages and is the revolve turn. A revolution page opens on the drawn half (Mirror off), then mirrors and
+  revolves (`REVOLVE_AT_OPEN`, `runRevolveIntro`; skipped with a page view, after any user input, or when this browser
+  last turned 3D off: store key 'revolve'). Flow opens as arrows; its browser memory is `FLOW_STORE` (renamed when the
+  defaults change, so stored untouched defaults do not pin the old ones).
+- Revolution (field_viewer `// ---- revolution ----`, api `_viewer_revolution`): the page's mirror faces are
+  `unfold_faces` (api `_page_mirror_faces`, also the `_hide_void` crop), so an axisymmetric map's far half is the x_lo
+  image of `AXIS_UNFOLD_TYPES` (core sub file "Mirror planes"); other types and azimuthal_order != 0 show the drawn half
+  in the glass. Polar / spherical domains take `mirror_faces` (unfold_faces' x_lo is the Cartesian axis; on a
+  spherical window it is r_min): `_viewer_revolution` adds the spherical far half itself, for unsigned / scalar fields
+  only ((r, theta) components keep their sign under the rotation, no reflection sign does that). viewer_data refuses x mirrors off the axis on a revolution page (no part of the body). While revolved
+  the camera orbits in another frame (`setOrbitFrame`: UP / E1 / E2 are `let`): code reading UP assumes nothing about
+  z being up; the bodies skip the axis image (whole revolutions) but take the other mirror images.

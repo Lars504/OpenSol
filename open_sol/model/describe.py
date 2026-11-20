@@ -10,7 +10,7 @@ from ..core.constants import FACE_LABELS
 from ..core.renderer import primary_field_info
 from ..materials import REGISTRY as MATERIAL_LIBRARY
 from ..materials.crystal_tensors import CRYSTALS
-from ..viz.field_viewer import FIGURE_CHOICES, FIGURE_RANGES
+from ..viz.field_viewer import FIGURE_CHOICES, FIGURE_COLORS, FIGURE_RANGES
 from .expressions import (BUILTIN_CONSTANTS, CONSTANT_DESCRIPTIONS, COORDINATE_NAMES, FUNCTION_ARITY,
                           FUNCTION_DESCRIPTIONS, MAX_EXPRESSION_LENGTH, RESERVED_NAMES)
 from .analytic import (CURVE_FUNCTION_DESCRIPTIONS, CURVE_RESULT_KINDS, DERIVED_RESULT_KINDS, FIT_QUANTITIES,
@@ -753,7 +753,8 @@ _MATERIAL_NOTES = (
 )
 def _figure_choices(key) -> str:
     """The choices of a field-viewer Plot setting as help text ('a' | 'b')."""
-    return ' | '.join(repr(choice) for choice in FIGURE_CHOICES[key])
+    return ' | '.join(repr(choice) for choice in (FIGURE_CHOICES[key] if key in FIGURE_CHOICES
+                                                  else (*FIGURE_COLORS[key], '#rrggbb')))
 
 
 def _figure_range(key) -> str:
@@ -1303,8 +1304,11 @@ _RESULTS_NOTES = (
         "  - what = a field ('physics.component' or a unique component; physics narrows it): every stored snapshot holding "
         "it is a frame (time snapshots play, labelled ones get a slider; a '<base>_re' / '_im' pair is animated "
         'over one period, Re / Im[A exp(j wt)]), else the current / saved state. 2D: a map (2D Cartesian flow / '
-        'current / potential / magnetostatic / heat pages can add particles or arrows of the in-plane vector; 2D '
-        'solid_mechanics / membrane fields drawn on the deformed body). 3D: cut planes (live: an x, y and z cut at '
+        'current / potential / magnetostatic / heat pages can add arrows (the default) or moving particles of the '
+        'in-plane vector; 2D solid_mechanics / membrane fields drawn on the deformed body; a map of an axisymmetric '
+        '(r, z) physics or a spherical (r, theta) domain opens revolved about its rotation axis: a 3D view inside '
+        'see-through surfaces of revolution of the domain and the objects, the far half its mirror image across the '
+        'axis where core.mirror.unfold_faces gives one). 3D: cut planes (live: an x, y and z cut at '
         'a mirror plane of its physics, else through the objects that do not span the window, else the window '
         'middle; snapshots and closed / loaded runs: the mid-height z cut and stored_cuts); planes [(axis, '
         'position m)]: the live state on exactly those planes, a snapshot its held cut nearest each, ValueError in '
@@ -1333,7 +1337,20 @@ _RESULTS_NOTES = (
         'true-length bar on a face-on map in place of the axes), scale_bar_length (m, > 0; default a round length '
         f"near a fifth of the view), scale_bar_color {_figure_choices('scale_bar_color')}, legend_color "
         f"{_figure_choices('legend_color')}, background {_figure_choices('background')}, export_scale "
-        f"{_figure_choices('export_scale')} (PNG pixels per screen pixel).",
+        f"{_figure_choices('export_scale')} (PNG pixels per screen pixel), contour_step (field unit, > 0: the "
+        'interval between contour lines on a linear colour scale, as 25 m on a map; default about 12 levels over the '
+        "range, the Contours density), contour_label_every "
+        f"{_figure_choices('contour_label_every')} (contour lines per labelled, bolder one, as every 4th for 100 m "
+        "labels on 25 m lines; 'auto': the labelled interval nearest the colour bar's tick step), contour_labels "
+        f"{_figure_choices('contour_labels')} (default 'on': the value written into a gap of the labelled lines, "
+        f"upright and spaced along them; none while the field animates), contour_color "
+        f"{_figure_choices('contour_color')} (one colour for every contour line and label; 'auto': black over a colour map whose middle is "
+        f"light, else white), contour_width (CSS px, {_figure_range('contour_width')}, default 1.6: the ordinary "
+        f"lines; labelled ones 1.7 x as wide), materials {{material name: {{'color': "
+        "'#rrggbb', 'alpha': 0 .. 1}} (each key optional; colour of its outlines, edges, see-through surfaces and "
+        'legend swatch; alpha the opacity of its surfaces (Glass faces, 3D bodies of revolution; default see-through), 1 draws '
+        'them solid, 0 hides the material; '
+        'ValueError for a name not drawn on the page).',
         'Stored states (live, closed and loaded alike): snapshots() -> [(time, label, [physics.component keys])] '
         '(frequency_domain: one per wavelength, field() holds only the last); snapshot_field(index, name, '
         'physics=None, plane=None) -> FieldData of one snapshot, float32 on the native window cells (x_centers / '

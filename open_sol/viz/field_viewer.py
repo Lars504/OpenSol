@@ -12,11 +12,15 @@ with per-layer displacements lets it draw the deformed shape (solids in plane, m
 (modes oscillate); a `ViewerVolume` per frame puts the whole 3D field on the page (a float16 3D texture the page
 ray-marches: slices, isosurfaces, shells, a cloud). `figure_settings` checks the Plot settings a page opens with (font
 sizes, colour and axis limits, colour bar and label places). 2D maps whose layers carry `ViewerVectors` (with a
-`ViewerFlow` naming them) get moving flow particles (a Flow button).
+`ViewerFlow` naming them) get flow arrows or moving particles (a Flow button). A `ViewerRevolution` marks a 2D map as
+the meridional half plane of a body of revolution: the page can turn it about the rotation axis into a 3D view inside
+see-through surfaces of revolution (its 3D button; the far half is the map's mirror image across the axis, when
+the caller passes that ViewerMirror).
 """
 
 import json
 import math
+import re
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -28,9 +32,9 @@ from .mode_player import _b64, length_scale
 TEMPLATE_FILE = 'field_viewer.html'
 DATA_MARKER = '/*__FIELD_DATA__*/null'
 FORMAT = 'open_sol.field_viewer'
-FORMAT_VERSION = 4                    # 2: length_scale, figure (Plot settings); 3: inward directions in line rows;
+FORMAT_VERSION = 5                    # 2: length_scale, figure (Plot settings); 3: inward directions in line rows;
 #                                       4: phasor partners (frame 'quadrature', data 'phasor'), flow vectors ('flow'),
-#                                          motion (displacement channels per frame), volume
+#                                          motion (displacement channels per frame), volume; 5: revolution
 FRAME_KINDS = ('time', 'labelled')    # time: snapshots the page can play; labelled: wavelengths, modes, frequencies
 MAX_BYTES = 24_000_000                # quantised values of every frame and layer (the page is ~4/3 of this, base64)
 MAX_FRAMES = 200
@@ -72,11 +76,19 @@ FIGURE_CHOICES = {
     'legend_color': ('auto', 'white', 'black'),                                  # material legend text
     'background': ('theme', 'white'),
     'export_scale': (1, 2, 4),                                                   # PNG pixels per screen pixel
+    'contour_labels': ('on', 'off'),                                             # values written into labelled lines
+    'contour_label_every': ('auto', 1, 2, 3, 4, 5, 10),                          # contour lines per labelled one
 }
 FIGURE_RANGES = {'font_size': (6.0, 40.0), 'title_size': (8.0, 72.0),            # CSS px
-                 'colorbar_length': (0.1, 1.0)}                                  # fraction of the view side
+                 'colorbar_length': (0.1, 1.0),                                  # fraction of the view side
+                 'contour_width': (0.5, 8.0)}                                    # CSS px, the ordinary contour lines
 FIGURE_LIMITS = ('color', 'x', 'y', 'z')   # <name>_min / <name>_max: colour limits (field unit), axis limits (m)
 FIGURE_LENGTHS = ('scale_bar_length',)     # positive lengths (m)
+FIGURE_VALUES = ('contour_step',)          # positive values in the field unit (contour_step: the interval between
+#                                            contour lines on a linear colour scale; None = automatic)
+FIGURE_COLORS = {'contour_color': ('auto', 'black', 'white')}   # one of the words or '#rrggbb'
+FIGURE_MATERIALS = 'materials'             # {material name: {'color': '#rrggbb', 'alpha': 0 .. 1}} (each key optional)
+_HEX_COLOR = re.compile(r'#[0-9a-fA-F]{6}')
 MOTION_COMPONENTS = ('u', 'v', 'n')        # displacement along a layer's first / second axis and along its normal
 
 
@@ -187,6 +199,19 @@ class ViewerMirror:
     position: float
     value_sign: int = 1
     flow_sign: int = 1                   # flow particles of the image: +1 the reflected paths, -1 those run backwards
+
+
+@dataclass(eq=False)
+class ViewerRevolution:
+    """A 2D map (layer axes x, y) that is the meridional half plane of a body of revolution (axisymmetric (r, z)
+    physics, spherical (r, theta) domains) about the line x = axis_position (m) along y: the page can turn it into a
+    3D view inside see-through surfaces of revolution of the profiles ((N, 2) drawing-plane polylines, m, on the side
+    x >= axis_position: the domain boundary; the solid objects' outlines join from the page's geometry). The far half
+    of the map (the field at phi + pi) is a ViewerMirror on the axis when the field's image there is known (api:
+    core.mirror.unfold_faces), else the page shows the drawn half alone. label names the coordinates on the page."""
+    profiles: list
+    axis_position: float = 0.0
+    label: str = 'axisymmetric (r, z)'
 
 
 def _centres(centres, low, high, count):
@@ -802,6 +827,35 @@ def _mirror_data(mirrors, scale):
     return data
 
 
+def _revolution_data(revolution, layers, mirrors, scale):
+    """JSON of a ViewerRevolution (positions in length units, profiles float32 (u, v) pairs), None for None;
+    ValueError unless every layer is a 2D map on (x, y), the profiles are finite polylines on the side x >=
+    axis_position, and no mirror plane normal to x lies off the axis (its image would be no part of the body)."""
+    if revolution is None:
+        return None
+    if any(layer.plane is not None or tuple(layer.axes) != ('x', 'y') for layer in layers):
+        raise ValueError('a revolution turns a 2D map on (x, y) about its axis: every layer must be one')
+    axis = float(revolution.axis_position)
+    reach = max(max(_layer_span(layer) for layer in layers), abs(axis)) or 1.0
+    profiles = []
+    for polyline in revolution.profiles:
+        points = np.asarray(polyline, dtype=np.float64)
+        if points.ndim != 2 or points.shape[1] != 2 or len(points) < 2 or not np.all(np.isfinite(points)):
+            raise ValueError(f'a revolution profile must be a finite (N >= 2, 2) polyline, got shape {points.shape}')
+        if float(points[:, 0].min()) < axis - 1e-6 * reach:
+            raise ValueError(f'a revolution profile reaches x = {float(points[:, 0].min()):.6g} m, across the '
+                             f'rotation axis x = {axis:.6g} m')
+        profiles.append(_b64((points / scale).astype('<f4')))
+    if not profiles:
+        raise ValueError('a revolution needs at least one profile (the domain boundary)')
+    off_axis = [mirror.face for mirror in mirrors
+                if mirror.face[0] == 'x' and abs(float(mirror.position) - axis) > 1e-6 * reach]
+    if off_axis:
+        raise ValueError(f"mirror plane(s) {', '.join(off_axis)} normal to x off the rotation axis: their images are "
+                         'no part of a body of revolution')
+    return {'axis': axis / scale, 'profiles': profiles, 'label': str(revolution.label)}
+
+
 # ---- flow particles (in-plane vectors of 2D maps) ----
 def _flow_shape(extent, n_frames, n_layers, source_shape):
     """(gu, gv) samples of a layer's uniform flow grid: FLOW_MAX_SIDE along the longer side of extent, fewer when every
@@ -1050,17 +1104,30 @@ def _volume_bytes(values, offset, scale, masked):
 
 
 def figure_settings(figure) -> dict:
-    """The checked Plot settings {key: value} of a page (FIGURE_CHOICES / _RANGES / _LIMITS / _LENGTHS keys; None
-    values = automatic, dropped); ValueError for an unknown key, a value outside its choices / range or min >= max."""
+    """The checked Plot settings {key: value} of a page (FIGURE_CHOICES / _RANGES / _LIMITS / _LENGTHS / _VALUES keys
+    and FIGURE_COLORS / FIGURE_MATERIALS; None values = automatic, dropped); ValueError for an unknown key, a value outside its choices /
+    range or min >= max, a material entry other than {'color': '#rrggbb', 'alpha': 0 .. 1} (viewer_data checks the
+    names against the page's materials)."""
     figure = dict(figure or {})
     limit_keys = tuple(f'{name}_{end}' for name in FIGURE_LIMITS for end in ('min', 'max'))
-    known = (*FIGURE_CHOICES, *FIGURE_RANGES, *limit_keys, *FIGURE_LENGTHS)
+    known = (*FIGURE_CHOICES, *FIGURE_RANGES, *limit_keys, *FIGURE_LENGTHS, *FIGURE_VALUES, *FIGURE_COLORS,
+             FIGURE_MATERIALS)
     unknown = sorted(set(figure) - set(known))
     if unknown:
         raise ValueError(f"unknown figure setting(s) {', '.join(map(repr, unknown))}; known: {', '.join(known)}")
     checked = {}
     for key, value in figure.items():
         if value is None:
+            continue
+        if key == FIGURE_MATERIALS:
+            materials = _material_settings(value)
+            if materials:
+                checked[key] = materials
+            continue
+        if key in FIGURE_COLORS:
+            if not isinstance(value, str) or (value not in FIGURE_COLORS[key] and not _HEX_COLOR.fullmatch(value)):
+                raise ValueError(f"figure setting {key} = {value!r} is not one of {FIGURE_COLORS[key]} or '#rrggbb'")
+            checked[key] = value.lower()
             continue
         if key in FIGURE_CHOICES:
             if isinstance(value, bool) or value not in FIGURE_CHOICES[key]:
@@ -1077,6 +1144,8 @@ def figure_settings(figure) -> dict:
             raise ValueError(f'figure setting {key} = {number:g} is outside {FIGURE_RANGES[key]}')
         if key in FIGURE_LENGTHS and not number > 0.0:
             raise ValueError(f'figure setting {key} = {number:g} is not a positive length')
+        if key in FIGURE_VALUES and not number > 0.0:
+            raise ValueError(f'figure setting {key} = {number:g} is not a positive value')
         checked[key] = number
     for name in FIGURE_LIMITS:
         low, high = checked.get(f'{name}_min'), checked.get(f'{name}_max')
@@ -1085,9 +1154,41 @@ def figure_settings(figure) -> dict:
     return checked
 
 
+def _material_settings(value) -> dict:
+    """Checked FIGURE_MATERIALS {name: {'color': '#rrggbb', 'alpha': float}} (None entries and values dropped)."""
+    if not isinstance(value, dict):
+        raise ValueError(f"figure setting {FIGURE_MATERIALS} must be {{material name: {{'color': '#rrggbb', "
+                         f"'alpha': 0 .. 1}}}}, got {type(value).__name__}")
+    checked = {}
+    for name, entry in value.items():
+        if entry is None:
+            continue
+        if not isinstance(name, str) or not isinstance(entry, dict):
+            raise ValueError(f"figure setting {FIGURE_MATERIALS}[{name!r}] must be a dict {{'color': '#rrggbb', "
+                             "'alpha': 0 .. 1}")
+        unknown = sorted(set(entry) - {'color', 'alpha'})
+        if unknown:
+            raise ValueError(f"figure setting {FIGURE_MATERIALS}[{name!r}]: unknown key(s) {unknown}; known: "
+                             "'color', 'alpha'")
+        style = {}
+        if entry.get('color') is not None:
+            if not isinstance(entry['color'], str) or not _HEX_COLOR.fullmatch(entry['color']):
+                raise ValueError(f"figure setting {FIGURE_MATERIALS}[{name!r}] color {entry['color']!r} is not "
+                                 "'#rrggbb'")
+            style['color'] = entry['color'].lower()
+        if entry.get('alpha') is not None:
+            alpha = entry['alpha']
+            if isinstance(alpha, bool) or not isinstance(alpha, (int, float)) or not 0.0 <= float(alpha) <= 1.0:
+                raise ValueError(f"figure setting {FIGURE_MATERIALS}[{name!r}] alpha {alpha!r} is not in [0, 1]")
+            style['alpha'] = float(alpha)
+        if style:
+            checked[name] = style
+    return checked
+
+
 def viewer_data(frames, quantity, title='', subtitle='', frame_kind='labelled', view=None, plan=None,
                 max_bytes=MAX_BYTES, max_frames=MAX_FRAMES, geometry=None, mirrors=None, figure=None, flow=None,
-                motion=None):
+                motion=None, revolution=None):
     """The JSON-able dict the page reads. frames [ViewerFrame] (one surface set throughout), quantity ViewerQuantity,
     frame_kind 'time' | 'labelled', view (azimuth, elevation) degrees or None, geometry ViewerGeometry or None,
     mirrors [ViewerMirror] the planes the page can unfold across (a Mirror button; grid layers ending on one get a
@@ -1099,7 +1200,8 @@ def viewer_data(frames, quantity, title='', subtitle='', frame_kind='labelled', 
     labelled frames): the page animates values cos(wt) + quadrature sin(wt), each frame quantised over -+ its largest
     modulus. motion: ViewerMotion of the layers' displacements (deformed shape, animation), None = none. Frame volumes (every frame or none; not for a phase or
     a phasor page) go on one uniform lattice within MAX_VOLUME_BYTES (block means; graded axes keep their centres) and
-    join the frame's colour range."""
+    join the frame's colour range. revolution: ViewerRevolution of a 2D map that is a meridional half plane (a mirror
+    on its axis draws the far half), None = a flat map only."""
     if not frames:
         raise ValueError('nothing to show: no field frames')
     if frame_kind not in FRAME_KINDS:
@@ -1124,6 +1226,17 @@ def viewer_data(frames, quantity, title='', subtitle='', frame_kind='labelled', 
         span = max(span, *(float(size) for size in geometry.box))
     scale, unit = length_scale(span or 1.0)
     flow_page, flow_frames = _flow_data(frames, flow, scale)
+    if revolution is not None and frames[0].volume is not None:
+        raise ValueError('a revolution turns a 2D map: a page with a volume has none')
+    revolution_entry = _revolution_data(revolution, first, mirrors, scale)
+    geometry_entry = None if geometry is None else _geometry_data(geometry, first, scale)
+    styled = set(figure.get(FIGURE_MATERIALS, {}))
+    if styled:
+        shown = {entry['name'] for entry in (geometry_entry or {}).get('materials', [])}
+        missing = sorted(styled - shown)
+        if missing:
+            raise ValueError(f"figure setting {FIGURE_MATERIALS} names {missing}, not drawn on this page"
+                             + (f" (its materials: {sorted(shown)})" if shown else ' (no model objects: geometry off)'))
     phasor = _phasor_frames(frames, quantity, frame_kind)
     lattices, volume_entry = [None] * len(frames), None
     if frames[0].volume is not None:
@@ -1185,14 +1298,15 @@ def viewer_data(frames, quantity, title='', subtitle='', frame_kind='labelled', 
         'length_unit': unit, 'length_scale': float(scale),   # m per length unit of the page
         'figure': figure or None,
         'figure_rules': {'choices': FIGURE_CHOICES, 'ranges': FIGURE_RANGES, 'limits': FIGURE_LIMITS,
-                         'lengths': FIGURE_LENGTHS},
+                         'lengths': FIGURE_LENGTHS, 'values': FIGURE_VALUES,
+                         'colors': FIGURE_COLORS},
         'quantity': {'label': quantity.label, 'unit': quantity.unit, 'signed': bool(quantity.signed),
                      'phase': bool(quantity.phase)},
         'layers': [_layer_geometry(layer, scale) for layer in first],
         'frames': packed, 'frame_kind': frame_kind if len(packed) > 1 else 'single',
         'range': [low, high],
         'view': None if view is None else [float(view[0]), float(view[1])],
-        'geometry': None if geometry is None else _geometry_data(geometry, first, scale),
+        'geometry': geometry_entry,
         'mirrors': _mirror_data(mirrors, scale),
         'flow': flow_page,
         'phasor': phasor,
@@ -1202,6 +1316,7 @@ def viewer_data(frames, quantity, title='', subtitle='', frame_kind='labelled', 
             'max': max(frame['dmax'] for frame in packed),
             'mirror_signs': {face: int(sign) for face, sign in motion.mirror_signs.items()}},
         'volume': volume_entry,
+        'revolution': revolution_entry,
     }
 
 

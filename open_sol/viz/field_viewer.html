@@ -99,6 +99,9 @@ header p { margin: 2px 0 0; color: var(--ink-3); font-size: 13px; }
 .settings input[type="number"], .settings select { width: 100%; min-width: 0; font: inherit; font-size: 12px;
   color: var(--ink); background: var(--panel-2); border: 1px solid var(--rule); border-radius: 6px; padding: 3px 6px; }
 .settings input:disabled { opacity: 0.45; }
+.settings input[type="color"] { width: 100%; min-width: 0; height: 24px; padding: 1px 2px; background: var(--panel-2);
+                                border: 1px solid var(--rule); border-radius: 6px; cursor: pointer; }
+.settings .rows label.mat { overflow: hidden; text-overflow: ellipsis; max-width: 110px; }
 .settings input.bad { border-color: #e5484d; }
 .settings textarea { grid-column: 1 / 4; width: 100%; height: 52px; resize: vertical; color: var(--ink-2);
                      font: 11px ui-monospace, "Cascadia Mono", Consolas, monospace; background: var(--panel-2);
@@ -178,6 +181,23 @@ body.present .app { padding: 10px; gap: 10px; }
           <option value="top">Top</option><option value="bottom">Bottom</option><option value="off">Off</option></select>
         <label for="fs_colorbar_length">Bar length</label>
         <input type="number" id="fs_colorbar_length" class="wide" min="0.1" max="1" step="0.05" placeholder="auto" title="Length of the colour bar as a fraction of the view, 0.1 - 1 (empty: automatic; applied as typed)">
+        <h2 id="fs_contourhead">Contour lines</h2>
+        <label for="fs_contour_step">Step / label every</label>
+        <input type="number" id="fs_contour_step" step="any" min="0" placeholder="auto" title="Interval between contour lines, in the field's unit, as 25 m on a map (empty: automatic, the Contours density; a log scale keeps its decades; Enter applies)">
+        <select id="fs_contour_label_every" title="Contour lines per labelled (bolder) one, as every 4th for 100 m labels on 25 m lines; Auto: the labelled interval nearest the colour bar's tick step">
+          <option value="auto">Auto</option><option value="1">Every line</option><option value="2">Every 2nd</option>
+          <option value="3">Every 3rd</option><option value="4">Every 4th</option><option value="5">Every 5th</option>
+          <option value="10">Every 10th</option></select>
+        <label for="fs_contour_color">Colour</label>
+        <select id="fs_contour_color" title="One colour for every contour line and its label; Auto: black over a colour map whose middle is light, else white">
+          <option value="auto">Auto</option><option value="black">Black</option><option value="white">White</option>
+          <option value="custom">Custom</option></select>
+        <input type="color" id="fs_contour_custom" title="A colour of your own for the contour lines and labels">
+        <label for="fs_contour_width">Width (px)</label>
+        <input type="number" id="fs_contour_width" class="wide" min="0.5" max="8" step="0.1" title="Width of the contour lines, 0.5 - 8 px (the labelled ones 1.7 x as wide; applied as typed)">
+        <label for="fs_contour_labels">Labels</label>
+        <select id="fs_contour_labels" class="wide" title="The value written into a gap of each labelled contour line, upright, spaced along it (none while the field animates)">
+          <option value="on">On</option><option value="off">Off</option></select>
         <h2 id="fs_axishead">Axis limits</h2>
         <label for="fs_x_min">x min / max</label>
         <input type="number" id="fs_x_min" step="any" title="Empty: automatic, the grey value; Enter applies"><input type="number" id="fs_x_max" step="any" title="Empty: automatic, the grey value; Enter applies">
@@ -202,6 +222,7 @@ body.present .app { padding: 10px; gap: 10px; }
         <label for="fs_legend_color" id="fs_legendlabel">Text colour</label>
         <select id="fs_legend_color" class="wide" title="Colour of the material names (the legend can be dragged over the field)">
           <option value="auto">As the texts</option><option value="white">White</option><option value="black">Black</option></select>
+        <h2 id="fs_materialhead" title="Colour and opacity of each material: its outlines (Objects colour Material), edges, see-through surfaces (Glass, 3D bodies of revolution) and legend swatch. Opacity: of its surfaces (Glass faces, 3D bodies of revolution), empty = automatic (see-through), 1 = solid, 0 hides the material">Materials: colour, opacity</h2>
         <h2>Export</h2>
         <label for="fs_background">Background</label>
         <select id="fs_background" class="wide" title="Background of the view and of the saved picture">
@@ -237,14 +258,13 @@ body.present .app { padding: 10px; gap: 10px; }
     <div class="group"><label for="range">Range</label>
       <input type="range" id="range" min="0.02" max="1" step="0.01" value="1" title="Colour limit as a fraction of the largest value (saturates hot spots)">
       <span class="val num" id="rangev"></span></div>
-    <div class="group" id="reliefgroup"><button id="terrain" aria-pressed="false" title="Raise the map into a lit 3D terrain with its walls, and turn the view to it; again: back to the flat map seen face-on (R)">3D</button>
-      <label for="relief">Relief</label>
-      <input type="range" id="relief" min="0" max="1" step="0.01" value="0" title="Raise the map by its value">
-      <span class="val num" id="reliefv"></span></div>
+    <div class="group" id="revolvegroup"><button id="revolve" aria-pressed="false">3D</button>
+      <label for="glass">Glass</label>
+      <input type="range" id="glass" class="short" min="0" max="1" step="0.05" value="0.5" title="Opacity of the see-through surfaces of revolution (the domain and the objects)"></div>
     <div class="group" id="flowgroup"><button id="flow" aria-pressed="false">Flow</button>
-      <select id="flowstyle" title="Flow drawn as moving particles or as arrows on a regular lattice (length in proportion to the magnitude) (Shift+V)">
-        <option value="particles">Particles</option><option value="arrows">Arrows</option></select>
-      <input type="range" id="flowdensity" class="short" min="0.2" max="4" step="0.1" value="1" title="Number of flow particles">
+      <select id="flowstyle" title="Flow drawn as arrows on a regular lattice (length in proportion to the magnitude) or as moving particles (Shift+V)">
+        <option value="arrows">Arrows</option><option value="particles">Particles</option></select>
+      <input type="range" id="flowdensity" class="short" min="0.2" max="4" step="0.1" value="1" title="Number of arrows">
       <input type="range" id="flowspeed" class="short" min="0" max="3" step="0.05" value="1" title="Speed of the flow particles (0: still)">
       <input type="range" id="arrowlength" class="short" min="0.2" max="3" step="0.05" value="1" title="Arrow length (1: an arrow at the reference magnitude, a high percentile, spans 0.9 of the lattice spacing; larger ones are not longer)"></div>
     <div class="group" id="contourgroup"><button id="contours" aria-pressed="false" title="Contour lines at round values, the bolder ones at the colour bar's ticks (decades on a log scale) (C)">Contours</button>
@@ -368,7 +388,7 @@ const AX = { x: 0, y: 1, z: 2 };
 // DIVERGING: a signed field whose values cross zero (or whose mirror images flip its sign): diverging maps, limits
 // symmetric about 0. A signed field of one sign throughout (a potential of 0 .. 5 V, a temperature rise) is coloured
 // like a magnitude, over its own range: symmetric limits would leave half the map unused
-const DIVERGING = SIGNED && (Math.min(DATA.range[0], -DATA.range[1]) < -0.02 * Math.max(Math.abs(DATA.range[0]), Math.abs(DATA.range[1]))
+const DIVERGING = SIGNED && (Math.max(DATA.range[0], -DATA.range[1]) < -0.02 * Math.max(Math.abs(DATA.range[0]), Math.abs(DATA.range[1]))
   || (DATA.mirrors || []).some((M) => M.sign < 0));
 const LOG_OK = !DIVERGING && DATA.range[1] > 0 && DATA.range[0] >= 0;
 // the kind of quantity picks the opening colour map (each kind remembers the user's own choice) and, for densities
@@ -390,21 +410,26 @@ function cmapStoreKey() { return DIVERGING ? 'cmap_signed' : SCALAR_KIND === 'ot
 const LENGTH_SCALE = DATA.length_scale || 1;   // m per length unit of the page
 const FIGURE_STYLE = { font_size: 11, title_size: 26, title: 'top_left', colorbar: 'bottom_right', colorbar_length: null,
   horizontal_axis: 'bottom', vertical_axis: 'left', scale_bar: 'on', scale_bar_color: 'auto', legend_color: 'auto',
-  background: 'theme', export_scale: 1 };
+  background: 'theme', export_scale: 1, contour_labels: 'on', contour_label_every: 'auto', contour_color: 'auto',
+  contour_width: 1.6 };
 // the rules come from Python (viz.field_viewer FIGURE_CHOICES / _RANGES / _LIMITS / _LENGTHS), the defaults are the page's
 const FIGURE_CHOICES = DATA.figure_rules.choices;
 const FIGURE_RANGES = DATA.figure_rules.ranges;
 const FIGURE_LENGTHS = DATA.figure_rules.lengths;   // positive lengths (m)
+const FIGURE_VALUES = DATA.figure_rules.values;     // positive values in the field unit (contour_step)
+const FIGURE_COLORS = DATA.figure_rules.colors;     // { key: words }: one of the words or '#rrggbb' (contour_color)
 const LIMIT_KEYS = DATA.figure_rules.limits.flatMap((name) => [name + '_min', name + '_max']);
-const FILE_KEYS = [...LIMIT_KEYS, ...FIGURE_LENGTHS];   // values of this model: remembered per file, not for every page
+const FILE_KEYS = [...LIMIT_KEYS, ...FIGURE_LENGTHS, ...FIGURE_VALUES];   // values of this model: remembered per file, not for every page
+function fieldUnitKey(k) { return k.startsWith('color') || FIGURE_VALUES.includes(k); }   // kept only for the same quantity
 const FIGURE_DEFAULTS = Object.assign({}, FIGURE_STYLE, Object.fromEntries(FILE_KEYS.map((k) => [k, null])));
 const LIMITS_STORE = 'limits:' + location.pathname;
 const QUANTITY_KEY = Q.label + '|' + (Q.unit || '');
 function validSetting(k, v) {
+  if (k in FIGURE_COLORS) return FIGURE_COLORS[k].includes(v) || (typeof v === 'string' && /^#[0-9a-f]{6}$/.test(v));
   if (k in FIGURE_CHOICES) return FIGURE_CHOICES[k].includes(v);
   if (v === null) return FIGURE_DEFAULTS[k] === null;
   if (typeof v !== 'number' || !isFinite(v)) return false;
-  if (FIGURE_LENGTHS.includes(k)) return v > 0;
+  if (FIGURE_LENGTHS.includes(k) || FIGURE_VALUES.includes(k)) return v > 0;
   return !(k in FIGURE_RANGES) || (v >= FIGURE_RANGES[k][0] && v <= FIGURE_RANGES[k][1]);
 }
 function storedJson(key) { try { const v = JSON.parse(store(key) || 'null'); return v && typeof v === 'object' ? v : {}; }
@@ -414,7 +439,7 @@ const fig = (() => {
   const out = Object.assign({}, FIGURE_DEFAULTS), style = storedJson('style'), kept = storedJson(LIMITS_STORE);
   for (const k of Object.keys(FIGURE_STYLE)) if (k in style && validSetting(k, style[k])) out[k] = style[k];
   for (const k of FILE_KEYS) if (typeof kept[k] === 'number' && validSetting(k, kept[k])
-      && (!k.startsWith('color') || kept.quantity === QUANTITY_KEY)) { out[k] = kept[k]; rememberedLimits.add(k); }
+      && (!fieldUnitKey(k) || kept.quantity === QUANTITY_KEY)) { out[k] = kept[k]; rememberedLimits.add(k); }
   for (const [k, v] of Object.entries(DATA.figure || {})) if (k in FIGURE_DEFAULTS && validSetting(k, v)) {
     out[k] = v; rememberedLimits.delete(k); }
   return out;
@@ -468,7 +493,7 @@ const LAYERS = DATA.layers.map((L, index) => {
 const AXIS_NAMES = ['x', 'y', 'z'];
 
 // planar: a 2D map, or 3D cut planes all in one plane (a single cut): shown face-on as the GUI canvas shows it (u to
-// the right, v up), with relief; NORMAL = the axis it faces, PLANE_AXES = its (u, v)
+// the right, v up); NORMAL = the axis it faces, PLANE_AXES = its (u, v)
 // (a page with the whole 3D field, DATA.volume, is never planar: its one cut is then a plane in the volume's box)
 const PLANAR = !DATA.volume && (is2d || DATA.layers.every((L) => L.normal === DATA.layers[0].normal && L.position === DATA.layers[0].position));
 const NORMAL = is2d ? 2 : AX[DATA.layers[0].normal];
@@ -491,6 +516,18 @@ const MIRROR_IMAGES = (() => {
   return images;
 })();
 const CAN_MIRROR = MIRROR_IMAGES.length > 1;
+// revolution block state (`// ---- revolution ----`), here because stretch(), resetCamera() and fitDistance() read it
+// from start-up on: DATA.revolution of a 2D map that is a meridional half plane (axis: the u of the rotation axis)
+const REVOLUTION = DATA.revolution && PLANAR && is2d ? DATA.revolution : null;
+let revolveFade = 0;                          // 0 .. 1: the surfaces of revolution fade in / out as the view turns
+let contourCache = null;                      // the labelled contour lines of the shown values (scalars block)
+let contourLabels = [];                       // the labels placed for this draw: gaps in the lines, text on the overlay
+const REV_PROFILES = REVOLUTION ? REVOLUTION.profiles.map(f32) : [];   // per profile (u, v) pairs, length units
+// a revolution page opens flat on the drawn half (Mirror off), then shows its mirror images and turns into the
+// revolved view (the intro at the end of the page), unless this browser turned 3D off or the page has a view
+const REVOLVE_AT_OPEN = !!REVOLUTION && !DATA.view && store('revolve') !== 'off';
+const MIRROR_AT_OPEN = CAN_MIRROR && !REVOLVE_AT_OPEN;
+let revGlass = (() => { const v = Number(store('glass')); return store('glass') !== null && v >= 0 && v <= 1 ? v : 0.5; })();
 
 // bounds of the simulated part (hmin, hmax), and of what is shown with or without its images (setBounds)
 const hmin = [Infinity, Infinity, Infinity], hmax = [-Infinity, -Infinity, -Infinity];
@@ -574,21 +611,28 @@ function setBounds(mirrored) {
       for (const k of keys) if (rememberedLimits.has(k)) fig[k] = null;
   }
 }
-setBounds(CAN_MIRROR);
+setBounds(MIRROR_AT_OPEN);
 
 // ---------- state ----------
 const state = {
   // colour limits: shared over time frames; per frame for labelled ones (modes, wavelengths: independent states)
-  frame: 0, playing: false, fps: 8, scale: KIND === 'time' ? 'all' : 'frame', log: false, decades: 3, range: 1, relief: 0,
-  lines: false, box: !PLANAR, spin: false, axes: !scaleBarOffered(), stretch: true, mirror: CAN_MIRROR,   // a scale bar stands in for the axes
+  frame: 0, playing: false, fps: 8, scale: KIND === 'time' ? 'all' : 'frame', log: false, decades: 3, range: 1,
+  lines: false, box: !PLANAR, spin: false, axes: !scaleBarOffered(), stretch: true, mirror: MIRROR_AT_OPEN,   // a scale bar stands in for the axes
+  revolve: false,                              // the revolution block's 3D view (never at open)
   cmap: store(cmapStoreKey()) || (DIVERGING ? 'coolwarm' : KIND_CMAP[SCALAR_KIND]),
 };
 const choices = CMAP_CHOICES[DIVERGING ? 'diverging' : 'sequential'];
 if (!choices.some(([key]) => key === state.cmap)) state.cmap = choices[0][0];
 $('cmap').replaceChildren(...choices.map(([key, label]) => new Option(label, key)));
 $('cmap').value = state.cmap;
-function stretch() { return state.stretch ? AUTO_STRETCH : [1, 1, 1]; }
+function stretch() {
+  // revolved: the map's normal axis takes the stretch of its u axis (the radius), so a ring stays round
+  const f = state.stretch ? AUTO_STRETCH : [1, 1, 1];
+  return state.revolve ? f.map((v, c) => c === NORMAL ? f[PLANE_AXES[0]] : v) : f;
+}
 function images() { return state.mirror ? MIRROR_IMAGES : [IDENTITY_IMAGE]; }
+function onAxis(M) { return !!REVOLUTION && AX[M.axis] === PLANE_AXES[0] && Math.abs(M.position - REVOLUTION.axis) <= 1e-6 * LARGEST; }
+function mirrorName(M) { return onAxis(M) ? 'the rotation axis' : M.face; }   // a revolution's far half
 function selfImage(L, I) {
   // an image reflecting a layer's normal axis across the layer's own plane (a cut on a mirror plane, placed there by
   // field_viewer.snap_to_mirrors) maps it onto itself: drawn once, else the coincident copy (sign-flipped for odd
@@ -657,27 +701,24 @@ const VS = `#version 300 es
 precision highp float;
 precision highp int;
 in vec3 aPos; in vec2 aVal; in vec2 aVal2;   // aVal2: the phasor partner or the next frame (waves block)
-in float aDown;                     // 1 = a terrain wall's bottom vertex (scalars block), else 0
 in vec4 aDisp;                      // displacement channels (solid2d block)
 uniform mat4 uView; uniform mat4 uProj; uniform vec3 uCenter;
 uniform vec3 uDispDir[4]; uniform vec4 uDispW; uniform float uAmp;   // deformed shape: aPos + sum aDisp[c] uDispW[c] uDispDir[c]
 uniform float uLo; uniform float uHi; uniform int uLog; uniform int uSigned;
-uniform float uRelief; uniform vec3 uNormal; uniform vec3 uStretch; uniform float uBase;
+uniform vec3 uStretch;
 uniform vec3 uMirA; uniform vec3 uMirB; uniform float uValSign; uniform int uPhase;   // mirror image: a x + b, value sign
 uniform float uMixA; uniform float uMixB;   // shown value = aVal uMixA + aVal2 uMixB (1, 0: aVal alone)
-out float vT; out float vOk; out vec3 vViewPos; out vec3 vPlace; out float vVal; out vec3 vSrc;
+out float vT; out float vOk; out vec3 vViewPos; out vec3 vPlace; out float vVal;
 void main() {
   float v = (aVal.x * uMixA + aVal2.x * uMixB) * uAmp, t;   // uAmp: cos(theta) of an oscillating mode (solid2d), else 1
   if (uValSign < 0.0) v = (uPhase == 1) ? (v > 0.0 ? v - 3.14159265 : v + 3.14159265) : -v;
   if (uLog == 1) { t = (log(max(v, 1e-37)) - log(uLo)) / (log(uHi) - log(uLo)); vVal = log(max(v, 1e-37)) * 0.4342944819; }
   else { t = (v - uLo) / (uHi - uLo); vVal = v; }   // vVal: the value the contour levels count (log10 on a log scale)
   t = clamp(t, 0.0, 1.0);
-  float h = (uSigned == 1) ? 2.0 * t - 1.0 : t;
   vec3 d = aDisp.x * uDispW.x * uDispDir[0] + aDisp.y * uDispW.y * uDispDir[1] + aDisp.z * uDispW.z * uDispDir[2]
          + aDisp.w * uDispW.w * uDispDir[3];
   vPlace = (aPos + d) * uMirA + uMirB;   // true coordinates of the (deformed, mirrored) point: the axis limits cut on them
-  vSrc = aPos;                        // of the simulated point: where an image reads the outline decal
-  vec3 p = (vPlace - uCenter) * uStretch + uNormal * mix(uRelief * h, -uBase, aDown);
+  vec3 p = (vPlace - uCenter) * uStretch;
   vT = t; vOk = uMixB != 0.0 ? min(aVal.y, aVal2.y) : aVal.y;
   vec4 vp = uView * vec4(p, 1.0);
   vViewPos = vp.xyz;
@@ -686,12 +727,11 @@ void main() {
 const FS = `#version 300 es
 precision highp float;
 precision highp int;
-in float vT; in float vOk; in vec3 vViewPos; in vec3 vPlace; in float vVal; in vec3 vSrc;
+in float vT; in float vOk; in vec3 vViewPos; in vec3 vPlace; in float vVal;
 uniform vec3 uStops[9]; uniform int uLine; uniform vec4 uLineColor; uniform float uShade;
 uniform vec3 uClipLo; uniform vec3 uClipHi;
-uniform int uContour; uniform float uC0; uniform float uCStep; uniform float uCMajor; uniform float uCWidth;
-uniform float uWall;                  // terrain walls (scalars block): darker, no contours
-uniform int uDecal; uniform int uDecalAuto; uniform sampler2D uDecalTex; uniform vec3 uDecalU; uniform vec3 uDecalV; uniform vec4 uDecalBox;   // outlines on a raised map
+uniform int uContour; uniform float uC0; uniform float uCStep; uniform float uCMajor; uniform float uCWidth; uniform vec3 uCInk;
+uniform int uLabCount; uniform vec4 uLab[48]; uniform float uLabHalfH;   // contour label gaps: centre px, direction x half width
 out vec4 outColor;
 vec3 cmap(float t) {
   t = clamp(t, 0.0, 1.0) * 8.0;
@@ -703,23 +743,28 @@ void main() {
   if (any(lessThan(vPlace, uClipLo)) || any(greaterThan(vPlace, uClipHi))) discard;   // outside the axis limits
   if (uLine == 1) { outColor = uLineColor; return; }
   vec3 base = cmap(vT);
-  if (uContour == 1 && uWall < 0.5) {
-    // isolines at uC0 + k uCStep (every uCMajor-th one bolder, as the colour bar ticks), anti-aliased over the
+  if (uContour == 1) {
+    // isolines at uC0 + k uCStep (every uCMajor-th one bolder and labelled), anti-aliased over the
     // screen-space change of k; none where the field is flat (a level the whole region sits on) or where the levels
     // crowd closer than ~2 px (a moire otherwise)
     float k = (vVal - uC0) / uCStep, w = fwidth(k);
-    if (w > 1e-6 && vT > 0.0 && vT < 1.0) {
+    bool gap = false;                 // inside a label's box (scalars block, placeContourLabels): no line there
+    for (int i = 0; i < 48; i++) {
+      if (i >= uLabCount) break;
+      vec2 q = uLab[i].zw, d = gl_FragCoord.xy - uLab[i].xy;
+      float hw2 = dot(q, q);
+      if (abs(dot(d, q)) < hw2 && abs(q.x * d.y - q.y * d.x) < uLabHalfH * sqrt(hw2)) { gap = true; break; }
+    }
+    if (!gap && w > 1e-4 && vT > 0.0 && vT < 1.0) {   // w: levels per px (a plateau's rounding noise stays below)
       float d = abs(fract(k + 0.5) - 0.5) / w;   // px to the nearest level
       bool major = abs(mod(floor(k + 0.5), uCMajor)) < 0.5;
       float hw = (major ? 0.85 : 0.5) * uCWidth;
       float a = (1.0 - smoothstep(hw - 0.5, hw + 0.5, d)) * (1.0 - smoothstep(0.25, 0.5, w)) * (major ? 0.9 : 0.6);
-      float lum = dot(base, vec3(0.2126, 0.7152, 0.0722));
-      vec3 ink = lum > 0.42 ? base * 0.28 : mix(base, vec3(1.0), 0.75);   // darker over light colours, lighter over dark
-      base = mix(base, ink, a);
+      base = mix(base, uCInk, a);       // one colour for every line (contourRgb), the ordinary ones fainter
     }
   }
   vec3 col = base;
-  if (uShade > 0.0) {                 // relief: light the raised surface (key, fill, rim as mode_player); flat maps keep the legend colours
+  if (uShade > 0.0) {                 // a membrane bent out of its plane: lit (key, fill, rim as mode_player); flat maps keep the legend colours
     vec3 n = normalize(cross(dFdx(vViewPos), dFdy(vViewPos)));
     vec3 v = normalize(-vViewPos);
     if (dot(n, v) < 0.0) n = -n;
@@ -729,13 +774,6 @@ void main() {
     float rim = pow(1.0 - max(dot(n, v), 0.0), 3.0);
     vec3 lit = base * (0.42 + 0.55 * dk + 0.18 * df) + vec3(0.18) * sp + vec3(0.05) * rim;
     col = mix(base, lit, uShade);
-    if (uWall > 0.5) col *= 0.62;
-  }
-  if (uDecal == 1 && uWall < 0.5) {   // the model outlines drawn into a texture over the plane: they follow the relief
-    vec4 d = texture(uDecalTex, (vec2(dot(vSrc, uDecalU), dot(vSrc, uDecalV)) - uDecalBox.xy) / uDecalBox.zw);
-    vec3 ink = d.rgb / max(d.a, 1e-4);
-    if (uDecalAuto == 1) ink = dot(col, vec3(0.2126, 0.7152, 0.0722)) > 0.45 ? vec3(0.05, 0.06, 0.08) : vec3(1.0);   // Contrast: per pixel
-    col = mix(col, ink, d.a);
   }
   outColor = vec4(col, 1.0);
 }`;
@@ -760,18 +798,17 @@ function setupGL() {
   gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FS));
   gl.linkProgram(prog);
   if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
-  for (const name of ['uView', 'uProj', 'uCenter', 'uLo', 'uHi', 'uLog', 'uSigned', 'uRelief', 'uNormal', 'uStretch',
+  for (const name of ['uView', 'uProj', 'uCenter', 'uLo', 'uHi', 'uLog', 'uSigned', 'uStretch',
                       'uStops', 'uLine', 'uLineColor', 'uShade', 'uMirA', 'uMirB', 'uValSign', 'uPhase',
-                      'uClipLo', 'uClipHi', 'uMixA', 'uMixB', 'uBase', 'uContour', 'uC0', 'uCStep', 'uCMajor', 'uCWidth',
-                      'uWall', 'uDecal', 'uDecalAuto', 'uDecalTex', 'uDecalU', 'uDecalV', 'uDecalBox',
-                      'uDispDir', 'uDispW', 'uAmp'])
+                      'uClipLo', 'uClipHi', 'uMixA', 'uMixB', 'uContour', 'uC0', 'uCStep', 'uCMajor', 'uCWidth', 'uCInk',
+                      'uLabCount', 'uLab', 'uLabHalfH', 'uDispDir', 'uDispW', 'uAmp'])
     uni[name] = gl.getUniformLocation(prog, name);
   const aPos = gl.getAttribLocation(prog, 'aPos'), aVal = gl.getAttribLocation(prog, 'aVal');
   const aVal2 = gl.getAttribLocation(prog, 'aVal2');
   if (aVal2 >= 0) gl.vertexAttrib2f(aVal2, 0, 1);   // without a buffer (box, still pages): a valued zero
   const aDisp = gl.getAttribLocation(prog, 'aDisp');
   if (aDisp >= 0) gl.vertexAttrib4f(aDisp, 0, 0, 0, 0);   // buffers without a displacement (box, no motion) stay put
-  // (aDown, the terrain walls, reads its generic 0 likewise: a new attribute of this program sets its value here)
+  // (a new attribute of this program sets its generic value here likewise)
   for (const L of LAYERS) {
     L.vao = gl.createVertexArray(); gl.bindVertexArray(L.vao);
     vertexBuffer(aPos, L.pos, 3, gl.STATIC_DRAW);
@@ -806,8 +843,10 @@ function sub(a, b) { return [a[0] - b[0], a[1] - b[1], a[2] - b[2]]; }
 function cross(a, b) { return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]; }
 function norm(a) { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / l, a[1] / l, a[2] / l]; }
 function dot(a, b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
-const UP = [0, 0, 1];
-const E1 = [-1, 0, 0], E2 = [0, -1, 0];      // azimuth 0 looks from -x; +90 deg from -y (2D: x right, y up)
+// the orbit frame: UP and the azimuth directions E1 / E2; let: a revolved view orbits about the rotation axis
+// instead (revolution block, setOrbitFrame)
+let UP = [0, 0, 1];
+let E1 = [-1, 0, 0], E2 = [0, -1, 0];        // azimuth 0 looks from -x; +90 deg from -y (2D: x right, y up)
 const cam = { az: 0, el: 0, dist: 1, target: [0, 0, 0], moved: false };   // moved: panned / zoomed by hand since the last fit
 // size of a face-on map as a fraction of the free area inside the insets (the corner grip; remembered per file).
 // Zoom and pan of a face-on map change the axis limits instead of the camera, so the plot frame keeps its size
@@ -816,14 +855,14 @@ let plotScale = (() => { const v = Number(store(PLOT_SCALE_STORE));
   return isFinite(v) && v >= PLOT_SCALE_MIN && v <= 1 ? v : 1; })();
 function setPlotScale(v) { plotScale = Math.max(PLOT_SCALE_MIN, Math.min(1, v)); store(PLOT_SCALE_STORE, String(plotScale)); }
 function resetCamera() {
-  if (PLANAR) [cam.az, cam.el] = state.relief > 0 ? terrainPose() : FACE_ON[NORMAL];   // a raised map: its terrain angle
+  if (PLANAR && state.revolve) [cam.az, cam.el] = revolvePose();   // in the revolved orbit frame
+  else if (PLANAR) [cam.az, cam.el] = FACE_ON[NORMAL];
   else { cam.az = 2.2; cam.el = 0.42; }        // eye at +x, -y, +z: x to the right, y into the view
   if (PLANAR && MOTION_NORMAL) { cam.az += 0.45; cam.el = 0.62; }   // an out-of-plane deformation: an oblique view
-  if (DATA.view) { cam.az = DATA.view[0] * Math.PI / 180; cam.el = DATA.view[1] * Math.PI / 180; }
+  if (DATA.view && !state.revolve) { cam.az = DATA.view[0] * Math.PI / 180; cam.el = DATA.view[1] * Math.PI / 180; }
   cam.target = [0, 0, 0]; cam.moved = false;
   fitDistance();
 }
-function reliefHeight() { return state.relief * 0.3 * Math.max(...shownSpan()); }
 function faceOn() { return PLANAR && Math.abs(eyeDir()[NORMAL]) > 0.99; }
 // the parts drawn on the overlay canvas around the view (drawOverlay), sized by the Plot settings; device px
 const PAD = 16;                                // CSS px between the canvas edge and those parts
@@ -852,12 +891,12 @@ function viewInsets() {
 }
 function overlayCentre() {
   // device px centre of a face-on map inside its insets (where the centred heading and colour bars go), else the canvas'
-  const ins = faceOn() && state.relief === 0 ? viewInsets() : { top: 0, bottom: 0, left: 0, right: 0 };
+  const ins = faceOn() ? viewInsets() : { top: 0, bottom: 0, left: 0, right: 0 };
   return [0.5 * (ins.left + canvas.width - ins.right), 0.5 * (ins.top + canvas.height - ins.bottom)];
 }
 function fitDistance() { const fov = 30 * Math.PI / 180, tan = Math.tan(fov / 2);
   const span = shownSpan(); cam.moved = false;
-  if (faceOn() && state.relief === 0) {
+  if (faceOn()) {
     // tight: the map rectangle fills plotScale of the canvas minus the insets, its centre at theirs (at distance d
     // the view is 2 d tan(fov / 2) high over canvas.height px)
     const ins = viewInsets(), [iu, iv] = PLANE_AXES;
@@ -871,7 +910,12 @@ function fitDistance() { const fov = 30 * Math.PI / 180, tan = Math.tan(fov / 2)
     return;
   }
   const aspect = canvas.width / Math.max(canvas.height, 1);
-  if (PLANAR) span[NORMAL] += reliefHeight() + 2 * motionNormalReach();
+  if (PLANAR) span[NORMAL] += 2 * motionNormalReach();
+  if (state.revolve) {   // the whole body of revolution, centred (the drawn half alone is off its axis)
+    const [lo, hi] = revolveBox(), f = stretch();
+    for (const c of [0, 1, 2]) span[c] = (hi[c] - lo[c]) * f[c];
+    cam.target = [0, 1, 2].map((c) => (0.5 * (lo[c] + hi[c]) - center[c]) * f[c]);
+  }
   const r = 0.5 * Math.hypot(span[0], span[1], span[2]) || 1;
   const h = r / tan, w = r / (tan * Math.min(aspect, 1.0));
   cam.dist = Math.max(h, w) * (PLANAR ? 0.92 : 0.86);
@@ -918,7 +962,6 @@ function resize() {
 function draw() {
   if (!gl || !ready) return;
   resize();
-  try { prepareDecal(); } catch (err) { decalFailed = true; decalActive = false; console.error('outline decal:', err); }
   gl.viewport(0, 0, canvas.width, canvas.height);
   const bg = themeColors.clear;
   gl.clearColor(bg[0], bg[1], bg[2], 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
@@ -932,12 +975,11 @@ function draw() {
   gl.uniform3fv(uni.uCenter, center); gl.uniform3fv(uni.uStretch, stretch());
   gl.uniform1f(uni.uLo, lo); gl.uniform1f(uni.uHi, hi);
   gl.uniform1i(uni.uLog, logScale ? 1 : 0); gl.uniform1i(uni.uSigned, DIVERGING ? 1 : 0);
-  setContourUniforms(lo, hi, logScale); setDecalUniforms();
   gl.uniform3fv(uni.uStops, new Float32Array(CMAPS[state.cmap].map(hexRgb).flat()));
-  const relief = PLANAR ? reliefHeight() : 0;
-  gl.uniform1f(uni.uShade, relief > 0 || motionLit() ? 1 : 0);
+  gl.uniform1f(uni.uShade, motionLit() ? 1 : 0);
   setMotionUniforms();
-  drawMotionOutlines(view, proj, relief, 'rest'); gl.useProgram(prog);   // the rest shape under the body
+  setContourUniforms(lo, hi, logScale, view, proj);   // after the motion weights: labels follow the deformed shape
+  drawMotionOutlines(view, proj, 'rest'); gl.useProgram(prog);   // the rest shape under the body
   gl.disable(gl.BLEND);
   gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(1, 1);   // fills behind their mesh lines
   gl.uniform1i(uni.uLine, 0); gl.uniform1i(uni.uPhase, Q.phase ? 1 : 0);
@@ -946,12 +988,11 @@ function draw() {
     setImage(uni, I);
     for (const L of LAYERS) {
       if (!L.visible || selfImage(L, I)) continue;
-      gl.uniform3fv(uni.uNormal, L.normal); gl.uniform1f(uni.uRelief, relief); setMotionLayer(uni, L, I);
+      setMotionLayer(uni, L, I);
       gl.bindVertexArray(L.vao); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, L.triBuf);
       gl.drawElements(gl.TRIANGLES, L.tri.length, gl.UNSIGNED_INT, 0);
     }
   }
-  drawWalls(relief);
   gl.disable(gl.POLYGON_OFFSET_FILL);
   gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
   gl.uniform1i(uni.uLine, 1);
@@ -961,7 +1002,7 @@ function draw() {
       setImage(uni, I);
       for (const L of LAYERS) {
         if (!L.visible || !L.edgeBuf || selfImage(L, I)) continue;
-        gl.uniform3fv(uni.uNormal, L.normal); gl.uniform1f(uni.uRelief, relief); setMotionLayer(uni, L, I);
+        setMotionLayer(uni, L, I);
         gl.bindVertexArray(L.vao); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, L.edgeBuf);
         gl.drawElements(gl.LINES, L.edges.length, gl.UNSIGNED_INT, 0);
       }
@@ -971,15 +1012,18 @@ function draw() {
   if (state.box && !PLANAR) {
     // the box lies on the axis limits themselves: drawn uncut
     gl.uniform3fv(uni.uClipLo, NO_CLIP_LO); gl.uniform3fv(uni.uClipHi, NO_CLIP_HI);
-    gl.uniform4fv(uni.uLineColor, themeColors.box); gl.uniform1f(uni.uRelief, 0);
+    gl.uniform4fv(uni.uLineColor, themeColors.box);
     gl.bindVertexArray(boxVao); gl.drawArrays(gl.LINES, 0, boxCount);
   }
   gl.disable(gl.BLEND);
   gl.bindVertexArray(null);
+  drawGeometry(view, proj, true);             // opacity-1 materials: solid surfaces, before anything see-through
+  drawRevolution(view, proj, true);
   drawFlow(view, proj);
-  drawMotionOutlines(view, proj, relief, 'moved');
+  drawMotionOutlines(view, proj, 'moved');
   drawVolume(view, proj, lo, hi, logScale);   // fields3d: the whole 3D field, before the objects (they depth-test)
-  drawGeometry(view, proj);
+  drawGeometry(view, proj, false);
+  drawRevolution(view, proj, false);          // see-through, after everything it lies over
   drawAxes(view, proj);
   drawOverlay(view, proj);
   if (renderScale === 1) placeGrip(view, proj);
@@ -997,7 +1041,7 @@ function project(point, view, proj) {
   return [(c[0] / c[2] + 1) * 0.5 * canvas.width, (1 - c[1] / c[2]) * 0.5 * canvas.height];
 }
 // ---------- the plot frame of a face-on map: zoom / pan move the axis limits inside it, the grip resizes it ----------
-function mapNavigable() { return PLANAR && state.relief === 0 && faceOn(); }
+function mapNavigable() { return PLANAR && faceOn(); }
 function planeCorner(u, v, view, proj) {
   const p = center.slice(), [iu, iv] = PLANE_AXES; p[iu] = u; p[iv] = v;   // center[NORMAL] = the plane's position
   return project(p, view, proj);
@@ -1285,17 +1329,19 @@ function drawMaterials(c) {
   // the material colours of the drawn objects; home: below the heading / colour bar of the top right corner
   MOVABLE.legend.box = null;
   if (!materialsShown) return;
+  const shown = GEOM.materials.filter((m) => !materialHidden(m.index));
+  if (!shown.length) return;
   const px = pixelRatio, pad = PAD * px, B = barMetrics(), F = B.F, gap = 0.6 * F, headH = headingHeight(), row = 1.45 * F;
   c.font = F + 'px ' + themeColors.font; c.textAlign = 'right'; c.textBaseline = 'middle';
-  const width = 1.5 * F + Math.max(...GEOM.materials.map((m) => c.measureText(m.name).width));
-  const height = row * GEOM.materials.length - (row - 0.9 * F);
+  const width = 1.5 * F + Math.max(...shown.map((m) => c.measureText(m.name).width));
+  const height = row * shown.length - (row - 0.9 * F);
   const homeLeft = canvas.width - pad - (fig.colorbar === 'right' ? B.width + gap : 0) - width;
   const homeTop = Math.max(40 * px, pad + (fig.title === 'top_right' ? headH + gap : 0) + (fig.colorbar === 'top_right' ? B.height + gap : 0));
   const [left, top] = placePart(MOVABLE.legend, homeLeft, homeTop, width, height);
   const ink = overlayColor(fig.legend_color, themeColors.axisText);
   let y = top;
-  for (const m of GEOM.materials) {
-    c.fillStyle = m.color; c.fillRect(left + width - 0.9 * F, y, 0.9 * F, 0.9 * F);
+  for (const m of shown) {
+    c.fillStyle = materialCss(m.index); c.fillRect(left + width - 0.9 * F, y, 0.9 * F, 0.9 * F);
     c.fillStyle = ink; c.fillText(m.name, left + width - 1.5 * F, y + 0.45 * F);
     y += row;
   }
@@ -1309,7 +1355,7 @@ function niceDown(x) { const p = Math.pow(10, Math.floor(Math.log10(x)));
   for (const m of [5, 2, 1]) if (m * p <= x * (1 + 1e-9)) return m * p; return p; }
 function drawScaleBar(c, view, proj) {
   // Plot settings scale bar: a bar of a round (or the given) true length with that length above it, on any planar view;
-  // tilted (relief, out-of-plane motion, turned by hand) it is the screen-horizontal scale at the map centre's depth
+  // tilted (revolved, out-of-plane motion, turned by hand) it is the screen-horizontal scale at the map centre's depth
   // (the narrow perspective changes it a little across the map); home: the lower right corner inside the plot frame
   // (mapFrame; off face-on the free area inside viewInsets)
   MOVABLE.scaleBar.box = null;
@@ -1339,7 +1385,7 @@ function drawScaleBar(c, view, proj) {
   c.fillText(text, left + 0.5 * width, top);
   c.fillRect(left + 0.5 * (width - bar), top + 1.3 * F, bar, thick);
 }
-function drawOverlay(view, proj) { drawHeading(actx); drawColorbar(actx); drawMaterials(actx); drawScaleBar(actx, view, proj); }
+function drawOverlay(view, proj) { drawContourLabels(actx); drawHeading(actx); drawColorbar(actx); drawMaterials(actx); drawScaleBar(actx, view, proj); }
 function composite(target) {
   // the GL view with its overlay (axes, heading, colour bar) on a 2D canvas: call right after draw() (the GL buffer
   // is not preserved)
@@ -1362,8 +1408,39 @@ const GEOM_MODES = !(GEOM_LINES.length || GEOM_FACES.length) ? [] : [
   ...(GEOM_FACES.length ? [['glass', 'Glass']] : []), ['off', 'Off']];
 state.geom = !GEOM_MODES.length ? 'off' : (!PLANAR && HAS_EDGES ? 'edges' : 'outline');
 state.geomColor = ['auto', 'white', 'black', 'material'].includes(store('geom_color')) ? store('geom_color') : 'auto';
-const MAT_RGB = new Map((GEOM ? GEOM.materials : []).map((m) => [m.index, hexRgb(m.color)]));
-function materialRgb(m) { return MAT_RGB.get(m) || hexRgb(GEOM.no_material_color); }
+// per-material colour and opacity (Plot settings 'Materials' rows; Python: figure setting 'materials', checked by
+// viz.field_viewer.figure_settings): matStyle { name: { color: '#rrggbb', alpha: 0 .. 1 } }, a missing key =
+// automatic (the page's colour; each use's own opacity). Start: this browser's memory for this file, then
+// DATA.figure.materials. color: outlines (Objects colour Material), edges, see-through surfaces, legend swatch; alpha:
+// the opacity of the material's surfaces (Glass faces, revolved bodies' sidewalls): 1 draws them solid (opaque, depth
+// written, before everything see-through: materialSolid), 0 hides the material everywhere (outlines, edges, rings,
+// legend)
+const MATERIALS_STORE = 'materials:' + location.pathname;
+const MATERIAL_BY_INDEX = new Map((GEOM ? GEOM.materials : []).map((m) => [m.index, m]));
+function checkedMaterialStyle(raw) {
+  // the entries of raw naming a material of this page with a valid colour / opacity (others dropped)
+  const out = {}, names = new Set((GEOM ? GEOM.materials : []).map((m) => m.name));
+  for (const [name, entry] of Object.entries(raw && typeof raw === 'object' ? raw : {})) {
+    if (!names.has(name) || !entry || typeof entry !== 'object') continue;
+    const style = {};
+    if (typeof entry.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(entry.color)) style.color = entry.color.toLowerCase();
+    if (typeof entry.alpha === 'number' && entry.alpha >= 0 && entry.alpha <= 1) style.alpha = entry.alpha;
+    if (Object.keys(style).length) out[name] = style;
+  }
+  return out;
+}
+const MATERIALS_WRITTEN = checkedMaterialStyle((DATA.figure || {}).materials);   // the page's own (Reset)
+let matStyle = Object.assign(checkedMaterialStyle(storedJson(MATERIALS_STORE)), MATERIALS_WRITTEN);
+function saveMaterials() { store(MATERIALS_STORE, JSON.stringify(matStyle)); }
+function materialStyle(m) { const M = MATERIAL_BY_INDEX.get(m); return (M && matStyle[M.name]) || {}; }
+function materialCss(m) {
+  const M = MATERIAL_BY_INDEX.get(m);
+  return materialStyle(m).color || (M ? M.color : GEOM.no_material_color);
+}
+function materialRgb(m) { return hexRgb(materialCss(m)); }
+function materialAlpha(m, auto) { const a = materialStyle(m).alpha; return a === undefined ? auto : a; }
+function materialHidden(m) { return materialStyle(m).alpha === 0; }
+function materialSolid(m) { return materialStyle(m).alpha === 1; }
 function contrastRgba() {
   // dark lines over a map whose middle colour is light (diverging maps), else light lines
   const [r, g, b] = hexRgb(CMAPS[state.cmap][4]);
@@ -1371,7 +1448,7 @@ function contrastRgba() {
   return dark ? [0.06, 0.07, 0.09, 0.9] : [1, 1, 1, 0.92];
 }
 function lineRgba(G) {
-  if (G.kind === 'edge') return [...materialRgb(G.material), 0.85];
+  if (G.kind === 'edge') return [...materialRgb(G.material), 0.85];   // (hidden materials are skipped by the callers)
   if (G.kind === 'outline' && state.geomColor === 'material') return [...materialRgb(G.material), 1];
   return contrastRgba();
 }
@@ -1424,12 +1501,14 @@ out vec3 vViewPos; out vec3 vPlace;
 void main() { vPlace = aPos * uMirA + uMirB; vec4 vp = uView * vec4((vPlace - uCenter) * uStretch, 1.0); vViewPos = vp.xyz; gl_Position = uProj * vp; }`;
 const GLASS_FS = `#version 300 es
 precision highp float;
-in vec3 vViewPos; in vec3 vPlace; uniform vec4 uColor; uniform vec3 uClipLo; uniform vec3 uClipHi;
+in vec3 vViewPos; in vec3 vPlace; uniform vec4 uColor; uniform vec3 uClipLo; uniform vec3 uClipHi; uniform int uSolid;
 out vec4 outColor;
 void main() {
   if (any(lessThan(vPlace, uClipLo)) || any(greaterThan(vPlace, uClipHi))) discard;   // outside the axis limits
-  // faces seen edge-on read stronger (a rim), faces turned to the eye lighter
   float facing = abs(normalize(cross(dFdx(vViewPos), dFdy(vViewPos))).z);
+  // solid: shaded by facing, the given opacity; see-through: faces seen edge-on read stronger (a rim), faces turned
+  // to the eye lighter
+  if (uSolid == 1) { outColor = vec4(uColor.rgb * (0.5 + 0.55 * facing), uColor.a); return; }
   outColor = vec4(uColor.rgb * (0.8 + 0.3 * facing), uColor.a * (1.6 - 0.9 * facing));
 }`;
 let geometryGL = null, lineProg = null, glassProg = null;   // geometryGL: null = not set up yet, false = nothing / failed
@@ -1457,49 +1536,56 @@ function setupGeometryGL() {
   }
   if (GEOM_FACES.length) {
     glassProg = linkProgram(GLASS_VS, GLASS_FS, ['uView', 'uProj', 'uCenter', 'uStretch', 'uColor', 'uMirA', 'uMirB',
-                                                 'uClipLo', 'uClipHi'], glassUni);
+                                                 'uClipLo', 'uClipHi', 'uSolid'], glassUni);
     const aPos = gl.getAttribLocation(glassProg, 'aPos');
     for (const G of GEOM_FACES) { G.vao = gl.createVertexArray(); gl.bindVertexArray(G.vao); vertexBuffer(aPos, G.pos, 3, gl.STATIC_DRAW); }
   }
   gl.bindVertexArray(null);
   return true;
 }
-function drawGeometry(view, proj) {
+function drawGeometry(view, proj, solid) {
+  // solid: only the Glass faces of opacity-1 materials (opaque, depth written, pushed behind their edges), drawn
+  // before anything see-through; else the see-through faces and every line
   if (geometryGL === null) {
     try { geometryGL = setupGeometryGL(); }
     catch (err) { geometryGL = false; $('geom').disabled = true; $('geom').title = 'Model objects: WebGL error ' + err.message; }
   }
   if (!geometryGL || state.geom === 'off') return;
   const f = stretch();
-  gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-  if (state.geom === 'glass' && glassProg) {   // after the opaque layers, no depth writes: every surface shows through
+  if (state.geom === 'glass' && glassProg) {   // see-through: after the opaque layers, no depth writes
+    const faces = GEOM_FACES.filter((G) => !materialHidden(G.material) && materialSolid(G.material) === solid);
     gl.useProgram(glassProg);
     gl.uniformMatrix4fv(glassUni.uView, false, view); gl.uniformMatrix4fv(glassUni.uProj, false, proj);
     gl.uniform3fv(glassUni.uCenter, center); gl.uniform3fv(glassUni.uStretch, f);
     gl.uniform3fv(glassUni.uClipLo, clipLo); gl.uniform3fv(glassUni.uClipHi, clipHi);
-    gl.depthMask(false);
-    for (const I of images()) {
+    gl.uniform1i(glassUni.uSolid, solid ? 1 : 0);
+    if (solid) { gl.disable(gl.BLEND); gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(1, 1); }
+    else { gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA); gl.depthMask(false); }
+    for (const I of faces.length ? images() : []) {
       setImage(glassUni, I);
-      for (const G of GEOM_FACES) {
-        gl.uniform4fv(glassUni.uColor, [...materialRgb(G.material), 0.16]);
+      for (const G of faces) {
+        gl.uniform4fv(glassUni.uColor, [...materialRgb(G.material), materialAlpha(G.material, 0.16)]);
         gl.bindVertexArray(G.vao); gl.drawArrays(gl.TRIANGLES, 0, G.count);
       }
     }
-    gl.depthMask(true);
+    gl.depthMask(true); gl.disable(gl.POLYGON_OFFSET_FILL); gl.disable(gl.BLEND); gl.bindVertexArray(null);
   }
+  if (solid) return;
+  gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
   gl.useProgram(lineProg);
   gl.uniformMatrix4fv(lineUni.uView, false, view); gl.uniformMatrix4fv(lineUni.uProj, false, proj);
   gl.uniform3fv(lineUni.uCenter, center); gl.uniform3fv(lineUni.uStretch, f);
   gl.uniform3fv(lineUni.uClipLo, clipLo); gl.uniform3fv(lineUni.uClipHi, clipHi);
   gl.uniform2f(lineUni.uViewport, canvas.width, canvas.height);
-  if (PLANAR) gl.disable(gl.DEPTH_TEST);       // one plane seen face-on (or raised by relief): outlines on top
+  // one plane: outlines on top of it; revolved, solid bodies (materialSolid) hide them
+  if (PLANAR && !revolveOn()) gl.disable(gl.DEPTH_TEST);
   const dash = 0.008 * (Math.max(...SPAN) || 1);
   for (const I of images()) {
     setImage(lineUni, I);
     for (const G of GEOM_LINES) {
       if (G.kind === 'outline' && (!LAYERS[G.layer].visible || selfImage(LAYERS[G.layer], I))) continue;
+      if (materialHidden(G.material)) continue;   // opacity 0 in the Materials settings
       if (G.kind !== 'outline' && state.geom === 'outline' && !is2d) continue;   // 3D edges and points: Edges / Glass
-      if (decalActive && decalKind(G)) continue;   // on a raised map they are drawn into the map (outlineDecal)
       // material-coloured outlines lie inside their own object (two objects meeting on a line: both colours show,
       // each on its side) and are a little wider; one-colour outlines stay centred on the true boundary
       const inset = G.kind === 'outline' && state.geomColor === 'material';
@@ -1516,7 +1602,7 @@ function syncGeometry() {
   $('geom').value = state.geom; $('geomcolor').value = state.geomColor; $('geomcolor').disabled = state.geom === 'off';
   // material legend (drawMaterials) when material colours are shown (edges, glass, or material-coloured outlines)
   materialsShown = !!GEOM && GEOM.materials.length > 0 && state.geom !== 'off'
-    && (state.geom !== 'outline' || state.geomColor === 'material');
+    && (state.geom !== 'outline' || state.geomColor === 'material' || state.revolve);   // revolved: material glass
 }
 $('geomgroup').style.display = GEOM_MODES.length ? '' : 'none';
 $('geom').replaceChildren(...GEOM_MODES.map(([key, label]) => new Option(label, key)));
@@ -1530,6 +1616,316 @@ window.addEventListener('keydown', (e) => {
 });
 syncGeometry();
 
+// ---- revolution ----
+// A 2D map that is the meridional half plane of a body of revolution (DATA.revolution: axisymmetric (r, z) physics,
+// spherical (r, theta) domains; the rotation axis runs along the map's v at u = REVOLUTION.axis). 3D turns the
+// view to it in 3D and draws see-through surfaces of revolution around the map: the domain boundary (REV_PROFILES,
+// glass of the theme's colour) and the solid objects' outlines (GEOM 'outline' rows of layer 0, glass of their
+// material; Objects off hides them), lit with a Fresnel rim and a highlight; per body the far side before the near
+// side (no depth writes; the opaque map hides what lies behind it), ring lines at the profile corners and the axis
+// dashed between them. The map's far half is its mirror image across the axis when Python gives one (an x mirror on
+// the axis: core.mirror.unfold_faces), shown by Mirror like every image; the bodies are whole revolutions, so they
+// take only the other images (a y symmetry plane reflects them). While revolved the camera orbits about the rotation
+// axis (setOrbitFrame: UP = the map's v, azimuth 0 = face-on), the normal axis takes the u stretch (stretch()) and
+// the fit covers the whole body (fitDistance). The 3D button (R) is this turn: only revolution pages have one. Pages
+// open flat on the drawn half, then mirror and revolve (REVOLVE_AT_OPEN, runRevolveIntro; the user's last 3D is
+// remembered).
+const REV_STEPS = 96, REV_MIN_STEPS = 24, REV_MAX_TRIANGLES = 1500000, REV_CORNER = 0.42;   // ring lines past 24 deg turns
+const MAP_FRAME = { up: UP, e1: E1, e2: E2 };
+const REV_FRAME = (() => { const unit = (c) => { const e = [0, 0, 0]; e[c] = 1; return e; };
+  return { up: unit(PLANE_AXES[1]), e1: unit(NORMAL), e2: unit(PLANE_AXES[0]) }; })();
+function revolvePose() { return [-0.62, 0.32]; }   // azimuth about the axis, elevation above the meridional plane
+function revolveOn() { return tween && tween.revolve ? tween.revolve === 'on' : state.revolve; }   // shown or turning to it
+function revolveBox() {
+  // [lo, hi] (length units) of the revolved bodies: the shown map and the profiles turned about the axis
+  const [iu, iv] = PLANE_AXES, a = REVOLUTION.axis;
+  let R = Math.max(Math.abs(bmin[iu] - a), Math.abs(bmax[iu] - a)), vlo = bmin[iv], vhi = bmax[iv];
+  for (const P of REV_PROFILES) for (let k = 0; k < P.length; k += 2) {
+    R = Math.max(R, Math.abs(P[k] - a)); vlo = Math.min(vlo, P[k + 1]); vhi = Math.max(vhi, P[k + 1]);
+  }
+  const lo = [0, 0, 0], hi = [0, 0, 0];
+  lo[iu] = a - R; hi[iu] = a + R; lo[iv] = vlo; hi[iv] = vhi; lo[NORMAL] = -R; hi[NORMAL] = R;   // a 2D map lies at 0
+  return [lo, hi];
+}
+function setOrbitFrame(F) {
+  // orbit in frame F keeping the eye direction (the screen's up follows F.up)
+  const e = eyeDir();
+  UP = F.up; E1 = F.e1; E2 = F.e2;
+  cam.el = Math.asin(Math.max(-1, Math.min(1, dot(e, UP))));
+  cam.az = Math.atan2(dot(e, E2), dot(e, E1));
+}
+function leaveRevolve() { state.revolve = false; revolveFade = 0; setOrbitFrame(MAP_FRAME); syncGeometry(); updateReadout(); }
+function setRevolve(on, animate = true) {
+  // turn into the revolved view (on: the eye kept, then a tween to revolvePose) or back to the flat map (a tween to
+  // face-on in the revolved frame, then the map's own frame: finishTween)
+  if (!REVOLUTION) return;
+  if (tween) finishTween();
+  if (on !== state.revolve) {
+    if (on) { state.revolve = true; setOrbitFrame(REV_FRAME); }
+    const from = { az: cam.az, el: cam.el, dist: cam.dist, target: cam.target.slice() };
+    const to = poseOf(on ? revolvePose() : [0, 0]);
+    while (to.az - from.az > Math.PI) to.az -= 2 * Math.PI;   // the shorter way round
+    while (to.az - from.az < -Math.PI) to.az += 2 * Math.PI;
+    tween = { start: performance.now(), from, to, revolve: on ? 'on' : 'off' };
+    if (!animate) finishTween();
+  }
+  syncGeometry(); updateReadout(); syncControls();
+}
+function revolveSegments(points, closedTolerance) {
+  // [r0, v0, r1, v1, nr, nv] rows of a profile polyline ((u, v) pairs): r from the axis, (nr, nv) the outward unit
+  // normal in the meridional plane (a closed profile: away from the region it encloses; open: away from the axis)
+  const a = REVOLUTION.axis, n = points.length / 2, rows = [];
+  const closed = n > 3 && Math.hypot(points[0] - points[2 * n - 2], points[1] - points[2 * n - 1]) <= closedTolerance;
+  let area = 0;
+  for (let k = 0; k + 1 < n; k++) area += (points[2 * k] - a) * points[2 * k + 3] - (points[2 * k + 2] - a) * points[2 * k + 1];
+  for (let k = 0; k + 1 < n; k++) {
+    const r0 = points[2 * k] - a, v0 = points[2 * k + 1], r1 = points[2 * k + 2] - a, v1 = points[2 * k + 3];
+    const len = Math.hypot(r1 - r0, v1 - v0);
+    if (!(len > 0)) continue;
+    let nr = (v1 - v0) / len, nv = -(r1 - r0) / len;   // right of the direction: outward for a counter-clockwise ring
+    if (closed ? area < 0 : nr < 0) { nr = -nr; nv = -nv; }
+    rows.push([r0, v0, r1, v1, nr, nv]);
+  }
+  return rows;
+}
+function revolveRings(rows, tolerance) {
+  // [r, v] of the ring lines of segment rows in order: the chain ends and corners turning by more than REV_CORNER
+  // (none on the axis)
+  const out = [], seen = new Set();
+  const add = (r, v) => { const key = Math.round(r / tolerance) + ',' + Math.round(v / tolerance);
+    if (Math.abs(r) > tolerance && !seen.has(key)) { seen.add(key); out.push([r, v]); } };
+  const joined = (A, B) => Math.hypot(A[2] - B[0], A[3] - B[1]) <= tolerance;
+  const turn = (A, B) => Math.acos(Math.max(-1, Math.min(1, A[4] * B[4] + A[5] * B[5])));   // between the normals
+  rows.forEach((A, k) => {
+    const prev = rows[(k + rows.length - 1) % rows.length], next = rows[(k + 1) % rows.length];
+    if (!joined(prev, A) || turn(prev, A) > REV_CORNER) add(A[0], A[1]);
+    if (!joined(A, next)) add(A[2], A[3]);
+  });
+  return out;
+}
+function revolvedBody(rows, steps) {
+  // { verts: position, normal per vertex (6 floats), idx } of segment rows turned once about the axis in steps
+  const [iu, iv] = PLANE_AXES, a = REVOLUTION.axis, w = NORMAL;
+  const verts = new Float32Array(rows.length * 2 * (steps + 1) * 6), idx = new Uint32Array(rows.length * steps * 6);
+  const C = [], S = [];
+  for (let k = 0; k <= steps; k++) { C.push(Math.cos(2 * Math.PI * k / steps)); S.push(Math.sin(2 * Math.PI * k / steps)); }
+  let vk = 0, ik = 0;
+  for (const [r0, v0, r1, v1, nr, nv] of rows) {
+    const base = vk;
+    for (let k = 0; k <= steps; k++) for (const [r, v] of [[r0, v0], [r1, v1]]) {
+      const o = 6 * vk++;
+      verts[o + iu] = a + r * C[k]; verts[o + iv] = v; verts[o + w] = r * S[k];
+      verts[o + 3 + iu] = nr * C[k]; verts[o + 3 + iv] = nv; verts[o + 3 + w] = nr * S[k];
+    }
+    for (let k = 0; k < steps; k++) {
+      const p = base + 2 * k;
+      idx[ik++] = p; idx[ik++] = p + 1; idx[ik++] = p + 3; idx[ik++] = p; idx[ik++] = p + 3; idx[ik++] = p + 2;
+    }
+  }
+  return { verts, idx };
+}
+function ringRows(rings, steps) {
+  // LINE_VS rows (start, end, arc length, no inward direction) of circles about the axis
+  const [iu, iv] = PLANE_AXES, a = REVOLUTION.axis, out = new Float32Array(rings.length * steps * 10);
+  let o = 0;
+  for (const [r, v] of rings) for (let k = 0; k < steps; k++) {
+    for (const [j, t] of [[0, k], [3, k + 1]]) {
+      const phi = 2 * Math.PI * t / steps;
+      out[o + j + iu] = a + r * Math.cos(phi); out[o + j + iv] = v; out[o + j + NORMAL] = r * Math.sin(phi);
+    }
+    out[o + 6] = 2 * Math.PI * r * k / steps; o += 10;
+  }
+  return out;
+}
+const REV_VS = `#version 300 es
+precision highp float;
+in vec3 aPos; in vec3 aNormal;
+uniform mat4 uView; uniform mat4 uProj; uniform vec3 uCenter; uniform vec3 uStretch; uniform vec3 uMirA; uniform vec3 uMirB;
+out vec3 vViewPos; out vec3 vNormal; out vec3 vPlace;
+void main() {
+  vPlace = aPos * uMirA + uMirB;
+  vec4 vp = uView * vec4((vPlace - uCenter) * uStretch, 1.0);
+  vViewPos = vp.xyz;
+  vNormal = mat3(uView) * (aNormal * uMirA / uStretch);   // a stretched surface's normal scales by 1 / stretch
+  gl_Position = uProj * vp;
+}`;
+const REV_FS = `#version 300 es
+precision highp float;
+in vec3 vViewPos; in vec3 vNormal; in vec3 vPlace;
+uniform vec4 uColor; uniform float uShine; uniform int uPass; uniform vec3 uClipLo; uniform vec3 uClipHi;
+out vec4 outColor;
+void main() {
+  if (any(lessThan(vPlace, uClipLo)) || any(greaterThan(vPlace, uClipHi))) discard;   // outside the axis limits
+  vec3 n = normalize(vNormal), v = normalize(-vViewPos);
+  float c = dot(n, v);
+  // pass 0: the far side of a see-through body (normal turned away), 1: the near side, 2: a solid body, both sides
+  if (uPass < 2 && (uPass == 0) != (c < 0.0)) discard;
+  if (c < 0.0) { n = -n; c = -c; }
+  float rim = pow(1.0 - c, 3.0);            // Fresnel: surfaces seen edge-on draw the body's silhouette
+  vec3 key = normalize(vec3(0.45, 0.75, 0.55)), fill = normalize(vec3(-0.6, -0.25, 0.5));
+  float sp = pow(max(dot(n, normalize(key + v)), 0.0), 60.0);
+  vec3 col = uColor.rgb * (0.62 + 0.3 * max(dot(n, key), 0.0) + 0.12 * max(dot(n, fill), 0.0)) + vec3(0.9) * sp;
+  if (uPass == 2) { outColor = vec4(col, uColor.a); return; }   // solid: the opacity as given (1, or the fade in)
+  float alpha = (uColor.a * (0.3 + 1.7 * rim) + 0.4 * sp * uShine) * (uPass == 0 ? 0.6 : 1.0);
+  outColor = vec4(col, clamp(alpha, 0.0, 0.9));
+}`;
+let revGL = null;                             // null: not set up yet, false: failed; else programs and bodies
+let revolveIntro = REVOLVE_AT_OPEN;           // the opening sequence is still due (runRevolveIntro)
+function setupRevolution() {
+  const tolerance = 1e-6 * LARGEST, domain = [], objects = new Map(), [iu, iv] = PLANE_AXES;
+  for (const P of REV_PROFILES) domain.push(...revolveSegments(P, tolerance * 10));
+  for (const G of GEOM_LINES) {   // the solid objects' outlines on the map (subtracted inputs, dashed, stay flat)
+    if (G.kind !== 'outline' || G.layer !== 0 || G.dashed) continue;
+    const rows = objects.get(G.material) || [], R = G.rows, a = REVOLUTION.axis;
+    for (let o = 0; o < R.length; o += 10) {
+      const r0 = R[o + iu] - a, v0 = R[o + iv], r1 = R[o + 3 + iu] - a, v1 = R[o + 3 + iv];
+      const len = Math.hypot(r1 - r0, v1 - v0);
+      if (!(len > 0) || (Math.abs(r0) <= tolerance && Math.abs(r1) <= tolerance)) continue;   // on the axis: nothing turns
+      let nr = -R[o + 7 + iu], nv = -R[o + 7 + iv];   // away from the object (its inward direction reversed)
+      if (!(Math.hypot(nr, nv) > 0.5)) { nr = (v1 - v0) / len; nv = -(r1 - r0) / len; if (nr < 0) { nr = -nr; nv = -nv; } }
+      rows.push([r0, v0, r1, v1, nr, nv]);
+    }
+    objects.set(G.material, rows);
+  }
+  const groups = [{ material: undefined, rows: domain.filter((A) => Math.abs(A[0]) > tolerance || Math.abs(A[2]) > tolerance) },
+                  ...[...objects].map(([material, rows]) => ({ material, rows }))].filter((B) => B.rows.length);
+  if (!groups.length) return false;
+  const segments = groups.reduce((n, B) => n + B.rows.length, 0);
+  const steps = Math.max(REV_MIN_STEPS, Math.min(REV_STEPS, Math.floor(REV_MAX_TRIANGLES / (2 * segments))));
+  const uni = {}, lineUni = {};
+  const prog = linkProgram(REV_VS, REV_FS, ['uView', 'uProj', 'uCenter', 'uStretch', 'uMirA', 'uMirB', 'uColor', 'uShine',
+                                            'uPass', 'uClipLo', 'uClipHi'], uni);
+  const lineProgram = linkProgram(LINE_VS, LINE_FS, ['uView', 'uProj', 'uCenter', 'uStretch', 'uViewport', 'uWidth', 'uColor',
+                                                     'uDash', 'uMirA', 'uMirB', 'uClipLo', 'uClipHi', 'uInset'], lineUni);
+  const aPos = gl.getAttribLocation(prog, 'aPos'), aNormal = gl.getAttribLocation(prog, 'aNormal');
+  const corners = new Float32Array([0, -1, 1, -1, 1, 1, 0, -1, 1, 1, 0, 1]);
+  const aCorner = gl.getAttribLocation(lineProgram, 'aCorner');
+  const lineAttributes = [['aA', 3, 0], ['aB', 3, 12], ['aS', 1, 24], ['aIn', 3, 28]].map(([n, size, offset]) => [gl.getAttribLocation(lineProgram, n), size, offset]);
+  function lineVao(rows) {   // one instanced quad per row of 10 floats, as the geometry block's line groups
+    const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+    vertexBuffer(aCorner, corners, 2, gl.STATIC_DRAW);
+    gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer()); gl.bufferData(gl.ARRAY_BUFFER, rows, gl.STATIC_DRAW);
+    for (const [loc, size, offset] of lineAttributes) if (loc >= 0) {
+      gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, size, gl.FLOAT, false, 40, offset); gl.vertexAttribDivisor(loc, 1); }
+    return { vao, count: rows.length / 10 };
+  }
+  const bodies = groups.map((B) => {
+    const { verts, idx } = revolvedBody(B.rows, steps);
+    const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer()); gl.bufferData(gl.ARRAY_BUFFER, verts, gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(aPos); gl.vertexAttribPointer(aPos, 3, gl.FLOAT, false, 24, 0);
+    if (aNormal >= 0) { gl.enableVertexAttribArray(aNormal); gl.vertexAttribPointer(aNormal, 3, gl.FLOAT, false, 24, 12); }
+    indexBuffer(idx);
+    const rings = revolveRings(B.rows, tolerance * 10);
+    return { material: B.material, vao, count: idx.length, rings: rings.length ? lineVao(ringRows(rings, REV_STEPS)) : null };
+  });
+  // the rotation axis, dashed, a little past the bodies
+  const [lo, hi] = revolveBox(), pad = 0.04 * (hi[iv] - lo[iv]), axisRow = new Float32Array(10);
+  axisRow[iu] = axisRow[3 + iu] = REVOLUTION.axis; axisRow[iv] = lo[iv] - pad; axisRow[3 + iv] = hi[iv] + pad;
+  const axis = lineVao(axisRow);
+  gl.bindVertexArray(null);
+  return { prog, uni, lineProgram, lineUni, bodies, axis };
+}
+function drawRevolution(view, proj, solid) {
+  // solid: only the bodies of opacity-1 materials (pass 2: opaque, depth written, pushed behind their rings), drawn
+  // before anything see-through; else the see-through bodies (far side, rings and axis, near side)
+  if (!REVOLUTION || !state.revolve || !(revolveFade > 0)) return;
+  if (revGL === null) {
+    try { revGL = setupRevolution(); }
+    catch (err) { revGL = false; console.error('revolution:', err); }
+    if (!revGL) { $('revolve').title = '3D: nothing to turn (or a WebGL error)'; }
+  }
+  if (!revGL) return;
+  const R = revGL, f = stretch(), fade = revolveFade, glass = revGlass;
+  const shown = images().filter((I) => I.a[PLANE_AXES[0]] > 0);   // the axis image is part of every whole revolution
+  const bodies = R.bodies.filter((B) => B.material === undefined || (state.geom !== 'off' && !materialHidden(B.material)));
+  const isSolid = (B) => B.material !== undefined && materialSolid(B.material);
+  const domainRgb = themeColors.dark ? [0.72, 0.82, 1.0] : [0.3, 0.42, 0.62];
+  const rgbOf = (B) => B.material === undefined ? domainRgb : materialRgb(B.material);
+  const alphaOf = (B) => fade * (B.material === undefined ? 0.03 + 0.2 * glass : materialAlpha(B.material, 0.05 + 0.28 * glass));
+  gl.enable(gl.DEPTH_TEST); gl.depthMask(false);
+  gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  const glassPass = (pass) => {
+    const drawn = bodies.filter((B) => isSolid(B) === (pass === 2));
+    if (!drawn.length) return;
+    gl.useProgram(R.prog);
+    gl.uniformMatrix4fv(R.uni.uView, false, view); gl.uniformMatrix4fv(R.uni.uProj, false, proj);
+    gl.uniform3fv(R.uni.uCenter, center); gl.uniform3fv(R.uni.uStretch, f);
+    gl.uniform3fv(R.uni.uClipLo, clipLo); gl.uniform3fv(R.uni.uClipHi, clipHi);
+    gl.uniform1i(R.uni.uPass, pass); gl.uniform1f(R.uni.uShine, fade);
+    for (const I of shown) {
+      setImage(R.uni, I);
+      for (const B of drawn) {
+        gl.uniform4fv(R.uni.uColor, [...rgbOf(B), alphaOf(B)]);
+        gl.bindVertexArray(B.vao); gl.drawElements(gl.TRIANGLES, B.count, gl.UNSIGNED_INT, 0);
+      }
+    }
+  };
+  if (solid) {   // depth written: what is drawn later lies in front of the body or is hidden by it (fade: blended in)
+    gl.depthMask(true); gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(1, 1);
+    glassPass(2);
+    gl.disable(gl.POLYGON_OFFSET_FILL); gl.disable(gl.BLEND); gl.bindVertexArray(null);
+    return;
+  }
+  glassPass(0);
+  gl.useProgram(R.lineProgram);
+  const U = R.lineUni;
+  gl.uniformMatrix4fv(U.uView, false, view); gl.uniformMatrix4fv(U.uProj, false, proj);
+  gl.uniform3fv(U.uCenter, center); gl.uniform3fv(U.uStretch, f);
+  gl.uniform3fv(U.uClipLo, clipLo); gl.uniform3fv(U.uClipHi, clipHi);
+  gl.uniform2f(U.uViewport, canvas.width, canvas.height); gl.uniform1f(U.uInset, 0);
+  gl.uniform1f(U.uWidth, 1.2 * pixelRatio); gl.uniform1f(U.uDash, 0);
+  const lineAlpha = fade * (0.35 + 0.45 * glass);
+  for (const I of shown) {
+    setImage(U, I);
+    for (const B of bodies) if (B.rings) {
+      gl.uniform4fv(U.uColor, [...rgbOf(B), lineAlpha]);
+      gl.bindVertexArray(B.rings.vao); gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, B.rings.count);
+    }
+  }
+  setImage(U, IDENTITY_IMAGE);
+  gl.uniform1f(U.uDash, 0.012 * LARGEST); gl.uniform4fv(U.uColor, [...themeColors.box.slice(0, 3), 0.8 * fade]);
+  gl.bindVertexArray(R.axis.vao); gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, R.axis.count);
+  glassPass(1);
+  gl.depthMask(true); gl.disable(gl.BLEND); gl.bindVertexArray(null);
+}
+function syncRevolve() {
+  if (!REVOLUTION) return;
+  $('revolve').setAttribute('aria-pressed', String(revolveOn()));
+  $('glass').value = String(revGlass); $('glass').disabled = !revolveOn();
+}
+$('revolvegroup').style.display = REVOLUTION ? '' : 'none';
+if (REVOLUTION) {
+  $('revolve').title = 'Turn the map about its rotation axis (' + REVOLUTION.label + ') into a 3D view inside see-through '
+    + 'surfaces of revolution of the domain and the objects; drag turns the body about its axis; again: back to the flat '
+    + 'map (R)';
+  $('revolve').onclick = userRevolve;
+  $('glass').oninput = (e) => { revGlass = +e.target.value; store('glass', String(revGlass)); };
+  window.addEventListener('keydown', (e) => {
+    if (e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT' && e.target.type !== 'range') return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.key === 'r' || e.key === 'R') userRevolve();
+  });
+  // anything the user does before the intro runs keeps the page as it is
+  for (const [el, type] of [[canvas, 'pointerdown'], [canvas, 'wheel'], [document.querySelector('.controls'), 'pointerdown'],
+                            [window, 'keydown']]) el.addEventListener(type, () => { revolveIntro = false; });
+}
+function userRevolve() {
+  // the 3D button / R: remembered, so a page opens revolved (or stays flat) as this browser left the last one
+  revolveIntro = false;
+  const on = !revolveOn(); store('revolve', on ? 'on' : 'off'); setRevolve(on);
+}
+function runRevolveIntro() {
+  // REVOLVE_AT_OPEN: the drawn half, then its mirror images, then the turn into the revolved view
+  if (!revolveIntro) return;
+  setTimeout(() => {
+    if (!revolveIntro) return;
+    if (CAN_MIRROR && !state.mirror) $('mirror').click();
+    setTimeout(() => { if (revolveIntro && !state.revolve && !tween) setRevolve(true); revolveIntro = false; }, 650);
+  }, 700);
+}
+// ---- end revolution ----
+
 // ---- vectors ----
 // Flow particles (DATA.flow: per 2D map layer an in-plane vector on a uniform grid over the layer's extent, int16 x, y
 // per frame over +-flow_max). Stateless pathlines: particle i lives generations of FLOW_LIFE s of flow clock, each
@@ -1541,22 +1937,25 @@ syncGeometry();
 // frame changes and zoom need no reset); the draw pass strokes them as screen-space quads fading to the tail, a light
 // core over a dark halo (the reverse over a light colour-map middle), so they read over any colour. Mirror images: the
 // paths are reflected, and run backwards where the product of the images' flow_sign is -1 (a vector odd along the
-// plane). No particles on a raised map (relief would hide them under its surface).
-// Arrows (style 'arrows'): one arrow per point of a lattice anchored at the layer grid's origin, square on screen
+// plane).
+// Arrows (style 'arrows', the default; particles: half as many as before the store key became FLOW_STORE): one arrow per point of a lattice anchored at the layer grid's origin, square on screen
 // (spacing from the density, as the particle count), pivot in the middle; direction = the projected data direction
 // (so arrows follow the particles' paths, also on a stretched axis), screen length = |vector| / speed_reference
 // (clamped to 1, like the particles' speed) x the lattice spacing x Arrow length; short arrows shrink as a whole and
 // fade below a few px. Same textures, mirror images (reflected, flow_sign reversed) and colours as the particles;
 // two passes, the halo (each arrow inflated by its outline) under the core.
 const FLOW = DATA.flow || null;
-const FLOW_STEPS = 48, FLOW_TAIL = 16, FLOW_LIFE = 3.2, FLOW_TRAVEL = 0.32, FLOW_PIXELS = 120, FLOW_MAX_PARTICLES = 30000;
+const FLOW_STEPS = 48, FLOW_TAIL = 16, FLOW_LIFE = 3.2, FLOW_TRAVEL = 0.32, FLOW_PIXELS = 240, FLOW_MAX_PARTICLES = 30000;
 // FLOW_PIXELS: CSS px^2 of the plot frame per particle at density 1 (so a small view is not crowded)
 const ARROW_PIXELS = 1150, ARROW_MAX = 40000, ARROW_WIDTH = 1.8, ARROW_HALO = 1.3;
 // ARROW_PIXELS: CSS px^2 per arrow at density 1 (~34 px spacing); ARROW_WIDTH / ARROW_HALO: shaft width / outline, CSS px
-const FLOW_STYLES = ['particles', 'arrows'];
+const FLOW_STYLES = ['arrows', 'particles'];   // the first one is the default
+// FLOW_STORE: the remembered Flow settings ('flow2': the defaults changed to arrows and half the particles, so what an
+// older page stored, often its untouched defaults, is not carried over)
+const FLOW_STORE = 'flow2';
 const flowState = (() => {
-  const out = { on: !!FLOW, style: 'particles', density: 1, speed: 1, arrowLength: 1, clock: 0, gl: null, frame: -1 };
-  const kept = storedJson('flow');
+  const out = { on: !!FLOW, style: FLOW_STYLES[0], density: 1, speed: 1, arrowLength: 1, clock: 0, gl: null, frame: -1 };
+  const kept = storedJson(FLOW_STORE);
   if (typeof kept.on === 'boolean') out.on = out.on && kept.on;
   if (FLOW_STYLES.includes(kept.style)) out.style = kept.style;
   if (typeof kept.density === 'number' && kept.density >= 0.2 && kept.density <= 4) out.density = kept.density;
@@ -1565,7 +1964,7 @@ const flowState = (() => {
   return out;
 })();
 function saveFlow() {
-  store('flow', JSON.stringify({ on: flowState.on, style: flowState.style, density: flowState.density, speed: flowState.speed,
+  store(FLOW_STORE, JSON.stringify({ on: flowState.on, style: flowState.style, density: flowState.density, speed: flowState.speed,
                                  arrowLength: flowState.arrowLength }));
 }
 const FLOW_TF_VS = `#version 300 es
@@ -1804,7 +2203,7 @@ function flowColors() {
   return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.5 ? { core: [0.04, 0.05, 0.07, 0.78], halo: [1, 1, 1, 0.45] }
                                                    : { core: [1, 1, 1, 0.95], halo: [0.02, 0.03, 0.06, 0.42] };
 }
-function flowShown() { return !!FLOW && flowState.on && state.relief === 0; }
+function flowShown() { return !!FLOW && flowState.on; }
 function drawFlow(view, proj) {
   if (!flowShown() || flowState.gl === false) return;
   if (flowState.gl === null) {
@@ -1828,7 +2227,9 @@ function drawFlow(view, proj) {
   const arrowSpacing = Math.sqrt(viewArea * f[iu] * f[iv] / Math.min(arrowsPerView, ARROW_MAX));
   const arrowDu = arrowSpacing / f[iu], arrowDv = arrowSpacing / f[iv];
   const arrowMaxLen = flowState.arrowLength * 0.9 * Math.sqrt(framePixels / Math.min(arrowsPerView, ARROW_MAX)) * pixelRatio;
-  gl.disable(gl.DEPTH_TEST); gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  // on the map, over its fills (pushed back by their polygon offset); revolved, depth-tested: solid bodies hide them
+  if (revolveOn()) gl.enable(gl.DEPTH_TEST); else gl.disable(gl.DEPTH_TEST);
+  gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
   images().forEach((I, m) => {
     const dir = flowDir(I);
     FLOW.layers.forEach((FL, li) => {
@@ -1924,8 +2325,6 @@ $('flowgroup').style.display = FLOW ? '' : 'none';
 if (FLOW) {
   $('flow').onclick = () => {
     flowState.on = !flowState.on; saveFlow(); flowSync(); updateReadout();
-    // particles show on a flat map only: turning them on lowers a raised one (not remembered as terrain off)
-    if (flowState.on && (state.relief > 0 || (tween && !tween.flat))) setTerrain(false, true, false);
   };
   const setFlowStyle = (style) => { flowState.style = style; saveFlow(); flowSync(); updateReadout(); };
   $('flowstyle').onchange = (e) => setFlowStyle(e.target.value);
@@ -2438,7 +2837,8 @@ function updateReadout() {
   const planes = LAYERS.filter((L) => L.name && L.visible).map((L) => L.name + ' ' + lengthUnit);
   if (planes.length) parts.push(planes.join(', '));
   if (state.stretch && CAN_STRETCH) parts.push('stretched ' + STRETCH_TEXT);
-  if (state.mirror && CAN_MIRROR) parts.push('mirrored at ' + MIRRORS.map((M) => M.face).join(', '));
+  if (state.mirror && CAN_MIRROR) parts.push('mirrored at ' + MIRRORS.map(mirrorName).join(', '));
+  if (state.revolve) parts.push('revolved: ' + REVOLUTION.label + (MIRRORS.some(onAxis) ? '' : ', the drawn half only'));
   if (flowShown()) parts.push((flowState.style === 'arrows' ? 'arrows: ' : 'streaks: ') + FLOW.label.toLowerCase());
   waveReadout(parts);
   if (MOTION && motionGain() > 0) parts.push(motionText());
@@ -2453,7 +2853,11 @@ function updateReadout() {
 // ---------- Plot settings panel: every key of fig has the input 'fs_<key>' ----------
 const SETTING_KEYS = Object.keys(FIGURE_DEFAULTS);
 function shownPer(k) { return /^[xyz]_/.test(k) || FIGURE_LENGTHS.includes(k) ? 1 / LENGTH_SCALE : 1; }   // panel value per stored value (lengths: m -> length units)
-function changedSettings() { return Object.fromEntries(SETTING_KEYS.filter((k) => fig[k] !== FIGURE_DEFAULTS[k]).map((k) => [k, fig[k]])); }
+function changedSettings() {
+  const out = Object.fromEntries(SETTING_KEYS.filter((k) => fig[k] !== FIGURE_DEFAULTS[k]).map((k) => [k, fig[k]]));
+  if (Object.keys(matStyle).length) out.materials = matStyle;   // the Materials rows (figure setting 'materials')
+  return out;
+}
 function syncSettings() {
   for (const k of SETTING_KEYS) {
     const el = $('fs_' + k);
@@ -2479,6 +2883,10 @@ function syncSettings() {
   $('settingsbtn').title = 'Font sizes, colour and axis limits, colour bar and label places of the picture'
     + (limited ? ' (limits are set)' : '');
   $('range').disabled = fig.color_max !== null || (DIVERGING && fig.color_min !== null);   // the limit it scales is given
+  syncScalars();                               // the Contours density gives way to a contour step
+  // the contour colour: a word in its select, a colour of its own as 'Custom' with the picker showing it
+  $('fs_contour_color').value = FIGURE_COLORS.contour_color.includes(fig.contour_color) ? fig.contour_color : 'custom';
+  $('fs_contour_custom').value = '#' + contourRgb().map((v) => Math.round(255 * v).toString(16).padStart(2, '0')).join('');
   $('hint').style.display = fig.colorbar === 'bottom_left' || fig.colorbar === 'bottom' ? 'none' : '';
 }
 function applySettings(boundsChanged) {
@@ -2494,7 +2902,8 @@ for (const k of SETTING_KEYS) {
     // typing: a ranged number (font sizes, bar length) is applied while typed, once it is a valid value; the limits
     // wait for Enter / leaving the field (half-typed numbers would crop and refit the view)
     let value;
-    if (el.tagName === 'SELECT') value = typeof FIGURE_DEFAULTS[k] === 'number' ? +el.value : el.value;
+    if (k in FIGURE_COLORS) value = el.value === 'custom' ? $('fs_contour_custom').value.toLowerCase() : el.value;
+    else if (el.tagName === 'SELECT') value = FIGURE_CHOICES[k].includes(el.value) ? el.value : +el.value;   // 'auto' or 4
     else if (el.value.trim() === '') value = null;
     else value = Number((+el.value / shownPer(k)).toPrecision(7));
     if (value === null && FIGURE_DEFAULTS[k] !== null) { if (!typing) syncSettings(); return; }   // a size cannot be empty: as before
@@ -2509,6 +2918,9 @@ for (const k of SETTING_KEYS) {
   if (k in FIGURE_RANGES) el.addEventListener('input', () => take(true));
 }
 $('fs_colorhead').textContent = 'Colour limits' + (Q.unit ? ' (' + Q.unit + ')' : '');
+$('fs_contourhead').textContent = 'Contour lines' + (Q.unit ? ' (' + Q.unit + ')' : '');
+$('fs_contour_custom').addEventListener('input', () => {   // picking a colour makes it the custom one
+  $('fs_contour_color').value = 'custom'; $('fs_contour_color').dispatchEvent(new Event('change')); });
 $('fs_axishead').textContent = 'Axis limits (' + lengthUnit + ')';
 $('fs_scalehead').textContent = 'Scale bar (' + lengthUnit + ')';
 // what needs one plane seen face-on (axis label sides, the scale bar) is offered for planar views only; the material
@@ -2516,10 +2928,47 @@ $('fs_scalehead').textContent = 'Scale bar (' + lengthUnit + ')';
 for (const id of ['fs_sidelabel', 'fs_horizontal_axis', 'fs_vertical_axis', 'fs_scalehead', 'fs_scalelabel', 'fs_scale_bar',
                   'fs_scale_bar_length', 'fs_scalecolorlabel', 'fs_scale_bar_color']) $(id).style.display = PLANAR ? '' : 'none';
 for (const id of ['fs_legendhead', 'fs_legendlabel', 'fs_legend_color']) $(id).style.display = DATA.geometry ? '' : 'none';
+// Materials rows: per material of the page a name, a colour picker and an opacity (0 .. 1, empty = automatic),
+// built after the heading; they edit matStyle (geometry block) and the settings text shows it
+const MATERIAL_ROWS = (GEOM ? GEOM.materials : []).map((m) => {
+  const label = document.createElement('label'), color = document.createElement('input'), alpha = document.createElement('input');
+  label.textContent = m.name; label.className = 'mat'; label.title = m.name;
+  color.type = 'color'; color.id = 'fs_material_color_' + m.index; label.htmlFor = color.id;
+  color.title = 'Colour of ' + m.name + ': outlines (Objects colour Material), edges, see-through surfaces, legend';
+  alpha.type = 'number'; alpha.min = '0'; alpha.max = '1'; alpha.step = '0.05'; alpha.placeholder = 'auto';
+  alpha.title = 'Opacity of the surfaces of ' + m.name + ' (Glass faces, 3D bodies of revolution), 0 - 1; 1 draws them solid, '
+    + '0 hides the material; empty: automatic, see-through (applied as typed)';
+  const restyle = (key, value) => {
+    const style = Object.assign({}, matStyle[m.name]);
+    if (value === null) delete style[key]; else style[key] = value;
+    if (Object.keys(style).length) matStyle[m.name] = style; else delete matStyle[m.name];
+    saveMaterials(); syncGeometry(); syncSettings();
+  };
+  color.addEventListener('input', () => restyle('color', color.value.toLowerCase()));
+  alpha.addEventListener('input', () => {
+    const text = alpha.value.trim(), v = +text;
+    if (text === '') { alpha.classList.remove('bad'); restyle('alpha', null); return; }
+    if (!(v >= 0 && v <= 1)) { alpha.classList.add('bad'); return; }
+    alpha.classList.remove('bad'); restyle('alpha', v);
+  });
+  return { m, label, color, alpha };
+});
+{ let after = $('fs_materialhead');
+  for (const R of MATERIAL_ROWS) for (const el of [R.label, R.color, R.alpha]) { after.insertAdjacentElement('afterend', el); after = el; } }
+$('fs_materialhead').style.display = MATERIAL_ROWS.length ? '' : 'none';
+function syncMaterialRows() {
+  for (const R of MATERIAL_ROWS) {
+    const style = matStyle[R.m.name] || {};
+    R.color.value = materialCss(R.m.index);
+    R.alpha.value = style.alpha === undefined ? '' : String(style.alpha); R.alpha.classList.remove('bad');
+  }
+}
+syncMaterialRows();
 $('settingsbtn').onclick = () => { $('settings').hidden = !$('settings').hidden; syncControls(); };
 $('settingsclose').onclick = () => { $('settings').hidden = true; syncControls(); };
 $('fs_reset').onclick = () => {
-  Object.assign(fig, FIGURE_DEFAULTS, DATA.figure || {});
+  Object.assign(fig, FIGURE_DEFAULTS, Object.fromEntries(Object.entries(DATA.figure || {}).filter(([k]) => k in FIGURE_DEFAULTS)));
+  matStyle = JSON.parse(JSON.stringify(MATERIALS_WRITTEN)); saveMaterials(); syncMaterialRows();
   state.axes = !scaleBarOffered();
   Object.values(MOVABLE).forEach(homePart);   // the dragged colour bar, material legend and scale bar too
   setPlotScale(1);                             // and the plot size of the corner grip
@@ -2554,7 +3003,6 @@ function syncControls() {
   $('frame').value = state.frame;
   $('speedv').textContent = state.fps + ' fps';
   $('rangev').textContent = Math.round(state.range * 100) + ' %';
-  $('reliefv').textContent = Math.round(state.relief * 100) + ' %';
   $('log').setAttribute('aria-pressed', String(state.log && LOG_OK));
   $('decades').style.display = state.log && LOG_OK ? '' : 'none';
   $('lines').setAttribute('aria-pressed', String(state.lines));
@@ -2571,6 +3019,7 @@ function syncControls() {
   syncWaveControls();
   syncScalars();
   syncMotion();
+  syncRevolve();
 }
 function select(f) { state.frame = ((f % NF) + NF) % NF; uploadFrame(); updateReadout(); syncControls(); }
 $('framegroup').style.display = NF > 1 ? '' : 'none';
@@ -2579,11 +3028,10 @@ $('speedgroup').style.display = KIND === 'time' ? '' : 'none';
 $('scale').style.display = NF > 1 ? '' : 'none';
 $('scale').value = state.scale;
 $('log').style.display = LOG_OK ? '' : 'none';
-$('reliefgroup').style.display = PLANAR ? '' : 'none';
 $('box').style.display = PLANAR ? 'none' : '';
 $('mirror').style.display = CAN_MIRROR ? '' : 'none';
 $('mirror').title = 'Mirror images across the symmetry planes: the whole structure, not only the simulated part ('
-  + MIRRORS.map((M) => M.face + (M.sign < 0 ? (Q.phase ? ': phase + π' : ': field × −1') : '')).join(', ') + ') (M)';
+  + MIRRORS.map((M) => mirrorName(M) + (M.sign < 0 ? (Q.phase ? ': phase + π' : ': field × −1') : '')).join(', ') + ') (M)';
 $('lines').disabled = !LAYERS.some((L) => L.edges);
 if ($('lines').disabled) $('lines').title = 'Mesh lines (too many cells to draw them)';
 $('frame').max = String(Math.max(NF - 1, 0));
@@ -2605,9 +3053,6 @@ $('scale').onchange = (e) => { state.scale = e.target.value; updateReadout(); };
 $('log').onclick = () => { state.log = !state.log; updateReadout(); syncControls(); };
 $('decades').onchange = (e) => { state.decades = +e.target.value; updateReadout(); };
 $('range').oninput = (e) => { state.range = +e.target.value; updateReadout(); syncControls(); };
-$('relief').oninput = (e) => { const was = state.relief; state.relief = +e.target.value;
-  if (was === 0 && state.relief > 0 && faceOn()) { cam.el = NORMAL === 2 ? 0.75 : 0.6; cam.target = [0, 0, 0]; }   // tilt so the relief shows
-  fitDistance(); syncControls(); };
 $('lines').onclick = () => { state.lines = !state.lines; syncControls(); };
 $('box').onclick = () => { state.box = !state.box; syncControls(); };
 $('axesbtn').onclick = () => { state.axes = !state.axes; syncControls(); };
@@ -2835,7 +3280,7 @@ $('record').onclick = async () => {
   $('rec').classList.add('on'); $('record').textContent = 'Stop';
   if (!config) { recordRealtime(seconds, done); return; }
   const shot = document.createElement('canvas');
-  let clock = performance.now();   // the recording's own clock (terrain tweens read it)
+  let clock = performance.now();   // the recording's own clock (the 3D tween reads it)
   try {
     const blob = await recordVideo(config, seconds, (dt) => { clock += 1000 * dt; advance(dt, clock); draw(); },
                                    () => composite(shot), $('record'));
@@ -2953,11 +3398,15 @@ function normalSign(I) {
   }
   return I.normalSign;
 }
-function setMotionLayer(u, L, I) {
-  if (!MOTION) return;
+function setMotionWeights(I) {
+  // motionW: the channel weights in mirror image I (the normal displacement flips with normalSign)
   const flip = normalSign(I);
   for (let k = 0; k < 4; k++)
     motionW[k] = motionPhase[k] * (k < MOTION_CHANNELS && MOTION_COMPONENTS[k % MOTION_COMPONENTS.length] === 'n' ? flip : 1);
+}
+function setMotionLayer(u, L, I) {
+  if (!MOTION) return;
+  setMotionWeights(I);
   gl.uniform3fv(u.uDispDir, L.motionDirs); gl.uniform4fv(u.uDispW, motionW);
 }
 // body outlines: the boundary edges of the drawn triangles (edges of one valued triangle only) of frame 0, drawn as
@@ -3049,11 +3498,10 @@ function uploadMotion() {
   }
 }
 const REST_W = new Float32Array(4);
-function drawMotionOutlines(view, proj, relief, pass) {
+function drawMotionOutlines(view, proj, pass) {
   // pass 'moved': the deformed body's outline (crisp edges where the void is hidden), after the layers; 'rest': its
-  // rest shape, before the layers without depth writes, so the body covers it (shown only when magnified); neither
-  // over a relief (the outline would lie under the raised map)
-  if (!outlineGL || relief > 0 || (pass === 'rest' && !(motionGain() > 0))) return;
+  // rest shape, before the layers without depth writes, so the body covers it (shown only when magnified)
+  if (!outlineGL || (pass === 'rest' && !(motionGain() > 0))) return;
   gl.useProgram(outlineProg);
   gl.uniformMatrix4fv(outlineUni.uView, false, view); gl.uniformMatrix4fv(outlineUni.uProj, false, proj);
   gl.uniform3fv(outlineUni.uCenter, center); gl.uniform3fv(outlineUni.uStretch, stretch());
@@ -3257,8 +3705,8 @@ if ((PHASOR || SMOOTH_OK && DIVERGING) && !store('cmap_signed')) { state.cmap = 
 }
 
 // ---- scalars ----
-// contour lines (in the field program: uContour), the lit '3D' terrain (relief with walls down to a base, reached by a
-// tween from the face-on map; pages of one stationary state open with it) and the backdrop gradient behind the view
+// contour lines (in the field program: uContour), the camera tween (the revolution block's 3D turn) and the backdrop
+// gradient behind the view
 const CONTOUR_COUNTS = { coarse: 6, normal: 12, fine: 24 };   // levels over the colour range, about
 const CONTOUR_STORE = 'contours:' + SCALAR_KIND;
 state.contours = (() => { const v = store(CONTOUR_STORE); return v === 'on' || (v !== 'off' && SCALAR_KIND !== 'other'); })();
@@ -3268,57 +3716,269 @@ function niceStep(lo, hi, count) {
   const raw = (hi - lo) / Math.max(count, 1), p = Math.pow(10, Math.floor(Math.log10(raw)));
   return [1, 2, 5, 10].map((m) => m * p).find((s) => s >= raw * (1 - 1e-9));
 }
+function contourStepGiven() { return fig.contour_step !== null && !(state.log && LOG_OK); }   // the Plot settings step applies
+function labelMultiple(step, target) {
+  // contour lines per labelled one for a given step: the multiple of step that is a round number (1, 2, 2.5, 5 x 10^n)
+  // nearest target (log distance); 1 when none is
+  let best = 1, err = Infinity;
+  for (let m = 1; m <= 50; m++) {
+    const v = m * step, r = v / Math.pow(10, Math.floor(Math.log10(v) + 1e-9));
+    if (![1, 2, 2.5, 5, 10].some((n) => Math.abs(r - n) < 1e-6 * n)) continue;
+    const e = Math.abs(Math.log(v / target));
+    if (e < err) { best = m; err = e; }
+  }
+  return best;
+}
 function contourLevels(lo, hi, logScale) {
   // { c0, step, major }: levels c0 + k step in the value the shader counts (log10 on a log scale), every major-th one
-  // bold: on the colour bar's ticks (about 4 over the range, as drawColorbar's default bar), decades on a log scale.
-  // c0 a bold level just below lo keeps k small (float32 in the shader)
-  const n = CONTOUR_COUNTS[state.contourDensity];
+  // bold and labelled. Automatic: bold on the colour bar's ticks (about 4 over the range, as drawColorbar's default
+  // bar), decades on a log scale, the Contours density between; the Plot settings contour_step (linear scale) and
+  // contour_label_every replace the step and the major count. c0, a labelled level at or just below lo, keeps k small
+  // (float32 in the shader) and puts the labels on multiples of their interval (0, 100, 200 m)
   const a = logScale ? Math.log10(lo) : lo, b = logScale ? Math.log10(hi) : hi;
   if (!(b > a) || !isFinite(a) || !isFinite(b)) return null;
-  const bold = logScale ? Math.max(1, niceStep(a, b, 4)) : niceStep(a, b, 4);
-  let best = 1;
-  for (const sub of [1, 2, 4, 5, 10]) if (Math.abs((b - a) / (bold / sub) - n) < Math.abs((b - a) / (bold / best) - n)) best = sub;
-  return { c0: Math.floor(a / bold) * bold, step: bold / best, major: best };
+  const bold = logScale ? Math.max(1, niceStep(a, b, 4)) : niceStep(a, b, 4), every = fig.contour_label_every;
+  let step, major;
+  if (contourStepGiven()) {
+    step = fig.contour_step;
+    if ((b - a) / step > 1e5) return null;   // lines far below a pixel apart (and k past float32's resolution)
+    major = every !== 'auto' ? every : labelMultiple(step, bold);
+  } else {
+    const n = CONTOUR_COUNTS[state.contourDensity];
+    let best = 1;
+    for (const sub of [1, 2, 4, 5, 10]) if (Math.abs((b - a) / (bold / sub) - n) < Math.abs((b - a) / (bold / best) - n)) best = sub;
+    step = bold / best; major = every !== 'auto' ? every : best;
+  }
+  return { c0: Math.floor(a / (step * major)) * step * major, step, major };
 }
-function setContourUniforms(lo, hi, logScale) {
+function setContourUniforms(lo, hi, logScale, view, proj) {
   const C = state.contours ? contourLevels(lo, hi, logScale) : null;
   gl.uniform1i(uni.uContour, C ? 1 : 0);
+  placeContourLabels(C, lo, hi, logScale, view, proj);
+  gl.uniform1i(uni.uLabCount, contourLabels.length);
   if (!C) return;
   gl.uniform1f(uni.uC0, C.c0); gl.uniform1f(uni.uCStep, C.step); gl.uniform1f(uni.uCMajor, C.major);
-  gl.uniform1f(uni.uCWidth, 1.6 * pixelRatio);
+  gl.uniform1f(uni.uCWidth, fig.contour_width * pixelRatio); gl.uniform3fv(uni.uCInk, contourRgb());
+  if (!contourLabels.length) return;
+  const boxes = new Float32Array(4 * CONTOUR_LABEL_MAX), H = canvas.height;
+  contourLabels.forEach((B, k) => boxes.set([B.x, H - B.y, B.ux * B.hw, -B.uy * B.hw], 4 * k));   // GL px: y up
+  gl.uniform4fv(uni.uLab, boxes); gl.uniform1f(uni.uLabHalfH, contourLabels[0].hh);
 }
 
-// terrain: relief TERRAIN_RELIEF seen from above at an angle; the tween moves the camera and the relief together
-const TERRAIN_RELIEF = 0.32, TWEEN_SECONDS = 1.1;
-const TERRAIN_OFFERED = PLANAR;
-let tween = null;                            // { start, from, to, flat } while the view moves between flat and 3D
-function terrainPose() { return [FACE_ON[NORMAL][0] - 0.5, NORMAL === 2 ? 0.66 : 0.55]; }
-function poseOf(relief, flat) {
-  // the camera { az, el, dist, target } fitted for a relief, face-on (flat) or at the terrain angle
-  const keep = { az: cam.az, el: cam.el, dist: cam.dist, target: cam.target, moved: cam.moved, relief: state.relief };
-  state.relief = relief; [cam.az, cam.el] = flat ? FACE_ON[NORMAL] : terrainPose(); cam.target = [0, 0, 0];
-  fitDistance();
-  const pose = { az: cam.az, el: cam.el, dist: cam.dist, target: cam.target.slice(), relief };
-  Object.assign(cam, { az: keep.az, el: keep.el, dist: keep.dist, target: keep.target, moved: keep.moved });
-  state.relief = keep.relief;
-  return pose;
+// contour labels: the labelled (major) levels are traced on the CPU over each layer's triangles (marching triangles
+// on the values the shader shows: the frame, its phasor partner or next frame by the wave mix, log10 on a log scale)
+// and joined into polylines of edge points (vertex a, vertex b, fraction t), cached until the values or the levels
+// change. Every draw places the labels along those lines in screen space: the point moved like the vertices (mirror
+// image, deformed shape), spaced CONTOUR_LABEL_SPACING font sizes apart, staggered per level, only on straight enough
+// stretches inside the canvas and the axis limits and clear of each other (at most CONTOUR_LABEL_MAX, the shader's
+// box array). The field shader leaves the contour lines out inside each label's box (uLab) and the overlay writes
+// the value there, upright, in the lines' colour. None while the field animates (playback, a turning phasor, the
+// deform animation): they would lag the moving lines.
+const CONTOUR_LABEL_MAX = 48, CONTOUR_LABEL_SPACING = 26;
+function contourLabelsAnimating() { return (state.playing && NF > 1) || (PHASOR && wave.playing) || (!!MOTION && motion.animate); }
+function shownLayerValues(i, logScale) {
+  // per vertex of layer i the value the shader counts (NaN without a value): the frame mixed with its partner
+  const A = frameValues(state.frame)[i], n = A.length / 2, out = new Float64Array(n);
+  const mixB = WAVE_SECOND ? wave.mixB : 0, mixA = WAVE_SECOND ? wave.mixA : 1;
+  const B = mixB !== 0 ? (PHASOR ? quadValues(state.frame) : frameValues((state.frame + 1) % NF))[i] : null;
+  for (let k = 0; k < n; k++) {
+    if (A[2 * k + 1] < 0.999 || (B && B[2 * k + 1] < 0.999)) { out[k] = NaN; continue; }
+    const v = A[2 * k] * mixA + (B ? B[2 * k] * mixB : 0);
+    out[k] = logScale ? Math.log10(Math.max(v, 1e-37)) : v;
+  }
+  return out;
 }
-function setTerrain(on, animate = true, remember = true) {
-  if (!TERRAIN_OFFERED) return;
-  if (tween) finishTween();
-  if (remember) store('terrain', on ? 'on' : 'off');
-  const from = { az: cam.az, el: cam.el, dist: cam.dist, target: cam.target.slice(), relief: state.relief };
-  const to = on ? poseOf(state.relief > 0 ? state.relief : TERRAIN_RELIEF, false) : poseOf(0, true);
-  while (to.az - from.az > Math.PI) to.az -= 2 * Math.PI;   // the shorter way round
-  while (to.az - from.az < -Math.PI) to.az += 2 * Math.PI;
-  tween = { start: performance.now(), from, to, flat: !on };
-  if (!animate) finishTween();
-  syncScalars();
+function contourPolylines(L, vals, levels) {
+  // [{ li, pts: Float64Array (a, b, t)* }]: the polylines of the levels (ascending) over L's triangles; a point lies on
+  // edge (a < b) at fraction t from a. A vertex on a level counts as above it, so every crossed triangle has two
+  // crossed edges and neighbours share their points (joined by edge and level)
+  const tri = L.tri, n = L.n, nl = levels.length, segs = [], ends = new Map();
+  const point = (p, q, c, out) => {   // the crossing of edge (p, q) by level c: key, a, b, t
+    const a = Math.min(p, q), b = Math.max(p, q), va = vals[a], vb = vals[b];
+    out.push(a * n + b, a, b, (c - va) / (vb - va));
+  };
+  for (let k = 0; k < tri.length; k += 3) {
+    const i0 = tri[k], i1 = tri[k + 1], i2 = tri[k + 2], v0 = vals[i0], v1 = vals[i1], v2 = vals[i2];
+    if (!(v0 === v0 && v1 === v1 && v2 === v2)) continue;
+    const low = Math.min(v0, v1, v2), high = Math.max(v0, v1, v2);
+    let li = 0, hi = nl;
+    while (li < hi) { const m = (li + hi) >> 1; if (levels[m] > low) hi = m; else li = m + 1; }   // first level above low
+    for (; li < nl && levels[li] <= high; li++) {
+      const c = levels[li], s = [], b0 = v0 < c, b1 = v1 < c, b2 = v2 < c;
+      if (b0 !== b1) point(i0, i1, c, s);
+      if (b1 !== b2) point(i1, i2, c, s);
+      if (b2 !== b0) point(i2, i0, c, s);
+      if (s.length !== 8) continue;
+      const id = segs.length;
+      segs.push({ li, p: s });
+      for (const e of [0, 1]) {
+        const key = s[4 * e] * nl + li, list = ends.get(key);
+        if (list) list.push(2 * id + e); else ends.set(key, [2 * id + e]);
+      }
+    }
+  }
+  const used = new Uint8Array(segs.length), out = [];
+  const pts = (S, e) => S.p.slice(4 * e + 1, 4 * e + 4);
+  const walk = (id, e, into) => {   // from the end e of segment id onwards, the points of the following segments
+    for (;;) {
+      const S = segs[id], next = (ends.get(S.p[4 * e] * nl + S.li) || []).find((x) => (x >> 1) !== id && !used[x >> 1]);
+      if (next === undefined) return;
+      id = next >> 1; e = 1 - (next & 1); used[id] = 1;
+      into.push(...pts(segs[id], e));
+    }
+  };
+  for (let id = 0; id < segs.length; id++) {
+    if (used[id]) continue;
+    used[id] = 1;
+    const S = segs[id], ahead = [...pts(S, 0), ...pts(S, 1)], back = [];
+    walk(id, 1, ahead); walk(id, 0, back);
+    const line = [];
+    for (let k = back.length - 3; k >= 0; k -= 3) line.push(back[k], back[k + 1], back[k + 2]);
+    out.push({ li: S.li, pts: Float64Array.from(line.concat(ahead)) });
+  }
+  return out;
+}
+function labelLevels(C, a, b, signed) {
+  // the labelled levels (counted values) strictly inside (a, b), or (-b, b) / (a, -a) as well when a mirror image
+  // shows the values negated (signed)
+  const S = C.step * C.major, lo = signed ? Math.min(a, -b) : a, hi = signed ? Math.max(b, -a) : b, out = [];
+  for (let j = Math.ceil(lo / S - 1e-9); j * S < hi - 1e-9 * S; j++) if (j * S > lo + 1e-9 * S) out.push(j * S);
+  return out.length > 400 ? out.filter((v, k) => k % Math.ceil(out.length / 400) === 0) : out;
+}
+function contourLines(C, a, b, logScale) {
+  // the cached polylines per layer of the labelled levels of the shown values
+  const signed = !logScale && !Q.phase && images().some((I) => I.sign < 0);
+  const levels = labelLevels(C, a, b, signed);
+  const key = [state.frame, WAVE_SECOND ? wave.mixA.toFixed(5) + ',' + wave.mixB.toFixed(5) : '', logScale, levels.join(',')].join('|');
+  if (contourCache && contourCache.key === key) return contourCache;
+  contourCache = { key, levels, layers: LAYERS.map((L, i) => levels.length ? contourPolylines(L, shownLayerValues(i, logScale), levels) : []) };
+  return contourCache;
+}
+function contourLabelText(v, logScale, scale) {
+  // a level (counted value) as written on its line: the colour bar's unit and factor, a log scale's values with an SI prefix
+  if (logScale) return fmtValue(Math.pow(10, v), Q.unit);
+  const x = Number((v / scale.factor).toPrecision(6));
+  return (x === 0 ? '0' : String(x)) + (scale.unit ? ' ' + scale.unit : '');
+}
+function contourRgb() {
+  // the colour of every contour line and label (Plot settings contour_color): a word, '#rrggbb', or 'auto' (black over
+  // a colour map whose middle is light, else white: one colour that reads over most of the map)
+  const v = fig.contour_color;
+  if (v.startsWith('#')) return hexRgb(v);
+  const [r, g, b] = hexRgb(CMAPS[state.cmap][4]);
+  const dark = v === 'black' || (v === 'auto' && 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.5);
+  return dark ? [0.06, 0.07, 0.09] : [1, 1, 1];
+}
+function placeContourLabels(C, lo, hi, logScale, view, proj) {
+  contourLabels = [];
+  if (!C || fig.contour_labels !== 'on' || contourLabelsAnimating()) return;
+  const a = logScale ? Math.log10(lo) : lo, b = logScale ? Math.log10(hi) : hi;
+  const lines = contourLines(C, a, b, logScale);
+  if (!lines.levels.length) return;
+  const px = pixelRatio, F = Math.round(0.95 * fig.font_size * px), W = canvas.width, H = canvas.height;
+  const font = F + 'px ' + themeColors.font, spacing = CONTOUR_LABEL_SPACING * F, hh = 0.62 * F, margin = 0.5 * F;
+  const scale = barScale(lo, hi, Q.unit), f = stretch(), widths = new Map();
+  const ink = 'rgb(' + contourRgb().map((v) => Math.round(255 * v)).join(',') + ')';
+  actx.font = font;
+  // clip = P V (q - centre) stretch, as the vertex shader
+  const M = new Float64Array(16);
+  for (let r = 0; r < 4; r++) for (let c = 0; c < 4; c++) {
+    let sum = 0; for (let k = 0; k < 4; k++) sum += proj[k * 4 + r] * view[c * 4 + k]; M[c * 4 + r] = sum; }
+  const tol = 1e-6 * LARGEST, inside = (q) => [0, 1, 2].every((c) => q[c] >= clipLo[c] - tol && q[c] <= clipHi[c] + tol);
+  const D = MOTION && motionGain() > 0 ? motionFrame(state.frame) : null;
+  for (const I of images()) {
+    if (I.sign < 0 && (Q.phase || logScale)) continue;
+    for (const L of LAYERS) {
+      if (!L.visible || selfImage(L, I)) continue;
+      let w = null;
+      if (D) { setMotionWeights(I); w = motionW; }
+      const pos = L.pos, disp = D ? D[L.index] : null, dirs = L.motionDirs;
+      const place = (v, out) => {   // vertex v moved (deformed shape) and mirrored: true coordinates
+        for (let c = 0; c < 3; c++) {
+          let p = pos[3 * v + c];
+          if (disp) for (let k = 0; k < 4; k++) p += disp[4 * v + k] * w[k] * dirs[3 * k + c];
+          out[c] = p * I.a[c] + I.b[c];
+        }
+      };
+      const qa = [0, 0, 0], qb = [0, 0, 0];
+      for (const P of lines.layers[L.index]) {
+        const level = lines.levels[P.li] * (I.sign < 0 ? -1 : 1);
+        if (!(level > a && level < b)) continue;
+        const text = contourLabelText(level, logScale, scale);
+        if (!widths.has(text)) widths.set(text, actx.measureText(text).width);
+        const hw = 0.5 * widths.get(text) + 0.45 * F;
+        // screen polyline (device px, y down) with true coordinates; a point behind the eye ends a run
+        const X = [], Y = [], T = [];
+        const flush = () => { if (X.length > 1) labelRun(X, Y, T, P.li, level, text, hw); X.length = Y.length = T.length = 0; };
+        const labelRun = (X, Y, T, li, level, text, hw) => {
+          const m = X.length, S = new Float64Array(m);
+          for (let k = 1; k < m; k++) S[k] = S[k - 1] + Math.hypot(X[k] - X[k - 1], Y[k] - Y[k - 1]);
+          const total = S[m - 1];
+          if (total < 2 * hw + 2 * F) return;
+          let k = 0;
+          const at = (s) => {   // [x, y, segment index] at arc length s (k advances monotonically)
+            while (k < m - 2 && S[k + 1] < s) k++;
+            while (k > 0 && S[k] > s) k--;
+            const g = S[k + 1] > S[k] ? (s - S[k]) / (S[k + 1] - S[k]) : 0;
+            return [X[k] + (X[k + 1] - X[k]) * g, Y[k] + (Y[k + 1] - Y[k]) * g, k, g];
+          };
+          let s = Math.max(hw, Math.min(spacing * (0.3 + 0.4 * ((li * 0.618) % 1)), 0.5 * total));
+          while (s <= total - hw && contourLabels.length < CONTOUR_LABEL_MAX) {
+            const A = at(s - hw), B = at(s + hw), Pm = at(s);
+            const dx = B[0] - A[0], dy = B[1] - A[1], chord = Math.hypot(dx, dy);
+            const q = T[Pm[2]].map((v, c) => v + (T[Pm[2] + 1][c] - v) * Pm[3]);
+            const ok = chord > 1.8 * hw
+              && [A, B, Pm].every((p) => p[0] > margin && p[0] < W - margin && p[1] > margin && p[1] < H - margin)
+              && inside(q) && inside(T[A[2]]) && inside(T[Math.min(B[2] + 1, m - 1)])
+              && contourLabels.every((o) => Math.hypot(o.x - Pm[0], o.y - Pm[1]) > o.hw + hw + 0.6 * F
+                                            && (o.level !== level || Math.hypot(o.x - Pm[0], o.y - Pm[1]) > 0.5 * spacing));
+            if (!ok) { s += 0.35 * hw; continue; }
+            let ux = dx / chord, uy = dy / chord;
+            if (ux < 0) { ux = -ux; uy = -uy; }   // upright text
+            contourLabels.push({ x: Pm[0], y: Pm[1], ux, uy, hw, hh, level, text, font, ink });
+            s += spacing;
+          }
+        };
+        for (let k = 0; k < P.pts.length; k += 3) {
+          place(P.pts[k], qa); place(P.pts[k + 1], qb);
+          const t = P.pts[k + 2], q = [0, 1, 2].map((c) => qa[c] + (qb[c] - qa[c]) * t);
+          const e = [0, 1, 2].map((c) => (q[c] - center[c]) * f[c]);
+          const cx = M[0] * e[0] + M[4] * e[1] + M[8] * e[2] + M[12], cy = M[1] * e[0] + M[5] * e[1] + M[9] * e[2] + M[13];
+          const cw = M[3] * e[0] + M[7] * e[1] + M[11] * e[2] + M[15];
+          if (!(cw > 1e-12)) { flush(); continue; }
+          X.push((cx / cw + 1) * 0.5 * W); Y.push((1 - cy / cw) * 0.5 * H); T.push(q);
+        }
+        flush();
+      }
+    }
+  }
+}
+function drawContourLabels(c) {
+  for (const B of contourLabels) {
+    c.save();
+    c.translate(B.x, B.y); c.rotate(Math.atan2(B.uy, B.ux));
+    c.font = B.font; c.fillStyle = B.ink; c.textAlign = 'center'; c.textBaseline = 'middle';
+    c.fillText(B.text, 0, 0.05 * B.hh);
+    c.restore();
+  }
+}
+
+const TWEEN_SECONDS = 1.1;
+// { start, from, to, revolve: 'on' / 'off' } while the revolution block's turn runs (in the revolved orbit frame)
+let tween = null;
+function poseOf(angles) {
+  // the camera { az, el, dist, target } fitted at the angles
+  const keep = { az: cam.az, el: cam.el, dist: cam.dist, target: cam.target, moved: cam.moved };
+  [cam.az, cam.el] = angles; cam.target = [0, 0, 0];
+  fitDistance();
+  const pose = { az: cam.az, el: cam.el, dist: cam.dist, target: cam.target.slice() };
+  Object.assign(cam, keep);
+  return pose;
 }
 function finishTween() {
   const T = tween; tween = null;
-  state.relief = T.to.relief;
-  if (T.flat) resetCamera();
+  revolveFade = T.revolve === 'on' ? 1 : 0;
+  if (T.revolve === 'off') { leaveRevolve(); resetCamera(); }   // back in the map's own orbit frame, face-on
   else Object.assign(cam, { az: T.to.az, el: T.to.el, dist: T.to.dist, target: T.to.target, moved: false });
   syncControls();
 }
@@ -3328,91 +3988,9 @@ function scalarsTick(now) {
   if (p >= 1) { finishTween(); return; }
   const e = p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2;   // ease in and out
   const A = tween.from, B = tween.to, mix = (a, b) => a + (b - a) * e;
-  // the map tilts before it lifts (and lies down before it turns face-on)
-  const r = tween.flat ? Math.max(0, 1 - 1.6 * e) : Math.min(1, Math.max(0, 1.6 * e - 0.25));
-  state.relief = (tween.flat ? A.relief : B.relief) * r;
+  revolveFade = tween.revolve === 'on' ? e : 1 - e;
   Object.assign(cam, { az: mix(A.az, B.az), el: mix(A.el, B.el), dist: Math.exp(mix(Math.log(A.dist), Math.log(B.dist))),
                        target: A.target.map((t, i) => mix(t, B.target[i])) });
-  $('reliefv').textContent = Math.round(state.relief * 100) + ' %'; $('relief').value = state.relief;
-}
-
-// walls of the raised map: a quad down to the base under every boundary edge (grid perimeter, triangulation edges
-// used once), coloured like the edge, lit darker; edges on a mirror plane are inside the unfolded map: left out
-// while the images show. Built on first use, values refreshed when the frame changes
-let walls = null;                            // null: not built yet, false: failed; else per layer
-let wallFrame = -1;
-function boundaryEdges(L, layer) {
-  if (layer.kind === 'grid') {
-    const nu = layer.nu, nv = layer.nv, e = [];
-    if (nu < 2 || nv < 2) return e;
-    for (let i = 0; i + 1 < nu; i++) e.push([i * nv, (i + 1) * nv], [i * nv + nv - 1, (i + 1) * nv + nv - 1]);
-    for (let j = 0; j + 1 < nv; j++) e.push([j, j + 1], [(nu - 1) * nv + j, (nu - 1) * nv + j + 1]);
-    return e;
-  }
-  const count = new Map(), n = L.n, tri = L.tri;
-  for (let t = 0; t < tri.length; t += 3) for (let c = 0; c < 3; c++) {
-    const a = tri[t + c], b = tri[t + (c + 1) % 3], key = Math.min(a, b) * n + Math.max(a, b);
-    count.set(key, (count.get(key) || 0) + 1);
-  }
-  const e = [];
-  for (const [key, k] of count) if (k === 1) e.push([Math.floor(key / n), key % n]);
-  return e;
-}
-function buildWalls() {
-  const aPos = gl.getAttribLocation(prog, 'aPos'), aVal = gl.getAttribLocation(prog, 'aVal'), aDown = gl.getAttribLocation(prog, 'aDown');
-  const tol = 1e-6 * (Math.max(...hmax.map((v, c) => v - hmin[c])) || 1);
-  const onMirror = (L, a, b) => (DATA.mirrors || []).some((M) => {
-    const c = AX[M.axis]; return Math.abs(L.pos[3 * a + c] - M.position) <= tol && Math.abs(L.pos[3 * b + c] - M.position) <= tol; });
-  return LAYERS.map((L, index) => {
-    const edges = boundaryEdges(L, DATA.layers[index]);
-    const outer = edges.filter(([a, b]) => !onMirror(L, a, b)), inner = edges.filter(([a, b]) => onMirror(L, a, b));
-    const ordered = outer.concat(inner), count = 6 * ordered.length;
-    const pos = new Float32Array(3 * count), down = new Float32Array(count), src = new Uint32Array(count);
-    let v = 0;
-    for (const [a, b] of ordered) for (const [node, d] of [[a, 0], [b, 0], [b, 1], [a, 0], [b, 1], [a, 1]]) {
-      pos.set(L.pos.subarray(3 * node, 3 * node + 3), 3 * v); down[v] = d; src[v] = node; v++;
-    }
-    const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
-    vertexBuffer(aPos, pos, 3, gl.STATIC_DRAW);
-    const valBuf = vertexBuffer(aVal, new Float32Array(2 * count), 2, gl.DYNAMIC_DRAW);
-    vertexBuffer(aDown, down, 1, gl.STATIC_DRAW);
-    gl.bindVertexArray(null);
-    return { vao, valBuf, src, count, outerCount: 6 * outer.length, vals: new Float32Array(2 * count) };
-  });
-}
-function wallBase(relief) {
-  // depth of the walls' bottom below the plane: a little under the lowest raised point of the shown values
-  const [lo, hi] = limits(), F = FRAMES[state.frame], low = state.scale === 'frame' ? F.lo : DATA.range[0];
-  const logScale = state.log && LOG_OK;
-  let t = logScale ? (Math.log(Math.max(low, 1e-300)) - Math.log(lo)) / (Math.log(hi) - Math.log(lo)) : (low - lo) / (hi - lo);
-  t = Math.min(1, Math.max(0, isFinite(t) ? t : 0));
-  return -relief * (DIVERGING ? 2 * t - 1 : t) + 0.035 * Math.max(...shownSpan());
-}
-function drawWalls(relief) {
-  if (!(relief > 0) || !PLANAR) return;
-  if (walls === null) { try { walls = buildWalls(); } catch (err) { walls = false; console.error('terrain walls:', err); } }
-  if (!walls) return;
-  if (wallFrame !== state.frame) {
-    const values = frameValues(state.frame);
-    walls.forEach((W, i) => {
-      const V = values[i];
-      for (let k = 0; k < W.count; k++) { W.vals[2 * k] = V[2 * W.src[k]]; W.vals[2 * k + 1] = V[2 * W.src[k] + 1]; }
-      gl.bindBuffer(gl.ARRAY_BUFFER, W.valBuf); gl.bufferSubData(gl.ARRAY_BUFFER, 0, W.vals);
-    });
-    wallFrame = state.frame;
-  }
-  gl.uniform1f(uni.uWall, 1);
-  gl.uniform1f(uni.uBase, wallBase(relief));
-  for (const I of images()) {
-    setImage(uni, I);
-    walls.forEach((W, i) => {
-      const L = LAYERS[i];
-      if (!L.visible || selfImage(L, I)) return;
-      gl.uniform3fv(uni.uNormal, L.normal); gl.uniform1f(uni.uRelief, relief);
-      gl.bindVertexArray(W.vao); gl.drawArrays(gl.TRIANGLES, 0, state.mirror && CAN_MIRROR ? W.outerCount : W.count);
-    });
-  }
-  gl.uniform1f(uni.uWall, 0);
 }
 
 // backdrop: the theme's view gradient (top to bottom, a soft light behind the middle), drawn into the GL view so
@@ -3448,97 +4026,17 @@ function drawBackdrop() {
   gl.depthMask(true); gl.enable(gl.DEPTH_TEST);
 }
 
-// outline decal: on a raised planar map the model outlines (and in 2D the point / line objects) are drawn once into a
-// texture over the plane (the line program, seen face-on through an orthographic matrix) and the field program lays
-// that texture on the surface, so they follow the relief (drawn as lines at the plane they would cut through it).
-// Redrawn when what it shows changes (key); mipmapped, so a turned view stays smooth
-let decalActive = false, decal = null;       // decal: { tex, fb, w, h, key }
-function decalKind(G) { return G.kind === 'outline' || (is2d && G.kind === 'glyph'); }
-let decalFailed = false;
-function prepareDecal() {
-  decalActive = false;
-  if (decalFailed) return;
-  if (!PLANAR || !(state.relief > 0) || !geometryGL || state.geom === 'off') return;
-  const lines = GEOM_LINES.filter((G) => decalKind(G) && (G.kind !== 'outline' || LAYERS[G.layer].visible));
-  if (!lines.length) return;
-  const [iu, iv] = PLANE_AXES, f = stretch();
-  const su = (hmax[iu] - hmin[iu]) * f[iu], sv = (hmax[iv] - hmin[iv]) * f[iv];
-  if (!(su > 0 && sv > 0)) return;
-  const side = Math.min(4096, gl.getParameter(gl.MAX_TEXTURE_SIZE));
-  const w = su >= sv ? side : Math.max(64, Math.round(side * su / sv)), h = su >= sv ? Math.max(64, Math.round(side * sv / su)) : side;
-  const screen = Math.max(canvas.width, canvas.height);
-  const key = [state.geom, state.geomColor, state.cmap, state.stretch, w, h, Math.round(screen / 64),
-               LAYERS.map((L) => L.visible ? 1 : 0).join('')].join('|');
-  if (!decal || decal.key !== key) renderDecal(lines, w, h, su, sv, side / (0.7 * screen), key);
-  decalActive = true;
-}
-function renderDecal(lines, w, h, su, sv, texelsPerPixel, key) {
-  if (!decal || decal.w !== w || decal.h !== h) {
-    if (decal) { gl.deleteTexture(decal.tex); gl.deleteFramebuffer(decal.fb); }
-    const tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
-    gl.texStorage2D(gl.TEXTURE_2D, Math.floor(Math.log2(Math.max(w, h))) + 1, gl.RGBA8, w, h);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    const fb = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
-    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
-    if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) throw new Error('outline decal framebuffer incomplete');
-    decal = { tex, fb, w, h, key: '' };
-  }
-  const [iu, iv] = PLANE_AXES, f = stretch();
-  gl.bindFramebuffer(gl.FRAMEBUFFER, decal.fb); gl.viewport(0, 0, w, h);
-  gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
-  gl.disable(gl.DEPTH_TEST); gl.enable(gl.BLEND);
-  gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);   // premultiplied texels
-  gl.useProgram(lineProg);
-  // clip = M (p - centre) stretch: the plane's u, v onto x, y over the simulated part
-  const M = new Float32Array(16); M[4 * iu] = 2 / su; M[4 * iv + 1] = 2 / sv; M[15] = 1;
-  const middle = [0, 1, 2].map((c) => 0.5 * (hmin[c] + hmax[c]));
-  gl.uniformMatrix4fv(lineUni.uView, false, M); gl.uniformMatrix4fv(lineUni.uProj, false, new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]));
-  gl.uniform3fv(lineUni.uCenter, middle); gl.uniform3fv(lineUni.uStretch, f);
-  gl.uniform3fv(lineUni.uClipLo, NO_CLIP_LO); gl.uniform3fv(lineUni.uClipHi, NO_CLIP_HI);
-  gl.uniform2f(lineUni.uViewport, w, h);
-  setImage(lineUni, IDENTITY_IMAGE);
-  const dash = 0.008 * (Math.max(...SPAN) || 1);
-  for (const G of lines) {
-    const inset = G.kind === 'outline' && state.geomColor === 'material';
-    // Contrast outlines: drawn white here, the field program picks dark or light over each pixel's colour
-    gl.uniform4fv(lineUni.uColor, state.geomColor === 'auto' ? [1, 1, 1, 0.92] : lineRgba(G)); gl.uniform1f(lineUni.uInset, inset ? 1 : 0);
-    gl.uniform1f(lineUni.uWidth, (G.kind === 'glyph' ? 2.5 : inset ? 2.25 : 1.75) * pixelRatio * texelsPerPixel);
-    gl.uniform1f(lineUni.uDash, G.dashed ? dash : 0);
-    gl.bindVertexArray(G.vao); gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, G.count);
-  }
-  gl.bindVertexArray(null);
-  gl.bindTexture(gl.TEXTURE_2D, decal.tex); gl.generateMipmap(gl.TEXTURE_2D);
-  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA); gl.disable(gl.BLEND); gl.enable(gl.DEPTH_TEST);
-  decal.key = key;
-}
-function setDecalUniforms() {
-  gl.uniform1i(uni.uDecal, decalActive ? 1 : 0);
-  if (!decalActive) return;
-  gl.uniform1i(uni.uDecalAuto, state.geomColor === 'auto' ? 1 : 0);
-  const [iu, iv] = PLANE_AXES, U = [0, 0, 0], V = [0, 0, 0]; U[iu] = 1; V[iv] = 1;
-  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, decal.tex); gl.uniform1i(uni.uDecalTex, 0);
-  gl.uniform3fv(uni.uDecalU, U); gl.uniform3fv(uni.uDecalV, V);
-  gl.uniform4f(uni.uDecalBox, hmin[iu], hmin[iv], hmax[iu] - hmin[iu], hmax[iv] - hmin[iv]);
-}
-
 // controls
 function syncScalars() {
   $('contours').setAttribute('aria-pressed', String(state.contours));
-  $('contourn').value = state.contourDensity; $('contourn').disabled = !state.contours;
-  $('terrain').setAttribute('aria-pressed', String(tween ? !tween.flat : state.relief > 0));
+  $('contourn').value = state.contourDensity; $('contourn').disabled = !state.contours || contourStepGiven();
 }
-$('terrain').style.display = TERRAIN_OFFERED ? '' : 'none';
-$('terrain').onclick = () => setTerrain(!(tween ? !tween.flat : state.relief > 0));
 $('contours').onclick = () => { state.contours = !state.contours; store(CONTOUR_STORE, state.contours ? 'on' : 'off'); syncScalars(); };
 $('contourn').onchange = (e) => { state.contourDensity = e.target.value; store('contour_density', state.contourDensity); };
 window.addEventListener('keydown', (e) => {
   if (e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT' && e.target.type !== 'range') return;
   if (e.ctrlKey || e.metaKey || e.altKey) return;
   if (e.key === 'c' || e.key === 'C') $('contours').click();
-  else if ((e.key === 'r' || e.key === 'R') && TERRAIN_OFFERED) $('terrain').click();
 });
 // densities (carriers, concentrations) spanning decades open on a log scale showing them all (up to 9 decades: the
 // log codes' span)
@@ -3552,11 +4050,6 @@ if (SCALAR_KIND === 'density' && LOG_OK) {
     $('decades').value = String(state.decades);
   }
 }
-// one stationary state (heat, potential, carriers: no frames to step) opens flat, as the canvas shows it, then rises
-// into the terrain, unless this browser turned the terrain off, the page was written with a view or flow particles
-// are on (the relief hides them: one of the two opens, the flow)
-const TERRAIN_AT_OPEN = TERRAIN_OFFERED && is2d && KIND === 'single' && !Q.phase && !DATA.phasor && !DATA.motion && !DATA.view
-  && !(FLOW && flowState.on) && store('terrain') !== 'off';
 
 // ---------- loop ----------
 const SPIN_RATE = 2 * Math.PI / 12;          // one turn in 12 s
@@ -3570,7 +4063,7 @@ function tick(now) {
   requestAnimationFrame(tick);
 }
 function advance(dt, now) {
-  // the page's clocks by dt seconds (now: ms, for the terrain tween); a recording calls advance + draw per frame
+  // the page's clocks by dt seconds (now: ms, for the 3D tween); a recording calls advance + draw per frame
   // instead of tick, so anything that moves with time goes here (never straight in tick) or recordings miss it
   introTurn(dt); adaptVolume(dt);
   if (state.spin) cam.az -= SPIN_RATE * dt;
@@ -3589,7 +4082,7 @@ if (mq.addEventListener) mq.addEventListener('change', () => readTheme());
 window.addEventListener('resize', () => { resize(); });
 if (gl) { try { setupGL(); } catch (err) { $('empty').hidden = false; $('empty').textContent = 'WebGL error: ' + err.message; } }
 resize(); resetCamera(); syncControls(); syncSettings(); select(0);
-if (TERRAIN_AT_OPEN) setTimeout(() => { if (state.relief === 0 && !tween) setTerrain(true); }, 700);
+runRevolveIntro();
 window.fieldViewer = { state, select, draw, cam, limits, figure: fig, wave, motion };
 requestAnimationFrame(tick);
 })();

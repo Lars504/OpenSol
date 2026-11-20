@@ -20,7 +20,8 @@ import numpy as np
 from . import __version__
 from .core import gpu_memory, host_memory
 from .core.backend import default_backend_name
-from .core.mirror import field_parity, field_plane_signs, image_sign, mirror_faces, unfold_faces, unfold_field
+from .core.mirror import (AXIS_UNFOLD_TYPES, field_parity, field_plane_signs, image_sign, mirror_faces, unfold_faces,
+                          unfold_field)
 from .core.renderer import primary_field_info
 from .core.time_estimate import format_seconds
 from .core.time_profile import profile_path, profile_text, run_profile
@@ -36,7 +37,9 @@ from .model.analytic import (CURVE_RESULT_KINDS, FFT_SERIES, RATIO_SERIES, built
                              table_xy)
 from .model.builder import ESTIMATE_FLOOR_BYTES, build as build_model, estimate_gap, estimate_verdict
 from .model.describe import REFERENCE_FILE, REGENERATE_COMMAND, TEMPLATES_FILE, describe, reference_files
+from .model.definition_helpers import is_axisymmetric
 from .model.expressions import error_message, evaluate_parameters
+from .model.geometry import domain_map
 from .model.import_contracts import check as check_import_contracts, rule_text
 from .model.interface_sampling import interface_line_profile, line_curve_field_keys, projected_info
 from .model.meshing import (MESH_ESTIMATE_ERRORS, built_mesh_estimates, estimate_memory, estimate_mesh,
@@ -62,7 +65,8 @@ from .model.templates import make_template, template_entries, template_model
 from .model.validate import internal_error_text, refused_on_estimated_counts, validate
 from .viz.common import line_profile
 from .viz.field_viewer import (MAX_VOLUME_FRAMES, ViewerFlow, ViewerFrame, ViewerGeometry, ViewerLayer, ViewerMirror,
-                               ViewerMotion, ViewerQuantity, ViewerVectors, ViewerVolume, figure_settings,
+                               ViewerMotion, ViewerQuantity, ViewerRevolution, ViewerVectors, ViewerVolume,
+                               figure_settings,
                                layer_from_field, mirror_plane, plan_frames, reduced_volume, snap_to_mirrors,
                                strided_layer, time_label, write_field_viewer)
 from .viz.mode_player import mode_player_from_results
@@ -1726,7 +1730,11 @@ class Results:
         '_im' field whose partner is stored beside it, or rendered from kept snapshot solutions (GUI runs), is
         animated over one period, Re / Im[A exp(j wt)]), else the current (live) or saved state; a 2D Cartesian page
         of a steady-flow physics (_FLOW_TYPES) carries the in-plane vector of its field (_viewer_flow, from the same
-        snapshot / state) for moving flow particles or arrows; a field of a 2D solid_mechanics / membrane physics is drawn on
+        snapshot / state) for flow arrows (the default) or moving particles; a 2D map of an axisymmetric (r, z)
+        physics or a spherical (r, theta) domain opens on the drawn half, then mirrors and turns about its rotation
+        axis into a 3D view inside see-through surfaces of revolution of the domain and the objects
+        (_viewer_revolution; the 3D button, remembered by the browser); a field of a
+        2D solid_mechanics / membrane physics is drawn on
         the deformed body (its displacement u_x / u_y or w_re, plus the imaginary parts when held, per frame; a Deform
         magnification; the solid's void cells, youngs_modulus <= 0, hidden and cropped away; modes and frequency
         responses oscillate, static states ramp their load with Animate); a 3D field is shown on its cut planes in
@@ -1747,8 +1755,9 @@ class Results:
         max_bytes (mode_shapes pages): viz.mode_player.ModePageTooLarge, nothing written, when the mode data would
         pass it (its sizes per group let a caller choose fields). None = the only mode_shapes result. geometry (field pages):
         the model objects (built parameters) go on the page, the outlines on every map / cut plane and in 3D the
-        object edges and surfaces, shown or hidden there. A model with mirror planes (core.mirror.mirror_faces; field
-        pages and 2D DFT maps): the page draws the mirror images of the field (its parity's signs) and objects too,
+        object edges and surfaces, shown or hidden there. A model with mirror planes (field pages:
+        core.mirror.unfold_faces, also the rotation axis of an axisymmetric field; 2D DFT maps): the page draws the
+        mirror images of the field (its parity's signs) and objects too,
         the whole structure, with a Mirror button to show the simulated part alone. Large data is thinned (grid
         stride, evenly kept frames; the page subtitle says so). figure (field and DFT pages; ValueError on a
         mode_shapes page): {setting: value} the page's Plot settings panel opens with (viz.field_viewer
@@ -1882,11 +1891,55 @@ class Results:
         # parity-sector snapshots are stored unfolded already: no images of them
         mirrors = [] if unfolded else self._viewer_mirrors(
             key.partition('.')[0], info, [(layer.axes, layer.extent) for layer in frames[0].layers], flow_infos)
+        revolution, mirrors = ((None, mirrors) if unfolded
+                               else self._viewer_revolution(key, info, frames[0].layers, mirrors))
         snap_to_mirrors(frames, mirrors)   # before the outlines: a cut next to a mirror plane is drawn on it
         objects = self._viewer_geometry([layer.plane for layer in frames[0].layers]) if geometry else None
         return write_field_viewer(path, frames, quantity, title=self._page_title(title) or info.label,
                                   subtitle=f'{key}, {source} (open_sol)', frame_kind=frame_kind, geometry=objects,
-                                  mirrors=mirrors, figure=figure, flow=flow, motion=motion)
+                                  mirrors=mirrors, figure=figure, flow=flow, motion=motion, revolution=revolution)
+
+    def _viewer_revolution(self, key, info, layers, mirrors):
+        """(ViewerRevolution, mirrors) of a 2D map that is the meridional half plane of a body of revolution about
+        the drawing plane's y axis (x = 0): a field of an axisymmetric (r, z) physics on a Cartesian domain (profile:
+        the map's window rectangle) or any field of a spherical (r, theta) domain (profile: the sector outline);
+        mirrors normal to x off the axis are dropped (RuntimeWarning: their images are no part of the body).
+        (None, mirrors) for every other page. The far half (Cartesian): the x_lo mirror _viewer_mirrors took from
+        unfold_faces (AXIS_UNFOLD_TYPES at azimuthal_order 0); spherical: an x mirror on the axis added here for an
+        unsigned or scalar-parity field (FieldInfo info) of an AXIS_UNFOLD_TYPES physics whose sector reaches the axis,
+        signed by the type (the (r, theta) components keep their sign under the rotation, which no reflection sign
+        reproduces: vector components get no far half). Else the drawn half shows alone."""
+        spec = self.spec
+        if spec is None or spec.dimensions != 2 or len(layers) != 1 or layers[0].plane is not None \
+                or tuple(layers[0].axes) != ('x', 'y'):
+            return None, mirrors
+        physics_spec = next((entry for entry in spec.physics if entry.name == key.partition('.')[0]), None)
+        if physics_spec is None:
+            return None, mirrors
+        parameters = self._built_parameters()
+        far = None
+        if spec.domain.coordinates == 'spherical':
+            profile, label = domain_map(spec, parameters).outline(), 'spherical (r, theta)'
+            axis_sign = AXIS_UNFOLD_TYPES.get(physics_spec.type)
+            parity = field_parity(info) if info.parity or not info.signed else None
+            if axis_sign and parity in ('even', 'scalar') \
+                    and float(np.min(profile[:, 0])) <= 1e-6 * float(np.max(np.abs(profile))):
+                far = ViewerMirror(face='x_lo', position=0.0, value_sign=image_sign(parity, 'x', axis_sign))
+        elif spec.domain.coordinates == 'cartesian' and is_axisymmetric(physics_settings(
+                get_registry().physics_type(physics_spec.type), physics_spec, parameters)):
+            u0, u1, v0, v1 = layers[0].extent
+            u0 = max(float(u0), 0.0)   # the window starts on the axis; a cropped solid keeps its axis face
+            profile = np.array([[u0, v0], [u1, v0], [u1, v1], [u0, v1], [u0, v0]], dtype=np.float64)
+            label = 'axisymmetric (r, z)'
+        else:
+            return None, mirrors
+        tolerance = 1e-6 * max(abs(float(edge)) for edge in layers[0].extent)
+        kept = [mirror for mirror in mirrors if mirror.face[0] != 'x' or abs(mirror.position) <= tolerance]
+        if len(kept) < len(mirrors):
+            dropped = sorted({mirror.face for mirror in mirrors} - {mirror.face for mirror in kept})
+            warnings.warn(f"web page mirror images: not across {', '.join(dropped)} (a plane normal to the radius off "
+                          'the rotation axis is no symmetry of the body of revolution)', RuntimeWarning, stacklevel=4)
+        return ViewerRevolution(profiles=[profile], axis_position=0.0, label=label), kept + ([far] if far else [])
 
     def _viewer_motion(self, key, frames, sources):
         """(ViewerMotion, subtitle note) of a 2D field page whose physics has a displacement (_MOTION_FIELDS), the
@@ -1925,8 +1978,7 @@ class Results:
                 return None, ', no deformed shape (the displacement lies on other samples than this field)'
             layer.displacement = tuple(channels)
         if stiffness_name and f'{physics}.{stiffness_name}' in names:
-            _hide_void(frames, self.field(f'{physics}.{stiffness_name}'),
-                       set(mirror_faces(self._state_spec(), physics)))
+            _hide_void(frames, self.field(f'{physics}.{stiffness_name}'), set(self._page_mirror_faces(physics)))
         mirror_signs = {}
         if 'n' in components:   # the normal displacement's images follow its own parity, not the shown field's
             spans = [(layer.axes, layer.extent) for layer in frames[0].layers]
@@ -2060,14 +2112,29 @@ class Results:
         min_step = 0.5 * float(record['dx_min']) if record['kind'] == 'tetrahedra' else None
         return reduced_volume(ViewerVolume(values=volume.values, centres=volume.centres), n_frames, min_step)
 
+    def _page_mirror_faces(self, physics):
+        """{face: sign} a web page of physics' fields reflects at: core.mirror.unfold_faces (the model's mirror planes
+        plus the rotation axis x_lo of an axisymmetric AXIS_UNFOLD_TYPES physics, as Results.field(unfold=True));
+        mirror_faces and a RuntimeWarning when the axis cannot be unfolded (an azimuthal_order other than 0);
+        mirror_faces on a polar / spherical domain (unfold_faces' x_lo is the Cartesian (r, z) axis; a spherical
+        window's axis is no outer face: _viewer_revolution draws its far half)."""
+        spec = self._state_spec()
+        if spec.domain.coordinates != 'cartesian':
+            return mirror_faces(spec, physics)
+        try:
+            return unfold_faces(spec, physics)
+        except ValueError as exc:
+            warnings.warn(f'web page mirror images: not across the rotation axis: {exc}', RuntimeWarning, stacklevel=5)
+            return mirror_faces(spec, physics)
+
     def _viewer_mirrors(self, physics, info, spans, flow_infos=None):
-        """ViewerMirrors of the model's mirror faces for a field of physics (FieldInfo info; None = an even
-        intensity), placed on the window edges of spans [(axes, extent)]; RuntimeWarning for what is not offered.
-        flow_infos (x, y FieldInfos of the page's flow vectors): each image's flow_sign = the image sign of the
-        component along the plane (+1: the reflected paths, -1: run backwards)."""
+        """ViewerMirrors of the page's mirror faces (_page_mirror_faces) for a field of physics (FieldInfo info; None =
+        an even intensity), placed on the window edges of spans [(axes, extent)]; RuntimeWarning for what is not
+        offered. flow_infos (x, y FieldInfos of the page's flow vectors): each image's flow_sign = the image sign of
+        the component along the plane (+1: the reflected paths, -1: run backwards)."""
         if self.spec is None:
             return []
-        all_faces = mirror_faces(self._state_spec(), physics)
+        all_faces = self._page_mirror_faces(physics)
         faces = all_faces
         if info is not None:
             faces = field_plane_signs(faces, info)
