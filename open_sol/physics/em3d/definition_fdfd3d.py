@@ -27,8 +27,8 @@ from ..em.definition_fdfd import (MIN_REGION_FRACTION_PARAM, resonance_region_me
                                   validate_resonance_table)
 from ..em.eigenfrequency import (REGION_COLUMN, ResonanceRegion, ResonanceTable, resonance_filter_time_item,
                                  resonance_table_result)
-from ..em.memory_estimates import (EIGEN_PHASE, EIGEN_ROLE, _study_values, cudss_factor_items, cudss_own_factor_bytes,
-                                   eigen_mixed, host_factor_items, resonance_search_items)
+from ..em.memory_estimates import (EIGEN_PHASE, EIGEN_ROLE, _study_values, cudss_factor_items, eigen_mixed,
+                                   host_factor_items, own_cudss_search_items, resonance_search_items)
 from .boundaries3d import AXES, FACE_TYPES_3D, MIRROR_TYPES_3D
 from .definition import (_BC_CHOICE_LABELS, _BC_TIP, _MATERIAL_PROPERTIES, _MATERIAL_SCHEMA,
                          _OPTIONAL_MATERIAL_SCHEMA, _PML_VISIBLE_3D, _SLOT_ARRAYS, _apply_pec, _boundary_config,
@@ -403,20 +403,19 @@ def _arnoldi_sizes(context, unknowns):
 
 
 def _cudss_eigen_items(factorization, unknowns, entries, general, label, fill=3, sparse_mass=False):
-    """(EIGEN_PHASE items, external items, external extra) of solve_resonances' own cuDSS factor (freed after the
-    solve; the EIGEN_ROLE job's): CSR copies (LDL^T lower triangle; Bloch: the whole LU matrix) and solve vectors;
-    nothing without cuDSS. fill: the 3D growth law (3) or a counted cudss_factor.FactorFill. sparse_mass (FEM): B is
-    the resonance filter's device copy (booked there), the solves add only the B v vector."""
+    """(EIGEN_PHASE / FILTER_PHASE items, external items, external extra) of solve_resonances' own cuDSS factor (freed
+    after the solve; the EIGEN_ROLE job's): CSR copies (LDL^T lower triangle; Bloch: the whole LU matrix) in both phases,
+    solve vectors in the eigen solve; nothing without cuDSS. fill: the 3D growth law (3) or a counted
+    cudss_factor.FactorFill. sparse_mass (FEM): B is booked by resonance_search_items (sparse_mass_entries), the solves
+    add only the B v vector."""
     if factorization not in CUDSS_FACTORIZATIONS:
         return (), [], 0
     mixed = eigen_mixed(factorization, unknowns)
     vector_bytes = COMPLEX128_BYTES * unknowns
-    b_item = ((EIGEN_PHASE, 'B v vector (complex128; the sparse B is the resonance filter\'s device copy)',
-               vector_bytes) if sparse_mass else
-              (EIGEN_PHASE, 'B diagonal and applied vector (complex128)', 2 * vector_bytes))
-    items = tuple(solver_job_items(EIGEN_ROLE, (
-        (EIGEN_PHASE, 'cuDSS operator copies, rhs buffer, row scale and one solve\'s vectors',
-         cudss_own_factor_bytes(unknowns, entries, mixed, symmetric=not general)), b_item)))
+    b_item = ((EIGEN_PHASE, 'B v vector (complex128; the sparse B: resonance search items)', vector_bytes)
+              if sparse_mass else (EIGEN_PHASE, 'B diagonal and applied vector (complex128)', 2 * vector_bytes))
+    items = tuple(own_cudss_search_items(label, unknowns, entries, mixed, symmetric=not general)
+                  + solver_job_items(EIGEN_ROLE, (b_item,)))
     external_items, external_extra = cudss_factor_items(label, unknowns, entries, dimensions=fill, mixed=mixed,
                                                         general=general)
     return items, solver_job_items(EIGEN_ROLE, external_items), external_extra
@@ -495,10 +494,12 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
     cudss_items, external_items, external_extra = _cudss_eigen_items(
         factorization, unknowns, row_entries * unknowns, not symmetric, 'the Nedelec curl-curl operator', fill,
         sparse_mass=True)
-    # the Arnoldi basis (device Krylov-Schur where it runs, first pass only) and the filter's A, M, W copies
+    # the Arnoldi basis (device Krylov-Schur where it runs, first pass only); the filter uploads A, W (and B without an
+    # own factor) one at a time: one pattern of row_entries per row each; an own factor's solves and the filter share B
     search_host, search_transient = resonance_search_items(solver_backend(context.spec), unknowns, n_wanted, n_basis,
                                                            own_cudss=factorization in CUDSS_FACTORIZATIONS,
-                                                           filter_entries=3 * row_entries * unknowns)
+                                                           filter_entries=row_entries * unknowns,
+                                                           sparse_mass_entries=row_entries * unknowns)
     host_items = factor_items + (
         (f'element assembly blocks ({n_local} x {n_local} per element: rows, columns, K and M)',
          n_elements * n_local * n_local * (2 * FLOAT64_BYTES + 2 * COMPLEX128_BYTES)),   # int64 indices

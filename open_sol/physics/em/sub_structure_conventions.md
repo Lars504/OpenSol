@@ -343,9 +343,12 @@ type's vocabulary and refusals are in its help texts and validation.
   eigenpairs^2, so ask only for resonances that exist near the target; estimators book
   `memory_estimates.resonance_search_items` and `eigenfrequency.resonance_filter_time_item` (first pass only). Per-
   column measures go through `_ResonanceFilter` (one sparse product per operator and block), never per-column host
-  csr_matvec loops (tetrahedral Mie: 2.4 s of 8 s). A sparse B (FEM) is uploaded once (`_PencilMass.device_matrix`):
-  the own-cuDSS solves and the filter share it, and the estimators book it as one of the filter's copies (a second
-  upload held ~0.58 GB beside the factor on the 690k-unknown nanobeam eighth model). Fields are 1 at the first argmax |u|: mirror-equal peaks leave the
+  csr_matvec loops (tetrahedral Mie: 2.4 s of 8 s). Two device phases beside an own factor, never overlapping: the
+  Krylov iteration (basis, solves) and the filter between passes (basis parked on the host, cached pool blocks
+  returned, one sparse operator uploaded at a time, narrow column blocks); estimators book them as `EIGEN_PHASE` and
+  `FILTER_PHASE` through `resonance_search_items` (`filter_entries` = the largest single operator, not the sum) and
+  `own_cudss_search_items` (the factor's copies in both). A sparse B (FEM) goes up once (`_PencilMass.device_matrix`),
+  shared by the own-cuDSS solves and the filter (`sparse_mass_entries`). Fields are 1 at the first argmax |u|: mirror-equal peaks leave the
   sign to round-off. `select_resonance(k)` sets `selected_resonance` (hz `face_fields` skips source currents);
   `_solution_dirty` stays True so a later step() re-solves the driven problem. Region (P2): on tensor grids
   `ctx.domain_mask`, so an object touching the window edge counts the PML cells beyond it (clamped centres; example

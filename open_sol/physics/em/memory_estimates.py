@@ -20,7 +20,7 @@ from ...solvers.host_direct import (HOST_DIRECT_FACTORIZATIONS, factor_label, ho
 from ...solvers.sparse_direct import CUDSS_BACK_ENDS, HOST_FACTOR_BACK_ENDS
 from .definition_bloch import bloch_active_axes
 from .definition_common import FREQUENCY_DOMAIN_STUDY, _q_accum_referenced, _study_wavelengths, eigen_solved
-from .eigenfrequency import FILTER_BLOCK_COLUMNS
+from .eigenfrequency import FILTER_DEVICE_BLOCK_COLUMNS
 from .materials import GYRATION_Z
 
 # FDFD kept Helmholtz term plan (operators._HelmholtzPlan): per cell 9 terms (4 per x / y product + the cell term) into
@@ -37,7 +37,10 @@ _FDFD_ASSEMBLY_BYTES = max(_FDFD_PLAN_TERMS * (3 * INT32_BYTES + 2 * _INT64_BYTE
 # Run phases (MemoryEstimate.transient_items) of the frequency-domain engines; never alive at the same time
 ASSEMBLY_PHASE = 'assembly'                 # operator assembly temporaries (the system itself is a run item)
 SOLVE_PHASE = 'solve'                       # one solve's material temporaries, an own (not kept) factor's copies
-EIGEN_PHASE = 'eigen solve'                 # solve_resonances / a mode solve: own factor copies, Krylov basis, filter
+EIGEN_PHASE = 'eigen solve'                 # solve_resonances / a mode solve: own factor copies, Krylov basis
+# solve_resonances between eigs passes: the resonance filter (one operator upload, column blocks) beside the own
+# factor's copies; the Krylov basis waits on the host (eigenfrequency._parked_decomposition)
+FILTER_PHASE = 'resonance filter'
 REFACTOR_PHASE = 'cuDSS refactorisation'    # refactorize on the planned pattern (a later frequency / order / iteration)
 # fdtd_memory_estimate item names (the label before ' (') the cpu numba Yee twins stream (definition_fdtd prices only
 # these as numba): fields, update coefficients and the Bloch imaginary set (its bulk is fields)
@@ -47,9 +50,12 @@ ADJOINT_PHASE = 'adjoint solve'             # one eps_sensitivity: transposed-so
 # solver role whose job holds a resonance search's own factor, factor copies and Krylov basis (solver_job_items: the
 # solve flow books them at that job); the filter, eigenvectors and operator copies stay the physics'
 EIGEN_ROLE = 'eigen'
-# _ResonanceFilter.measures: device column blocks alive at once (columns, conjugate, A v, B v and one product
-# temporary; + D v with a row scale)
+# _ResonanceFilter.measures: device column blocks alive at once, one operator at a time (columns, its product, the
+# conjugate, one product temporary and the real energies; + D v with a row scale)
 _FILTER_BLOCKS = 5
+# its window / region rows (float64), diagonal weights (float64), diagonal mass and row scale (complex128): an upper
+# figure in bytes per unknown, kept on the device for the whole search
+_FILTER_VECTOR_BYTES = 3 * FLOAT64_BYTES + 2 * COMPLEX128_BYTES
 _DFT_SPECTRA = {'ez': 1, 'hz': 3}   # complex64 (n_wavelengths, mx, my) spectra of a DFTMonitor (monitors.py)
 # FieldProbe users (core.monitors: growable float32 device trace + float64 host times); counted by the FDTD physics
 # estimator because a FeatureType estimator does not see the study duration
@@ -146,10 +152,15 @@ def real_cross_section_operator(settings_values, context):
     return True
 
 
-def resonance_search_items(backend, unknowns, n_wanted, n_basis, own_cudss, filter_entries, scaled_block=None):
-    """(host items, EIGEN_PHASE transient items) of eigenfrequency.solve_resonances: the device Krylov-Schur basis
-    (first pass; no widening reserve) or ARPACK's host basis (the EIGEN_ROLE job's), the host eigenvectors, on the gpu
-    the resonance filter's copies (scaled_block: the D v block of a polished search, None = own_cudss)."""
+def resonance_search_items(backend, unknowns, n_wanted, n_basis, own_cudss, filter_entries, scaled_block=None,
+                           sparse_mass_entries=0):
+    """(host items, transient items) of eigenfrequency.solve_resonances: EIGEN_PHASE the device Krylov-Schur basis
+    (first pass; no widening reserve) or ARPACK's host basis (the EIGEN_ROLE job's); FILTER_PHASE on the gpu the
+    resonance filter between passes (the basis parked on the host): its largest single operator upload (filter_entries
+    stored entries of A, a sparse W / B of the FEM pattern no larger; a real W cast on the device) and its column blocks
+    (scaled_block: the D v block of a polished search, None = own_cudss); in both its window / weight vectors and, an own
+    cuDSS factor with a sparse B (sparse_mass_entries stored entries), the B copy the solves and the filter share; the
+    host eigenvectors. The own factor's copies: own_cudss_search_items."""
     gpu = backend == 'gpu'
     vector_bytes = COMPLEX128_BYTES * int(unknowns)
     host_items = [(f'eigenvectors ({n_wanted} x complex128)', n_wanted * vector_bytes)]
@@ -161,23 +172,48 @@ def resonance_search_items(backend, unknowns, n_wanted, n_basis, own_cudss, filt
                           'needs about twice as much)', (rows + 2) * vector_bytes)])
     else:
         host_items += solver_job_items(EIGEN_ROLE, [(f'Arnoldi basis ({n_basis} vectors)', n_basis * vector_bytes)])
-    if gpu:   # sparse A, B / W copies; column blocks of at most n_wanted Ritz vectors (+ D v of an own cuDSS factor)
-        columns = min(FILTER_BLOCK_COLUMNS, max(int(n_wanted), 1))
-        blocks = _FILTER_BLOCKS + (1 if (own_cudss if scaled_block is None else scaled_block) else 0)
-        transient_items.append((EIGEN_PHASE, f'resonance filter: device operator copies (sparse complex128) and '
-                                             f'{blocks} column blocks', int(filter_entries) * COMPLEX128_CSR_ENTRY_BYTES
-                                + blocks * columns * vector_bytes))
+    if not gpu:
+        return host_items, transient_items
+    vectors_label = 'resonance filter: window, region and diagonal weight / mass / row-scale vectors'
+    transient_items += [(phase, vectors_label, _FILTER_VECTOR_BYTES * int(unknowns))
+                        for phase in (EIGEN_PHASE, FILTER_PHASE)]
+    if own_cudss and sparse_mass_entries:   # eigenfrequency: device_mass, uploaded once for both
+        transient_items += solver_job_items(EIGEN_ROLE, [
+            (phase, 'B = -M on the device (sparse complex128; the solves and the resonance filter share it)',
+             int(sparse_mass_entries) * COMPLEX128_CSR_ENTRY_BYTES + INT32_BYTES * (int(unknowns) + 1))
+            for phase in (EIGEN_PHASE, FILTER_PHASE)])
+    # one operator at a time: A complex128, a real sparse W also its float64 values while cast
+    entry_bytes = COMPLEX128_CSR_ENTRY_BYTES + (FLOAT64_BYTES if sparse_mass_entries else 0)
+    columns = min(FILTER_DEVICE_BLOCK_COLUMNS, max(int(n_wanted), 1))
+    blocks = _FILTER_BLOCKS + (1 if (own_cudss if scaled_block is None else scaled_block) else 0)
+    transient_items += [
+        (FILTER_PHASE, 'resonance filter: one sparse operator uploaded at a time (A, W or B; complex128)',
+         int(filter_entries) * entry_bytes + INT32_BYTES * (int(unknowns) + 1)),
+        (FILTER_PHASE, f'resonance filter: {blocks} column blocks of {columns} Ritz vectors', blocks * columns
+         * vector_bytes)]
     return host_items, transient_items
 
 
+def own_cudss_search_items(label, unknowns, entries, mixed, symmetric=True) -> list:
+    """Pool items of solve_resonances' own cuDSS factor (the EIGEN_ROLE job's): its CSR copies, rhs buffer and row scale
+    (cudss_kept_bytes) in EIGEN_PHASE and FILTER_PHASE, one solve's vectors in EIGEN_PHASE only (the filter returns the
+    cached blocks first). label: what the copies are of."""
+    kept = cudss_kept_bytes(unknowns, entries, mixed, symmetric)
+    return solver_job_items(EIGEN_ROLE, [
+        (EIGEN_PHASE, f'cuDSS copies of {label}, rhs buffer, row scale and one solve\'s vectors',
+         kept + solve_peak_bytes(unknowns, COMPLEX128_BYTES, mixed)),
+        (FILTER_PHASE, f'cuDSS copies of {label}, rhs buffer and row scale (no solve running)', kept)])
+
+
 def _resonance_search(context, n_resonances, unknowns, own_cudss, filter_entries, basis_per_wanted=0,
-                      scaled_block=None):
+                      scaled_block=None, sparse_mass_entries=0):
     """resonance_search_items on the run backend of a search for n_resonances: 2 n_resonances + 10 wanted (within 1 ..
     unknowns - 2), the Arnoldi basis of the eigen subspace_size, else basis_per_wanted x wanted, else scipy's."""
     n_wanted = max(min(2 * n_resonances + 10, unknowns - 2), 1)
     n_basis = arnoldi_basis_size(n_wanted, unknowns, eigen_subspace_size(context.solvers), basis_per_wanted * n_wanted)
     return resonance_search_items(solver_backend(context.spec), unknowns, n_wanted, n_basis, own_cudss=own_cudss,
-                                  filter_entries=filter_entries, scaled_block=scaled_block)
+                                  filter_entries=filter_entries, scaled_block=scaled_block,
+                                  sparse_mass_entries=sparse_mass_entries)
 
 
 def cudss_factor_items(label, n_unknowns, entries, dimensions=2, mixed=False, general=False, value_bytes=16):
@@ -508,8 +544,8 @@ def _fdfd_fem_memory_estimate(settings_values, mesh, context):
     transient_items = []
     if eigen:   # eigenfrequency.solve_resonances
         n_resonances = int(_study_values(context).get('n_resonances') or 1)
-        search_host, transient_items = _resonance_search(context, n_resonances, unknowns, on_device,
-                                                         3 * entries)   # A, B, W
+        search_host, transient_items = _resonance_search(context, n_resonances, unknowns, on_device, entries,
+                                                         sparse_mass_entries=entries)   # A, B, W: one pattern
         host_items += [*search_host,
                        (f'resonance vectors ({n_resonances} x complex128)', n_resonances * vector_bytes),
                        ('shifted operator copy (sparse complex128)', entries * COMPLEX128_CSR_ENTRY_BYTES)]
@@ -518,8 +554,7 @@ def _fdfd_fem_memory_estimate(settings_values, mesh, context):
         mixed = eigen_mixed(factorization, unknowns) if eigen else factorization == 'cudss_mixed'
         external_items, external_extra = cudss_factor_items('the FEM operator', unknowns, entries, mixed=mixed)
         if eigen:   # solve_resonances' own factor lives for the eigen solve
-            transient_items += solver_job_items(EIGEN_ROLE, [(EIGEN_PHASE, 'cuDSS operator copies and solve vectors',
-                                                              cudss_own_factor_bytes(unknowns, entries, mixed))])
+            transient_items += own_cudss_search_items('the FEM operator', unknowns, entries, mixed)
             external_items = solver_job_items(EIGEN_ROLE, external_items)
         else:       # the driven factor is kept and refactorised in place (fdfd_2d_fem previous=)
             kept_cudss_items(run_items, transient_items, unknowns, entries, mixed, later_factorisations(context))
@@ -563,8 +598,7 @@ def _eigen_items(context, n_cells, sparse_row, superlu=True):
     external_items, external_extra = [], 0
     if own_cudss:
         mixed = eigen_mixed(factorization, n_cells)
-        transient_items += solver_job_items(EIGEN_ROLE, [(EIGEN_PHASE, 'cuDSS operator copies and solve vectors',
-                                                          cudss_own_factor_bytes(n_cells, 5 * n_cells, mixed))])
+        transient_items += own_cudss_search_items('the shifted operator', n_cells, 5 * n_cells, mixed)
         external_items, external_extra = cudss_factor_items('the shifted operator', n_cells, 5 * n_cells, mixed=mixed)
         external_items = solver_job_items(EIGEN_ROLE, external_items)
     host_items = factor + [
@@ -780,9 +814,8 @@ def conical_memory_estimate(settings_values, mesh, context):
         external_items, external_extra = cudss_factor_items('the conical curl-curl operator', unknowns, 13 * unknowns,
                                                             mixed=mixed)
         if eigen:   # the resonance search's own factor
-            transient_items += solver_job_items(EIGEN_ROLE, [
-                (EIGEN_PHASE, 'cuDSS lower-triangle copies and solve vectors',
-                 cudss_own_factor_bytes(unknowns, 13 * unknowns, mixed))])
+            transient_items += own_cudss_search_items('the conical curl-curl operator', unknowns, 13 * unknowns,
+                                                      mixed)
             external_items = solver_job_items(EIGEN_ROLE, external_items)
         else:       # host_fdfd keeps the driven factor (_cudss_previous) and refactorises it in place
             kept_cudss_items(run_items, transient_items, unknowns, 13 * unknowns, mixed, later_factorisations(context))
@@ -807,16 +840,16 @@ def _fem_resonance_memory_estimate(settings_values, mesh, context, n_resonances,
     fields per element; host SuperLU (or a cuDSS LDL^T: external), blocks, Arnoldi work, resonance vectors (n_orders
     x n_resonances; None: one search, unlabelled), the quadrature-point bases (sample_bases), display fields; one
     order's search and its own factor at a time."""
-    from .fem_modes import (DISCRETIZATION_ORDERS, FEM_ENTRIES_PER_ROW, cudss_operator_bytes, estimated_unknowns,
-                            fem_lu_bytes, operator_bytes, sample_basis_bytes)
+    from .fem_modes import (DISCRETIZATION_ORDERS, FEM_ENTRIES_PER_ROW, estimated_unknowns, fem_lu_bytes,
+                            operator_bytes, sample_basis_bytes)
     order = DISCRETIZATION_ORDERS[settings_values.get('discretization', 'quadratic')]
     n_elements = int(mesh.n_elements)
     unknowns = estimated_unknowns(n_elements, int(mesh.n_edges), int(mesh.n_nodes), order)
     factorization = eigen_factorization(context.solvers)
     on_device = factorization in CUDSS_FACTORIZATIONS
+    fem_entries = FEM_ENTRIES_PER_ROW[order] * unknowns
     search_host, search_transient = _resonance_search(   # the filter's A, B and W: one operator's entries each
-        context, n_resonances, unknowns, on_device, 3 * operator_bytes(unknowns, order) // COMPLEX128_CSR_ENTRY_BYTES,
-        basis_per_wanted)
+        context, n_resonances, unknowns, on_device, fem_entries, basis_per_wanted, sparse_mass_entries=fem_entries)
     vectors_label, n_vectors = (f'{n_resonances}', n_resonances) if n_orders is None else (
         f'{n_orders} x {n_resonances}', n_orders * n_resonances)
     host_items = ([] if on_device else solver_job_items(EIGEN_ROLE, host_factor_items(
@@ -833,10 +866,8 @@ def _fem_resonance_memory_estimate(settings_values, mesh, context, n_resonances,
     external_items, external_extra = [], 0
     if on_device:
         mixed = eigen_mixed(factorization, unknowns)
-        transient_items += solver_job_items(EIGEN_ROLE, [(EIGEN_PHASE, 'cuDSS operator copies and solve vectors',
-                                                          cudss_operator_bytes(unknowns, order, mixed))])
-        external_items, external_extra = cudss_factor_items(operator_label, unknowns,
-                                                            FEM_ENTRIES_PER_ROW[order] * unknowns, mixed=mixed)
+        transient_items += own_cudss_search_items(operator_label, unknowns, fem_entries, mixed)
+        external_items, external_extra = cudss_factor_items(operator_label, unknowns, fem_entries, mixed=mixed)
         external_items = solver_job_items(EIGEN_ROLE, external_items)
     return MemoryEstimate.from_items((('resonance state fields (2 x float32 per element)',
                                        2 * FLOAT32_BYTES * n_elements),), host_items=host_items,
@@ -898,9 +929,7 @@ def bor_memory_estimate(settings_values, mesh, context):
         external_items, external_extra = cudss_factor_items('the BOR curl-curl operator', unknowns, entries,
                                                             dimensions=fill, mixed=mixed)
         if eigen:   # each order's resonance search factors on its own
-            transient_items += solver_job_items(EIGEN_ROLE, [
-                (EIGEN_PHASE, 'cuDSS lower-triangle copies and solve vectors',
-                 cudss_own_factor_bytes(unknowns, entries, mixed))])
+            transient_items += own_cudss_search_items('the BOR curl-curl operator', unknowns, entries, mixed)
             external_items = solver_job_items(EIGEN_ROLE, external_items)
         else:       # host_fdfd keeps the driven factor and refactorises it at the next order / wavelength
             kept_cudss_items(run_items, transient_items, unknowns, entries, mixed,

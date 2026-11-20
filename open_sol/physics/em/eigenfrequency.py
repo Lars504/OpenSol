@@ -68,9 +68,11 @@ MIXED_ARPACK_TOLERANCE = 1e-6
 # ARPACK (operators too small for it) restarts from the random start plus the Ritz vectors found (_widened_start).
 # Mie sphere example (6.5e4 unknowns): pass 2 from scratch found nothing new; before S5a/S5b the two passes took 663 applications / 30 s.
 # The device pass reserves nothing (the reserve was half the basis item, 0.77 GiB on the nanobeam eighth model, held by
-# runs that never widen): a widening moves the kept rows to the host, frees the device basis and allocates the wider one
-# (_device_basis_for_widening: never two device bases), only when it fits the pool room; else no widening, with a
-# warning. The memory estimate books the first pass only. The host twin still reserves (host RAM).
+# runs that never widen). After every device pass the kept rows go to the host and the device basis is freed before the
+# resonance filter runs beside the factor (_parked_decomposition; dropped when no widening can follow), so the Krylov
+# phase and the filter phase never hold the basis together with the filter's uploads; a widening uploads the rows into
+# the wider basis (_device_basis_for_widening: only when it fits the pool room; else no widening, with a warning). The
+# memory estimate books the first pass only. The host twin still reserves (host RAM).
 MAX_WIDENINGS = 2
 WIDENING_BASIS_RESERVE = 2
 
@@ -80,29 +82,49 @@ def _device_basis_for_widening(kept_decomposition, wider_basis):
     rows go to the host when the wider basis fits gpu_memory.pool_room_bytes, and fits is False when it does not."""
     from ...core.gpu_memory import format_bytes, pool_room_bytes
     kept_basis, kept_hessenberg = kept_decomposition
-    if kept_basis.shape[0] >= wider_basis + 1:
+    parked = isinstance(kept_basis, np.ndarray)   # _parked_decomposition: no device rows held
+    if not parked and kept_basis.shape[0] >= wider_basis + 1:
         return kept_decomposition, '', True
     n_unknowns = int(kept_basis.shape[1])
     held_bytes = int(kept_basis.nbytes)
+    device_held = 0 if parked else held_bytes
     wider_bytes = (int(wider_basis) + 1) * 16 * n_unknowns
     room = pool_room_bytes()   # None before a budget (scripts): the allocation itself decides
     growth = f'{format_bytes(held_bytes)} to {format_bytes(wider_bytes)} of GPU memory'
-    if room is not None and wider_bytes > room + held_bytes:
+    if room is not None and wider_bytes > room + device_held:
         return kept_decomposition, (
             f'the search was not widened (twice the eigenpairs): its Krylov basis would grow from {growth}, but only '
-            f'{format_bytes(room + held_bytes)} are free within the GPU memory budget; resonances may be missing. '
+            f'{format_bytes(room + device_held)} are free within the GPU memory budget; resonances may be missing. '
             'Reduce the cell count, set the eigen solver subspace_size lower, or move the target wavelength nearer '
             'the wanted resonances'), False
-    filled_rows = kept_hessenberg.shape[1] + 1
-    host_rows = kept_basis[:filled_rows].get()
-    del kept_basis, kept_decomposition   # the caller's tuple is replaced by the returned one: the device rows go
+    if parked:
+        host_rows = kept_basis
+    else:
+        host_rows = kept_basis[:kept_hessenberg.shape[1] + 1].get()
+        del kept_basis, kept_decomposition   # the caller's tuple is replaced by the returned one: the device rows go
     return (host_rows, kept_hessenberg), (
         f'the search was widened (twice the eigenpairs) and its Krylov basis grew from {growth}, which the memory '
         'estimate does not book'), True
+
+
+def _parked_decomposition(kept_decomposition, resumable):
+    """A device Krylov-Schur state before the resonance filter runs beside the factor: its filled rows moved to the host
+    (resumable: a widening may still resume it; _KrylovSchur uploads them into the wider storage), else None. Either
+    way the device basis is freed (a host twin's state is returned as it is)."""
+    if kept_decomposition is None or not resumable:
+        return None
+    kept_basis, kept_hessenberg = kept_decomposition
+    if isinstance(kept_basis, np.ndarray):
+        return kept_decomposition
+    return kept_basis[:kept_hessenberg.shape[1] + 1].get(), kept_hessenberg
 # Resonance filter (_ResonanceFilter): Ritz vectors per batched sparse product (A V, B V, W V of a column block); its
 # scratch is ~4 blocks of n x this complex128. The per-column host csr_matvec loops it replaced took 2.4 s of an 8 s
 # tetrahedral Mie run (44k Nedelec unknowns, 48 eigenpairs over two passes) and 1.0 s of the conical pipe (194k)
 FILTER_BLOCK_COLUMNS = 16
+# ... on the device, beside an own factor: narrower blocks (one cuSPARSE product reads the operator per block, ~ms)
+# and one operator uploaded at a time; with the Krylov basis on the host meanwhile (_parked_decomposition) the filter
+# held ~2.4 GiB less beside the factor than the 16-column blocks and kept A, B, W copies (690k Nedelec unknowns)
+FILTER_DEVICE_BLOCK_COLUMNS = 4
 # host B v of a sparse B (_PencilMass.times: two per squared-Cayley application) cut into row blocks on this many threads
 # from this many stored entries: scipy's CSR kernel is serial but releases the GIL (tetrahedral Mie PARDISO profile,
 # 44k Nedelec unknowns: 609 serial products took 2.3 s, ~10 % of the run)
@@ -388,6 +410,9 @@ def solve_resonances(host_operator, mass, omega_target, energy_weights, in_windo
                 theta, vectors, pass_applications, converged, kept_decomposition = eigen_solver.eigs_device(
                     apply_on_backend, n_unknowns, n_wanted, start_vector, tolerance_floor=tolerance_floor,
                     default_basis=default_basis, resume=kept_decomposition, matvec_on_host=host_device)
+                # the filter runs beside the factor without the device basis: its rows wait on the host for a widening
+                kept_decomposition = _parked_decomposition(
+                    kept_decomposition, widenings < MAX_WIDENINGS and n_wanted < n_free - 2)
             elif eigs_host is not None:
                 basis_kept = basis_kept or kept_decomposition is not None
                 theta, vectors, pass_applications, converged, kept_decomposition = eigs_host(
@@ -522,37 +547,49 @@ def _energy_weights(energy_weights, n_unknowns):
 
 
 class _ResonanceFilter:
-    """A, B = -M, the energy weights W, the window / region rows and the polish row scale D of solve_resonances, on the
-    device (on_gpu) or the host: per-column measures of a pass's Ritz vectors by one sparse product per operator;
-    quotients False (plain shift-invert, no polish): A and B are neither stored nor applied, their measures are 0;
-    device_mass: the solves' device copy of a sparse B (on_gpu), read instead of a second upload."""
+    """A, B = -M, the energy weights W, the window / region rows and the polish row scale D of solve_resonances:
+    per-column measures of a pass's Ritz vectors, one sparse operator at a time over column blocks. On the device
+    (on_gpu) the sparse operators stay on the host between passes: each measures call returns the pool's cached blocks,
+    uploads one operator, applies it to every block of FILTER_DEVICE_BLOCK_COLUMNS and frees it before the next (beside
+    an own factor the filter never holds two; device_mass: the solves' device copy of a sparse B, read instead). On the
+    host: blocks of FILTER_BLOCK_COLUMNS. quotients False (plain shift-invert, no polish): A and B are neither kept nor
+    applied, their measures are 0."""
     _MEASURES = ('mass', 'operator', 'scaled_operator', 'scaled_mass', 'energy', 'window', 'region')
 
     def __init__(self, host_operator, b_mass, energy_weights, in_window, in_region, row_scale, on_gpu,
                  quotients=True, device_mass=None):
         if on_gpu:
             import cupy as xp
-            import cupyx.scipy.sparse
-
-            def stored(matrix):   # complex128 CSR (a complex cuSPARSE product of the complex vectors)
-                return cupyx.scipy.sparse.csr_matrix(matrix.tocsr().astype(np.complex128))
         else:
             xp = np
-
-            def stored(matrix):
-                return matrix.tocsr()
         self.xp = xp
+        self.on_gpu = bool(on_gpu)
         self.quotients = bool(quotients)
-        self.operator = stored(host_operator) if self.quotients else None
+        self.operator = host_operator.tocsr() if self.quotients else None   # host; uploaded per measures call
         self.mass_diagonal = b_mass.matrix is None
         self.mass = (None if not self.quotients else
-                     xp.asarray(b_mass.diagonal)[:, None] if self.mass_diagonal else
-                     device_mass if on_gpu and device_mass is not None else stored(b_mass.matrix))
+                     xp.asarray(b_mass.diagonal)[:, None] if self.mass_diagonal else b_mass.matrix)
+        self.device_mass = device_mass if self.on_gpu else None
         self.weights_diagonal = isinstance(energy_weights, np.ndarray)
-        self.weights = (xp.asarray(energy_weights)[:, None] if self.weights_diagonal else stored(energy_weights))
+        self.weights = (xp.asarray(energy_weights)[:, None] if self.weights_diagonal else energy_weights.tocsr())
         self.window = xp.asarray(in_window, dtype=np.float64)[:, None]
         self.region = None if in_region is None else xp.asarray(in_region, dtype=np.float64)[:, None]
         self.row_scale = None if row_scale is None else xp.asarray(row_scale)[:, None]
+
+    def _applied_form(self, matrix, diagonal, kept=None):
+        """The operator measures applies: a diagonal column as stored, a sparse one on the host as is, on the device
+        `kept` (an uploaded copy the caller holds) or a fresh complex128 upload the caller frees after use."""
+        if diagonal or not self.on_gpu:
+            return matrix
+        if kept is not None:
+            return kept
+        import cupy as cp
+        import cupyx.scipy.sparse
+        csr = matrix.tocsr()
+        data = cp.asarray(csr.data)
+        if data.dtype != np.complex128:   # a complex cuSPARSE product of the complex vectors (W is real)
+            data = data.astype(np.complex128)
+        return cupyx.scipy.sparse.csr_matrix((data, cp.asarray(csr.indices), cp.asarray(csr.indptr)), shape=csr.shape)
 
     def measures(self, vectors) -> dict:
         """Host (k,) arrays per column v of host vectors (n, k): mass v^H B v, operator v^H A v, scaled_operator
@@ -560,28 +597,45 @@ class _ResonanceFilter:
         |v|^2 w or Re(conj(v) (W v)) (all rows / in_window / in_region; region 0 without one)."""
         xp = self.xp
         n_columns = vectors.shape[1]
-        result = np.zeros((len(self._MEASURES), n_columns), dtype=np.complex128)
-        for start in range(0, n_columns, FILTER_BLOCK_COLUMNS):
-            block = slice(start, min(start + FILTER_BLOCK_COLUMNS, n_columns))
-            columns = xp.asarray(np.ascontiguousarray(vectors[:, block]), dtype=np.complex128)
-            conjugate = xp.conj(columns)
-            energies = (xp.abs(columns) ** 2 * self.weights if self.weights_diagonal
-                        else xp.real(conjugate * (self.weights @ columns)))
-            region = (xp.zeros(columns.shape[1], dtype=np.float64) if self.region is None
+        width = FILTER_DEVICE_BLOCK_COLUMNS if self.on_gpu else FILTER_BLOCK_COLUMNS
+        blocks = [slice(start, min(start + width, n_columns)) for start in range(0, n_columns, width)]
+        result = {name: np.zeros(n_columns, dtype=np.complex128) for name in self._MEASURES}
+        if self.on_gpu:   # the solves' cached vectors go back to the device before the uploads (factor beside them)
+            from ...core.gpu_memory import release_cached_blocks
+            release_cached_blocks()
+
+        def columns_of(block):
+            return xp.asarray(np.ascontiguousarray(vectors[:, block]), dtype=np.complex128)
+
+        def to_host(parts):   # one read per block and operator
+            return parts.get() if xp is not np else parts
+        weights = self._applied_form(self.weights, self.weights_diagonal)
+        for block in blocks:
+            columns = columns_of(block)
+            energies = (xp.abs(columns) ** 2 * weights if self.weights_diagonal
+                        else xp.real(xp.conj(columns) * (weights @ columns)))
+            del columns
+            region = (xp.zeros(energies.shape[1], dtype=np.float64) if self.region is None
                       else xp.sum(energies * self.region, axis=0))
-            if self.quotients:
-                applied = self.operator @ columns
-                massed = self.mass * columns if self.mass_diagonal else self.mass @ columns
-                scaled = columns if self.row_scale is None else self.row_scale * columns   # D v (v^T D = (D v)^T)
-                quotient_parts = (xp.sum(conjugate * massed, axis=0), xp.sum(conjugate * applied, axis=0),
-                                  xp.sum(scaled * applied, axis=0), xp.sum(scaled * massed, axis=0))
-            else:
-                quotient_parts = (xp.zeros(columns.shape[1], dtype=np.complex128),) * 4
-            parts = xp.stack((*quotient_parts, xp.sum(energies, axis=0).astype(np.complex128),
-                              xp.sum(energies * self.window, axis=0).astype(np.complex128),
-                              region.astype(np.complex128)))
-            result[:, block] = parts.get() if xp is not np else parts   # one read per block
-        return dict(zip(self._MEASURES, result))
+            parts = to_host(xp.stack((xp.sum(energies, axis=0), xp.sum(energies * self.window, axis=0), region)))
+            del energies
+            result['energy'][block], result['window'][block], result['region'][block] = parts
+        del weights
+        if self.quotients:
+            for names, matrix, diagonal, kept in ((('operator', 'scaled_operator'), self.operator, False, None),
+                                                  (('mass', 'scaled_mass'), self.mass, self.mass_diagonal,
+                                                   self.device_mass)):
+                applied_by = self._applied_form(matrix, diagonal, kept)
+                for block in blocks:
+                    columns = columns_of(block)
+                    applied = applied_by * columns if diagonal else applied_by @ columns
+                    scaled = columns if self.row_scale is None else self.row_scale * columns   # D v (v^T D = (D v)^T)
+                    parts = to_host(xp.stack((xp.sum(xp.conj(columns) * applied, axis=0),
+                                              xp.sum(scaled * applied, axis=0))))
+                    del columns, applied, scaled
+                    result[names[0]][block], result[names[1]][block] = parts
+                del applied_by
+        return result
 
 
 def region_filter(in_region, min_region_fraction, n_unknowns):
@@ -611,13 +665,17 @@ def element_region_rows(dofs, free, element_mask) -> np.ndarray:
 
 def resonance_filter_time_item(backend, unknowns, filter_entries, eigenpairs):
     """Run-time TimeItem of the resonance filter per eigenpair of a pass (_ResonanceFilter; filter_entries = stored
-    entries of A and a sparse B / W): on the gpu one upload, the sparse products and ~14 vector passes; on the cpu the
-    batched host product (matrix read once per FILTER_BLOCK_COLUMNS). Count: the first pass, a guess up to the widenings."""
+    entries of A and a sparse B / W): on the gpu the column uploaded once per operator (3), the pass's operator uploads
+    shared by its eigenpairs, the sparse products and ~14 vector passes; on the cpu the batched host product (matrix
+    read once per FILTER_BLOCK_COLUMNS). Count: the first pass, a guess up to the widenings."""
     from ...core import time_estimate as te
     from ...core.memory_estimate import COMPLEX128_BYTES, COMPLEX128_CSR_ENTRY_BYTES
     vector_bytes = COMPLEX128_BYTES * float(unknowns)
     if backend == 'gpu':
-        ops = (te.Transfer(vector_bytes), te.Spmv(float(unknowns), float(filter_entries), COMPLEX128_BYTES),
+        uploads = COMPLEX128_CSR_ENTRY_BYTES * float(filter_entries) / max(float(eigenpairs), 1.0)
+        # + the Krylov basis parked on the host (_parked_decomposition): ~5 rows per eigenpair (basis 5 x wanted)
+        ops = (te.Transfer(3.0 * vector_bytes + uploads + 5.0 * vector_bytes),
+               te.Spmv(float(unknowns), float(filter_entries), COMPLEX128_BYTES),
                te.Elementwise(12.0 * vector_bytes, 2.0 * vector_bytes, launches=2), te.PythonCalls(2))
     else:
         ops = (te.HostStream(COMPLEX128_CSR_ENTRY_BYTES * float(filter_entries) / FILTER_BLOCK_COLUMNS
