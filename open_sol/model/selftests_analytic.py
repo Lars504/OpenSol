@@ -408,7 +408,8 @@ ANALYTIC_SELFTEST_CASES = (
         description='CPU check of core.harmonic_probe (no model run): records out of frequency order, a repeated '
                     'frequency replaced (replace_same_frequency) or kept in record order, series <component>_re / '
                     '_im / _abs / _phase vs ascending frequency [Hz] rebuilding the phasors (round-off), units, and '
-                    'the refusals (missing component, bare value for two components, frequency <= 0, vector '
+                    'a park of every value to host complex numbers keeping them, the refusals (missing component, bare '
+                    'value for two components, frequency <= 0, vector '
                     'value, non-identifier name, recorded() before the first record). error = number of failed '
                     'sub-checks, tolerance 0.',
         specs=lambda: {},
