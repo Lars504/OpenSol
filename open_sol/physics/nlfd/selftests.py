@@ -247,7 +247,7 @@ def _check_collocation_transpose(results):
     from ..em.harmonic import face_mean_at_centres
     from .media import bulk_medium
     from .mixing import ChannelSpec, build_mixing_table, resolve_channels
-    from .sources import centres_to_faces, delivered_power, polarization_density
+    from .sources import CellAreas, centres_to_faces, delivered_power, polarization_density
     from .tensors import chi2_from_voigt, chi3_from_n2_beta, chi3_isotropic, euler_rotation, rotate_tensor, voigt_matrix
     violations = []
     rng = np.random.default_rng(11)
@@ -307,7 +307,7 @@ def _check_collocation_transpose(results):
             if not terms:
                 continue
             density = polarization_density(terms, fields, by_name, channel.components, (nx, ny), xp=np)
-            power = delivered_power(channel.omega, fields[target], density, cell_area, xp=np)
+            power = delivered_power(channel.omega, fields[target], density, CellAreas(widths, np), xp=np)
             exchange.append(power)
             if channel.polarization == 'hz':   # centre work = face work of the C*-distributed polarisation
                 ex_faces, ey_faces = face_fields[target]

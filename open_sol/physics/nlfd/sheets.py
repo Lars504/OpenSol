@@ -443,7 +443,7 @@ def sheet_site_work(site_polarizations, sheets, target_grid_fields, omega, xp):
 
 def sheet_site_absorption(site_polarizations, sheets, target_grid_fields, omega, cell_area, xp):
     """float64 full-grid [W/m^3] -(omega / 2) L_s a_t Im(conj(E[k_t]) P_s) per tap, in the cell owning tap k_t (a face:
-    the cell whose hi face it is) over its area cell_area (nx, ny): sum A q = -sheet_site_work exactly."""
+    the cell whose hi face it is) over its area (cell_area: sources.CellAreas): sum A q = -sheet_site_work exactly."""
     shape = cell_area.shape
     flat = xp.zeros(shape[0] * shape[1], dtype=xp.complex128)
     for name, values in site_polarizations.items():
@@ -455,7 +455,7 @@ def sheet_site_absorption(site_polarizations, sheets, target_grid_fields, omega,
             index, sample, _ = taps
             weights = sheet.site_length[:, None] * sample
             _scatter_add(flat, index, weights * xp.conj(field.ravel()[index]) * values[:, component:component + 1], xp)
-    return (-0.5 * float(omega)) * flat.imag.reshape(shape) / cell_area
+    return cell_area.divided((-0.5 * float(omega)) * flat.imag.reshape(shape))
 
 
 def sheet_cotangents(terms, grid_fields, sheets, components, omega, grid_cotangent, shape, xp):

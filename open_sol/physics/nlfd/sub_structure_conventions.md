@@ -32,7 +32,12 @@ A new term (bulk, sheet or carrier-like) must:
 - add its exact tangent to `NewtonLinearization` (else Newton converges linearly, or not);
 - add its transpose to adjoint.py (`_channel_backward`; pump_depleted `depleted_cotangents`);
 - when lossy, add its density to absorption.py (`absorbed_power_density`: method independent);
-- add its buffers to `_memory_estimate` (run items vs phases: its comments).
+- add its buffers to `_memory_estimate` (run items vs phases: its comments);
+- weigh by the cell areas through `solver.cell_area` (`sources.CellAreas`: separable widths, `integral` / `divided`),
+  never a full-grid area array (8 B per cell).
+
+The time recipe's channel assemblies are `definition_fdfd.fdfd_assembly_ops` (the mean channel's gpu transfer): a
+change of the FDFD assembly's ops reaches nlfd through it.
 
 Sheets: a `SheetMedium` lives in `solver.sheets`, never `solver.media` (poling_map, Miller, carriers and Kerr boxes
 iterate media). Its table entry is the host representative tensor (validation and build compute it alike); the values

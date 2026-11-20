@@ -66,10 +66,29 @@ def centres_to_faces(centre_values, axis, periodic, cell_widths, xp=None, wrap_f
     return faces
 
 
-def cell_areas(domain):
-    """float64 (nx, ny) Yee cell areas w_x,i w_y,j [m^2] (yee_grid.grid_cell_widths) on the domain's backend."""
-    cell_dx, cell_dy = grid_cell_widths(domain.grid)
-    return domain.xp.asarray(np.outer(cell_dx, cell_dy))
+class CellAreas:
+    """Yee cell areas A_ij = w_x,i w_y,j [m^2] kept separable: float64 (nx,) / (ny,) widths on xp, never the full-grid
+    product (8 B per cell); of_domain: the yee_grid.grid_cell_widths of a domain on its backend."""
+
+    def __init__(self, cell_widths, xp):
+        self.widths_x, self.widths_y = (xp.asarray(np.asarray(widths, dtype=np.float64)) for widths in cell_widths)
+        self.shape = (self.widths_x.size, self.widths_y.size)
+
+    @classmethod
+    def of_domain(cls, domain):
+        return cls(grid_cell_widths(domain.grid), domain.xp)
+
+    def integral(self, values):
+        """float sum_ij A_ij values_ij of a real float64 (nx, ny) array: w_x^T values w_y (host sync)."""
+        if values.shape != self.shape:
+            raise ValueError(f'CellAreas.integral needs a {self.shape} array, got {values.shape}')
+        return float(self.widths_x @ (values @ self.widths_y))
+
+    def divided(self, values):
+        """New (nx, ny) values / A per cell (divided by the two widths in turn)."""
+        if values.shape != self.shape:
+            raise ValueError(f'CellAreas.divided needs a {self.shape} array, got {values.shape}')
+        return values / self.widths_x[:, None] / self.widths_y[None, :]
 
 
 class ChannelFieldStore:
@@ -279,12 +298,12 @@ def kerr_diagonal(terms, target, centre_fields, media, components, box, xp):
 
 
 def delivered_power(omega, centre_field, density, cell_area, xp=None):
-    """W [W/m] = (omega / 2) sum A Im(conj(E) . P) of a density on its target channel's centre field (host sync; xp
-    None = the module of the cell areas)."""
-    xp = array_module_of(cell_area) if xp is None else xp
+    """W [W/m] = (omega / 2) sum A Im(conj(E) . P) of a density on its target channel's centre field (cell_area: a
+    CellAreas; host sync per component; xp None = the module of the cell areas)."""
+    xp = array_module_of(cell_area.widths_x) if xp is None else xp
     total = 0.0
     for component, values in density.items():
-        total += float(xp.sum(cell_area * (xp.conj(centre_field[component]) * values).imag))
+        total += cell_area.integral((xp.conj(centre_field[component]) * values).imag)
     return 0.5 * float(omega) * total
 
 

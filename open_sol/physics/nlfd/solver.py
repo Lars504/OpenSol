@@ -32,7 +32,7 @@ from .mixing import (MILLER_REFERENCE_HARMONICS, build_mixing_table, describe_mi
 from .renderer import NonlinearRenderer
 from .sheets import line_sheet, sheet_site_work, surface_sheet
 from .sources import (ChannelFieldStore, FreeCarriers, KerrOperatorTerm, NewtonLinearization,
-                      NonlinearPolarizationPhasor, cell_areas, delivered_power)
+                      NonlinearPolarizationPhasor, CellAreas, delivered_power)
 
 COUPLING_MODES = ('undepleted', 'pump_depleted')
 STATE_POLARIZATIONS = ('ez', 'hz')   # state() carries both phasor pairs (zeros for an absent polarisation)
@@ -555,9 +555,9 @@ class NonlinearHarmonicPhysics(PhysicsSolver):
 
     @property
     def cell_area(self):
-        """float64 full-grid Yee cell areas [m^2] (cached)."""
+        """sources.CellAreas of the Yee cells (separable widths, cached)."""
         if self._cell_area is None:
-            self._cell_area = cell_areas(self.domain)
+            self._cell_area = CellAreas.of_domain(self.domain)
         return self._cell_area
 
     def _delivered_power(self, source):

@@ -75,6 +75,7 @@ def _adjoint_error(sheet, widths, rng):
 
 def _check_sheet_sites(results):
     from .mixing import ChannelSpec, build_mixing_table, resolve_channels
+    from .sources import CellAreas
     from .sheets import (SELVEDGES, line_sheet, rotate_sites, sheet_chi2_local, sheet_cotangents, sheet_grid_density,
                          sheet_sigma3_local, sheet_site_absorption, sheet_site_polarizations, sheet_site_work,
                          surface_frames, surface_local_tensor, surface_sheet)
@@ -165,7 +166,7 @@ def _check_sheet_sites(results):
                                                                        for product in products)
         sites = sheet_site_polarizations(terms, grids, adjoint_sheets, channel.components, channel.omega, np)
         absorbed = float(np.sum(areas * sheet_site_absorption(sites, adjoint_sheets, grids[target], channel.omega,
-                                                              areas, np)))
+                                                              CellAreas(widths, np), np)))
         work = sheet_site_work(sites, adjoint_sheets, grids[target], channel.omega, np)
         absorption_errors[channel.name] = abs(absorbed + work) / abs(work)
     worst_transpose = max(transpose_errors.values(), default=math.inf)

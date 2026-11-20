@@ -28,7 +28,7 @@ from ..em.definition_common import (EM_FAMILY, em_material_params, make_validate
 from ..em.definition_bloch import is_fdfd_port_feature
 from ..em.definition_conducting_sheet import sheet_conductivity_from_values
 from ..em.definition_design import OPTIMIZATION_STUDY, design_region_feature
-from ..em.definition_fdfd import ASSEMBLY_BYTES_PER_ENTRY, EM_FDFD_EZ, EM_FDFD_HZ, direct_solver_issues
+from ..em.definition_fdfd import EM_FDFD_EZ, EM_FDFD_HZ, direct_solver_issues, fdfd_assembly_ops
 from ..em.definition_feature_validation import bloch_period_line_issues, conducting_sheet_line_issues
 from ..em.materials import EM_MATERIAL_SCHEMAS
 from ..em.memory_estimates import fdfd_memory_estimate
@@ -1375,7 +1375,12 @@ def _time_estimate(settings_values, mesh, context):
     single = outer[0] == 1.0 and outer[1] == 'exact'   # the cascade counters hold the last nonlinear solve only
     physics_counter = ('solvers', context.name, 'counters')
     role_counter = ('solvers', context.name, 'roles', 'linear', 'counters')
-    assembly_ops = (te.HostStream(ASSEMBLY_BYTES_PER_ENTRY * nnz), te.PythonCalls(200))
+    # FDFDPhysics._assemble of a channel: the em_fdfd recipe's ops (host stream, calls, the gpu park upload / host
+    # system download), the mean channel's transfer with both polarisations
+    per_channel = [fdfd_assembly_ops(n_cells, channel.polarization) for channel in channels]
+    if not all(isinstance(ops[-1], te.Transfer) for ops in per_channel):
+        raise TypeError('nlfd time recipe: definition_fdfd.fdfd_assembly_ops must end with its te.Transfer')
+    assembly_ops = per_channel[0][:-1] + (te.Transfer(sum(ops[-1].bytes for ops in per_channel) / n_channels),)
     channel_solves, channel_limit = _over(outer, solves, solves_limit)
     density_count, density_limit = _over(outer, evaluations, evaluations_limit)
     items = [te.TimeItem('channel assemblies', 'assembly', outer[0] * n_channels, outer[1], assembly_ops,
@@ -1458,7 +1463,7 @@ def _memory_estimate(settings_values, mesh, context):
     if _enabled_features(physics_spec, 'pec_domain'):
         items.append((f'PEC masks ({len(channels)} channels x bool)', len(channels) * BOOL_BYTES * n_cells))
     # run items (kept): the channel field store, the cached polarisation densities (applied and diagnostic terms) and
-    # hz face currents, cell areas + the absorbed-power total; pump_depleted the forward iteration buffers (Anderson
+    # hz face currents, the absorbed-power total; pump_depleted the forward iteration buffers (Anderson
     # history + Kerr operator terms (picard), Krylov basis + Newton vectors + tangent fields (newton)): freed after the
     # solve but alive across the channels' (re)assembly, so not a phase of their own. Transient phases: one density
     # evaluation, take_absorbed_power, the cascade adjoint (after the forward solve, systems assembled)
@@ -1481,7 +1486,8 @@ def _memory_estimate(settings_values, mesh, context):
                           components * COMPLEX128_BYTES * n_cells),
                          (f'hz face currents ({2 * n_hz_targets} x complex128)',
                           2 * n_hz_targets * COMPLEX128_BYTES * n_cells),
-                         ('cell areas + absorbed power total', (FLOAT64_BYTES + FLOAT32_BYTES) * n_cells)]
+                         ('absorbed power total (float32; the cell areas are separable widths)',
+                          FLOAT32_BYTES * n_cells)]
             # NonlinearPolarizationPhasor.density: centre_vector's new collocated hz fields + box products, freed
             transient_items.append(('nonlinear densities', 'density temporaries (collocated hz fields, box products)',
                                     (2 * n_hz_sources + _DENSITY_TRANSIENT_ARRAYS) * COMPLEX128_BYTES * n_cells))
