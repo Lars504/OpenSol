@@ -172,8 +172,16 @@ def _check_device_assembler(_):
         dofs = lagrange_dofs_3d(mesh, order)
         free = rng.random(3 * dofs.n_dofs) < _FREE_FRACTION
         host = TangentAssembler3D(dofs, material, elements=solid, free=free)
-        for label, cache_bytes in ((f'P{order}', None), (f'P{order} uncached', 0)):
-            device = TangentAssembler3D(dofs, material, elements=solid, free=free, cache_bytes=cache_bytes, device=True)
+        try:   # the device keeps J^-1 / |det J| and expands the gradients per chunk: no host gradient cache setting
+            TangentAssembler3D(dofs, material, elements=solid, free=free, cache_bytes=0, device=True)
+            refused = False
+        except ValueError:
+            refused = True
+        add(f'P{order} device cache_bytes refused', 0.0 if refused else 1.0, 0.0)
+        for label in (f'P{order}',):
+            # the device gradients / weights / S0 element rows expanded per chunk against the host's (S0 kept per
+            # element on the device, per rule point on the host)
+            device = TangentAssembler3D(dofs, material, elements=solid, free=free, device=True)
             for step in range(2):   # the second call reuses the device S0 of the same StressField object
                 displacement = _DISPLACEMENT * rng.standard_normal((dofs.n_dofs, 3))
                 name = f'{label} call {step + 1}'
