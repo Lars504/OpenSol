@@ -724,7 +724,7 @@ class PotentialPhysics(DiffusionPhysicsBase):
         if self._superposition is None:
             shape = (_DRIVEN_QUANTITIES, *system.window_shape)
             self._superposition = xp.empty(shape, dtype=DTYPE)
-            self._zero_sources = xp.zeros(system.window_shape, dtype=DTYPE)
+            self._zero_sources = xp.zeros((), dtype=DTYPE)   # 0-d: the source kernels broadcast it
         self._bases, self._basis_fluxes = {}, {}
         try:
             for waveform in (*waveforms, None):
