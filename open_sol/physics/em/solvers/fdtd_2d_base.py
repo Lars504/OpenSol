@@ -70,17 +70,47 @@ def _box_overlap(box, other):
 
 def _single_value(*arrays) -> bool:
     """Whether every array holds one value throughout (min == max per array; NaN counts as varying): two reductions per
-    array, no full-size temporary, one host sync (build / materials_changed time only)."""
-    uniform = None
+    array, no full-size temporary, one host sync for the device arrays (build / materials_changed time only); host
+    numpy arrays (MaterialGrid.park) reduce on the host."""
+    uniform, device = True, None
     for array in arrays:
         flag = array.min() == array.max()
-        uniform = flag if uniform is None else uniform & flag
-    return bool(uniform)
+        if isinstance(array, np.ndarray):
+            uniform = uniform and bool(flag)
+        else:
+            device = flag if device is None else device & flag
+    return uniform and (device is None or bool(device))
 
 
 def _all_zero(array) -> bool:
-    """Whether every entry of `array` is 0 (two reductions, one host sync)."""
+    """Whether every entry of `array` is 0 (two reductions, one host sync; a host array reduces on the host)."""
     return bool((array.min() == 0) & (array.max() == 0))
+
+
+# cells per block of the parked-material reads (MaterialGrid.park: the coefficient rebuilds upload x-row blocks, so a
+# rebuild never holds a whole parked array on the device; 16 MB float32)
+PARKED_BLOCK_CELLS = 1 << 22
+
+
+def material_row_blocks(materials, names, nx, ny) -> list:
+    """x-row slices covering the grid for a rebuild reading the MaterialGrid arrays `names` elementwise: one slice of
+    every row when none is parked, else blocks of about PARKED_BLOCK_CELLS cells (each parked array uploaded per
+    block through MaterialGrid.device_array)."""
+    if materials.parked.isdisjoint(names):
+        return [slice(0, nx)]
+    per_block = max(1, PARKED_BLOCK_CELLS // ny)
+    return [slice(start, min(start + per_block, nx)) for start in range(0, nx, per_block)]
+
+
+def material_values(materials, name):
+    """MaterialGrid property `name` for one elementwise device read: the run-backend array, or for a parked one its
+    single value as a DTYPE scalar when uniform (host min / max), else a device copy (a transient full-grid upload)."""
+    array = getattr(materials, name)
+    if name not in materials.parked:
+        return array
+    if _single_value(array):
+        return DTYPE(array.flat[0])
+    return materials.device_array(name)
 
 
 def _coefficient_view(storage, shape, xp):
@@ -384,7 +414,8 @@ class _YeeEngine2DBase(PhysicsSolver):
 
     def _rebuild_h_coefficients(self):
         """da / db from mu_r / sigma_m: one value while both are uniform (checked per rebuild: one host sync), per cell
-        for good once they vary (class docstring "Coefficient storage")."""
+        for good once they vary (class docstring "Coefficient storage"); parked arrays (MaterialGrid.park) are read in
+        uploaded x-row blocks (material_row_blocks)."""
         materials = self.materials
         if not self._h_cells:
             self._h_cells = not _single_value(materials.mu_r, materials.sigma_m)
@@ -397,10 +428,15 @@ class _YeeEngine2DBase(PhysicsSolver):
             self._h_coefficients = (da, db, np.int32(not self._h_cells))
             self.da, self.db = (_coefficient_view(array, shape, xp) for array in (da, db))
         da, db, uniform = self._h_coefficients
-        sigma_m, mu_r = materials.sigma_m, materials.mu_r
+        dt, mu0 = self._dt_real, self._real(MU0)
         if uniform:   # the same kernel on one cell: bit for bit the per-cell values
-            sigma_m, mu_r = sigma_m.reshape(-1)[:1], mu_r.reshape(-1)[:1]
-        _kernels.h_coefficients(sigma_m, mu_r, self._dt_real, self._real(MU0), da, db)
+            corner = (slice(0, 1), slice(0, 1))
+            _kernels.h_coefficients(materials.device_array('sigma_m', corner).reshape(1),
+                                    materials.device_array('mu_r', corner).reshape(1), dt, mu0, da, db)
+            return
+        for rows in material_row_blocks(materials, self._H_COEFFICIENT_MATERIALS, self.nx, self.ny):
+            _kernels.h_coefficients(materials.device_array('sigma_m', rows), materials.device_array('mu_r', rows),
+                                    dt, mu0, da[rows], db[rows])
 
     @property
     def precision(self) -> str:

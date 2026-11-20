@@ -16,6 +16,7 @@ from .definition_common import (BOX_CELLS, CPML_BC_HELP, EM_FAMILY, EZ_CURRENT_T
                                 apply_ez_point_source, apply_far_field, apply_field_probe, apply_flux_monitor,
                                 apply_gaussian_beam, apply_hz_point_source, apply_line_source, apply_mode_monitor,
                                 apply_mode_source, apply_pec, apply_tfsf, beam_params, create_em_physics,
+                                fdtd_parked_material_arrays,
                                 dft_result_callback, em_material_params, far_field_params,
                                 flux_result_callback, hz_point_source_params, make_far_field_result_callback,
                                 make_source_shortest_wavelength, make_validate_physics, mode_end_text,
@@ -458,6 +459,7 @@ def _fdtd_physics_type(polarization):
         shortest_wavelength=make_source_shortest_wavelength({feature.name: feature for feature in features}),
         validate=with_bloch_validation(make_validate_harmonic_fdtd(make_validate_physics(slot_arrays))),
         memory_estimate=fdtd_memory_estimate(polarization),
+        parked_material_arrays=partial(fdtd_parked_material_arrays, polarization),
         time_estimate=partial(fdtd_time_step_estimate, polarization),
         solver_roles={'stepper': STEPPER_ROLE},
         backends=('gpu', 'cpu'),   # core.kernels twins: numpy (numba when installed) on the cpu backend

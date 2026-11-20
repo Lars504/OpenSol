@@ -3,7 +3,7 @@ TFSF box outline warnings."""
 import math
 
 import numpy as np
-from ...core.backend import array_module_of, host_copy, write_host_into
+from ...core.backend import host_copy, write_host_into
 
 from ...core.constants import DTYPE, EPS0
 
@@ -30,8 +30,9 @@ def register_em_arrays(materials, polarization):
     registered = materials.property_names()
     if polarization in ('hz', 'modes') and 'eps_r' in registered:
         for name in ('eps_xx', 'eps_yy'):
-            if name not in registered:
-                array_module_of(materials.eps_r).copyto(materials.add_property(name, 1.0), materials.eps_r)
+            if name not in registered:   # assign: eps_r may be parked on the host (MaterialGrid.park)
+                materials.add_property(name, 1.0)
+                materials.assign(name, None, materials.eps_r)
     materials.add_properties(EM_MATERIAL_SCHEMAS[polarization])
 
 
@@ -84,7 +85,7 @@ def tfsf_outline_warnings(physics, boxes, uniform=False):
         reference = (0, y0 - row_start)   # outline cell (x0 - 1, y0) in the region
         outline = xp.zeros((x1 - x0 + 2, region[1].stop - row_start), dtype=xp.bool_)
         for name, vacuum_value in EM_MATERIAL_SCHEMAS[physics.polarization].items():
-            values = getattr(materials, name)[region]
+            values = materials.device_array(name, region)   # a parked (host) array: the region moves
             if uniform:
                 target = values[reference]
                 tolerance = DTYPE(1e-6) * xp.abs(target) + DTYPE(1e-12)

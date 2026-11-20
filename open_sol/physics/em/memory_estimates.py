@@ -20,7 +20,9 @@ from ...solvers.host_direct import (HOST_DIRECT_FACTORIZATIONS, factor_label, ho
                                     superlu_bytes_scale)
 from ...solvers.sparse_direct import CUDSS_BACK_ENDS, HOST_FACTOR_BACK_ENDS
 from .definition_bloch import bloch_active_axes
-from .definition_common import FREQUENCY_DOMAIN_STUDY, _q_accum_referenced, _study_wavelengths, eigen_solved
+from .definition_common import (FREQUENCY_DOMAIN_STUDY, _q_accum_referenced, _study_wavelengths, eigen_solved,
+                                fdtd_parked_material_arrays)
+from .solvers.fdtd_2d_base import PARKED_BLOCK_CELLS
 from .eigenfrequency import FILTER_DEVICE_BLOCK_COLUMNS
 from .materials import GYRATION_Z
 
@@ -509,9 +511,22 @@ def fdtd_memory_estimate(polarization):
                               n_spectra * n_wavelengths * COMPLEX64_BYTES * window_cell_count(mesh)))
         # finalize's float32 Courant check (requirement, ratio; hz min(eps)) and two pole weight temporaries (field
         # dtype: the cell weight and its face average); the coefficient layout checks reduce without temporaries
-        return MemoryEstimate.from_items(items + trace_items,
-                                         build_extra=(3 * FLOAT32_BYTES + 2 * real_bytes) * n_cells,
-                                         host_items=host_items, run_items=run_items, transient_items=transient_items)
+        build_extra = (3 * FLOAT32_BYTES + 2 * real_bytes) * n_cells
+        parked = fdtd_parked_material_arrays(polarization, context.spec, context.registry, context.physics_spec,
+                                             context.parameters)
+        if parked:   # EMPhysics(park_arrays=): on the device through the material painting, on the host from create
+            parked_bytes = FLOAT32_BYTES * len(parked) * n_cells
+            if 'mu_r' in parked and context.material_sets('mu_r', default=1):
+                build_extra += FLOAT32_BYTES * n_cells   # the Courant check's device copy of a varying mu_r
+            build_extra = max(build_extra, parked_bytes - 3 * real_bytes * n_cells,   # painted, before the fields
+                              FLOAT32_BYTES * len(parked) * min(n_cells, PARKED_BLOCK_CELLS))   # rebuild blocks
+            host_items = list(host_items) + [(f"material arrays parked on the host ({', '.join(parked)}, float32)",
+                                              parked_bytes)]
+            if n_wavelengths and 'mu_r' in parked:   # the pulse's energy check uploads the mu_r window per chunk
+                transient_items.append(('harmonic energy check', 'parked mu_r window upload (float32)',
+                                        FLOAT32_BYTES * window_cell_count(mesh)))
+        return MemoryEstimate.from_items(items + trace_items, build_extra=build_extra, host_items=host_items,
+                                         run_items=run_items, transient_items=transient_items)
     return estimate
 
 

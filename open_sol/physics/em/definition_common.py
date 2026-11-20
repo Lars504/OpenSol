@@ -9,8 +9,8 @@ from ...core import time_estimate as te
 from ...core.constants import C0, EPS0, FACE_LABELS, FACES, MU0
 from ...core.sources import GaussianPulse, RickerWavelet
 from ...core.wavelengths import resolved_wavelengths, wavelength_range
-from ...model.definition_helpers import (dynamic_material_values, eigen_factorization, evaluates_to, study_duration,
-                                         validate_points_inside)
+from ...model.definition_helpers import (dynamic_material_values, eigen_factorization, evaluates_to,
+                                         parkable_material_arrays, study_duration, validate_points_inside)
 from ...model.expressions import (FIELD_COORDINATE_NAMES, ExpressionError, evaluate_scalar,
                                   referenced_names)
 from ...model.geometry import line_orientation, preview_pixel_centers
@@ -24,7 +24,7 @@ from ...model.schema import (EIGENFREQUENCY_STUDY, FREQUENCY_DOMAIN_STUDY, GYRAT
                              OPTOMECHANICS_STUDY, PERMITTIVITY_PROPERTY_NAMES, DomainRequirements, Issue, Param,
                              array_owner, coupling_reads_absorbed_power, coupling_writes, feature_path, known_physics,
                              output_field_names, permittivity_arrays, resolve_values, state_field_names)
-from . import EMPhysics
+from . import PARKABLE_ARRAYS, EMPhysics
 from .boundaries import BoundaryConfig
 from .eigenfrequency import ResonanceTable, resonance_filter_time_item
 from .material_fit import MAX_LORENTZ_POLES, NK_FIT_DEFAULTS, NK_FIT_MODEL
@@ -924,12 +924,27 @@ def fem_resonance_time_estimate(settings_values, mesh, context, label, bytes_per
         **eigen_work, **eigen_backend_kwargs(context))))
 
 
+def fdtd_parked_material_arrays(polarization, spec, registry, physics_spec, parameters) -> tuple:
+    """PhysicsType.parked_material_arrays of em_fdtd_<polarization>: the EMPhysics PARKABLE_ARRAYS (mu_r, sigma_m)
+    under the shared rule (definition_helpers.parkable_material_arrays over the type's material properties), moved to
+    the host at create, before the engine allocates (physics/em sub file "Parked material arrays")."""
+    try:
+        own_properties = {param.name for param in registry.physics_type(physics_spec.type).material_properties}
+    except KeyError:   # reported by validate
+        return ()
+    return parkable_material_arrays(spec, registry, physics_spec, parameters, own_properties,
+                                    tuple(sorted(PARKABLE_ARRAYS[polarization])))
+
+
 def create_em_physics(ctx, physics_spec, settings_values, polarization, background_targets):
     """EMPhysics of `polarization` at the 'stepper' solver's precision (single / double) with dispersive poles, the
     dispersive background written into the MaterialGrid arrays background_targets (e.g. ('eps_r',) or ('eps_xx',
-    'eps_yy')) and absorption tracking; never finalizes."""
+    'eps_yy')), absorption tracking and the material arrays it parks on the host (fdtd_parked_material_arrays);
+    never finalizes."""
     em = EMPhysics(ctx.domain, polarization, boundary_config=ctx.domain.boundary_config,
-                   precision=stepper_precision(ctx.solvers(physics_spec.name)))
+                   precision=stepper_precision(ctx.solvers(physics_spec.name)),
+                   park_arrays=fdtd_parked_material_arrays(polarization, ctx.spec, ctx.registry, physics_spec,
+                                                           ctx.parameters))
     write_dispersive_materials(ctx, physics_spec, em, background_targets)
     if settings_values['track_absorption'] or _q_accum_referenced(ctx.spec, physics_spec.name, ctx.registry):
         em.engine.enable_q_accum = True

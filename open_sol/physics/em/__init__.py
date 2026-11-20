@@ -9,7 +9,7 @@ from ...core.constants import C0, DTYPE, ETA0
 from ...core.solver_base import PhysicsSolver
 from .fields import Fields2D_Ez, Fields2D_Hz
 from .materials import (DrudePole, LorentzPole, _pole_label, _pole_step_term, material_solution_state,
-                        restore_material_solution, tfsf_outline_warnings)
+                        register_em_arrays, restore_material_solution, tfsf_outline_warnings)
 from .boundaries import BCType, BoundaryConfig, BoundaryManager, CPMLSided, solver_boundary_config
 from .sources import (
     GaussianPulse, ContinuousWave, RickerWavelet,
@@ -27,7 +27,7 @@ from .placement import (PERMITTIVITY_ARRAYS, PERMITTIVITY_SLOTS, box_cells, box_
                         require_polarization, sheet_line, tfsf_box_cells, tfsf_open_faces)
 from .renderer import EMRenderer, EMRendererHz
 from .solvers import FDTDEngine2D_Ez, FDTDEngine2D_Hz
-from .solvers.fdtd_2d_base import _bounding_box, add_pec_cells, record_dispersive_region
+from .solvers.fdtd_2d_base import _bounding_box, add_pec_cells, material_values, record_dispersive_region
 from .yee_grid import cpml_grading_cell_size, grid_cell_widths
 from .subpixel_smoothing import SubpixelSmoothing
 from .conformal_pec import ConformalPEC, build_conformal_pec
@@ -56,6 +56,8 @@ _POLARIZATION_CLASSES = {'ez': (Fields2D_Ez, FDTDEngine2D_Ez, EMRenderer),
 # MaterialGrid arrays the calibrated source injection depends on (cb / db and the local impedance at omega0).
 _CALIBRATION_MATERIALS = {'ez': frozenset({'eps_r', 'sigma_e', 'mu_r', 'sigma_m'}),
                           'hz': frozenset({'eps_xx', 'eps_yy', 'sigma_e', 'mu_r', 'sigma_m'})}
+# MaterialGrid arrays EMPhysics(park_arrays=) may move to the host (each reader goes through device_array or host rows)
+PARKABLE_ARRAYS = {'ez': frozenset({'mu_r', 'sigma_m'}), 'hz': frozenset({'mu_r', 'sigma_m'})}
 # explicit_kernels stepper precision -> field dtype of the 2D engines (half_storage: em_fdtd_3d and others only)
 _FIELD_DTYPES = {'single': np.dtype(np.float32), 'double': np.dtype(np.float64)}
 
@@ -70,7 +72,8 @@ class EMPhysics(PhysicsSolver):
     name = "em"
     subpixel_smoothing = None   # SubpixelSmoothing of the model-wide switch (set_subpixel_smoothing); mode ports read it
 
-    def __init__(self, domain, polarization: str = 'ez', boundary_config=None, precision: str = 'single'):
+    def __init__(self, domain, polarization: str = 'ez', boundary_config=None, precision: str = 'single',
+                 park_arrays=()):
         if polarization not in _POLARIZATION_CLASSES:
             raise ValueError(f"polarization must be 'ez' (E_z, H_x, H_y) or 'hz' (H_z, E_x, E_y), "
                              f"got {polarization!r}")
@@ -89,6 +92,16 @@ class EMPhysics(PhysicsSolver):
         # Run backend of the Domain (cupy on 'gpu', numpy on 'cpu'): every array below lives there and every kernel is
         # a core.kernels twin, so one code path serves both.
         self.xp = xp = domain.xp
+
+        # park_arrays (model path: definition_common.fdtd_parked_material_arrays): MaterialGrid arrays moved to the
+        # host before anything of the engine is allocated, so the build peak never holds both; every reader takes them
+        # through MaterialGrid.device_array (or reads host rows / blocks): physics/em sub file "Parked material arrays"
+        unknown = set(park_arrays) - PARKABLE_ARRAYS[polarization]
+        if unknown:
+            raise ValueError(f'EMPhysics ({polarization}) parks only {sorted(PARKABLE_ARRAYS[polarization])} on the '
+                             f'host, got {sorted(unknown)}')
+        register_em_arrays(domain.materials, polarization)
+        domain.materials.park(park_arrays)
 
         grid = domain.grid
         fields_class, engine_class, self._renderer_class = _POLARIZATION_CLASSES[polarization]
@@ -241,7 +254,8 @@ class EMPhysics(PhysicsSolver):
 
     def _check_courant_stability(self):
         """ValueError when eps * mu_r < (C0 dt)^2 (1/dx_i^2 + 1/dy_j^2) + mu_r * pole term in any cell, PML included
-        (one host sync); eps = eps_r (ez) or min(eps_xx, eps_yy) (hz), pole term from _pole_stability_term."""
+        (one host sync); eps = eps_r (ez) or min(eps_xx, eps_yy) (hz), pole term from _pole_stability_term; a parked
+        array is a scalar when uniform, else a device copy (fdtd_2d_base.material_values)."""
         dt = float(self.engine.dt)
         dx_cells, dy_cells = self.domain.cell_widths()
         light_step_squared = (C0 * dt) ** 2
@@ -253,19 +267,20 @@ class EMPhysics(PhysicsSolver):
             permittivity, permittivity_label = materials.eps_r, 'eps_r'
         else:
             permittivity, permittivity_label = xp.minimum(materials.eps_xx, materials.eps_yy), 'min(eps_xx, eps_yy)'
+        cell_mu_r = material_values(materials, 'mu_r')
         pole_term = self._pole_stability_term(dt)
         requirement = required_x[:, None] + required_y[None, :]
         if pole_term is not None:
-            requirement = requirement + materials.mu_r * pole_term
-        stability_ratio = permittivity * materials.mu_r
+            requirement = requirement + cell_mu_r * pole_term
+        stability_ratio = permittivity * cell_mu_r   # permittivity is a device array: a new one
         stability_ratio /= requirement
         worst_ratio = float(stability_ratio.min())
         if worst_ratio >= 1.0 - 1e-6:
             return
         ix, iy = np.unravel_index(int(xp.argmin(stability_ratio)), stability_ratio.shape)
         x_centers, y_centers = self.domain.cell_centers()
-        mu_r = float(materials.mu_r[ix, iy])
-        eps_mu = float(permittivity[ix, iy]) * mu_r
+        mu_r = float(cell_mu_r if np.ndim(cell_mu_r) == 0 else cell_mu_r[ix, iy])
+        eps_mu = float(permittivity if np.ndim(permittivity) == 0 else permittivity[ix, iy]) * mu_r
         required = light_step_squared * (1.0 / dx_cells[ix] ** 2 + 1.0 / dy_cells[iy] ** 2)
         pole_text = ''
         if pole_term is not None and float(pole_term[ix, iy]) > 0.0:

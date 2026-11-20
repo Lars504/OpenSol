@@ -270,9 +270,14 @@ class PortLine:
         cells = slice(*self.solve_range)
         return (normal_cell, cells) if self.normal == 'x' else (cells, normal_cell)
 
+    @property
+    def _row_index(self):
+        """Index of the whole grid line through the line cell in a full-grid array."""
+        return (slice(None), self.line_cell) if self.axis == 'x' else (self.line_cell, slice(None))
+
     def _grid_row(self, array):
         """View of a full-grid array along the whole grid line through the line cell."""
-        return array[:, self.line_cell] if self.axis == 'x' else array[self.line_cell, :]
+        return array[self._row_index]
 
     def _region_row(self, box, mask, xp):
         """Float64 xp row of a dispersive region along the grid line, None when the region misses the line."""
@@ -293,7 +298,7 @@ class PortLine:
         names = _MATERIAL_ROWS[(self.polarization, self.axis)]
         materials = physics.domain.materials
         xp = physics.domain.xp
-        rows = [self._grid_row(getattr(materials, name)) for name in names]
+        rows = [materials.device_array(name, self._row_index) for name in names]   # parked arrays: the row moves
         poles = []
         for pole, box, mask in physics.dispersive_regions:
             row = self._region_row(box, mask, xp)

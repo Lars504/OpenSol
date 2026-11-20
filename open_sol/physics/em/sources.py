@@ -596,9 +596,10 @@ class SheetCurrentCalibration:
             line_eps = (self._row_permittivity(lower_row, cell_eps, materials) * lower_width
                         + self._row_permittivity(upper_row, cell_eps, materials) * upper_width
                         ) / (lower_width + upper_width)
-        admittance = _sheet_admittance(line_eps, source.target_line(materials.mu_r),
-                                       source.target_line(materials.sigma_m), self.omega, self.normal_spacing,
-                                       float(self.physics.domain.grid.dt))
+        xp = engine.xp   # asarray: a parked (host) array's line moves (MaterialGrid.park)
+        admittance = _sheet_admittance(line_eps, xp.asarray(source.target_line(materials.mu_r)),
+                                       xp.asarray(source.target_line(materials.sigma_m)), self.omega,
+                                       self.normal_spacing, float(self.physics.domain.grid.dt))
         _line_injection_profile(source.target_line(cb_line), admittance, self.weight, source.profile)
 
 

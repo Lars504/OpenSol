@@ -62,8 +62,9 @@ A new accepted sync joins this list.
   grid-row transfer per FDFD port mode re-solve (per reassembly) and per FDTD mode-port recalibration after the first
   step (material drift check, re-solve above `mode_ports._RESOLVE_DRIFT`); the E_z ohmic-box refresh per
   `materials_changed` of sigma_e; the 2D FDTD coefficient layout checks (sigma_e == 0 at the first E rebuild after a
-  sigma_e change, mu_r / sigma_m uniform per H rebuild, none once per cell); em_fdtd_3d: the chunk uploads of parked
-  material arrays per index rebuild, one face kind's geometry upload per subpixel refresh.
+  sigma_e change, mu_r / sigma_m uniform per H rebuild, none once per cell; parked arrays: their x-row block uploads
+  per rebuild); em_fdtd_3d: the chunk uploads of parked material arrays per index rebuild, one face kind's geometry
+  upload per subpixel refresh.
 - laminar_flow: the velocity check once per lattice check interval (>= 100 steps).
 - Probe tables: `monitors.park_probe_rows` right after the time loops' per-chunk sync (study `_run_time_dependent`,
   `_run_harmonic_pulse`; `Simulation.run` per chunk), one transfer per table holding >= PROBE_PARK_ROWS rows; a HarmonicProbeRecord's stacked
