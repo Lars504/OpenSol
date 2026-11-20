@@ -30,6 +30,8 @@ cells, anchors) and the damped iteration are in the core sub file, FEM assembly 
 - Memory: magnetostatics / magnetostatics_3d add a cuDSS 'linear' factor through
   `fem.diffusion.cudss_diffusion_estimate` (refactorises when a material saturates); a saturating tensor model adds
   `kept_preconditioner_bytes`. The time recipe still prices one setup / factorisation per saturation iteration (an over-estimate since the kept preconditioner).
+  MagneticPhysics keeps the window nu_xx / nu_yy and mu_dc copies only while its saturation loop runs: a linear
+  model's readers of nu go through `_reluctivities` (rebuilt from the materials), never `_nu_xx` directly.
 
 ## MagneticPhysics (2D tensor)
 - Axisymmetric unknown psi = r A_phi on the PLANAR DiffusionSystem (`axisymmetric=False`, c = nu / r_c): never the

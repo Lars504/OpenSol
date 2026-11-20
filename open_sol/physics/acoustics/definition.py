@@ -7,7 +7,7 @@ from dataclasses import replace
 import numpy as np
 
 from ...core.constants import DTYPE, EPS0, FACE_LABELS, FACES
-from ...core.memory_estimate import FLOAT32_BYTES, INT32_BYTES, MemoryEstimate
+from ...core.memory_estimate import BOOL_BYTES, FLOAT32_BYTES, INT32_BYTES, MemoryEstimate
 from ...core.time_estimate import explicit_step_estimate
 from ...core.mirror import MIRROR_SIGNS, mirror_faces
 from ...core.monitors import probe_result
@@ -1041,8 +1041,9 @@ def _numba_stepped(item_label):
 
 
 def _memory_estimate(settings_values, mesh, context):
-    """5 fields (axisymmetric 6: + stt; float16 under half_storage) + 8 coefficient arrays + the pressure buffer
-    (float32 full grid), CPML psi slabs (8 per absorbing axis pair), a rigid keep mask, the probe traces over the study
+    """5 fields (axisymmetric 6: + stt; float16 under half_storage) + 5 to 8 coefficient arrays (solver._set_storage)
+    + the pressure buffer (float32 full grid), CPML psi slabs (8 per absorbing axis pair), a bool rigid keep mask, the
+    probe traces over the study
     duration in estimated acoustic steps, piezo / monoclinic: the strain accumulator (+ monoclinic: the rate buffers;
     two-way: P and bound-charge buffers); build
     extra: the stable-step temporaries of finalize; run: the elastic strain pair (first acousto-optic transfer or
@@ -1058,14 +1059,19 @@ def _memory_estimate(settings_values, mesh, context):
     slab_y = layer * sum(settings_values[f'bc_{face}'] == 'absorbing' for face in ('y_lo', 'y_hi'))
     has_rigid = any(feature.enabled and feature.type == 'rigid_domain' for feature in context.physics_spec.features)
     psi_cells = max(slab_x, 1) * int(mesh.ny) + max(slab_y, 1) * int(mesh.nx)
+    # solver._set_storage: c11, c12, c66c, vb_x, vb_y; + c22 when a material sets c11 / c22 (else c22 is c11); + va_x,
+    # va_y when a material sets acoustic_damping (else the lossless velocity kernels)
+    n_coefficients = (5 + int(context.material_sets('c11') or context.material_sets('c22'))
+                      + 2 * int(context.material_sets('acoustic_damping')))
     items = ((f"vx, vy, sxx, syy, sxy{', stt' if axisymmetric else ''} ({n_fields} x "
               f"{'float16' if half else 'float32'})", n_fields * field_bytes * cells),
-             ('stiffness and velocity coefficients (8 x float32)', 8 * FLOAT32_BYTES * cells),
+             (f'stiffness and velocity coefficients ({n_coefficients} x float32)',
+              n_coefficients * FLOAT32_BYTES * cells),
              ('pressure buffer (float32)', FLOAT32_BYTES * cells),
              ('CPML memory variables', 4 * FLOAT32_BYTES * psi_cells),
              ('CPML profiles and slab maps', (8 * FLOAT32_BYTES + INT32_BYTES) * (int(mesh.nx) + int(mesh.ny))),
              ('radius rows (float32)', KERNEL_ROWS * FLOAT32_BYTES * int(mesh.nx) if axisymmetric else 0),
-             ('rigid keep mask (float32)', FLOAT32_BYTES * cells if has_rigid else 0))
+             ('rigid keep mask (bool)', BOOL_BYTES * cells if has_rigid else 0))
     piezo = any(context.material_sets(name) for name in PIEZO_ARRAYS)
     monoclinic = any(context.material_sets(name) for name in MONOCLINIC_ARRAYS)
     two_way = piezo and two_way_piezo(context.spec, context.physics_spec.name)

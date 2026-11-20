@@ -126,7 +126,7 @@ class SolidMechanicsPhysics(MultiShiftModes, SolidMechanicsBase):
         super().prepare(domain)
         system = self.system
         xp = system.xp
-        self._applied_body_force = xp.zeros((2, *system.element_shape), dtype=system.dtype)   # [N/m^3] per element
+        self._applied_body_force = None   # (2, *element_shape) [N/m^3] per element: the first add_body_force
         self._held_axial = xp.zeros(system.node_shape, dtype=xp.bool_)   # u_z held at 0 in a guided modal solve
         self._axial_nodes = None   # nodal u_z amplitude [m] of the shown guided mode
         self._lame = None              # (lambda, mu) of the guided-mode coefficients (isotropic only)
@@ -314,6 +314,8 @@ class SolidMechanicsPhysics(MultiShiftModes, SolidMechanicsBase):
         mask_window = system.window_mask(mask, 'body force')
         for component, value in ((0, f_x), (1, f_y)):
             density = system.window_values(value, 'body force density', system.dtype)
+            if self._applied_body_force is None:
+                self._applied_body_force = system.xp.zeros((2, *system.element_shape), dtype=system.dtype)
             self._applied_body_force[component] += system.xp.where(mask_window, density, 0.0)
         self._loads_dirty = True
 
@@ -961,7 +963,9 @@ class SolidMechanicsPhysics(MultiShiftModes, SolidMechanicsBase):
 
         fields = self.fields
         for component, coupled in ((0, fields.body_force_x), (1, fields.body_force_y)):
-            density = coupled[window].astype(dtype) + self._applied_body_force[component]
+            density = coupled[window].astype(dtype)
+            if self._applied_body_force is not None:
+                density += self._applied_body_force[component]
             system.add_volume_load(load[..., component], xp.where(self._solid, density, 0.0))
         return load
 

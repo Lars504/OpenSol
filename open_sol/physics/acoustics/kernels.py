@@ -81,6 +81,7 @@ _NEIGHBOURS = r"""
 # v_hi) / (2 r_c) with c_tt = c11, c_rt = c_zt = c12 (exact for isotropic solids and fluids): the discrete adjoint pair
 # of the ring-volume energy, so the scheme stays energy conserving. The CPML stretches the radial derivatives only.
 _AXISYMMETRIC = '#define AXISYMMETRIC\n'
+_LOSSLESS = '#define LOSSLESS\n'   # velocity updates without the va damping factors (see the velocity source)
 
 # Stepper precisions (field_kernels): the fields are field_t (core.half_storage: float, or fp16 under half_storage, read
 # by FLOAD / written by FSTORE, arithmetic in float) in stored units: stress / stress_scale, velocity / velocity_scale.
@@ -147,10 +148,19 @@ void acoustic_update_velocity(
         psi_y_syy[p] = psi;
         dsyy_dy += psi;
     }
+#ifdef LOSSLESS
+    const float bx = vb_x[idx], by = vb_y[idx];
+    vx[idx] = FSTORE(bx != 0.0f ? FLOAD(vx[idx]) + bx * stress_to_velocity * (dsxx_dx + dsxy_dy - hoop_force) : 0.0f);
+    vy[idx] = FSTORE(by != 0.0f ? FLOAD(vy[idx]) + by * stress_to_velocity * (dsxy_dx + dsyy_dy) : 0.0f);
+#else
     vx[idx] = FSTORE(va_x[idx] * FLOAD(vx[idx]) + vb_x[idx] * stress_to_velocity * (dsxx_dx + dsxy_dy - hoop_force));
     vy[idx] = FSTORE(va_y[idx] * FLOAD(vy[idx]) + vb_y[idx] * stress_to_velocity * (dsxy_dx + dsyy_dy));
+#endif
 }
 """
+# LOSSLESS (no cell has acoustic_damping): va = (1 - k) / (1 + k) is 1 on every face with vb != 0 and 0 with vb, so the
+# va arrays are not kept (va_x / va_y args are unread dummies): v = vb != 0 ? v + vb F : 0, 8 B / cell less storage and
+# traffic per step.
 
 
 _STRESS_SOURCE = r"""
@@ -315,8 +325,8 @@ def _stress_arguments(args, axisymmetric, strain_accumulator, monoclinic):
             *args[k:])
 
 
-def _velocity_host(axisymmetric):
-    """numpy twin of acoustic_update_velocity (args of the planar or the AXISYMMETRIC variant)."""
+def _velocity_host(axisymmetric, lossless=False):
+    """numpy twin of acoustic_update_velocity (args of the planar or the AXISYMMETRIC variant; LOSSLESS: va unread)."""
     def update_velocity(*args):
         (vx, vy, sxx, syy, sxy, stt, va_x, vb_x, va_y, vb_y, inv_dx_e, inv_dx_h, inv_dy_e, inv_dy_h, slab_x, slab_y,
          pml_x, pml_y, radial, psi_x_sxx, psi_x_sxy, psi_y_sxy, psi_y_syy, stress_to_velocity, _, _, _, periodic_x,
@@ -341,8 +351,13 @@ def _velocity_host(axisymmetric):
         force_x = dsxx_dx + dsxy_dy
         if axisymmetric:
             force_x -= hoop_force
-        vx[...] = va_x * vx + vb_x * stress_to_velocity * force_x
-        vy[...] = va_y * vy + vb_y * stress_to_velocity * (dsxy_dx + dsyy_dy)
+        if lossless:
+            zero = np.float32(0.0)
+            vx[...] = np.where(vb_x != zero, vx + vb_x * stress_to_velocity * force_x, zero)
+            vy[...] = np.where(vb_y != zero, vy + vb_y * stress_to_velocity * (dsxy_dx + dsyy_dy), zero)
+        else:
+            vx[...] = va_x * vx + vb_x * stress_to_velocity * force_x
+            vy[...] = va_y * vy + vb_y * stress_to_velocity * (dsxy_dx + dsyy_dy)
     return update_velocity
 
 
@@ -397,7 +412,7 @@ def _stress_host(axisymmetric, strain_accumulator=False, monoclinic=False):
 # (planar stt / radial, strain, rates) is passed as a dummy of the same type that the frozen flags never touch.
 # cache=True: numba keys closures by their cell values (one cache entry per variant), so only the first process after
 # an edit of this file compiles them (~0.5-1 s per variant and signature otherwise in every cpu process).
-def _velocity_numba(axisymmetric):
+def _velocity_numba(axisymmetric, lossless=False):
     def factory(numba):
         @numba.njit(parallel=True, cache=True)
         def kernel(vx, vy, sxx, syy, sxy, stt, va_x, vb_x, va_y, vb_y, inv_dx_e, inv_dx_h, inv_dy_e, inv_dy_h, slab_x,
@@ -443,13 +458,22 @@ def _velocity_numba(axisymmetric):
                         psi = pml_y[2, j] * psi_y_syy[i, ky] + pml_y[3, j] * dsyy_dy
                         psi_y_syy[i, ky] = psi
                         dsyy_dy += psi
-                    vx[i, j] = va_x[i, j] * vx[i, j] + vb_x[i, j] * stress_to_velocity * (dsxx_dx + dsxy_dy - hoop_force)
-                    vy[i, j] = va_y[i, j] * vy[i, j] + vb_y[i, j] * stress_to_velocity * (dsxy_dx + dsyy_dy)
+                    if lossless:
+                        bx, by = vb_x[i, j], vb_y[i, j]
+                        vx[i, j] = (vx[i, j] + bx * stress_to_velocity * (dsxx_dx + dsxy_dy - hoop_force)
+                                    if bx != 0.0 else 0.0)
+                        vy[i, j] = vy[i, j] + by * stress_to_velocity * (dsxy_dx + dsyy_dy) if by != 0.0 else 0.0
+                    else:
+                        vx[i, j] = (va_x[i, j] * vx[i, j]
+                                    + vb_x[i, j] * stress_to_velocity * (dsxx_dx + dsxy_dy - hoop_force))
+                        vy[i, j] = va_y[i, j] * vy[i, j] + vb_y[i, j] * stress_to_velocity * (dsxy_dx + dsyy_dy)
 
         def update_velocity(*args):
             (vx, vy, sxx, syy, sxy, stt, va_x, vb_x, va_y, vb_y, inv_dx_e, inv_dx_h, inv_dy_e, inv_dy_h, slab_x,
              slab_y, pml_x, pml_y, radial, psi_x_sxx, psi_x_sxy, psi_y_sxy, psi_y_syy, stress_to_velocity, nx, ny, _,
              periodic_x, periodic_y) = _velocity_arguments(args, axisymmetric)
+            if lossless:   # the unread va dummies (shape (1,)): 2D arrays of the frozen signature
+                va_x = va_y = vb_x
             kernel(vx, vy, sxx, syy, sxy, sxx if stt is None else stt, va_x, vb_x, va_y, vb_y, inv_dx_e, inv_dx_h,
                    inv_dy_e, inv_dy_h, slab_x, slab_y, pml_x, pml_y, pml_x if radial is None else radial, psi_x_sxx,
                    psi_x_sxy, psi_y_sxy, psi_y_syy, stress_to_velocity, nx, ny, periodic_x, periodic_y)
@@ -580,7 +604,8 @@ def _isotropic_moduli_host(rho, sound_speed, shear_speed, youngs, poisson):
 
 
 def _face_coefficients_host(rho, damping, keep, has_keep, axis, periodic, share_lo, share_hi, pinned, dt, va, vb):
-    """va / vb of the hi faces along axis (0 where pinned, on a non-periodic hi edge, without density or rigid)."""
+    """va / vb of the hi faces along axis (0 where pinned, on a non-periodic hi edge, without density or rigid); va
+    None: lossless, vb only."""
     shape = (-1, 1) if axis == 0 else (1, -1)
     lo, hi = share_lo.reshape(shape), share_hi.reshape(shape)
     face_rho = lo * rho + hi * _shifted(rho, axis, 1, periodic)
@@ -590,23 +615,27 @@ def _face_coefficients_host(rho, damping, keep, has_keep, axis, periodic, share_
         inside[-1] = False
         valid &= inside.reshape(shape)
     if has_keep:
-        valid &= (keep * _shifted(keep, axis, 1, periodic)) != 0.0
+        valid &= keep & _shifted(keep, axis, 1, periodic)
     k = np.float32(0.5) * (lo * damping + hi * _shifted(damping, axis, 1, periodic)) * dt
     zero = np.float32(0.0)
     with np.errstate(all='ignore'):
-        va[...] = np.where(valid, (1.0 - k) / (1.0 + k), zero)
+        if va is not None:
+            va[...] = np.where(valid, (1.0 - k) / (1.0 + k), zero)
         vb[...] = np.where(valid, dt / (face_rho * (1.0 + k)), zero)
 
 
 def _coefficients_host(rho, sound_speed, shear_speed, youngs, poisson, m11, m12, m22, m66, damping, keep, has_keep,
                        share_x_lo, share_x_hi, share_y_lo, share_y_hi, c11, c12, c22, c66c, va_x, vb_x, va_y, vb_y,
-                       dt, nx, ny, periodic_x, periodic_y, pin_x_lo, pin_x_hi, pin_y_lo, pin_y_hi):
+                       separate_c22, lossy, dt, nx, ny, periodic_x, periodic_y, pin_x_lo, pin_x_hi, pin_y_lo,
+                       pin_y_hi):
     """numpy twin of acoustic_coefficients."""
     periodic_x, periodic_y = bool(periodic_x), bool(periodic_y)
+    has_keep, separate_c22, lossy = bool(has_keep), bool(separate_c22), bool(lossy)
     longitudinal, lame_lambda, shear = _isotropic_moduli_host(rho, sound_speed, shear_speed, youngs, poisson)
     c11[...] = np.where(np.isnan(m11), longitudinal, m11)
     c12[...] = np.where(np.isnan(m12), lame_lambda, m12)
-    c22[...] = np.where(np.isnan(m22), longitudinal, m22)
+    if separate_c22:
+        c22[...] = np.where(np.isnan(m22), longitudinal, m22)
     g0 = np.where(np.isnan(m66), shear, m66)
     g1 = _shifted(g0, 0, 1, periodic_x)          # missing neighbours read 0: no shear corner there
     g2 = _shifted(g0, 1, 1, periodic_y)
@@ -618,10 +647,10 @@ def _coefficients_host(rho, sound_speed, shear_speed, youngs, poisson, m11, m12,
     pinned_x = (rows == int(pin_x_lo)) | (rows == int(pin_x_hi))
     pinned_y = (columns == int(pin_y_lo)) | (columns == int(pin_y_hi))
     c66c[...] = np.where(pinned_x | pinned_y, np.float32(0.0), corner)
-    _face_coefficients_host(rho, damping, keep, has_keep, 0, periodic_x, share_x_lo, share_x_hi, pinned_x, dt, va_x,
-                            vb_x)
-    _face_coefficients_host(rho, damping, keep, has_keep, 1, periodic_y, share_y_lo, share_y_hi, pinned_y, dt, va_y,
-                            vb_y)
+    _face_coefficients_host(rho, damping, keep, has_keep, 0, periodic_x, share_x_lo, share_x_hi, pinned_x, dt,
+                            va_x if lossy else None, vb_x)
+    _face_coefficients_host(rho, damping, keep, has_keep, 1, periodic_y, share_y_lo, share_y_hi, pinned_y, dt,
+                            va_y if lossy else None, vb_y)
 
 
 # Coefficients from the material arrays, one thread per cell (no temporaries: safe on per-step material updates).
@@ -632,9 +661,11 @@ def _coefficients_host(rho, sound_speed, shear_speed, youngs, poisson, m11, m12,
 # moduli of the 4 cells around the corner (0 when any is <= 0: fluid-solid and vacuum corners carry no shear; 0 on a
 # non-periodic hi row / column). Faces: density and damping are the share-weighted means of the two cells (exact
 # mass of the dual cell: width shares, axisymmetric x faces the ring-volume shares); va = (1 - k) / (1 + k), vb = dt / (rho_f (1 + k)), k = damping_f dt / 2; va = vb = 0 (pinned
-# velocity) without density, on a rigid cell (keep 0) or on a non-periodic hi outer face. pin_x_lo / _hi (row) and
+# velocity) without density, on a rigid cell (keep false) or on a non-periodic hi outer face. pin_x_lo / _hi (row) and
 # pin_y_lo / _hi (column) >= 0 = a slip wall on the hi face of that row / column (a 'rigid' window face of a padded
-# grid): its normal velocity and the shear corners on it are 0. Host twin: _coefficients_host.
+# grid): its normal velocity and the shear corners on it are 0. Storage (AcousticPhysics._set_storage): separate_c22 0
+# = c22 is the c11 array itself (no cell sets c11 / c22, so they agree), not written; lossy 0 = no va arrays (va_x /
+# va_y dummies, not written: the LOSSLESS velocity kernels imply va). Host twin: _coefficients_host.
 coefficients_kernel = raw_twin('acoustics.coefficients', cp.RawKernel(r"""
 __device__ __forceinline__ void isotropic_moduli(
     const float* rho, const float* sound_speed, const float* shear_speed, const float* youngs, const float* poisson,
@@ -672,13 +703,13 @@ __device__ __forceinline__ float shear_modulus(
 }
 
 __device__ __forceinline__ void face_coefficients(
-    const float* rho, const float* damping, const float* keep, int has_keep, int idx, int other,
+    const float* rho, const float* damping, const bool* keep, int has_keep, int idx, int other,
     float share_lo, float share_hi, float dt, float* va, float* vb)
 {
     if (other < 0) { *va = 0.0f; *vb = 0.0f; return; }
     float rho_f = share_lo * rho[idx] + share_hi * rho[other];
-    float keep_f = has_keep ? keep[idx] * keep[other] : 1.0f;
-    if (!(rho_f > 0.0f) || keep_f == 0.0f) { *va = 0.0f; *vb = 0.0f; return; }
+    bool kept = !has_keep || (keep[idx] && keep[other]);
+    if (!(rho_f > 0.0f) || !kept) { *va = 0.0f; *vb = 0.0f; return; }
     float k = 0.5f * (share_lo * damping[idx] + share_hi * damping[other]) * dt;
     *va = (1.0f - k) / (1.0f + k);
     *vb = dt / (rho_f * (1.0f + k));
@@ -690,12 +721,12 @@ void acoustic_coefficients(
     const float* __restrict__ youngs, const float* __restrict__ poisson,
     const float* __restrict__ m11, const float* __restrict__ m12, const float* __restrict__ m22,
     const float* __restrict__ m66, const float* __restrict__ damping,
-    const float* __restrict__ keep, int has_keep,
+    const bool* __restrict__ keep, int has_keep,
     const float* __restrict__ share_x_lo, const float* __restrict__ share_x_hi,
     const float* __restrict__ share_y_lo, const float* __restrict__ share_y_hi,
-    float* __restrict__ c11, float* __restrict__ c12, float* __restrict__ c22, float* __restrict__ c66c,
-    float* __restrict__ va_x, float* __restrict__ vb_x, float* __restrict__ va_y, float* __restrict__ vb_y,
-    float dt, int nx, int ny, int periodic_x, int periodic_y,
+    float* c11, float* __restrict__ c12, float* c22, float* __restrict__ c66c,
+    float* va_x, float* __restrict__ vb_x, float* va_y, float* __restrict__ vb_y,
+    int separate_c22, int lossy, float dt, int nx, int ny, int periodic_x, int periodic_y,
     int pin_x_lo, int pin_x_hi, int pin_y_lo, int pin_y_hi)
 {
     int j = blockIdx.x * blockDim.x + threadIdx.x;
@@ -713,7 +744,7 @@ void acoustic_coefficients(
     float a = m11[idx], b = m12[idx], c = m22[idx];
     c11[idx] = (a != a) ? longitudinal : a;
     c12[idx] = (b != b) ? lame_lambda : b;
-    c22[idx] = (c != c) ? longitudinal : c;
+    if (separate_c22) c22[idx] = (c != c) ? longitudinal : c;
 
     float corner = 0.0f;
     if (ipjp >= 0) {
@@ -726,10 +757,15 @@ void acoustic_coefficients(
     }
     c66c[idx] = (pinned_x || pinned_y) ? 0.0f : corner;
 
+    float va, vb;
     face_coefficients(rho, damping, keep, has_keep, idx, pinned_x ? -1 : ip, share_x_lo[i], share_x_hi[i], dt,
-                      va_x + idx, vb_x + idx);
+                      &va, &vb);
+    vb_x[idx] = vb;
+    if (lossy) va_x[idx] = va;
     face_coefficients(rho, damping, keep, has_keep, idx, pinned_y ? -1 : jp, share_y_lo[j], share_y_hi[j], dt,
-                      va_y + idx, vb_y + idx);
+                      &va, &vb);
+    vb_y[idx] = vb;
+    if (lossy) va_y[idx] = va;
 }
 """, "acoustic_coefficients"), _coefficients_host)
 
@@ -1016,6 +1052,8 @@ def _volume_scatter_host(axisymmetric):
 _FIELD_SOURCES = {
     'velocity': ('', _VELOCITY_SOURCE, 'acoustic_update_velocity'),
     'velocity_axisymmetric': (_AXISYMMETRIC, _VELOCITY_SOURCE, 'acoustic_update_velocity'),
+    'velocity_lossless': (_LOSSLESS, _VELOCITY_SOURCE, 'acoustic_update_velocity'),
+    'velocity_axisymmetric_lossless': (_AXISYMMETRIC + _LOSSLESS, _VELOCITY_SOURCE, 'acoustic_update_velocity'),
     'stress': ('', _STRESS_SOURCE, 'acoustic_update_stress'),
     'stress_axisymmetric': (_AXISYMMETRIC, _STRESS_SOURCE, 'acoustic_update_stress'),
     'stress_strain': ('#define STRAIN_ACCUMULATOR\n', _STRESS_SOURCE, 'acoustic_update_stress'),
@@ -1036,6 +1074,8 @@ _FIELD_SOURCES = {
 _FIELD_HOST_TWINS = {
     'velocity': _velocity_host(False),
     'velocity_axisymmetric': _velocity_host(True),
+    'velocity_lossless': _velocity_host(False, lossless=True),
+    'velocity_axisymmetric_lossless': _velocity_host(True, lossless=True),
     'stress': _stress_host(False),
     'stress_axisymmetric': _stress_host(True),
     'stress_strain': _stress_host(False, strain_accumulator=True),
@@ -1054,6 +1094,8 @@ _FIELD_HOST_TWINS = {
 _FIELD_NUMBA_TWINS = {
     'velocity': _velocity_numba(False),
     'velocity_axisymmetric': _velocity_numba(True),
+    'velocity_lossless': _velocity_numba(False, lossless=True),
+    'velocity_axisymmetric_lossless': _velocity_numba(True, lossless=True),
     'stress': _stress_numba(False),
     'stress_axisymmetric': _stress_numba(True),
     'stress_strain': _stress_numba(False, strain_accumulator=True),

@@ -31,8 +31,8 @@ class SlotSum:
         self._reads_window = False    # a contributor reads LOSS_FIELDS
         self.source_fields = frozenset()
         self.name = f'{target}.{target_input}'
-        self._total = None            # combined value buffer ('sum' with several contributors, 'index' dn sum)
-        self._permittivity = None     # 'index' output eps buffer
+        self._total = None            # combined value buffer (several contributors: their sum; 'index': then eps)
+        self._converted_writes = None   # 'index', one contributor: its buffer_writes when its buffer became eps
         self._reference_recorded = False
 
     def add(self, term, every, after_source_step):
@@ -50,6 +50,9 @@ class SlotSum:
             raise ValueError(f"coupling '{term.name}' (every {every}) and {self.name} (every "
                              f"{self._requested_every}) contribute to slot '{self.target_input}' of '{self.target}': "
                              'contributors to one slot share one every')
+        if self._converted_writes is not None:   # the lone contributor's buffer holds eps now, not its dn (_combine)
+            raise ValueError(f"coupling '{term.name}' joins slot '{self.target_input}' of '{self.target}' after "
+                             f'{self.name} transferred: add every contributor of a slot before its first transfer')
         phase = bool(after_source_step)
         reads_window = any(field in LOSS_FIELDS for _, field in term.source_fields)
         if len(self._phases | {phase}) > 1 and (reads_window or self._reads_window):
@@ -121,13 +124,25 @@ class SlotSum:
             self._reference_recorded = True
 
     def _combine(self, physics_by_name):
-        """Combined slot value from the contributor buffers (no allocation after the first call); None without any."""
+        """Combined slot value from the contributor buffers (no allocation after the first call); None without any.
+        'index' writes eps = (n0 + sum dn)^2 over a scratch buffer, never a third array: with several contributors the
+        sum buffer; with one its own buffer, which is refreshed right before every combine (apply / apply_now / flush
+        / transfer_value) and written by nothing but the term, so its dn is not needed again; when the refresh wrote
+        no new value (a transform returning None) the buffer already holds the eps of that dn. Every index slot copies
+        the value it is given (inject_source docstrings), so the eps is never kept by reference."""
         buffers = [term.buffer for term in self.contributors if term.buffer is not None]
         if not buffers:
             return None
         total = buffers[0]
         xp = array_module_of(total)   # the run backend's module (numpy on the cpu)
-        if len(buffers) > 1:
+        if self.contribution == 'index' and len(self.contributors) == 1:
+            term = self.contributors[0]
+            if term.buffer_writes != self._converted_writes:
+                n0 = reference_index(_lookup(physics_by_name, self.target, self).domain.materials, self.target_input)
+                index_shift_to_permittivity(n0, total, total)   # elementwise: in place is exact
+                self._converted_writes = term.buffer_writes
+            return total
+        if len(buffers) > 1 or self.contribution == 'index':   # 'index': never convert a contributor's own dn
             if self._total is None:
                 self._total = xp.empty_like(total)
             xp.copyto(self._total, total)
@@ -136,10 +151,8 @@ class SlotSum:
             total = self._total
         if self.contribution == 'sum':
             return total
-        if self._permittivity is None:
-            self._permittivity = xp.empty_like(total)
         n0 = reference_index(_lookup(physics_by_name, self.target, self).domain.materials, self.target_input)
-        return index_shift_to_permittivity(n0, total, self._permittivity)
+        return index_shift_to_permittivity(n0, total, total)
 
 
 def slot_contributions(coupling):

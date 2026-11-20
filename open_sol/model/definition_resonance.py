@@ -6,15 +6,16 @@ from typing import Callable
 
 from ..core.constants import C0
 from ..core.memory_estimate import FLOAT32_BYTES, FLOAT64_BYTES
+from ..core.monitors import PROBE_INITIAL_ROWS, PROBE_PARK_ROWS
 from ..core.resonance import (AMPLITUDE_FLOOR, BAND_KINDS, MATCH_TOLERANCE, MAX_SAMPLES, ResonanceMonitor,
                               analysis_host_bytes)
 from .definition_helpers import study_duration, validate_points_inside
-from .schema import FeatureType, Issue, Param, feature_path, resolve_values
+from .schema import FeatureType, Issue, Param, feature_path, resolve_values, solver_backend
 
 FEATURE_NAME = 'resonance_monitor'
 MAX_POINTS = 16                # probe points of one resonance_monitor (one joint pole fit)
 MIN_WINDOW_PERIODS = 10        # analysed window / longest band period below which validation warns
-PROBE_INITIAL_SAMPLES = 1024   # growable point traces (core.monitors.FieldProbe, acoustics AcousticProbe): doubled when full
+PROBE_INITIAL_SAMPLES = PROBE_INITIAL_ROWS   # growable point traces (core.monitors FieldProbe / ProbeRows): doubled
 
 
 @dataclass(frozen=True)
@@ -168,30 +169,44 @@ def _trace_duration(context):
 
 
 def point_trace_items(context, mesh, trace_types, dt=None):
-    """(build items, run items, host items) of the growable point traces (float32 device values, float64 host times)
-    of the enabled features of trace_types over the study duration in steps of dt (None = mesh.dt, the EM step), plus
-    one resonance analysis at a time."""
+    """(build items, run items, host items) of the growable point traces (float32 values, float64 host times) of the
+    enabled features of trace_types over the study duration in steps of dt (None = mesh.dt, the EM step), plus one
+    resonance analysis at a time. gpu: the traces are ProbeRows tables whose rows go to the host at each study chunk
+    boundary once PROBE_PARK_ROWS are held (core.monitors.park_probe_rows), so the device part grows to the capacity
+    of at most 2 x PROBE_PARK_ROWS rows (a ~0.1 s chunk steps fewer ticks wherever traces matter) and the parked
+    values are host items; cpu: every value stays in its numpy buffer."""
     traces = [feature for feature in context.physics_spec.features if feature.enabled and feature.type in trace_types]
     if not traces:
         return [], [], []
     duration = _trace_duration(context)
     dt = mesh.dt if dt is None else dt
     n_steps = int(duration / dt) + 1 if duration is not None and dt else 0
-    capacity = PROBE_INITIAL_SAMPLES
-    while capacity < n_steps:
-        capacity *= 2
+    capacity = _trace_capacity(n_steps)
+    parked = solver_backend(context.spec) == 'gpu'
+    device_capacity = _trace_capacity(min(n_steps, 2 * PROBE_PARK_ROWS)) if parked else capacity
     points = {feature.name: _point_count(context, feature) for feature in traces}
     n_traces = sum(points.values())
     build = [(f'point traces ({n_traces} x float32, initial {PROBE_INITIAL_SAMPLES} samples)',
               n_traces * FLOAT32_BYTES * PROBE_INITIAL_SAMPLES)]
-    run = [(f'point trace growth ({n_traces} x float32 to {capacity} samples)',
-            n_traces * FLOAT32_BYTES * (capacity - PROBE_INITIAL_SAMPLES))]
+    run = [(f'point trace growth ({n_traces} x float32 to {device_capacity} samples'
+            f'{", older ones parked on the host" if parked else ""})',
+            n_traces * FLOAT32_BYTES * (device_capacity - PROBE_INITIAL_SAMPLES))]
     host = [(f'point trace times ({n_traces} x float64)', n_traces * FLOAT64_BYTES * capacity)]
+    if parked and n_steps > PROBE_PARK_ROWS:
+        host.append((f'parked point trace values ({n_traces} x float32)', n_traces * FLOAT32_BYTES * capacity))
     widest = max((points[feature.name] for feature in traces if feature.type == FEATURE_NAME), default=0)
     if widest:   # one analysis at a time: the monitor with the most points
         host.append((f'resonance analysis (harmonic inversion temporaries, {widest} point(s))',
                      analysis_host_bytes(n_steps, widest)))
     return build, run, host
+
+
+def _trace_capacity(n_rows):
+    """Rows of a growable trace once it holds n_rows: PROBE_INITIAL_SAMPLES doubled until they fit."""
+    capacity = PROBE_INITIAL_SAMPLES
+    while capacity < n_rows:
+        capacity *= 2
+    return capacity
 
 
 def _point_count(context, feature):

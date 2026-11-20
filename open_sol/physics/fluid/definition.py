@@ -16,7 +16,7 @@ from ...model.definition_helpers import (HALF_STORAGE_STEPPER_ROLE, evaluates_to
 from ...solvers.explicit_kernels import stepper_precision
 from ...model.geometry import expand_entities
 from ...model.schema import (STATIONARY_STUDY, TIME_DEPENDENT_STUDY, FeatureType, Issue, Param, PhysicsType,
-                              coupling_writes, feature_path)
+                              coupling_writes, feature_path, solver_backend)
 from .lattice import N_DIRECTIONS
 from .renderer import FluidRenderer
 from .selftests import HEATED_MICROCHANNEL_DESCRIPTION, HEATED_MICROCHANNEL_LABEL, heated_microchannel_spec
@@ -532,21 +532,34 @@ def _time_estimate(settings_values, mesh, context):
 
 
 def _memory_estimate(settings_values, mesh, context):
-    """Full-grid SI fields (8 x float32) plus the window lattice: 2 x 9 populations, lattice macros, relaxation rates,
-    forces, saved velocity (9 x float32), fluid mask; the float64 kinematic viscosity and refresh temporaries; the
-    Bouzidi wall-row table (conformal boundaries; its (rows, 8) fractions, wall cells only, not counted) and the
-    vorticity buffer of the first request (run)."""
+    """Full-grid SI fields (8 x float32) plus the window lattice: 2 x 9 populations, lattice macros and mass density
+    (4 x float32), fluid mask, as FluidPhysics.prepare keeps them: the saved velocity of the steady march (stationary
+    only), per-cell relaxation rates (cpu, or fluids of several / unknown kinematic viscosities: the gpu reads 1-element
+    rates of one) and lattice forces (cpu, or a body_force feature / a coupling into the flow; a steady force uniform on
+    the fluid frees them after its refresh); refresh temporaries (the float64 kinematic viscosity is rebuilt, never
+    kept); the Bouzidi wall-row table (conformal boundaries; its (rows, 8) fractions, wall cells only, not counted)
+    and the vorticity buffer of the first request (run)."""
     window_cells = window_cell_count(mesh)
     half = resolved_stepper_precision(context.solvers) == 'half_storage'
     population_bytes = 2 if half else FLOAT32_BYTES
     conformal = getattr(context.spec.solver_defaults, 'conformal_boundaries', False) is True
+    host = solver_backend(context.spec) == 'cpu'
+    stationary = not (context.spec.study.type == TIME_DEPENDENT_STUDY and settings_values['time_mode'] == 'transient')
+    fluids = fluid_materials(context)
+    kinematic = _kinematic_viscosities(context, fluids)
+    per_cell_rates = host or len(kinematic) < len(fluids) or len(set(kinematic)) > 1
+    physics_spec = context.physics_spec
+    forced = host or any(feature.enabled and feature.type == 'body_force' for feature in physics_spec.features) or any(
+        coupling.enabled and coupling.target == physics_spec.name for coupling in context.spec.couplings)
     fields = MemoryEstimate.from_items((('fields u, u_abs, pressure, body forces (8 x float32)',
                                          8 * FLOAT32_BYTES * int(mesh.n_cells)),))
     lattice = MemoryEstimate.from_items(
         ((f"populations (2 x {N_DIRECTIONS} x {'float16' if half else 'float32'})",
           2 * N_DIRECTIONS * population_bytes * window_cells),
-         ('lattice macros, rates, forces (10 x float32 + bool)', (10 * FLOAT32_BYTES + BOOL_BYTES) * window_cells),
-         ('kinematic viscosity (float64)', FLOAT64_BYTES * window_cells),
+         ('lattice macros, mass density (4 x float32 + bool)', (4 * FLOAT32_BYTES + BOOL_BYTES) * window_cells),
+         ('saved velocity of the steady march (2 x float32)', 2 * FLOAT32_BYTES * window_cells if stationary else 0),
+         ('per-cell relaxation rates (2 x float32)', 2 * FLOAT32_BYTES * window_cells if per_cell_rates else 0),
+         ('per-cell lattice forces (2 x float32)', 2 * FLOAT32_BYTES * window_cells if forced else 0),
          ('Bouzidi wall rows (int32)', 4 * window_cells if conformal else 0)),
         build_extra=6 * FLOAT64_BYTES * window_cells,
         run_items=(('vorticity (float32)', FLOAT32_BYTES * window_cells),))

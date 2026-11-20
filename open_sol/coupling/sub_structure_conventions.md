@@ -57,7 +57,10 @@ Per-topic notes (transform physics, cadence, self-tests) live in the CouplingTyp
   coupling: builder `shared_views`); 'value' transforms run on the source mesh (create gets that mesh's ctx: buffers
   are source-shaped) and `transfer_value` moves the result into the persistent target-shaped `_moved`. Buffers,
   SlotSum, relaxation and `write` are unchanged; the change check stays on the real solvers;
-  `DynamicMaterialUpdate(notify=)` limits materials_changed to its mesh.
+  `DynamicMaterialUpdate(notify=)` limits materials_changed to its mesh. Views are shared build-wide per (transfer,
+  side) (`BuildContext.transfer_views`; dynamic material updates reading another mesh use the same views), so a
+  field several couplings read is interpolated once per source revision into one buffer: a transform must never
+  hand a view's array itself to a slot that keeps it by reference (another reader's refresh would rewrite it).
 
 ## Additive source slots (E13, `slot_sum.py`)
 - Contributor API (no builder or validate change): (1) the transform returns the slot's full-grid (nx, ny), 3D (nx,
@@ -70,6 +73,10 @@ Per-topic notes (transform physics, cadence, self-tests) live in the CouplingTyp
 - Mixed phases on one slot with a contributor reading `slot_sum.LOSS_FIELDS` (em_heat_joule beside
   magnetic_heat_induction at equal stride) raise in `SlotSum.add` at build; model.validate does not see it yet.
   Remedy: give the after-source contributor's source an every other than the coupling's.
+- 'index' eps is written over a scratch buffer (one contributor: its own buffer, `buffer_writes` telling whether it
+  already holds eps; several: the sum buffer), so every index slot's `inject_source` copies its value (all do) and
+  no code reads a lone index contributor's `buffer` as dn; contributors join a slot before its first transfer
+  (`SlotSum.add` raises after).
 - Index slots = `index_reference.INDEX_SLOTS` (`<array>_update` of eps_r / eps_xx / eps_yy): a family-'em' type takes
   every index coupling (thermo-optic, Pockels, plasma dispersion, strain-optic, acousto-optic) through them.
 - Reference index n0 (`physics/em/index_reference.py`): transforms read it through `reference_index` /

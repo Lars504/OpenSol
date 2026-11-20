@@ -35,9 +35,15 @@ def _stacked_complex(values):
     return host
 
 
+# device 0-d values a record holds before they move to the host together (one transfer, one sync per this many
+# values; each cupy 0-d array holds a 512 B pool block: 1e4 frequencies x 3 components ~ 15 MiB if never moved)
+HARMONIC_PARK_VALUES = 256
+
+
 class HarmonicProbeRecord:
     """Complex phasors (exp(+j omega t)) of one probe's components per solved frequency [Hz]; values are kept as given
-    (numbers or numpy / cupy 0-d arrays: no host sync per record) and moved to the host by recorded()."""
+    (numbers or numpy / cupy 0-d arrays: no host sync per record), moved to the host as complex128 numbers every
+    HARMONIC_PARK_VALUES device values (one stacked transfer, between frequency solves) and by recorded()."""
 
     def __init__(self, components, unit='', label=''):
         components = (components,) if isinstance(components, str) else tuple(components)
@@ -54,6 +60,7 @@ class HarmonicProbeRecord:
         self.label = str(label)
         self._frequencies = []   # [Hz] in record order
         self._rows = []          # per record: the values in component order
+        self._device_values = 0   # cupy 0-d values among the rows (moved to the host at HARMONIC_PARK_VALUES)
 
     def __len__(self):
         return len(self._frequencies)
@@ -62,6 +69,7 @@ class HarmonicProbeRecord:
         """Forget every record (a new frequency sweep)."""
         self._frequencies.clear()
         self._rows.clear()
+        self._device_values = 0
 
     def record(self, frequency, values, replace_same_frequency=True):
         """Store the phasors {component: value} (every component; a bare value for a one-component record) at
@@ -91,6 +99,15 @@ class HarmonicProbeRecord:
             self._rows.append(row)
         else:
             self._rows[index] = row
+        self._device_values += sum(1 for value in row if array_module_of(value) is not np)
+        if self._device_values >= HARMONIC_PARK_VALUES:
+            self._park()
+
+    def _park(self):
+        """Every row's values as host complex numbers (one stacked transfer per component)."""
+        columns = [_stacked_complex([row[position] for row in self._rows]) for position in range(len(self.components))]
+        self._rows = [tuple(complex(column[index]) for column in columns) for index in range(len(self._rows))]
+        self._device_values = 0
 
     def index_of(self, frequency):
         """Record index of frequency [Hz] (within FREQUENCY_MATCH_RTOL; the latest of repeated ones), None if
