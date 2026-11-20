@@ -74,6 +74,10 @@ contracts"). em_fdtd_3d (B2) and the eigensolver em_fdfd_3d (tensor Yee and tetr
   `fem_solver3d.FEMResonancePhysics3D` around `fem3d.FEMPhysics3D`).
 - Self-tests `selftests_fdfd3d` / `selftests_fem3d`: model runs on the gpu with cudss_mixed; keep heavy cases and
   examples off the cpu (host SuperLU takes minutes there).
+- Device memory of a solve is solve_resonances' (em sub file "FDFD", eigenfrequency): the estimators book it through
+  `resonance_search_items` with the storage the solve picks (a mixed LDL^T, i.e. no Bloch phase, is polished: complex64
+  basis rows, `polished_mixed_search(..., symmetric=not Bloch)`; tetrahedra: lower triangles of a symmetric search),
+  so a change of what fdfd3d / fem3d pass to it (symmetrizer, symmetric, a sparse mass) changes both estimators.
 - Cost: direct factor time ~ n^2; host SuperLU > 10 min at ~1e5 unknowns, gpu cudss_mixed ~1 s at 2.2e5. Study
   convergence by perturbing downward (thinner PML, coarser cells), never by larger grids.
 - Band diagrams: a parameter sweep over bloch_k<axis> (fresh factor per k). The Bloch period is the meshed one and a

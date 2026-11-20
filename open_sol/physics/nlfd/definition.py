@@ -13,8 +13,8 @@ from difflib import SequenceMatcher
 
 from ...core import time_estimate as te
 from ...core.constants import C0, ETA0, FACES
-from ...core.memory_estimate import (BOOL_BYTES, COMPLEX128_BYTES, FLOAT32_BYTES, FLOAT64_BYTES, MemoryEstimate,
-                                     combine)
+from ...core.memory_estimate import (BOOL_BYTES, COMPLEX64_BYTES, COMPLEX128_BYTES, FLOAT32_BYTES, FLOAT64_BYTES,
+                                     MemoryEstimate, combine)
 from ...core.mirror import MIRROR_SIGNS
 from ...model.definition_helpers import (DIRECT_LINEAR_ROLE, optimization_evaluations, resolved_back_end,
                                          selected_material_data)
@@ -1383,8 +1383,12 @@ def _time_estimate(settings_values, mesh, context):
                          limit=channel_limit, counter=physics_counter + ('solves',)),
              te.TimeItem('nonlinear polarisation densities', 'evaluation', density_count, kind, tuple(density),
                          limit=density_limit)]
-    krylov = (te.elementwise(store, 2 * GMRES_RESTART, 2, COMPLEX128_BYTES, launches=8), te.Sync(2),
-              te.PythonCalls(30 + 4 * n_channels))   # CGS2 over half the restart basis on average
+    # iteration.real_gmres(single_basis=True) per product: CGS2 over half the complex64 restart basis on average (+ the
+    # row read for its complex128 copy, the two complex64 projection copies of w written and read); complex128: the row
+    # copy written, w read for the casts, subtracted twice (read, write) and its norm
+    krylov = (te.elementwise(store, 2 * GMRES_RESTART + 3, 2, COMPLEX64_BYTES, launches=6),
+              te.elementwise(store, 5, 3, COMPLEX128_BYTES, launches=6), te.Sync(2),
+              te.PythonCalls(30 + 4 * n_channels))
     if newton:
         count, limit = _over(outer, passes, passes_limit)
         tangents = tuple(_term_ops(term, n_cells, slots=term.order) for term in applied)
@@ -1475,13 +1479,19 @@ def _memory_estimate(settings_values, mesh, context):
             # NonlinearPolarizationPhasor.density: centre_vector's new collocated hz fields + box products, freed
             transient_items.append(('nonlinear densities', 'density temporaries (collocated hz fields, box products)',
                                     (2 * n_hz_sources + _DENSITY_TRANSIENT_ARRAYS) * COMPLEX128_BYTES * n_cells))
+            newton_bytes = 0
             if pump_depleted and settings_values['iteration_method'] == 'newton':
-                buffers = GMRES_RESTART + 1 + NEWTON_BUFFERS
+                # iteration.real_gmres(single_basis=True): GMRES_RESTART + 1 complex64 basis rows; the Newton vectors,
+                # the complex128 row handed to the Jacobian product and the complex64 projection copy of w
+                store_bytes = store_arrays * n_cells
+                newton_bytes = ((GMRES_RESTART + 1) * COMPLEX64_BYTES + (NEWTON_BUFFERS + 1) * COMPLEX128_BYTES
+                                + COMPLEX64_BYTES) * store_bytes
                 # tangent product: centre fields at x (cached) and of v (2 per hz channel each), one target's dP and
                 # its hz face currents
                 tangent_arrays = 4 * n_hz_sources + 2 + 2
-                run_items += [(f'Newton-Krylov basis and vectors ({buffers} x the store)',
-                               buffers * store_arrays * COMPLEX128_BYTES * n_cells),
+                run_items += [(f'Newton-Krylov basis ({GMRES_RESTART + 1} x the store, complex64) and vectors '
+                               f'({NEWTON_BUFFERS + 1} x the store, complex128; + a complex64 projection copy)',
+                               newton_bytes),
                               (f'Newton tangent fields ({tangent_arrays} x complex128)',
                                tangent_arrays * COMPLEX128_BYTES * n_cells)]
             elif pump_depleted:
@@ -1501,11 +1511,14 @@ def _memory_estimate(settings_values, mesh, context):
                 temporaries = _CASCADE_ADJOINT_TEMPORARIES
                 transient_items.append(('cascade adjoint', f'cascade adjoint temporaries ({temporaries} x complex128, '
                                         'approximate)', temporaries * COMPLEX128_BYTES * n_cells))
-                if pump_depleted and settings_values['iteration_method'] != 'newton':   # newton: reuses the freed
-                    buffers = GMRES_RESTART + 1 + _ADJOINT_BUFFERS                       # Newton basis blocks
-                    transient_items.append(('cascade adjoint', f'pump-depleted adjoint GMRES basis and vectors '
-                                            f'({buffers} x the store)',
-                                            buffers * store_arrays * COMPLEX128_BYTES * n_cells))
+                if pump_depleted:   # the complex128 GMRES (newton: beyond the freed Newton blocks, run items above)
+                    buffers = GMRES_RESTART + 1 + _ADJOINT_BUFFERS
+                    adjoint_bytes = buffers * store_arrays * COMPLEX128_BYTES * n_cells - newton_bytes
+                    if adjoint_bytes > 0:
+                        transient_items.append(('cascade adjoint', f'pump-depleted adjoint GMRES basis and vectors '
+                                                f'({buffers} x the store, complex128'
+                                                f'{"; less the freed Newton buffers" if newton_bytes else ""})',
+                                                adjoint_bytes))
             if pump_depleted:   # take_absorbed_power: lagged-loss and nonlinear absorption densities
                 transient_items.append(('absorbed power', 'absorbed-power temporaries (float64 + 4 x complex128)',
                                         (FLOAT64_BYTES + 4 * COMPLEX128_BYTES) * n_cells))
