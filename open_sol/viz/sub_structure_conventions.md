@@ -41,7 +41,10 @@ plot, imports of `viz.common` / `DARK_CMAPS`, canvas cell edges) live in the gui
   read from `FIGURE_*`; defaults are prose). `FIGURE_MATERIALS` ({name: {color, alpha}}) is the exception: no
   `FIGURE_STYLE` entry or fs_<key> input; the page keeps it in `matStyle` (geometry block: per-file memory, Materials
   rows built in the Plot settings block, `changedSettings` adds it) and every material colour / opacity is read through
-  `materialRgb` / `materialCss` / `materialAlpha` / `materialHidden`, never `GEOM.materials[i].color` directly.
+  `materialRgb` / `materialCss` / `materialAlpha` / `materialHidden` / `materialSolid`, never `GEOM.materials[i].color`
+  directly. Opacity 1 is solid: `drawGeometry` / `drawRevolution(view, proj, solid=true)` draw those surfaces opaque
+  with depth writes (polygon offset, so edges and rings stay on top) before flow and everything see-through; the
+  see-through passes skip them.
 - Per-sample arrays of a `ViewerLayer` follow every layer rebuild (the class docstring lists them): a new one joins all.
 - One page shows one animation clock per thing: api drops the phasor partner when the deformed shape oscillates
   (`ViewerMotion.oscillate`) or a volume is attached, `viewer_data` refuses a phasor page with volumes, and the page's

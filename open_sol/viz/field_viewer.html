@@ -205,7 +205,7 @@ body.present .app { padding: 10px; gap: 10px; }
         <label for="fs_legend_color" id="fs_legendlabel">Text colour</label>
         <select id="fs_legend_color" class="wide" title="Colour of the material names (the legend can be dragged over the field)">
           <option value="auto">As the texts</option><option value="white">White</option><option value="black">Black</option></select>
-        <h2 id="fs_materialhead" title="Colour and opacity of each material: its outlines (Objects colour Material), edges, see-through surfaces (Glass, Revolve) and legend swatch. Opacity: of the see-through surfaces, empty = automatic, 0 hides the material">Materials: colour, opacity</h2>
+        <h2 id="fs_materialhead" title="Colour and opacity of each material: its outlines (Objects colour Material), edges, see-through surfaces (Glass, Revolve) and legend swatch. Opacity: of its surfaces (Glass faces, Revolve bodies), empty = automatic (see-through), 1 = solid, 0 hides the material">Materials: colour, opacity</h2>
         <h2>Export</h2>
         <label for="fs_background">Background</label>
         <select id="fs_background" class="wide" title="Background of the view and of the saved picture">
@@ -1008,11 +1008,13 @@ function draw() {
   }
   gl.disable(gl.BLEND);
   gl.bindVertexArray(null);
+  drawGeometry(view, proj, true);             // opacity-1 materials: solid surfaces, before anything see-through
+  drawRevolution(view, proj, true);
   drawFlow(view, proj);
   drawMotionOutlines(view, proj, relief, 'moved');
   drawVolume(view, proj, lo, hi, logScale);   // fields3d: the whole 3D field, before the objects (they depth-test)
-  drawGeometry(view, proj);
-  drawRevolution(view, proj);                 // see-through, after everything it lies over
+  drawGeometry(view, proj, false);
+  drawRevolution(view, proj, false);          // see-through, after everything it lies over
   drawAxes(view, proj);
   drawOverlay(view, proj);
   if (renderScale === 1) placeGrip(view, proj);
@@ -1401,8 +1403,9 @@ state.geomColor = ['auto', 'white', 'black', 'material'].includes(store('geom_co
 // viz.field_viewer.figure_settings): matStyle { name: { color: '#rrggbb', alpha: 0 .. 1 } }, a missing key =
 // automatic (the page's colour; each use's own opacity). Start: this browser's memory for this file, then
 // DATA.figure.materials. color: outlines (Objects colour Material), edges, see-through surfaces, legend swatch; alpha:
-// the opacity of the material's see-through surfaces (Glass, Revolve bodies), 0 hides the material everywhere
-// (outlines, edges, rings, legend). matVersion counts changes (the outline decal's cache key)
+// the opacity of the material's surfaces (Glass faces, Revolve bodies' sidewalls): 1 draws them solid (opaque, depth
+// written, before everything see-through: materialSolid), 0 hides the material everywhere (outlines, edges, rings,
+// legend). matVersion counts changes (the outline decal's cache key)
 const MATERIALS_STORE = 'materials:' + location.pathname;
 const MATERIAL_BY_INDEX = new Map((GEOM ? GEOM.materials : []).map((m) => [m.index, m]));
 function checkedMaterialStyle(raw) {
@@ -1429,6 +1432,7 @@ function materialCss(m) {
 function materialRgb(m) { return hexRgb(materialCss(m)); }
 function materialAlpha(m, auto) { const a = materialStyle(m).alpha; return a === undefined ? auto : a; }
 function materialHidden(m) { return materialStyle(m).alpha === 0; }
+function materialSolid(m) { return materialStyle(m).alpha === 1; }
 function contrastRgba() {
   // dark lines over a map whose middle colour is light (diverging maps), else light lines
   const [r, g, b] = hexRgb(CMAPS[state.cmap][4]);
@@ -1489,12 +1493,14 @@ out vec3 vViewPos; out vec3 vPlace;
 void main() { vPlace = aPos * uMirA + uMirB; vec4 vp = uView * vec4((vPlace - uCenter) * uStretch, 1.0); vViewPos = vp.xyz; gl_Position = uProj * vp; }`;
 const GLASS_FS = `#version 300 es
 precision highp float;
-in vec3 vViewPos; in vec3 vPlace; uniform vec4 uColor; uniform vec3 uClipLo; uniform vec3 uClipHi;
+in vec3 vViewPos; in vec3 vPlace; uniform vec4 uColor; uniform vec3 uClipLo; uniform vec3 uClipHi; uniform int uSolid;
 out vec4 outColor;
 void main() {
   if (any(lessThan(vPlace, uClipLo)) || any(greaterThan(vPlace, uClipHi))) discard;   // outside the axis limits
-  // faces seen edge-on read stronger (a rim), faces turned to the eye lighter
   float facing = abs(normalize(cross(dFdx(vViewPos), dFdy(vViewPos))).z);
+  // solid: shaded by facing, the given opacity; see-through: faces seen edge-on read stronger (a rim), faces turned
+  // to the eye lighter
+  if (uSolid == 1) { outColor = vec4(uColor.rgb * (0.5 + 0.55 * facing), uColor.a); return; }
   outColor = vec4(uColor.rgb * (0.8 + 0.3 * facing), uColor.a * (1.6 - 0.9 * facing));
 }`;
 let geometryGL = null, lineProg = null, glassProg = null;   // geometryGL: null = not set up yet, false = nothing / failed
@@ -1522,43 +1528,49 @@ function setupGeometryGL() {
   }
   if (GEOM_FACES.length) {
     glassProg = linkProgram(GLASS_VS, GLASS_FS, ['uView', 'uProj', 'uCenter', 'uStretch', 'uColor', 'uMirA', 'uMirB',
-                                                 'uClipLo', 'uClipHi'], glassUni);
+                                                 'uClipLo', 'uClipHi', 'uSolid'], glassUni);
     const aPos = gl.getAttribLocation(glassProg, 'aPos');
     for (const G of GEOM_FACES) { G.vao = gl.createVertexArray(); gl.bindVertexArray(G.vao); vertexBuffer(aPos, G.pos, 3, gl.STATIC_DRAW); }
   }
   gl.bindVertexArray(null);
   return true;
 }
-function drawGeometry(view, proj) {
+function drawGeometry(view, proj, solid) {
+  // solid: only the Glass faces of opacity-1 materials (opaque, depth written, pushed behind their edges), drawn
+  // before anything see-through; else the see-through faces and every line
   if (geometryGL === null) {
     try { geometryGL = setupGeometryGL(); }
     catch (err) { geometryGL = false; $('geom').disabled = true; $('geom').title = 'Model objects: WebGL error ' + err.message; }
   }
   if (!geometryGL || state.geom === 'off') return;
   const f = stretch();
-  gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-  if (state.geom === 'glass' && glassProg) {   // after the opaque layers, no depth writes: every surface shows through
+  if (state.geom === 'glass' && glassProg) {   // see-through: after the opaque layers, no depth writes
+    const faces = GEOM_FACES.filter((G) => !materialHidden(G.material) && materialSolid(G.material) === solid);
     gl.useProgram(glassProg);
     gl.uniformMatrix4fv(glassUni.uView, false, view); gl.uniformMatrix4fv(glassUni.uProj, false, proj);
     gl.uniform3fv(glassUni.uCenter, center); gl.uniform3fv(glassUni.uStretch, f);
     gl.uniform3fv(glassUni.uClipLo, clipLo); gl.uniform3fv(glassUni.uClipHi, clipHi);
-    gl.depthMask(false);
-    for (const I of images()) {
+    gl.uniform1i(glassUni.uSolid, solid ? 1 : 0);
+    if (solid) { gl.disable(gl.BLEND); gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(1, 1); }
+    else { gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA); gl.depthMask(false); }
+    for (const I of faces.length ? images() : []) {
       setImage(glassUni, I);
-      for (const G of GEOM_FACES) {
-        if (materialHidden(G.material)) continue;
+      for (const G of faces) {
         gl.uniform4fv(glassUni.uColor, [...materialRgb(G.material), materialAlpha(G.material, 0.16)]);
         gl.bindVertexArray(G.vao); gl.drawArrays(gl.TRIANGLES, 0, G.count);
       }
     }
-    gl.depthMask(true);
+    gl.depthMask(true); gl.disable(gl.POLYGON_OFFSET_FILL); gl.disable(gl.BLEND); gl.bindVertexArray(null);
   }
+  if (solid) return;
+  gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
   gl.useProgram(lineProg);
   gl.uniformMatrix4fv(lineUni.uView, false, view); gl.uniformMatrix4fv(lineUni.uProj, false, proj);
   gl.uniform3fv(lineUni.uCenter, center); gl.uniform3fv(lineUni.uStretch, f);
   gl.uniform3fv(lineUni.uClipLo, clipLo); gl.uniform3fv(lineUni.uClipHi, clipHi);
   gl.uniform2f(lineUni.uViewport, canvas.width, canvas.height);
-  if (PLANAR) gl.disable(gl.DEPTH_TEST);       // one plane seen face-on (or raised by relief): outlines on top
+  // one plane seen face-on (or raised by relief): outlines on top; revolved, solid bodies (materialSolid) hide them
+  if (PLANAR && !revolveOn()) gl.disable(gl.DEPTH_TEST);
   const dash = 0.008 * (Math.max(...SPAN) || 1);
   for (const I of images()) {
     setImage(lineUni, I);
@@ -1739,12 +1751,14 @@ void main() {
   if (any(lessThan(vPlace, uClipLo)) || any(greaterThan(vPlace, uClipHi))) discard;   // outside the axis limits
   vec3 n = normalize(vNormal), v = normalize(-vViewPos);
   float c = dot(n, v);
-  if ((uPass == 0) != (c < 0.0)) discard;   // pass 0: the far side of a body (normal turned away), 1: the near side
+  // pass 0: the far side of a see-through body (normal turned away), 1: the near side, 2: a solid body, both sides
+  if (uPass < 2 && (uPass == 0) != (c < 0.0)) discard;
   if (c < 0.0) { n = -n; c = -c; }
   float rim = pow(1.0 - c, 3.0);            // Fresnel: surfaces seen edge-on draw the body's silhouette
   vec3 key = normalize(vec3(0.45, 0.75, 0.55)), fill = normalize(vec3(-0.6, -0.25, 0.5));
   float sp = pow(max(dot(n, normalize(key + v)), 0.0), 60.0);
   vec3 col = uColor.rgb * (0.62 + 0.3 * max(dot(n, key), 0.0) + 0.12 * max(dot(n, fill), 0.0)) + vec3(0.9) * sp;
+  if (uPass == 2) { outColor = vec4(col, uColor.a); return; }   // solid: the opacity as given (1, or the fade in)
   float alpha = (uColor.a * (0.3 + 1.7 * rim) + 0.4 * sp * uShine) * (uPass == 0 ? 0.6 : 1.0);
   outColor = vec4(col, clamp(alpha, 0.0, 0.9));
 }`;
@@ -1805,7 +1819,9 @@ function setupRevolution() {
   gl.bindVertexArray(null);
   return { prog, uni, lineProgram, lineUni, bodies, axis };
 }
-function drawRevolution(view, proj) {
+function drawRevolution(view, proj, solid) {
+  // solid: only the bodies of opacity-1 materials (pass 2: opaque, depth written, pushed behind their rings), drawn
+  // before anything see-through; else the see-through bodies (far side, rings and axis, near side)
   if (!REVOLUTION || !state.revolve || !(revolveFade > 0)) return;
   if (revGL === null) {
     try { revGL = setupRevolution(); }
@@ -1816,12 +1832,15 @@ function drawRevolution(view, proj) {
   const R = revGL, f = stretch(), fade = revolveFade, glass = revGlass;
   const shown = images().filter((I) => I.a[PLANE_AXES[0]] > 0);   // the axis image is part of every whole revolution
   const bodies = R.bodies.filter((B) => B.material === undefined || (state.geom !== 'off' && !materialHidden(B.material)));
+  const isSolid = (B) => B.material !== undefined && materialSolid(B.material);
   const domainRgb = themeColors.dark ? [0.72, 0.82, 1.0] : [0.3, 0.42, 0.62];
   const rgbOf = (B) => B.material === undefined ? domainRgb : materialRgb(B.material);
   const alphaOf = (B) => fade * (B.material === undefined ? 0.03 + 0.2 * glass : materialAlpha(B.material, 0.05 + 0.28 * glass));
   gl.enable(gl.DEPTH_TEST); gl.depthMask(false);
   gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
   const glassPass = (pass) => {
+    const drawn = bodies.filter((B) => isSolid(B) === (pass === 2));
+    if (!drawn.length) return;
     gl.useProgram(R.prog);
     gl.uniformMatrix4fv(R.uni.uView, false, view); gl.uniformMatrix4fv(R.uni.uProj, false, proj);
     gl.uniform3fv(R.uni.uCenter, center); gl.uniform3fv(R.uni.uStretch, f);
@@ -1829,12 +1848,18 @@ function drawRevolution(view, proj) {
     gl.uniform1i(R.uni.uPass, pass); gl.uniform1f(R.uni.uShine, fade);
     for (const I of shown) {
       setImage(R.uni, I);
-      for (const B of bodies) {
+      for (const B of drawn) {
         gl.uniform4fv(R.uni.uColor, [...rgbOf(B), alphaOf(B)]);
         gl.bindVertexArray(B.vao); gl.drawElements(gl.TRIANGLES, B.count, gl.UNSIGNED_INT, 0);
       }
     }
   };
+  if (solid) {   // depth written: what is drawn later lies in front of the body or is hidden by it (fade: blended in)
+    gl.depthMask(true); gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(1, 1);
+    glassPass(2);
+    gl.disable(gl.POLYGON_OFFSET_FILL); gl.disable(gl.BLEND); gl.bindVertexArray(null);
+    return;
+  }
   glassPass(0);
   gl.useProgram(R.lineProgram);
   const U = R.lineUni;
@@ -2195,7 +2220,9 @@ function drawFlow(view, proj) {
   const arrowSpacing = Math.sqrt(viewArea * f[iu] * f[iv] / Math.min(arrowsPerView, ARROW_MAX));
   const arrowDu = arrowSpacing / f[iu], arrowDv = arrowSpacing / f[iv];
   const arrowMaxLen = flowState.arrowLength * 0.9 * Math.sqrt(framePixels / Math.min(arrowsPerView, ARROW_MAX)) * pixelRatio;
-  gl.disable(gl.DEPTH_TEST); gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  // on the map, over its fills (pushed back by their polygon offset); revolved, depth-tested: solid bodies hide them
+  if (revolveOn()) gl.enable(gl.DEPTH_TEST); else gl.disable(gl.DEPTH_TEST);
+  gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
   images().forEach((I, m) => {
     const dir = flowDir(I);
     FLOW.layers.forEach((FL, li) => {
@@ -2896,8 +2923,8 @@ const MATERIAL_ROWS = (GEOM ? GEOM.materials : []).map((m) => {
   color.type = 'color'; color.id = 'fs_material_color_' + m.index; label.htmlFor = color.id;
   color.title = 'Colour of ' + m.name + ': outlines (Objects colour Material), edges, see-through surfaces, legend';
   alpha.type = 'number'; alpha.min = '0'; alpha.max = '1'; alpha.step = '0.05'; alpha.placeholder = 'auto';
-  alpha.title = 'Opacity of the see-through surfaces of ' + m.name + ' (Glass, Revolve), 0 - 1; 0 hides the material; '
-    + 'empty: automatic (applied as typed)';
+  alpha.title = 'Opacity of the surfaces of ' + m.name + ' (Glass faces, Revolve bodies), 0 - 1; 1 draws them solid, '
+    + '0 hides the material; empty: automatic, see-through (applied as typed)';
   const restyle = (key, value) => {
     const style = Object.assign({}, matStyle[m.name]);
     if (value === null) delete style[key]; else style[key] = value;
