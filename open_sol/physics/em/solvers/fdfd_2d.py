@@ -558,6 +558,9 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
         self._sensitivity = None
         system = self._refresh_system(check_driven_size=True)
         self._solve_port_modes()
+        # the factor first, then the rhs: the rhs (16 B per cell) and its sources' temporaries never share the device
+        # with the factorisation peak (the sources read the system and other channels' fields, never the factor)
+        self._prepare_driven_factor()
 
         rhs = xp.zeros(self._field_re.shape, dtype=xp.complex128)
         for source in self.sources:
@@ -817,33 +820,46 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
                 return solution
             self._factorization = None   # too far from the factored operator: refactorise
         if self._factorization is None:
-            options = {}
-            if self.linear_solver.back_end in CUDSS_BACK_ENDS:   # LDL^T of D A (LU when not symmetric), plan reused
-                previous, self._cudss_previous = self._cudss_previous, None
-                if previous is None:   # one LU on the device (_transposed_solve): the adjoint's, refactorised back
-                    previous, self._transposed_previous = self._transposed_previous, None
-                if previous is None:
-                    previous, self._transposed_factorization = self._transposed_factorization, None
-                options = {'previous': previous, 'symmetric': True,   # K1: checked by the solve below
-                           'symmetrizer': self._symmetrizer(self.system.omega), 'defer_check': True}
-                del previous
-            elif self.linear_solver.back_end in HOST_DIRECT_BACK_ENDS:   # host LDL^T of D A (LU when not symmetric):
-                self._release_kept_cudss()   # recyclable and transposes natively, like SuperLU
-                options = {'symmetric': True, 'symmetrizer': self._symmetrizer(self.system.omega)}
-            else:   # SuperLU (also after an 'auto' runtime fell back from cuDSS: its kept factors are freed)
-                self._release_kept_cudss()
-            self._factorization = self.linear_solver.factorize(self.system.operator,
-                                                               *self._grid_shape_and_periodicity(), **options)
-            self.last_factor_seconds = self.linear_solver.last_factor_seconds
-            self.host_factor_bytes = self._factorization.host_bytes
-            self._factored_omega = self.system.omega
-            self._factorization_current = True
+            self._factorize_operator()
         if transpose and _is_cudss(self._factorization) and not self._factorization.symmetric:
             return self._checked_transposed_solve(flat_rhs)
         try:
             return self._factorization.solve(flat_rhs, transpose=transpose)
         except CudssAccuracyError as error:   # a refreshed factor's deferred check missed at this, its first solve
             return self._fall_back_solve(error, flat_rhs, transpose)
+
+    def _prepare_driven_factor(self):
+        """Before a driven solve builds its rhs: factorise system.operator when no factor of it or of an earlier
+        operator at this omega (GMRES-recycled by _solve_linear) is kept; line_block: the system's block factor."""
+        if self._line_block is not None:
+            self._system_line_factor()   # None once rejected: the reference factor waits for its rhs
+        elif self._factorization is None:
+            self._factorize_operator()
+
+    def _factorize_operator(self):
+        """_factorization = the 'linear' solver's factor of system.operator (cuDSS: LDL^T of D A, an LU when not
+        symmetric, on the kept plan; MUMPS / PARDISO: host LDL^T of D A; SuperLU otherwise)."""
+        options = {}
+        if self.linear_solver.back_end in CUDSS_BACK_ENDS:   # LDL^T of D A (LU when not symmetric), plan reused
+            previous, self._cudss_previous = self._cudss_previous, None
+            if previous is None:   # one LU on the device (_transposed_solve): the adjoint's, refactorised back
+                previous, self._transposed_previous = self._transposed_previous, None
+            if previous is None:
+                previous, self._transposed_factorization = self._transposed_factorization, None
+            options = {'previous': previous, 'symmetric': True,   # K1: checked by the first solve (_solve_linear)
+                       'symmetrizer': self._symmetrizer(self.system.omega), 'defer_check': True}
+            del previous
+        elif self.linear_solver.back_end in HOST_DIRECT_BACK_ENDS:   # host LDL^T of D A (LU when not symmetric):
+            self._release_kept_cudss()   # recyclable and transposes natively, like SuperLU
+            options = {'symmetric': True, 'symmetrizer': self._symmetrizer(self.system.omega)}
+        else:   # SuperLU (also after an 'auto' runtime fell back from cuDSS: its kept factors are freed)
+            self._release_kept_cudss()
+        self._factorization = self.linear_solver.factorize(self.system.operator,
+                                                           *self._grid_shape_and_periodicity(), **options)
+        self.last_factor_seconds = self.linear_solver.last_factor_seconds
+        self.host_factor_bytes = self._factorization.host_bytes
+        self._factored_omega = self.system.omega
+        self._factorization_current = True
 
     def _checked_transposed_solve(self, flat_rhs):
         """_transposed_solve inside _solve_linear's deferred-check catch (K1)."""

@@ -626,6 +626,10 @@ def fdfd_memory_estimate(polarization):
                            2 * operator_copy)]
         else:
             run_items += line_block_items
+        if not eigen:   # fdfd_2d._solve builds the rhs after the factorisation: alive with the solve only
+            transient_items.append((CUDSS_SOLVE_PHASE if back_end in CUDSS_BACK_ENDS else SOLVE_PHASE,
+                                    'driven rhs (complex128, built after the factorisation)',
+                                    COMPLEX128_BYTES * n_cells))
         if parked:   # all but the physics' own eps_xy change array live on the system
             system_items += [item for item in off_diagonal_run if not item[0].startswith('eps_xy coupled change')]
             run_items += [item for item in off_diagonal_run if item[0].startswith('eps_xy coupled change')]

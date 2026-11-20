@@ -269,7 +269,10 @@ type's vocabulary and refusals are in its help texts and validation.
   em_fdfd_hz_gyrotropic_adjoint_gradient.
 - Dirty flags: `_system_dirty` (materials_changed of a read array, slots, PEC, poles, new omega) reassembles and
   refactorises; `_solution_dirty` (that or a new source) re-solves. A recyclable factor at an unchanged omega (Picard
-  step) preconditions host GMRES instead (`_solve_linear`); A1 operators cached per omega (`_yee_ops`).
+  step) preconditions host GMRES instead (`_solve_linear`); A1 operators cached per omega (`_yee_ops`). `_solve`
+  factorises (`_prepare_driven_factor`) before it builds the rhs, so the rhs and the sources' temporaries never share
+  the device with the factorisation peak: a source's add_to_rhs must not need the factor, and new work between the
+  two keeps its full-grid arrays after the factorisation too (estimate: the rhs is a solve-phase item).
 - Where the system lives (gpu): `HarmonicSystem.cell_mu`, the cell eps (`cell_eps`, hz `cell_eps_xx / _yy`) and the
   hz `eps_hi_*_faces` are host numpy on both backends (read as lines, cells or whole on the host only): device code
   takes its xp from `weight_hi_*_faces`, never from them, and a new device consumer of them uploads what it reads
