@@ -58,6 +58,9 @@ A new accepted sync joins this list.
   step (material drift check, re-solve above `mode_ports._RESOLVE_DRIFT`); the E_z ohmic-box refresh per
   `materials_changed` of sigma_e.
 - laminar_flow: the velocity check once per lattice check interval (>= 100 steps).
+- Probe tables: `monitors.park_probe_rows` right after the time loops' per-chunk sync (study `_run_time_dependent`,
+  `_run_harmonic_pulse`), one transfer per table holding >= PROBE_PARK_ROWS rows; a HarmonicProbeRecord's stacked
+  transfer every HARMONIC_PARK_VALUES device values (between frequency solves).
 - Mechanics: per Newton iteration of a device tangent (fem.elasticity3d.TangentAssembler3D(device=True)) the
   displacement up / force down and the operator norm of `CudssFactorization.refactorize_device_values` (its scatter
   sums are cupyx.scatter_add, never cupy.bincount, which syncs on max(x) per call); per assembly with the
@@ -234,6 +237,17 @@ A new accepted sync joins this list.
 - Frequency-domain FEM solvers record point phasors through `HarmonicProbeRecord` / `harmonic_probe_result` (series
   `<c>_re/_im/_abs/_phase` vs Frequency [Hz]), so `two_wave_fit` / `pole_fit` read them all alike; series built
   elsewhere use `phasor_series`. The FDFD HarmonicProbe (wavelength abscissa) stays separate.
+- Device 0-d values go to the host (complex128 numbers) every HARMONIC_PARK_VALUES: a recorder may pass cupy 0-d
+  values without a sync, but never relies on them staying device arrays in `_rows`.
+
+## Probe tables (`monitors`)
+- gpu `ProbeRows` (FieldProbeRows, acoustics ProbeRecorder) park their device rows on a host table at study chunk
+  boundaries (`park_probe_rows`, a weak registry of live tables): `n_rows` counts every row, the device counter and
+  `device_rows` only those since the last park, the same device table and launch stay (step graphs keep their
+  pointers). Code reading samples goes through `column_values`, never `_samples` rows by absolute index; a park
+  between a record and its `stamp` / `rewrite_last_row` would lose that row (never inside a step). Scripts
+  (`Simulation.run`) do not park: their tables grow on the device as before. Per-probe FieldProbe buffers (cpu
+  engines, probes no table took over) never park. Estimate: `definition_resonance.point_trace_items`.
 
 ## Resonance finder (`resonance`, host numpy; the shared row is `model.definition_resonance`)
 - The analysis runs only in `ResonanceMonitor.result(waveforms, unit, dt)` (cached per (samples, start, dt)): dt is
