@@ -32,12 +32,13 @@ poles on region boxes and the J.E loss accounting (q_accum) of the EM loss proto
 # span}, the FDFD polar rule); a phase of 0 or pi mod 2 pi steps the real set alone (c = +-1, s = 0).
 # Backends: every array lives on the Domain's xp (cupy on 'gpu', numpy on 'cpu') and every kernel is
 # a core.kernels twin (kernels3d), so this one code path runs on both.
+import ctypes
 import math
 import warnings
 from dataclasses import replace
 
 import numpy as np
-from ...core.backend import array_module_of, host_copy, to_host
+from ...core.backend import array_module_of, to_host
 
 from ...core.constants import C0, DTYPE, ETA0
 from ...core.grid3d import finest_physical_widths_3d
@@ -266,7 +267,8 @@ class FDTDEngine3D:
         self.time = 0.0
         self.n_step = 0
         # J.E accounting (EM loss protocol): q_accum [J/m^3] over the current window and the last completed window (a
-        # host numpy copy: read only at a transfer, a render or the end-of-run merge), both on the loss box q_box (origin, shape: the bounding box of the sigma_e > 0 cells and the pole region windows,
+        # host float32 array, pinned on the gpu and filled by an async copy: read only through host_last_q_accum by a
+        # render, the end-of-run merge and snapshots), both on the loss box q_box (origin, shape: the bounding box of the sigma_e > 0 cells and the pole region windows,
         # grown, never shrunk, when a rebuild or a new pole reaches outside it; allocated at the first enable), the box
         # of the sigma_e > 0 cells (refreshed per rebuild) and pending pole work
         self._enable_q_accum = False
@@ -275,6 +277,7 @@ class FDTDEngine3D:
         self.q_accum_time = 0.0
         self.last_q_accum = None
         self.last_q_accum_time = 0.0
+        self._last_q_accum_event = None
         self._ohmic_box = None       # (origin, shape, launch) of the conducting cells, None without any
         self._pole_work_pending = False
         self._ints = tuple(np.int32(value) for value in (self.nx, self.ny, self.nz))
@@ -811,7 +814,9 @@ class FDTDEngine3D:
             return
         self.q_accum = self._regrid(self.q_accum, (origin, shape), (lower, new_shape))
         if self.last_q_accum is not None:
-            self.last_q_accum = self._regrid(self.last_q_accum, (origin, shape), (lower, new_shape))
+            last = self._host_buffer(new_shape)
+            last[...] = self._regrid(self.host_last_q_accum(), (origin, shape), (lower, new_shape))
+            self.last_q_accum = last
         self.q_box = (lower, new_shape)
 
     def _regrid(self, values, old_box, new_box):
@@ -868,8 +873,8 @@ class FDTDEngine3D:
         if box != self.q_box:
             self.q_box = box
             self.q_accum = self.xp.zeros(box[1], dtype=DTYPE)
-        if self.last_q_accum is not None and self.last_q_accum.shape != box[1]:
-            self.last_q_accum = np.zeros(box[1], dtype=DTYPE)
+        if self.last_q_accum is not None and self.host_last_q_accum().shape != box[1]:
+            self.last_q_accum = self._host_buffer(box[1])
         fill()
         self._fit_q_box()
 
@@ -941,15 +946,42 @@ class FDTDEngine3D:
         self._pole_work_pending = False
 
     def reset_q_accum(self) -> None:
-        """Start a new accumulation window; a non-empty one is kept as last_q_accum (host copy: one transfer of the
-        loss box) / last_q_accum_time."""
+        """Start a new accumulation window; a non-empty one is parked on the host as last_q_accum / last_q_accum_time
+        (gpu: an async copy of the loss box into the pinned buffer on the current stream, no host sync; the zero fill
+        of q_accum after it queues behind it)."""
         self.deposit_pole_work()
         if self.q_accum_time > 0.0:
-            self.last_q_accum = host_copy(self.q_accum)
+            if self.last_q_accum is None or self.last_q_accum.shape != self.q_accum.shape:
+                self.host_last_q_accum()   # nothing in flight into a buffer that is dropped
+                self.last_q_accum = self._host_buffer(self.q_accum.shape)
+            if self.xp is np:
+                np.copyto(self.last_q_accum, self.q_accum)
+            elif self.q_accum.size:
+                stream = self.xp.cuda.get_current_stream()
+                self.q_accum.data.copy_to_host_async(ctypes.c_void_p(self.last_q_accum.ctypes.data),
+                                                     self.q_accum.nbytes, stream)
+                self._last_q_accum_event = stream.record()
             self.last_q_accum_time = self.q_accum_time
         if self.q_accum is not None:
             self.q_accum.fill(DTYPE(0.0))
         self.q_accum_time = 0.0
+
+    def _host_buffer(self, shape):
+        """A host float32 array of shape: pinned on the gpu (async device-to-host copies), plain numpy on the cpu."""
+        dtype = np.dtype(DTYPE)
+        count = math.prod(shape)
+        if self.xp is np or count == 0:
+            return np.zeros(shape, dtype=dtype)
+        memory = self.xp.cuda.alloc_pinned_memory(count * dtype.itemsize)
+        return np.frombuffer(memory, dtype=dtype, count=count).reshape(shape)
+
+    def host_last_q_accum(self):
+        """The last completed window [J/m^3] on the loss box as a host float32 array (None before the first one),
+        after its device-to-host copy finished (one event wait on the gpu)."""
+        if self._last_q_accum_event is not None:
+            self._last_q_accum_event.synchronize()
+            self._last_q_accum_event = None
+        return self.last_q_accum
 
     def take_absorbed_power(self, merge_previous: bool = False):
         """Mean absorbed power density [W/m^3] since the last call (new full-grid array, 0 outside the loss box), then a
@@ -960,7 +992,7 @@ class FDTDEngine3D:
             return None
         self.deposit_pole_work()
         if merge_previous and self.last_q_accum is not None:
-            self.q_accum += self.xp.asarray(self.last_q_accum)
+            self.q_accum += self.xp.asarray(self.host_last_q_accum())
             window += float(self.last_q_accum_time)
             self.q_accum_time = window
         power_density = self.q_grid(self.q_accum)

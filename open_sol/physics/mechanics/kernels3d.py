@@ -9,6 +9,13 @@ import numpy as np
 
 from ...core.kernels import real_raw_twin
 
+# The reduced inverse node blocks (block-Jacobi preconditioner) are stored float32 at every solve precision: they are
+# formed and inverted in the solve dtype and only rounded on storage; a preconditioner changes the CG path, not its
+# fixed point (the residual and the stop test stay in the solve dtype), and a 6e-8 relative rounding of a symmetric
+# block inverse keeps it symmetric positive definite (non-SPD reduced blocks already fall back to the diagonal), so a
+# float64 solve still reaches its tolerance; half the block bytes (24 B / node) and their per-iteration reads.
+PRECONDITIONER_DTYPE = np.dtype(np.float32)
+
 # Cell-centre outputs in the argument order of elastic_outputs (the 3D field class keeps this order).
 OUTPUT_ARRAYS_3D = ('u_x', 'u_y', 'u_z', 'u_abs',
                     'strain_xx', 'strain_yy', 'strain_zz', 'strain_xy', 'strain_xz', 'strain_yz',
@@ -417,23 +424,24 @@ void reduce_invert_blocks(real_t* __restrict__ blocks, const bool* __restrict__ 
     }
 }
 """,
-    # z = B_solve^-1 r per node (symmetric inverse blocks xx, yy, zz, xy, xz, yz). block_precondition3_rows: r, z of
-    # n_rows C rows (n_rows, 3 n_nodes), one thread per (row, node), the blocks shared.
+    # z = B_solve^-1 r per node (symmetric inverse blocks xx, yy, zz, xy, xz, yz; float32 at every precision, see
+    # PRECONDITIONER_DTYPE). block_precondition3_rows: r, z of n_rows C rows (n_rows, 3 n_nodes), one thread per (row,
+    # node), the blocks shared.
     'block_precondition3': r"""
 __device__ __forceinline__ void block_precondition3_node(
-    int node, const real_t* __restrict__ inverse, const real_t* __restrict__ r, real_t* __restrict__ z)
+    int node, const float* __restrict__ inverse, const real_t* __restrict__ r, real_t* __restrict__ z)
 {
-    const real_t* b = inverse + 6 * (idx_t)node;
+    const float* b = inverse + 6 * (idx_t)node;
     const int dof = 3 * node;
     const real_t r0 = r[dof], r1 = r[dof + 1], r2 = r[dof + 2];
-    z[dof] = b[0] * r0 + b[3] * r1 + b[4] * r2;
-    z[dof + 1] = b[3] * r0 + b[1] * r1 + b[5] * r2;
-    z[dof + 2] = b[4] * r0 + b[5] * r1 + b[2] * r2;
+    z[dof] = (real_t)b[0] * r0 + (real_t)b[3] * r1 + (real_t)b[4] * r2;
+    z[dof + 1] = (real_t)b[3] * r0 + (real_t)b[1] * r1 + (real_t)b[5] * r2;
+    z[dof + 2] = (real_t)b[4] * r0 + (real_t)b[5] * r1 + (real_t)b[2] * r2;
 }
 
 extern "C" __global__
 void block_precondition3(
-    const real_t* __restrict__ inverse, const real_t* __restrict__ r, real_t* __restrict__ z, int n_nodes)
+    const float* __restrict__ inverse, const real_t* __restrict__ r, real_t* __restrict__ z, int n_nodes)
 {
     const int node = blockIdx.x * blockDim.x + threadIdx.x;
     if (node >= n_nodes) return;
@@ -442,7 +450,7 @@ void block_precondition3(
 
 extern "C" __global__
 void block_precondition3_rows(
-    const real_t* __restrict__ inverse, const real_t* __restrict__ r, real_t* __restrict__ z, int n_nodes, int n_rows)
+    const float* __restrict__ inverse, const real_t* __restrict__ r, real_t* __restrict__ z, int n_nodes, int n_rows)
 {
     const idx_t index = (idx_t)blockIdx.x * blockDim.x + threadIdx.x;
     if (index >= (idx_t)n_nodes * n_rows) return;
@@ -457,7 +465,7 @@ void block_precondition3_rows(
 extern "C" __global__
 void elastic_update_precondition(
     const real_t* __restrict__ direction, const real_t* __restrict__ product, real_t* __restrict__ solution,
-    real_t* __restrict__ residual, real_t* __restrict__ preconditioned, const real_t* __restrict__ inverse,
+    real_t* __restrict__ residual, real_t* __restrict__ preconditioned, const float* __restrict__ inverse,
     const real_t* __restrict__ rho, const real_t* __restrict__ pq_partials, real_t* __restrict__ rz_partials,
     int n_partials, int update, int n_nodes)
 {
@@ -478,10 +486,10 @@ void elastic_update_precondition(
                 residual[dof + a] = r[a];
             }
         }
-        const real_t* b = inverse + 6 * (idx_t)node;
-        const real_t z0 = b[0] * r[0] + b[3] * r[1] + b[4] * r[2];
-        const real_t z1 = b[3] * r[0] + b[1] * r[1] + b[5] * r[2];
-        const real_t z2 = b[4] * r[0] + b[5] * r[1] + b[2] * r[2];
+        const float* b = inverse + 6 * (idx_t)node;
+        const real_t z0 = (real_t)b[0] * r[0] + (real_t)b[3] * r[1] + (real_t)b[4] * r[2];
+        const real_t z1 = (real_t)b[3] * r[0] + (real_t)b[1] * r[1] + (real_t)b[5] * r[2];
+        const real_t z2 = (real_t)b[4] * r[0] + (real_t)b[5] * r[1] + (real_t)b[2] * r[2];
         preconditioned[dof] = z0;
         preconditioned[dof + 1] = z1;
         preconditioned[dof + 2] = z2;
@@ -533,16 +541,17 @@ void elastic_direction_product(
 }
 """,
     # Total nodal load [N] = applied + per adjacent solid element: thermal beta_a dT s_ka A_perp_a / 4 (lower-side
-    # nodes -, upper-side +) and body force (coupled + applied) times volume / 8.
+    # nodes -, upper-side +) and body force (coupled + applied) times volume / 8; has_applied_load / has_applied_body
+    # 0: no applied nodal load / per-element body force (applied_load / applied_body unread dummies).
     'elastic_load': r"""
 extern "C" __global__
 void elastic_load(
-    real_t* __restrict__ load, const real_t* __restrict__ applied_load,
+    real_t* __restrict__ load, const real_t* __restrict__ applied_load, int has_applied_load,
     const real_t* __restrict__ lam, const real_t* __restrict__ mu,
     const float* __restrict__ alpha_xx, const float* __restrict__ alpha_yy, const float* __restrict__ alpha_zz,
     const float* __restrict__ rise, const float* __restrict__ rise_ext,
     const float* __restrict__ body_x, const float* __restrict__ body_y, const float* __restrict__ body_z,
-    const real_t* __restrict__ applied_body,
+    const real_t* __restrict__ applied_body, int has_applied_body,
     const real_t* __restrict__ wx, const real_t* __restrict__ wy, const real_t* __restrict__ wz,
     int ex, int ey, int ez, int ox, int oy, int oz, int ny_full, int nz_full)
 {
@@ -552,7 +561,9 @@ void elastic_load(
     int i, j, k;
     node_ijk(node, nyn, nzn, &i, &j, &k);
     const int n_elements = ex * ey * ez;
-    real_t acc[3] = {applied_load[3 * node], applied_load[3 * node + 1], applied_load[3 * node + 2]};
+    real_t acc[3] = {(real_t)0, (real_t)0, (real_t)0};
+    if (has_applied_load)
+        for (int a = 0; a < 3; ++a) acc[a] = applied_load[3 * node + a];
     for (int di = 0; di < 2; ++di) {
         const int ei = i - 1 + di;
         if (ei < 0 || ei >= ex) continue;
@@ -574,9 +585,12 @@ void elastic_load(
                 const real_t alpha[3] = {(real_t)alpha_xx[g], (real_t)alpha_yy[g], (real_t)alpha_zz[g]};
                 const real_t alpha_sum = alpha[0] + alpha[1] + alpha[2];
                 const real_t dT = (real_t)rise[g] + (real_t)rise_ext[g];
-                const real_t body[3] = {(real_t)body_x[g] + applied_body[e],
-                                        (real_t)body_y[g] + applied_body[n_elements + e],
-                                        (real_t)body_z[g] + applied_body[2 * n_elements + e]};
+                real_t body[3] = {(real_t)body_x[g], (real_t)body_y[g], (real_t)body_z[g]};
+                if (has_applied_body) {
+                    body[0] += applied_body[e];
+                    body[1] += applied_body[n_elements + e];
+                    body[2] += applied_body[2 * n_elements + e];
+                }
                 const real_t eighth_volume = (real_t)0.125 * a_w * b_w * c_w;
                 for (int a = 0; a < 3; ++a) {
                     const real_t beta = (real_t)2 * m * alpha[a] + l * alpha_sum;   // (C alpha)_aa per kelvin
@@ -1070,8 +1084,9 @@ def _window_values_host(full, window, dtype):
     return full[window].astype(dtype)
 
 
-def _elastic_load_host(out, applied_load, lame_lambda, mu, alpha_xx, alpha_yy, alpha_zz, rise, rise_ext, body_x, body_y,
-                       body_z, applied_body, wx, wy, wz, ex, ey, ez, ox, oy, oz, ny_full, nz_full):
+def _elastic_load_host(out, applied_load, has_applied_load, lame_lambda, mu, alpha_xx, alpha_yy, alpha_zz, rise,
+                       rise_ext, body_x, body_y, body_z, applied_body, has_applied_body, wx, wy, wz, ex, ey, ez, ox, oy,
+                       oz, ny_full, nz_full):
     ex, ey, ez, ox, oy, oz = (int(value) for value in (ex, ey, ez, ox, oy, oz))
     dtype = out.dtype
     window = (slice(ox, ox + ex), slice(oy, oy + ey), slice(oz, oz + ez))
@@ -1079,16 +1094,18 @@ def _elastic_load_host(out, applied_load, lame_lambda, mu, alpha_xx, alpha_yy, a
     alphas = tuple(_window_values_host(alpha, window, dtype) for alpha in (alpha_xx, alpha_yy, alpha_zz))
     alpha_sum = alphas[0] + alphas[1] + alphas[2]
     temperature_change = _window_values_host(rise, window, dtype) + _window_values_host(rise_ext, window, dtype)
-    applied = applied_body.reshape(3, ex, ey, ez)
-    bodies = tuple(_window_values_host(body, window, dtype) + applied[axis]
-                   for axis, body in enumerate((body_x, body_y, body_z)))
+    bodies = tuple(_window_values_host(body, window, dtype) for body in (body_x, body_y, body_z))
+    if int(has_applied_body):
+        applied = applied_body.reshape(3, ex, ey, ez)
+        bodies = tuple(body + applied[axis] for axis, body in enumerate(bodies))
     a_w, b_w, c_w = wx[:, None, None], wy[None, :, None], wz[None, None, :]
     areas = (b_w * c_w, a_w * c_w, a_w * b_w)
     eighth_volume = 0.125 * a_w * b_w * c_w
     thermal = tuple(np.where(solid, 0.25 * (2.0 * shear * alphas[axis] + lam * alpha_sum) * temperature_change
                              * areas[axis], 0) for axis in range(3))
     body = tuple(np.where(solid, eighth_volume * bodies[axis], 0) for axis in range(3))
-    load = applied_load.reshape(ex + 1, ey + 1, ez + 1, 3).copy()
+    load = (applied_load.reshape(ex + 1, ey + 1, ez + 1, 3).copy() if int(has_applied_load)
+            else np.zeros((ex + 1, ey + 1, ez + 1, 3), dtype=dtype))
     for corner in _CORNERS:   # lower-side nodes of an element take -, upper-side + of the thermal term
         target = load[corner[0]:corner[0] + ex, corner[1]:corner[1] + ey, corner[2]:corner[2] + ez]
         for axis in range(3):
@@ -1146,8 +1163,11 @@ _NUMBA_TWINS = {'elastic_product': _elastic_product_numba, 'elastic_mass_product
                 'elastic_direction_product': _elastic_direction_product_numba}
 # name -> core.kernels twin: the cupy RawKernel (compiled per real type of args[0], every kernel's first array) for cupy
 # arguments, the numba / numpy twin for numpy ones
+# kernels whose first array is not real_t: the argument that sets their real type (block_precondition3: the float32
+# blocks come first)
+_DTYPE_ARGUMENTS = {'block_precondition3': 1}
 _TWINS = {name: real_raw_twin(f'mechanics3d.{name}', _PREAMBLE + _SOURCES[name], name, host,
-                              numba=_NUMBA_TWINS.get(name))
+                              numba=_NUMBA_TWINS.get(name), dtype_argument=_DTYPE_ARGUMENTS.get(name, 0))
           for name, host in _HOST_TWINS.items()}
 
 
@@ -1261,14 +1281,17 @@ class BrickKernels:
 
     def load(self, out, applied_load, lame_lambda, mu, alphas, temperature_rise, temperature_rise_ext, body_forces,
              applied_body_force, widths):
-        """out = applied nodal load + thermal load + body forces (coupled full-grid + applied per element) [N]."""
+        """out = applied nodal load (None: none) + thermal load + body forces (coupled full-grid + applied per element,
+        None: none) [N]."""
         full = [self._full_grid(array, label) for array, label in zip(
             (*alphas, temperature_rise, temperature_rise_ext, *body_forces),
             ('alpha_xx', 'alpha_yy', 'alpha_zz', 'temperature_rise', 'temperature_rise_ext',
              'body_force_x', 'body_force_y', 'body_force_z'))]
+        has_load, has_body = applied_load is not None, applied_body_force is not None
         self._launch('elastic_load', self._node_blocks,
-                     (out, applied_load, lame_lambda, mu, *full, applied_body_force, *widths,
-                      *self._element_args, *self._window_args))
+                     (out, applied_load if has_load else lame_lambda, _MASK_ON if has_load else _MASK_OFF,
+                      lame_lambda, mu, *full, applied_body_force if has_body else lame_lambda,
+                      _MASK_ON if has_body else _MASK_OFF, *widths, *self._element_args, *self._window_args))
 
     def outputs(self, output_arrays, unknown, lame_lambda, mu, alphas, temperature_rise, temperature_rise_ext,
                 widths, thermal=True):

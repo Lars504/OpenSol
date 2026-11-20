@@ -888,12 +888,13 @@ to_physical = twin('fluid.lattice_to_physical', _to_physical_gpu, _to_physical_h
 # Steady / health check of FluidPhysics in one pass: maxima (uint32 bits of non-negative float32: their order is the
 # float order, NaN above inf, so atomicMax keeps a NaN) = (max |u_x - saved_x|, max |u_y - saved_y|, max u^2), then
 # saved = lattice velocity; maxima must be zero before the launch (grid-stride, warp shuffle, 3 atomics per warp).
+# saved may be the lattice arrays themselves (the transient health check keeps no saved velocity: change 0), so the
+# velocity pointers carry no __restrict__.
 _VELOCITY_CHECK_SOURCE = r'''
 __device__ __forceinline__ unsigned int larger_bits(const unsigned int a, const unsigned int b) { return a > b ? a : b; }
 
 extern "C" __global__
-void lattice_velocity_check(const float* __restrict__ lattice_x, const float* __restrict__ lattice_y,
-                            float* __restrict__ saved_x, float* __restrict__ saved_y,
+void lattice_velocity_check(const float* lattice_x, const float* lattice_y, float* saved_x, float* saved_y,
                             unsigned int* __restrict__ maxima, const int n_cells)
 {
     unsigned int change_x = 0u, change_y = 0u, speed_squared = 0u;
@@ -922,7 +923,8 @@ VELOCITY_CHECK_BLOCKS = 64   # grid-stride blocks of BLOCK_SIZE threads (few ato
 
 
 def _velocity_check_host(lattice_x, lattice_y, saved_x, saved_y, maxima, n_cells):
-    """numpy twin of lattice_velocity_check: the three maxima as float32 into the uint32 maxima, saved = lattice."""
+    """numpy twin of lattice_velocity_check: the three maxima as float32 into the uint32 maxima, saved = lattice (saved
+    may be lattice itself)."""
     maxima_values = maxima.view(np.float32)
     maxima_values[0] = np.abs(lattice_x - saved_x).max()
     maxima_values[1] = np.abs(lattice_y - saved_y).max()

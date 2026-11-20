@@ -8,7 +8,8 @@ import numpy as np
 from ....core.backend import cp
 from ....core.kernels import real_raw_twin, twin
 
-from .fdtd_ez_2d_kernels import launch, h_coefficients, lorentz_e_correction, drude_e_correction, q_accum_je_half
+from .fdtd_ez_2d_kernels import (drude_e_correction, h_coefficients, host_coefficient, launch, lorentz_e_correction,
+                                 numba_coefficient, q_accum_je_half)
 from ..yee_grid import face_partner
 
 
@@ -35,7 +36,7 @@ void update_hz_kernel(
     const real_t* __restrict__ db,
     const real_t* __restrict__ inv_dx_e,
     const real_t* __restrict__ inv_dy_e,
-    int nx, int ny, int periodic_x, int periodic_y,
+    int nx, int ny, int periodic_x, int periodic_y, int h_uniform,
     const real_t* __restrict__ ex_partner,
     const real_t* __restrict__ ey_partner,
     real_t wrap_cos_x, real_t wrap_sin_x, real_t wrap_cos_y, real_t wrap_sin_y)
@@ -57,13 +58,15 @@ void update_hz_kernel(
         curl -= (ey[idx] - (ey[wrapped] * wrap_cos_x - ey_partner[wrapped] * wrap_sin_x)) * inv_dx_e[i];
     }
     else                 curl -= ey[idx]                             * inv_dx_e[i];
-    hz[idx] = da[idx] * hz[idx] + db[idx] * curl;
+    int hc = h_uniform ? 0 : idx;
+    hz[idx] = da[hc] * hz[idx] + db[hc] * curl;
 }
 """
 
 
-def _update_hz_host(hz, ex, ey, da, db, inv_dx_e, inv_dy_e, nx, ny, periodic_x, periodic_y, ex_partner, ey_partner,
-                    wrap_cos_x, wrap_sin_x, wrap_cos_y, wrap_sin_y):
+def _update_hz_host(hz, ex, ey, da, db, inv_dx_e, inv_dy_e, nx, ny, periodic_x, periodic_y, h_uniform, ex_partner,
+                    ey_partner, wrap_cos_x, wrap_sin_x, wrap_cos_y, wrap_sin_y):
+    da, db = (host_coefficient(values, h_uniform, hz.shape) for values in (da, db))
     curl = np.empty_like(hz)
     curl[:, 1:] = (ex[:, 1:] - ex[:, :-1]) * inv_dy_e[1:]
     if periodic_y:
@@ -82,8 +85,8 @@ def _update_hz_host(hz, ex, ey, da, db, inv_dx_e, inv_dy_e, nx, ny, periodic_x, 
 
 def _update_hz_numba(numba):
     @numba.njit(parallel=True, cache=True)
-    def kernel(hz, ex, ey, da, db, inv_dx_e, inv_dy_e, nx, ny, periodic_x, periodic_y, ex_partner, ey_partner,
-               wrap_cos_x, wrap_sin_x, wrap_cos_y, wrap_sin_y):
+    def kernel(hz, ex, ey, da, db, inv_dx_e, inv_dy_e, nx, ny, periodic_x, periodic_y, h_uniform, ex_partner,
+               ey_partner, wrap_cos_x, wrap_sin_x, wrap_cos_y, wrap_sin_y):
         for prange_i in numba.prange(nx):
             i = np.int64(prange_i)   # the parfor gufunc types the prange index uint64: mixed with int64 -> float64
             for j in range(ny):
@@ -99,8 +102,15 @@ def _update_hz_numba(numba):
                     curl -= (ey[i, j] - (ey[nx - 1, j] * wrap_cos_x - ey_partner[nx - 1, j] * wrap_sin_x)) * inv_dx_e[i]
                 else:
                     curl -= ey[i, j] * inv_dx_e[i]
-                hz[i, j] = da[i, j] * hz[i, j] + db[i, j] * curl
-    return kernel
+                if h_uniform:
+                    hz[i, j] = da[0, 0] * hz[i, j] + db[0, 0] * curl
+                else:
+                    hz[i, j] = da[i, j] * hz[i, j] + db[i, j] * curl
+
+    def call(hz, ex, ey, da, db, *args):   # uniform storage (1,) -> (1, 1): every indexed array is 2D (numba trap)
+        uniform = args[6]
+        kernel(hz, ex, ey, numba_coefficient(da, uniform), numba_coefficient(db, uniform), *args)
+    return call
 
 
 update_hz_kernel = real_raw_twin('em2d.update_hz', _UPDATE_HZ_SOURCE, 'update_hz_kernel', _update_hz_host,
@@ -124,7 +134,7 @@ void update_exy_kernel(
     const real_t* __restrict__ cb_y,
     const real_t* __restrict__ inv_dx_h,
     const real_t* __restrict__ inv_dy_h,
-    int nx, int ny, int periodic_x, int periodic_y,
+    int nx, int ny, int periodic_x, int periodic_y, int ca_uniform,
     const real_t* __restrict__ hz_partner,
     real_t wrap_cos_x, real_t wrap_sin_x, real_t wrap_cos_y, real_t wrap_sin_y)
 {
@@ -132,19 +142,21 @@ void update_exy_kernel(
     int i = blockIdx.y * blockDim.y + threadIdx.y;
     if (i >= nx || j >= ny) return;
     int idx = i * ny + j;
+    int ac = ca_uniform ? 0 : idx;
     real_t h = hz[idx];
-    if (j < ny - 1)      ex[idx] = ca_x[idx] * ex[idx] + cb_x[idx] * (hz[idx + 1]  - h) * inv_dy_h[j];
-    else if (periodic_y) ex[idx] = ca_x[idx] * ex[idx] + cb_x[idx]
+    if (j < ny - 1)      ex[idx] = ca_x[ac] * ex[idx] + cb_x[idx] * (hz[idx + 1]  - h) * inv_dy_h[j];
+    else if (periodic_y) ex[idx] = ca_x[ac] * ex[idx] + cb_x[idx]
                                    * (hz[i * ny] * wrap_cos_y + hz_partner[i * ny] * wrap_sin_y - h) * inv_dy_h[j];
-    if (i < nx - 1)      ey[idx] = ca_y[idx] * ey[idx] - cb_y[idx] * (hz[idx + ny] - h) * inv_dx_h[i];
-    else if (periodic_x) ey[idx] = ca_y[idx] * ey[idx] - cb_y[idx]
+    if (i < nx - 1)      ey[idx] = ca_y[ac] * ey[idx] - cb_y[idx] * (hz[idx + ny] - h) * inv_dx_h[i];
+    else if (periodic_x) ey[idx] = ca_y[ac] * ey[idx] - cb_y[idx]
                                    * (hz[j] * wrap_cos_x + hz_partner[j] * wrap_sin_x - h) * inv_dx_h[i];
 }
 """
 
 
 def _update_exy_host(ex, ey, hz, ca_x, cb_x, ca_y, cb_y, inv_dx_h, inv_dy_h, nx, ny, periodic_x, periodic_y,
-                     hz_partner, wrap_cos_x, wrap_sin_x, wrap_cos_y, wrap_sin_y):
+                     ca_uniform, hz_partner, wrap_cos_x, wrap_sin_x, wrap_cos_y, wrap_sin_y):
+    ca_x, ca_y = (host_coefficient(values, ca_uniform, hz.shape) for values in (ca_x, ca_y))
     ex[:, :-1] = ca_x[:, :-1] * ex[:, :-1] + cb_x[:, :-1] * (hz[:, 1:] - hz[:, :-1]) * inv_dy_h[:-1]
     if periodic_y:
         ex[:, -1] = ca_x[:, -1] * ex[:, -1] + cb_x[:, -1] * (
@@ -158,22 +170,28 @@ def _update_exy_host(ex, ey, hz, ca_x, cb_x, ca_y, cb_y, inv_dx_h, inv_dy_h, nx,
 def _update_exy_numba(numba):
     @numba.njit(parallel=True, cache=True)
     def kernel(ex, ey, hz, ca_x, cb_x, ca_y, cb_y, inv_dx_h, inv_dy_h, nx, ny, periodic_x, periodic_y,
-               hz_partner, wrap_cos_x, wrap_sin_x, wrap_cos_y, wrap_sin_y):
+               ca_uniform, hz_partner, wrap_cos_x, wrap_sin_x, wrap_cos_y, wrap_sin_y):
         for prange_i in numba.prange(nx):
             i = np.int64(prange_i)   # the parfor gufunc types the prange index uint64: mixed with int64 -> float64
             for j in range(ny):
+                a_x = ca_x[0, 0] if ca_uniform else ca_x[i, j]
+                a_y = ca_y[0, 0] if ca_uniform else ca_y[i, j]
                 h = hz[i, j]
                 if j < ny - 1:
-                    ex[i, j] = ca_x[i, j] * ex[i, j] + cb_x[i, j] * (hz[i, j + 1] - h) * inv_dy_h[j]
+                    ex[i, j] = a_x * ex[i, j] + cb_x[i, j] * (hz[i, j + 1] - h) * inv_dy_h[j]
                 elif periodic_y:
-                    ex[i, j] = ca_x[i, j] * ex[i, j] + cb_x[i, j] * (
+                    ex[i, j] = a_x * ex[i, j] + cb_x[i, j] * (
                         hz[i, 0] * wrap_cos_y + hz_partner[i, 0] * wrap_sin_y - h) * inv_dy_h[j]
                 if i < nx - 1:
-                    ey[i, j] = ca_y[i, j] * ey[i, j] - cb_y[i, j] * (hz[i + 1, j] - h) * inv_dx_h[i]
+                    ey[i, j] = a_y * ey[i, j] - cb_y[i, j] * (hz[i + 1, j] - h) * inv_dx_h[i]
                 elif periodic_x:
-                    ey[i, j] = ca_y[i, j] * ey[i, j] - cb_y[i, j] * (
+                    ey[i, j] = a_y * ey[i, j] - cb_y[i, j] * (
                         hz[0, j] * wrap_cos_x + hz_partner[0, j] * wrap_sin_x - h) * inv_dx_h[i]
-    return kernel
+
+    def call(ex, ey, hz, ca_x, cb_x, ca_y, *args):   # uniform storage (1,) -> (1, 1) (numba trap: 2D arrays only)
+        uniform = args[7]
+        kernel(ex, ey, hz, numba_coefficient(ca_x, uniform), cb_x, numba_coefficient(ca_y, uniform), *args)
+    return call
 
 
 update_exy_kernel = real_raw_twin('em2d.update_exy', _UPDATE_EXY_SOURCE, 'update_exy_kernel', _update_exy_host,
@@ -186,7 +204,9 @@ update_exy_kernel = real_raw_twin('em2d.update_exy', _UPDATE_EXY_SOURCE, 'update
 # E_y[i, j] with (i+1, j); the last column / row pairs with cell 0 on periodic axes, else with itself. Then the
 # semi-implicit coefficients of eps dE/dt = curl H - sigma E - J: eps = eps_rel eps0 [F/m], k = sigma dt / (2 eps),
 # ca = (1 - k) / (1 + k), cb = (dt / eps) / (1 + k) (also the Drude correction factor). Materials are float32, the face
-# shares, coefficients, dt and eps0 real_t (the face mean in real_t, rounded like face_average in that dtype).
+# shares, coefficients, dt and eps0 real_t (the face mean in real_t, rounded like face_average in that dtype). write_ca 0
+# leaves ca (the engine's uniform 1 while sigma_e is 0 everywhere: a (1,) array) and write_eps 0 eps_abs (allocated only
+# for a nonlinear medium) unwritten.
 _E_FACE_COEFFICIENTS_SOURCE = r"""
 __device__ __forceinline__ real_t face_value(real_t self_value, real_t partner_value, real_t lower_share,
                                              real_t upper_share)
@@ -199,14 +219,15 @@ __device__ __forceinline__ real_t face_value(real_t self_value, real_t partner_v
 }
 
 __device__ __forceinline__ void store_face_coefficients(
-    real_t eps_rel, real_t sigma, real_t dt, real_t eps0, real_t* ca, real_t* cb, real_t* eps_abs, int idx)
+    real_t eps_rel, real_t sigma, real_t dt, real_t eps0, real_t* ca, real_t* cb, real_t* eps_abs, int idx,
+    int write_ca, int write_eps)
 {
     real_t eps = eps_rel * eps0;
     real_t k = sigma * dt / ((real_t)2 * eps);
     real_t denom = (real_t)1 + k;
-    ca[idx] = ((real_t)1 - k) / denom;
+    if (write_ca) ca[idx] = ((real_t)1 - k) / denom;
     cb[idx] = (dt / eps) / denom;
-    eps_abs[idx] = eps;
+    if (write_eps) eps_abs[idx] = eps;
 }
 
 extern "C" __global__
@@ -224,7 +245,7 @@ void e_face_coefficients(
     const real_t* __restrict__ upper_share_y,
     const real_t* __restrict__ lower_share_x,
     const real_t* __restrict__ upper_share_x,
-    int nx, int ny, int periodic_x, int periodic_y, real_t dt, real_t eps0)
+    int nx, int ny, int periodic_x, int periodic_y, int write_ca, int write_eps, real_t dt, real_t eps0)
 {
     int j = blockIdx.x * blockDim.x + threadIdx.x;
     int i = blockIdx.y * blockDim.y + threadIdx.y;
@@ -235,13 +256,13 @@ void e_face_coefficients(
     store_face_coefficients(
         face_value(eps_xx[idx], eps_xx[partner_x], lower_share_y[j], upper_share_y[j]),
         face_value(sigma_e[idx], sigma_e[partner_x], lower_share_y[j], upper_share_y[j]),
-        dt, eps0, ca_x, cb_x, eps_x, idx);
+        dt, eps0, ca_x, cb_x, eps_x, idx, write_ca, write_eps);
     int partner_i = (i < nx - 1) ? i + 1 : (periodic_x ? 0 : i);
     int partner_y = partner_i * ny + j;
     store_face_coefficients(
         face_value(eps_yy[idx], eps_yy[partner_y], lower_share_x[i], upper_share_x[i]),
         face_value(sigma_e[idx], sigma_e[partner_y], lower_share_x[i], upper_share_x[i]),
-        dt, eps0, ca_y, cb_y, eps_y, idx);
+        dt, eps0, ca_y, cb_y, eps_y, idx, write_ca, write_eps);
 }
 """
 
@@ -251,27 +272,30 @@ def _partner_index(n, periodic):
     return face_partner(np.arange(int(n)), 0, periodic)
 
 
-def _store_face_coefficients_host(eps_rel, sigma, dt, eps0, ca, cb, eps_abs):
+def _store_face_coefficients_host(eps_rel, sigma, dt, eps0, ca, cb, eps_abs, write_ca, write_eps):
     eps = eps_rel * eps0
     k = sigma * dt / (2.0 * eps)
     denom = 1.0 + k
-    ca[...] = (1.0 - k) / denom
+    if write_ca:
+        ca[...] = (1.0 - k) / denom
     cb[...] = (dt / eps) / denom
-    eps_abs[...] = eps
+    if write_eps:
+        eps_abs[...] = eps
 
 
 def _e_face_coefficients_host(ca_x, cb_x, eps_x, ca_y, cb_y, eps_y, eps_xx, eps_yy, sigma_e, lower_share_y,
-                              upper_share_y, lower_share_x, upper_share_x, nx, ny, periodic_x, periodic_y, dt, eps0):
+                              upper_share_y, lower_share_x, upper_share_x, nx, ny, periodic_x, periodic_y, write_ca,
+                              write_eps, dt, eps0):
     partner_j = _partner_index(ny, periodic_y)
     partner_i = _partner_index(nx, periodic_x)
-    eps_xx, eps_yy, sigma_e = (array.astype(ca_x.dtype, copy=False) for array in (eps_xx, eps_yy, sigma_e))
+    eps_xx, eps_yy, sigma_e = (array.astype(cb_x.dtype, copy=False) for array in (eps_xx, eps_yy, sigma_e))
     _store_face_coefficients_host(eps_xx * lower_share_y + eps_xx[:, partner_j] * upper_share_y,
                                   sigma_e * lower_share_y + sigma_e[:, partner_j] * upper_share_y,
-                                  dt, eps0, ca_x, cb_x, eps_x)
+                                  dt, eps0, ca_x, cb_x, eps_x, write_ca, write_eps)
     lower_x, upper_x = lower_share_x[:, None], upper_share_x[:, None]
     _store_face_coefficients_host(eps_yy * lower_x + eps_yy[partner_i] * upper_x,
                                   sigma_e * lower_x + sigma_e[partner_i] * upper_x,
-                                  dt, eps0, ca_y, cb_y, eps_y)
+                                  dt, eps0, ca_y, cb_y, eps_y, write_ca, write_eps)
 
 
 e_face_coefficients = real_raw_twin('em2d.e_face_coefficients', _E_FACE_COEFFICIENTS_SOURCE, 'e_face_coefficients',

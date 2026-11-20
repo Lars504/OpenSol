@@ -121,7 +121,8 @@ class MagneticPhysics3D(MirrorTotals, DiffusionPhysicsBase):
         self._bind_window(self.fields.phi_m)
         self._derived_pml_copies = [pair for field_name in MAGNETIC_3D_FIELD_NAMES[1:]
                                     for pair in edge_extension_views_3d(getattr(self.fields, field_name), window)]
-        self._zero_source = self.xp.zeros(system.window_shape, dtype=DTYPE)   # build_rhs input: no volume sources
+        # build_rhs input: no volume sources (0-d: the source kernels broadcast it, no float32 window)
+        self._zero_source = self.xp.zeros((), dtype=DTYPE)
         # window face / centre coordinates [m] from the window's lower corner (host float64), the external ring's frame
         self._faces = tuple(np.concatenate(([0.0], np.cumsum(widths)))
                             for widths in (system.dx_window, system.dy_window, system.dz_window))

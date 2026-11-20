@@ -12,6 +12,20 @@ from ....core.kernels import real_raw_twin, twin
 _BLOCK = (32, 8, 1)
 
 
+# Uniform coefficient storage (both engines, fdtd_2d_base "Coefficient storage"): da / db (and ca when sigma_e is 0
+# everywhere) may be ONE value, a (1,) array, instead of an (nx, ny) one; the Yee / conformal kernels take an int flag
+# per such pair (h_uniform, ca_uniform) and read entry 0 for every cell. Twins: the numpy ones broadcast the value over
+# the grid (host_coefficient), the numba ones get it as (1, 1) and read [0, 0] (every array a numba twin indexes is 2D).
+def host_coefficient(values, uniform, shape):
+    """numpy twins: the full-grid (read-only when broadcast) view of a coefficient storage."""
+    return np.broadcast_to(values.reshape(1, 1), shape) if uniform else values
+
+
+def numba_coefficient(values, uniform):
+    """numba twins: a coefficient storage as a 2D array ((1, 1) when uniform, read at [0, 0])."""
+    return values.reshape(1, 1) if uniform else values
+
+
 # Periodic axes (periodic_x / periodic_y = 1) wrap the Yee stencil: the last H row/column differences
 # Ez against cell 0 (inv_d*_h[n-1] = 1 / wrap spacing) and Ez of cell 0 against the last H row/column,
 # so the period is exactly the nx (ny) cells of the grid. Non-periodic axes keep the last H row/column at 0 and read
@@ -30,7 +44,7 @@ void update_h_kernel(
     const real_t* __restrict__ db,
     const real_t* __restrict__ inv_dx_h,
     const real_t* __restrict__ inv_dy_h,
-    int nx, int ny, int periodic_x, int periodic_y,
+    int nx, int ny, int periodic_x, int periodic_y, int h_uniform,
     const real_t* __restrict__ ez_partner,
     real_t wrap_cos_x, real_t wrap_sin_x, real_t wrap_cos_y, real_t wrap_sin_y)
 {
@@ -38,19 +52,23 @@ void update_h_kernel(
     int i = blockIdx.y * blockDim.y + threadIdx.y;
     if (i >= nx || j >= ny) return;
     int idx = i * ny + j;
+    int hc = h_uniform ? 0 : idx;
+    real_t a = da[hc];
+    real_t b = db[hc];
     real_t e = ez[idx];
-    if (j < ny - 1)      hx[idx] = da[idx] * hx[idx] - db[idx] * (ez[idx + 1]  - e) * inv_dy_h[j];
-    else if (periodic_y) hx[idx] = da[idx] * hx[idx] - db[idx]
+    if (j < ny - 1)      hx[idx] = a * hx[idx] - b * (ez[idx + 1]  - e) * inv_dy_h[j];
+    else if (periodic_y) hx[idx] = a * hx[idx] - b
                                    * (ez[i * ny] * wrap_cos_y + ez_partner[i * ny] * wrap_sin_y - e) * inv_dy_h[j];
-    if (i < nx - 1)      hy[idx] = da[idx] * hy[idx] + db[idx] * (ez[idx + ny] - e) * inv_dx_h[i];
-    else if (periodic_x) hy[idx] = da[idx] * hy[idx] + db[idx]
+    if (i < nx - 1)      hy[idx] = a * hy[idx] + b * (ez[idx + ny] - e) * inv_dx_h[i];
+    else if (periodic_x) hy[idx] = a * hy[idx] + b
                                    * (ez[j] * wrap_cos_x + ez_partner[j] * wrap_sin_x - e) * inv_dx_h[i];
 }
 """
 
 
-def _update_h_host(ez, hx, hy, da, db, inv_dx_h, inv_dy_h, nx, ny, periodic_x, periodic_y, ez_partner,
+def _update_h_host(ez, hx, hy, da, db, inv_dx_h, inv_dy_h, nx, ny, periodic_x, periodic_y, h_uniform, ez_partner,
                    wrap_cos_x, wrap_sin_x, wrap_cos_y, wrap_sin_y):
+    da, db = (host_coefficient(values, h_uniform, hx.shape) for values in (da, db))
     hx[:, :-1] = da[:, :-1] * hx[:, :-1] - db[:, :-1] * (ez[:, 1:] - ez[:, :-1]) * inv_dy_h[:-1]
     if periodic_y:
         hx[:, -1] = da[:, -1] * hx[:, -1] - db[:, -1] * (
@@ -62,23 +80,29 @@ def _update_h_host(ez, hx, hy, da, db, inv_dx_h, inv_dy_h, nx, ny, periodic_x, p
 
 def _update_h_numba(numba):
     @numba.njit(parallel=True, cache=True)
-    def kernel(ez, hx, hy, da, db, inv_dx_h, inv_dy_h, nx, ny, periodic_x, periodic_y, ez_partner,
+    def kernel(ez, hx, hy, da, db, inv_dx_h, inv_dy_h, nx, ny, periodic_x, periodic_y, h_uniform, ez_partner,
                wrap_cos_x, wrap_sin_x, wrap_cos_y, wrap_sin_y):
         for prange_i in numba.prange(nx):
             i = np.int64(prange_i)   # the parfor gufunc types the prange index uint64: mixed with int64 -> float64
             for j in range(ny):
+                a = da[0, 0] if h_uniform else da[i, j]
+                b = db[0, 0] if h_uniform else db[i, j]
                 e = ez[i, j]
                 if j < ny - 1:
-                    hx[i, j] = da[i, j] * hx[i, j] - db[i, j] * (ez[i, j + 1] - e) * inv_dy_h[j]
+                    hx[i, j] = a * hx[i, j] - b * (ez[i, j + 1] - e) * inv_dy_h[j]
                 elif periodic_y:
-                    hx[i, j] = da[i, j] * hx[i, j] - db[i, j] * (
+                    hx[i, j] = a * hx[i, j] - b * (
                         ez[i, 0] * wrap_cos_y + ez_partner[i, 0] * wrap_sin_y - e) * inv_dy_h[j]
                 if i < nx - 1:
-                    hy[i, j] = da[i, j] * hy[i, j] + db[i, j] * (ez[i + 1, j] - e) * inv_dx_h[i]
+                    hy[i, j] = a * hy[i, j] + b * (ez[i + 1, j] - e) * inv_dx_h[i]
                 elif periodic_x:
-                    hy[i, j] = da[i, j] * hy[i, j] + db[i, j] * (
+                    hy[i, j] = a * hy[i, j] + b * (
                         ez[0, j] * wrap_cos_x + ez_partner[0, j] * wrap_sin_x - e) * inv_dx_h[i]
-    return kernel
+
+    def call(ez, hx, hy, da, db, *args):   # uniform storage (1,) -> (1, 1): every indexed array is 2D (numba trap)
+        uniform = args[6]
+        kernel(ez, hx, hy, numba_coefficient(da, uniform), numba_coefficient(db, uniform), *args)
+    return call
 
 
 update_h_kernel = real_raw_twin('em2d.update_h', _UPDATE_H_SOURCE, 'update_h_kernel', _update_h_host,
@@ -95,7 +119,7 @@ void update_e_kernel(
     const real_t* __restrict__ cb,
     const real_t* __restrict__ inv_dx_e,
     const real_t* __restrict__ inv_dy_e,
-    int nx, int ny, int periodic_x, int periodic_y,
+    int nx, int ny, int periodic_x, int periodic_y, int ca_uniform,
     const real_t* __restrict__ hx_partner,
     const real_t* __restrict__ hy_partner,
     real_t wrap_cos_x, real_t wrap_sin_x, real_t wrap_cos_y, real_t wrap_sin_y)
@@ -117,13 +141,14 @@ void update_e_kernel(
         curl -= (hx[idx] - (hx[wrapped] * wrap_cos_y - hx_partner[wrapped] * wrap_sin_y)) * inv_dy_e[j];
     }
     else                 curl -= hx[idx]                             * inv_dy_e[j];
-    ez[idx] = ca[idx] * ez[idx] + cb[idx] * curl;
+    ez[idx] = ca[ca_uniform ? 0 : idx] * ez[idx] + cb[idx] * curl;
 }
 """
 
 
-def _update_e_host(ez, hx, hy, ca, cb, inv_dx_e, inv_dy_e, nx, ny, periodic_x, periodic_y, hx_partner, hy_partner,
-                   wrap_cos_x, wrap_sin_x, wrap_cos_y, wrap_sin_y):
+def _update_e_host(ez, hx, hy, ca, cb, inv_dx_e, inv_dy_e, nx, ny, periodic_x, periodic_y, ca_uniform, hx_partner,
+                   hy_partner, wrap_cos_x, wrap_sin_x, wrap_cos_y, wrap_sin_y):
+    ca = host_coefficient(ca, ca_uniform, ez.shape)
     curl = np.empty_like(ez)
     curl[1:] = (hy[1:] - hy[:-1]) * inv_dx_e[1:, None]
     if periodic_x:
@@ -142,8 +167,8 @@ def _update_e_host(ez, hx, hy, ca, cb, inv_dx_e, inv_dy_e, nx, ny, periodic_x, p
 
 def _update_e_numba(numba):
     @numba.njit(parallel=True, cache=True)
-    def kernel(ez, hx, hy, ca, cb, inv_dx_e, inv_dy_e, nx, ny, periodic_x, periodic_y, hx_partner, hy_partner,
-               wrap_cos_x, wrap_sin_x, wrap_cos_y, wrap_sin_y):
+    def kernel(ez, hx, hy, ca, cb, inv_dx_e, inv_dy_e, nx, ny, periodic_x, periodic_y, ca_uniform, hx_partner,
+               hy_partner, wrap_cos_x, wrap_sin_x, wrap_cos_y, wrap_sin_y):
         for prange_i in numba.prange(nx):
             i = np.int64(prange_i)   # the parfor gufunc types the prange index uint64: mixed with int64 -> float64
             for j in range(ny):
@@ -159,8 +184,12 @@ def _update_e_numba(numba):
                     curl -= (hx[i, j] - (hx[i, ny - 1] * wrap_cos_y - hx_partner[i, ny - 1] * wrap_sin_y)) * inv_dy_e[j]
                 else:
                     curl -= hx[i, j] * inv_dy_e[j]
-                ez[i, j] = ca[i, j] * ez[i, j] + cb[i, j] * curl
-    return kernel
+                a = ca[0, 0] if ca_uniform else ca[i, j]
+                ez[i, j] = a * ez[i, j] + cb[i, j] * curl
+
+    def call(ez, hx, hy, ca, *args):   # uniform storage (1,) -> (1, 1): every indexed array is 2D (numba trap)
+        kernel(ez, hx, hy, numba_coefficient(ca, args[7]), *args)
+    return call
 
 
 update_e_kernel = real_raw_twin('em2d.update_e', _UPDATE_E_SOURCE, 'update_e_kernel', _update_e_host,
@@ -330,6 +359,26 @@ e_coefficients = twin('em2d.e_coefficients', cp.ElementwiseKernel(
     cb = (dt / eps) / denom;
     ''',
     'e_coefficients'), _e_coefficients_host)
+
+
+# cb alone (the engine keeps ca uniform at 1 while sigma_e is 0 everywhere): the cb of e_coefficients, same arithmetic
+# (bit for bit; at sigma 0 the division by denom = 1 is exact).
+def _cb_coefficients_host(sigma, eps_r, dt, eps0, cb):
+    eps = eps_r.astype(cb.dtype, copy=False) * eps0
+    k = sigma.astype(cb.dtype, copy=False) * dt / (2.0 * eps)
+    cb[...] = (dt / eps) / (1.0 + k)
+
+
+cb_coefficients = twin('em2d.cb_coefficients', cp.ElementwiseKernel(
+    'float32 sigma, float32 eps_r, T dt, T eps0',
+    'T cb',
+    '''
+    T eps = eps_r * eps0;
+    T k = sigma * dt / ((T)2 * eps);
+    T denom = (T)1 + k;
+    cb = (dt / eps) / denom;
+    ''',
+    'cb_coefficients'), _cb_coefficients_host)
 
 
 def _h_coefficients_host(sigma_m, mu_r, dt, mu0, da, db):

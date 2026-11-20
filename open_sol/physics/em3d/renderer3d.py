@@ -123,7 +123,7 @@ class EMRenderer3D(YeeRenderer3D):
         if engine.q_accum_time > 0.0:   # loss-box arrays: q_selection fills 0 outside the box
             values, seconds = engine.q_accum, engine.q_accum_time
         elif engine.last_q_accum is not None:
-            values, seconds = engine.last_q_accum, engine.last_q_accum_time
+            values, seconds = engine.host_last_q_accum(), engine.last_q_accum_time
         else:
             return self.xp.zeros(engine.material_id[window].shape, dtype=DTYPE)
         power = engine.q_selection(values, window)

@@ -52,9 +52,10 @@ contracts"). em_fdtd_3d (B2) and the eigensolver em_fdfd_3d (tensor Yee and tetr
   face weights (`kernels3d.pole_face_weights`) and cb are computed in `pole_drive_3d` / `pole_correct_3d` (one launch
   per pole and field set; checked against the stored path by em3d_pole_kernels, the only Lorentz case).
 - Losses: q_accum and the last window live on the loss box `engine.q_box` (ohmic box union pole windows, grown never
-  shrunk by `_fit_q_box`, which every rebuild, enable and add_pole call); the last window is a host copy (one
-  transfer per window reset). Readers go through `q_selection` / `q_grid` (full-grid copies: state()['q_accum'],
-  take_absorbed_power), never index q_accum by grid slices; a new writer stays inside q_box. sigma_m loss is not
+  shrunk by `_fit_q_box`, which every rebuild, enable and add_pole call); the last window is a host (pinned) copy
+  filled asynchronously per window reset, read only through `host_last_q_accum` (the event wait), as the 2D engines.
+  Readers go through `q_selection` / `q_grid` (full-grid copies: state()['q_accum'], take_absorbed_power), never
+  index q_accum by grid slices; a new writer stays inside q_box. sigma_m loss is not
   counted.
 - Backends (core sub file "Kernel twins"): every array from `engine.xp`; numba twins only for update_h / update_e /
   ohmic_loss (CPU case em3d_kernels_numba). The numpy twins cache coefficients by input identity

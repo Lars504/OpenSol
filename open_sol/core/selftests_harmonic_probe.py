@@ -60,6 +60,12 @@ def check_harmonic_probe_record(add):
     add('keep_both_in_record_order', kept_frequencies.tolist() == [4.0, 5.0, 5.0]
         and kept_values['w'].tolist() == [3.0, 1.0, 2.0], values=kept_values['w'].real.tolist())
     add('index_of_latest', keep_both.index_of(5.0) == 1 and keep_both.index_of(6.0) is None)
+    before = record.recorded()
+    record._park()   # what HARMONIC_PARK_VALUES device values trigger: every value a host complex number
+    after = record.recorded()
+    add('park_keeps_values', np.array_equal(before[0], after[0])
+        and all(np.array_equal(before[1][component], after[1][component]) for component in ('u', 'v'))
+        and all(isinstance(value, complex) for row in record._rows for value in row))
     add('missing_component_raises', raises(lambda: record.record(1.0, {'u': 1.0})))
     add('bare_value_needs_one_component', raises(lambda: record.record(1.0, 1.0)))
     add('nonpositive_frequency_raises', raises(lambda: keep_both.record(0.0, 1.0)))

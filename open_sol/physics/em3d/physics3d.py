@@ -318,7 +318,8 @@ class EMPhysics3D(EM3DSlots, PhysicsSolver):
         state['q_box'] = engine.q_box
         state['q_accum'] = None if engine.q_accum is None else host_copy(engine.q_accum)
         state['q_accum_time'] = float(engine.q_accum_time)
-        state['last_q_accum'] = None if engine.last_q_accum is None else host_copy(engine.last_q_accum)
+        last = engine.host_last_q_accum()
+        state['last_q_accum'] = None if last is None else last.copy()
         state['last_q_accum_time'] = float(engine.last_q_accum_time)
         if materials:
             state['eps_r'] = host_copy(self.domain.materials.eps_r)
@@ -335,15 +336,16 @@ class EMPhysics3D(EM3DSlots, PhysicsSolver):
             raise RuntimeError('em_fdtd_3d restore_solution: absorbed-power accumulation was switched on or off '
                                'since this state was taken')
         last = state['last_q_accum']
+        engine.host_last_q_accum()   # no copy in flight into the buffer written or dropped here
         if last is None:
             engine.last_q_accum = None
-        elif engine.last_q_accum is None:   # a host array (engine3d reset_q_accum)
-            engine.last_q_accum = np.empty(last.shape, dtype=last.dtype)
+        elif engine.last_q_accum is None or engine.last_q_accum.shape != last.shape:   # host (engine3d reset_q_accum)
+            engine.last_q_accum = engine._host_buffer(last.shape)
 
         def fill():
             write_host_into(engine.q_accum, state['q_accum'])
             if last is not None:
-                write_host_into(engine.last_q_accum, last)
+                write_host_into(engine.host_last_q_accum(), last)
         if engine.q_accum is not None:   # on the stored loss box, then grown to the current loss cells
             engine.set_q_box(state['q_box'], fill)
         engine.q_accum_time = state['q_accum_time']

@@ -149,8 +149,9 @@ def _hz_fdtd_checks(registry, add, window_values, backend='auto'):
         domain, engine, materials = session.domain, physics.engine, session.domain.materials
         geometry = physics.subpixel_smoothing.geometry
         window = domain.physical_window()
-        faces = {'faces_y': (_host_set(geometry.faces_y), engine.eps_x, 'eps_xx'),
-                 'faces_x': (_host_set(geometry.faces_x), engine.eps_y, 'eps_yy')}
+        face_eps_x, face_eps_y = engine.face_permittivities()   # allocated on demand (the nonlinear medium's read)
+        faces = {'faces_y': (_host_set(geometry.faces_y), face_eps_x, 'eps_xx'),
+                 'faces_x': (_host_set(geometry.faces_x), face_eps_y, 'eps_yy')}
         for kind, (locations, face_eps, array) in faces.items():
             measured = _host(face_eps).astype(np.float64) / EPS0
             window_values[kind] = measured[window]
@@ -179,7 +180,7 @@ def _hz_fdtd_checks(registry, add, window_values, backend='auto'):
         line = port.slab_line(_PORT_OMEGA)
         a, b = port.solve_range
         face_index = np.clip(np.arange(a - 1, b), 0, domain.grid.ny - 1)
-        eps_x, eps_y = (_host(array).astype(np.float64) / EPS0 for array in (engine.eps_x, engine.eps_y))
+        eps_x, eps_y = (_host(array).astype(np.float64) / EPS0 for array in (face_eps_x, face_eps_y))
         add('hz_port_transverse', _relative_difference(np.real(line.cell_weight), eps_y[line_cell, a:b]),
             _RELATIVE_TOLERANCE)
         add('hz_port_longitudinal', _relative_difference(np.real(1.0 / line.face_weight),
