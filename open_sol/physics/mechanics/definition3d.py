@@ -71,6 +71,8 @@ SOLID_3D_TYPE_NAME = 'solid_mechanics_3d'               # = selftests_3d.SOLID_3
 THERMAL_STRAIN_COUPLING = 'heat_solid_thermal_strain'   # = selftests_3d.THERMAL_STRAIN_COUPLING
 _AXES = ('x', 'y', 'z')
 _DISPLACEMENTS = ('u_x', 'u_y', 'u_z')   # load / held value names (follow_load / follow_held_values)
+# features whose held values may be non-zero (a tensor ElasticSystem3D keeps held_values only for those: _zero_hold)
+_PRESCRIBING_FEATURES = ('displacement', 'prescribed_displacement_domain')
 _TRACTIONS = ('t_x', 't_y', 't_z')
 _BODY_FORCES = ('f_x', 'f_y', 'f_z')
 _TETRAHEDRA = 'tetrahedra'
@@ -1187,7 +1189,9 @@ def _time_estimate(settings_values, mesh, context):
     gathered nodal vectors) and the 3 x 3 node-block preconditioner; stationary: the static solves (coupled: per step
     of a time_dependent study); eigenfrequency: one PCG solve per Lanczos application of the 'eigen' role (its own
     timer then holds the solves, so its items join the rest of the study). A tetrahedron mesh: _tetrahedra_time_estimate.
-    A background solid of StudySpec.solved_physics is priced as in a stationary study."""
+    A background solid of StudySpec.solved_physics is priced as in a stationary study. Not booked: the K u_fix brick
+    product per right-hand side of a prescribed displacement other than 0 (system3d.build_rhs; one product beside the
+    solve's hundreds)."""
     context = background_context(context, context.physics_spec)
     if mesh.kind == _TETRAHEDRA:
         return _tetrahedra_time_estimate(settings_values, mesh, context)
@@ -1639,6 +1643,11 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
                                      transient_items=transient_items, **cudss_external(factors))
 
 
+def _zero_hold(value) -> bool:
+    """True for a held component the tensor system needs no held_values for: empty (free) or a literal 0."""
+    return value is None or value == '' or (isinstance(value, (int, float)) and value == 0)
+
+
 def _memory_estimate(settings_values, mesh, context):
     """MechanicsFields3D plus the window ElasticSystem3D counted from its allocations (a tetrahedron mesh:
     _tetrahedra_memory_estimate; a background solid of StudySpec.solved_physics: as stationary)."""
@@ -1653,17 +1662,22 @@ def _memory_estimate(settings_values, mesh, context):
     n_fields = len(OUTPUT_ARRAYS_3D) + len(INPUT_ARRAYS_3D)
     fields = MemoryEstimate.from_items(((f'fields ({n_fields} x float32)',
                                          n_fields * FLOAT32_BYTES * int(mesh.n_cells)),))
-    # unknown, held values, applied load, load, rhs, fixed values, fixed coupling, CG unknown; the matrix-free
-    # PCGSolver workspace (residual, two directions of the fused iteration, product, preconditioned; mixed: float32 +
-    # the float64 outer vectors; the fused iteration's block partial sums are negligible)
+    # unknown, applied load, load, rhs, CG unknown (+ held values with a prescribed displacement other than 0: no u_fix
+    # or K u_fix vectors, system3d builds K u_fix per rhs on the CG unknown); the matrix-free PCGSolver workspace
+    # (residual, two directions of the fused iteration, product, preconditioned; mixed: float32 + the float64 outer
+    # vectors; the fused iteration's block partial sums are negligible)
     multigrid = linear_solver_multigrid(context)   # multigrid3d: no fused iteration (one direction vector)
-    vectors = (8 * value_bytes * dofs
+    features = [feature for feature in context.physics_spec.features if feature.enabled]
+    prescribed = any(feature.type in _PRESCRIBING_FEATURES and any(
+        not _zero_hold(feature.params.get(name)) for name in _DISPLACEMENTS) for feature in features)
+    vectors = ((5 + int(prescribed)) * value_bytes * dofs
                + workspace_bytes(dofs, 'mixed' if mixed else SOLVER_PRECISIONS[precision], jacobi=False,
                                  fused=not multigrid))
-    masks = 3 * BOOL_BYTES * dofs + BOOL_BYTES * elements   # held, free, rigid-check held copy; rigid-check solid copy
+    masks = 2 * BOOL_BYTES * dofs   # held, free (the rigid-check key is bit-packed on the host)
     blocks = 6 * value_bytes * nodes                         # reduced inverse 3 x 3 blocks
-    # lambda, mu, applied body force (3); the physics' solid mask
-    element_arrays = 5 * value_bytes * elements + BOOL_BYTES * elements
+    # lambda, mu, applied body force (3, with a body_force feature); the physics' solid mask
+    body_force = any(feature.type == 'body_force' for feature in features)
+    element_arrays = (2 + 3 * int(body_force)) * value_bytes * elements + BOOL_BYTES * elements
     # Lame temporaries (E, nu, products) + solid / range masks; int32 labels, padded copy, node labels; dof masks
     build_extra = ((6 * value_bytes + 2 * BOOL_BYTES + 2 * INT32_BYTES) * elements + INT32_BYTES * nodes
                    + 2 * BOOL_BYTES * dofs)

@@ -63,16 +63,17 @@ class ElasticSystem3D(ElasticSystemBase):
         node_shape, n_dofs = self.node_shape, self.n_dofs
         self.unknown = xp.zeros(n_dofs, dtype=dtype)                      # nodal (u_x, u_y, u_z) [m], interleaved
         self.held = xp.zeros((*node_shape, 3), dtype=xp.bool_)           # dofs held by supports
-        self.held_values = xp.zeros((*node_shape, 3), dtype=dtype)       # their prescribed displacement [m]
+        # their prescribed displacement [m]: None until a hold writes a value other than a scalar 0 (all held at 0:
+        # no array, no K u_fix product); unconnected dofs are pinned at 0
+        self.held_values = None
         self.applied_load = xp.zeros((*node_shape, 3), dtype=dtype)      # nodal forces of the load features [N]
-        self.applied_body_force = xp.zeros((3, *self.element_shape), dtype=dtype)   # feature body forces [N/m^3]
+        self.applied_body_force = None   # (3, *element_shape) feature body forces [N/m^3]: the first add_body_force
         self.load_full = xp.zeros(n_dofs, dtype=dtype)                   # total nodal load of the last build_rhs
         self.rhs = xp.zeros(n_dofs, dtype=dtype)
-        self.fixed_values = xp.zeros(n_dofs, dtype=dtype)    # prescribed values on held / pinned dofs, 0 on free ones
-        self.fixed_coupling = xp.zeros(n_dofs, dtype=dtype)  # K . fixed_values
         self.free = xp.zeros(n_dofs, dtype=xp.bool_)
         self.inverse_blocks = xp.zeros((self.n_nodes, 6), dtype=dtype)   # reduced inverse 3 x 3 blocks per node
-        # CG unknown w = u - u_fix; between solves the scratch of reaction (solve rebuilds it from unknown)
+        # CG unknown w = u on free dofs, 0 on fixed ones; between solves the scratch of reaction and of build_rhs's K
+        # u_fix (solve rebuilds it from unknown)
         self._solution = xp.zeros(n_dofs, dtype=dtype)
         # reaction: K u of the last solve kept in _solution while (solves, assemblies) are unchanged (every PCG solve,
         # the Lanczos inner ones too, counts in n_solves and overwrites _solution); anything else that writes
@@ -143,10 +144,28 @@ class ElasticSystem3D(ElasticSystemBase):
         for component, value in enumerate((u_x, u_y, u_z)):
             if value is not None:
                 dof_mask[nodes + (component,)] = True
-                self.held_values[nodes + (component,)] = xp.asarray(value, dtype=self.dtype)
+                held_values = self._held_values_for(value)
+                if held_values is not None:
+                    held_values[nodes + (component,)] = xp.asarray(value, dtype=self.dtype)
         self.held |= dof_mask
         self.operator_dirty = True
         return dof_mask
+
+    def _held_values_for(self, value):
+        """held_values to write a hold value into: None while every hold so far is a scalar 0 and this one too (the
+        values stay implicit), else the array (allocated with zeros on the first other value)."""
+        if self.held_values is None:
+            if isinstance(value, (int, float, np.integer, np.floating)) and value == 0:
+                return None
+            self.held_values = self.xp.zeros((*self.node_shape, 3), dtype=self.dtype)
+        return self.held_values
+
+    def _write_fixed_values(self, vector) -> None:
+        """vector on the fixed dofs = the prescribed displacements (held) and 0 (unconnected), free dofs kept."""
+        xp = self.xp
+        xp.multiply(vector, self.free, out=vector)
+        if self.held_values is not None:
+            xp.copyto(vector, self.held_values.reshape(-1), where=self.held.reshape(-1))
 
     def hold_cells(self, mask_window, u_x=0.0, u_y=0.0, u_z=0.0):
         """Hold components [m] (None = free, else a scalar) on every corner node of the masked window cells;
@@ -157,7 +176,9 @@ class ElasticSystem3D(ElasticSystemBase):
         for component, value in enumerate((u_x, u_y, u_z)):
             if value is not None:
                 dof_mask[..., component] = nodes
-                xp.copyto(self.held_values[..., component], xp.asarray(float(value), dtype=self.dtype), where=nodes)
+                held_values = self._held_values_for(float(value))
+                if held_values is not None:
+                    xp.copyto(held_values[..., component], xp.asarray(float(value), dtype=self.dtype), where=nodes)
         self.held |= dof_mask
         self.operator_dirty = True
         return dof_mask
@@ -177,13 +198,21 @@ class ElasticSystem3D(ElasticSystemBase):
         for component, density in enumerate((f_x, f_y, f_z)):
             if isinstance(density, (int, float)) and density == 0:
                 continue
-            self.applied_body_force[component] += xp.where(mask_window, xp.asarray(density, dtype=self.dtype), 0.0)
+            self.body_force_target()[component] += xp.where(mask_window, xp.asarray(density, dtype=self.dtype), 0.0)
+
+    def body_force_target(self):
+        """applied_body_force, allocated (zeros) on the first call: a solid without body force features keeps none
+        and the load kernel skips it."""
+        if self.applied_body_force is None:
+            self.applied_body_force = self.xp.zeros((3, *self.element_shape), dtype=self.dtype)
+        return self.applied_body_force
 
     # --- assembly -------------------------------------------------------------
 
     def assemble(self, lame_lambda, mu, solid_elements) -> None:
         """Keep the element Lame coefficients [Pa] (window-shaped; mu = 0 marks void) as the operator, pin unconnected
-        dofs, check rigid modes per solid region, then the fixed coupling and the reduced inverse blocks."""
+        dofs, check rigid modes per solid region, then the reduced inverse blocks and the fixed values of unknown (K
+        u_fix: per build_rhs, only with prescribed displacements)."""
         xp = self.xp
         dtype = self.dtype
         for values, name in ((lame_lambda, 'lame_lambda'), (mu, 'mu'), (solid_elements, 'solid_elements')):
@@ -201,15 +230,12 @@ class ElasticSystem3D(ElasticSystemBase):
         del unconnected
         self._check_rigid_modes(solid_elements)
 
-        self.fixed_values.fill(0)
-        xp.copyto(self.fixed_values, self.held_values.reshape(-1), where=held)
-        kernels.product(self.fixed_values, self.fixed_coupling, lame_lambda, mu, widths, self.free, masked=False)
         kernels.reduce_invert_blocks(self.inverse_blocks, self.free)
         if self.widths_single is not None:   # mixed / double multigrid: float32 operator (blocks inverted in float64)
             self._single_operator = None   # free the previous copies first
             self._single_operator = tuple(values.astype(np.float32)
                                           for values in (lame_lambda, mu, self.inverse_blocks))
-        xp.copyto(self.unknown, self.fixed_values, where=~self.free)
+        self._write_fixed_values(self.unknown)
         self.lame_lambda, self.mu = lame_lambda, mu
         if self.multigrid is not None:   # the hierarchy of this assembly, level 0 = the CG's own (inner) operator
             if self.widths_single is not None:
@@ -228,12 +254,12 @@ class ElasticSystem3D(ElasticSystemBase):
     def _check_rigid_modes(self, solid_elements):
         """Raise ValueError when a solid region (26-connected solid elements) admits a rigid motion: rank of the 6 x 6
         Gram matrix of the rigid-mode rows at its held dofs below 6. Skipped while the solid and held sets are
-        unchanged."""
+        unchanged (their bit-packed host copies are the key: no device copies kept between assemblies)."""
         xp = self.xp
-        signature = (solid_elements.copy(), self.held.copy())
+        signature = tuple(np.packbits(to_host(mask).reshape(-1)) for mask in (solid_elements, self.held))
         cached = self._rigid_signature
-        if (cached is not None and bool(xp.array_equal(cached[0], signature[0]))
-                and bool(xp.array_equal(cached[1], signature[1]))):
+        if (cached is not None and np.array_equal(cached[0], signature[0])
+                and np.array_equal(cached[1], signature[1])):
             return
         labels, n_regions = self.ndimage.label(solid_elements, structure=np.ones((3, 3, 3), dtype=bool))
         n_regions = int(n_regions)
@@ -310,13 +336,24 @@ class ElasticSystem3D(ElasticSystemBase):
 
     def build_rhs(self, alphas, temperature_rise, temperature_rise_ext, body_forces) -> None:
         """Total nodal load [N] into load_full by the fused load kernel (full-grid float32 alpha_xx / yy / zz, the two
-        temperature rises [K], coupled body_force_x / y / z [N/m^3]), then rhs = D_free (load - K u_fix)."""
+        temperature rises [K], coupled body_force_x / y / z [N/m^3]), then rhs = D_free (load - K u_fix): K u_fix is one
+        brick product on the scratch _solution, only while a prescribed displacement is not 0 (held_values kept)."""
         if self.lame_lambda is None:
             raise RuntimeError('assemble before build_rhs')
+        xp = self.xp
         self.kernels.load(self.load_full, self.applied_load, self.lame_lambda, self.mu, alphas, temperature_rise,
                           temperature_rise_ext, body_forces, self.applied_body_force, self.widths_device)
-        self.xp.subtract(self.load_full, self.fixed_coupling, out=self.rhs)
-        self.xp.multiply(self.rhs, self.free, out=self.rhs)
+        if self.held_values is None:   # u_fix = 0
+            xp.multiply(self.load_full, self.free, out=self.rhs)
+        else:
+            fixed = self._solution   # u_fix (reaction scratch between solves)
+            fixed.fill(0)
+            xp.copyto(fixed, self.held_values.reshape(-1), where=self.held.reshape(-1))
+            self._reaction_key = None
+            self.kernels.product(fixed, self.rhs, self.lame_lambda, self.mu, self.widths_device, self.free,
+                                 masked=False)
+            xp.subtract(self.load_full, self.rhs, out=self.rhs)
+            xp.multiply(self.rhs, self.free, out=self.rhs)
         self._rhs_built = True
 
     def _assembled(self) -> bool:
@@ -340,8 +377,21 @@ class ElasticSystem3D(ElasticSystemBase):
         self.kernels.precondition(self.inverse_blocks, residual, out)
 
     def solve(self) -> None:
-        """The base PCG solve under the multigrid guard (_guarded_solve)."""
-        self._guarded_solve(super().solve)
+        """The PCG solve of the free dofs from the current unknown under the multigrid guard (_guarded_solve); unknown
+        then holds the solution on the free dofs and the fixed values (_write_fixed_values) on the others."""
+        if not self._solvable():
+            raise RuntimeError('assemble and build_rhs before solve')
+        self._guarded_solve(self._solve_free)
+
+    def _solve_free(self) -> None:
+        """One PCG solve: CG unknown = unknown on the free dofs (0 on fixed ones, kept by the masked operator and the
+        reduced blocks), back into unknown with the fixed values rewritten (the base solve's u - u_fix / + u_fix without
+        a stored u_fix vector)."""
+        xp, solution = self.xp, self._solution
+        xp.multiply(self.unknown, self.free, out=solution)
+        self.linear_solver.solve(self.rhs, solution)
+        xp.copyto(self.unknown, solution)
+        self._write_fixed_values(self.unknown)
 
     def multigrid_budget(self) -> int:
         """CG iterations a multigrid solve may take (_guarded_solve): the block-Jacobi estimate (pcg
