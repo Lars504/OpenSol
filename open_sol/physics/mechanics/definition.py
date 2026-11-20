@@ -1114,14 +1114,18 @@ def _fem_memory_estimate(settings_values, mesh, context):
         host_items.extend((('frequency response loss and mass CSR (float64)', 2 * csr_entry_bytes * entries),
                            ('frequency response complex operator copies', 3 * (16 + INT32_BYTES) * entries),
                            ('frequency response solution vectors (complex)', 4 * 16 * vector_dofs)))
+        # HarmonicSystem keeps K real without a loss: a lossless pencil has real terms and a real factor
+        lossy = bool(context.material_sets(LOSS_ARRAYS[0]))
+        kind = 'complex' if lossy else 'real'
         if host_factor:
             host_items.extend(host_factor_items(linear_back_end,
-                                                'frequency response complex SuperLU L + U (heuristic)',
-                                                2 * _FEM_FILL_FACTOR * host_real_lu_bytes(vector_dofs), vector_dofs,
-                                                entries, complex_values=True))
+                                                f'frequency response {kind} SuperLU L + U (heuristic)',
+                                                (2 if lossy else 1) * _FEM_FILL_FACTOR * host_real_lu_bytes(vector_dofs),
+                                                vector_dofs, entries, complex_values=lossy))
         else:   # the kept HarmonicSystem: cuDSS LDL^T refreshed from the DevicePencil (K + j L, M)
-            run_items += harmonic_pencil_items(vector_dofs, entries, linear_back_end, (16, FLOAT64_BYTES))
-            factors.append(('frequency response cuDSS factor', vector_dofs, entries, 16, 2,
+            run_items += harmonic_pencil_items(vector_dofs, entries, linear_back_end,
+                                               (16 if lossy else FLOAT64_BYTES, FLOAT64_BYTES))
+            factors.append(('frequency response cuDSS factor', vector_dofs, entries, 16 if lossy else FLOAT64_BYTES, 2,
                             linear_back_end == 'cudss_mixed'))
         host_items.extend(reduced_sweep_memory_items(context, vector_dofs, entries))
     else:
@@ -1239,7 +1243,8 @@ def _memory_estimate(settings_values, mesh, context):
             transient_items += eigen_transient
             host_items += eigen_host_items
         if study == FREQUENCY_RESPONSE_STUDY:
-            host_items += frequency_response_host_items(PIEZO_COMPONENTS * (dofs // 2))
+            host_items += frequency_response_host_items(PIEZO_COMPONENTS * (dofs // 2), complex_factor=bool(
+                context.material_sets(LOSS_ARRAYS[0]) or context.material_sets(LOSS_ARRAYS[1])))
     elif study in MODAL_STUDIES:
         # mass stencil, its gathered data and CSR copy, density temporaries: freed once M is on the host
         transient_items.append(('eigen assembly', 'eigen mass assembly',
@@ -1250,7 +1255,7 @@ def _memory_estimate(settings_values, mesh, context):
         host_items = (*_eigen_host_items(context, dofs, entries), *eigen_host_items)
     elif study == FREQUENCY_RESPONSE_STUDY:   # host stencils of K, loss, M and the complex factor per frequency
         host_items = (('frequency response host stencils', 3 * _GUIDED_ASSEMBLY_BYTES_PER_ENTRY * entries),
-                      *frequency_response_host_items(dofs))
+                      *frequency_response_host_items(dofs, complex_factor=bool(context.material_sets(LOSS_ARRAYS[0])))))
     elif host_back_end:   # the static solid's host factor of A_solve (gpu backend: of a downloaded copy)
         host_items = (('A_solve CSR copy for the host factor (float64)', (FLOAT64_BYTES + INT32_BYTES) * entries),
                       *host_factor_items(host_back_end, 'SuperLU L + U factors of A_solve (float64, heuristic)',
@@ -1488,20 +1493,23 @@ def _frequency_response_time_estimate(context, dofs, entries, assembly_ops, io_o
     sweep = frequency_sweep_counts(context)
     factorizations, kind = sweep['factorizations'], sweep['factorizations_kind']
     complex_bytes = 2 * FLOAT64_BYTES
+    # a lossless pencil keeps K real (HarmonicSystem): a real SuperLU, the complex rhs as its two real columns
+    lossy = bool(context.material_sets(LOSS_ARRAYS[0]))
+    solve = te.HostSolve(dofs, 2, True) if lossy else te.HostSolve(dofs, 2, False, rhs=2)
     per_factor = (te.HostStream(_HARMONIC_HOST_PASSES * (complex_bytes + INT32_BYTES) * entries),
-                  te.HostSolve(dofs, 2, True), te.Transfer(2 * complex_bytes * dofs), te.PythonCalls(40))
+                  solve, te.Transfer(2 * complex_bytes * dofs), te.PythonCalls(40))
     counter = ('solvers', context.name, 'counters', 'harmonic_factorizations')
     estimate = te.TimeEstimate((
         te.TimeItem('stiffness assembly', 'assembly', 1.0, 'exact', assembly_ops),
         te.TimeItem('harmonic host stencils', 'assembly', 1.0, 'exact',
                     (te.HostStream(3 * _GUIDED_ASSEMBLY_BYTES_PER_ENTRY * entries), te.PythonCalls(60))),
-        te.TimeItem('complex SuperLU factorisations', 'factorisation', factorizations, kind,
-                    (te.HostLU(dofs, 2, True),), counter=counter),
+        te.TimeItem(f"{'complex' if lossy else 'real'} SuperLU factorisations", 'factorisation', factorizations, kind,
+                    (te.HostLU(dofs, 2, lossy),), counter=counter),
         te.TimeItem('harmonic operator, solve and load', 'factorisation', factorizations, kind, per_factor,
                     counter=counter),
         te.TimeItem('outputs', 'frequency', sweep['field_points'], 'exact', io_ops),
         *reduced_sweep_time_items(sweep, dofs)))
-    return te.combine((estimate, *_reduced_sweep_extra_time(sweep, (te.HostSolve(dofs, 2, True),))))
+    return te.combine((estimate, *_reduced_sweep_extra_time(sweep, (solve,))))
 
 
 def _reduced_sweep_extra_time(sweep, host_solve_ops) -> tuple:
@@ -1651,12 +1659,16 @@ def _fem_time_estimate(settings_values, mesh, context):
                  te.TimeItem('outputs (full solution products)', 'frequency', sweep['field_points'], 'exact',
                              io_ops + host_rhs),
                  *reduced_sweep_time_items(sweep, unknowns))
-        work = context.solver_work('linear', unknowns=unknowns, nnz=entries, value_bytes=2 * FLOAT64_BYTES,
-                                   dimensions=2, solves=sweep['solves'], solves_kind=sweep['solves_kind'],
+        # a lossless pencil keeps K real (HarmonicSystem): a real factor, the complex rhs as two real solves
+        lossy = bool(context.material_sets(LOSS_ARRAYS[0]))
+        work = context.solver_work('linear', unknowns=unknowns, nnz=entries,
+                                   value_bytes=(2 if lossy else 1) * FLOAT64_BYTES,
+                                   dimensions=2, solves=sweep['solves'], rhs=1.0 if lossy else 2.0,
+                                   solves_kind=sweep['solves_kind'],
                                    factorizations=sweep['factorizations'],
                                    factorizations_kind=sweep['factorizations_kind'], device_values=True, **scales)
         return te.combine((te.TimeEstimate(items), work, *prestress(with_loads=False), *_reduced_sweep_extra_time(
-            sweep, (te.HostSolve(unknowns, 2, True, scale=_FEM_FILL_FACTOR),))))
+            sweep, (te.HostSolve(unknowns, 2, lossy, rhs=1 if lossy else 2, scale=_FEM_FILL_FACTOR),))))
     per_step, follows, outer_solves, kind, assemblies, assemblies_kind, solves = _static_counts(settings_values, context)
     items = (te.TimeItem('stiffness assembly', 'assembly', assemblies, assemblies_kind, assembly_ops,
                          per_step=per_step and follows),

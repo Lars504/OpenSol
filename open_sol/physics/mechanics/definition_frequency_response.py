@@ -157,12 +157,14 @@ def frequency_response_issues(vctx, physics_spec, settings_values, path, thermal
 
 
 # ---- memory estimate (CPU) ----
-def frequency_response_host_items(dofs):
+def frequency_response_host_items(dofs, complex_factor=True):
     """Host items of one frequency of the frequency response on `dofs` unknowns (2 or 3 per node): the float64 K /
-    loss / M copies, the complex total and reduced operators and the complex SuperLU factor (heuristic)."""
+    loss / M copies, the complex total and reduced operators and the SuperLU factor (heuristic; complex_factor False:
+    a lossless pencil without a resistive load, HarmonicSystem's real factor)."""
     entries = _ENTRIES_PER_DOF * dofs
     real_entry, complex_entry = FLOAT64_BYTES + INT32_BYTES, _COMPLEX_BYTES + INT32_BYTES
     return (('frequency response host K, loss, M (float64 CSR)', 3 * real_entry * entries),
             ('frequency response complex operator copies', 3 * complex_entry * entries),
-            ('frequency response complex SuperLU L + U (heuristic)', host_lu_bytes(dofs)),
+            (f"frequency response {'complex' if complex_factor else 'real'} SuperLU L + U (heuristic)",
+             host_lu_bytes(dofs) // (1 if complex_factor else 2)),
             ('frequency response solution vectors (complex)', 4 * _COMPLEX_BYTES * dofs))
