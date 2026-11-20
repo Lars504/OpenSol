@@ -616,9 +616,13 @@ class _ResonanceFilter:
                      xp.asarray(b_mass.diagonal)[:, None] if self.mass_diagonal else b_mass.matrix)
         self.device_mass = device_mass if self.on_gpu else None
         self.weights_diagonal = isinstance(energy_weights, np.ndarray)
-        self.weights = (xp.asarray(energy_weights)[:, None] if self.weights_diagonal else energy_weights.tocsr())
-        self.window = xp.asarray(in_window, dtype=np.float64)[:, None]
-        self.region = None if in_region is None else xp.asarray(in_region, dtype=np.float64)[:, None]
+        # float32 rows (kept for the whole search): the 0 / 1 window and region exactly, diagonal energy weights to 6e-8
+        # relative, which only moves the PML / region fractions the filter compares with its thresholds (energies
+        # themselves are summed in float64: |v|^2 float64 x float32 promotes); B and D stay complex128 (Rayleigh polish)
+        self.weights = (xp.asarray(energy_weights, dtype=np.float32)[:, None] if self.weights_diagonal
+                        else energy_weights.tocsr())
+        self.window = xp.asarray(in_window, dtype=np.float32)[:, None]
+        self.region = None if in_region is None else xp.asarray(in_region, dtype=np.float32)[:, None]
         self.row_scale = None if row_scale is None else xp.asarray(row_scale)[:, None]
 
     def _applied_form(self, matrix, diagonal, kept=None, real=None):

@@ -68,9 +68,9 @@ EIGEN_ROLE = 'eigen'
 # _ResonanceFilter.measures: device column blocks alive at once, one operator at a time (columns, its product, the
 # conjugate, one product temporary and the real energies; + D v with a row scale)
 _FILTER_BLOCKS = 5
-# its window / region rows (float64), diagonal weights (float64), diagonal mass and row scale (complex128): an upper
-# figure in bytes per unknown, kept on the device for the whole search
-_FILTER_VECTOR_BYTES = 3 * FLOAT64_BYTES + 2 * COMPLEX128_BYTES
+# its window / region rows and diagonal weights (float32), diagonal mass and row scale (complex128): an upper figure in
+# bytes per unknown, kept on the device for the whole search
+_FILTER_VECTOR_BYTES = 3 * FLOAT32_BYTES + 2 * COMPLEX128_BYTES
 _DFT_SPECTRA = {'ez': 1, 'hz': 3}   # complex64 (n_wavelengths, mx, my) spectra of a DFTMonitor (monitors.py)
 # FieldProbe users (core.monitors: growable float32 device trace + float64 host times); counted by the FDTD physics
 # estimator because a FeatureType estimator does not see the study duration
