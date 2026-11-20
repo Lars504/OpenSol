@@ -1200,12 +1200,15 @@ class SparseDirectSolver:
                                                   symmetric_known=pencil.symmetric, defer_check=defer_check)
         return self._counted(factor, start)
 
-    def factorize_device_csr(self, operator, real=False, symmetric=False, positive_definite=False, previous=None):
+    def factorize_device_csr(self, operator, real=False, symmetric=False, positive_definite=False, previous=None,
+                             symmetric_known=False):
         """CudssFactorization of a cupyx CSR (cuDSS back ends) without a host copy of its values (H1), counted: the
-        asymmetry check (when symmetry is asked for), equilibration and lower-triangle take on the device; a previous
-        factor of the same options is refreshed (its pattern matched on the device: no index download), else a new one
-        is planned from the device values. A non-canonical operator is canonicalised in a copy first. A refusal of an
-        'auto' runtime: a host SuperLU Factorization of a host copy, the runtime on SuperLU from then on (B1b)."""
+        asymmetry check (when symmetry is asked for; symmetric_known: the caller vouches for a symmetric operator, so
+        no transpose map, no check pass and the fused refresh on a reused plan), equilibration and lower-triangle take
+        on the device; a previous factor of the same options is refreshed (its pattern matched on the device: no index
+        download), else a new one is planned from the device values. A non-canonical operator is canonicalised in a
+        copy first. A refusal of an 'auto' runtime: a host SuperLU Factorization of a host copy, the runtime on
+        SuperLU from then on (B1b)."""
         import cupy as cp
         from .cudss_factor import CUDSS_REFUSALS, CudssFactorization
         if self.back_end not in CUDSS_BACK_ENDS:
@@ -1218,12 +1221,14 @@ class SparseDirectSolver:
                 if previous.n_unknowns == operator.shape[0] and previous.can_refactorize(real, precision, symmetric,
                                                                                          positive_definite):
                     indptr, indices = previous.host_pattern_of(operator)
-                    previous.refactorize_device_values(operator.data, indptr, indices, check_symmetry=True)
+                    previous.refactorize_device_values(operator.data, indptr, indices,
+                                                       check_symmetry=not symmetric_known)
                     return self._counted(previous, start)
                 previous.release()
             factor = CudssFactorization.from_device_values(
                 operator.data, cp.asnumpy(operator.indptr), cp.asnumpy(operator.indices), real=real,
-                symmetric=symmetric, precision=precision, positive_definite=positive_definite, check_symmetry=True)
+                symmetric=symmetric, precision=precision, positive_definite=positive_definite,
+                check_symmetry=not symmetric_known)
             return self._counted(factor, start)
         except CUDSS_REFUSALS as error:   # an 'auto' runtime: host SuperLU of a host copy from now on (B1b)
             if not self.fall_back(error, operator.shape[0]):
@@ -1416,6 +1421,11 @@ class DiffusionDirectSolver(ExactSolveRecord):
         # False: factorize_host_operator asks cuDSS / MUMPS / PARDISO for a symmetric indefinite LDL^T instead of the SPD
         # request, the kind of a shifted pencil that refactorises the detached factor (mechanics stress stiffening)
         self.positive_definite = True
+        # True: the owner vouches that every operator handed to factorize is symmetric (a DiffusionSystem's A_solve, an
+        # FEM diffusion operator: shared face / element terms), so a cuDSS factor skips the device symmetry check and
+        # its transpose map (factorize_device_csr symmetric_known: 4 B per stored entry kept, the plan's int64 keys);
+        # False (default, e.g. the 2D ElasticSystem): checked
+        self.symmetric_known = False
 
     def _refuse_cusolver_qr(self, back_end) -> None:
         if back_end == 'cusolver_qr':
@@ -1433,7 +1443,8 @@ class DiffusionDirectSolver(ExactSolveRecord):
         on_host = isinstance(operator.data, np.ndarray)
         if back_end in CUDSS_BACK_ENDS:   # gpu backend only (backend_misfit): no host round trip of the values (H1)
             self._factor = self.runtime.factorize_device_csr(operator, real=True, positive_definite=True,
-                                                             previous=self._factor)
+                                                             previous=self._factor,
+                                                             symmetric_known=self.symmetric_known)
             self._device_operator = operator if self.compute_residual else None
             return
         if back_end in HOST_DIRECT_BACK_ENDS:

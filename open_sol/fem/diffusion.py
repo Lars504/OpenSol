@@ -62,6 +62,8 @@ class FEMDiffusionSystemCommon:
                              f'the {backend} one')
         linear_solver.label = label
         self.linear_solver = linear_solver
+        if isinstance(linear_solver, DiffusionDirectSolver):   # symmetric element / edge terms: no cuDSS symmetry check
+            linear_solver.symmetric_known = True
         self.mesh = mesh
         self.order = int(order)
         self.backend = backend

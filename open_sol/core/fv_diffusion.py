@@ -386,6 +386,12 @@ class DiffusionSystem:
         linear_solver.label = label         # messages name the physics
         linear_solver.compute_residual = bool(compute_residual)
         self.linear_solver = linear_solver
+        # A_solve is symmetric by construction (both entries of a face from one conductance array, c_xy / wrap pairs
+        # alike, a symmetric elimination): a direct factor (bare or inside magnetic's KeptPreconditionerSolver) skips
+        # cuDSS's device symmetry check and its transpose map
+        direct = getattr(linear_solver, 'inner', linear_solver)
+        if isinstance(direct, DiffusionDirectSolver):
+            direct.symmetric_known = True
         self.require_anchors = True         # False: no singular-system check (the heat noise solve adds j omega C)
         self.n_diagonal_refreshes = 0       # refresh_diagonal calls that replaced a full assembly
         self.n_held_refreshes = 0           # refresh_held_values calls that replaced a full assembly
