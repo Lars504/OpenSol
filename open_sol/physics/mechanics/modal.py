@@ -34,7 +34,7 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 
-from ...solvers.arpack_shift_invert import CUDSS_FACTORIZATIONS, ArpackShiftInvertSolver
+from ...solvers.arpack_shift_invert import CUDSS_FACTORIZATIONS, SINGLE_BASIS_MIN_TOLERANCE, ArpackShiftInvertSolver
 from ...solvers.host_direct import HostDirectAccuracyError, factor_label
 
 MODAL_TABLE_COLUMNS = ('resonance_number', 'frequency', 'angular_frequency')
@@ -350,9 +350,14 @@ class ModalPencil:
                                               pencil=self._pencil())
             else:
                 coefficients = None if self.kind == 'damped' else (1.0, 1j / omega_target)
+                # complex64 Krylov basis only on a node tolerance >= SINGLE_BASIS_MIN_TOLERANCE (1e-6): the Ritz
+                # residuals are then asked no tighter than the fp32 Arnoldi relation holds (~1e-7 |H|; the factor
+                # solves, M products and H stay float64; loaded modes get the float64 Newton polish on top). The
+                # default tolerance 0 (machine precision) keeps the complex128 basis
+                single_basis = solver.tolerance >= SINGLE_BASIS_MIN_TOLERANCE
                 result = solver.eigs_shifted(None, self.mass, omega_target ** 2, n_wanted, start_vector=start_vector,
                                              previous=self.factor, pencil=self._pencil(),
-                                             stiffness_coefficients=coefficients)
+                                             stiffness_coefficients=coefficients, single_basis=single_basis)
         except RuntimeError as exc:
             self.factor = None
             raise ValueError(self._failure_text(exc, omega_target)) from None

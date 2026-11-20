@@ -198,11 +198,20 @@ file ("Triangle meshes"). Error indicators: section "Error indicators" (users: g
   `HarmonicSystemBase` (header: `frequency_terms`, `set_frequency_load` / `set_held_offsets`, `solution` / `factor` /
   `fixed_value`, `ensure_assembled()`); `load_vector`, `operator` and `reactions` hold pencil terms only. Subclass
   hooks (`_assemble_terms`, `_physical_values`, ...) are for subclasses (grep `class .*HarmonicSystem` under physics).
+- Real stays real: pencil terms keep their own dtype (`part`, the DevicePencil terms), so a pencil without PML,
+  complex coefficient or damping term combines real values and factors real on a DevicePencil / HostPencil
+  (`pencil.reduced(omega)` / `operator(omega)` are always complex copies, the host SuperLU route factors those: a new
+  device or factor path reads the parts). Estimators book complex terms
+  / factor only for what makes them complex (pressure_acoustics: PML; impedance adds the real damping term).
+- harmonic_resonances' complex / general paths hand M to `device_factor_matvec` as it is (a real M stays float64 on
+  the device, a complex symmetric pencil its lower triangle, probed) and keep a complex64 Krylov basis at an eigen
+  tolerance >= `SINGLE_BASIS_MIN_TOLERANCE`: the membrane estimate mirrors both.
 
 ## Squeeze film (`squeeze_film.py`; runtimes: physics/mechanics/squeeze_film.py tets, physics/membrane/squeeze_film.py)
 - Equation, units, vents and the two routes of w: module header. A shape that is not the film's own full coefficients
   goes through the volume source on the ACTIVE dof map (never the full map: a boundary dof's support outside the film
-  would count).
+  would count). An incompressible film factors its K part alone (real conductance: a real factor), never
+  `operator(0.0)` (a complex copy).
 
 ## Reduced sweeps (`reduced_harmonic.py`, `reduced_outputs.py`)
 - Contract: module headers and `HarmonicSystemBase.plan_reduced`. Per-frequency loads / held values go in as

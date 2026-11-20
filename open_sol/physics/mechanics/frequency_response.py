@@ -25,7 +25,7 @@ _PHASE_DEGREES = 180.0 / math.pi
 class HarmonicSystem:
     """The pencil (operator, loss, mass) of one assembly reduced once to the free dofs (G^T X G with G = column_map, None
     = identity) for the frequency solves; each solve factorises the complex symmetric operator + j loss - omega^2 mass
-    of the free dofs: on a cuDSS back end from the term values kept on the device (sparse_direct.DevicePencil,
+    of the free dofs (real symmetric without a loss and a load: a real factor): on a cuDSS back end from the term values kept on the device (sparse_direct.DevicePencil,
     factorize_pencil: LDL^T, the previous factor's plan reused), on MUMPS / PARDISO from host term values
     (sparse_direct.HostPencil, the analysis reused, no per-frequency asymmetry check), else by the runtime's
     factorize_host (host SuperLU; counted there) or, runtime None, a private host SuperLU. The summed pattern never depends on the
@@ -59,9 +59,11 @@ class HarmonicSystem:
         self._pattern = pattern_sum(list(zeros.values()))
         aligned = {name: pattern_sum([term if other == name else zeros[other] for other in terms]).data
                    for name, term in terms.items()}
-        self._fixed_values = aligned['stiffness'].astype(np.complex128)
-        if 'loss' in aligned:
-            self._fixed_values += 1j * aligned['loss']
+        # real stays real: without a loss the stiffness term keeps the real K values, so a lossless pencil without a
+        # resistive load combines real values per frequency and its factor is real (half the factor and pencil bytes,
+        # a quarter of the multiply-adds; the complex rhs is solved as its real and imaginary parts)
+        self._fixed_values = (aligned['stiffness'] + 1j * aligned['loss'] if 'loss' in aligned
+                              else aligned['stiffness'])
         self._mass_values = aligned['mass']
         self._load_values = aligned.get('load')
         # |diag K|, |diag M| of the free dofs: the row scale of every cuDSS factorisation (computed once)
@@ -120,8 +122,11 @@ class HarmonicSystem:
         coefficients = [1.0, -omega * omega] + ([] if self._load_values is None else [1j / omega])
         if self._pencil is None:
             terms = [self._fixed_values, self._mass_values] + ([] if self._load_values is None else [self._load_values])
+            # vouched symmetric (no device symmetry check, only the lower triangles uploaded): K, L, M, the coupled
+            # piezo operator and the diagonal electrode loads are symmetric by construction, kept by the free-dof
+            # selection and the real congruence G^T X G
             self._pencil = isinstance(self.runtime, SparseDirectSolver) and self.runtime.pencil(
-                self._pattern.indptr, self._pattern.indices, terms, symmetric=True) or False
+                self._pattern.indptr, self._pattern.indices, terms, symmetric=True, symmetric_known=True) or False
         # the scale of diag(K) + omega^2 diag(M) never cancels near a resonance (cuDSS equilibration)
         stiffness_diagonal, mass_diagonal = self._diagonals
         scale = None if self.runtime is None else 1.0 / np.sqrt(stiffness_diagonal + (omega * omega) * mass_diagonal)
@@ -130,14 +135,15 @@ class HarmonicSystem:
                                                         previous=self.factor)
         else:
             values = self._fixed_values - (omega * omega) * self._mass_values
-            if self._load_values is not None:
-                values += (1j / omega) * self._load_values
+            if self._load_values is not None:   # complex: never in place on the real values of a lossless pencil
+                values = values + (1j / omega) * self._load_values
             matrix = scipy.sparse.csr_matrix((values, self._pattern.indices, self._pattern.indptr),
                                              shape=self._pattern.shape)
+            real = not np.iscomplexobj(values)   # a lossless pencil: a real factor (solve_host splits a complex rhs)
             if self.runtime is None:
-                self.factor = factorize_host(matrix)
+                self.factor = factorize_host(matrix, real=real)
             else:
-                self.factor = self.runtime.factorize_host(matrix, symmetric=True, row_scale=scale,
+                self.factor = self.runtime.factorize_host(matrix, real=real, symmetric=True, row_scale=scale,
                                                           previous=self.factor)
         self.factorizations += 1
         return self.factor

@@ -744,14 +744,16 @@ class ArpackShiftInvertSolver:
         return result + (shift_inertia,) if inertia else result
 
     def eigs_shifted(self, stiffness, mass, shift, n_wanted, start_vector=None, row_scale=None, previous=None,
-                     pencil=None, stiffness_coefficients=None):
+                     pencil=None, stiffness_coefficients=None, single_basis=False):
         """(lambda complex, vectors, applications, converged, factor) of the n_wanted eigenpairs K x = lambda M x nearest
         the real shift of a complex symmetric (not Hermitian) host pencil, M symmetric (real semi-definite, or complex:
         an elastic PML; a caller's general pencil, symmetric False, factors by LU):
         counted complex symmetric factor of K - sigma M (sigma, pencil and previous as eigsh_shifted; with a pencil of
         several stiffness terms K = sum a_i K_i, a_i = stiffness_coefficients, and stiffness unused; cuDSS LDL^T with
         row_scale, None = ShiftPencil.row_scale) and Arnoldi (eigs) on (K - sigma M)^-1 M; massless rows give theta = 0
-        (lambda infinite: NaN); RuntimeError when that factor is singular."""
+        (lambda infinite: NaN); RuntimeError when that factor is singular. single_basis: eigs(single_basis=True), a
+        complex64 device basis (ValueError, before any factorisation, below SINGLE_BASIS_MIN_TOLERANCE)."""
+        _check_single_basis(single_basis, self.tolerance)   # eigs_shifted passes no tolerance floor
         # a caller's pencil may be general (symmetric False: a complex Bloch reduction of a complex symmetric pencil)
         pencil = self._checked_pencil(pencil, (stiffness,), mass, np.complex128,
                                       symmetric=True if pencil is None else pencil.symmetric)
@@ -776,11 +778,11 @@ class ArpackShiftInvertSolver:
                 return cp.asnumpy(device_apply(cp.asarray(vector)))
         try:
             theta, vectors, applications, converged = self.eigs(apply, n_unknowns, n_wanted, start_vector=start_vector,
-                                                                device_matvec=device_apply)
+                                                                device_matvec=device_apply, single_basis=single_basis)
         except CudssAccuracyError as exc:   # a refreshed factor's deferred check missed in its first solve
             if self._fall_back(exc, n_unknowns, pencil):   # 'auto': this shift again, on SuperLU
                 return self.eigs_shifted(None, pencil.mass, shift, n_wanted, start_vector=start_vector, pencil=pencil,
-                                         stiffness_coefficients=stiffness_coefficients)
+                                         stiffness_coefficients=stiffness_coefficients, single_basis=single_basis)
             raise _shift_factor_error(exc, sigma) from None
         theta = np.asarray(theta, dtype=np.complex128)
         nonzero = np.abs(theta) > 0.0

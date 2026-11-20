@@ -28,7 +28,7 @@ from ..em.definition_fdfd import (MIN_REGION_FRACTION_PARAM, resonance_region_me
 from ..em.eigenfrequency import (REGION_COLUMN, ResonanceRegion, ResonanceTable, resonance_filter_time_item,
                                  resonance_table_result)
 from ..em.memory_estimates import (EIGEN_PHASE, EIGEN_ROLE, _study_values, cudss_factor_items, eigen_mixed,
-                                   host_factor_items, own_cudss_search_items, polished_mixed_search,
+                                   host_factor_items, own_cudss_search_items, real_cross_section_operator,
                                    resonance_search_items)
 from .boundaries3d import AXES, FACE_TYPES_3D, MIRROR_TYPES_3D
 from .definition import (_BC_CHOICE_LABELS, _BC_TIP, _MATERIAL_PROPERTIES, _MATERIAL_SCHEMA,
@@ -334,13 +334,14 @@ def _memory_estimate(settings_values, mesh, context):
     cudss_items, external_items, external_extra = _cudss_eigen_items(factorization, unknowns, _ROW_ENTRIES * unknowns,
                                                                      general, 'the curl-curl operator',
                                                                      fill=FactorFill(cudss_counted))
-    # the Arnoldi basis (device Krylov-Schur where it runs, first pass only; a mixed LDL^T of D A is polished: complex64
-    # rows, eigenfrequency solve_resonances single_basis) and the filter's device A copy
+    # the Arnoldi basis (device Krylov-Schur where it runs, first pass only; a polished search keeps complex64 rows:
+    # _polished_search) and the filter's device A copy (fdfd3d passes no symmetric: a full A; float64 when real)
     search_host, search_transient = resonance_search_items(solver_backend(context.spec), unknowns, n_wanted, n_basis,
                                                            own_cudss=factorization in CUDSS_FACTORIZATIONS,
                                                            filter_entries=_ROW_ENTRIES * unknowns,
-                                                           single_basis=polished_mixed_search(factorization, unknowns,
-                                                                                              not general))
+                                                           single_basis=_polished_search(factorization, unknowns,
+                                                                                         not general, config),
+                                                           real_values=_real_values(settings_values, context, config))
     host_items = factor_items + (
         (f'operator A and its CSC copy ({_ROW_ENTRIES} entries per row)',
          2 * (_ROW_ENTRIES * COMPLEX128_CSR_ENTRY_BYTES * unknowns + row_bytes)),
@@ -404,6 +405,24 @@ def _arnoldi_sizes(context, unknowns):
     n_basis = arnoldi_basis_size(n_wanted, unknowns, eigen_subspace_size(context.solvers),
                                  ARNOLDI_BASIS_PER_WANTED * n_wanted)
     return n_resonances, n_wanted, n_basis
+
+
+def _polished_search(factorization, unknowns, ldlt, config) -> bool:
+    """Whether eigenfrequency.solve_resonances polishes an em_fdfd_3d search (and so keeps a complex64 device basis,
+    single_basis): an own LDL^T (ldlt: no complex Bloch phase; LDLT_FACTORIZATIONS) that is mixed (from
+    MIXED_EIGEN_MIN_UNKNOWNS on; below it a mixed request factors in double) or of a complex A whose ARPACK fdfd3d /
+    fem3d floor (any cpml face: ARPACK_TOLERANCE_FLOOR, the stretch makes A complex)."""
+    if not ldlt or factorization not in LDLT_FACTORIZATIONS:
+        return False
+    mixed = factorization in MIXED_FACTORIZATIONS and int(unknowns) >= MIXED_EIGEN_MIN_UNKNOWNS
+    return mixed or bool(config.needs_cpml)
+
+
+def _real_values(settings_values, context, config) -> bool:
+    """Whether the resonance filter's A and B have no imaginary part (device_matrices float64 storage): no cpml face, no
+    Bloch phase, no sigma_e / sigma_m and no Drude / Lorentz poles (the materials test of em_modes' cross-section)."""
+    return (not config.needs_cpml and not config.has_bloch_phase
+            and real_cross_section_operator(settings_values, context))
 
 
 def _cudss_eigen_items(factorization, unknowns, entries, general, label, fill=3, sparse_mass=False):
@@ -477,7 +496,8 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
     vector_bytes = COMPLEX128_BYTES * unknowns
     matrix_bytes = row_entries * COMPLEX128_CSR_ENTRY_BYTES * unknowns + INT32_BYTES * unknowns
     factorization = eigen_factorization(context.solvers)
-    symmetric = not _boundary_config(settings_values).has_bloch_phase   # MUMPS / PARDISO: LDL^T of the pencil
+    config = _boundary_config(settings_values)
+    symmetric = not config.has_bloch_phase   # MUMPS / PARDISO: LDL^T of the pencil
     if factorization in CUDSS_FACTORIZATIONS:
         factor_items = ()
     elif counted is not None:
@@ -504,9 +524,10 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
                                                            own_cudss=factorization in CUDSS_FACTORIZATIONS,
                                                            filter_entries=row_entries * unknowns,
                                                            sparse_mass_entries=row_entries * unknowns,
-                                                           symmetric_mass=symmetric,
-                                                           single_basis=polished_mixed_search(factorization, unknowns,
-                                                                                              symmetric))
+                                                           symmetric_mass=symmetric, symmetric_operator=symmetric,
+                                                           single_basis=_polished_search(factorization, unknowns,
+                                                                                         symmetric, config),
+                                                           real_values=_real_values(settings_values, context, config))
     host_items = factor_items + (
         (f'element assembly blocks ({n_local} x {n_local} per element: rows, columns, K and M)',
          n_elements * n_local * n_local * (2 * FLOAT64_BYTES + 2 * COMPLEX128_BYTES)),   # int64 indices
@@ -552,8 +573,9 @@ def _time_estimate(settings_values, mesh, context):
                            counter=physics_counter(context, 'assemblies'))
     # S9: the resonance filter per eigenpair of a pass (eigenfrequency._ResonanceFilter: A, and on tetrahedra the
     # sparse M and W, applied once per column block; was the "rest of the study": 628 ms against 16 ms on the Mie example)
-    candidate_filter = resonance_filter_time_item(context.backend, unknowns,
-                                                  3.0 * nnz if mesh.kind == 'tetrahedra' else nnz, eigenpairs)
+    candidate_filter = resonance_filter_time_item(   # tetrahedra without a Bloch phase: a symmetric search
+        context.backend, unknowns, 3.0 * nnz if mesh.kind == 'tetrahedra' else nnz, eigenpairs,
+        symmetric=mesh.kind == 'tetrahedra' and not config.has_bloch_phase)
     return te.combine((te.TimeEstimate((assembly, candidate_filter)),
                        context.solver_work('eigen', unknowns=unknowns, nnz=nnz, value_bytes=COMPLEX128_BYTES,
                                            dimensions=3, solves=1.0, factorizations=1.0, eigenpairs=eigenpairs,

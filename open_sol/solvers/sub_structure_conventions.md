@@ -239,8 +239,9 @@ internals: cudss_factor.py header; MUMPS / PARDISO: section "host_direct"; nvmat
 - `eigs_device(single_basis=True)` / `eigs(single_basis=True)` (complex64 basis on the device Krylov-Schur; host
   ARPACK ignores it) only on a tolerance >= SINGLE_BASIS_MIN_TOLERANCE (ValueError below, on every path, so a misuse
   fails at any size): its Arnoldi relation holds to fp32. Callers: solve_resonances' polished mixed search
-  (`refine`; estimators book it through `memory_estimates.polished_mixed_search`), other eigs callers through
-  `arnoldi_basis_bytes(single_basis=True)`. One search keeps one basis dtype (a resume checks it).
+  (`refine`; estimators book it through `memory_estimates.polished_mixed_search`), `eigs_shifted(single_basis=)`
+  from mechanics `ModalPencil._shift_solve` (damped / loaded pencils, only on a node tolerance >= 1e-6; its estimator
+  `eigen_device_items` reads the same rule), other eigs callers through `arnoldi_basis_bytes(single_basis=True)`. One search keeps one basis dtype (a resume checks it).
 - Device B of the shift-invert maps: `device_factor_matvec(factorization, B, symmetric=)` and
   `ShiftPencil.device_mass` store B through `device_matrix` (float64 when real, also a complex-typed B with zero
   imaginary parts; a diagonal B as its vector; symmetric: lower triangle + diagonal, probed). Estimators book

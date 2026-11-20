@@ -160,6 +160,7 @@ _CUDSS_CELL = 2.0 * _MODES_CELL
 _CUDSS_LOSS_FACTOR = 1e-3
 _CUDSS_FACTORS = (0.5, 0.99, 1.0005, 1.01, 1.5)   # x the lowest continuum roller-box frequency
 _CUDSS_TOLERANCE = 1e-9                           # relative max |dx| (both double; first estimate)
+_CUDSS_LOSSLESS_FACTORS = (0.5, 1.5)              # lossless run (real factor): off the modes, x the lowest mode
 
 
 def _check_cudss(_):
@@ -209,6 +210,27 @@ def _check_cudss(_):
     tolerances = dict.fromkeys(errors, _CUDSS_TOLERANCE)
     errors['cuDSS plans'], tolerances['cuDSS plans'] = abs(runtimes['cudss'].n_cudss_plans - 1), 0.5
     errors['LDL^T'], tolerances['LDL^T'] = 0.0 if details['cudss'].get('symmetric') else 1.0, 0.5
+    # lossless: HarmonicSystem keeps the pencil real, so cuDSS factors a real LDL^T and solves the complex load as its
+    # two real parts; reference: a complex scipy spsolve of the reduced operator
+    import scipy.sparse.linalg
+    free = np.flatnonzero(system.free)
+    complex_load = (1.0 + 0.5j) * load
+    lossless = HarmonicSystem(system.operator, None, mass, system.free,
+                              runtime=SparseDirectSolver(back_end='cudss', backend='gpu'))
+    for factor in _CUDSS_LOSSLESS_FACTORS:
+        omega = 2.0 * math.pi * factor * lowest
+        solution = lossless.solve(omega, fixed, complex_load)[0]
+        operator = (system.operator - omega * omega * mass).tocsr()[free][:, free].astype(np.complex128).tocsc()
+        reference = scipy.sparse.linalg.spsolve(operator, complex_load[free])
+        name = f'lossless x at {factor:g} f_1'
+        errors[name] = float(np.max(np.abs(solution[free] - reference)) / np.max(np.abs(reference)))
+        tolerances[name] = _CUDSS_TOLERANCE
+    errors['lossless real factor'] = 0.0 if getattr(lossless.factor, 'real', False) else 1.0
+    tolerances['lossless real factor'] = 0.5
+    details['lossless'] = {'factor': getattr(lossless.factor, 'description', 'SuperLU'),
+                           'device_bytes': getattr(lossless.factor, 'device_bytes', None)}
+    if hasattr(lossless.factor, 'release'):
+        lossless.factor.release()
     return scaled_worst_result(errors, tolerances, **details)
 
 
@@ -241,7 +263,11 @@ FREQUENCY_RESPONSE_3D_CASES = (
                      f"{', '.join(f'{factor:g}' for factor in _CUDSS_FACTORS)} x the lowest continuum mode: the "
                      "sparse_direct 'cudss' runtime (complex symmetric LDL^T) against 'scipy_splu' (relative max |dx| "
                      f'within {_CUDSS_TOLERANCE:g}), one cuDSS plan for all frequencies (refactorised in place) and a '
-                     'symmetric factor. details record the counters, plan / factorise seconds and device bytes. GPU '
+                     'symmetric factor. lossless (no loss term): the real cuDSS LDL^T HarmonicSystem keeps, its '
+                     'complex-load solutions at '
+                     f"{', '.join(f'{factor:g}' for factor in _CUDSS_LOSSLESS_FACTORS)} f_1 against a complex scipy "
+                     f'spsolve (within {_CUDSS_TOLERANCE:g}). details record the counters, plan / factorise seconds and '
+                     'device bytes. GPU '
                      'only; passes with a note without nvmath-python (62.5 nm cells: worst 5.9e-12 at 1.0005 f_1).'),
         specs=dict, check=_check_cudss, backends=('gpu',)),
 )

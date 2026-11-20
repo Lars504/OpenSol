@@ -301,17 +301,24 @@ def _memory_estimate(settings_values, mesh, context):
         host_lu_bytes(unknowns), unknowns, entries, symmetric=False, eigen=True))
     # one mode solve at a time (cross_section_modes.solve_prepared_modes: the factor is local, freed on return), so its
     # device vectors are one transient phase. cuDSS general LU in double (the transverse-H operator is not complex
-    # symmetric): the equilibrated complex128 CSR copy, rhs / equilibration / solution / applied vectors and the
-    # diagonal B of device_factor_matvec, a device vector (complex128; float64 on a lossless cross-section without PML)
+    # symmetric): the equilibrated CSR copy, rhs / equilibration / solution / applied vectors and the diagonal B of
+    # device_factor_matvec, a device vector. E1: a real operator (lossless cross-section without PML) factors in float64
+    # and B is a float64 vector; its solves of the complex Krylov vectors run as two real solves (complex128 vectors)
     mode_solve = []
     external_items, external_extra = (), 0
     if on_device:
-        mode_solve = [('cuDSS operator copy (complex128 CSR)',
-                       operator_copy_bytes(unknowns, entries, COMPLEX128_BYTES, symmetric=False)),
+        from ...solvers.device_matrices import device_matrix_bytes
+        from ..em.memory_estimates import real_cross_section_operator
+        real = real_cross_section_operator(settings_values, context)
+        value_bytes, value_type = (FLOAT64_BYTES, 'float64') if real else (COMPLEX128_BYTES, 'complex128')
+        mode_solve = [(f'cuDSS operator copy ({value_type} CSR)',
+                       operator_copy_bytes(unknowns, entries, value_bytes, symmetric=False)),
                       ('cuDSS rhs buffer, row scale and one solve\'s vectors',
-                       solve_buffer_bytes(unknowns, COMPLEX128_BYTES) + solve_peak_bytes(unknowns, COMPLEX128_BYTES)),
-                      ('device mass diagonal B (complex128 vector)', COMPLEX128_BYTES * unknowns)]
-        permanent, external_extra = factor_device_bytes(unknowns, entries, COMPLEX128_BYTES, dimensions=2,
+                       solve_buffer_bytes(unknowns, value_bytes) + solve_peak_bytes(unknowns, COMPLEX128_BYTES)),
+                      (f'device mass diagonal B ({value_type} vector) and B x (complex128)',
+                       device_matrix_bytes(unknowns, unknowns, symmetric=False, real=real, diagonal=True)
+                       + COMPLEX128_BYTES * unknowns)]
+        permanent, external_extra = factor_device_bytes(unknowns, entries, value_bytes, dimensions=2,
                                                         symmetric=False)
         external_items = (('cuDSS cross-section LU factor (one section at a time)', permanent),)
     # the device Krylov-Schur basis (gpu backend, eigs' size rule) lives for one mode solve, host ARPACK's is host
