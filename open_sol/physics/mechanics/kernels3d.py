@@ -9,6 +9,13 @@ import numpy as np
 
 from ...core.kernels import real_raw_twin
 
+# The reduced inverse node blocks (block-Jacobi preconditioner) are stored float32 at every solve precision: they are
+# formed and inverted in the solve dtype and only rounded on storage; a preconditioner changes the CG path, not its
+# fixed point (the residual and the stop test stay in the solve dtype), and a 6e-8 relative rounding of a symmetric
+# block inverse keeps it symmetric positive definite (non-SPD reduced blocks already fall back to the diagonal), so a
+# float64 solve still reaches its tolerance; half the block bytes (24 B / node) and their per-iteration reads.
+PRECONDITIONER_DTYPE = np.dtype(np.float32)
+
 # Cell-centre outputs in the argument order of elastic_outputs (the 3D field class keeps this order).
 OUTPUT_ARRAYS_3D = ('u_x', 'u_y', 'u_z', 'u_abs',
                     'strain_xx', 'strain_yy', 'strain_zz', 'strain_xy', 'strain_xz', 'strain_yz',
@@ -417,23 +424,24 @@ void reduce_invert_blocks(real_t* __restrict__ blocks, const bool* __restrict__ 
     }
 }
 """,
-    # z = B_solve^-1 r per node (symmetric inverse blocks xx, yy, zz, xy, xz, yz). block_precondition3_rows: r, z of
-    # n_rows C rows (n_rows, 3 n_nodes), one thread per (row, node), the blocks shared.
+    # z = B_solve^-1 r per node (symmetric inverse blocks xx, yy, zz, xy, xz, yz; float32 at every precision, see
+    # PRECONDITIONER_DTYPE). block_precondition3_rows: r, z of n_rows C rows (n_rows, 3 n_nodes), one thread per (row,
+    # node), the blocks shared.
     'block_precondition3': r"""
 __device__ __forceinline__ void block_precondition3_node(
-    int node, const real_t* __restrict__ inverse, const real_t* __restrict__ r, real_t* __restrict__ z)
+    int node, const float* __restrict__ inverse, const real_t* __restrict__ r, real_t* __restrict__ z)
 {
-    const real_t* b = inverse + 6 * (idx_t)node;
+    const float* b = inverse + 6 * (idx_t)node;
     const int dof = 3 * node;
     const real_t r0 = r[dof], r1 = r[dof + 1], r2 = r[dof + 2];
-    z[dof] = b[0] * r0 + b[3] * r1 + b[4] * r2;
-    z[dof + 1] = b[3] * r0 + b[1] * r1 + b[5] * r2;
-    z[dof + 2] = b[4] * r0 + b[5] * r1 + b[2] * r2;
+    z[dof] = (real_t)b[0] * r0 + (real_t)b[3] * r1 + (real_t)b[4] * r2;
+    z[dof + 1] = (real_t)b[3] * r0 + (real_t)b[1] * r1 + (real_t)b[5] * r2;
+    z[dof + 2] = (real_t)b[4] * r0 + (real_t)b[5] * r1 + (real_t)b[2] * r2;
 }
 
 extern "C" __global__
 void block_precondition3(
-    const real_t* __restrict__ inverse, const real_t* __restrict__ r, real_t* __restrict__ z, int n_nodes)
+    const float* __restrict__ inverse, const real_t* __restrict__ r, real_t* __restrict__ z, int n_nodes)
 {
     const int node = blockIdx.x * blockDim.x + threadIdx.x;
     if (node >= n_nodes) return;
@@ -442,7 +450,7 @@ void block_precondition3(
 
 extern "C" __global__
 void block_precondition3_rows(
-    const real_t* __restrict__ inverse, const real_t* __restrict__ r, real_t* __restrict__ z, int n_nodes, int n_rows)
+    const float* __restrict__ inverse, const real_t* __restrict__ r, real_t* __restrict__ z, int n_nodes, int n_rows)
 {
     const idx_t index = (idx_t)blockIdx.x * blockDim.x + threadIdx.x;
     if (index >= (idx_t)n_nodes * n_rows) return;
@@ -457,7 +465,7 @@ void block_precondition3_rows(
 extern "C" __global__
 void elastic_update_precondition(
     const real_t* __restrict__ direction, const real_t* __restrict__ product, real_t* __restrict__ solution,
-    real_t* __restrict__ residual, real_t* __restrict__ preconditioned, const real_t* __restrict__ inverse,
+    real_t* __restrict__ residual, real_t* __restrict__ preconditioned, const float* __restrict__ inverse,
     const real_t* __restrict__ rho, const real_t* __restrict__ pq_partials, real_t* __restrict__ rz_partials,
     int n_partials, int update, int n_nodes)
 {
@@ -478,10 +486,10 @@ void elastic_update_precondition(
                 residual[dof + a] = r[a];
             }
         }
-        const real_t* b = inverse + 6 * (idx_t)node;
-        const real_t z0 = b[0] * r[0] + b[3] * r[1] + b[4] * r[2];
-        const real_t z1 = b[3] * r[0] + b[1] * r[1] + b[5] * r[2];
-        const real_t z2 = b[4] * r[0] + b[5] * r[1] + b[2] * r[2];
+        const float* b = inverse + 6 * (idx_t)node;
+        const real_t z0 = (real_t)b[0] * r[0] + (real_t)b[3] * r[1] + (real_t)b[4] * r[2];
+        const real_t z1 = (real_t)b[3] * r[0] + (real_t)b[1] * r[1] + (real_t)b[5] * r[2];
+        const real_t z2 = (real_t)b[4] * r[0] + (real_t)b[5] * r[1] + (real_t)b[2] * r[2];
         preconditioned[dof] = z0;
         preconditioned[dof + 1] = z1;
         preconditioned[dof + 2] = z2;
@@ -1151,8 +1159,11 @@ _NUMBA_TWINS = {'elastic_product': _elastic_product_numba, 'elastic_mass_product
                 'elastic_direction_product': _elastic_direction_product_numba}
 # name -> core.kernels twin: the cupy RawKernel (compiled per real type of args[0], every kernel's first array) for cupy
 # arguments, the numba / numpy twin for numpy ones
+# kernels whose first array is not real_t: the argument that sets their real type (block_precondition3: the float32
+# blocks come first)
+_DTYPE_ARGUMENTS = {'block_precondition3': 1}
 _TWINS = {name: real_raw_twin(f'mechanics3d.{name}', _PREAMBLE + _SOURCES[name], name, host,
-                              numba=_NUMBA_TWINS.get(name))
+                              numba=_NUMBA_TWINS.get(name), dtype_argument=_DTYPE_ARGUMENTS.get(name, 0))
           for name, host in _HOST_TWINS.items()}
 
 

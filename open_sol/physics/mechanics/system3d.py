@@ -10,7 +10,7 @@ from ...core.backend import to_host
 from ...core.constants import FACES_3D
 from ...solvers.block_eigen import BlockEigenSolver
 from ...solvers.pcg import CG_ITERATIONS_PER_AXIS_CELL, PCGSolver
-from .kernels3d import BrickKernels, FusedBrickIteration
+from .kernels3d import PRECONDITIONER_DTYPE, BrickKernels, FusedBrickIteration
 from .multigrid3d import (BlockCycle, CYCLE_COST_IN_JACOBI_ITERATIONS, FALLBACK_ITERATIONS, FALLBACK_MIN_ITERATIONS,
                           BrickMultigrid)
 from .modal import LANCZOS_TOLERANCE_PER_CG, solve_lowest_modes_block, solve_lowest_modes_matrix_free
@@ -71,7 +71,8 @@ class ElasticSystem3D(ElasticSystemBase):
         self.load_full = xp.zeros(n_dofs, dtype=dtype)                   # total nodal load of the last build_rhs
         self.rhs = xp.zeros(n_dofs, dtype=dtype)
         self.free = xp.zeros(n_dofs, dtype=xp.bool_)
-        self.inverse_blocks = xp.zeros((self.n_nodes, 6), dtype=dtype)   # reduced inverse 3 x 3 blocks per node
+        # reduced inverse 3 x 3 blocks per node, float32 at every precision (PRECONDITIONER_DTYPE)
+        self.inverse_blocks = xp.zeros((self.n_nodes, 6), dtype=PRECONDITIONER_DTYPE)
         # CG unknown w = u on free dofs, 0 on fixed ones; between solves the scratch of reaction and of build_rhs's K
         # u_fix (solve rebuilds it from unknown)
         self._solution = xp.zeros(n_dofs, dtype=dtype)
@@ -223,18 +224,23 @@ class ElasticSystem3D(ElasticSystemBase):
         mu = xp.ascontiguousarray(mu, dtype=dtype)
         kernels, widths = self.kernels, self.widths_device
 
-        kernels.diagonal_blocks(self.inverse_blocks, lame_lambda, mu, widths)
+        # node blocks formed and inverted in the solve dtype, kept float32 (a float64 solve: a transient block array)
+        single_blocks = np.dtype(dtype) == PRECONDITIONER_DTYPE
+        blocks = self.inverse_blocks if single_blocks else xp.empty((self.n_nodes, 6), dtype=dtype)
+        kernels.diagonal_blocks(blocks, lame_lambda, mu, widths)
         held = self.held.reshape(-1)
-        unconnected = (self.inverse_blocks[:, :3] <= 0).reshape(-1) & ~held   # dofs touching no solid element
+        unconnected = (blocks[:, :3] <= 0).reshape(-1) & ~held   # dofs touching no solid element
         xp.logical_not(held | unconnected, out=self.free)
         del unconnected
         self._check_rigid_modes(solid_elements)
 
-        kernels.reduce_invert_blocks(self.inverse_blocks, self.free)
+        kernels.reduce_invert_blocks(blocks, self.free)
+        if not single_blocks:
+            xp.copyto(self.inverse_blocks, blocks)   # in place: graphs and multigrid keep the array
+            del blocks
         if self.widths_single is not None:   # mixed / double multigrid: float32 operator (blocks inverted in float64)
             self._single_operator = None   # free the previous copies first
-            self._single_operator = tuple(values.astype(np.float32)
-                                          for values in (lame_lambda, mu, self.inverse_blocks))
+            self._single_operator = (lame_lambda.astype(np.float32), mu.astype(np.float32), self.inverse_blocks)
         self._write_fixed_values(self.unknown)
         self.lame_lambda, self.mu = lame_lambda, mu
         if self.multigrid is not None:   # the hierarchy of this assembly, level 0 = the CG's own (inner) operator
@@ -545,8 +551,8 @@ class ElasticSystem3D(ElasticSystemBase):
                     lame_lambda, mu, blocks = self._single_operator
                     widths = self.widths_single
                 else:
-                    lame_lambda, mu, blocks = (values.astype(single)
-                                               for values in (self.lame_lambda, self.mu, self.inverse_blocks))
+                    lame_lambda, mu = (values.astype(single) for values in (self.lame_lambda, self.mu))
+                    blocks = self.inverse_blocks   # float32 already (PRECONDITIONER_DTYPE)
                     widths = tuple(xp.asarray(values, dtype=single) for values in self.widths_host)
                 operators[dtype] = (lame_lambda, mu, widths, blocks, operators[double][4].astype(single))
             return operators[dtype]

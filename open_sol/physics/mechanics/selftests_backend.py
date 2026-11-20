@@ -191,7 +191,7 @@ def _random_iteration_arguments(rng, element_shape, dtype):
 
     def vector():
         return rng.standard_normal(n_dofs).astype(dtype)
-    inverse = np.zeros((n_nodes, 6), dtype=dtype)
+    inverse = np.zeros((n_nodes, 6), dtype=np.float32)   # kernels3d.PRECONDITIONER_DTYPE at every solve dtype
     inverse[:, :3] = rng.uniform(0.5, 1.5, (n_nodes, 3))
     inverse[:, 3:] = rng.uniform(-0.2, 0.2, (n_nodes, 3))
     inverse = inverse.reshape(-1)

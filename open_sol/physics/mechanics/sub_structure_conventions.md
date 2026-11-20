@@ -178,7 +178,10 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   (`_solution`, which also resets `_reaction_key`), and `solve` rewrites the fixed dofs of unknown
   (`_write_fixed_values`). `applied_body_force` likewise waits for the first body force (`body_force_target`). A new
   writer of held values goes through `_held_values_for`; the estimate books both by feature (`_PRESCRIBING_FEATURES`,
-  body_force).
+  body_force). The reduced inverse node blocks are float32 at every solve precision (`kernels3d.PRECONDITIONER_DTYPE`,
+  its error argument at the constant): formed / inverted in the solve dtype in a transient, every kernel reading them
+  takes `const float*` (a new one too; block_precondition3 takes its real type from the residual, `_DTYPE_ARGUMENTS`),
+  and the mixed / block-eigen float32 operator sets share the array.
 - pcg preconditioner 'multigrid' (opt-in): design and known weakness in the `multigrid3d.py` header, the fallback guard
   in `_guarded_solve`. Self-tests `solid_3d_multigrid` and `solid_3d_multigrid_void` fail on a fallback, so the guard
   cannot hide a weak cycle.
