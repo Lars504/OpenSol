@@ -353,6 +353,9 @@ def diffusion_system_estimate(window_cells, precision, cross_term=False, transie
         build_extra = max(build_extra, alive + amg.setup_extra_bytes(cells, value_bytes, entries_per_row))
         if not (backend == 'gpu' and amg.DEVICE_AGGREGATION):   # the device twin holds no host copy of the CSR
             host_items.append(('multigrid aggregation (transient)', amg.aggregation_host_bytes(cells, entries_per_row)))
+        # aggregates and tentative prolongators between setups: numpy arrays (on the cpu backend beside its hierarchy)
+        kept_host = ('multigrid aggregates and tentative prolongators (host, kept)', amg.kept_host_bytes(cells))
+        (items if backend == 'cpu' else host_items).append(kept_host)
     if direct:   # solvers.sparse_direct.DiffusionDirectSolver: one factor per assembly, the previous one dropped
         from ..solvers import host_direct   # numpy only (a function-level exception of the core rule)
         if direct in host_direct.HOST_DIRECT_BACK_ENDS:   # real SPD: PARDISO Cholesky / MUMPS LDL^T

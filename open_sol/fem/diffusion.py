@@ -999,6 +999,8 @@ def fem_system_estimate(n_dofs, entries_per_dof, local_dofs, n_elements, element
             from ..solvers import multigrid as amg
             items.append(('multigrid hierarchy (operators, prolongations, vectors)',
                           amg.hierarchy_bytes(n_active, value_bytes, entries_per_dof)))
+            host_items.append(('multigrid aggregates and tentative prolongators (host, kept)',
+                               amg.kept_host_bytes(n_active)))
             build_extra = amg.setup_extra_bytes(n_active, value_bytes, entries_per_dof)
             refactor_extra += build_extra
     if refactorizes:
