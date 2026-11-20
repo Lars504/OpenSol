@@ -1598,7 +1598,10 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
             symmetric=_trivial_bloch_phase(settings_values), checked=not _trivial_bloch_phase(settings_values),
             dimensions=fill, complex_eigs=complex_eigs, n_basis=n_basis,
             # the elastic mass couples one component per row (piezoelectric: the pencil's count, an upper bound)
-            mass_entries=None if piezoelectric else factored_entries // 3)
+            mass_entries=None if piezoelectric else factored_entries // 3,
+            # ShiftPencil keeps a real M float64 in a complex pencil (loss, resistive load); a PML stretch or a Bloch
+            # phase makes M complex
+            mass_bytes=_COMPLEX_BYTES if _complex_pencil(settings_values) else FLOAT64_BYTES)
         host_items.extend((name, complex_factor * value) for name, value in _eigen_host_items(
             context, factored, rigid_motions, pml, basis_on_device))
         host_items.extend(eigen_host_items)

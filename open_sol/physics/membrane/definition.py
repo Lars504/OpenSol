@@ -1247,12 +1247,13 @@ def _memory_estimate(settings_values, mesh, context):
             eigen_items.append((f'device Krylov-Schur basis ({basis + 1} {row_type} rows + 2 complex128 work vectors)',
                                 ((basis + 1) * row_bytes + 2 * COMPLEX128_BYTES) * dofs))
             if cudss is not None:
-                from ...solvers.device_matrices import device_matrix_bytes
+                from ...solvers.device_matrices import device_matrix_bytes, device_product_bytes
                 bloch = any(_bloch_wavenumber(settings_values, axis) != 0.0
                             for axis in _periodic_axes(settings_values))
-                eigen_items.append(('eigen device mass of the Krylov-Schur matvec',
-                                    device_matrix_bytes(dofs, entries, symmetric=not bloch,
-                                                        real=not (bloch or _pml_faces(settings_values)))))
+                real_mass = not (bloch or _pml_faces(settings_values))
+                eigen_items.append(('eigen device mass of the Krylov-Schur matvec and its product vectors',
+                                    device_matrix_bytes(dofs, entries, symmetric=not bloch, real=real_mass)
+                                    + device_product_bytes(dofs, symmetric=not bloch, real=real_mass)))
         else:
             host_items.append(('ARPACK basis (complex128)', basis_bytes))
     host_items.extend(reduced_sweep_memory_items(context, dofs, entries))

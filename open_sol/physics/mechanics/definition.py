@@ -1098,7 +1098,9 @@ def _fem_memory_estimate(settings_values, mesh, context):
         # runs eigs_shifted (the device Krylov-Schur on a DevicePencil), a real one eigsh_shifted
         eigen_transient, eigen_host_items, eigen_factors, eigen_phases, basis_on_device = eigen_device_items(
             context, vector_dofs, entries, 16 if complex_pencil else FLOAT64_BYTES, dimensions=fill,
-            complex_eigs=complex_pencil, n_basis=n_basis, mass_entries=entries // components)
+            complex_eigs=complex_pencil, n_basis=n_basis, mass_entries=entries // components,
+            # a loss factor leaves M real (float64 in the complex pencil); a PML stretch or a Bloch reduction does not
+            mass_bytes=16 if pml or complex_bloch_pencil_2d(settings_values) else FLOAT64_BYTES)
         host_items.extend((name, (2 if complex_pencil else 1) * value) for name, value in _eigen_host_items(
             context, vector_dofs, entries, rigid_motions, pml, basis_on_device))
         transient_items += eigen_transient
@@ -1345,19 +1347,24 @@ EIGEN_PHASE = 'eigen solve'
 
 
 def eigen_device_items(context, dofs, entries, value_bytes, terms=2, term_bytes=None, symmetric=True, checked=False,
-                       dimensions=2, complex_eigs=False, n_basis=0, mass_entries=None) -> tuple:
+                       dimensions=2, complex_eigs=False, n_basis=0, mass_entries=None, mass_bytes=None) -> tuple:
     """(transient items by phase, host items, cuDSS factors, {factor label: its phases}, basis_on_device) of the eigen
     ShiftPencil (modal.ModalPencil) on a cuDSS factorization; ((), (), (), {}, False) on SuperLU. complex_eigs: the
     eigs_shifted path (a complex pencil: PML, loss, loaded electrodes; else eigsh_shifted), whose device matvec runs the
     device Krylov-Schur on n_basis vectors when device_arnoldi_fits; mass_entries: stored entries of M itself (None:
-    the pencil's, an upper bound; a vector Lagrange mass: entries / components; also used by definition3d)."""
+    the pencil's, an upper bound; a vector Lagrange mass: entries / components; also used by definition3d);
+    term_bytes: value bytes of each stiffness term (None: value_bytes), mass_bytes: of the M term (None: term_bytes;
+    ShiftPencil keeps a real M float64 in a complex pencil, a loss-only pencil: 8)."""
     from ...solvers.arpack_shift_invert import (DEVICE_PENCIL_MIN_ENTRIES, MIXED_EIGEN_MIN_UNKNOWNS,
                                                 arnoldi_basis_bytes)
     from ...solvers.cudss_factor import index_map_bytes, operator_copy_bytes, solve_buffer_bytes, solve_peak_bytes
+    from ...solvers.device_matrices import device_matrix_bytes, device_product_bytes
     factorization = eigen_factorization(context.solvers)
     if factorization not in CUDSS_FACTORIZATIONS:
         return (), (), (), {}, False
     term_bytes = value_bytes if term_bytes is None else term_bytes
+    mass_bytes = term_bytes if mass_bytes is None else mass_bytes
+    term_total = (terms - 1) * term_bytes + mass_bytes   # value bytes of every stored term together
     # S5c (ArpackShiftInvertSolver.factorization_for): a small cudss_mixed pencil factors in double on the host route
     switched = factorization == 'cudss_mixed' and dofs < MIXED_EIGEN_MIN_UNKNOWNS
     mixed = factorization == 'cudss_mixed' and not switched
@@ -1365,7 +1372,7 @@ def eigen_device_items(context, dofs, entries, value_bytes, terms=2, term_bytes=
     solve_vectors = ('eigen cuDSS one solve\'s vectors', solve_peak_bytes(dofs, value_bytes, mixed))
     factor_label = 'eigen cuDSS factor of K - sigma M'
     factors = ((factor_label, dofs, entries, value_bytes, dimensions, mixed),)
-    host_items = (('eigen shift pencil term values and diagonals', terms * term_bytes * (entries + dofs)),)
+    host_items = (('eigen shift pencil term values and diagonals', term_total * (entries + dofs)),)
     if not (entries >= DEVICE_PENCIL_MIN_ENTRIES and not switched):
         # a factor of the host K - sigma M: its lower-triangle (LU: full) CSR copies in the pool; host ARPACK
         copies = ('eigen cuDSS lower-triangle CSR copies',
@@ -1377,10 +1384,10 @@ def eigen_device_items(context, dofs, entries, value_bytes, terms=2, term_bytes=
     # symmetric pencil on the host (nothing beyond the stored terms), else it holds the full terms, the int64 lower
     # take and the new lower terms together
     lower = (entries + dofs) // 2 if symmetric else entries
-    stored = ('eigen DevicePencil stored terms', terms * term_bytes * lower)
+    stored = ('eigen DevicePencil stored terms', term_total * lower)
     upload = ('eigen DevicePencil upload transients (full terms, lower take, symmetry check)',
               0 if symmetric and not checked else
-              terms * term_bytes * entries + (8 * lower if symmetric else 0)
+              term_total * entries + (8 * lower if symmetric else 0)
               + (int((_SYMMETRY_CHECK_BYTES + 2 * term_bytes) * entries) if checked else 0))
     # the CudssFactorization planned from the pencil's device values (refactorize_device_lower: the lower triangle's
     # index maps alone; refactorize_device_values of a full-pattern pencil: rows, columns and diagonal slots; the
@@ -1394,11 +1401,16 @@ def eigen_device_items(context, dofs, entries, value_bytes, terms=2, term_bytes=
     # float64 row-scale gathers and their product of its equilibration, if larger)
     combined = ('eigen combined pencil values of one factorisation',
                 value_bytes * lower if symmetric else max(value_bytes, 3 * FLOAT64_BYTES) * entries)
-    # ShiftPencil.device_mass: the host M uploaded on its own pattern (values of the pencil dtype, int32 indices /
-    # indptr); the product vectors
+    # ShiftPencil.device_mass: the host M uploaded on its own pattern by device_matrices.device_matrix (float64 when
+    # real, also in a complex pencil; on a symmetric DevicePencil its strict lower triangle + diagonal); the product's
+    # vectors (eigs: complex operands; eigsh: the pencil dtype) and the solve input
     mass_entries = entries if mass_entries is None else int(mass_entries)
-    mass = ('eigen device mass product (M on its own pattern: values, int32 indices, vectors)',
-            (value_bytes + INT32_BYTES) * mass_entries + INT32_BYTES * (dofs + 1) + 3 * value_bytes * dofs)
+    real_mass = mass_bytes == FLOAT64_BYTES
+    mass = ('eigen device mass product (M on its own pattern, device_matrix; product vectors)',
+            device_matrix_bytes(dofs, mass_entries, symmetric, real_mass)
+            + device_product_bytes(dofs, symmetric=symmetric, real=real_mass,
+                                   complex_operand=complex_eigs or value_bytes > FLOAT64_BYTES)
+            + value_bytes * dofs)
     basis_on_device, basis_bytes = (arnoldi_basis_bytes(dofs, n_basis, solver_backend(context.spec),
                                                         device_matvec=True) if complex_eigs else (False, 0))
     basis = (f'eigen device Krylov-Schur basis ({n_basis} + 3 x complex128)', basis_bytes if basis_on_device else 0)
