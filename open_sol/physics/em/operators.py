@@ -234,8 +234,8 @@ class EDifference:
     periodic axis: + lower[0] v[n-1], the Bloch wrap in it), times other_scale along the other axis (polar dy_e: 1 /
     r~_c; None = 1). The entries are those of the CSR (yee_e_differences; polar dy_e applies its row scale after the
     sum: equal to rounding; checked by em_operators_consistency); `@` takes one flat (nx*ny,) vector and allocates its
-    result, `.T` is the transpose. Anything else (a sparse product, .data)
-    fails loudly: such readers take the assembled CSR of yee_operators / KeptYeeOperators.at."""
+    result, `.T` is the transpose. Anything else (a sparse product, .data) fails loudly: such readers take the
+    assembled CSR of yee_operators / KeptYeeOperators.at."""
 
     def __init__(self, axis, grid_shape, diagonal, lower, periodic, other_scale=None, transposed=False):
         if axis not in (0, 1):

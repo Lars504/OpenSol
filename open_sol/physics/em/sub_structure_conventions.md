@@ -288,8 +288,9 @@ type's vocabulary and refusals are in its help texts and validation.
   needing it as a matrix (sparse product, `.data`: TypeError) assembles it itself. Kept complex128 on
   purpose: the face weights, `solution` and the face fields (the discrete Poynting balance and the TFSF leak are
   checked to 1e-9 / 1e-12, and a 32-bit copy of what the operator was assembled from breaks both). Estimators:
-  `memory_estimates.FDFD_HOST_SYSTEM_ARRAYS`, `_FDFD_PLAN_TERM_BYTES`, `_YEE_ENTRY_MAP_BYTES`; the time recipe's
-  transfer `definition_fdfd.fdfd_assembly_ops`.
+  `memory_estimates.FDFD_HOST_SYSTEM_ARRAYS`, `FDFD_LOSS_ARRAYS`, `_FDFD_PLAN_TERM_BYTES`, `_YEE_ENTRY_MAP_BYTES`,
+  `_YEE_E_PATTERN_BYTES`, `_YEE_E_CSR_BYTES`; the time recipe's transfer `definition_fdfd.fdfd_assembly_ops` (nlfd
+  reuses it).
 - Linear solver: 'linear' role (`SparseDirectSolver`, `FDFDPhysics(linear_solver=)`), 'auto' resolved at finalize;
   eigenfrequency uses the 'eigen' role (also optomechanics). Size guards: a cusolver_qr workspace overrun bypasses the
   pool budget and can freeze Windows / crash the driver instead of failing, so sizes are refused before solving:
