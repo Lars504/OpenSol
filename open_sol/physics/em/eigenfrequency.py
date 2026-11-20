@@ -125,14 +125,17 @@ FILTER_BLOCK_COLUMNS = 16
 # and one operator uploaded at a time; with the Krylov basis on the host meanwhile (_parked_decomposition) the filter
 # held ~2.4 GiB less beside the factor than the 16-column blocks and kept A, B, W copies (690k Nedelec unknowns)
 FILTER_DEVICE_BLOCK_COLUMNS = 4
+# Device storage (solvers.device_matrices.device_matrix): a symmetric search (symmetric=True: A, B and a sparse W
+# complex / real symmetric, probed on upload, ValueError otherwise) keeps every sparse operator as its strict lower
+# triangle + diagonal (~0.27 GiB less for B than the full CSR on the 690k-unknown nanobeam eighth model) and applies it
+# by untransposed L products (bilinear: two per measure, twice the full CSR's reads, in a filter that is a small part of
+# eigs); real values stay float64 (12 of 20 B per stored entry: a lossless, PML-free B or A, and W always), applied to
+# complex operands through their float64 view, never as a complex128 copy (cuSPARSE casts a real CSR per product)
 # host B v of a sparse B (_PencilMass.times: two per squared-Cayley application) cut into row blocks on this many threads
 # from this many stored entries: scipy's CSR kernel is serial but releases the GIL (tetrahedral Mie PARDISO profile,
 # 44k Nedelec unknowns: 609 serial products took 2.3 s, ~10 % of the run)
 HOST_MASS_THREADS = 8
 HOST_MASS_THREAD_MIN_ENTRIES = 500_000
-# a symmetric search keeps the device B as its lower triangle (_DeviceSymmetricMass: ~0.27 GiB less than the full CSR
-# on the 690k-unknown nanobeam eighth model); B's symmetry is probed first, |u^T B v - v^T B u| <= this x |u| |B v|
-_MASS_SYMMETRY_TOLERANCE = 1e-10
 _MASS_POOL = []   # the ThreadPoolExecutor of _mass_pool, made on first use
 
 
@@ -142,6 +145,18 @@ def _mass_pool():
         from concurrent.futures import ThreadPoolExecutor
         _MASS_POOL.append(ThreadPoolExecutor(max_workers=HOST_MASS_THREADS, thread_name_prefix='pencil_mass'))
     return _MASS_POOL[0]
+
+
+def _host_product(matrix, vectors):
+    """matrix @ vectors of a scipy sparse matrix and host (n,) / (n, k) vectors; a real matrix applied to complex vectors
+    through their float64 view (one real product of the interleaved Re / Im columns: scipy would cast the matrix values
+    to complex128 per product)."""
+    if np.iscomplexobj(matrix.data) or not np.iscomplexobj(vectors):
+        return matrix @ vectors
+    vectors = np.ascontiguousarray(vectors, dtype=np.complex128)
+    pairs = vectors.view(np.float64).reshape(vectors.shape[0], -1)   # row i: Re v_i0, Im v_i0, Re v_i1, ...
+    product = np.ascontiguousarray(matrix @ pairs, dtype=np.float64)
+    return product.view(np.complex128).reshape((matrix.shape[0],) + vectors.shape[1:])
 
 
 @dataclass(frozen=True, eq=False)
@@ -190,19 +205,26 @@ class EigenSolve:
 
 @dataclass(frozen=True, eq=False)
 class _PencilMass:
-    """B = -M of the pencil on flat unknowns: an (n,) complex128 diagonal (FDFD faces / cells) or a complex128 scipy
-    CSR (FEM edge mass); `free` = rows of B not all zero (pinned rows have none)."""
+    """B = -M of the pencil on flat unknowns: an (n,) complex128 diagonal (FDFD faces / cells) or a scipy CSR (FEM edge
+    mass), float64 when M has no imaginary part (a lossless, PML-free mass: 12 B per stored entry instead of 20 on the
+    host and the device, applied to complex vectors through their float64 view), else complex128; `free` = rows of B
+    not all zero (pinned rows have none)."""
     diagonal: object   # (n,) or None
     matrix: object     # scipy CSR or None
 
     @classmethod
     def of_mass(cls, mass):
-        """B = -mass for an (n,) M diagonal or a square scipy sparse M."""
+        """B = -mass for an (n,) M diagonal or a square scipy sparse M (a complex one without imaginary part: real)."""
         import scipy.sparse
         if scipy.sparse.issparse(mass):
             if mass.shape[0] != mass.shape[1]:
                 raise ValueError(f'solve_resonances needs a square sparse mass matrix, got shape {mass.shape}')
-            return cls(diagonal=None, matrix=(-mass).tocsr().astype(np.complex128))
+            matrix = (-mass).tocsr()
+            if np.iscomplexobj(matrix.data):
+                if np.any(matrix.data.imag):
+                    return cls(diagonal=None, matrix=matrix.astype(np.complex128, copy=False))
+                matrix = matrix.real   # one O(nnz) scan: a real mass never becomes a complex128 copy
+            return cls(diagonal=None, matrix=matrix.astype(np.float64, copy=False))
         return cls(diagonal=-np.asarray(mass, dtype=np.complex128).ravel(), matrix=None)   # a copy (unary minus)
 
     @property
@@ -250,91 +272,40 @@ class _PencilMass:
         return tuple(blocks) if len(blocks) > 1 else None
 
     def times(self, vectors):
-        """B @ vectors on the host, vectors (n,) or (n, k); a large sparse B by row blocks on _mass_pool threads."""
+        """B @ vectors on the host, vectors (n,) or (n, k); a large sparse B by row blocks on _mass_pool threads; a real
+        B through the float64 view of complex vectors (_host_product)."""
         if self.matrix is not None:
             blocks = self._row_blocks
             if blocks is None:
-                return self.matrix @ vectors
+                return _host_product(self.matrix, vectors)
             vectors = np.asarray(vectors)
             out = np.empty((self.matrix.shape[0],) + vectors.shape[1:], dtype=np.result_type(self.matrix.dtype, vectors))
 
             def product(block):
                 start, stop, rows = block
-                out[start:stop] = rows @ vectors
+                out[start:stop] = _host_product(rows, vectors)
             list(_mass_pool().map(product, blocks))   # list: a worker's exception raises here
             return out
         return self.diagonal.reshape((-1,) + (1,) * (np.ndim(vectors) - 1)) * vectors
 
     def device_matrix(self, symmetric=False):
         """Device copy of a sparse B (None for a diagonal B), one upload the device solves and the resonance filter
-        share: a complex128 cupyx CSR, symmetric (B^T = B, probed) a _DeviceSymmetricMass of half its bytes."""
+        share: solvers.device_matrices.device_matrix (float64 values of a real B; symmetric: B^T = B probed, its strict
+        lower triangle + diagonal, ValueError for an unsymmetric B)."""
         if self.matrix is None:
             return None
-        if symmetric:
-            self.check_symmetric()
-            return _DeviceSymmetricMass(self.matrix)
-        import cupyx.scipy.sparse
-        return cupyx.scipy.sparse.csr_matrix(self.matrix)
+        from ...solvers.device_matrices import device_matrix
+        return device_matrix(self.matrix, symmetric=bool(symmetric), real=not np.iscomplexobj(self.matrix.data))
 
-    def check_symmetric(self):
-        """ValueError unless u^T B v = v^T B u for two random vectors (to _MASS_SYMMETRY_TOLERANCE of |u| |B v|)."""
-        random = np.random.default_rng(_START_VECTOR_SEED)
-        probes = random.standard_normal((self.size, 2))
-        products = self.times(probes)
-        forward, backward = probes[:, 0] @ products[:, 1], probes[:, 1] @ products[:, 0]
-        scale = np.linalg.norm(probes[:, 0]) * np.linalg.norm(products[:, 1])
-        if not abs(forward - backward) <= _MASS_SYMMETRY_TOLERANCE * scale:
-            raise ValueError(f'solve_resonances(symmetric=True) needs a symmetric sparse mass matrix: u^T B v - v^T B u '
-                             f'= {abs(forward - backward):.3g}, |u| |B v| = {scale:.3g}')
-
-    def device_times(self, device_matrix=None):
-        """Callable v -> B v on cupy vectors (B uploaded once; device_matrix: a sparse B's device_matrix already
-        uploaded)."""
+    def device_times(self, device_matrix=None, symmetric=False):
+        """Callable v -> B v on cupy complex128 vectors (B uploaded once; device_matrix: a sparse B's device_matrix
+        already uploaded, else uploaded here with `symmetric` storage)."""
         import cupy as cp
         if self.matrix is None:
             diagonal = cp.asarray(self.diagonal)
             return lambda vector: diagonal * vector
-        matrix = self.device_matrix() if device_matrix is None else device_matrix
+        matrix = self.device_matrix(symmetric) if device_matrix is None else device_matrix
         return lambda vector: matrix @ vector
-
-
-class _DeviceSymmetricMass:
-    """A symmetric sparse B on the device as its strict lower triangle L (cupyx CSR) and diagonal d: B X = L X + L^T X
-    + d X, L^T read through cuSPARSE's transposed product on L's arrays (no copy)."""
-
-    def __init__(self, matrix):
-        import cupy as cp
-        import cupyx.scipy.sparse
-        import scipy.sparse
-        lower = scipy.sparse.tril(matrix, k=-1, format='csr')
-        lower.sum_duplicates()   # sorted, no duplicates: cupyx then never re-sorts per product
-        self.lower = cupyx.scipy.sparse.csr_matrix(lower)
-        self.lower.has_canonical_format = True
-        self.upper = self.lower.T   # csc view of the same arrays
-        self.diagonal = cp.asarray(matrix.diagonal(), dtype=np.complex128)
-        self.shape = matrix.shape
-
-    def __matmul__(self, columns):
-        product = self.lower @ columns
-        product += self.upper @ columns
-        product += (self.diagonal if columns.ndim == 1 else self.diagonal[:, None]) * columns
-        return product
-
-    def bilinear(self, left, right):
-        """(k,) column sums of left * (B right) for (n, k) blocks by untransposed L products only (u^T L^T w = w^T L u):
-        the resonance filter's measures, without a transposed cuSPARSE block product and its work buffer."""
-        return ((left * (self.lower @ right)).sum(axis=0) + (right * (self.lower @ left)).sum(axis=0)
-                + (left * (self.diagonal[:, None] * right)).sum(axis=0))
-
-
-def device_mass_bytes(n_unknowns, entries, symmetric) -> int:
-    """Pool bytes of _PencilMass.device_matrix for `entries` stored entries: a complex128 CSR, symmetric the strict lower
-    triangle's CSR + the complex128 diagonal."""
-    n_unknowns, entries = int(n_unknowns), int(entries)
-    indptr = 4 * (n_unknowns + 1)
-    if not symmetric:
-        return 20 * entries + indptr
-    return 20 * ((entries - n_unknowns) // 2) + indptr + 16 * n_unknowns
 
 
 def solve_resonances(host_operator, mass, omega_target, energy_weights, in_window, n_resonances, field_of=None,
@@ -352,7 +323,8 @@ def solve_resonances(host_operator, mass, omega_target, energy_weights, in_windo
     tolerance_floor, basis basis_per_wanted x the wanted eigenpairs unless the node sets one (0 = scipy's default;
     MAX_WIDENINGS doublings of the wanted eigenpairs while the PML filter leaves fewer than n_resonances);
     symmetrizer (n,) diagonal D with D A complex symmetric: an own cuDSS / MUMPS / PARDISO factor is the LDL^T of D A
-    (D B the mass); symmetric: A itself is complex symmetric (FEM, no symmetrizer: the same LDL^T); equilibration (n,)
+    (D B the mass); symmetric: A itself is complex symmetric (FEM, no symmetrizer: the same LDL^T; on the device A, a
+    sparse B and a sparse W are stored as lower triangles, their symmetry probed: ValueError if not); equilibration (n,)
     > 0: the row scale of such a factor (None = its |diag|^-1/2); in_region (n,) bool rows of a region (None: none)
     and min_region_fraction in [0, 1] (module header); rayleigh_symmetrizer (n,) D with D A complex symmetric, checked
     by the caller: a complex A is polished (module header) on any factor, SuperLU and a given one too."""
@@ -383,7 +355,9 @@ def solve_resonances(host_operator, mass, omega_target, energy_weights, in_windo
     if factorization is None:   # own factor of A + (sigma - k_t^2) M, sigma = shift: never exactly on a resonance
         import scipy.sparse
         target_squared, shift = shift, shift * (1.0 + SHIFT_RELATIVE_OFFSET)
-        host_operator = (host_operator - (shift - target_squared) * b_mass.sparse()).tocsr()
+        # complex128 also for a real A and B (the factor solves the complex Krylov vectors)
+        host_operator = (host_operator - (shift - target_squared) * b_mass.sparse()).tocsr().astype(np.complex128,
+                                                                                                    copy=False)
     on_device = False   # an own cuDSS factor: each application runs on the GPU, one vector transfer each way
     polish = False      # LDL^T of D A: ARPACK to MIXED_ARPACK_TOLERANCE, then the float64 Rayleigh quotient per vector
     refine = False      # a mixed polished factor: MIXED_EIGS_REFINEMENTS float64 steps per solve
@@ -421,7 +395,8 @@ def solve_resonances(host_operator, mass, omega_target, energy_weights, in_windo
     start_vector[~free] = 0.0
     target_wavelength = 2.0 * math.pi * C0 / omega_target
     # a sparse B (FEM) goes to the device once: the device solves and the resonance filter read the same copy (two
-    # copies held ~0.58 GB beside the factor on the 690k-unknown nanobeam eighth model); symmetric: its lower triangle
+    # copies held ~0.58 GB beside the factor on the 690k-unknown nanobeam eighth model); symmetric: its lower triangle,
+    # a real B float64 (FILTER_DEVICE_BLOCK_COLUMNS comment)
     device_mass = (b_mass.device_matrix(symmetric=bool(symmetric)) if on_device and scaled_b is b_mass else None)
     if on_device:
         b_times = scaled_b.device_times(device_mass)
@@ -445,7 +420,8 @@ def solve_resonances(host_operator, mass, omega_target, energy_weights, in_windo
             return scaled + shift * solve(b_times(scaled))
     resonance_filter = _ResonanceFilter(host_operator, b_mass, energy_weights, in_window, in_region,
                                         row_scale if polish else None, on_gpu=on_device or eigen_solver.device_arnoldi,
-                                        quotients=spectral_map != 'shift_invert' or polish, device_mass=device_mass)
+                                        quotients=spectral_map != 'shift_invert' or polish, device_mass=device_mass,
+                                        symmetric=bool(symmetric))
 
     def eigen_passes(n_wanted, start_vector):
         """_EigenPasses of eigs on the current solves from n_wanted eigenpairs, doubled while the PML filter leaves
@@ -612,20 +588,22 @@ class _ResonanceFilter:
     """A, B = -M, the energy weights W, the window / region rows and the polish row scale D of solve_resonances:
     per-column measures of a pass's Ritz vectors, one sparse operator at a time over column blocks. On the device
     (on_gpu) the sparse operators stay on the host between passes: each measures call returns the pool's cached blocks,
-    uploads one operator, applies it to every block of FILTER_DEVICE_BLOCK_COLUMNS and frees it before the next (beside
-    an own factor the filter never holds two; device_mass: the solves' device copy of a sparse B, read instead). On the
-    host: blocks of FILTER_BLOCK_COLUMNS. quotients False (plain shift-invert, no polish): A and B are neither kept nor
-    applied, their measures are 0."""
+    uploads one operator (solvers.device_matrices: float64 when real, W always; symmetric: lower triangle + diagonal,
+    probed), applies it to every block of FILTER_DEVICE_BLOCK_COLUMNS and frees it before the next (beside an own factor
+    the filter never holds two; device_mass: the solves' device copy of a sparse B, read instead). On the host: blocks
+    of FILTER_BLOCK_COLUMNS. quotients False (plain shift-invert, no polish): A and B are neither kept nor applied, their
+    measures are 0."""
     _MEASURES = ('mass', 'operator', 'scaled_operator', 'scaled_mass', 'energy', 'window', 'region')
 
     def __init__(self, host_operator, b_mass, energy_weights, in_window, in_region, row_scale, on_gpu,
-                 quotients=True, device_mass=None):
+                 quotients=True, device_mass=None, symmetric=False):
         if on_gpu:
             import cupy as xp
         else:
             xp = np
         self.xp = xp
         self.on_gpu = bool(on_gpu)
+        self.symmetric = bool(symmetric)   # device storage of A, a sparse B / W: lower triangle + diagonal
         self.quotients = bool(quotients)
         self.operator = host_operator.tocsr() if self.quotients else None   # host; uploaded per measures call
         self.mass_diagonal = b_mass.matrix is None
@@ -638,21 +616,16 @@ class _ResonanceFilter:
         self.region = None if in_region is None else xp.asarray(in_region, dtype=np.float64)[:, None]
         self.row_scale = None if row_scale is None else xp.asarray(row_scale)[:, None]
 
-    def _applied_form(self, matrix, diagonal, kept=None, real=False):
+    def _applied_form(self, matrix, diagonal, kept=None, real=None):
         """The operator measures applies: a diagonal column as stored, a sparse one on the host as is, on the device
-        `kept` (an uploaded copy the caller holds) or a fresh upload the caller frees after use (complex128; real: the
-        float64 W as stored)."""
+        `kept` (an uploaded copy the caller holds) or a fresh device_matrix upload the caller frees after use (real:
+        float64 storage, None: float64 when the values are real; symmetric storage when the search is)."""
         if diagonal or not self.on_gpu:
             return matrix
         if kept is not None:
             return kept
-        import cupy as cp
-        import cupyx.scipy.sparse
-        csr = matrix.tocsr()
-        data = cp.asarray(csr.data)
-        if not real and data.dtype != np.complex128:   # a complex cuSPARSE product of the complex vectors
-            data = data.astype(np.complex128)
-        return cupyx.scipy.sparse.csr_matrix((data, cp.asarray(csr.indices), cp.asarray(csr.indptr)), shape=csr.shape)
+        from ...solvers.device_matrices import device_matrix
+        return device_matrix(matrix, symmetric=self.symmetric, real=real)
 
     def measures(self, vectors) -> dict:
         """Host (k,) arrays per column v of host vectors (n, k): mass v^H B v, operator v^H A v, scaled_operator
@@ -698,11 +671,12 @@ class _ResonanceFilter:
                 for block in blocks:
                     columns = columns_of(block)
                     scaled = columns if self.row_scale is None else self.row_scale * columns   # D v (v^T D = (D v)^T)
-                    if isinstance(applied_by, _DeviceSymmetricMass):
+                    if self.on_gpu and self.symmetric and not diagonal:   # untransposed L products (bilinear)
                         parts = to_host(xp.stack((applied_by.bilinear(xp.conj(columns), columns),
                                                   applied_by.bilinear(scaled, columns))))
                     else:
-                        applied = applied_by * columns if diagonal else applied_by @ columns
+                        applied = (applied_by * columns if diagonal else applied_by @ columns if self.on_gpu
+                                   else _host_product(applied_by, columns))
                         parts = to_host(xp.stack((xp.sum(xp.conj(columns) * applied, axis=0),
                                                   xp.sum(scaled * applied, axis=0))))
                         del applied
@@ -737,19 +711,22 @@ def element_region_rows(dofs, free, element_mask) -> np.ndarray:
     return rows[np.asarray(free)]
 
 
-def resonance_filter_time_item(backend, unknowns, filter_entries, eigenpairs):
+def resonance_filter_time_item(backend, unknowns, filter_entries, eigenpairs, symmetric=False):
     """Run-time TimeItem of the resonance filter per eigenpair of a pass (_ResonanceFilter; filter_entries = stored
     entries of A and a sparse B / W): on the gpu the column uploaded once per operator (3), the pass's operator uploads
     shared by its eigenpairs, the sparse products and ~14 vector passes; on the cpu the batched host product (matrix
-    read once per FILTER_BLOCK_COLUMNS). Count: the first pass, a guess up to the widenings."""
+    read once per FILTER_BLOCK_COLUMNS). symmetric (solve_resonances(symmetric=True)): device lower triangles, half the
+    upload bytes, the quotient measures read them twice (bilinear). Count: the first pass, a guess up to the
+    widenings."""
     from ...core import time_estimate as te
     from ...core.memory_estimate import COMPLEX128_BYTES, COMPLEX128_CSR_ENTRY_BYTES
     vector_bytes = COMPLEX128_BYTES * float(unknowns)
     if backend == 'gpu':
-        uploads = COMPLEX128_CSR_ENTRY_BYTES * float(filter_entries) / max(float(eigenpairs), 1.0)
+        storage = 0.5 if symmetric else 1.0   # lower triangle + diagonal (real values: 12 of 20 B, not counted)
+        uploads = storage * COMPLEX128_CSR_ENTRY_BYTES * float(filter_entries) / max(float(eigenpairs), 1.0)
         # + the Krylov basis parked on the host (_parked_decomposition): ~5 rows per eigenpair (basis 5 x wanted)
         ops = (te.Transfer(3.0 * vector_bytes + uploads + 5.0 * vector_bytes),
-               te.Spmv(float(unknowns), float(filter_entries), COMPLEX128_BYTES),
+               te.Spmv(float(unknowns), (2.0 if symmetric else 1.0) * float(filter_entries), COMPLEX128_BYTES),
                te.Elementwise(12.0 * vector_bytes, 2.0 * vector_bytes, launches=2), te.PythonCalls(2))
     else:
         ops = (te.HostStream(COMPLEX128_CSR_ENTRY_BYTES * float(filter_entries) / FILTER_BLOCK_COLUMNS
