@@ -15,7 +15,7 @@ import cmath
 import math
 
 import numpy as np
-from ...core.backend import array_module_of
+from ...core.backend import array_module_of, to_host
 
 from ...core.constants import C0, EPS0, ETA0, MU0
 from ...core.mesh import has_uniform_spacing
@@ -147,7 +147,7 @@ class ElectricDipolePhasor:
         """(J_x on hi-y faces, J_y on hi-x faces) complex128 (nx, ny) FDTD-sign currents [A/m^2], None = none."""
         _require_polarization(system, 'hz', 'ElectricDipolePhasor')
         shape = (system.ops.nx, system.ops.ny)
-        xp = array_module_of(system.cell_mu)
+        xp = array_module_of(system.weight_hi_x_faces)   # the run backend (cell_mu is a host array)
         return self._face_array('ex', shape, xp), self._face_array('ey', shape, xp)
 
     def add_to_rhs(self, rhs, physics, system):
@@ -187,28 +187,26 @@ class SheetCurrentPhasor:
         self.set_amplitude(amplitude, phase)
 
     def set_amplitude(self, amplitude, phase):
-        """New amplitude [V/m] and phase [deg] in place (a reused sweep build); the next solve uploads the weights."""
+        """New amplitude [V/m] and phase [deg] in place (a reused sweep build)."""
         self.amplitude = float(amplitude)
         self.phase = float(phase)
         self._host_line_weight = self._unit_line_weight * (self.amplitude * phase_factor(phase, 'Sheet current'))
-        self._line_weight = None   # on the run backend from the next solve
 
     def _line_currents(self, line_eps, line_mu, omega):
-        """complex128 sheet current densities [A/m^2] of the line cells / faces with complex eps and mu at omega."""
-        xp = array_module_of(line_eps)
-        self._line_weight = _on_backend(self._line_weight, self._host_line_weight, xp)
-        launch_factor = sheet_launch_factor(line_eps * line_mu, omega, self._normal_spacing, xp=xp)
-        return self._line_weight * xp.sqrt(line_eps / line_mu) * launch_factor
+        """Host complex128 sheet current densities [A/m^2] of the line cells / faces with host complex eps and mu at
+        omega (a line of the host system arrays: no device work per line)."""
+        launch_factor = sheet_launch_factor(line_eps * line_mu, omega, self._normal_spacing, xp=np)
+        return self._host_line_weight * np.sqrt(line_eps / line_mu) * launch_factor
 
     def face_currents(self, physics, system):
         """hz: (J_x, None) for axis 'x' or (None, J_y) for axis 'y', complex128 (nx, ny) FDTD-sign face currents
-        [A/m^2] from the system's complex face eps and the line cells' complex mu."""
+        [A/m^2] of the run backend from the system's complex face eps and the line cells' complex mu (host arrays)."""
         _require_polarization(system, 'hz', 'SheetCurrentPhasor face_currents')
         line = self.line
         face_eps = system.eps_hi_y_faces if self.axis == 'x' else system.eps_hi_x_faces   # at E_x / at E_y
-        xp = array_module_of(face_eps)
+        xp = array_module_of(system.weight_hi_x_faces)
         currents = xp.zeros((system.ops.nx, system.ops.ny), dtype=xp.complex128)
-        currents[line] = self._line_currents(face_eps[line], system.cell_mu[line], system.omega)
+        currents[line] = xp.asarray(self._line_currents(face_eps[line], system.cell_mu[line], system.omega))
         return (currents, None) if self.axis == 'x' else (None, currents)
 
     def add_to_rhs(self, rhs, physics, system):
@@ -217,8 +215,9 @@ class SheetCurrentPhasor:
             rhs += face_current_rhs(system, *self.face_currents(physics, system))
             return
         line = self.line
-        sheet_current = self._line_currents(system.cell_eps[line], system.cell_mu[line], system.omega)
-        rhs[line] += (-1j * system.omega * MU0) * sheet_current
+        line_eps = np.asarray(to_host(system.cell_eps[line]))   # one line from the device per solve
+        sheet_current = self._line_currents(line_eps, system.cell_mu[line], system.omega)
+        rhs[line] += array_module_of(rhs).asarray((-1j * system.omega * MU0) * sheet_current)
 
 
 class PlaneWavePhasor:

@@ -25,16 +25,30 @@ from .eigenfrequency import FILTER_DEVICE_BLOCK_COLUMNS
 from .materials import GYRATION_Z
 
 # FDFD kept Helmholtz term plan (operators._HelmholtzPlan): per cell 9 terms (4 per x / y product + the cell term) into
-# 5 operator entries; kept int32: 3 per product term, the first term of each entry, (entry, term) of the other terms
-# and the pattern (indices + indptr)
+# 5 operator entries; int32: 3 per product term, the first term of each entry, (entry, term) of the other terms (the
+# terms: operators._ParkedInt32, pinned host on the gpu, uploaded per assembly) and the pattern (indices + indptr, on
+# the run backend)
 _FDFD_PLAN_TERMS, _FDFD_OPERATOR_ROW, _FDFD_PRODUCT_TERMS = 9, 5, 8
 _INT64_BYTES = 8
-_FDFD_PLAN_BYTES = INT32_BYTES * (3 * _FDFD_PRODUCT_TERMS + _FDFD_OPERATOR_ROW
-                                  + 2 * (_FDFD_PLAN_TERMS - _FDFD_OPERATOR_ROW) + _FDFD_OPERATOR_ROW + 1)
+_FDFD_PRODUCT_TERM_BYTES = INT32_BYTES * 3 * _FDFD_PRODUCT_TERMS
+_FDFD_PLAN_TERM_BYTES = (_FDFD_PRODUCT_TERM_BYTES
+                         + INT32_BYTES * (_FDFD_OPERATOR_ROW + 2 * (_FDFD_PLAN_TERMS - _FDFD_OPERATOR_ROW)))
+_FDFD_PLAN_PATTERN_BYTES = INT32_BYTES * (_FDFD_OPERATOR_ROW + 1)
+# KeptYeeOperators: the int32 2D entry -> 1D entry map of each of the 4 Yee operators (2 entries per row), parked
+# beside the plan's terms and uploaded by every `at`
+_YEE_ENTRY_MAP_BYTES = 4 * 2 * INT32_BYTES
 # assembly peak per cell: the plan build's sort (int32 rows / columns, int64 order + argsort result, the gathered rows
-# per term; first assembly) over a later omega's term buffer (complex128 per term + one gathered 4-per-row factor)
-_FDFD_ASSEMBLY_BYTES = max(_FDFD_PLAN_TERMS * (3 * INT32_BYTES + 2 * _INT64_BYTES),
-                           (_FDFD_PLAN_TERMS + 4) * COMPLEX128_BYTES)
+# per term; first assembly) over a later omega's term buffer (complex128 per term + one gathered 4-per-row factor);
+# gpu: the build's product terms beside the sort, the uploaded plan terms beside the term buffer
+_FDFD_SORT_BYTES = _FDFD_PLAN_TERMS * (3 * INT32_BYTES + 2 * _INT64_BYTES)
+_FDFD_TERM_BUFFER_BYTES = (_FDFD_PLAN_TERMS + 4) * COMPLEX128_BYTES
+_FDFD_ASSEMBLY_BYTES = {'cpu': max(_FDFD_SORT_BYTES, _FDFD_TERM_BUFFER_BYTES),
+                        'gpu': max(_FDFD_SORT_BYTES + _FDFD_PRODUCT_TERM_BYTES,
+                                   _FDFD_TERM_BUFFER_BYTES + _FDFD_PLAN_TERM_BYTES)}
+# host transfer per cell of one gpu assembly (definition_fdfd's time recipe): the plan terms and Yee entry maps up, the
+# host system arrays (cell mu; hz also the two E-face eps) down
+FDFD_ASSEMBLY_UPLOAD_BYTES = _FDFD_PLAN_TERM_BYTES + _YEE_ENTRY_MAP_BYTES
+FDFD_HOST_SYSTEM_ARRAYS = {'ez': 1, 'hz': 3}
 # Run phases (MemoryEstimate.transient_items) of the frequency-domain engines; never alive at the same time
 ASSEMBLY_PHASE = 'assembly'                 # operator assembly temporaries (the system itself is a run item)
 SOLVE_PHASE = 'solve'                       # one solve's material temporaries, an own (not kept) factor's copies
@@ -489,22 +503,29 @@ def fdfd_memory_estimate(polarization):
             return _fdfd_fem_memory_estimate(settings_values, mesh, context)
         n_cells = int(mesh.n_cells)
         sparse_row = INT32_BYTES   # CSR indptr entry per row
-        n_system_arrays = 4 if polarization == 'ez' else 7   # complex128 cell / face eps, mu and face weights
+        gpu = solver_backend(context.spec) == 'gpu'
+        # complex128 face weights and cell eps on the run backend; cell mu (hz: and the E-face eps) on the host
+        n_host_arrays = FDFD_HOST_SYSTEM_ARRAYS[polarization]
+        n_system_arrays = (4 if polarization == 'ez' else 7) - n_host_arrays
         items = [('state re / im / q_abs (3 x float32)', 3 * FLOAT32_BYTES * n_cells),
                  ('dispersive pole masks', sum((n_drude + n_lorentz) * BOOL_BYTES * box_cells
                                                for box_cells, n_drude, n_lorentz in _pole_regions(context)))]
         solution_bytes = 3 * COMPLEX128_BYTES * n_cells
         run_items = [('solution and face fields (3 x complex128)', solution_bytes)]
-        # the device HarmonicSystem: run items, or ASSEMBLY_PHASE items where the eigen search parks it
-        system_items = [('Yee operators (4 sparse complex128) and their kept kron entry maps (int32)',
-                         4 * (2 * (COMPLEX128_CSR_ENTRY_BYTES + INT32_BYTES) + sparse_row) * n_cells),
-                        ('kept Helmholtz term plan (int32; polar grids have none)', _FDFD_PLAN_BYTES * n_cells),
+        # the device HarmonicSystem: run items, or ASSEMBLY_PHASE items where the eigen search parks it; the plan's
+        # terms and the Yee entry maps wait on the host between assemblies on the gpu (operators._ParkedInt32)
+        parked_bytes = (_FDFD_PLAN_TERM_BYTES + _YEE_ENTRY_MAP_BYTES) * n_cells
+        system_items = [('Yee operators (4 sparse complex128)',
+                         4 * (2 * COMPLEX128_CSR_ENTRY_BYTES + sparse_row) * n_cells),
+                        ('kept Helmholtz pattern (int32; polar grids have none)', _FDFD_PLAN_PATTERN_BYTES * n_cells),
                         ('Helmholtz operator (sparse complex128)',
                          (5 * COMPLEX128_CSR_ENTRY_BYTES + sparse_row) * n_cells),
                         (f'system arrays ({n_system_arrays} x complex128)',
                          n_system_arrays * COMPLEX128_BYTES * n_cells)]
+        if not gpu:
+            system_items.append(('kept Helmholtz term plan and Yee kron entry maps (int32)', parked_bytes))
         # _assemble: the old system is dropped first; a single solve assembles before its solution and factor exist
-        assembly_bytes = _FDFD_ASSEMBLY_BYTES * n_cells
+        assembly_bytes = _FDFD_ASSEMBLY_BYTES['gpu' if gpu else 'cpu'] * n_cells
         single_solve = not later_factorisations(context)
         later_bytes = solution_bytes   # run items made after a single solve's assembly
         transient_items = []
@@ -576,6 +597,12 @@ def fdfd_memory_estimate(polarization):
         else:
             run_items += system_items + off_diagonal_run
         host_items += off_diagonal_host if superlu_host else []
+        host_label = 'cell mu' if polarization == 'ez' else 'cell mu, E-face eps'
+        host_items.append((f'system arrays on the host ({n_host_arrays} x complex128: {host_label})',
+                           n_host_arrays * COMPLEX128_BYTES * n_cells))
+        if gpu:
+            host_items.append(('Helmholtz term plan and Yee kron entry maps (int32, pinned between assemblies)',
+                               parked_bytes))
         transient_items.append((ASSEMBLY_PHASE, 'Helmholtz assembly (term plan build sort / term buffer)'
                                 + (' before the solution and factor exist' if single_solve else ''),
                                 phase_before_items(assembly_bytes, later_bytes if single_solve else 0)))
@@ -840,9 +867,10 @@ def adjoint_objective_memory_estimate(polarization):
 
     def estimate(values, n_selected_cells, mesh):
         n_cells = int(mesh.n_cells)
-        # the EpsSensitivity (gradients + densities) stays cached until the next solve; small beside the temporaries
-        items = [(ADJOINT_PHASE, f'adjoint sensitivity cache ({n_gradients} x float64 + {n_densities} x float32)',
-                  (n_gradients * FLOAT64_BYTES + n_densities * FLOAT32_BYTES) * n_cells),
+        # the float32 EpsSensitivity (gradients + densities) stays cached until the next solve starts (fdfd_2d._solve
+        # drops it before the factorisation); small beside the temporaries
+        items = [(ADJOINT_PHASE, f'adjoint sensitivity cache ({n_gradients + n_densities} x float32)',
+                  (n_gradients + n_densities) * FLOAT32_BYTES * n_cells),
                  (ADJOINT_PHASE, f'adjoint solve temporaries ({n_temporaries} x complex128)',
                   n_temporaries * COMPLEX128_BYTES * n_cells)]
         if n_mean_maps:

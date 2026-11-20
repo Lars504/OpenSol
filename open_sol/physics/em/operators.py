@@ -227,6 +227,51 @@ def yee_operators(cell_widths, boundary_config, pml_dx, omega=None, xp=np, spars
     return YeeOperators2D(nx=nx, ny=ny, omega=omega, dx_e=dx_e, dx_h=dx_h, dy_e=dy_e, dy_h=dy_h)
 
 
+class _ParkedInt32:
+    """int32 arrays (xp, or numpy built on the host) read only once per assembly: on the gpu parked in one pinned host
+    buffer (the device copies dropped) and uploaded as one device array per use; on the cpu kept as they are."""
+    # One host-to-device copy of ~180 B per cell per assembly (Helmholtz term plan + Yee entry maps; ~20 ms per 1e6 cells
+    # over PCIe) beside a factorisation of seconds, for ~180 B per cell less device memory in every other phase.
+
+    def __init__(self, arrays, xp):
+        arrays = tuple(arrays)
+        for array in arrays:
+            if array.dtype != np.int32 or array.ndim != 1:
+                raise ValueError(f'_ParkedInt32 parks 1D int32 arrays, got {array.dtype} of shape {array.shape}')
+        self.xp = xp
+        self.sizes = tuple(int(array.size) for array in arrays)
+        if xp is np:
+            self._arrays, self._host = arrays, None
+            return
+        import cupyx
+        self._arrays = None
+        self._host = cupyx.empty_pinned((sum(self.sizes),), dtype=np.int32)
+        start = 0
+        for array, size in zip(arrays, self.sizes):
+            target = self._host[start:start + size]
+            if isinstance(array, np.ndarray):   # built on the host: no device round trip
+                target[...] = array
+            else:
+                array.get(out=target)
+            start += size
+
+    @property
+    def host_bytes(self) -> int:
+        """Pinned host bytes (0 on the cpu backend)."""
+        return 0 if self._host is None else int(self._host.nbytes)
+
+    def upload(self):
+        """The arrays on xp in their order (gpu: views of one fresh device copy, freed with the last view)."""
+        if self._host is None:
+            return self._arrays
+        device = self.xp.asarray(self._host)
+        parts, start = [], 0
+        for size in self.sizes:
+            parts.append(device[start:start + size])
+            start += size
+        return tuple(parts)
+
+
 def _difference_matrices_1d(cell_widths, boundary_config, pml_dx, omega, xp=np, sparse=True):
     """(d1x_e, d1x_h, d1y_e, d1y_h, stretch_x_e) of yee_operators: the four 1D Yee differences at omega (None = kappa)
     and the x centre stretch (polar radii)."""
@@ -246,8 +291,9 @@ def _difference_matrices_1d(cell_widths, boundary_config, pml_dx, omega, xp=np, 
 class KeptYeeOperators:
     """Cartesian yee_operators of one grid at any omega on kept kron patterns: per omega only the four host 1D
     differences are rebuilt and gathered into the kept 2D CSR (same pattern and values as yee_operators, no kron)."""
-    # Kept per part (dx_e, dx_h, dy_e, dy_h): the 1D (indptr, indices) host pattern, the xp int32 map 2D entry -> 1D
-    # entry, and the xp 2D indices / indptr, shared by the ops of every omega (never modified in place: consumers copy).
+    # Kept per part (dx_e, dx_h, dy_e, dy_h): the 1D (indptr, indices) host pattern and the xp 2D indices / indptr,
+    # shared by the ops of every omega (never modified in place: consumers copy); the int32 maps 2D entry -> 1D entry
+    # (read by `at` only) in one _ParkedInt32 (gpu: pinned host, uploaded per call), as the term plan's terms.
     # Ops of the current parts are recognised by identity of the YeeOperators2D (_issued_ops), never of their index
     # arrays: scipy's csr constructor re-slices indices (prune), so `ops.dx_e.indices is kept` never holds on the host.
 
@@ -257,7 +303,8 @@ class KeptYeeOperators:
         self.pml_dx = float(pml_dx)
         self.xp = xp
         self.nx, self.ny = (len(widths) for widths in self.cell_widths)
-        self._parts = None
+        self._parts = None        # ((1D host pattern, xp 2D indices, xp 2D indptr) per part)
+        self._entry_maps = None   # _ParkedInt32 of the four xp int32 entry maps
         self._issued_ops = weakref.WeakSet()   # YeeOperators2D that `at` gathered on the current parts
         self._helmholtz_plan = None   # _HelmholtzPlan of the current parts (first helmholtz call)
 
@@ -270,15 +317,20 @@ class KeptYeeOperators:
         if self._parts is None or not all(np.array_equal(matrix.indptr, part[0][0])
                                           and np.array_equal(matrix.indices, part[0][1])
                                           for matrix, part in zip(differences, self._parts)):
-            self._parts = self._helmholtz_plan = None   # free the old maps and term plan first
+            self._parts = self._entry_maps = self._helmholtz_plan = None   # free the old maps and term plan first
             self._issued_ops = weakref.WeakSet()       # ops of the old parts no longer match the plan
-            self._parts = tuple(self._kron_part(matrix, identity_first) for matrix, identity_first in
-                                zip(differences, (False, False, True, True)))
+            parts = [self._kron_part(matrix, identity_first) for matrix, identity_first in
+                     zip(differences, (False, False, True, True))]
+            self._entry_maps = _ParkedInt32([part[1] for part in parts], self.xp)   # read here only: parked
+            self._parts = tuple((pattern, indices, indptr) for pattern, _, indices, indptr in parts)
+            del parts
         n_unknowns = self.nx * self.ny
         csr_matrix = _sparse_module(self.xp).csr_matrix
+        entry_maps = self._entry_maps.upload()
         matrices = [csr_matrix((self.xp.asarray(matrix.data)[entry_map], indices, indptr),
                                shape=(n_unknowns, n_unknowns))
-                    for matrix, (_, entry_map, indices, indptr) in zip(differences, self._parts)]
+                    for matrix, entry_map, (_, indices, indptr) in zip(differences, entry_maps, self._parts)]
+        del entry_maps
         ops = YeeOperators2D(self.nx, self.ny, omega, *matrices)
         self._issued_ops.add(ops)
         return ops
@@ -295,15 +347,15 @@ class KeptYeeOperators:
         return self._helmholtz_plan.operator(ops, weight_hi_x_faces, weight_hi_y_faces, cell_term)
 
     def _kron_part(self, matrix_1d, identity_first):
-        """(1D host pattern, xp entry map, xp indices, xp indptr) of kron(I, D) / kron(D, I): the kron of D's entry
-        numbers + 1 (never 0, so no entry drops) gives the 2D pattern and which D entry each 2D entry copies."""
+        """(1D host pattern, host int32 entry map, xp indices, xp indptr) of kron(I, D) / kron(D, I): the kron of D's
+        entry numbers + 1 (never 0, so no entry drops) gives the 2D pattern and which D entry each 2D entry copies."""
         import scipy.sparse
         numbered = scipy.sparse.csr_matrix((np.arange(1, matrix_1d.nnz + 1, dtype=np.float64), matrix_1d.indices,
                                             matrix_1d.indptr), shape=matrix_1d.shape)
         kron = _kron_identity(numbered, self.nx if identity_first else self.ny, identity_first, np, True)
         entry_map = (kron.data - 1.0).astype(np.int32)
         xp = self.xp
-        return ((matrix_1d.indptr.copy(), matrix_1d.indices.copy()), xp.asarray(entry_map),
+        return ((matrix_1d.indptr.copy(), matrix_1d.indices.copy()), entry_map,
                 xp.asarray(kron.indices.astype(np.int32)), xp.asarray(kron.indptr.astype(np.int32)))
 
 
@@ -327,7 +379,9 @@ class _HelmholtzPlan:
     entry, face, right entry) and the output entry it sums into, built once on the xp backend."""
     # Terms in one flat buffer [x terms, y terms, cell terms]; sorted stably by (row, column), an output entry's terms
     # keep that order: level 0 gathers each entry's first term, level r adds its r-th (unique entries per level:
-    # deterministic, no atomics). Kept int32: 3 per term (4 + 4 per cell) + 2 per term after the first + the pattern.
+    # deterministic, no atomics). Kept int32: 3 per term (4 + 4 per cell) + 2 per term after the first, parked
+    # (_ParkedInt32: pinned host on the gpu, uploaded per `operator` call), and the pattern (indices + indptr) on xp:
+    # every operator of the plan shares it.
 
     def __init__(self, ops, parts, xp):
         self.parts = parts   # the KeptYeeOperators parts it was built on
@@ -335,10 +389,10 @@ class _HelmholtzPlan:
         self.n_unknowns = n_unknowns = ops.nx * ops.ny
         x_rows, x_columns, *x_terms = _product_terms(ops.dx_e, ops.dx_h, xp)
         y_rows, y_columns, *y_terms = _product_terms(ops.dy_e, ops.dy_h, xp)
-        self.x_terms, self.y_terms = tuple(x_terms), tuple(y_terms)
+        self.n_x_terms, self.n_y_terms = int(x_rows.size), int(y_rows.size)
         cells = xp.arange(n_unknowns, dtype=xp.int32)
         rows, columns = xp.concatenate((x_rows, y_rows, cells)), xp.concatenate((x_columns, y_columns, cells))
-        del x_rows, x_columns, y_rows, y_columns, x_terms, y_terms
+        del x_rows, x_columns, y_rows, y_columns
         order = xp.argsort(columns, kind='stable')   # LSD on int32 keys: by column, then stably by row
         order = order[xp.argsort(rows[order], kind='stable')]
         sorted_rows, sorted_columns = rows[order], columns[order]
@@ -350,11 +404,16 @@ class _HelmholtzPlan:
         self.indptr = xp.searchsorted(sorted_rows[first], xp.arange(n_unknowns + 1, dtype=xp.int32)).astype(xp.int32)
         del sorted_rows, sorted_columns
         rank = xp.arange(order.size, dtype=xp.int32) - xp.flatnonzero(first).astype(xp.int32)[entry_of_term]
-        self.first_terms = order[first].astype(xp.int32)
-        self.levels = []   # (output entries, terms) of the 2nd, 3rd, ... term of the entries that have one
+        first_terms = order[first].astype(xp.int32)
+        levels = []   # (output entries, terms) of the 2nd, 3rd, ... term of the entries that have one
         for level in range(1, int(rank.max()) + 1):
             at_level = rank == level
-            self.levels.append((entry_of_term[at_level], order[at_level].astype(xp.int32)))
+            levels.append((entry_of_term[at_level], order[at_level].astype(xp.int32)))
+        del rank, order, first, entry_of_term
+        self.n_levels = len(levels)
+        # [x left entries, faces, right entries, the same of y, first terms, (level entries, level terms) per level]
+        self._terms = _ParkedInt32((*x_terms, *y_terms, first_terms,
+                                    *(array for pair in levels for array in pair)), xp)
 
     def operator(self, ops, weight_hi_x_faces, weight_hi_y_faces, cell_term):
         """CSR (scipy / cupyx) of helmholtz_operator's sum at these ops and weights, canonical on the kept pattern."""
@@ -365,21 +424,25 @@ class _HelmholtzPlan:
         cell_term = _flat_values(cell_term, n_unknowns, xp, 'helmholtz_operator cell_term')
         dtype = np.result_type(ops.dx_e.dtype, ops.dx_h.dtype, ops.dy_e.dtype, ops.dy_h.dtype, weight_x.dtype,
                                weight_y.dtype, cell_term.dtype)
-        n_product_terms = self.x_terms[0].size + self.y_terms[0].size
+        parked = self._terms.upload()   # gpu: one host-to-device copy of the plan's terms, freed on return
+        x_terms, y_terms, first_terms = parked[0:3], parked[3:6], parked[6]
+        levels = [(parked[7 + 2 * level], parked[8 + 2 * level]) for level in range(self.n_levels)]
+        del parked
+        n_product_terms = self.n_x_terms + self.n_y_terms
         terms = xp.empty(n_product_terms + n_unknowns, dtype=dtype)
         start = 0
         for left, right, weight, (left_entries, faces, right_entries) in (
-                (ops.dx_e, ops.dx_h, weight_x, self.x_terms), (ops.dy_e, ops.dy_h, weight_y, self.y_terms)):
+                (ops.dx_e, ops.dx_h, weight_x, x_terms), (ops.dy_e, ops.dy_h, weight_y, y_terms)):
             part = terms[start:start + left_entries.size]   # (L_ij w_j) R_jk: helmholtz_operator's product order
             xp.take(left.data.astype(dtype, copy=False), left_entries, out=part)
             part *= weight[faces]
             part *= right.data[right_entries]
             start += left_entries.size
         terms[n_product_terms:] = cell_term
-        data = terms[self.first_terms]
-        for entries, level_terms in self.levels:
+        data = terms[first_terms]
+        for entries, level_terms in levels:
             data[entries] += terms[level_terms]
-        del terms
+        del terms, x_terms, y_terms, first_terms, levels
         operator = _sparse_module(xp).csr_matrix((data, self.indices, self.indptr), shape=(n_unknowns, n_unknowns))
         operator.has_canonical_format = True
         return operator

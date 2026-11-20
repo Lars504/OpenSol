@@ -209,7 +209,8 @@ type's vocabulary and refusals are in its help texts and validation.
 ## FDFD (em_fdfd_ez / em_fdfd_hz)
 - `FDFDPhysics` (HarmonicEMShell) shares EMPhysics' attributes (domain, sources, monitors, dispersive_regions,
   pec_cells, permittivity_arrays, ...), so PortLine, couplings and the Visualizer treat both alike.
-- Backends: every array on `self.xp` (cupy + cupyx CSR or numpy + scipy CSR), masks included; eigenfrequency gets host
+- Backends: every array on `self.xp` (cupy + cupyx CSR or numpy + scipy CSR), masks included (but the host system
+  arrays and parked plan: "Where the system lives" below); eigenfrequency gets host
   copies; sources keep host arrays until the first solve (`fdfd_sources._on_backend`). Shared with FDTD, so they must
   stay backend-neutral: `materials.register_em_arrays`, PortLine `_host_rows`, PhaseChangeMedium, `_phasor_part(xp)`,
   adjoint.py, DesignRegion. Self-tests em_fdfd_cpu_gpu, em_fdfd_adjoint_cpu_gpu.
@@ -251,6 +252,15 @@ type's vocabulary and refusals are in its help texts and validation.
 - Dirty flags: `_system_dirty` (materials_changed of a read array, slots, PEC, poles, new omega) reassembles and
   refactorises; `_solution_dirty` (that or a new source) re-solves. A recyclable factor at an unchanged omega (Picard
   step) preconditions host GMRES instead (`_solve_linear`); A1 operators cached per omega (`_yee_ops`).
+- Where the system lives (gpu): `HarmonicSystem.cell_mu` and the hz `eps_hi_*_faces` are host numpy on both backends
+  (read as lines, cells or whole on the host only): device code takes its xp from `weight_hi_*_faces`, never from
+  them, and a new device consumer of them uploads what it reads. The KeptYeeOperators entry maps and the Helmholtz
+  plan's terms wait in pinned host memory between assemblies (`operators._ParkedInt32`, one upload per `at` /
+  `operator` call); an array read only per assembly joins that park, never the run-resident set. Kept complex128 on
+  purpose: the face weights, `solution` and the face fields (the discrete Poynting balance and the TFSF leak are
+  checked to 1e-9 / 1e-12, and a 32-bit copy of what the operator was assembled from breaks both). Estimators:
+  `memory_estimates.FDFD_HOST_SYSTEM_ARRAYS`, `_FDFD_PLAN_TERM_BYTES`, `_YEE_ENTRY_MAP_BYTES`; the time recipe's
+  transfer `definition_fdfd.fdfd_assembly_ops`.
 - Linear solver: 'linear' role (`SparseDirectSolver`, `FDFDPhysics(linear_solver=)`), 'auto' resolved at finalize;
   eigenfrequency uses the 'eigen' role (also optomechanics). Size guards: a cusolver_qr workspace overrun bypasses the
   pool budget and can freeze Windows / crash the driver instead of failing, so sizes are refused before solving:
@@ -372,7 +382,9 @@ type's vocabulary and refusals are in its help texts and validation.
   em_resonance_region_fraction, em_fdfd_resonance_region, em_eigen_sparse_mass, em_resonance_filter_device_storage (gpu); template disk_resonator_eigenmodes.
 - Adjoint (C7, `adjoint.py`, derivation in its header): objectives subclass the flux / mode monitors; J = sum weight
   * value (flux unfolded by `mirror_factor`, mode power raw). `eps_sensitivity()` is lazy, cached per (n_solves,
-  objectives), zeros while a resonance is shown; `solve_adjoint` refuses a system reassembled since the last driven
+  objectives) until the next `_solve` starts (dropped before its factorisation), float32 gradients (argument at
+  `EpsSensitivity`; `permittivity_gradients`, which nlfd chains, stays float64), zeros while a resonance is shown;
+  `solve_adjoint` refuses a system reassembled since the last driven
   solve or a shown resonance. The adjoint source is folded through the transpose of the wall fill; hz differentiates V
   incl. the `pin_image_cells` fold, plus (as nlfd) the objectives' face fields (`face_cotangents` = the objective face
   parts) and the rhs D_e V J of the sources' summed `face_currents`. Held fixed: source calibrations (the J values),

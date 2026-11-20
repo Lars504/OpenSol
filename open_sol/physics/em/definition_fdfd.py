@@ -6,7 +6,7 @@ import numpy as np
 
 from ...core import time_estimate as te
 from ...core.backend import to_host
-from ...core.memory_estimate import BOOL_BYTES, MemoryEstimate
+from ...core.memory_estimate import BOOL_BYTES, COMPLEX128_BYTES, MemoryEstimate
 from ...core.renderer import FieldInfo
 from ...core.mirror import mirror_faces
 from ...model.definition_helpers import (FDFD_LINEAR_ROLE, eigen_factorization, eigen_role, evaluates_to,
@@ -54,7 +54,8 @@ from .index_reference import OFF_DIAGONAL_ARRAY, OFF_DIAGONAL_SLOT
 from .definition_effective_index import effective_index_feature
 from .definition_phase_change import phase_change_medium_feature
 from .materials import EM_MATERIAL_SCHEMAS, GYRATION_Z
-from .memory_estimates import fdfd_memory_estimate, pec_memory_estimate, search_single_basis
+from .memory_estimates import (FDFD_ASSEMBLY_UPLOAD_BYTES, FDFD_HOST_SYSTEM_ARRAYS, fdfd_memory_estimate,
+                               pec_memory_estimate, search_single_basis)
 from .placement import PERMITTIVITY_SLOTS
 from .renderer import FDFDRendererEz, FDFDRendererHz
 from .solvers.fdfd_2d import FDFDPhysics
@@ -902,7 +903,7 @@ def _fdfd_physics_type(polarization):
         shortest_wavelength=shortest_solved_wavelength,
         validate=_make_validate_physics(slot_arrays),
         memory_estimate=fdfd_memory_estimate(polarization),
-        time_estimate=_fdfd_time_estimate,
+        time_estimate=partial(_fdfd_time_estimate, polarization=polarization),
         solver_roles={'linear': FDFD_LINEAR_ROLE,
                       'eigen': eigen_role((EIGENFREQUENCY_STUDY, OPTOMECHANICS_STUDY), mixed_factorization=True)},
         subpixel_smoothing=True,
@@ -936,17 +937,26 @@ def _driven_points(context) -> tuple:
     return solves, kind, limit
 
 
-def _fdfd_time_estimate(settings_values, mesh, context):
-    """Per solved wavelength the Helmholtz assembly (host scipy) and one factorisation of the 'linear' role with one
-    solve per enabled source; eigen-solved: one shift-invert of the 'eigen' role (2 n_resonances + 10 eigenpairs);
-    optimization: per iteration (bounded) a forward and an adjoint solve; time_dependent: a re-solve per step of its
-    stride; triangle meshes: _triangle_time_estimate."""
+def fdfd_assembly_ops(n_cells, polarization) -> tuple:
+    """Ops of one tensor-mesh Helmholtz assembly (FDFDPhysics._assemble): the host stream per stored entry, and on the
+    gpu the upload of the parked term plan / Yee entry maps (operators._ParkedInt32) and the download of the host
+    system arrays (memory_estimates FDFD_ASSEMBLY_UPLOAD_BYTES, FDFD_HOST_SYSTEM_ARRAYS)."""
+    cells = float(n_cells)
+    transfer = FDFD_ASSEMBLY_UPLOAD_BYTES + COMPLEX128_BYTES * FDFD_HOST_SYSTEM_ARRAYS[polarization]
+    return (te.HostStream(ASSEMBLY_BYTES_PER_ENTRY * 5.0 * cells), te.PythonCalls(200), te.Transfer(transfer * cells))
+
+
+def _fdfd_time_estimate(settings_values, mesh, context, polarization='ez'):
+    """Per solved wavelength the Helmholtz assembly (host scipy; fdfd_assembly_ops) and one factorisation of the
+    'linear' role with one solve per enabled source; eigen-solved: one shift-invert of the 'eigen' role (2 n_resonances
+    + 10 eigenpairs); optimization: per iteration (bounded) a forward and an adjoint solve; time_dependent: a re-solve
+    per step of its stride; triangle meshes: _triangle_time_estimate."""
     if getattr(mesh, 'kind', 'tensor') == 'triangles':
         return _triangle_time_estimate(settings_values, mesh, context)
     unknowns = float(mesh.n_cells)
     nnz = 5.0 * unknowns
     sources = _source_count(context)
-    assembly_ops = (te.HostStream(ASSEMBLY_BYTES_PER_ENTRY * nnz), te.PythonCalls(200))
+    assembly_ops = fdfd_assembly_ops(unknowns, polarization)
     if eigen_solved(context.spec, context.name):
         from .cross_section_modes import cpml_cross_section
         eigenpairs = resonance_eigenpairs(context)

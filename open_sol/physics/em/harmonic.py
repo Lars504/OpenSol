@@ -97,7 +97,7 @@ def face_current_rhs(system, jx_faces, jy_faces):
         raise ValueError(f"face_current_rhs is the H_z face-current term; an {system.polarization!r} system takes "
                          f"-j omega mu0 J_z at the cell centres")
     ops = system.ops
-    xp = array_module_of(system.eps_hi_y_faces)
+    xp = array_module_of(system.weight_hi_y_faces)   # the run backend (eps_hi_*_faces are host arrays)
     rhs = xp.zeros(ops.nx * ops.ny, dtype=xp.complex128)
     jx_flat = None if jx_faces is None else xp.asarray(jx_faces, dtype=xp.complex128).ravel()
     jy_flat = None if jy_faces is None else xp.asarray(jy_faces, dtype=xp.complex128).ravel()
@@ -170,6 +170,8 @@ class HarmonicSystem:
     cell_eps: object             # ez: complex eps_r(omega) (nx, ny), no conducting sheet; hz: None
     cell_eps_xx: object          # hz: complex eps_xx(omega) cells; ez: None
     cell_eps_yy: object          # hz: complex eps_yy(omega) cells; ez: None
+    # Host numpy on every backend (FDFDPhysics._assemble): read only as lines (sheet sources), single cells (TFSF) or
+    # whole on the host (eigen mass, optomechanics), so they never wait on the device beside the factor
     cell_mu: object              # complex mu cells (nx, ny)
     eps_hi_x_faces: object       # hz: face_average(cell_eps_yy, axis 0) at E_y (with eps_xy: of eps_yy - eps_xy^2 /
     eps_hi_y_faces: object       # eps_xx); hz: face_average(cell_eps_xx, axis 1) at E_x (eps_xx - eps_xy^2 / eps_yy)
