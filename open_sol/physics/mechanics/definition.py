@@ -1198,9 +1198,16 @@ def _memory_estimate(settings_values, mesh, context):
                                    csr_entries=entries if mixed else 0)
     if mixed:   # float32 inverse blocks (3 per node), the two CSR product outputs (float64 + float32)
         vectors += 3 * FLOAT32_BYTES * (dofs // 2) + (FLOAT64_BYTES + FLOAT32_BYTES) * dofs
-    # stencil positions (int64), indices / entry rows (int32) per entry; indptr per dof, diagonal-block positions
-    pattern = (_INT64_BYTES + 2 * INT32_BYTES) * entries + (INT32_BYTES + 2 * _INT64_BYTES) * dofs
-    operators = 2 * value_bytes * entries   # operator_full and A_solve data
+    # stencil positions (int32 below 2^31 stencil slots, else int64), indices / entry rows (int32) per entry; indptr per
+    # dof, diagonal-block positions
+    pattern = ((INT32_BYTES if entries < 2 ** 31 else _INT64_BYTES) + 2 * INT32_BYTES) * entries + (
+        INT32_BYTES + 2 * _INT64_BYTES) * dofs
+    # A_solve data (the full K is not kept) and the float64 K rows of the held dofs for reactions (held_rows: booked
+    # for every outer face held in both components; a fixed_domain region adds its own rows)
+    n_x_nodes, n_y_nodes = n_x + 1, n_y + 1
+    held_dofs = 4 * (n_x_nodes + n_y_nodes)
+    operators = value_bytes * entries + held_dofs * (_STENCIL_ENTRIES_PER_DOF * (FLOAT64_BYTES + INT32_BYTES)
+                                                     + INT32_BYTES + _INT64_BYTES)
     # fixed values, free, fixed coupling, kept load, 3 inverse-block entries per node; element area, applied body force
     # (2), the ten kept stiffness coefficients (stiffness.ElementStiffness); solid mask and its rigid-check copy
     assembly = int(5.5 * value_bytes * dofs) + (13 * value_bytes + 2 * BOOL_BYTES) * elements
@@ -1217,7 +1224,7 @@ def _memory_estimate(settings_values, mesh, context):
         run_items.append(('generalized plane strain unit solves',
                           (2 * n_terms + 1) * value_bytes * dofs + value_bytes * elements))
     if stiffness_follows_state(context):
-        # stencil, gathered data, product temporary and the new operator pair while the old pair is alive
+        # stencil, gathered data, product temporary and the new A_solve while the old one is alive
         transient_items.append(('stiffness re-assembly', 'stiffness re-assembly (state-dependent stiffness)',
                                 4 * value_bytes * entries))
     host_items = ()
