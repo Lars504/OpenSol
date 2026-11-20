@@ -12,8 +12,9 @@ from ..core import gpu_memory
 from ..core.backend import array_module_of, cp, to_host
 from ..core.constants import C0
 from ..core.damped_iteration import AndersonHistory
-from ..core.kernels import axis_first_reduce
+from ..core.kernels import axis_first_reduce, twin
 from ..core.mirror import mirror_faces, parity_tag, sector_specs
+from ..core.monitors import park_probe_rows
 from ..core.renderer import primary_field_info
 from ..core.time_estimate import format_seconds, merge_time_checks, time_check, time_check_warnings
 from ..core.wavelengths import resolved_wavelengths, wavelength_label
@@ -949,6 +950,7 @@ def _run_time_dependent(session, values, emit, control, service):
             chunk_start = time.perf_counter()
             ticks_done = runner.advance(chunk_ticks, min(t_final, next_output))
             device.synchronize()
+            park_probe_rows()   # after the chunk's sync: long traces wait on the host, not on the device
             chunk_ticks = _next_chunk_ticks(chunk_ticks, ticks_done, time.perf_counter() - chunk_start)
             time.sleep(0)   # hand the GIL to the GUI thread (any positive sleep lasts >= ~1.4 ms on Windows)
             progress_emit(_time_progress(runner, t_start, t_final, tick_start, wall_start, message=stepping_text))
@@ -1476,6 +1478,7 @@ def _run_harmonic_pulse(session, pulsed, wavelengths, values, live, emit, contro
                 runner.t, runner.tick = t + dt, tick + 1
             # one host sync per chunk: the energy reduction
             energy = sum(float(accumulator.field_energy(solvers[name])) for name, accumulator in accumulators.items())
+            park_probe_rows()   # after that sync: long traces wait on the host
             if not math.isfinite(energy):
                 raise RuntimeError(f'harmonic FDTD pulse: the field energy became non-finite at t = {runner.t:.4g} s '
                                    '(unstable time step or material data)')
@@ -2524,9 +2527,23 @@ def _wrap_loop_back(schedule, order, wrap):
     return wrapped
 
 
+def _relax_in_place_host(value, relaxation, previous):
+    previous += relaxation * (value - previous)
+    return previous
+
+
+# previous += relaxation * (value - previous) in one pass (relaxation cast to T; value and previous of one dtype,
+# else cupy raises): a _RelaxedTransfer keeps one copy per part and no per-sweep temporaries
+_relax_in_place = twin('model.relax_in_place', cp.ElementwiseKernel(
+    'T value, T relaxation', 'T previous', 'previous = previous + relaxation * (value - previous)',
+    'open_sol_relax_in_place'), _relax_in_place_host)
+
+
 class _RelaxedTransfer:
     """Stationary loop-back coupling injecting previous + relaxation * (new - previous) per term (CouplingTerm,
-    CouplingGroup terms, DynamicMaterialUpdate); the first transfer goes in unrelaxed."""
+    CouplingGroup terms, DynamicMaterialUpdate); the first transfer goes in unrelaxed (as a copy). The relaxed value
+    is the kept array itself, updated in place right before its write (a slot keeping it by reference sees each
+    relaxed value, as with a fresh array)."""
 
     def __init__(self, coupling, relaxation):
         self._parts = getattr(coupling, 'terms', (coupling,))
@@ -2539,9 +2556,13 @@ class _RelaxedTransfer:
             if value is None:
                 continue
             previous = self._previous.get(part)
-            if previous is not None:
-                value = previous + self._relaxation * (value - previous)
-            self._previous[part] = value.copy() if hasattr(value, 'copy') else value
+            if previous is None:
+                self._previous[part] = value = value.copy() if hasattr(value, 'copy') else value
+            elif isinstance(previous, (np.ndarray, cp.ndarray)):   # in place: no relaxation temporaries
+                _relax_in_place(value, previous.dtype.type(self._relaxation), previous)
+                value = previous
+            else:
+                self._previous[part] = value = previous + self._relaxation * (value - previous)
             part.write(physics_by_name, value)
 
 

@@ -87,7 +87,9 @@ class CouplingTerm:
             raise ValueError(f"CouplingTerm contribution must be '' or one of {', '.join(CONTRIBUTIONS)}, got "
                              f"{contribution!r}")
         self.contribution = contribution
-        self.buffer = None   # contributor: persistent full-grid float32 copy of the last value (None before one)
+        self.buffer = None   # contributor: persistent full-grid float32 copy of the last value (None before one;
+        #                      a lone 'index' contributor's SlotSum turns it into eps after each write: slot_sum)
+        self.buffer_writes = 0   # values written into buffer so far
         self.source = source
         self.source_field = source_field
         self.target = target
@@ -176,6 +178,7 @@ class CouplingTerm:
         if self.buffer is None:
             self.buffer = xp.empty(shape, dtype=DTYPE)
         xp.copyto(self.buffer, value, casting='same_kind')
+        self.buffer_writes += 1
 
     def _source_changed(self, physics_by_name: dict) -> bool:
         revision = state_revisions(physics_by_name, self._read_physics)
