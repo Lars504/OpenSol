@@ -543,8 +543,8 @@ class DiffusionSystem:
         self.surface_diag = None
         self.surface_rhs = None
         self._rhs_full_buffer = xp.zeros(window_shape, dtype=dtype)   # un-eliminated rhs, written by build_rhs
-        # CG solution w = u - u_fix (the residual / direction workspace is the PCGSolver's, sized at assemble)
-        self._solution = xp.zeros(self.n_window, dtype=dtype)
+        # (no CG solution vector: solve() iterates on the unknown itself, shifted to w = u - u_fix and back; the
+        # residual / direction workspace is the PCGSolver's, sized at assemble)
 
         self.pattern = None            # CSR index structure, reused across rebuilds
         self._fused_geometry = None    # (FaceGeometry, packed 1D factors, offsets) of the fused re-assembly
@@ -1335,15 +1335,20 @@ class DiffusionSystem:
         steady solve, the step's initial residual with a capacity term (implicit Euler: PHY-1)."""
         if self.A_solve is None:
             raise RuntimeError('assemble before solve')
-        solution = self._solution
-        fixed_values = self.fixed_values.ravel()
-        self.xp.subtract(self.unknown, fixed_values, out=solution)
         reference = 'rhs' if self.capacity_over_dt is None else 'initial_residual'
         if self._pending_anchor_check is not None:   # its read joins the CG's first sync (rhs norm) right after
             pending, self._pending_anchor_check = self._pending_anchor_check, None
             self._finish_anchor_check(*pending)
-        self.linear_solver.solve(self.rhs, solution, reference)
-        self.xp.add(solution, fixed_values, out=self.unknown)
+        # in place on the unknown (no solution vector, the same arithmetic): w = u - u_fix during the solve, u again
+        # after it, also when the solver raises. Nothing may read the unknown inside the solve (a solver callback or
+        # pcg check reads only its arguments); a CUDA graph of the CG keys on the unknown's pointer.
+        fixed_values = self.fixed_values.ravel()
+        unknown = self.unknown
+        self.xp.subtract(unknown, fixed_values, out=unknown)
+        try:
+            self.linear_solver.solve(self.rhs, unknown, reference)
+        finally:
+            self.xp.add(unknown, fixed_values, out=unknown)
 
     # --- post-processing --------------------------------------------------------
 

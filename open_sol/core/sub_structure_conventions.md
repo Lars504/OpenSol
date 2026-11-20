@@ -342,7 +342,9 @@ A new accepted sync joins this list.
   when `cross_term_dirty` is set (heat / potential `materials_changed` of the xy array): a script writing the xy array
   in place must call `materials_changed` too.
 - CG solves for u - u_fix, so b holds only [c u] drives: never put held values [u] into b (against eps0-scaled rows the
-  tolerance then stops CG after a few iterations). Script constructors keep max_iter = 5000; the model's 0 = auto
+  tolerance then stops CG after a few iterations). It iterates in place on `unknown` (no solution vector): during
+  `linear_solver.solve` the unknown holds w = u - u_fix, so a solver wrapper or callback never reads the system's
+  unknown (or fields derived from it) inside the solve. Script constructors keep max_iter = 5000; the model's 0 = auto
   (`pcg.resolve_max_iterations`, Jacobi needs ~10 iterations per cell of the longest window axis; 'multigrid' needs
   nothing from the system).
 - Anchors: `assemble(check_anchors=False)` only for a caller that changed coefficient values but not which c are > 0,
