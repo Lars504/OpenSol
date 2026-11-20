@@ -624,7 +624,8 @@ _DESCRIPTION = (
     'hy / hz _re / _im / _abs (H = j curl E / (omega mu0 mu) at the complex omega), e_abs (primary), e_intensity, '
     'h_abs (cell centres), w_e = eps0 / 4 sum eps_c |E_c|^2 and eps_r, shown as cut planes. Memory: host dominates, '
     'the 3D factor grows ~ n^(4/3), n = E unknowns (~3 per cell; a solver size rule warns above 1e6 and refuses 4e6); '
-    'device 48 B per cell of fields plus the material arrays. heat_em_thermo_optic writes eps_r (+ eps_xx / eps_yy) '
+    'the device holds the eigen solve only: the 48 B per cell of resonance fields and (GPU, uncoupled, constant '
+    'materials) the material arrays stay on the host. heat_em_thermo_optic writes eps_r (+ eps_xx / eps_yy) '
     "as a background coupling. 'tetrahedra' mesh (finite elements): Nedelec edge elements (discretization), one "
     'material value per element, cpml faces as a PML shell of pml_cells x the maximum element size meshed with the '
     'window (complex stretch tensor), the same eigen solve (sparse mass), outputs sampled at points (cut planes on a '
