@@ -12,7 +12,7 @@ from ..core import gpu_memory
 from ..core.backend import array_module_of, cp, to_host
 from ..core.constants import C0
 from ..core.damped_iteration import AndersonHistory
-from ..core.kernels import axis_first_reduce
+from ..core.kernels import axis_first_reduce, twin
 from ..core.mirror import mirror_faces, parity_tag, sector_specs
 from ..core.monitors import park_probe_rows
 from ..core.renderer import primary_field_info
@@ -2527,9 +2527,23 @@ def _wrap_loop_back(schedule, order, wrap):
     return wrapped
 
 
+def _relax_in_place_host(value, relaxation, previous):
+    previous += relaxation * (value - previous)
+    return previous
+
+
+# previous += relaxation * (value - previous) in one pass (relaxation cast to T; value and previous of one dtype,
+# else cupy raises): a _RelaxedTransfer keeps one copy per part and no per-sweep temporaries
+_relax_in_place = twin('model.relax_in_place', cp.ElementwiseKernel(
+    'T value, T relaxation', 'T previous', 'previous = previous + relaxation * (value - previous)',
+    'open_sol_relax_in_place'), _relax_in_place_host)
+
+
 class _RelaxedTransfer:
     """Stationary loop-back coupling injecting previous + relaxation * (new - previous) per term (CouplingTerm,
-    CouplingGroup terms, DynamicMaterialUpdate); the first transfer goes in unrelaxed."""
+    CouplingGroup terms, DynamicMaterialUpdate); the first transfer goes in unrelaxed (as a copy). The relaxed value
+    is the kept array itself, updated in place right before its write (a slot keeping it by reference sees each
+    relaxed value, as with a fresh array)."""
 
     def __init__(self, coupling, relaxation):
         self._parts = getattr(coupling, 'terms', (coupling,))
@@ -2542,9 +2556,13 @@ class _RelaxedTransfer:
             if value is None:
                 continue
             previous = self._previous.get(part)
-            if previous is not None:
-                value = previous + self._relaxation * (value - previous)
-            self._previous[part] = value.copy() if hasattr(value, 'copy') else value
+            if previous is None:
+                self._previous[part] = value = value.copy() if hasattr(value, 'copy') else value
+            elif isinstance(previous, (np.ndarray, cp.ndarray)):   # in place: no relaxation temporaries
+                _relax_in_place(value, previous.dtype.type(self._relaxation), previous)
+                value = previous
+            else:
+                self._previous[part] = value = previous + self._relaxation * (value - previous)
             part.write(physics_by_name, value)
 
 
