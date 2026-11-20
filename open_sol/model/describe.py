@@ -1303,8 +1303,11 @@ _RESULTS_NOTES = (
         "  - what = a field ('physics.component' or a unique component; physics narrows it): every stored snapshot holding "
         "it is a frame (time snapshots play, labelled ones get a slider; a '<base>_re' / '_im' pair is animated "
         'over one period, Re / Im[A exp(j wt)]), else the current / saved state. 2D: a map (2D Cartesian flow / '
-        'current / potential / magnetostatic / heat pages can add particles or arrows of the in-plane vector; 2D '
-        'solid_mechanics / membrane fields drawn on the deformed body). 3D: cut planes (live: an x, y and z cut at '
+        'current / potential / magnetostatic / heat pages can add arrows (the default) or moving particles of the '
+        'in-plane vector; 2D solid_mechanics / membrane fields drawn on the deformed body; a map of an axisymmetric '
+        '(r, z) physics or a spherical (r, theta) domain can be turned about its rotation axis into a 3D view inside '
+        'see-through surfaces of revolution of the domain and the objects, the far half its mirror image across the '
+        'axis where core.mirror.unfold_faces gives one). 3D: cut planes (live: an x, y and z cut at '
         'a mirror plane of its physics, else through the objects that do not span the window, else the window '
         'middle; snapshots and closed / loaded runs: the mid-height z cut and stored_cuts); planes [(axis, '
         'position m)]: the live state on exactly those planes, a snapshot its held cut nearest each, ValueError in '

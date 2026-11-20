@@ -50,6 +50,14 @@ plot, imports of `viz.common` / `DARK_CMAPS`, canvas cell edges) live in the gui
 - Everything a picture must hold is drawn on the overlay canvas (`drawOverlay`), never as DOM over the view (PNG and
   recordings take the canvases only); a new overlay part also reserves its room in `viewInsets`, a new movable part
   is a `MOVABLE` entry plus a `placePart` call in its draw function.
-- Key bindings live in each block's own keydown listener; taken: V flow, Shift+V particles / arrows (2D flow pages)
+- Key bindings live in each block's own keydown listener; taken: V flow, Shift+V arrows / particles (2D flow pages)
   and view cycling (3D volume pages; never on the same page), C contours, R terrain, D deform animation, G objects,
-  M mirror.
+  M mirror, O revolve.
+- Pages open flat (no automatic terrain). Flow opens as arrows; its browser memory is `FLOW_STORE` (renamed when the
+  defaults change, so stored untouched defaults do not pin the old ones).
+- Revolution (field_viewer `// ---- revolution ----`, api `_viewer_revolution`): the page's mirror faces are
+  `unfold_faces` (api `_page_mirror_faces`, also the `_hide_void` crop), so an axisymmetric map's far half is the x_lo
+  image of `AXIS_UNFOLD_TYPES` (core sub file "Mirror planes"); other types and azimuthal_order != 0 show the drawn half
+  in the glass. viewer_data refuses x mirrors off the axis on a revolution page (no part of the body). While revolved
+  the camera orbits in another frame (`setOrbitFrame`: UP / E1 / E2 are `let`): code reading UP assumes nothing about
+  z being up; the bodies skip the axis image (whole revolutions) but take the other mirror images.
