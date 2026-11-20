@@ -20,7 +20,10 @@ def _acoustic_parity_case(name, label, case_names, covers, max_wall_time, heavy)
                                max_wall_time=max_wall_time)
     return replace(case, description=(
         f"The analytic elastic_waves cases {', '.join(case_names)} run on solver_defaults.backend cpu (core.kernels "
-        f'twins, numba for the velocity / stress updates when installed, else numpy: {covers}) and on gpu. Each case\'s own check grades the cpu runs, and its measured value must '
+        f'twins, numba for the velocity / stress updates when installed, else numpy: {covers}) and on gpu, where the '
+        'model path parks the material arrays on the host (the coefficients then come from the numpy twin of a host '
+        'rebuild, so the parity also grades the parked path against the unparked cpu one). Each case\'s own check '
+        'grades the cpu runs, and its measured value must '
         f'match the gpu runs\' within a relative {PARITY_TOLERANCE:g} (float32 arithmetic on both; the host twins '
         'round products and sums separately where CUDA may fuse them). error = the worst of cpu error / case '
         'tolerance and difference / parity tolerance, tolerance 1. Without a usable GPU only the cpu checks count.'))

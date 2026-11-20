@@ -464,8 +464,8 @@ first bring the background physics (those without the study's hook) to a station
   complex records, geometric nonlinearity (held factor, device tangents), thermoelastic damping, reused sweep builds,
   couplings and optics hooks, memory estimates, self-tests.
 - `open_sol/physics/membrane/`: layout, model (plate switch, system lifetime), self-tests.
-- `open_sol/physics/acoustics/`: elastic_waves (step graphs, kernel / numpy mirrors, adjoint pairs), couplings, not
-  built / open (incl. pressure_acoustics).
+- `open_sol/physics/acoustics/`: elastic_waves (step graphs, kernel / numpy mirrors, parked material arrays, adjoint
+  pairs), couplings, not built / open (incl. pressure_acoustics).
 - `open_sol/physics/fluid/`: FluidPhysics (Bouzidi walls, steady march, float32 bias), convection, self-tests,
   triangles / cuDSS (decision).
 - `open_sol/physics/magnetic/`: layout and registration, shared rules (snapshots, saturation loops, memory),

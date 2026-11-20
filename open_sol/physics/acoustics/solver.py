@@ -71,6 +71,15 @@ _PIEZO_ROWS = {'electric_field_x': ('piezo_e11', 'piezo_e12', 'piezo_e16'),
 ACOUSTIC_PROPERTY_ARRAYS = {name: (name,) for name in (*ACOUSTIC_SCHEMA, *MONOCLINIC_ARRAYS, *PIEZO_ARRAYS,
                                                         *PHOTOELASTIC_TENSOR_ARRAYS)}
 _COEFFICIENT_MATERIALS = frozenset(ACOUSTIC_SCHEMA) - {'gruneisen', 'photoelastic_p11', 'photoelastic_p12'}
+# the coefficients kernel's material inputs, in its argument order (a parked one: the host rebuild reads them all)
+COEFFICIENT_INPUTS = ('rho', 'sound_speed', 'shear_speed', 'youngs_modulus', 'poisson_ratio', 'c11', 'c12', 'c22',
+                      'c66', 'acoustic_damping')
+# MaterialGrid arrays a model build may park on the host (park_arrays; definition._parked_material_arrays decides):
+# the coefficient inputs (read only by coefficient rebuilds), gruneisen (read every step by a heat pulse or the heating
+# slot), the photoelastic arrays (acousto-optic transforms) and the piezo arrays (field slots, bound charge, stiffened
+# dt); never c16 / c26 (the monoclinic stress kernel reads them every step)
+PARKABLE_ARRAYS = (*COEFFICIENT_INPUTS, 'gruneisen', 'photoelastic_p11', 'photoelastic_p12',
+                   *PHOTOELASTIC_TENSOR_ARRAYS, *PIEZO_ARRAYS)
 _DAMPING = 'acoustic_damping'                     # its presence keeps the va arrays (AcousticPhysics._set_storage)
 _NORMAL_STIFFNESS = frozenset({'c11', 'c22'})     # set in a cell: c22 is its own array, else the c11 one
 
@@ -158,13 +167,15 @@ class AcousticPhysics(PhysicsSolver):
     (set at construction and at finalize, re-derived only there); a smaller runner step is honoured. axisymmetric: x = r
     from the axis on the grid's x_lo edge (a 'rigid' face, not padded), y = z, with the hoop stress stt. precision
     'single' | 'half_storage' (fp16 fields in stored units, scales fixed at the first finalize; no piezo, no c16 / c26,
-    no slots)."""
+    no slots). park_arrays: PARKABLE_ARRAYS moved to the host right after the first coefficient build (MaterialGrid.park;
+    later rebuilds run the numpy twin on host copies and upload the coefficients; a reader of a parked array raises);
+    the fields are allocated only after that first time step, so the build peak never holds both."""
 
     name = 'acoustics'
     material_schema = ACOUSTIC_SCHEMA
 
     def __init__(self, domain, faces=None, pml_cells=20, pml_reflection=1e-4, courant=0.9, heating_envelope=None,
-                 axisymmetric=False, precision='single'):
+                 axisymmetric=False, precision='single', park_arrays=()):
         if precision not in FIELD_DTYPES:
             raise ValueError(f"stepper precision must be one of {', '.join(FIELD_DTYPES)}, got {precision!r}")
         if precision != 'single' and domain.backend.name != 'gpu':
@@ -193,6 +204,11 @@ class AcousticPhysics(PhysicsSolver):
         self.courant = float(courant)
         self.pml_reflection = float(pml_reflection)
         self.heating_envelope = heating_envelope   # None: the heating_power slot is the instantaneous heating rate
+        unparkable = sorted(set(park_arrays) - set(PARKABLE_ARRAYS))
+        if unparkable:
+            raise ValueError(f'elastic_waves cannot park the material arrays {unparkable} (read every step or unknown); '
+                             f"parkable: {', '.join(PARKABLE_ARRAYS)}")
+        self._park_pending = tuple(park_arrays)   # parked by the first _update_time_step after its coefficient build
 
         nx, ny = domain.grid.nx, domain.grid.ny
         self.nx, self.ny = nx, ny
@@ -220,6 +236,9 @@ class AcousticPhysics(PhysicsSolver):
         self._inv_dx_e, self._inv_dx_h = device(self._inv_dx_e_host), device(inv_dx_h)
         self._inv_dy_e, self._inv_dy_h = device(self._inv_dy_e_host), device(inv_dy_h)
         self._shares = (device(share_x_lo), device(share_x_hi), device(share_y_lo), device(share_y_hi))
+        # float32 host copies of the shares (the host coefficient rebuild of parked materials)
+        self._shares_host = tuple(np.asarray(share, dtype=DTYPE) for share in (share_x_lo, share_x_hi, share_y_lo,
+                                                                               share_y_hi))
         if self.axisymmetric:
             self._radial = device(kernel_rows(dx_cells))
 
@@ -234,9 +253,7 @@ class AcousticPhysics(PhysicsSolver):
         self._psi_y = tuple(psi_array(n_slab_y, nx, False, xp) for _ in range(4))
 
         shape = (nx, ny)
-        field_dtype = FIELD_DTYPES[precision]
-        self.fields = AcousticFields(*(xp.zeros(shape, dtype=field_dtype) for _ in range(5)),
-                                     stt=xp.zeros(shape, dtype=field_dtype) if self.axisymmetric else None)
+        self.fields = None   # AcousticFields, allocated after the first time step (below)
         # effective stiffness [Pa] (cells; c66c at corners) and velocity coefficients (faces), rewritten in place;
         # _set_storage: c22 is the c11 array while no cell sets c11 / c22 (equal then), va_x / va_y exist only while a
         # cell has acoustic_damping (None: lossless, the LOSSLESS velocity kernels imply va = 1 where vb != 0)
@@ -316,9 +333,13 @@ class AcousticPhysics(PhysicsSolver):
         self.largest_stiffness = None                # [Pa] max(c11, c22) over the cells (half_storage scale estimate)
         self.largest_impedance = None                # [Pa s/m] max sqrt(max(c11, c22) rho) over the cells
         try:
-            self._update_time_step()   # its first step chooses the coefficient storage (_choose_storage)
+            self._update_time_step()   # its first step chooses the coefficient storage (_choose_storage), parks
         except ValueError:   # stiffness may still come from state-dependent materials: finalize decides
             self.stable_dt = None
+        # after the first time step: its temporaries (and the parked arrays, when parking) are gone by now
+        field_dtype = FIELD_DTYPES[precision]
+        self.fields = AcousticFields(*(xp.zeros(shape, dtype=field_dtype) for _ in range(5)),
+                                     stt=xp.zeros(shape, dtype=field_dtype) if self.axisymmetric else None)
 
     # --- PhysicsSolver contract -----------------------------------------------------------------------------------
 
@@ -480,9 +501,20 @@ class AcousticPhysics(PhysicsSolver):
         if array is not None:
             check_backend_array(array, (self.nx, self.ny), DTYPE, f"inject_source('{name}', ...) array", xp=self.xp)
         if name == HEATING_SLOT:
+            if array is not None:
+                self.require_device_materials(('gruneisen',), "the 'heating_power' slot")
             self._heating = array
         elif self.piezoelectric and array is not None:
+            self.require_device_materials(PIEZO_ARRAYS, f"the '{name}' slot")
             self._apply_field_component(name, array)
+
+    def require_device_materials(self, names, reader) -> None:
+        """RuntimeError when one of the MaterialGrid arrays `names` is parked on the host (park_arrays), since `reader`
+        reads it on the device: definition._parked_material_arrays must keep it there for this model."""
+        parked = sorted(self.materials.parked.intersection(names))
+        if parked:
+            raise RuntimeError(f'elastic_waves: {reader} reads the material arrays {parked}, which the build parked on '
+                               'the host (definition._parked_material_arrays must keep them on the device for it)')
 
     def renderer(self):
         from .renderer import AcousticRenderer
@@ -708,6 +740,7 @@ class AcousticPhysics(PhysicsSolver):
         if not self.piezoelectric:
             raise ValueError("elastic_waves has no piezo_e* arrays: the two-way piezoelectric coupling needs a "
                              "piezoelectric material")
+        self.require_device_materials(PIEZO_ARRAYS, 'the two-way piezo bound charge')
         self._piezo_permittivity = (permittivity_xx, permittivity_yy, permittivity_xy)
         if self._bound_charge_buffers is None:
             self._bound_charge_buffers = tuple(self.xp.zeros((self.nx, self.ny), dtype=DTYPE) for _ in range(3))
@@ -795,7 +828,12 @@ class AcousticPhysics(PhysicsSolver):
     # --- coefficients and time step -------------------------------------------------------------------------------
 
     def _rebuild_coefficients(self):
+        """Effective c11 / c12 / c22 / c66c and the velocity coefficients at self.dt, in place: the coefficients kernel
+        on the run backend, or its numpy twin on host copies when a coefficient input is parked (_rebuild_on_host)."""
         materials = self.materials
+        if not materials.parked.isdisjoint(COEFFICIENT_INPUTS):
+            self._rebuild_on_host()
+            return
         keep = self._no_rigid if self._rigid_keep is None else self._rigid_keep
         lossy = self.va_x is not None
         va_x, va_y = (self.va_x, self.va_y) if lossy else (self._unit, self._unit)   # unwritten dummies when lossless
@@ -809,13 +847,45 @@ class AcousticPhysics(PhysicsSolver):
              DTYPE(self.dt if self.dt is not None else 1.0), self._nx_i32, self._ny_i32,
              self._periodic_x_i32, self._periodic_y_i32, *self._pins))
 
+    def _rebuild_on_host(self):
+        """_rebuild_coefficients with parked materials (build time, or a new runner dt: one host pass and one upload
+        per coefficient array): the coefficients kernel's numpy twin on host copies of every input (the unparked ones
+        downloaded, the shares and rigid keep mask too) into host outputs, then written into the device arrays in
+        place (the step graphs keep their pointers)."""
+        materials = self.materials
+        inputs = tuple(to_host(getattr(materials, name)) for name in COEFFICIENT_INPUTS)
+        has_keep = self._rigid_keep is not None
+        keep = to_host(self._rigid_keep) if has_keep else np.ones(1, dtype=bool)
+        separate_c22, lossy = self.c22 is not self.c11, self.va_x is not None
+        names = ('c11', 'c12', 'c66c', 'vb_x', 'vb_y') + (('c22',) if separate_c22 else ()) + (
+            ('va_x', 'va_y') if lossy else ())
+        shape = (self.nx, self.ny)
+        outputs = {name: np.empty(shape, dtype=DTYPE) for name in names}
+        unit = np.ones(1, dtype=DTYPE)   # unwritten dummies (c22 aliased to c11, lossless va)
+        _kernels.coefficients_kernel(
+            self._k_grid, self._k_block,
+            (*inputs, keep, np.int32(has_keep), *self._shares_host, outputs['c11'], outputs['c12'],
+             outputs.get('c22', unit), outputs['c66c'], outputs.get('va_x', unit), outputs['vb_x'],
+             outputs.get('va_y', unit), outputs['vb_y'], np.int32(separate_c22), np.int32(lossy),
+             DTYPE(self.dt if self.dt is not None else 1.0), self._nx_i32, self._ny_i32,
+             self._periodic_x_i32, self._periodic_y_i32, *self._pins))
+        for name, values in outputs.items():
+            write_host_into(getattr(self, name), values)
+
     def _choose_storage(self):
-        """_set_storage from the material values (one host sync: build time): va arrays when a cell has
-        acoustic_damping != 0, a separate c22 when a cell sets c11 or c22 (not NaN)."""
-        materials, xp = self.materials, self.xp
-        lossy, separate_c22 = (bool(value) for value in to_host(xp.stack((
-            xp.any(materials.acoustic_damping != 0),
-            xp.any(~xp.isnan(materials.c11)) | xp.any(~xp.isnan(materials.c22))))))
+        """_set_storage from the material values (one host sync: build time; parked inputs: numpy on host copies): va
+        arrays when a cell has acoustic_damping != 0, a separate c22 when a cell sets c11 or c22 (not NaN)."""
+        materials = self.materials
+        names = ('acoustic_damping', 'c11', 'c22')
+        if materials.parked.isdisjoint(names):
+            xp = self.xp
+            lossy, separate_c22 = (bool(value) for value in to_host(xp.stack((
+                xp.any(materials.acoustic_damping != 0),
+                xp.any(~xp.isnan(materials.c11)) | xp.any(~xp.isnan(materials.c22))))))
+        else:
+            damping, c11, c22 = (to_host(getattr(materials, name)) for name in names)
+            lossy = bool(np.any(damping != 0))
+            separate_c22 = bool(np.any(~np.isnan(c11)) or np.any(~np.isnan(c22)))
         self._set_storage(lossy, separate_c22)
 
     def _set_storage(self, lossy, separate_c22) -> bool:
@@ -852,12 +922,17 @@ class AcousticPhysics(PhysicsSolver):
         stiffness (`kernels.stability_stiffness`, anisotropic von Neumann bound, c16 / c26 included) times the largest
         buoyancy 1 / rho_face of its four faces (a solid-vacuum face has rho / 2; axisymmetric: 1 / dx_min^2 times
         `radial_stability_factor`; two-way piezo: the stiffened c^D); the CPML damping uses the largest sqrt(max(c11,
-        c22) / rho). Two host syncs (build time): the storage choice (_choose_storage), the bounds."""
+        c22) / rho). Two host syncs (build time): the storage choice (_choose_storage), the bounds. The first call parks
+        park_arrays right after its coefficient build."""
         built_dt = self.dt
         self._choose_storage()
         self._rebuild_coefficients()   # effective c11 / c12 / c22 / c66c (dt-independent part; va / vb at self.dt)
+        if self._park_pending:   # the coefficients hold the materials now: park before the temporaries below
+            materials = self.materials
+            materials.park([name for name in self._park_pending if name in materials.property_names()])
+            self._park_pending = ()
         xp = self.xp
-        rho = self.materials.rho
+        rho = self.materials.device_array('rho')   # an upload of a parked rho, freed with the temporaries
         longitudinal = xp.maximum(xp.maximum(self.c11, self.c22), DTYPE(0.0))
         reference_squared = xp.where(rho > 0, longitudinal / xp.maximum(rho, DTYPE(1e-30)), DTYPE(0.0)).max()
         largest_stiffness = longitudinal.max()
@@ -995,6 +1070,7 @@ class AcousticPhysics(PhysicsSolver):
     def add_heat_pulse(self, mask, power_density, envelope):
         """Thermoelastic source: power_density [W/m^3] (number or full-grid array) on the bool mask (run backend) times
         the envelope; None for an empty mask."""
+        self.require_device_materials(('gruneisen',), 'a heat pulse source')
         box = _bounding_box(mask)
         if box is None:
             return None
