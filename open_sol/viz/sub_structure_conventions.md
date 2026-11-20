@@ -58,6 +58,8 @@ plot, imports of `viz.common` / `DARK_CMAPS`, canvas cell edges) live in the gui
 - Revolution (field_viewer `// ---- revolution ----`, api `_viewer_revolution`): the page's mirror faces are
   `unfold_faces` (api `_page_mirror_faces`, also the `_hide_void` crop), so an axisymmetric map's far half is the x_lo
   image of `AXIS_UNFOLD_TYPES` (core sub file "Mirror planes"); other types and azimuthal_order != 0 show the drawn half
-  in the glass. viewer_data refuses x mirrors off the axis on a revolution page (no part of the body). While revolved
+  in the glass. Polar / spherical domains take `mirror_faces` (unfold_faces' x_lo is the Cartesian axis; on a
+  spherical window it is r_min): `_viewer_revolution` adds the spherical far half itself, for unsigned / scalar fields
+  only ((r, theta) components keep their sign under the rotation, no reflection sign does that). viewer_data refuses x mirrors off the axis on a revolution page (no part of the body). While revolved
   the camera orbits in another frame (`setOrbitFrame`: UP / E1 / E2 are `let`): code reading UP assumes nothing about
   z being up; the bodies skip the axis image (whole revolutions) but take the other mirror images.

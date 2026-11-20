@@ -371,7 +371,7 @@ const AX = { x: 0, y: 1, z: 2 };
 // DIVERGING: a signed field whose values cross zero (or whose mirror images flip its sign): diverging maps, limits
 // symmetric about 0. A signed field of one sign throughout (a potential of 0 .. 5 V, a temperature rise) is coloured
 // like a magnitude, over its own range: symmetric limits would leave half the map unused
-const DIVERGING = SIGNED && (Math.min(DATA.range[0], -DATA.range[1]) < -0.02 * Math.max(Math.abs(DATA.range[0]), Math.abs(DATA.range[1]))
+const DIVERGING = SIGNED && (Math.max(DATA.range[0], -DATA.range[1]) < -0.02 * Math.max(Math.abs(DATA.range[0]), Math.abs(DATA.range[1]))
   || (DATA.mirrors || []).some((M) => M.sign < 0));
 const LOG_OK = !DIVERGING && DATA.range[1] > 0 && DATA.range[0] >= 0;
 // the kind of quantity picks the opening colour map (each kind remembers the user's own choice) and, for densities

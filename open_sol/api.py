@@ -20,7 +20,8 @@ import numpy as np
 from . import __version__
 from .core import gpu_memory, host_memory
 from .core.backend import default_backend_name
-from .core.mirror import field_parity, field_plane_signs, image_sign, mirror_faces, unfold_faces, unfold_field
+from .core.mirror import (AXIS_UNFOLD_TYPES, field_parity, field_plane_signs, image_sign, mirror_faces, unfold_faces,
+                          unfold_field)
 from .core.renderer import primary_field_info
 from .core.time_estimate import format_seconds
 from .core.time_profile import profile_path, profile_text, run_profile
@@ -1889,20 +1890,24 @@ class Results:
         # parity-sector snapshots are stored unfolded already: no images of them
         mirrors = [] if unfolded else self._viewer_mirrors(
             key.partition('.')[0], info, [(layer.axes, layer.extent) for layer in frames[0].layers], flow_infos)
-        revolution, mirrors = (None, mirrors) if unfolded else self._viewer_revolution(key, frames[0].layers, mirrors)
+        revolution, mirrors = ((None, mirrors) if unfolded
+                               else self._viewer_revolution(key, info, frames[0].layers, mirrors))
         snap_to_mirrors(frames, mirrors)   # before the outlines: a cut next to a mirror plane is drawn on it
         objects = self._viewer_geometry([layer.plane for layer in frames[0].layers]) if geometry else None
         return write_field_viewer(path, frames, quantity, title=self._page_title(title) or info.label,
                                   subtitle=f'{key}, {source} (open_sol)', frame_kind=frame_kind, geometry=objects,
                                   mirrors=mirrors, figure=figure, flow=flow, motion=motion, revolution=revolution)
 
-    def _viewer_revolution(self, key, layers, mirrors):
+    def _viewer_revolution(self, key, info, layers, mirrors):
         """(ViewerRevolution, mirrors) of a 2D map that is the meridional half plane of a body of revolution about
         the drawing plane's y axis (x = 0): a field of an axisymmetric (r, z) physics on a Cartesian domain (profile:
         the map's window rectangle) or any field of a spherical (r, theta) domain (profile: the sector outline);
         mirrors normal to x off the axis are dropped (RuntimeWarning: their images are no part of the body).
-        (None, mirrors) for every other page. The far half is the x_lo mirror _viewer_mirrors took from
-        unfold_faces (AXIS_UNFOLD_TYPES at azimuthal_order 0), else the drawn half shows alone."""
+        (None, mirrors) for every other page. The far half (Cartesian): the x_lo mirror _viewer_mirrors took from
+        unfold_faces (AXIS_UNFOLD_TYPES at azimuthal_order 0); spherical: an x mirror on the axis added here for an
+        unsigned or scalar-parity field (FieldInfo info) of an AXIS_UNFOLD_TYPES physics whose sector reaches the axis,
+        signed by the type (the (r, theta) components keep their sign under the rotation, which no reflection sign
+        reproduces: vector components get no far half). Else the drawn half shows alone."""
         spec = self.spec
         if spec is None or spec.dimensions != 2 or len(layers) != 1 or layers[0].plane is not None \
                 or tuple(layers[0].axes) != ('x', 'y'):
@@ -1911,8 +1916,14 @@ class Results:
         if physics_spec is None:
             return None, mirrors
         parameters = self._built_parameters()
+        far = None
         if spec.domain.coordinates == 'spherical':
             profile, label = domain_map(spec, parameters).outline(), 'spherical (r, theta)'
+            axis_sign = AXIS_UNFOLD_TYPES.get(physics_spec.type)
+            parity = field_parity(info) if info.parity or not info.signed else None
+            if axis_sign and parity in ('even', 'scalar') \
+                    and float(np.min(profile[:, 0])) <= 1e-6 * float(np.max(np.abs(profile))):
+                far = ViewerMirror(face='x_lo', position=0.0, value_sign=image_sign(parity, 'x', axis_sign))
         elif spec.domain.coordinates == 'cartesian' and is_axisymmetric(physics_settings(
                 get_registry().physics_type(physics_spec.type), physics_spec, parameters)):
             u0, u1, v0, v1 = layers[0].extent
@@ -1927,7 +1938,7 @@ class Results:
             dropped = sorted({mirror.face for mirror in mirrors} - {mirror.face for mirror in kept})
             warnings.warn(f"web page mirror images: not across {', '.join(dropped)} (a plane normal to the radius off "
                           'the rotation axis is no symmetry of the body of revolution)', RuntimeWarning, stacklevel=4)
-        return ViewerRevolution(profiles=[profile], axis_position=0.0, label=label), kept
+        return ViewerRevolution(profiles=[profile], axis_position=0.0, label=label), kept + ([far] if far else [])
 
     def _viewer_motion(self, key, frames, sources):
         """(ViewerMotion, subtitle note) of a 2D field page whose physics has a displacement (_MOTION_FIELDS), the
@@ -2103,8 +2114,12 @@ class Results:
     def _page_mirror_faces(self, physics):
         """{face: sign} a web page of physics' fields reflects at: core.mirror.unfold_faces (the model's mirror planes
         plus the rotation axis x_lo of an axisymmetric AXIS_UNFOLD_TYPES physics, as Results.field(unfold=True));
-        mirror_faces and a RuntimeWarning when the axis cannot be unfolded (an azimuthal_order other than 0)."""
+        mirror_faces and a RuntimeWarning when the axis cannot be unfolded (an azimuthal_order other than 0);
+        mirror_faces on a polar / spherical domain (unfold_faces' x_lo is the Cartesian (r, z) axis; a spherical
+        window's axis is no outer face: _viewer_revolution draws its far half)."""
         spec = self._state_spec()
+        if spec.domain.coordinates != 'cartesian':
+            return mirror_faces(spec, physics)
         try:
             return unfold_faces(spec, physics)
         except ValueError as exc:
