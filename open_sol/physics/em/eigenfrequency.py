@@ -53,6 +53,11 @@ _START_VECTOR_SEED = 6          # deterministic ARPACK start vector (no symmetry
 # ARPACK to 1e-10 dominated the PARDISO Mie run (39 ms solves, two per application, ~660 applications)
 # E2: a caller that measured D A complex symmetric passes rayleigh_symmetrizer (2D FDFD, never with a Bloch phase): any
 # factor of a complex A (SuperLU, line-block too) then takes the same floor and polish (DBR: ~124 applications at eps)
+# Every polished search (mixed or double factor, E2) keeps its device Krylov-Schur basis complex64
+# (eigs_device(single_basis=True), half the basis bytes): ARPACK stops at this tolerance, at or above
+# arpack_shift_invert.SINGLE_BASIS_MIN_TOLERANCE (the fp32 Arnoldi relation holds to ~1e-7 |H|; eigs_device refuses a
+# lower one loudly), the fp32 rows perturb the Ritz vectors by ~1e-7 against their 1e-6 residual, and the float64
+# Rayleigh quotients square either into the eigenvalue (~1e-12)
 MIXED_EIGS_REFINEMENTS = 1
 MIXED_ARPACK_TOLERANCE = 1e-6
 # Tried and removed (2026-11): eigs on unrefined complex64 solves (half the solves: Mie eigs 7.0 -> 4.8 s), accepted
@@ -442,7 +447,7 @@ def solve_resonances(host_operator, mass, omega_target, energy_weights, in_windo
                 theta, vectors, pass_applications, converged, kept_decomposition = eigen_solver.eigs_device(
                     apply_on_backend, n_unknowns, n_wanted, start_vector, tolerance_floor=tolerance_floor,
                     default_basis=default_basis, resume=kept_decomposition, matvec_on_host=host_device,
-                    single_basis=refine)   # a polished mixed search: complex64 basis (SINGLE_BASIS_MIN_TOLERANCE)
+                    single_basis=polish)   # every polished search: complex64 basis (MIXED_ARPACK_TOLERANCE comment)
                 # the filter runs beside the factor without the device basis: its rows wait on the host for a widening
                 kept_decomposition = _parked_decomposition(
                     kept_decomposition, widenings < MAX_WIDENINGS and n_wanted < n_free - 2)

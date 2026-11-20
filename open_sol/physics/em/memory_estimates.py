@@ -224,16 +224,20 @@ def own_cudss_search_items(label, unknowns, entries, mixed, symmetric=True) -> l
 
 
 def _resonance_search(context, n_resonances, unknowns, own_cudss, filter_entries, basis_per_wanted=0,
-                      scaled_block=None, sparse_mass_entries=0, symmetric_search=False, ldlt=None):
+                      scaled_block=None, sparse_mass_entries=0, symmetric_search=False, ldlt=None,
+                      polished_double=False):
     """resonance_search_items on the run backend of a search for n_resonances: 2 n_resonances + 10 wanted (within 1 ..
     unknowns - 2), the Arnoldi basis of the eigen subspace_size, else basis_per_wanted x wanted, else scipy's;
     symmetric_search (solve_resonances(symmetric=True): A itself complex symmetric, FEM and the BOR FIT operator): the
     filter's lower triangles; ldlt (None = symmetric_search; True also for a symmetrized D A without Bloch phase /
-    gyration): the own factor is an LDL^T, so complex64 basis rows on a polished_mixed_search."""
+    gyration): the own factor is an LDL^T. Complex64 basis rows (every polished search, eigenfrequency
+    MIXED_ARPACK_TOLERANCE) on a polished_mixed_search or when polished_double (the caller's test that the search is
+    polished on a double factor too: E2, or a floored complex A of an LDL^T)."""
     n_wanted = max(min(2 * n_resonances + 10, unknowns - 2), 1)
     n_basis = arnoldi_basis_size(n_wanted, unknowns, eigen_subspace_size(context.solvers), basis_per_wanted * n_wanted)
     ldlt = symmetric_search if ldlt is None else ldlt
-    single_basis = own_cudss and polished_mixed_search(eigen_factorization(context.solvers), unknowns, symmetric=ldlt)
+    single_basis = bool(polished_double) or (own_cudss and polished_mixed_search(eigen_factorization(context.solvers),
+                                                                                 unknowns, symmetric=ldlt))
     return resonance_search_items(solver_backend(context.spec), unknowns, n_wanted, n_basis, own_cudss=own_cudss,
                                   filter_entries=filter_entries, scaled_block=scaled_block,
                                   sparse_mass_entries=sparse_mass_entries, symmetric_mass=symmetric_search,
@@ -496,9 +500,14 @@ def fdfd_memory_estimate(polarization):
         back_end = resolved_back_end(context.solvers)
         superlu_host = False   # host items with a SuperLU factor: the eps_xy fill below adds to them
         if eigen_solved(context.spec, context.physics_spec.name):   # no driven solve: the shift-invert factor instead
+            from .cross_section_modes import cpml_cross_section
+            bloch = bool(bloch_active_axes(settings_values))
             host_items, eigen_transient, external_items, external_extra = _eigen_items(   # fdfd_2d._symmetrizer: D A
                 context, n_cells, sparse_row, superlu=not line_block_items,              # unless Bloch / gyration_z
-                ldlt=not bloch_active_axes(settings_values) and not context.material_sets(GYRATION_Z))
+                ldlt=not bloch and not context.material_sets(GYRATION_Z),
+                # E2 (_adjoint_symmetrizer: no Bloch phase, eps_xy or gyration_z) polishes a complex A on any factor:
+                # an open model (a lossy closed one is booked unpolished)
+                polished_double=not bloch and not off_diagonal_run and cpml_cross_section(settings_values))
             superlu_host = not line_block_items and eigen_factorization(context.solvers) not in CUDSS_FACTORIZATIONS
             transient_items += eigen_transient
             run_items += line_block_items
@@ -611,11 +620,11 @@ def _line_block_run_items(settings_values, mesh, context, polarization):
     return [(f'line_block operator ({precision})', operator), (f'line_block factor ({precision})', factor)]
 
 
-def _eigen_items(context, n_cells, sparse_row, superlu=True, ldlt=True):
+def _eigen_items(context, n_cells, sparse_row, superlu=True, ldlt=True, polished_double=False):
     """(host items, EIGEN_PHASE items, external items, external extra) of eigenfrequency.solve_resonances: its own
     factor (superlu: no line_block solver; SuperLU on the host, a cudss eigen factorization outside the pool with its
-    pool copies; ldlt: the LDL^T of D A, so a polished mixed one keeps a complex64 basis), the operator copy, the
-    Arnoldi work (resonance_search_items), the resonance fields and vectors."""
+    pool copies; ldlt: the LDL^T of D A, so a polished mixed one keeps a complex64 basis, as any search when
+    polished_double), the operator copy, the Arnoldi work (resonance_search_items), the resonance fields and vectors."""
     values = _study_values(context)
     n_resonances = int(values.get('n_resonances', values.get('n_optical_resonances')) or 1)
     vector_bytes = COMPLEX128_BYTES * n_cells
@@ -627,7 +636,7 @@ def _eigen_items(context, n_cells, sparse_row, superlu=True, ldlt=True):
         symmetric=True, eigen=True)) if superlu and not own_cudss else [])
     # any factor may be Rayleigh-polished (E2: a complex A with a measured symmetrizer): the D v block booked always
     search_host, transient_items = _resonance_search(context, n_resonances, n_cells, own_cudss, 5 * n_cells,
-                                                     scaled_block=True, ldlt=ldlt)
+                                                     scaled_block=True, ldlt=ldlt, polished_double=polished_double)
     external_items, external_extra = [], 0
     if own_cudss:
         mixed = eigen_mixed(factorization, n_cells)
@@ -834,8 +843,12 @@ def conical_memory_estimate(settings_values, mesh, context):
                                      'complex128)', 3 * COMPLEX128_BYTES * n_cells)]
     if eigen:   # conical.solve_conical_resonances
         n_resonances = int(_study_values(context).get('n_resonances') or 1)
-        search_host, search_transient = _resonance_search(   # an LDL^T of D A unless a Bloch phase makes it an LU
-            context, n_resonances, unknowns, on_device, 13 * unknowns, ldlt=not bloch_active_axes(settings_values))
+        from ...solvers.arpack_shift_invert import LDLT_FACTORIZATIONS
+        from .cross_section_modes import cpml_cross_section
+        ldlt = not bloch_active_axes(settings_values)   # an LDL^T of D A unless a Bloch phase makes it an LU
+        search_host, search_transient = _resonance_search(   # an own LDL^T of a complex (open) A: polished (floored)
+            context, n_resonances, unknowns, on_device, 13 * unknowns, ldlt=ldlt,
+            polished_double=ldlt and factorization in LDLT_FACTORIZATIONS and cpml_cross_section(settings_values))
         transient_items += search_transient
         host_items += [*search_host,
                        (f'resonance fields ({n_resonances} x 6 components complex128)',
