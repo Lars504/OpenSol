@@ -197,8 +197,9 @@ file ("Triangle meshes"). Error indicators: section "Error indicators" (users: g
   `fixed_value`, `ensure_assembled()`); `load_vector`, `operator` and `reactions` hold pencil terms only. Subclass
   hooks (`_assemble_terms`, `_physical_values`, ...) are for subclasses (grep `class .*HarmonicSystem` under physics).
 - Real stays real: pencil terms keep their own dtype (`part`, the DevicePencil terms), so a pencil without PML,
-  complex coefficient or damping term combines real values and factors real on cuDSS (`pencil.reduced(omega)` /
-  `operator(omega)` are always complex copies: device and factor paths read the parts). Estimators book complex terms
+  complex coefficient or damping term combines real values and factors real on a DevicePencil / HostPencil
+  (`pencil.reduced(omega)` / `operator(omega)` are always complex copies, the host SuperLU route factors those: a new
+  device or factor path reads the parts). Estimators book complex terms
   / factor only for what makes them complex (pressure_acoustics: PML; impedance adds the real damping term).
 - harmonic_resonances' complex / general paths hand M to `device_factor_matvec` as it is (a real M stays float64 on
   the device, a complex symmetric pencil its lower triangle, probed) and keep a complex64 Krylov basis at an eigen

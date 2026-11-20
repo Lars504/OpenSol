@@ -1234,18 +1234,17 @@ def _memory_estimate(settings_values, mesh, context):
         wanted = 2 * _requested_resonances(context) + 4
         basis = arnoldi_basis_size(wanted, dofs)
         # a complex pencil runs eigs: on the gpu its device Krylov-Schur basis (freed with the solve); a real one eigsh
+        # fem.harmonic_resonances on a cuDSS factor: complex64 rows at an eigen tolerance >= SINGLE_BASIS_MIN_TOLERANCE
+        from ...solvers.arpack_shift_invert import SINGLE_BASIS_MIN_TOLERANCE
+        single = cudss is not None and _eigen_tolerance(context) >= SINGLE_BASIS_MIN_TOLERANCE
         on_device, basis_bytes = ((False, basis * COMPLEX128_BYTES * dofs) if not complex_pencil
                                   else arnoldi_basis_bytes(dofs, basis, solver_backend(context.spec),
-                                                           device_matvec=cudss is not None))
+                                                           device_matvec=cudss is not None, single_basis=single))
         if on_device:
-            # fem.harmonic_resonances on a cuDSS factor: complex64 rows at an eigen tolerance >=
-            # SINGLE_BASIS_MIN_TOLERANCE, and the device M of its matvec (device_matrix: float64 unless a PML / Bloch
-            # phase makes it complex, its lower triangle unless a Bloch reduction makes the pencil general)
-            from ...solvers.arpack_shift_invert import SINGLE_BASIS_MIN_TOLERANCE
-            single = cudss is not None and _eigen_tolerance(context) >= SINGLE_BASIS_MIN_TOLERANCE
-            row_type, row_bytes = ('complex64', COMPLEX128_BYTES // 2) if single else ('complex128', COMPLEX128_BYTES)
-            eigen_items.append((f'device Krylov-Schur basis ({basis + 1} {row_type} rows + 2 complex128 work vectors)',
-                                ((basis + 1) * row_bytes + 2 * COMPLEX128_BYTES) * dofs))
+            # and the device M of its matvec (device_matrix: float64 unless a PML / Bloch phase makes it complex, its
+            # lower triangle unless a Bloch reduction makes the pencil general)
+            row_type = 'complex64' if single else 'complex128'
+            eigen_items.append((f'device Krylov-Schur basis ({basis + 1} {row_type} rows + work vectors)', basis_bytes))
             if cudss is not None:
                 from ...solvers.device_matrices import device_matrix_bytes, device_product_bytes
                 bloch = any(_bloch_wavenumber(settings_values, axis) != 0.0
