@@ -111,8 +111,13 @@ at module level."""
 # operators and for symmetrizer factors.
 # Device copies (cupy pool): a symmetric factor keeps only the lower triangle L of E in value_dtype (residuals and mixed
 # refinement apply E y = L y + L^T y - diag(L) y; double: it is also the matrix cuDSS reads) plus, mixed, its
-# factor_dtype copy; a general factor keeps the full E (+ the factor_dtype copy when mixed). operator_copy_bytes
-# estimates them for the memory estimators (+ mixed: the GMRES vectors of one full-accuracy solve).
+# factor_dtype copy; a general factor keeps the full E (+ the factor_dtype copy when mixed). The factor_dtype copy holds
+# values only: it shares the value-dtype copy's int32 index arrays (host-route and device plans alike; cuDSS only reads
+# them). operator_copy_bytes estimates them for the memory estimators (+ mixed: the GMRES vectors of one full-accuracy
+# solve). The value-dtype copy stays for the factor's life, double too: probes, deferred checks and the mixed GMRES take
+# residuals with it, a double solve with cuDSS refinement (ir_num_steps after a missed probe) reads it, refreshes write
+# into it and the plan holds its pointers. Parking it on the host would save (value bytes + 4) per stored entry, a few
+# per cent of the factor (2D 5-point at 1e5 unknowns: ~60 of ~1000 B per unknown), against those guarantees: kept.
 # Fused refresh (K2): refactorize_device_values on the reused plan without symmetrizer or symmetry check (pencils of
 # full-pattern values, Newton Jacobians, host operators on the planned pattern with symmetric_known) writes R (and a
 # symmetric kind's diagonal) by one row kernel and E (+ its factor-dtype copy) by one entry kernel straight into the
@@ -635,13 +640,13 @@ CUDSS_MIXED_SOLVE_VECTORS = 2 * GMRES_RESTART + 10   # + the GMRES basis and dir
 
 def operator_copy_bytes(n_unknowns, entries, value_bytes=16, symmetric=True, mixed=False) -> int:
     """Pool bytes of the CSR copies a CudssFactorization keeps per plan (_plan: value dtype, the lower triangle +
-    diagonal when symmetric; mixed: + the half-size factor copy) of `entries` stored entries (int32 indices); the rhs
-    buffer and row scale: solve_buffer_bytes, a solve's vectors: solve_peak_bytes."""
+    diagonal when symmetric; mixed: + the half-size factor values on the same int32 index arrays) of `entries` stored
+    entries; the rhs buffer and row scale: solve_buffer_bytes, a solve's vectors: solve_peak_bytes."""
     n_unknowns, entries = int(n_unknowns), int(entries)
     stored = (entries + n_unknowns) // 2 if symmetric else entries
-    copies = ((value_bytes, value_bytes // 2) if mixed else (value_bytes,))
+    values = value_bytes + (value_bytes // 2 if mixed else 0)
     diagonal = value_bytes * n_unknowns if symmetric else 0
-    return sum((copy_bytes + 4) * stored + 4 * (n_unknowns + 1) for copy_bytes in copies) + diagonal
+    return (values + 4) * stored + 4 * (n_unknowns + 1) + diagonal
 
 
 def solve_buffer_bytes(n_unknowns, value_bytes=16, mixed=False) -> int:
@@ -1811,13 +1816,16 @@ class CudssFactorization(ProbedFactor):
         self.operator_norm = row_sums if symmetric_sums else math.sqrt(row_sums * column_sums)
         return host_csr, row_scale, symmetrizer, rows
 
-    def _factor_copy(self, factor_host):
+    def _factor_copy(self):
         """Device CSR cuDSS factorises: _operator itself in double (the full E, or the lower triangle of a symmetric
-        kind), else a factor_dtype copy of factor_host."""
+        kind), else a factor_dtype copy of its values on _operator's own index arrays (cuDSS only reads them: one
+        int32 index set per plan, as the device plans of _device_plan)."""
         import cupyx.scipy.sparse
+        operator = self._operator
         if self._factor_dtype == self.value_dtype:
-            return self._operator
-        return cupyx.scipy.sparse.csr_matrix(factor_host.astype(self._factor_dtype))
+            return operator
+        return cupyx.scipy.sparse.csr_matrix((operator.data.astype(self._factor_dtype), operator.indices,
+                                              operator.indptr), shape=operator.shape)
 
     def _plan(self, host_csr, factor_host, kind, source=None):
         """Upload, create and plan a DirectSolver of `kind` (freeing the previous one); ValueError when cuDSS's peak
@@ -1836,7 +1844,7 @@ class CudssFactorization(ProbedFactor):
         self._operator = cupyx.scipy.sparse.csr_matrix(factor_host if symmetric else host_csr)
         self._diagonal = cp.asarray(factor_host.diagonal()) if symmetric else None
         self._operator_transpose = self._operator.T if symmetric else None   # a CSC view sharing the arrays
-        self._factor_matrix = self._factor_copy(factor_host)   # cuDSS keeps its pointers
+        self._factor_matrix = self._factor_copy()   # cuDSS keeps its pointers
         self._pattern = (host_csr.indptr.copy(), host_csr.indices.copy())
         self._pattern_source = source   # the caller arrays matched to it (_on_planned_pattern)
         self._plan_solver(kind, started)
@@ -1985,8 +1993,8 @@ class CudssFactorization(ProbedFactor):
         self._operator.data[...] = cp.asarray((factor_host if symmetric else host_csr).data)
         if symmetric:
             self._diagonal[...] = cp.asarray(factor_host.diagonal())
-        if self._factor_matrix is not self._operator:
-            self._factor_matrix.data[...] = cp.asarray(factor_host.data.astype(self._factor_dtype))
+        if self._factor_matrix is not self._operator:   # cast on the device from the values just uploaded
+            self._factor_matrix.data[...] = self._operator.data.astype(self._factor_dtype)
 
     def _factorize_and_probe(self, defer=False):
         """cuDSS factorize + probe solve (double: cuDSS refinement when it misses ACCEPT_RESIDUAL; mixed: GMRES-refined
@@ -2152,7 +2160,10 @@ class CudssFactorization(ProbedFactor):
         transpose: complex symmetric)."""
         if self._diagonal is None:
             return self._operator @ vector
-        return self._operator @ vector + self._operator_transpose @ vector - self._diagonal * vector
+        product = self._operator @ vector   # summed in place: one temporary beside it at a time
+        product += self._operator_transpose @ vector
+        product -= self._diagonal * vector
+        return product
 
     def _cudss_solve(self):
         """cuDSS solve of the rhs buffer, timed and counted (RAW_SOLVE: the kept solution buffer, read before the next

@@ -8,6 +8,7 @@ from typing import NamedTuple
 import numpy as np
 
 from .cudss_factor import CUDSS_REFUSALS, CudssAccuracyError, canonical_csr, csr_rows
+from .device_matrices import device_matrix
 from .host_direct import (HOST_DIRECT_FACTORIZATIONS, HOST_DIRECT_MIXED_BACK_ENDS, double_of,
                           host_direct_factorization, is_host_direct_factor, quiet_openblas)
 from .sparse_direct import LOWER_STORED_FRACTION, SparseDirectSolver, SuperLUOrdering, factorize_host
@@ -179,10 +180,11 @@ def _values_on_pattern(base, matrix):
 
 
 class ShiftPencil:
-    """Host terms (K_1, ..., K_m, M) of K - sigma M = sum_i a_i K_i - sigma M on one canonical CSR pattern, their
-    diagonals, M itself (dtype, for products) and, on a cuDSS factorization with at least device_min_entries stored
-    entries, their DevicePencil (else device None: the host route); symmetric_known: the caller vouches that every term
-    is (complex) symmetric, so no symmetry check is made (device or host route)."""
+    """Host terms (K_1, ..., K_m, M) of K - sigma M = sum_i a_i K_i - sigma M on one canonical CSR pattern (a real term
+    float64 in a complex pencil too), their diagonals, M itself (dtype, for host products) and, on a cuDSS
+    factorization with at least device_min_entries stored entries, their DevicePencil (else device None: the host
+    route); symmetric_known: the caller vouches that every term is (complex) symmetric, so no symmetry check is made
+    (device or host route)."""
 
     def __init__(self, stiffness_terms, mass, dtype, symmetric, device_runtime=None, device_min_entries=0,
                  symmetric_known=False):
@@ -192,14 +194,20 @@ class ShiftPencil:
         self.n_stiffness_terms = len(stiffness_terms)
         self.mass = mass.tocsr().astype(self.dtype, copy=False)
         self.n_rows = int(self.mass.shape[0])
-        matrices = [canonical_csr(term, self.dtype) for term in stiffness_terms] + [canonical_csr(self.mass,
-                                                                                                    self.dtype)]
+        # real terms stay float64 in a complex pencil (a real M or K: half the DevicePencil term bytes); the
+        # combination, its diagonals and the device refresh promote per shift
+        sources = list(stiffness_terms) + [mass]
+        dtypes = [self.dtype if self.dtype.kind != 'c' or np.iscomplexobj(term.data) else np.dtype(np.float64)
+                  for term in sources]
+        matrices = [canonical_csr(term, dtype) for term, dtype in zip(sources, dtypes)]
         base = matrices[0]
         term_values = [base.data] + [_values_on_pattern(base, matrix) for matrix in matrices[1:]]
         if any(values is None for values in term_values):   # an entry outside the first term's pattern: merge them all
             terms = [pattern_combination(matrices, [float(index == position) for index in range(len(matrices))])
                      for position in range(len(matrices))]   # the same COO entries: one pattern, explicit zeros kept
-            base, term_values = terms[0], [term.data for term in terms]
+            base = terms[0]
+            term_values = [term.data if dtype.kind == 'c' else np.ascontiguousarray(term.data.real, dtype=np.float64)
+                           for term, dtype in zip(terms, dtypes)]   # the merge promoted every term to one dtype
         # own index arrays: cuDSS matches a refreshed pattern by their identity (never modified in place), so a caller
         # changing its K afterwards cannot alias them; base.data is read, never modified
         self.indptr, self.indices = base.indptr.copy(), base.indices.copy()
@@ -231,12 +239,14 @@ class ShiftPencil:
         return out
 
     def device_mass(self):
-        """cupyx CSR of M on its own pattern (the host M uploaded once): a vector FEM mass stores a third of the pencil
-        pattern's entries, and mirroring the lower-stored M term to the full pencil pattern (DevicePencil.full_term)
-        costs six int64 arrays of that pattern while it is built."""
+        """M on its own pattern on the device (the host M uploaded once, device_matrices.device_matrix: a real M float64
+        also in a complex pencil, applied to complex vectors without a complex copy; on a symmetric DevicePencil its
+        strict lower triangle + diagonal; a diagonal M its vector; memory: device_matrix_bytes): a vector FEM mass
+        stores a third of the pencil pattern's entries, and mirroring the lower-stored M term to the full pencil
+        pattern (DevicePencil.full_term) costs six int64 arrays of that pattern while it is built."""
         if self._device_mass is None:
-            import cupyx.scipy.sparse
-            self._device_mass = cupyx.scipy.sparse.csr_matrix(self.mass)
+            symmetric = self.device.symmetric if self.device is not None else self.symmetric_known
+            self._device_mass = device_matrix(self.mass, symmetric=symmetric)
         return self._device_mass
 
     def mass_operator(self):
@@ -392,26 +402,31 @@ def device_arnoldi_fits(n_unknowns, basis_size, host_matvec=False) -> bool:
     return not host_matvec or float(n_unknowns) * rows >= HOST_MATVEC_DEVICE_MIN_ENTRIES
 
 
-def arnoldi_basis_bytes(n_unknowns, basis_size, backend, device_matvec=False, real=False):
+def arnoldi_basis_bytes(n_unknowns, basis_size, backend, device_matvec=False, real=False, single_basis=False):
     """(on_device, bytes) of an eigs caller's Arnoldi basis (memory estimators): the device Krylov-Schur's (basis + 1)
     complex128 rows + its product and packed-read vectors on the gpu backend when device_arnoldi_fits (device_matvec: a
-    cuDSS solve), else ARPACK's host basis (real: float64, eigs(real=True))."""
+    cuDSS solve; single_basis: complex64 rows and vectors + the complex128 operand the matvec gets), else ARPACK's host
+    basis (real: float64, eigs(real=True))."""
     on_device = backend == 'gpu' and device_arnoldi_fits(n_unknowns, basis_size, host_matvec=not device_matvec)
     rows = int(basis_size) + (3 if on_device else 0)
+    if on_device and single_basis:
+        return on_device, (8 * rows + 16) * int(n_unknowns)
     return on_device, rows * (8 if real and not on_device else 16) * int(n_unknowns)
 
 
-def device_factor_matvec(factorization, mass, **solve_options):
-    """cupy matvec x -> factorization.solve(B x, **solve_options) of a cuDSS factor (B host scipy, uploaded as complex128
-    on first use) for eigs(device_matvec=), None for any other factor (SuperLU, line-block: host solves only)."""
+def device_factor_matvec(factorization, mass, symmetric=False, **solve_options):
+    """cupy matvec x -> factorization.solve(B x, **solve_options) of a cuDSS factor for eigs(device_matvec=), None for
+    any other factor (SuperLU, line-block: host solves only). B (host scipy sparse, or a 1D diagonal) goes to the device
+    on first use as device_matrices.device_matrix: real values float64 (a complex B with zero imaginary parts too), a
+    diagonal B as its vector, symmetric (B^T = B, probed: ValueError) as its strict lower triangle + diagonal; memory:
+    device_matrix_bytes."""
     if getattr(factorization, 'back_end', None) != 'cudss':
         return None
     device_mass = []
 
     def apply(vector):
         if not device_mass:
-            import cupyx.scipy.sparse
-            device_mass.append(cupyx.scipy.sparse.csr_matrix(mass.tocsr().astype(np.complex128)))
+            device_mass.append(device_matrix(mass, symmetric=symmetric))
         return factorization.solve(device_mass[0] @ vector, **solve_options)
     return apply
 
@@ -774,21 +789,24 @@ class ArpackShiftInvertSolver:
         return eigenvalues, vectors, applications, converged, factor
 
     def eigs(self, matvec, n_unknowns, n_wanted, start_vector=None, tolerance_floor=0.0, max_restarts=MAX_RESTARTS,
-             default_basis=0, device_matvec=None, real=False):
+             default_basis=0, device_matvec=None, real=False, single_basis=False):
         """(theta, host vectors, operator applications, converged) of the n_wanted largest-|theta| eigenpairs of the
         linear map `matvec` (numpy complex128, n_unknowns), tolerance = max(node, tolerance_floor), at most max_restarts
         restarts, basis = the node's subspace_size, else default_basis, else scipy's; without convergence the converged
         part. The device Krylov-Schur (eigs_device) instead of host ARPACK when device_arnoldi_fits: on device_matvec
         (cupy -> cupy, e.g. device_factor_matvec), else on a device_arnoldi runtime around matvec. real (E1): a real map
         (matvec real -> real, start_vector real): host ARPACK runs the real dnaupd (one real solve per application
-        instead of two); the Krylov-Schur paths stay complex (matvec then gets complex vectors)."""
+        instead of two); the Krylov-Schur paths stay complex (matvec then gets complex vectors). single_basis: the
+        device Krylov-Schur keeps a complex64 basis (eigs_device; host ARPACK ignores it), refused (ValueError) on every
+        path when the tolerance is below SINGLE_BASIS_MIN_TOLERANCE."""
+        _check_single_basis(single_basis, max(self.tolerance, float(tolerance_floor)))
         basis_size = arnoldi_basis_size(n_wanted, n_unknowns, self.subspace_size, default_basis)
         if ((device_matvec is not None or self.device_arnoldi)
                 and device_arnoldi_fits(n_unknowns, basis_size, host_matvec=device_matvec is None)):
             theta, vectors, applications, converged, _ = self.eigs_device(
                 matvec if device_matvec is None else device_matvec, n_unknowns, n_wanted, start_vector,
                 tolerance_floor=tolerance_floor, max_restarts=max_restarts, default_basis=default_basis,
-                matvec_on_host=device_matvec is None)
+                matvec_on_host=device_matvec is None, single_basis=single_basis)
             return theta, vectors, applications, converged
         return self._host_eigs(matvec, n_unknowns, n_wanted, start_vector, tolerance_floor, max_restarts,
                                default_basis, real=real)
@@ -837,9 +855,10 @@ class ArpackShiftInvertSolver:
         the state of an earlier call on the same matvec (a widening: its Krylov decomposition kept, expanded to the
         larger basis, in place when its storage holds it; a state whose basis the caller moved to the host (numpy
         rows) is uploaded into the new storage); reserve_basis: allocate rows for a later basis that large; single_basis:
-        a complex64 basis (tolerance >= SINGLE_BASIS_MIN_TOLERANCE, else ValueError). Too small for a device basis
-        (device_arnoldi_fits without the host rule): host eigs, state None."""
+        a complex64 basis (tolerance >= SINGLE_BASIS_MIN_TOLERANCE, else ValueError, also on the host fallback, which
+        ignores it). Too small for a device basis (device_arnoldi_fits without the host rule): host eigs, state None."""
         import cupy as cp
+        _check_single_basis(single_basis, max(self.tolerance, float(tolerance_floor)))
         basis_size = arnoldi_basis_size(n_wanted, n_unknowns, self.subspace_size, default_basis)
         if not device_arnoldi_fits(n_unknowns, basis_size):
             host_matvec = matvec if matvec_on_host else (lambda vector: cp.asnumpy(matvec(cp.asarray(vector))))
@@ -849,9 +868,6 @@ class ArpackShiftInvertSolver:
         self.last_arnoldi = 'device Krylov-Schur'
         start = time.perf_counter()
         tolerance = max(self.tolerance, float(tolerance_floor)) or float(np.finfo(np.float64).eps)
-        if single_basis and tolerance < SINGLE_BASIS_MIN_TOLERANCE:
-            raise ValueError(f'eigs_device: a complex64 basis needs a tolerance >= {SINGLE_BASIS_MIN_TOLERANCE:g}, got '
-                             f'{tolerance:g}')
         search = _KrylovSchur(matvec, int(n_unknowns), int(n_wanted), basis_size, tolerance, start_vector, resume,
                               matvec_on_host=matvec_on_host,
                               capacity=min(int(reserve_basis), int(n_unknowns) // DEVICE_ARNOLDI_MIN_RATIO - 1),
@@ -971,6 +987,14 @@ _UNIT_ROW_KERNELS = {}     # basis dtype -> ElementwiseKernel
 # ~3e-8 off already, float64 Rayleigh quotients afterwards). Half the basis bytes: ~0.6 GiB of the widened pass on the
 # 690k-unknown nanobeam eighth model (byte count)
 SINGLE_BASIS_MIN_TOLERANCE = 1e-6
+
+
+def _check_single_basis(single_basis, tolerance) -> None:
+    """ValueError for a complex64 basis (single_basis) at a tolerance below SINGLE_BASIS_MIN_TOLERANCE (0 = machine
+    precision counts as below)."""
+    if single_basis and not float(tolerance) >= SINGLE_BASIS_MIN_TOLERANCE:
+        raise ValueError(f'a complex64 Krylov basis (single_basis) needs a tolerance >= {SINGLE_BASIS_MIN_TOLERANCE:g}, '
+                         f'got {float(tolerance):g} (0 = machine precision)')
 
 
 def _unit_row_kernel(dtype=np.complex128):

@@ -5,7 +5,7 @@ from dataclasses import replace
 
 from ...core import time_estimate as te
 from ...core.memory_estimate import (BOOL_BYTES, COMPLEX64_BYTES, COMPLEX128_BYTES, COMPLEX128_CSR_ENTRY_BYTES,
-                                     FLOAT32_BYTES, FLOAT64_BYTES, INT32_BYTES, MemoryEstimate, host_lu_bytes)
+                                     FLOAT32_BYTES, FLOAT64_BYTES, MemoryEstimate, host_lu_bytes)
 from ...model.definition_helpers import eigen_factorization, eigen_role, eigen_subspace_size
 from ...model.expressions import referenced_names
 from ...model.geometry import expand_entities
@@ -302,7 +302,7 @@ def _memory_estimate(settings_values, mesh, context):
     # one mode solve at a time (cross_section_modes.solve_prepared_modes: the factor is local, freed on return), so its
     # device vectors are one transient phase. cuDSS general LU in double (the transverse-H operator is not complex
     # symmetric): the equilibrated complex128 CSR copy, rhs / equilibration / solution / applied vectors and the
-    # uploaded diagonal B of device_factor_matvec
+    # diagonal B of device_factor_matvec, a device vector (complex128; float64 on a lossless cross-section without PML)
     mode_solve = []
     external_items, external_extra = (), 0
     if on_device:
@@ -310,8 +310,7 @@ def _memory_estimate(settings_values, mesh, context):
                        operator_copy_bytes(unknowns, entries, COMPLEX128_BYTES, symmetric=False)),
                       ('cuDSS rhs buffer, row scale and one solve\'s vectors',
                        solve_buffer_bytes(unknowns, COMPLEX128_BYTES) + solve_peak_bytes(unknowns, COMPLEX128_BYTES)),
-                      ('device mass diagonal B (complex128 CSR)', COMPLEX128_CSR_ENTRY_BYTES * unknowns
-                       + INT32_BYTES * (unknowns + 1))]
+                      ('device mass diagonal B (complex128 vector)', COMPLEX128_BYTES * unknowns)]
         permanent, external_extra = factor_device_bytes(unknowns, entries, COMPLEX128_BYTES, dimensions=2,
                                                         symmetric=False)
         external_items = (('cuDSS cross-section LU factor (one section at a time)', permanent),)

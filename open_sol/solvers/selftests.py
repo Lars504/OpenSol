@@ -270,6 +270,8 @@ def _check_eigsh_on_eigenvalue(results_by_name):
 _CUDSS_SHIFT = 2.0 + 0.1j         # inside the spectrum of the sparse_direct case operator
 _CUDSS_EIGENPAIRS = 6
 _SINGLE_BASIS_EIGEN_TOLERANCE = 1e-5   # eigs_device(single_basis=True) at tolerance 1e-6 vs SuperLU's eigenvalues
+_PENCIL_SHIFT = 3.0               # inside the spectrum of (L + complex diagonal, (8 I - L) / 12)
+_PRODUCT_TOLERANCE = 1e-12        # device_matrices products vs the host scipy products (round-off of one product)
 _RESONANT_MODE = (5, 4)           # K (1 + i eta) - lambda_54 I: a drive on a lightly damped Laplacian mode
 _RESONANT_LOSS_FACTOR = 1e-6      # eta = 1 / Q: eps32 kappa(E) ~ 0.7, so plain float64 refinement nearly stalls
 
@@ -293,6 +295,52 @@ def _matched_error(values, references) -> float:
     return float(max(np.min(np.abs(values - reference)) / abs(reference) for reference in references))
 
 
+def _check_device_matrices(real_symmetric, complex_symmetric, rhs, rng, errors, failed, details) -> None:
+    """device_matrices against the host scipy products (GPU, inside solver_arpack_cudss): a real symmetric matrix given
+    complex (detected real: float64 lower triangle + diagonal) and as is (full float64 CSR), a complex symmetric one
+    (complex128 lower triangle), a diagonal one (its vector), each on a complex vector, a complex (n, 3) block and a
+    float64 vector and in bilinear(conj(X), X), within _PRODUCT_TOLERANCE; the pool bytes equal device_matrix_bytes;
+    refused (ValueError): symmetric for a non-symmetric matrix, real=True with nonzero imaginary parts."""
+    import cupy as cp
+    import scipy.sparse
+    from .device_matrices import device_matrix, device_matrix_bytes
+    n_unknowns = real_symmetric.shape[0]
+    block = rng.standard_normal((n_unknowns, 3)) + 1j * rng.standard_normal((n_unknowns, 3))
+    real_vector = rng.standard_normal(n_unknowns)
+    diagonal = scipy.sparse.diags(rng.uniform(0.5, 2.0, n_unknowns)).tocsr()
+    real_entries, complex_entries = real_symmetric.nnz, complex_symmetric.nnz
+    cases = {   # name: (host matrix, device_matrix arguments, storage, storage dtype, pool bytes)
+        'real_lower': (real_symmetric, {'matrix': real_symmetric.astype(np.complex128), 'symmetric': True}, 'lower',
+                       np.float64, device_matrix_bytes(n_unknowns, real_entries, True, True)),
+        'real_full': (real_symmetric, {'matrix': real_symmetric}, 'full', np.float64,
+                      device_matrix_bytes(n_unknowns, real_entries, False, True)),
+        'complex_lower': (complex_symmetric, {'matrix': complex_symmetric, 'symmetric': True}, 'lower', np.complex128,
+                          device_matrix_bytes(n_unknowns, complex_entries, True, False)),
+        'diagonal': (diagonal, {'matrix': diagonal, 'symmetric': True}, 'diagonal', np.float64,
+                     device_matrix_bytes(n_unknowns, n_unknowns, True, True, diagonal=True))}
+    worst = {}
+    for name, (host, arguments, storage, dtype, expected_bytes) in cases.items():
+        device = device_matrix(**arguments)
+        if device.storage != storage or device.dtype != dtype or device.nbytes != expected_bytes:
+            failed.append(f'device_matrix_{name}_storage')
+        relative = []
+        for operand in (rhs, block, real_vector):
+            reference = host @ operand
+            got = cp.asnumpy(device @ cp.asarray(operand))
+            relative.append(float(np.linalg.norm(got - reference) / np.linalg.norm(reference)))
+        form = cp.asnumpy(device.bilinear(cp.asarray(np.conj(block)), cp.asarray(block)))
+        reference_form = np.sum(np.conj(block) * (host @ block), axis=0)
+        relative.append(float(np.max(np.abs(form - reference_form)) / np.max(np.abs(reference_form))))
+        worst[name] = max(relative)
+    details['device_matrix_product_errors'] = worst
+    errors['device_matrix_products'] = max(worst.values())
+    if not max(worst.values()) <= _PRODUCT_TOLERANCE:
+        failed.append('device_matrix_products')
+    asymmetric = (real_symmetric + scipy.sparse.triu(real_symmetric, k=1)).tocsr()
+    _refused(failed, 'device_matrix_asymmetric_refused', lambda: device_matrix(asymmetric, symmetric=True), ValueError)
+    _refused(failed, 'device_matrix_real_refused', lambda: device_matrix(complex_symmetric, real=True), ValueError)
+
+
 def _check_arpack_cudss(results_by_name):
     """arpack_shift_invert factorization cudss vs superlu (GPU): solve, eigs shift-invert of a complex non-symmetric
     operator, eigsh_shifted of a real symmetric pencil, a mixed LDL^T driven on a Q = 1e6 resonance (GMRES refinement,
@@ -301,7 +349,8 @@ def _check_arpack_cudss(results_by_name):
     import scipy.sparse.linalg
     from .arpack_shift_invert import (SINGLE_BASIS_MIN_TOLERANCE, ArpackShiftInvertSolver, backend_misfit,
                                       device_arnoldi_fits, device_factor_matvec)
-    from .cudss_factor import ACCEPT_RESIDUAL, BACKWARD_ERROR_TOLERANCE, MIXED_MAX_REFINEMENTS, CudssFactorization
+    from .cudss_factor import (ACCEPT_RESIDUAL, BACKWARD_ERROR_TOLERANCE, MIXED_MAX_REFINEMENTS, CudssFactorization,
+                               operator_copy_bytes, solve_buffer_bytes)
     skipped = skip_without_cudss()
     if skipped is not None:
         return skipped
@@ -313,6 +362,10 @@ def _check_arpack_cudss(results_by_name):
     start = rng.standard_normal(n_unknowns) + 1j * rng.standard_normal(n_unknowns)
     stiffness = _laplacian(nx, ny)
     mass = scipy.sparse.diags(rng.uniform(0.5, 2.0, n_unknowns)).tocsr()
+    # a real symmetric positive definite non-diagonal mass (8 I - L) / 12 and a complex symmetric stiffness: the
+    # device_matrices storage (float64 lower triangle + diagonal) under device_factor_matvec and the ShiftPencil
+    fem_mass = ((8.0 * scipy.sparse.identity(n_unknowns, format='csr') - stiffness) / 12.0).tocsr()
+    pencil_stiffness = (stiffness + scipy.sparse.diags((0.5 + 0.2j) * rng.uniform(1.0, 2.0, n_unknowns))).tocsr()
     errors, failed, details, eigenvalues = {}, [], {}, {}
     for factorization in ('superlu', 'cudss'):
         solver = ArpackShiftInvertSolver(factorization=factorization)
@@ -321,6 +374,14 @@ def _check_arpack_cudss(results_by_name):
         if not converged:
             failed.append(f'{factorization}_eigs_converged')
         eigenvalues[f'{factorization}_eigs'] = _CUDSS_SHIFT + 1.0 / np.asarray(theta)
+        if factorization == 'superlu':   # references of the real-mass device paths below (host ARPACK, SuperLU)
+            eigenvalues['superlu_eigs_mass'] = np.asarray(solver.eigs(
+                lambda vector: factor.solve_host(fem_mass @ vector), n_unknowns, _CUDSS_EIGENPAIRS, start)[0])
+            eigenvalues['superlu_eigs_shifted'] = solver.eigs_shifted(pencil_stiffness, fem_mass, _PENCIL_SHIFT,
+                                                                      _CUDSS_EIGENPAIRS)[0]
+            _refused(failed, 'eigs_single_basis_refused_on_host_arpack',
+                     lambda: solver.eigs(factor.solve_host, n_unknowns, _CUDSS_EIGENPAIRS, start, single_basis=True),
+                     ValueError)
         symmetric, _vectors, _applications, converged, _factor = solver.eigsh_shifted(stiffness, mass, 1.0,
                                                                                      _CUDSS_EIGENPAIRS)
         if not converged:
@@ -392,6 +453,36 @@ def _check_arpack_cudss(results_by_name):
         if not converged or solver.last_arnoldi != 'device Krylov-Schur':
             failed.append('cudss_eigs_device_matvec')
         eigenvalues['cudss_eigs_routed'] = _CUDSS_SHIFT + 1.0 / np.asarray(routed_theta)
+        _check_device_matrices(fem_mass, pencil_stiffness, rhs, rng, errors, failed, details)
+        # device_factor_matvec of the real symmetric mass given complex (stored float64 lower triangle + diagonal, the
+        # Krylov-Schur's complex rows through its float64 view), double and complex64 basis (eigs(single_basis))
+        mass_matvec = device_factor_matvec(factor, fem_mass.astype(np.complex128), symmetric=True)
+        mass_theta, _vectors, _applications, converged = solver.eigs(
+            factor.solve_host, n_unknowns, _CUDSS_EIGENPAIRS, start, device_matvec=mass_matvec)
+        if not converged or solver.last_arnoldi != 'device Krylov-Schur':
+            failed.append('cudss_eigs_real_mass_matvec')
+        errors['cudss_eigs_real_mass'] = _matched_error(mass_theta, eigenvalues['superlu_eigs_mass'])
+        single_theta, _vectors, _applications, converged = solver.eigs(
+            factor.solve_host, n_unknowns, _CUDSS_EIGENPAIRS, start, device_matvec=mass_matvec,
+            tolerance_floor=SINGLE_BASIS_MIN_TOLERANCE, single_basis=True)
+        single_error = _matched_error(single_theta, eigenvalues['superlu_eigs_mass'])
+        details['eigs_single_basis_real_mass_error'] = single_error
+        if not converged or not single_error <= _SINGLE_BASIS_EIGEN_TOLERANCE:
+            failed.append('cudss_eigs_single_basis_real_mass')
+        # ShiftPencil on a DevicePencil (size threshold off): the real M term kept float64 in the complex pencil, M on
+        # the device as its float64 lower triangle; eigs_shifted against SuperLU's
+        pencil_solver = ArpackShiftInvertSolver(factorization='cudss')
+        pencil_solver.device_pencil_min_entries = 0
+        pencil = pencil_solver.shift_pencil((pencil_stiffness,), fem_mass, np.complex128, symmetric=True)
+        shifted_values, _vectors, _applications, converged, pencil_factor = pencil_solver.eigs_shifted(
+            pencil_stiffness, fem_mass, _PENCIL_SHIFT, _CUDSS_EIGENPAIRS, pencil=pencil)
+        device_mass = pencil.device_mass() if pencil.device is not None else None
+        if (not converged or pencil.device is None or not pencil.device.symmetric
+                or pencil.term_values[-1].dtype != np.float64 or pencil.term_values[0].dtype != np.complex128
+                or device_mass.storage != 'lower' or device_mass.dtype != np.float64):
+            failed.append('cudss_shift_pencil_real_mass')
+        errors['cudss_eigs_shifted_real_mass'] = _matched_error(shifted_values, eigenvalues['superlu_eigs_shifted'])
+        pencil_factor.release()
         # S5c: a model runtime factors cudss_mixed below mixed_min_unknowns in double; a script runtime keeps mixed
         if (ArpackShiftInvertSolver(factorization='cudss_mixed', mixed_min_unknowns=n_unknowns + 1)
                 .factorization_for(n_unknowns) != 'cudss'
@@ -413,6 +504,14 @@ def _check_arpack_cudss(results_by_name):
         errors['cudss_mixed_ldlt_solve'] = norm_relative_error(mixed.solve_host(rhs), symmetric_reference)
         details.update(mixed_unrefined_residual=mixed.single_residual, mixed_refinement_steps=mixed.refinement_steps,
                        mixed_device_bytes=mixed.device_bytes)
+        # the pool copies of a host-route plan are what the estimators book (the mixed factor copy on the double copy's
+        # index arrays: one index set)
+        for name, planned, is_mixed in (('ldlt', ldlt, False), ('mixed_ldlt', mixed, True)):
+            booked = (operator_copy_bytes(n_unknowns, complex_symmetric.nnz, 16, symmetric=True, mixed=is_mixed)
+                      + solve_buffer_bytes(n_unknowns, 16, mixed=is_mixed))
+            details[f'{name}_pool_bytes'] = {'held': planned.device_bytes - planned.permanent_bytes, 'booked': booked}
+            if planned.device_bytes - planned.permanent_bytes != booked:
+                failed.append(f'cudss_{name}_pool_bytes_booked')
         if mixed.factor_precision != 'mixed':   # the double fallback must not hide a mixed factor that stopped working
             failed.append('cudss_mixed_ldlt_kept_mixed')
         resonant, resonant_rhs = _resonant_operator(nx, ny)   # GMRES refinement removes the near-null mode
@@ -2561,7 +2660,18 @@ SOLVER_SELFTEST_CASES = (
                     'place on rows reserved by the first pass) matched to SuperLU, a complex64 basis (single_basis, '
                     f'tolerance 1e-6) and its widening resumed from host rows within {_SINGLE_BASIS_EIGEN_TOLERANCE:g} '
                     'of SuperLU and refused at machine precision, as eigs_device around the host SuperLU solve and eigs on device_factor_matvec of the '
-                    'cudss LU, a device_arnoldi runtime below the host-matvec size rule on host ARPACK; cudss_mixed below mixed_min_unknowns resolved to cudss; every solve converged, the probe '
+                    'cudss LU, a device_arnoldi runtime below the host-matvec size rule on host ARPACK; '
+                    'device_matrices against host products (a real symmetric (8 I - L) / 12 given complex: float64 '
+                    'lower triangle + diagonal; full float64; complex symmetric lower; diagonal) on complex vectors, '
+                    f'blocks, real vectors and bilinear forms within {_PRODUCT_TOLERANCE:g}, their bytes equal to '
+                    'device_matrix_bytes, a non-symmetric and a complex real=True request refused; eigs on '
+                    'device_factor_matvec of that mass (symmetric) against SuperLU, with single_basis within '
+                    f'{_SINGLE_BASIS_EIGEN_TOLERANCE:g} (refused on host ARPACK at machine precision); eigs_shifted '
+                    'of the complex symmetric pencil (L + complex diagonal, that mass) on a DevicePencil (real M term '
+                    'float64, M on the device as its float64 lower triangle) against SuperLU; the pool bytes of the '
+                    'complex symmetric LDL^T plans (double, mixed) equal to operator_copy_bytes + '
+                    'solve_buffer_bytes; cudss_mixed below '
+                    'mixed_min_unknowns resolved to cudss; every solve converged, the probe '
                     'residual within the cuDSS accept tolerance, the device bytes counted, no solve after release, '
                     'cudss and cudss_mixed misfits on the cpu backend only. Passes as skipped without nvmath-python.',
         specs=lambda: {}, check=_check_arpack_cudss, max_wall_time=120.0, backends=('gpu',)),

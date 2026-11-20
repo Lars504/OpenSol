@@ -1029,9 +1029,10 @@ def cudss_diffusion_estimate(n_unknowns, entries, dimensions, back_end='cudss', 
     mixed = back_end == 'cudss_mixed'
     lower = (entries + n_unknowns) // 2
     maps = index_map_bytes(n_unknowns, entries)
-    # the device plan's CSR copies (double, + the float32 one when mixed) share the maps' lower indices / indptr
+    # the device plan's CSR copies (double, + the float32 values when mixed: one index set) share the maps' lower
+    # indices / indptr
     values = operator_copy_bytes(n_unknowns, entries, FLOAT64_BYTES, symmetric=True, mixed=mixed) - (
-        (2 if mixed else 1) * INT32_BYTES * (lower + n_unknowns + 1))
+        INT32_BYTES * (lower + n_unknowns + 1))
     rhs_buffer = (FLOAT32_BYTES if mixed else FLOAT64_BYTES) * n_unknowns   # the factor dtype
     items = (('cuDSS index maps (rows, columns, lower take, diagonal slots, transpose map)', maps),
              ('cuDSS lower-triangle values, diagonal, rhs buffer and row scale',
