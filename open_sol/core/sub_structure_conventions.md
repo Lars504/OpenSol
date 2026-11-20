@@ -317,8 +317,24 @@ A new accepted sync joins this list.
   PCGSolver binding), keeping only what the anchor shortcut compares (assembled c, C/dt, anchor code). A new kept
   assembly array joins both `_release_assembly` and `_keep_assembly`; nothing may read the previous assembly inside
   assemble except those. The `LaplacianPattern` assembly maps (slot_positions, entry_rows) are released after the
-  first elimination where `_fused_pattern` holds and rebuilt transiently on access (fixed_region_outflow); systems
+  first elimination where `_fused_pattern` holds and rebuilt transiently on access (full_operator); systems
   re-assembling through build_laplacian keep them (no rebuild sync per step; estimate: `conformal=`, cross_term, wrap).
+- One device CSR per assembly (A_solve): A_eff is never kept (`assembled` marks a kept assembly). Its readers take the
+  kept face terms: `_off_diagonal_product` (A_eff u_fix on free rows: refresh_diagonal / refresh_held_values),
+  `fv_diffusion_3d.crossing_outflow` (fixed_region_outflow) and the transient `full_operator()` (thermal noise,
+  parity checks; a dense slot array + slot_positions pass, so never per step). A new off-diagonal operator term goes
+  into `fv_diffusion_3d._off_diagonal_slots`, `off_diagonal_product` and `crossing_outflow` too, else those three
+  silently drop it (selftest diffusion_fused_reassembly checks them against A_solve / rhs_offset). Assemble deletes
+  A_eff and its window temporaries before `_factorize_solver` (the multigrid setup / factor plan is the build peak).
+  A direct or banded linear solver (`ignores_preconditioner`) gets no Jacobi diagonal (`_keeps_inverse_diagonal`).
+- Precision (why the system dtype, not float32 storage, follows the linear solver): A_solve, the CG vectors and the
+  conduction diagonal must share the solve precision, since rounding a Laplacian's diagonal and off-diagonals apart
+  breaks its exact zero row sums: a spurious sink of ~eps a_ii per row, amplified by kappa in the low modes (the
+  'single' failures: float32 CG floor ~1e-6, iron |B| errors of percents in magnetostatics). Rounding coefficients
+  consistently (g to float32, then the diagonal as their float64 sum) perturbs only the physics by ~eps32 (the
+  material arrays are float32 already), with no kappa factor: the route to float32 operator storage beside a float64
+  CG, not yet built. pcg 'mixed' is no memory saving here (the float64 A_solve stays for the residual, plus its
+  float32 copy) and its CSR path is Jacobi only, so the gpu Automatic stays double multigrid (its hierarchy is float32).
 - c_xy cross term (2D Cartesian only): never drop its diagonal part (row sums would act as a spurious exchange with
   u = 0 at window / region corners). Definite on graded cells only for c_xy^2 < c_xx c_yy x 4 r / (1 + r)^2 per axis
   (r = neighbour width ratio), stricter than the continuum bound. Whether c_xy is nonzero is decided (one sync) only

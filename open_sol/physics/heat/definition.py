@@ -6,13 +6,14 @@ from dataclasses import replace
 from ...core.backend import to_host
 from ...core.constants import FREE_MESH_KINDS, N_A
 from ...core.memory_estimate import (COMPLEX128_BYTES, FLOAT32_BYTES, FLOAT64_BYTES, MemoryEstimate, combine,
-                                     diffusion_system_estimate, host_lu_bytes, window_cell_count)
+                                     diffusion_full_operator_bytes, diffusion_system_estimate, host_lu_bytes,
+                                     window_cell_count)
 from ...core.mirror import MIRROR_SIGNS, feature_mirror_faces, mirror_faces
 from ...core.renderer import FieldInfo
 from ...core.time_estimate import (HeldValues, HostStream, TimeEstimate, TimeItem, Transfer, combine as combine_time,
                                    diffusion_time_estimate)
 from ...fem.diffusion import (cudss_back_end, cudss_diffusion_estimate, fem_diffusion_estimate, fem_solve_host_ops,
-                              fem_time_system, painted_fraction)
+                              fem_time_system, painted_fraction, pcg_linear_solver)
 from ...fem.diffusion3d import fem_diffusion_estimate_3d
 from ...model.definition_helpers import (
     AXISYMMETRIC_SPACE_SETTINGS, AZIMUTHAL_ORDER_PARAM, CG_DIFFUSION_LINEAR_ROLE, DISCRETIZATION_PARAM,
@@ -935,7 +936,8 @@ def _memory_estimate(settings_values, mesh, context):
     from ...model.schema import solver_backend
     # conformal: cut cells keep the assembly maps (an upper bound where the domain's coordinates refuse them)
     solver_options = dict(mixed=linear_solver_mixed(context), multigrid=linear_solver_multigrid(context),
-                          direct=linear_solver_direct(context), flux=True, backend=solver_backend(context.spec),
+                          direct=linear_solver_direct(context), pcg=pcg_linear_solver(context.solvers), flux=True,
+                          backend=solver_backend(context.spec),
                           conformal=bool(context.spec.solver_defaults.conformal_boundaries))
     wrap = mesh.domain_map is not None and mesh.domain_map.angle_wrap != 'none'   # phi wrap: 2 more build slots
     cross_term = not context.spec.is_3d and context.material_sets('k_xy')
@@ -1104,7 +1106,8 @@ def _line_block_noise_estimate(mesh, context):
                   for params in feature_params)
     n_rhs = len(context.spec.materials) + 1   # contribution parts + 'other' at most
     precision = shifted.values['precision']
-    entries =(9 if context.material_sets('k_xy') else 5) * cells
+    entries_per_row = 9 if context.material_sets('k_xy') else 5
+    entries = entries_per_row * cells
     # LineBlockSolver.chunk_size takes min(shifts, MAX_CHUNK_SHIFTS, MEMORY_FRACTION x pool room / per shift) (room:
     # budget - pool used, at most the free device memory), so a chunk never outgrows the budget: one shift is what must
     # fit (as the FDFD wavelength batch books one)
@@ -1114,7 +1117,12 @@ def _line_block_noise_estimate(mesh, context):
                                                                                    2, precision)),),
         transient_items=(('thermal noise chunk', f'thermal noise line_block chunk (1 of up to {chunk} shifts, sized to '
                           'the free memory at run time)',
-                          line_block_shift_bytes(n_blocks, block_size, cells, n_rhs, precision)),))
+                          line_block_shift_bytes(n_blocks, block_size, cells, n_rhs, precision)),
+                         # HarmonicHeatOperator: the system keeps no A_eff CSR, full_operator rebuilds it once
+                         ('thermal noise operator', 'rebuilt A_eff of the heat system (DiffusionSystem.full_operator)',
+                          diffusion_full_operator_bytes(cells, entries_per_row, entries_per_row,
+                                                        FLOAT64_BYTES if linear_solver_precision(context) == 'float64'
+                                                        else FLOAT32_BYTES))))
 
 
 _MODE_PAIR = (('weighting', ('mode_pair',)),)

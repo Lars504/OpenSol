@@ -62,6 +62,8 @@ class FEMDiffusionSystemCommon:
                              f'the {backend} one')
         linear_solver.label = label
         self.linear_solver = linear_solver
+        if isinstance(linear_solver, DiffusionDirectSolver):   # symmetric element / edge terms: no cuDSS symmetry check
+            linear_solver.symmetric_known = True
         self.mesh = mesh
         self.order = int(order)
         self.backend = backend
@@ -1014,6 +1016,14 @@ def fem_system_estimate(n_dofs, entries_per_dof, local_dofs, n_elements, element
         transient_items.append(('refactorisation', 'FEM operator copy and solver setup (run backend)', refactor_extra))
     return MemoryEstimate.from_items(items, build_extra=build_extra, host_items=host_items,
                                      transient_items=transient_items)
+
+
+def pcg_linear_solver(solvers) -> bool:
+    """Whether the resolved 'linear' solver ({role: ResolvedSolver} of MemoryContext, or None: the systems' own pcg) is
+    pcg: diffusion_system_estimate(pcg=) books its CG workspace and the kept Jacobi diagonal only then (a direct or
+    banded solver ignores the preconditioner: DiffusionSystem._keeps_inverse_diagonal)."""
+    resolved = (solvers or {}).get('linear')
+    return resolved is None or resolved.solver_type.name == 'pcg'
 
 
 def cudss_back_end(solvers):

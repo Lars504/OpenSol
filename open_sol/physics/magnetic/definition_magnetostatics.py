@@ -6,7 +6,8 @@ from ...core.memory_estimate import (BOOL_BYTES, FLOAT32_BYTES, FLOAT64_BYTES, M
                                      diffusion_system_estimate, window_cell_count)
 from ...core.mirror import feature_mirror_faces, mirror_faces
 from ...core.time_estimate import HeldValues, diffusion_time_estimate
-from ...fem.diffusion import cudss_back_end, cudss_diffusion_estimate, fem_diffusion_estimate, fem_time_system
+from ...fem.diffusion import (cudss_back_end, cudss_diffusion_estimate, fem_diffusion_estimate, fem_time_system,
+                              pcg_linear_solver)
 from ...fem.magnetostatics import PLANAR_DEGREES
 from ...fem.quadrature import triangle_rule
 from ...model.definition_helpers import (AXISYMMETRIC_SPACE_SETTINGS, CG_DIFFUSION_LINEAR_ROLE, DISCRETIZATION_PARAM,
@@ -676,6 +677,7 @@ def _memory_estimate(settings_values, mesh, context):
     parts = [own, diffusion_system_estimate(window_cells, precision, mixed=linear_solver_mixed(context),
                                             multigrid=linear_solver_multigrid(context),
                                             direct=linear_solver_direct(context),
+                                            pcg=pcg_linear_solver(context.solvers),
                                             backend=solver_backend(context.spec))]
     cudss = cudss_back_end(context.solvers)
     if cudss:   # DiffusionDirectSolver on the kept A_solve, refactorised per saturation iteration

@@ -172,7 +172,7 @@ def _fused_differences(fused, reference):
     from ...core.backend import to_host
 
     def pairs():
-        yield 'operator', fused.operator_full.data, reference.operator_full.data
+        yield 'operator', fused.full_operator().data, reference.full_operator().data
         yield 'solve_operator', fused.A_solve.data, reference.A_solve.data
         for name in ('inverse_diagonal', 'rhs_offset', 'rhs_drive', 'fixed_values', 'free', '_conduction_diagonal',
                      'unknown'):
@@ -195,6 +195,40 @@ def _fused_differences(fused, reference):
     return differences
 
 
+def _kept_operator_differences(system):
+    """{check: relative difference} of what replaced the kept A_eff CSR against what the assembly computed from its
+    own A_eff: full_operator() eliminated (D_free A D_free + D_fixed) vs A_solve, rhs_offset from full_operator() and
+    from the face-term off-diagonal product vs the kept one, and crossing_outflow vs the per-entry CSR sum over the
+    held box's edge (the former fixed_region_outflow formula)."""
+    from ...core.backend import to_host
+    from ...core.fv_diffusion_3d import crossing_outflow
+    full = system.full_operator()
+    data = np.asarray(to_host(full.data), dtype=np.float64)
+    indptr, indices = np.asarray(to_host(full.indptr)), np.asarray(to_host(full.indices))
+    rows = np.repeat(np.arange(indptr.size - 1), np.diff(indptr))
+    free = np.asarray(to_host(system.free), dtype=np.float64).ravel()
+    eliminated = data * free[rows] * free[indices] + np.where(rows == indices, 1.0 - free[rows], 0.0)
+    fixed_values = np.asarray(to_host(system.fixed_values), dtype=np.float64).ravel()
+    rhs_drive = np.asarray(to_host(system.rhs_drive), dtype=np.float64).ravel()
+    rhs_offset = np.asarray(to_host(system.rhs_offset), dtype=np.float64).ravel()
+    coupling = np.bincount(rows, weights=data * fixed_values[indices], minlength=free.size)
+    product = np.asarray(to_host(system._off_diagonal_product(system.fixed_values)), dtype=np.float64).ravel()
+    mask = np.asarray(to_host(system.fixed_user)).ravel()
+    unknown = np.asarray(to_host(system.unknown), dtype=np.float64)
+    crossing = mask[rows] & ~mask[indices]
+    reference_outflow = float(np.sum(data[crossing] * (unknown[indices[crossing]] - unknown[rows[crossing]])))
+    outflow = float(crossing_outflow(system.unknown2d, system.fixed_user, system.face_conductances,
+                                     system.wrap_conductance, system.wrap_sign, system.cross))
+
+    def relative(values, reference):
+        return float(np.max(np.abs(values - reference), initial=0.0)) / max(float(np.max(np.abs(reference),
+                                                                                        initial=0.0)), 1e-300)
+    return {'full_operator_eliminated': relative(eliminated, np.asarray(to_host(system.A_solve.data), np.float64)),
+            'full_operator_rhs_offset': relative(free * (rhs_drive - coupling), rhs_offset),
+            'off_diagonal_rhs_offset': relative(free * (rhs_drive - product), rhs_offset),
+            'crossing_outflow': abs(outflow - reference_outflow) / max(abs(reference_outflow), 1e-300)}
+
+
 def _fused_window(checks, backend, label, widths, axisymmetric=False, azimuthal_order=0):
     """One window: fused vs reference systems through two assemblies; differences and counters into checks."""
     three_d = len(widths) == 3
@@ -211,6 +245,10 @@ def _fused_window(checks, backend, label, widths, axisymmetric=False, azimuthal_
         systems[fused] = system
     for name, difference in _fused_differences(systems[True], systems[False]).items():
         checks.add_error(f'{backend}_{label}_{name}', difference, _FUSED_TOLERANCE)
+    for fused, system in systems.items():   # the kept face terms against the assembly's own A_eff (no kept CSR)
+        for name, difference in _kept_operator_differences(system).items():
+            checks.add_error(f'{backend}_{label}_{"fused" if fused else "reference"}_{name}', difference,
+                             _FUSED_TOLERANCE)
     checks.add(f'{backend}_{label}_counters', systems[True].n_fused_assemblies == 1
                and systems[False].n_fused_assemblies == 0 and systems[True].n_anchor_shortcuts == 1,
                value={'fused': systems[True].n_fused_assemblies, 'reference': systems[False].n_fused_assemblies,
@@ -279,7 +317,11 @@ BACKEND_SELFTEST_CASES = (
                      'azimuthal order 1 (zero-area axis face), 3D Cartesian with C/dt and robin / neumann z faces. '
                      'Compared: A_eff and A_solve values, Jacobi diagonal, rhs offset / drive, fixed values, free '
                      'mask, conduction diagonal, the unknown, every face term and interior face conductance (max '
-                     f'difference / max |reference|, tolerance {_FUSED_TOLERANCE:g}), plus the fused / anchor-shortcut '
+                     f'difference / max |reference|, tolerance {_FUSED_TOLERANCE:g}); on both paths the A_eff the '
+                     'system rebuilds from its kept face terms (full_operator: it keeps no A_eff CSR) eliminated '
+                     'against A_solve, the rhs offset from it and from the face-term off-diagonal product, and the '
+                     "held box's crossing outflow against the per-entry CSR sum (same tolerance); plus the fused / "
+                     'anchor-shortcut '
                      'counters, and on the cpu that a coefficient-only change opening a floating region still raises. '
                      'The gpu half is skipped without a usable GPU.'),
         specs=lambda: {}, check=lambda _results: _check_fused_reassembly(), backends=('cpu', 'gpu')),

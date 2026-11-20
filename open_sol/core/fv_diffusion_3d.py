@@ -345,15 +345,11 @@ def build_laplacian(coefficients, geometry, bcs, pattern=None, dtype=np.float64,
         lower, upper = _cut(axis, _LOWER), _cut(axis, _UPPER)
         diagonal[lower] += conductance
         diagonal[upper] += conductance
-        slots[upper + (Ellipsis, layout.lower[axis])] = -conductance   # upper cell -> its lower neighbour
-        slots[lower + (Ellipsis, layout.upper[axis])] = -conductance   # lower cell -> its upper neighbour
     wrap_conductance = None
-    if wrap_sign:   # g (u_last - s u_first)^2: +g on both diagonals, -s g on the pair
+    if wrap_sign:   # g (u_last - s u_first)^2: +g on both diagonals, -s g on the pair (_off_diagonal_slots)
         wrap_conductance = wrap_face_conductance(coefficients[1], geometry, held)
         diagonal[:, -1] += wrap_conductance
         diagonal[:, 0] += wrap_conductance
-        slots[:, -1, ..., layout.wrap_to_first] = -float(wrap_sign) * wrap_conductance
-        slots[:, 0, ..., layout.wrap_to_last] = -float(wrap_sign) * wrap_conductance
 
     rhs_bc = xp.zeros(shape, dtype=dtype)
     face_terms = {}
@@ -371,11 +367,8 @@ def build_laplacian(coefficients, geometry, bcs, pattern=None, dtype=np.float64,
         diagonal[1:, 1:] += half     # NE
         diagonal[:-1, 1:] -= half    # NW
         diagonal[1:, :-1] -= half    # SE
-        corners = layout.corners
-        slots[:-1, :-1, corners[(1, 1)]] = -half   # (i, j) -> (i+1, j+1)
-        slots[1:, 1:, corners[(-1, -1)]] = -half
-        slots[:-1, 1:, corners[(1, -1)]] = half    # (i, j+1) -> (i+1, j)
-        slots[1:, :-1, corners[(-1, 1)]] = half
+        del half
+    _off_diagonal_slots(slots, layout, conductances, wrap_conductance, wrap_sign, cross)
 
     data = slots.reshape(-1)[pattern.slot_positions]
     del slots, diagonal
@@ -383,6 +376,88 @@ def build_laplacian(coefficients, geometry, bcs, pattern=None, dtype=np.float64,
     operator = sparse_module(backend_of(data)).csr_matrix((data, pattern.indices, pattern.indptr),
                                                           shape=(n_cells, n_cells))
     return operator, rhs_bc, pattern, conductances, face_terms, wrap_conductance
+
+
+def _off_diagonal_slots(slots, layout, conductances, wrap_conductance, wrap_sign, cross) -> None:
+    """Write build_laplacian's off-diagonal entries into its dense (shape + n_slots) slot array: -g of each interior
+    face, -s g of the phi-wrap pair, the c_xy quads' -c_q/2 (NE / SW) and +c_q/2 (NW / SE) corner pairs."""
+    for axis, conductance in enumerate(conductances):
+        lower, upper = _cut(axis, _LOWER), _cut(axis, _UPPER)
+        slots[upper + (Ellipsis, layout.lower[axis])] = -conductance   # upper cell -> its lower neighbour
+        slots[lower + (Ellipsis, layout.upper[axis])] = -conductance   # lower cell -> its upper neighbour
+    if wrap_conductance is not None:
+        slots[:, -1, ..., layout.wrap_to_first] = -float(wrap_sign) * wrap_conductance
+        slots[:, 0, ..., layout.wrap_to_last] = -float(wrap_sign) * wrap_conductance
+    if cross is not None:
+        half = 0.5 * cross.coefficient
+        corners = layout.corners
+        slots[:-1, :-1, corners[(1, 1)]] = -half   # (i, j) -> (i+1, j+1)
+        slots[1:, 1:, corners[(-1, -1)]] = -half
+        slots[:-1, 1:, corners[(1, -1)]] = half    # (i, j+1) -> (i+1, j)
+        slots[1:, :-1, corners[(-1, 1)]] = half
+
+
+def assembled_operator(pattern, diagonal, conductances, wrap_conductance=None, wrap_sign=0, cross=None):
+    """The CSR build_laplacian assembles (on its pattern), rebuilt from what an assembly keeps: the window-shaped
+    diagonal (DiffusionSystem: conduction + losses + capacity) and the off-diagonal terms of _off_diagonal_slots. A
+    transient for rare readers (DiffusionSystem.full_operator): a dense slot array and (released maps) a rebuilt
+    slot_positions pass."""
+    xp = array_module_of(diagonal)
+    shape = tuple(diagonal.shape)
+    layout = pattern.layout
+    slots = xp.zeros(shape + (layout.n_slots,), dtype=diagonal.dtype)
+    slots[..., layout.diagonal] = diagonal
+    _off_diagonal_slots(slots, layout, conductances, wrap_conductance, wrap_sign, cross)
+    data = slots.reshape(-1)[pattern.slot_positions]
+    del slots
+    n_cells = int(np.prod(shape))
+    return sparse_module(backend_of(data)).csr_matrix((data, pattern.indices, pattern.indptr),
+                                                      shape=(n_cells, n_cells))
+
+
+def off_diagonal_product(values, conductances, wrap_conductance=None, wrap_sign=0, cross=None):
+    """(A - diag(A)) values of build_laplacian's operator from its off-diagonal terms (window-shaped values and
+    result, values' dtype): the coupling of every cell to its neighbours' values without the assembled CSR."""
+    xp = array_module_of(values)
+    product = xp.zeros(values.shape, dtype=values.dtype)
+    for axis, conductance in enumerate(conductances):
+        lower, upper = _cut(axis, _LOWER), _cut(axis, _UPPER)
+        product[lower] -= conductance * values[upper]
+        product[upper] -= conductance * values[lower]
+    if wrap_conductance is not None:
+        wrap = float(wrap_sign) * wrap_conductance
+        product[:, -1] -= wrap * values[:, 0]
+        product[:, 0] -= wrap * values[:, -1]
+    if cross is not None:
+        half = 0.5 * cross.coefficient
+        product[:-1, :-1] -= half * values[1:, 1:]
+        product[1:, 1:] -= half * values[:-1, :-1]
+        product[:-1, 1:] += half * values[1:, :-1]
+        product[1:, :-1] += half * values[:-1, 1:]
+    return product
+
+
+def crossing_outflow(unknown, mask, conductances, wrap_conductance=None, wrap_sign=0, cross=None):
+    """0-d float64 sum of A_rc (u_c - u_r) over the off-diagonal entries of build_laplacian's operator from a masked
+    cell r to an unmasked cell c (window-shaped unknown and bool mask): per coupled pair (a, b) with entry e its
+    e (u_b - u_a)(m_a - m_b), the difference taken in float64 before the product (no u-sized rounding)."""
+    xp = array_module_of(unknown)
+    u = unknown.astype(np.float64)
+    m = mask.astype(np.float64)
+    total = xp.zeros((), dtype=np.float64)
+
+    def pairs(entry, a, b):
+        return xp.sum(entry.astype(np.float64) * ((u[b] - u[a]) * (m[a] - m[b])))
+
+    for axis, conductance in enumerate(conductances):
+        total = total - pairs(conductance, _cut(axis, _LOWER), _cut(axis, _UPPER))
+    if wrap_conductance is not None:
+        total = total - float(wrap_sign) * pairs(wrap_conductance, (slice(None), -1), (slice(None), 0))
+    if cross is not None:
+        half = 0.5 * cross.coefficient
+        total = total - pairs(half, (_LOWER, _LOWER), (_UPPER, _UPPER))   # SW -> NE: -c_q / 2
+        total = total + pairs(half, (_LOWER, _UPPER), (_UPPER, _LOWER))   # NW -> SE: +c_q / 2
+    return total
 
 
 def anchor_link_graph(coefficients, fixed, held, face_terms, wrap=False):

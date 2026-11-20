@@ -280,20 +280,31 @@ def host_real_lu_bytes(n_unknowns, dimensions=2) -> int:
 _FLUX_ARRAYS = {2: 6, 3: 9}
 _CROSS_FLUX_ARRAYS = 6
 _DISSIPATION_SHARE_ARRAYS = 2
-# assemble's window locals alive while linear_solver.factorize runs (diagonal_extra, effective_diagonal, fixed_values,
-# coupling_to_fixed in the solve dtype; unconnected, fixed, loss_anchor_cells bool); the pattern-build and anchor-check
-# temporaries are freed by then
-_FACTORIZE_ALIVE_VALUE_ARRAYS = 4
-_FACTORIZE_ALIVE_MASKS = 3
+# assemble's window locals alive while linear_solver.factorize runs: A_eff, its diagonals, the coupling to fixed cells
+# and the masks are deleted before it (DiffusionSystem.assemble); only `fixed` (bool) stays, held by a deferred gpu
+# anchor check until the next solve
+_FACTORIZE_ALIVE_VALUE_ARRAYS = 0
+_FACTORIZE_ALIVE_MASKS = 1
+
+
+def diffusion_full_operator_bytes(window_cells, entries_per_row, n_slots, value_bytes) -> int:
+    """Transient device bytes of DiffusionSystem.full_operator (thermal noise, parity checks): the dense slot array,
+    the rebuilt CSR values, a released pattern's slot_positions rebuild (bool slot mask, int64 flatnonzero, int32 copy)
+    and the diagonal with its loss / capacity sum."""
+    return int(window_cells) * (int(n_slots) * (int(value_bytes) + BOOL_BYTES)
+                                + int(entries_per_row) * (int(value_bytes) + FLOAT64_BYTES + INT32_BYTES)
+                                + 2 * int(value_bytes))
 
 
 def diffusion_system_estimate(window_cells, precision, cross_term=False, transient=False,
                               dimensions=2, mixed=False, multigrid=False, direct=False,
                               azimuthal=False, wrap=False, flux=False, dissipation=False,
-                              backend=None, conformal=False) -> MemoryEstimate:
+                              backend=None, conformal=False, pcg=True) -> MemoryEstimate:
     """DiffusionSystem (core.fv_diffusion) on window_cells (3D: all window voxels, dimensions=3): prepare buffers, CSR
-    pattern, assembled operators and vectors (steady; azimuthal: the kept azimuthal diagonal of an (r, z) order
-    m != 0; ONE assembly: a re-assembly drops its predecessor first, DiffusionSystem._release_assembly); build extra:
+    pattern, the one kept operator (A_solve: no A_eff CSR is kept) and assembly vectors (steady; azimuthal: the kept
+    azimuthal diagonal of an (r, z) order m != 0; ONE assembly: a re-assembly drops its predecessor first,
+    DiffusionSystem._release_assembly); pcg (the resolved 'linear' solver is pcg, fem.diffusion.pcg_linear_solver;
+    False: a direct / banded solver, no CG workspace and no kept Jacobi diagonal); build extra:
     the larger of the pattern build + anchor check and (multigrid) the setup while assemble's locals live; conformal
     (solver_defaults.conformal_boundaries reaching a 2D system: cut cells) keeps the assembly maps; mixed
     (a 'mixed' pcg, precision 'float64'): its float32 operator copy and refinement vectors; multigrid (the pcg
@@ -309,33 +320,35 @@ def diffusion_system_estimate(window_cells, precision, cross_term=False, transie
     value_bytes = FLOAT64_BYTES if precision == 'float64' else FLOAT32_BYTES
     entries_per_row = 9 if cross_term else 5
     cells = int(window_cells)
-    # prepare: cell_area, rhs, unknown, extra_diag / _rhs, fixed values, rhs_full buffer, CG solution + PCGSolver
-    # residual / direction / CSR product (solvers.pcg.workspace_bytes) + fixed mask + the cached uint8 anchor code
-    # (face-area divisors are separable 1D factors)
-    buffers = (11 * value_bytes + BOOL_BYTES + 1) * cells
-    operators = 2 * entries_per_row * value_bytes * cells   # operator_full and A_solve data (shared indices)
-    # inverse diagonal, free, rhs_offset, fixed_values, rhs_drive, 2 face conductances, assembled c_xx / c_yy, the
-    # conduction diagonal (+ C/dt); the loss-anchor mask (bool); the kept c_xy quad coefficients and their bool mask
-    assembly = ((10 + (1 if transient else 0) + (1 if azimuthal else 0) + (1 if cross_term else 0)) * value_bytes
-                + (2 if cross_term else 1) * BOOL_BYTES) * cells
-    # pattern build (slot mask, int64 flatnonzero), dense slot array (+ 2 phi-wrap slots), assembly temporaries (the
-    # kept polar r_c dphi lengths among them), anchor check at 2x resolution (link image, int32 labels and their copy)
+    # prepare: cell_area, rhs, unknown, extra_diag / _rhs, fixed values, rhs_full buffer, CG solution (+ pcg: the
+    # PCGSolver residual / direction / CSR product, solvers.pcg.workspace_bytes) + fixed mask + the cached uint8 anchor
+    # code (face-area divisors are separable 1D factors)
+    workspace = 3 if pcg else 0
+    buffers = ((8 + workspace) * value_bytes + BOOL_BYTES + 1) * cells
+    # (pcg) inverse diagonal, free, rhs_offset, fixed_values, rhs_drive, 2 face conductances, assembled c_xx / c_yy,
+    # the conduction diagonal (+ C/dt); the loss-anchor mask (bool); the kept c_xy quad coefficients and their bool mask
+    assembly = ((9 + int(pcg) + (1 if transient else 0) + (1 if azimuthal else 0) + (1 if cross_term else 0))
+                * value_bytes + (2 if cross_term else 1) * BOOL_BYTES) * cells
+    # pattern build (slot mask, int64 flatnonzero), dense slot array (+ 2 phi-wrap slots) and the A_eff values taken
+    # from it (an assembly transient now, through the elimination), assembly temporaries (the kept polar r_c dphi
+    # lengths among them), anchor check at 2x resolution (link image, int32 labels and their copy)
     n_slots = entries_per_row + (2 if wrap else 0)   # fv_diffusion_3d._SlotLayout
-    build_extra = (n_slots * (BOOL_BYTES + FLOAT64_BYTES) + (n_slots + 7) * value_bytes
+    build_extra = (n_slots * (BOOL_BYTES + FLOAT64_BYTES) + (n_slots + 7 + entries_per_row) * value_bytes
                    + 4 * (BOOL_BYTES + 2 * INT32_BYTES) + 30) * cells
     if dimensions == 3:   # 7-point operator (core.fv_diffusion_3d), no cross term, no face-length arrays
         entries_per_row = 7
-        # cell volume, rhs, unknown, extra_diag / _rhs, fixed values, rhs_full buffer, 4 CG vectors + fixed mask, the
-        # cached uint8 anchor code
-        buffers = (11 * value_bytes + BOOL_BYTES + 1) * cells
-        operators = 2 * entries_per_row * value_bytes * cells
+        # cell volume, rhs, unknown, extra_diag / _rhs, fixed values, rhs_full buffer, CG solution (+ pcg: 3 CG
+        # vectors) + fixed mask, the cached uint8 anchor code
+        buffers = ((8 + workspace) * value_bytes + BOOL_BYTES + 1) * cells
         # as 2D with 3 face conductances and c_zz
-        assembly = (12 + (1 if transient else 0)) * value_bytes * cells + BOOL_BYTES * cells
-        # pattern build (slot mask, int64 flatnonzero), dense slot array, anchor check at 2x resolution (link image,
-        # int32 labels and their copy)
+        assembly = (11 + int(pcg) + (1 if transient else 0)) * value_bytes * cells + BOOL_BYTES * cells
+        # pattern build (slot mask, int64 flatnonzero), dense slot array and the A_eff values, anchor check at 2x
+        # resolution (link image, int32 labels and their copy)
         n_slots = 9 if wrap else entries_per_row   # fv_diffusion_3d._SlotLayout
-        build_extra = (n_slots * (BOOL_BYTES + FLOAT64_BYTES) + (n_slots + 6) * value_bytes
+        build_extra = (n_slots * (BOOL_BYTES + FLOAT64_BYTES) + (n_slots + 6 + entries_per_row) * value_bytes
                        + 8 * (BOOL_BYTES + 2 * INT32_BYTES) + 30) * cells
+    # A_solve data (the pattern's indices shared); A_eff is never kept (DiffusionSystem.full_operator rebuilds it)
+    operators = entries_per_row * value_bytes * cells
     # indptr + diagonal positions per row, indices per entry (int32); the per-entry assembly maps (slot_positions,
     # entry_rows: int32) stay only where re-assemblies run build_laplacian (c_xy, phi wrap, 2D cut cells:
     # DiffusionSystem._fused_pattern), else they live through the first assembly's build only
@@ -345,8 +358,8 @@ def diffusion_system_estimate(window_cells, precision, cross_term=False, transie
         pattern += assembly_maps
     else:
         build_extra += assembly_maps
-    items = [('solver buffers', buffers), ('sparse pattern (int32)', pattern), ('assembled operators', operators),
-             ('assembly vectors', assembly)]
+    items = [('solver buffers', buffers), ('sparse pattern (int32)', pattern),
+             ('assembled operator (A_solve)', operators), ('assembly vectors', assembly)]
     if mixed:
         from ..solvers.pcg import mixed_extra_bytes   # numpy only (the fv_diffusion exception of the core rule)
         items.append(('mixed-precision CG (float32 operator copy, refinement vectors)',
