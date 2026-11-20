@@ -702,33 +702,121 @@ def free_restriction(matrix, free):
     return reduced
 
 
+RANK_DTYPE_LIMIT = 2 ** 16   # scalar row lengths below which DevicePatternCsr keeps its column ranks as uint16
+_DEVICE_KERNELS = {}          # ('scatter', block, n_local) / ('product', block) -> cupy kernel, compiled on first use
+
+
+def device_pattern_bytes(n_local, elements, n=0, nnz=0, block=1, reduced_entries=0) -> int:
+    """Pool bytes of a DevicePatternCsr over `elements` elements of n_local scalar dofs: per element the int32 scalar
+    dofs and the uint16 column ranks of every scalar dof pair (int32 from RANK_DTYPE_LIMIT, not counted), plus with
+    n / nnz (the block pattern's rows / entries) the int64 scalar row starts and int32 scalar columns, and the int32
+    free take of reduced_entries."""
+    n_local, elements = int(n_local), int(elements)
+    per_element = 4 * n_local + 2 * n_local * n_local
+    pattern = (8 * (int(n) // int(block) + 1) + 4 * (int(nnz) // int(block) ** 2)) if n else 0
+    return elements * per_element + pattern + 4 * int(reduced_entries)
+
+
+def _scatter_kernel(block, n_local):
+    """cupy kernel (blocks (m, block r, block r), raw flat scalar dofs (m r,), raw flat ranks (m r r,), raw int64 scalar
+    row starts -> raw data): data[block^2 P_i + block a L_i + block k + b] += blocks[e, block p + a, block q + b] by
+    atomicAdd, i = dofs[e, p], k = ranks[e, p, q] (the rank of dofs[e, q] in scalar row i), P_i / L_i the row's start /
+    length (the slot rule of _block_slots); block and r are compile-time constants."""
+    key = ('scatter', int(block), int(n_local))
+    if key not in _DEVICE_KERNELS:
+        from ..core.backend import cp
+        width = int(block) * int(n_local)
+        _DEVICE_KERNELS[key] = cp.ElementwiseKernel(
+            'float64 value, raw I dofs, raw K ranks, raw int64 starts', 'raw float64 data',
+            f'const long long e = i / {width * width}LL; const int row = (int)((i / {width}) % {width});'
+            f' const int column = (int)(i % {width}); const int p = row / {block}; const int a = row % {block};'
+            f' const int q = column / {block}; const int b = column % {block};'
+            f' const long long dof = dofs[e * {n_local} + p]; const long long first = starts[dof];'
+            f' const long long length = starts[dof + 1] - first;'
+            f' atomicAdd(&data[{block * block}LL * first + {block}LL * a * length'
+            f' + {block}LL * (long long)ranks[(e * {n_local} + p) * {n_local} + q] + b], value);',
+            f'fem_pattern_scatter_{block}_{n_local}')
+    return _DEVICE_KERNELS[key]
+
+
+def _product_kernel(block):
+    """cupy kernel (raw data, raw x, raw int64 scalar row starts, raw scalar columns -> y (n,)): y = A x of the block
+    pattern read through its scalar pattern (row block i + a holds a block-wide run at block j for every j of scalar
+    row i, in order), one thread per row."""
+    key = ('product', int(block))
+    if key not in _DEVICE_KERNELS:
+        from ..core.backend import cp
+        _DEVICE_KERNELS[key] = cp.ElementwiseKernel(
+            'raw float64 data, raw float64 x, raw int64 starts, raw S columns', 'float64 y',
+            f'const long long dof = i / {block}; const int a = (int)(i % {block}); const long long first = starts[dof];'
+            f' const long long length = starts[dof + 1] - first;'
+            f' const long long start = {block * block}LL * first + {block}LL * a * length; double sum = 0.0;'
+            f' for (long long k = 0; k < length; ++k) {{ const long long column = {block}LL * (long long)columns[first'
+            f' + k]; for (int b = 0; b < {block}; ++b) sum += data[start + {block}LL * k + b] * x[column + b]; }}'
+            f' y = sum;',
+            f'fem_pattern_product_{block}')
+    return _DEVICE_KERNELS[key]
+
+
+def _scalar_maps(pattern, low, slots, starts):
+    """Host (int32 scalar dofs (m, r), column ranks (m, r, r): uint16 below RANK_DTYPE_LIMIT, else int32) of one
+    group's block slots (m, block r, block r) relative to low, on the scalar row starts: the a = b = 0 slot of a dof
+    pair (i, j) is indptr[block i] + block k (_block_slots), so i comes from the row holding the pair's first slot and
+    k from the offset. Raises when a slot leaves the rule (a slot map not of this pattern)."""
+    block = pattern.block
+    plane = slots[:, ::block, ::block].astype(np.int64) + low                   # (m, r, r): the a = b = 0 slots
+    rows = np.searchsorted(pattern.indptr, plane[:, :, 0], side='right') - 1    # vector rows block i
+    dofs = rows // block
+    ranks = plane - pattern.indptr[rows][:, :, None].astype(np.int64)
+    lengths = starts[dofs + 1] - starts[dofs]
+    if ranks.size and (int(ranks.min()) < 0 or bool(np.any(ranks % block)) or bool(np.any(rows % block))
+                       or bool(np.any(ranks // block >= lengths[:, :, None]))):
+        raise ValueError('DevicePatternCsr: a scatter map does not match the pattern')
+    ranks //= block
+    longest = int(np.diff(starts).max()) if starts.size > 1 else 0
+    return dofs.astype(np.int32), ranks.astype(np.uint16 if longest < RANK_DTYPE_LIMIT else np.int32)
+
+
 class DevicePatternCsr:
-    """Device (cupy) twin of a FixedPatternCsr: the per-group scatter maps as global data slots, the full and free-free
-    patterns and the free take on the GPU; blocks summed by cupyx.scatter_add (atomic, no host sync: cupy.bincount syncs
-    on max(x) per call), CSRs as cupyx. The host pattern (`host`) keeps the host index arrays."""
+    """Device (cupy) twin of a FixedPatternCsr for float64 data: per group the int32 scalar element dofs and the column
+    rank of every scalar dof pair (_scalar_maps; the scatter kernel recomputes each block entry's slot from them: a P2
+    tetrahedron keeps 240 B where int32 slots of its 30 x 30 block took 3.6 kB), the scalar row starts and columns
+    (block^2 fewer than the block pattern's indices) and the free take on the GPU; blocks summed by atomicAdd (no host
+    sync: cupy.bincount syncs on max(x) per call), the full product by a row kernel on the scalar pattern. The block
+    pattern's own indptr / indices and the reduced pattern stay on the host (`host`): full() / reduced() upload them per
+    call (checks, a pencil); the Newton loop reads only product / reduced_values."""
 
     def __init__(self, pattern):
         from ..core.backend import cp
         self.host = pattern
-        self.n, self.nnz = pattern.n, pattern.nnz
+        self.n, self.nnz, self.block = pattern.n, pattern.nnz, pattern.block
         slot_dtype = np.int32 if self.nnz < 2 ** 31 else np.int64
-        self.indptr = cp.asarray(pattern.indptr)
-        self.indices = cp.asarray(pattern.indices)
-        self._slots = [cp.asarray((slots.astype(np.int64) + low).astype(slot_dtype).ravel())
-                       for low, _, slots in pattern._scatter]
+        if self.block > 1:
+            starts, keys = pattern._slot_keys()
+            columns = keys % (self.n // self.block)
+        else:
+            starts, columns = pattern.indptr, pattern.indices
+        starts = np.asarray(starts, dtype=np.int64)
+        self._starts = cp.asarray(starts)
+        self._columns = cp.asarray(np.asarray(columns).astype(np.int32 if self.n < 2 ** 31 else np.int64, copy=False))
+        del columns
+        self._groups = []   # per group (elements m, scalar dofs r, device int32 dofs (m r,), device ranks (m r r,))
+        for low, _, slots in pattern._scatter:
+            dofs, ranks = _scalar_maps(pattern, low, slots, starts)
+            self._groups.append((int(dofs.shape[0]), int(dofs.shape[1]), cp.asarray(dofs.ravel()),
+                                 cp.asarray(ranks.ravel())))
+            del dofs, ranks
         self.free = pattern.free
         if pattern.free is not None:
             self.n_free = pattern.n_free
             self.reduced_take = cp.asarray(pattern.reduced_take.astype(slot_dtype))
-            self.reduced_indptr = cp.asarray(pattern.reduced_indptr)
-            self.reduced_indices = cp.asarray(pattern.reduced_indices)
 
     @property
     def device_bytes(self) -> int:
-        """Pool bytes of the device index arrays."""
-        arrays = [self.indptr, self.indices, *self._slots]
+        """Pool bytes of the device index arrays (device_pattern_bytes)."""
+        arrays = [self._starts, self._columns, *(array for group in self._groups for array in group[2:])]
         if self.free is not None:
-            arrays += [self.reduced_take, self.reduced_indptr, self.reduced_indices]
+            arrays.append(self.reduced_take)
         return int(sum(array.nbytes for array in arrays))
 
     def zeros(self):
@@ -737,15 +825,32 @@ class DevicePatternCsr:
         return cp.zeros(self.nnz)
 
     def add(self, data, group, blocks) -> None:
-        """data += the real device element blocks (m, r, r) of group index `group` (constructor order)."""
-        import cupyx
-        cupyx.scatter_add(data, self._slots[group], blocks.ravel())
+        """data += the real device element blocks (m, block r, block r) of group index `group` (constructor order) on
+        float64 data (nnz,)."""
+        elements, n_local, dofs, ranks = self._groups[group]
+        width = self.block * n_local
+        if blocks.shape != (elements, width, width) or data.dtype != np.float64 or data.shape != (self.nnz,):
+            raise ValueError(f'DevicePatternCsr.add: blocks {blocks.shape} / data {data.dtype} {data.shape} for a '
+                             f'group of {elements} elements of width {width} on {self.nnz} entries')
+        _scatter_kernel(self.block, n_local)(blocks, dofs, ranks, self._starts, data)
+
+    def product(self, data, vector):
+        """Device float64 (n,) product of the CSR of float64 device data with a device vector (n,) (no index upload)."""
+        from ..core.backend import cp
+        if data.dtype != np.float64 or data.shape != (self.nnz,) or vector.shape != (self.n,):
+            raise ValueError(f'DevicePatternCsr.product: data {data.dtype} {data.shape} / vector {vector.shape} for a '
+                             f'pattern of {self.nnz} entries and {self.n} rows')
+        result = cp.empty(self.n)
+        _product_kernel(self.block)(data, cp.ascontiguousarray(vector, dtype=cp.float64), self._starts, self._columns,
+                                    result)
+        return result
 
     def full(self, data, copy_pattern=False):
-        """cupyx CSR (n, n) of device data on the pattern (shared index arrays unless copy_pattern)."""
-        from ..core.backend import cupyx_sparse
-        indices, indptr = (self.indices.copy(), self.indptr.copy()) if copy_pattern else (self.indices, self.indptr)
-        return cupyx_sparse.csr_matrix((data, indices, indptr), shape=(self.n, self.n))
+        """cupyx CSR (n, n) of device data on the pattern, its index arrays uploaded from the host per call (own
+        arrays whatever copy_pattern says: callers never match them by identity)."""
+        from ..core.backend import cp, cupyx_sparse
+        return cupyx_sparse.csr_matrix((data, cp.asarray(self.host.indices), cp.asarray(self.host.indptr)),
+                                       shape=(self.n, self.n))
 
     def reduced_values(self, data):
         """Device values (reduced nnz,) of the free rows / columns of data, in the host reduced pattern's order."""
@@ -754,7 +859,8 @@ class DevicePatternCsr:
         return data[self.reduced_take]
 
     def reduced(self, data):
-        """cupyx canonical CSR (n_free, n_free) of the free rows / columns of device data."""
-        from ..core.backend import cupyx_sparse
-        return cupyx_sparse.csr_matrix((self.reduced_values(data), self.reduced_indices, self.reduced_indptr),
-                                       shape=(self.n_free, self.n_free))
+        """cupyx canonical CSR (n_free, n_free) of the free rows / columns of device data (the host reduced pattern
+        uploaded per call)."""
+        from ..core.backend import cp, cupyx_sparse
+        return cupyx_sparse.csr_matrix((self.reduced_values(data), cp.asarray(self.host.reduced_indices),
+                                        cp.asarray(self.host.reduced_indptr)), shape=(self.n_free, self.n_free))

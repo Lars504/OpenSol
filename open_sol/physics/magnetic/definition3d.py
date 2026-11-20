@@ -434,7 +434,7 @@ def _memory_estimate(settings_values, mesh, context):
     cudss = cudss_back_end(context.solvers)
     if cudss:   # DiffusionDirectSolver on the kept A_solve, refactorised per saturation iteration
         parts.append(cudss_diffusion_estimate(window_cells, 7 * window_cells, 3, cudss, input_copy=False,
-                                              refactorizes=bool(saturation)))
+                                              refactorizes=bool(saturation), symmetric_known=True))
     return combine(parts)
 
 

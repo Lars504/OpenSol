@@ -130,9 +130,10 @@ class MagneticPhysics(MirrorTotals, DiffusionPhysicsBase):
         self._nonlinear_cells = None    # window bool mask of the last refresh's saturating cells
         self._nonlinear_flat = None     # their flat window indices (k,): the compact loop state's cells
         self._saturation_stale = True
-        # solve-dtype window nu_xx / nu_yy and mu_dc_xx / _yy of the last assembly: kept only while the saturation loop
-        # runs (_coefficients; a linear model rebuilds nu for its fields: _reluctivities)
-        self._nu_xx = self._nu_yy = self._permeability = None
+        # while the saturation loop runs (_coefficients): the checked window views of mu_dc_xx / _yy (the float32
+        # material arrays, no copy) and the solve-dtype nu_xx / nu_yy (2, k) the last assembly put on the saturating
+        # cells (the state moves on after the last solve: fields and |B| read these); every other nu is rebuilt from mu
+        self._permeability = self._assembled_reluctivity = None
         self.prepare(domain)
 
     # --- PhysicsSolver contract ---------------------------------------------
@@ -418,45 +419,46 @@ class MagneticPhysics(MirrorTotals, DiffusionPhysicsBase):
 
     def _coefficients(self, read_permeability=True):
         """(c_xx, c_yy) = (nu_yy / r, nu_xx / r) window arrays in the solve dtype; nu = exp of the saturation loop state
-        when set, else 1 / (mu0 mu_dc). While the saturation loop runs it keeps nu_xx / nu_yy (fields, |B|) and mu_dc_xx
-        / _yy (saturation curve; read and checked unless read_permeability is False: the kept copies); a linear model
-        keeps neither (fields rebuild nu from the materials: _reluctivities, 4 solve-dtype values per window cell)."""
-        dtype = self.system.dtype
+        when set, else 1 / (mu0 mu_dc). While the saturation loop runs it keeps the mu_dc_xx / _yy window views (read
+        and checked unless read_permeability is False) and the assembled nu of the saturating cells (fields, |B|); a
+        linear model keeps neither. No window copy is kept: nu is rebuilt per assembly / field update (_reluctivities),
+        the kept compact nu is exactly what the operator holds."""
         if read_permeability:
             materials = self.domain.materials
             window = self.system.window
-            mu_xx = materials.mu_dc_xx[window].astype(dtype)
-            mu_yy = materials.mu_dc_yy[window].astype(dtype)
+            mu_xx, mu_yy = materials.mu_dc_xx[window], materials.mu_dc_yy[window]
             xp = self.xp
             if bool(xp.any(~(mu_xx > 0) | ~(mu_yy > 0) | ~xp.isfinite(mu_xx) | ~xp.isfinite(mu_yy))):
                 raise ValueError(f"magnetostatics '{self.name}': mu_dc_xx / mu_dc_yy must be finite and > 0 in every "
                                  'window cell')
             self._permeability = (mu_xx, mu_yy)
         elif self._permeability is None:
-            raise RuntimeError(f"magnetostatics '{self.name}': no kept mu_dc copies (a full assembly reads them)")
-        mu_xx, mu_yy = self._permeability
-        nu_xx = 1.0 / (MU0 * mu_xx)
-        nu_yy = 1.0 / (MU0 * mu_yy)
-        if self._log_reluctivity_state is not None:   # the saturating cells: exp of the compact loop state
-            flat = self._nonlinear_flat
-            nu_xx.reshape(-1)[flat] = self.xp.exp(self._log_reluctivity_state[0]).astype(dtype)
-            nu_yy.reshape(-1)[flat] = self.xp.exp(self._log_reluctivity_state[1]).astype(dtype)
-        if self._nonlinear:
-            self._nu_xx, self._nu_yy = nu_xx, nu_yy
-        else:   # linear: nothing kept between assemblies
-            self._nu_xx = self._nu_yy = self._permeability = None
+            raise RuntimeError(f"magnetostatics '{self.name}': no kept mu_dc views (a full assembly reads them)")
+        self._assembled_reluctivity = (None if self._log_reluctivity_state is None else   # the compact loop state
+                                       self.xp.exp(self._log_reluctivity_state).astype(self.system.dtype))
+        nu_xx, nu_yy = self._reluctivities()
+        if not self._nonlinear:   # linear: nothing kept between assemblies
+            self._permeability = self._assembled_reluctivity = None
         return nu_yy / self._radius_window, nu_xx / self._radius_window
 
     def _reluctivities(self):
-        """(nu_xx, nu_yy) window arrays of the assembled operator: the saturation loop's kept ones, else 1 / (mu0
-        mu_dc) of the materials (a linear model keeps no copy; checked by its assembly)."""
-        if self._nu_xx is not None:
-            return self._nu_xx, self._nu_yy
-        materials = self.domain.materials
-        window = self.system.window
+        """(nu_xx, nu_yy) solve-dtype window arrays of the assembled operator: 1 / (mu0 mu_dc) of the loop's kept views
+        (else of the materials: a linear model keeps none; checked by its assembly), the assembled nu on the
+        saturating cells."""
         dtype = self.system.dtype
-        return (1.0 / (MU0 * materials.mu_dc_xx[window].astype(dtype)),
-                1.0 / (MU0 * materials.mu_dc_yy[window].astype(dtype)))
+        if self._permeability is not None:
+            mu_xx, mu_yy = self._permeability
+        else:
+            materials = self.domain.materials
+            window = self.system.window
+            mu_xx, mu_yy = materials.mu_dc_xx[window], materials.mu_dc_yy[window]
+        nu_xx = 1.0 / (MU0 * mu_xx.astype(dtype))
+        nu_yy = 1.0 / (MU0 * mu_yy.astype(dtype))
+        if self._assembled_reluctivity is not None:
+            flat = self._nonlinear_flat
+            nu_xx.reshape(-1)[flat] = self._assembled_reluctivity[0]
+            nu_yy.reshape(-1)[flat] = self._assembled_reluctivity[1]
+        return nu_xx, nu_yy
 
     def _assemble(self, full=True):
         """Assemble with the current nu; full=False (later saturation iterations: only nu changed, every c > 0) reuses
@@ -503,9 +505,11 @@ class MagneticPhysics(MirrorTotals, DiffusionPhysicsBase):
         if not self._nonlinear:
             self._log_reluctivity_state = None   # back to the linear 1 / (mu0 mu_dc)
             self._nonlinear_cells = None
+            self._permeability = self._assembled_reluctivity = None
             return
         if self._nonlinear_cells is None or not bool(xp.array_equal(nonlinear_cells, self._nonlinear_cells)):
             self._log_reluctivity_state = None   # new saturating set: restart from every curve's B = 0 limit
+            self._assembled_reluctivity = None   # (of the old set's cells)
             self._nonlinear_flat = xp.flatnonzero(nonlinear_cells.ravel())
         self._nonlinear_cells = nonlinear_cells
         flat = self._nonlinear_flat
@@ -541,7 +545,7 @@ class MagneticPhysics(MirrorTotals, DiffusionPhysicsBase):
             self._solve_once(fields=False)
             flux_magnitude = self._saturating_flux_magnitude()
             # |H| = nu |B| in the (isotropic) table cells: B = H / nu there (no remanence), read by the tables only
-            field_magnitude = (self._nu_xx.reshape(-1)[self._nonlinear_flat].astype(np.float64) * flux_magnitude
+            field_magnitude = (self._assembled_reluctivity[0].astype(np.float64) * flux_magnitude
                                if self._bh_curves else None)
             proposal = self._saturated_log_reluctivity(flux_magnitude, field_magnitude)
             if stall is not None and stall.check(proposal, log_reluctivity):
@@ -564,8 +568,8 @@ class MagneticPhysics(MirrorTotals, DiffusionPhysicsBase):
         flat = self._nonlinear_flat
         flux_x, flux_y = self._physical_flux_at_centres()
         # |B| = hypot(H_x / nu_xx, H_y / nu_yy) with (H_x, H_y) = +-(-flux_y, flux_x): the signs drop out
-        B_x = flux_y.reshape(-1)[flat] / self._nu_xx.reshape(-1)[flat]
-        B_y = flux_x.reshape(-1)[flat] / self._nu_yy.reshape(-1)[flat]
+        B_x = flux_y.reshape(-1)[flat] / self._assembled_reluctivity[0]
+        B_y = flux_x.reshape(-1)[flat] / self._assembled_reluctivity[1]
         return self.xp.hypot(B_x, B_y).astype(np.float64)
 
     def _physical_flux_at_centres(self):
@@ -590,7 +594,8 @@ class MagneticPhysics(MirrorTotals, DiffusionPhysicsBase):
         mu0 extension)."""
         xp = self.xp
         flat = self._nonlinear_flat
-        mu_xx, mu_yy = (mu.reshape(-1)[flat].astype(np.float64) for mu in self._permeability)
+        cells = xp.unravel_index(flat, self.system.window_shape)   # the kept mu_dc are window views (no flat view)
+        mu_xx, mu_yy = (mu[cells].astype(np.float64) for mu in self._permeability)
         if self._saturation is not None:
             nu_xx = saturation_reluctivity(flux_magnitude, mu_xx, self._saturation, xp)
             nu_yy = saturation_reluctivity(flux_magnitude, mu_yy, self._saturation, xp)

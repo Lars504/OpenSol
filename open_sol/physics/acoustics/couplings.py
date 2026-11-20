@@ -10,6 +10,7 @@ from ..em.index_reference import in_plane_reference_indices, reference_index
 from ..mechanics.strain_optic import (PHOTOELASTIC_SHEAR_ROW, PHOTOELASTIC_TENSOR_ROWS,
                                       photoelastic_shear_permittivity_shift, photoelastic_tensor_index_shift,
                                       strain_optic_index_shift)
+from .solver import PHOTOELASTIC_TENSOR_ARRAYS
 
 # electrostatics face BC kinds whose edge face takes the cell's own polarisation (an electrode holds the surface charge)
 _ELECTRODE_KINDS = ('dirichlet', 'robin')
@@ -20,6 +21,8 @@ _UNSET = DTYPE(np.nan)              # tensor entry without an array: the kernel'
 
 # Index slot -> (strain along the field, the two across it) as indices into (strain_xx, strain_yy, strain_zz).
 _SLOT_COMPONENTS = {'eps_r_update': (2, 0, 1), 'eps_xx_update': (0, 1, 2), 'eps_yy_update': (1, 0, 2)}
+# the MaterialGrid arrays the acousto-optic transforms read (AcousticPhysics.require_device_materials)
+_PHOTOELASTIC_ARRAYS = ('photoelastic_p11', 'photoelastic_p12', *PHOTOELASTIC_TENSOR_ARRAYS)
 
 
 def make_acousto_optic_transform(slot):
@@ -29,6 +32,7 @@ def make_acousto_optic_transform(slot):
     (row_xx, fallback_xx), (row_yy, fallback_yy), row_xy = PHOTOELASTIC_TENSOR_ROWS[slot]
 
     def acousto_optic_index_shift(stress_xx, acoustics, em=None):
+        acoustics.require_device_materials(_PHOTOELASTIC_ARRAYS, 'the acousto-optic coupling')
         strain_xx, strain_yy = acoustics.elastic_strain()
         materials = acoustics.materials
         if acoustics.photoelastic_tensor:
@@ -46,6 +50,7 @@ def make_acousto_optic_transform(slot):
 def acousto_optic_shear_shift(stress_xx, acoustics, em=None):
     """CouplingTerm transform (sxx, acoustic solver, EM solver) -> full-grid Delta eps_xy of the eps_xy_update slot:
     -n0_xx^2 n0_yy^2 (p_61 e_xx + p_62 e_yy + p_66 g), isotropic p_66 = (p11 - p12) / 2 without the tensor arrays."""
+    acoustics.require_device_materials(_PHOTOELASTIC_ARRAYS, 'the acousto-optic shear coupling')
     strain_xx, strain_yy = acoustics.elastic_strain()
     materials = acoustics.materials
     n0_xx, n0_yy = in_plane_reference_indices(materials)

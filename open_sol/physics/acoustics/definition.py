@@ -13,8 +13,9 @@ from ...core.mirror import MIRROR_SIGNS, mirror_faces
 from ...core.monitors import probe_result
 from ...model.definition_helpers import (AXISYMMETRIC, AXISYMMETRIC_SPACE_SETTINGS, HALF_STORAGE_STEPPER_ROLE,
                                          axisymmetric_issues, geometry_param, is_axisymmetric, optional_material_param,
-                                         plain_number, point_cells, reports_model_checks, resolved_stepper_precision,
-                                         selected_material_data, study_duration, validate_points_inside)
+                                         parkable_material_arrays, plain_number, point_cells, reports_model_checks,
+                                         resolved_stepper_precision, selected_material_data, study_duration,
+                                         validate_points_inside)
 from ...model.definition_resonance import ResonanceProbe, point_trace_items, resonance_monitor_feature
 from ...model.expressions import Expression, ExpressionError
 from ...model.geometry import line_orientation
@@ -25,9 +26,9 @@ from .axisymmetric import KERNEL_ROWS, radial_stability_factor
 from ...solvers.explicit_kernels import stepper_precision
 from .renderer import AcousticRenderer
 from .selftests import PHOTOACOUSTIC_DESCRIPTION, PHOTOACOUSTIC_SUMMARY, photoacoustic_disc_spec
-from .solver import (ACOUSTIC_PROPERTY_ARRAYS, ACOUSTIC_SCHEMA, BOUNDARY_TYPES, ELECTRIC_FIELD_SLOTS, HEATING_SLOT,
-                     MONOCLINIC_ARRAYS, OPTIONAL_ACOUSTIC_SCHEMA, PHOTOELASTIC_TENSOR_ARRAYS, PIEZO_ARRAYS, STEP_GRAPHS,
-                     AcousticPhysics)
+from .solver import (ACOUSTIC_PROPERTY_ARRAYS, ACOUSTIC_SCHEMA, BOUNDARY_TYPES, COEFFICIENT_INPUTS,
+                     ELECTRIC_FIELD_SLOTS, HEATING_SLOT, MONOCLINIC_ARRAYS, OPTIONAL_ACOUSTIC_SCHEMA, PARKABLE_ARRAYS,
+                     PHOTOELASTIC_TENSOR_ARRAYS, PIEZO_ARRAYS, STEP_GRAPHS, AcousticPhysics)
 from .sources import PROBE_COMPONENTS, VELOCITY_COMPONENTS, HeatingPulse, make_waveform
 
 PHYSICS_TYPE_NAME = 'elastic_waves'
@@ -999,6 +1000,36 @@ def _solver_faces(values) -> dict:
     return {face: 'rigid' if values[f'bc_{face}'] == _SYMMETRIC_FACE else values[f'bc_{face}'] for face in FACES}
 
 
+# ---- parked material arrays ----
+_HEAT_PULSE_FEATURE = 'heat_pulse_source'   # its HeatPulseSource reads gruneisen every step
+# arrays only couplings out of this physics read: the acousto-optic transforms (photoelastic), the bound charge (piezo)
+_READ_BY_COUPLINGS_OUT = ('photoelastic_p11', 'photoelastic_p12', *PHOTOELASTIC_TENSOR_ARRAYS, *PIEZO_ARRAYS)
+
+
+def _parked_material_arrays(spec, registry, physics_spec, parameters) -> tuple:
+    """MaterialGrid arrays elastic_waves moves to the host after its first coefficient build (AcousticPhysics
+    park_arrays): solver.PARKABLE_ARRAYS without gruneisen when a heat pulse feature reads it every step, under the
+    shared rule (definition_helpers.parkable_material_arrays over the elastic_waves material properties: no coupling
+    into the physics; one reading it keeps the photoelastic / piezo arrays). Names of unallocated optional arrays may
+    be listed (the solver and _allocated_parked skip them)."""
+    heat_pulse = any(feature.enabled and feature.type == _HEAT_PULSE_FEATURE for feature in physics_spec.features)
+    arrays = tuple(name for name in PARKABLE_ARRAYS if not (heat_pulse and name == 'gruneisen'))
+    return parkable_material_arrays(spec, registry, physics_spec, parameters,
+                                    {param.name for param in _MATERIAL_PROPERTIES}, arrays,
+                                    read_by_couplings_out=_READ_BY_COUPLINGS_OUT)
+
+
+def _allocated_parked(context) -> list:
+    """The _parked_material_arrays the build allocates: ACOUSTIC_SCHEMA always, an optional group (piezo, photoelastic
+    tensor) when a material sets one of its arrays to anything but None (meshing.optional_material_arrays)."""
+    groups = (PIEZO_ARRAYS, PHOTOELASTIC_TENSOR_ARRAYS)
+    triggered = {name for group in groups if any(context.material_sets(member, default=None) for member in group)
+                 for name in group}
+    return [name for name in _parked_material_arrays(context.spec, context.registry, context.physics_spec,
+                                                     context.parameters)
+            if name in ACOUSTIC_SCHEMA or name in triggered]
+
+
 def _create(ctx, physics_spec, values):
     envelope = (HeatingPulse(values['heating_pulse_width'], values['heating_pulse_delay'])
                 if values['heating_envelope'] == 'gaussian' else None)
@@ -1006,7 +1037,8 @@ def _create(ctx, physics_spec, values):
                            pml_cells=values['pml_cells'], pml_reflection=values['pml_reflection'],
                            courant=values['courant'], heating_envelope=envelope,
                            axisymmetric=is_axisymmetric(values),
-                           precision=stepper_precision(ctx.solvers(physics_spec.name)))
+                           precision=stepper_precision(ctx.solvers(physics_spec.name)),
+                           park_arrays=_parked_material_arrays(ctx.spec, ctx.registry, physics_spec, ctx.parameters))
 
 
 _GRAPHED_TRACES = ('field_probe', 'resonance_monitor')                         # ProbeRecorder: inside the step graph
@@ -1040,15 +1072,21 @@ def _numba_stepped(item_label):
                                   'strain accumulator', 'monoclinic strain rates'))
 
 
+_STEP_TEMPORARIES = 8          # full-grid float32 temporaries of AcousticPhysics._update_time_step
+# full-grid float32 temporaries of the numpy coefficients twin (kernels._coefficients_host: the moduli, the four corner
+# shear moduli and the corner mean stay alive through the face coefficients' temporaries; bools counted as one)
+_HOST_REBUILD_TEMPORARIES = 15
+
+
 def _memory_estimate(settings_values, mesh, context):
     """5 fields (axisymmetric 6: + stt; float16 under half_storage) + 5 to 8 coefficient arrays (solver._set_storage)
     + the pressure buffer (float32 full grid), CPML psi slabs (8 per absorbing axis pair), a bool rigid keep mask, the
-    probe traces over the study
-    duration in estimated acoustic steps, piezo / monoclinic: the strain accumulator (+ monoclinic: the rate buffers;
-    two-way: P and bound-charge buffers); build
-    extra: the stable-step temporaries of finalize; run: the elastic strain pair (first acousto-optic transfer or
-    strain render), the shear strain buffers (photoelastic tensor read by an acousto-optic coupling), the piezo last
-    field / shear drive (first field transfer) and the trace growth."""
+    probe traces over the study duration in estimated acoustic steps, piezo / monoclinic: the strain accumulator (+
+    monoclinic: the rate buffers; two-way: P and bound-charge buffers); build extra: the stable-step temporaries of
+    finalize, or the parked material arrays before the fields exist (_parked_material_arrays: host items then, with
+    the host coefficient rebuild); run: the elastic strain pair (first acousto-optic transfer or strain render), the
+    shear strain buffers (photoelastic tensor read by an acousto-optic coupling), the piezo last field / shear drive
+    (first field transfer) and the trace growth."""
     cells = int(mesh.n_cells)
     axisymmetric = is_axisymmetric(settings_values)
     n_fields = 6 if axisymmetric else 5
@@ -1088,7 +1126,25 @@ def _memory_estimate(settings_values, mesh, context):
                                       axisymmetric, two_way)
     trace_items, trace_growth, host_items = point_trace_items(context, mesh, _POINT_TRACE_FEATURES,
                                                               dt=acoustic_dt or 0.0)   # unknown dt: initial traces
-    return MemoryEstimate.from_items(items + tuple(trace_items), build_extra=8 * FLOAT32_BYTES * cells,
+    # build peak: the stable-step temporaries (_update_time_step) of finalize beside every kept array; parked material
+    # arrays (meshing books them nowhere else) stay on the device from the materials stage until the first coefficient
+    # build of create (beside the storage choice's bool temporaries), and the fields, the rigid mask and the pressure
+    # buffer exist only after that first time step, which uploads a parked rho beside its temporaries
+    build_extra = _STEP_TEMPORARIES * FLOAT32_BYTES * cells
+    parked = _allocated_parked(context)
+    if parked:
+        parked_bytes = FLOAT32_BYTES * len(parked) * cells
+        later = (n_fields * field_bytes + FLOAT32_BYTES + (BOOL_BYTES if has_rigid else 0)) * cells
+        build_extra = max(parked_bytes + 2 * BOOL_BYTES * cells - later,
+                          build_extra + (FLOAT32_BYTES * cells if 'rho' in parked else 0))
+        host_items = tuple(host_items) + ((f"material arrays parked on the host ({', '.join(parked)}, float32)",
+                                           parked_bytes),)
+        if not set(parked).isdisjoint(COEFFICIENT_INPUTS):   # AcousticPhysics._rebuild_on_host
+            downloaded = sum(1 for name in COEFFICIENT_INPUTS if name not in parked)
+            host_items += (('host coefficient rebuild (numpy twin: outputs, temporaries, unparked inputs; '
+                            'approximate)', FLOAT32_BYTES * (n_coefficients + _HOST_REBUILD_TEMPORARIES + downloaded)
+                            * cells + (BOOL_BYTES * cells if has_rigid else 0)),)
+    return MemoryEstimate.from_items(items + tuple(trace_items), build_extra=build_extra,
                                      host_items=host_items,
                                      run_items=[('elastic strain buffers (2 x float32)', 2 * FLOAT32_BYTES * cells),
                                                 (f'elastic shear strain buffers ({shear_buffers} x float32)',
@@ -1230,6 +1286,7 @@ ELASTIC_WAVES = PhysicsType(
     steps_in_time=lambda settings_values: True,
     validate=_validate_physics,
     memory_estimate=_memory_estimate,
+    parked_material_arrays=_parked_material_arrays,
     time_estimate=_time_estimate,
     solver_roles={'stepper': HALF_STORAGE_STEPPER_ROLE},
     backends=('gpu', 'cpu'),   # core.kernels twins (numpy) on the cpu; half_storage refused there by explicit_kernels
