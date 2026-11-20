@@ -278,7 +278,9 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
         self.eigen_solve = None
         # SuperLU: the scipy_splu size rule below; line_block: the block-axis rule
         system = self._refresh_system(check_driven_size=self._line_block is not None)
-        self._release_kept_cudss()   # no driven factorisation follows here: free the device factors kept for a plan
+        # the eigen solve factors on its own: no cuDSS factor of the driven solves (current, transposed or kept for a
+        # plan) stays beside it on the device; a later driven solve factorises again
+        self._release_device_factors()
         shape = self._field_re.shape
         pinned = self._pinned_cells(system.pec_cells)   # identity rows: PEC and the outermost wall / mirror cells
         cell_mass = system.cell_eps if system.polarization == 'ez' else system.cell_mu
@@ -794,6 +796,18 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
                 factorization.release()   # idempotent: a failed deferred check released it already
                 setattr(self, name, None)
         self._factorization_current = False
+        self._release_kept_cudss()
+
+    def _release_device_factors(self):
+        """Release every cuDSS factor of the driven solves (the current one and its transpose too; a host SuperLU /
+        MUMPS / PARDISO factor stays) before a factorisation of the physics' own, e.g. the eigen solve's."""
+        if _is_cudss(self._factorization):
+            self._factorization.release()
+            self._factorization = None
+            self._factorization_current = False
+        if _is_cudss(self._transposed_factorization):
+            self._transposed_factorization.release()
+            self._transposed_factorization = None
         self._release_kept_cudss()
 
     def _release_kept_cudss(self):

@@ -170,6 +170,9 @@ class FEMFDFDPhysics(HarmonicEMShell, TriangleEMPhysics):
         if self._cudss_previous is not None:   # no driven factorisation follows here: free the factor kept for a plan
             self._cudss_previous.release()
             self._cudss_previous = None
+        if getattr(self._factorization, 'back_end', None) == 'cudss':   # nor a current driven one beside the eigen
+            self._factorization.release()                               # solve's own (a later solve factorises again)
+            self._factorization = None
         issue = self._size_issue(system.layout)
         if issue is not None and issue[0] == 'error':
             raise ValueError(f'eigenfrequency solve: {issue[1]}')
