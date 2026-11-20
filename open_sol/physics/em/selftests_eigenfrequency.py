@@ -8,7 +8,7 @@ import numpy as np
 
 from ...core.constants import C0, EPS0
 from ...model.schema import EIGENFREQUENCY_STUDY, SelfTestCase
-from ...model.selftest_helpers import float_list, solver_role, tolerance_units_result
+from ...model.selftest_helpers import SubChecks, float_list, solver_role, tolerance_units_result
 from ...model.spec import (DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec,
                            ParameterSpec, PhysicsSpec, SolverSpec, StudySpec)
 from .selftests_fdfd import cpu_specs
@@ -223,6 +223,85 @@ def _check_line_block_cavity(results_by_name):
     return tolerance_units_result(errors, tolerances, details)
 
 
+# ---- em_resonance_filter_device_storage: eigenfrequency._ResonanceFilter / _PencilMass device storage against the host
+# (solvers.device_matrices: float64 real values, symmetric lower triangles); a random FEM-like pattern of _STORAGE_N
+# unknowns, _STORAGE_COLUMNS Ritz columns (not a multiple of the device column blocks), round-off tolerance
+_STORAGE_N = 600
+_STORAGE_COLUMNS = 9
+_STORAGE_COUPLINGS = 6            # random symmetric off-diagonal couplings per row (+ the diagonal)
+_STORAGE_TOLERANCE = 1e-12        # relative to each measure's largest |value| (float64 products in another order)
+_STORAGE_SEED = 11
+
+
+def _storage_pencil(complex_values, random):
+    """(A, M, W) host scipy CSR of one symmetric pattern: A complex symmetric (complex_values) or real symmetric, M the
+    same (a mass: diagonally dominant), W a real symmetric energy matrix."""
+    import scipy.sparse
+    n = _STORAGE_N
+    rows = np.repeat(np.arange(n), _STORAGE_COUPLINGS)
+    columns = random.integers(0, n, rows.size)
+
+    def symmetric(diagonal, scale, imaginary):
+        values = scale * random.standard_normal(rows.size)
+        if imaginary:
+            values = values + 1j * scale * random.standard_normal(rows.size)
+        off = scipy.sparse.coo_matrix((values, (rows, columns)), shape=(n, n)).tocsr()
+        matrix = (off + off.T + scipy.sparse.diags(diagonal)).tocsr()
+        matrix.sum_duplicates()
+        return matrix
+    operator = symmetric(4.0 + random.random(n) + (0.3j * random.random(n) if complex_values else 0.0), 1.0,
+                         complex_values)
+    mass = symmetric(20.0 + random.random(n) + (0.2j * random.random(n) if complex_values else 0.0), 0.5,
+                     complex_values)
+    weights = symmetric(20.0 + random.random(n), 0.5, False)
+    return operator, mass, weights
+
+
+def _check_filter_device_storage(_):
+    """Device _ResonanceFilter measures (symmetric and full storage, real and complex pencils, the solves' shared B copy)
+    against the host filter; _PencilMass keeps a real B float64 and its host / device products equal the complex ones;
+    a symmetric search refuses an unsymmetric B."""
+    import cupy as cp
+    import scipy.sparse
+
+    from .eigenfrequency import _PencilMass, _ResonanceFilter
+    checks = SubChecks()
+    random = np.random.default_rng(_STORAGE_SEED)
+    n = _STORAGE_N
+    vectors = random.standard_normal((n, _STORAGE_COLUMNS)) + 1j * random.standard_normal((n, _STORAGE_COLUMNS))
+    window = random.random(n) > 0.3
+    region = random.random(n) > 0.6
+    row_scale = 1.0 + random.random(n) + 0.1j * random.random(n)
+    for label, complex_values in (('real', False), ('complex', True)):
+        operator, mass, weights = _storage_pencil(complex_values, random)
+        b_mass = _PencilMass.of_mass(mass.astype(np.complex128))   # a complex dtype without imaginary part: real
+        checks.add(f'{label} B dtype', np.iscomplexobj(b_mass.matrix.data) == complex_values,
+                   value=str(b_mass.matrix.dtype))
+        reference = -(mass.astype(np.complex128) @ vectors)
+        checks.add_error(f'{label} host B v', float(np.max(np.abs(b_mass.times(vectors) - reference))
+                                                    / np.max(np.abs(reference))), _STORAGE_TOLERANCE)
+        host = _ResonanceFilter(operator, b_mass, weights, window, region, row_scale, on_gpu=False).measures(vectors)
+        for symmetric in (True, False):
+            device_mass = b_mass.device_matrix(symmetric=symmetric)
+            device_b = b_mass.device_times(device_mass)
+            product = cp.asnumpy(device_b(cp.asarray(vectors[:, 0])))
+            checks.add_error(f'{label} symmetric={symmetric} device B v', float(
+                np.max(np.abs(product - reference[:, 0])) / np.max(np.abs(reference[:, 0]))), _STORAGE_TOLERANCE)
+            for shared in (device_mass, None):
+                device = _ResonanceFilter(operator, b_mass, weights, window, region, row_scale, on_gpu=True,
+                                          device_mass=shared, symmetric=symmetric).measures(vectors)
+                for name, values in host.items():
+                    scale = float(np.max(np.abs(values))) or 1.0
+                    checks.add_error(f"{label} symmetric={symmetric}{' shared B' if shared is not None else ''} "
+                                     f'{name}', float(np.max(np.abs(device[name] - values))) / scale,
+                                     _STORAGE_TOLERANCE)
+            del device_mass, device_b
+    unsymmetric = _PencilMass.of_mass((mass + scipy.sparse.random(n, n, density=0.01, random_state=_STORAGE_SEED,
+                                                                  format='csr')).tocsr())
+    checks.add_raises('unsymmetric B refused by a symmetric search', lambda: unsymmetric.device_matrix(symmetric=True))
+    return checks.result(unknowns=n, columns=_STORAGE_COLUMNS)
+
+
 EIGENFREQUENCY_SELFTEST_CASES = (
     SelfTestCase(
         name='em_fdfd_eigenfrequency_pec_cavity',
@@ -266,4 +345,22 @@ EIGENFREQUENCY_SELFTEST_CASES = (
                     'tolerance 1.',
         specs=_line_block_cavity_specs,
         check=_check_line_block_cavity),
+    SelfTestCase(
+        name='em_resonance_filter_device_storage',
+        label='Eigen layer: device storage of the resonance filter and the sparse mass',
+        description=f'GPU (eigenfrequency directly, no model run): a random symmetric {_STORAGE_N}-unknown pencil of '
+                    'one FEM-like pattern, real (A, M real symmetric) and complex (complex symmetric), with a real '
+                    f'symmetric energy matrix W, {_STORAGE_COLUMNS} random complex Ritz columns, window / region rows '
+                    'and a complex row scale. The device _ResonanceFilter (solvers.device_matrices: real values '
+                    'float64, symmetric storage lower triangle + diagonal measured by bilinear products, and full '
+                    'storage; B uploaded by the filter and the solves\' shared copy) must give every measure (v^H B v, '
+                    'v^H A v, v^T D A v, v^T D B v, energy, window and region sums) of the host filter to '
+                    f'{_STORAGE_TOLERANCE:g} relative to its largest value; _PencilMass keeps a real mass float64 '
+                    '(given as complex128 without imaginary part) and its host and device B v equal the complex128 '
+                    'product to the same tolerance; a symmetric search refuses an unsymmetric B (ValueError). error = '
+                    'number of failed sub-checks, tolerance 0. Written, not run.',
+        specs=lambda: {},
+        check=_check_filter_device_storage,
+        max_wall_time=60.0,
+        backends=('gpu',)),
 )
