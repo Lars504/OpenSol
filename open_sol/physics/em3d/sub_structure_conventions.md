@@ -78,6 +78,10 @@ contracts"). em_fdtd_3d (B2) and the eigensolver em_fdfd_3d (tensor Yee and tetr
   `resonance_search_items` with the storage the solve picks (a mixed LDL^T, i.e. no Bloch phase, is polished: complex64
   basis rows, `polished_mixed_search(..., symmetric=not Bloch)`; tetrahedra: lower triangles of a symmetric search),
   so a change of what fdfd3d / fem3d pass to it (symmetrizer, symmetric, a sparse mass) changes both estimators.
+  Nothing else of em_fdfd_3d lives on the device: the tensor resonance fields (`FDFDPhysics3D.fields`, complex64) are
+  host numpy on either backend, and `renderer_fdfd3d` does its math on the host per read window / plane and uploads
+  the float32 result (tetrahedra likewise, `renderer_fem3d`). A new reader of them works on the host or uploads per
+  read, never a kept device copy.
 - Cost: direct factor time ~ n^2; host SuperLU > 10 min at ~1e5 unknowns, gpu cudss_mixed ~1 s at 2.2e5. Study
   convergence by perturbing downward (thinner PML, coarser cells), never by larger grids.
 - Band diagrams: a parameter sweep over bloch_k<axis> (fresh factor per k). The Bloch period is the meshed one and a

@@ -5,6 +5,7 @@ from dataclasses import replace
 
 import numpy as np
 
+from ...core.backend import to_host
 from ...core.constants import DTYPE, EPS0
 from ...core.renderer import FieldInfo
 from ..em.renderer import _MODULUS_FIELD_INFOS
@@ -49,26 +50,28 @@ class FDFDRenderer3D(YeeRenderer3D):
         self._wrap_factors = tuple(complex(np.exp(1j * angle)) for angle in angles)   # the face one period down
 
     def _field(self, component, cut):
+        """The read window / plane computed on the host from the host complex64 fields (fdfd3d), uploaded once as
+        float32 (the run backend's array); eps_r is the MaterialGrid view."""
         self.field_info(component)
         xp = self.xp
         if component == 'eps_r':
             return self.domain.materials.eps_r[self._window(cut)]
         if component in ('e_abs', 'e_intensity', 'h_abs'):
             names = ('hx', 'hy', 'hz') if component == 'h_abs' else ('ex', 'ey', 'ez')
-            values = sum(xp.abs(self._centre(name, cut)) ** 2 for name in names)
-            return (values if component == 'e_intensity' else xp.sqrt(values)).astype(DTYPE)
+            values = sum(np.abs(self._centre(name, cut)) ** 2 for name in names)
+            return xp.asarray(values if component == 'e_intensity' else np.sqrt(values), dtype=DTYPE)
         if component == 'w_e':
             window = self._window(cut)
-            values = sum(axis_permittivity(self.domain.materials, axis)[window] * xp.abs(self._centre(name, cut)) ** 2
-                         for axis, name in enumerate(('ex', 'ey', 'ez')))
-            return (0.25 * EPS0 * values).astype(DTYPE)
+            values = sum(np.asarray(to_host(axis_permittivity(self.domain.materials, axis)[window]), dtype=DTYPE)
+                         * np.abs(self._centre(name, cut)) ** 2 for axis, name in enumerate(('ex', 'ey', 'ez')))
+            return xp.asarray(DTYPE(0.25 * EPS0) * values, dtype=DTYPE)
         name, _, part = component.rpartition('_')
         values = self.em.fields[name][self._window(cut)]
-        values = {'re': lambda: values.real, 'im': lambda: values.imag, 'abs': lambda: xp.abs(values)}[part]()
-        return values.astype(DTYPE)
+        values = {'re': lambda: values.real, 'im': lambda: values.imag, 'abs': lambda: np.abs(values)}[part]()
+        return xp.asarray(np.ascontiguousarray(values, dtype=DTYPE))
 
     def _centre(self, component, cut):
-        """complex64 component averaged to the window cell centres (yee_grid.lower_face_partner: cell 0 of a
+        """Host complex64 component averaged to the window cell centres (yee_grid.lower_face_partner: cell 0 of a
         non-periodic axis takes its own face, of a Bloch axis the wrapped face times e^{+j k L})."""
         field = self.em.fields[component]
         periodic = self.em.periodic
@@ -90,7 +93,7 @@ class FDFDRenderer3D(YeeRenderer3D):
                 axes.remove(axis)
             kept_axes = [other for other in range(3) if other != axis]
         for axis in axes:
-            values = 0.5 * (values + lower_face_partner(values, kept_axes.index(axis), periodic[axis], self.xp,
+            values = 0.5 * (values + lower_face_partner(values, kept_axes.index(axis), periodic[axis], np,
                                                         self._wrap_factors[axis]))
         window = self.domain.physical_window()
         return values[tuple(window[axis] for axis in kept_axes)]
