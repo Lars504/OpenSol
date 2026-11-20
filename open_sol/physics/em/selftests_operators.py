@@ -229,6 +229,35 @@ def _kept_yee_matches(operators, boundaries, cell_widths, omega):
         # one kept pattern buffer for both omegas (scipy's csr re-slices indices, so compare buffers, not objects)
         matches.append(np.shares_memory(kept_patterns[0][0], kept_patterns[1][0])
                        and np.shares_memory(kept_patterns[0][1], kept_patterns[1][1]))
+        matches.extend(_parked_kept_yee_matches(operators, config, cell_widths, omega, weights, face_index))
+    return matches
+
+
+def _parked_kept_yee_matches(operators, config, cell_widths, omega, weights, face_index):
+    """[bool] on a usable gpu (else []): the cupy KeptYeeOperators, whose Yee entry maps and Helmholtz plan terms wait in
+    pinned host memory between calls (operators._ParkedInt32), gives the numpy path's ops bit for bit and its
+    Helmholtz values to 1e-14 at two omegas in turn, nothing of the parked arrays left on the device."""
+    from ...core.backend import cp, gpu_available
+    if not gpu_available():
+        return []
+    host = operators.KeptYeeOperators(cell_widths, config, _GRADED_BASE_CELL)
+    device = operators.KeptYeeOperators(cell_widths, config, _GRADED_BASE_CELL, xp=cp)
+    device_weights = tuple(cp.asarray(values) for values in weights)
+    matches = []
+    for frequency in (omega, 1.37 * omega):
+        host_ops, device_ops = host.at(frequency), device.at(frequency)
+        matches.append(all(
+            np.array_equal(first.indptr, second.indptr.get()) and np.array_equal(first.indices, second.indices.get())
+            and np.array_equal(first.data, second.data.get()) for first, second in
+            ((host_ops.dx_e, device_ops.dx_e), (host_ops.dx_h, device_ops.dx_h), (host_ops.dy_e, device_ops.dy_e),
+             (host_ops.dy_h, device_ops.dy_h))))
+        cell_term = (frequency / C0) ** 2 * (2.0 - 0.1j + np.sin(0.3 * face_index))
+        reference = host.helmholtz(host_ops, *weights, cell_term)
+        planned = device.helmholtz(device_ops, *device_weights, cp.asarray(cell_term)).get()
+        matches.append(np.array_equal(reference.indptr, planned.indptr)
+                       and np.array_equal(reference.indices, planned.indices)
+                       and bool(abs(planned - reference).max() / abs(reference).max() < 1e-14))
+        matches.append(device._entry_maps.host_bytes > 0 and device._helmholtz_plan._terms.host_bytes > 0)
     return matches
 
 
@@ -564,8 +593,10 @@ OPERATOR_SELFTEST_CASES = (
                     'a complex operator build, Drude / Lorentz susceptibility and lossy complex_permittivity Im < 0, '
                     'and pin_image_cells of an even image on the outer '
                     'ring of an all-pmc graded grid keeps constants in the interior null space of the Laplacian '
-                    '(relative row sums < 1e-12). (D) face_average (width-weighted on graded widths, the plain '
-                    'mean bit for bit on uniform ones) / face_pec against explicit loops. (E) On the H_z engines of '
+                    '(relative row sums < 1e-12); KeptYeeOperators at two omegas gives yee_operators\' CSR bit for '
+                    'bit and helmholtz_operator\'s values to 1e-14, on numpy and on cupy with its entry maps and term '
+                    'plan parked in pinned host memory between calls. (D) face_average (width-weighted on graded '
+                    'widths, the plain mean bit for bit on uniform ones) / face_pec against explicit loops. (E) On the H_z engines of '
                     'B with random eps_xx / eps_yy (1-12) and sigma_e (0-3e5 S/m): the fused face eps / ca / cb '
                     'rebuild must equal face_average followed by the E_z cell-coefficient kernel (relative 1e-6). (F) '
                     'Both engines on the B grid x-periodic with CPML (default sigma), random eps 1-12 and a PEC '

@@ -4,6 +4,7 @@ loss protocol."""
 import cmath
 import math
 import time
+from dataclasses import replace
 
 import numpy as np
 from ....core.backend import check_backend_array, host_copy, to_host, write_host_into
@@ -283,10 +284,12 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
         self._release_device_factors()
         shape = self._field_re.shape
         pinned = self._pinned_cells(system.pec_cells)   # identity rows: PEC and the outermost wall / mirror cells
-        cell_mass = system.cell_eps if system.polarization == 'ez' else system.cell_mu
+        # host complex128 (cell_mu is a host array of the system)
+        cell_mass = np.asarray(to_host(system.cell_eps if system.polarization == 'ez' else system.cell_mu),
+                               dtype=np.complex128)
         if system.cell_area_fractions is not None:   # hz conformal PEC: the free-area mass of the cut cells
-            cell_mass = cell_mass * system.cell_area_fractions
-        mass = np.asarray(to_host(cell_mass), dtype=np.complex128).ravel().copy()
+            cell_mass = cell_mass * to_host(system.cell_area_fractions)
+        mass = cell_mass.ravel().copy()
         mass[np.asarray(to_host(pinned), dtype=bool).ravel()] = 0.0
         # cell areas of the PML-share filter = the outer product of these factors (polar: r_c dr x dphi)
         area_factors = (self.domain.cell_widths() if self.metric is None
@@ -327,7 +330,8 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
 
     def _park_device_system(self) -> bool:
         """Free the device HarmonicSystem (Helmholtz operator, system arrays, the Yee operators of the omega and the kept
-        Yee entry maps / Helmholtz term plan: ~0.6 kB per cell) for an eigen search on its host copies, the freed
+        Yee / Helmholtz patterns: ~0.35 kB per cell; the parked entry maps and plan terms go from the pinned host
+        memory with them) for an eigen search on its host copies, the freed
         blocks returned to the device (the own cuDSS factor lies outside the pool); the system is marked dirty, so the
         next _refresh_system reassembles it (one first assembly with its plan build: tens of ms per 1e6 cells beside
         a search of seconds). True when parked: the gpu backend without a line_block solver (whose factor is kept)."""
@@ -531,6 +535,8 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
         _refresh_pending_state)."""
         solve_start = time.perf_counter()
         xp = self.xp
+        # the last gradient belongs to the previous solve (its key holds n_solves): freed before the factorisation
+        self._sensitivity = None
         system = self._refresh_system(check_driven_size=True)
         self._solve_port_modes()
 
@@ -939,14 +945,17 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
     def _assemble(self, omega):
         """HarmonicSystem of the current materials (+ extra_permittivity) at omega: A1 operators with the complex PML
         stretch, complex128 Helmholtz operator (ez: PEC cells pinned; hz: PEC face weights 0; wall / mirror rows:
-        WALL_SIGNS; conformal_pec weights); conducting sheets enter the operator only, not cell / face eps."""
+        WALL_SIGNS; conformal_pec weights); conducting sheets enter the operator only, not cell / face eps. cell_mu and
+        the hz E-face eps go to the host (HarmonicSystem comment: read by lines / cells only; gpu: one transfer of
+        16 / 48 B per cell per assembly), what the solves read stays on the run backend."""
         domain = self.domain
         materials = domain.materials
         xp = self.xp
         bc = self.boundary_config
         periodic_x, periodic_y = bool(bc.periodic_x), bool(bc.periodic_y)
         cell_dx, cell_dy = grid_cell_widths(domain.grid)
-        if self._yee_ops is None or self._yee_ops[0] != omega:
+        # an ez system keeps no e differences (below): a reassembly at its omega gathers them again
+        if self._yee_ops is None or self._yee_ops[0] != omega or self._yee_ops[1].dx_e is None:
             self._yee_ops = None   # free the previous omega's operators first
             polar = self.metric is not None   # polar: PML cells graded on the outermost r width (no mesh_config)
             if polar:
@@ -980,10 +989,14 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
             operator = self._helmholtz(ops, weight_hi_x_faces, weight_hi_y_faces, cell_term)
             del cell_term
             operator = self._pin_outer_cells(operator, pec_cells)
+            # ez reads dx_e / dy_e only in this assembly (face curls, sources and the adjoint take dx_h / dy_h): the
+            # system and the omega cache drop their values (2 x 32 B per cell; None fails loudly in a new reader)
+            ops = replace(ops, dx_e=None, dy_e=None)
+            self._yee_ops = (omega, ops)
             return HarmonicSystem(
                 polarization='ez', omega=omega, ops=ops, operator=operator, weight_hi_x_faces=weight_hi_x_faces,
                 weight_hi_y_faces=weight_hi_y_faces, cell_eps=cell_eps, cell_eps_xx=None, cell_eps_yy=None,
-                cell_mu=cell_mu, eps_hi_x_faces=None, eps_hi_y_faces=None, pec_cells=pec_cells,
+                cell_mu=to_host(cell_mu), eps_hi_x_faces=None, eps_hi_y_faces=None, pec_cells=pec_cells,
                 periodic_x=periodic_x, periodic_y=periodic_y)
 
         cell_eps_xx = cell_permittivity(materials, 'eps_xx', self.dispersive_regions, omega, xp=xp)
@@ -1051,7 +1064,8 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
         return HarmonicSystem(
             polarization='hz', omega=omega, ops=ops, operator=operator, weight_hi_x_faces=weight_hi_x_faces,
             weight_hi_y_faces=weight_hi_y_faces, cell_eps=None, cell_eps_xx=cell_eps_xx, cell_eps_yy=cell_eps_yy,
-            cell_mu=cell_mu, eps_hi_x_faces=eps_hi_x_faces, eps_hi_y_faces=eps_hi_y_faces, pec_cells=pec_cells,
+            cell_mu=to_host(cell_mu), eps_hi_x_faces=to_host(eps_hi_x_faces), eps_hi_y_faces=to_host(eps_hi_y_faces),
+            pec_cells=pec_cells,
             periodic_x=periodic_x, periodic_y=periodic_y, off_diagonal=off_diagonal, cell_eps_xy=cell_eps_xy,
             cell_gyration=cell_gyration, face_fractions=face_fractions, cell_area_fractions=cell_area_fractions)
 
