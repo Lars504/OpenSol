@@ -915,7 +915,8 @@ def _make_memory_estimate(kind):
                                            azimuthal=azimuthal_order_of(settings_values) != 0,
                                            wrap=mesh.domain_map is not None and mesh.domain_map.angle_wrap != 'none',
                                            flux=True, dissipation=spec.with_joule,   # _update_derived_fields per solve
-                                           backend=solver_backend(context.spec))
+                                           backend=solver_backend(context.spec),
+                                           conformal=bool(context.spec.solver_defaults.conformal_boundaries))
         parts = [fields, system]
         if cudss:   # DiffusionDirectSolver factorises the kept A_solve
             parts.append(cudss_diffusion_estimate(window_cells, (9 if cross_term else 5) * window_cells, 2, cudss,

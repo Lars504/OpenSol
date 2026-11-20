@@ -28,16 +28,18 @@ MAX_LEVELS = 25
 MIS_MAX_ROUNDS = 100             # distance-2 independent set rounds (O(log n) in practice); leftovers become roots
 PSEUDO_INVERSE_CUTOFF = 1e-12    # coarsest eigenvalues below this x the largest are dropped
 AGGREGATION_SEED = 0             # tie-break order of the independent set: deterministic hierarchies
-# CPU estimate (2D 5-point and 3D 7-point smoothed aggregation, operator complexity ~1.5-2): stored CSR entries per
-# fine unknown (tentative T, prolongation P, restriction R, coarse operators) and vectors per fine unknown (weights,
-# residual, coarse solutions, the PCG preconditioned vector)
-# (filtered smoothing: 11.96 measured on a 2.16e6-cell 3D mesh graded 2.5 um - 2 mm, operator complexity 1.81; a 2D
-# 5-point strip heater holds 8.47 at complexity 1.355, booked ~7 % high: P rows ~2.8 in both, the coarse operators
-# differ); measured by the work counters multigrid_entries_per_unknown / _device_bytes (_record_size)
-HIERARCHY_ENTRIES_PER_UNKNOWN = 12
+# CPU estimate (2D 5-point and 3D 7-point smoothed aggregation, operator complexity ~1.5-2): stored device CSR entries
+# per fine unknown (prolongation P, restriction R, coarse operators) and vectors per fine unknown (weights, residual,
+# coarse solutions, the PCG preconditioned vector)
+# (filtered smoothing: 11.96 measured with T on the device on a 2.16e6-cell 3D mesh graded 2.5 um - 2 mm, operator
+# complexity 1.81; a 2D 5-point strip heater 8.47 at complexity 1.355: P rows ~2.8 in both, the coarse operators
+# differ); measured by the work counters multigrid_entries_per_unknown / _device_bytes (_record_size). The tentative
+# prolongators T (one entry per aggregated row: ~1.25 per fine unknown over the levels) now wait on the host between
+# setups (_HostTentative): 11.96 - 1.25 ~ 10.7 in 3D, ~7.2 in 2D (booked high)
+HIERARCHY_ENTRIES_PER_UNKNOWN = 11
 SETUP_ENTRIES_PER_UNKNOWN = 8    # transient stacked P blocks and coarse products per fine unknown
 HIERARCHY_VECTORS_PER_UNKNOWN = 4
-HIERARCHY_ROWS_PER_UNKNOWN = 4   # CSR indptr rows of T, P, R and the coarse operators per fine unknown
+HIERARCHY_ROWS_PER_UNKNOWN = 3   # CSR indptr rows of P, R and the coarse operators per fine unknown (~1.75, booked high)
 # host aggregation of the fine operator: its copy plus int64 / bool temporaries (+16: strong_links' symmetric union,
 # int8 / int32 S, S^T and S + S^T, then its int64 columns)
 HOST_BYTES_PER_ENTRY = 56
@@ -66,9 +68,16 @@ HIERARCHY_DTYPE = np.float32
 HIERARCHY_VALUE_BYTES = 4
 
 
+def tentative_bytes(n_unknowns) -> int:
+    """Device bytes of the fine level's tentative prolongator T while its level is built (one HIERARCHY_DTYPE entry
+    and int32 column per aggregated row, int32 indptr): uploaded from the host per setup, freed once P is stacked."""
+    return int(n_unknowns) * (HIERARCHY_VALUE_BYTES + 4 + 4)
+
+
 def hierarchy_bytes(n_unknowns, value_bytes, entries_per_row) -> int:
     """Device bytes of the hierarchy of an n_unknowns operator with entries_per_row (CPU): HIERARCHY_DTYPE matrices,
-    vectors (value_bytes: the fine precision, conservative) and the cached nonzero pattern of the fine operator."""
+    vectors (value_bytes: the fine precision, conservative) and the cached nonzero pattern of the fine operator (the
+    tentative prolongators wait on the host: tentative_bytes, a setup transient)."""
     n_unknowns = int(n_unknowns)
     return int(n_unknowns * (HIERARCHY_ENTRIES_PER_UNKNOWN * (HIERARCHY_VALUE_BYTES + 4)
                              + HIERARCHY_ROWS_PER_UNKNOWN * 4 + HIERARCHY_VECTORS_PER_UNKNOWN * value_bytes
@@ -78,26 +87,33 @@ def hierarchy_bytes(n_unknowns, value_bytes, entries_per_row) -> int:
 def setup_extra_bytes(n_unknowns, value_bytes, entries_per_row) -> int:
     """Transient device bytes of one setup on top of hierarchy_bytes: the stacked P blocks and coarse products, the l1
     row sums and the block planning (4-byte pattern data per entry), plus the largest of the fine level's three steps
-    on one row block, which follow each other (_build_level): the strength filter, the smoothing product A_F T on the
-    filtered block it returns, the Galerkin product (a small operator's whole A @ P: n entries_per_row^2 bounds it).
-    Not counted: the gpu column chunks' P_c copies (_column_block, a few % of the peak) and a 3D A @ P result beyond
-    SETUP_ENTRIES_PER_UNKNOWN entries per row."""
+    on one row block, which follow each other (_build_level): the strength filter and the smoothing product A_F T on
+    the filtered block it returns (both beside the uploaded T: tentative_bytes), the Galerkin product (T freed; a small
+    operator's whole A @ P: n entries_per_row^2 bounds it). Not counted: the gpu column chunks' P_c copies
+    (_column_block, a few % of the peak) and a 3D A @ P result beyond SETUP_ENTRIES_PER_UNKNOWN entries per row."""
     n_unknowns, entries_per_row = int(n_unknowns), int(entries_per_row)
     per_unknown = (SETUP_ENTRIES_PER_UNKNOWN * (HIERARCHY_VALUE_BYTES + 4) + 2 * value_bytes
                    + 4 * entries_per_row + 12)
     entries = n_unknowns * entries_per_row
     block_entries = min(entries, PRODUCT_BLOCK_PRODUCTS)
     sliced = block_entries < entries   # a row slice is a copy, the whole operator is taken as it is (_rows)
-    strength_filter = (FILTER_BYTES_PER_ENTRY + ((value_bytes + 4) if sliced else 0)) * block_entries
+    tentative = tentative_bytes(n_unknowns)
+    strength_filter = tentative + (FILTER_BYTES_PER_ENTRY + ((value_bytes + 4) if sliced else 0)) * block_entries
     # the filter's temporaries are gone: its block (values, int32 columns), the HIERARCHY_DTYPE copy, one partial
     # product per entry (T holds one entry per row)
-    smoothing = (value_bytes + 4 + HIERARCHY_VALUE_BYTES + PRODUCT_BYTES_PER_PRODUCT) * block_entries
+    smoothing = tentative + (value_bytes + 4 + HIERARCHY_VALUE_BYTES + PRODUCT_BYTES_PER_PRODUCT) * block_entries
     # A @ P on the block's HIERARCHY_DTYPE copy (a slice: with its own columns); P rows hold no more entries than A's
     # (SETUP_PRODUCT_SHARE of that bound)
     products = SETUP_PRODUCT_SHARE * n_unknowns * entries_per_row ** 2
     galerkin = (min(PRODUCT_WORKSPACE_BYTES, int(PRODUCT_BYTES_PER_PRODUCT * products))
                 + (HIERARCHY_VALUE_BYTES + (4 if sliced else 0)) * block_entries)
     return n_unknowns * per_unknown + max(strength_filter, smoothing, galerkin)
+
+
+def kept_host_bytes(n_unknowns) -> int:
+    """Host bytes kept between setups (CPU): per aggregated row of every level (~1 / (1 - COARSENING_RATIO_GUESS) per
+    fine unknown) its int64 aggregate index and the tentative prolongator's value, column and indptr entry."""
+    return int(int(n_unknowns) / (1.0 - COARSENING_RATIO_GUESS) * (8 + HIERARCHY_VALUE_BYTES + 4 + 4))
 
 
 def aggregation_host_bytes(n_unknowns, entries_per_row) -> int:
@@ -160,6 +176,8 @@ def setup_ops(n_unknowns, nnz, value_bytes, backend='gpu') -> tuple:
         entries_per_row = nnz / max(n_unknowns, 1.0)
         host_bytes = aggregation_host_bytes(n_unknowns, max(int(round(entries_per_row)), 1))
         aggregation = (te.HostStream(AGGREGATION_HOST_PASSES * host_bytes), te.Transfer(nnz * (value_bytes + 4)))
+    if backend == 'gpu':   # every setup uploads the tentative prolongators of all levels (_tentative)
+        aggregation += (te.Transfer(tentative_bytes(n_unknowns) / (1.0 - COARSENING_RATIO_GUESS)),)
     return aggregation + (
         te.Elementwise(SETUP_DEVICE_PASSES * SETUP_ENTRIES_PER_UNKNOWN * n_unknowns * (HIERARCHY_VALUE_BYTES + 4),
                        0.0, launches=50 * level_count_guess(n_unknowns)),
@@ -824,7 +842,9 @@ class MultigridPreconditioner:
         self._host_matvec = host_csr_matvec() if backend == 'cpu' else None   # cpu cycle products into level vectors
         self._levels = []
         self._aggregates = []        # host (aggregate, count) per coarsening, kept while the pattern stays
-        self._tentatives = []        # backend tentative prolongators T of those aggregates
+        # host (values, columns, indptr, n_aggregates) of the tentative prolongators T of those aggregates: uploaded per
+        # level build and freed once P is stacked (tentative_bytes), so the device holds no T between setups
+        self._host_tentatives = []
         self._pattern = None         # (indptr, indices, nonzero mask) the aggregates were built from
         self._coarsest = None        # ('dense', inverse) or ('smooth', operator, weights, residual)
         self._scaled_residual = None # fine-level copy of the residual scaled to max |r| in [0.5, 1) (precondition)
@@ -893,10 +913,15 @@ class MultigridPreconditioner:
         if reuse and not self._aggregates and operator.shape[0] > COARSEST_UNKNOWNS:
             reuse = False
         if not reuse:
-            self._aggregates, self._tentatives = [], []
-            self._pattern = (operator.indptr, operator.indices, nonzero)
+            self._aggregates, self._host_tentatives = [], []
             self.n_aggregations += 1
-        self._levels = []                  # drop the old hierarchy before building the new one
+        # the current operator's arrays (equal ones on reuse): a caller uploading fresh index arrays per factorize (FEM)
+        # never keeps the first operator's indices alive through the cached pattern
+        self._pattern = (operator.indptr, operator.indices, nonzero)
+        # drop the old hierarchy before building the new one: its levels and its coarsest solver (a dense inverse of up
+        # to COARSEST_DENSE_LIMIT^2, or the smoother-only level holding the previous fine operator)
+        self._levels = []
+        self._coarsest = None
         self.no_strong_links = False
         current, depth = operator, 0
         while True:
@@ -946,7 +971,7 @@ class MultigridPreconditioner:
         if self._coarsest[0] == 'smooth' and self._levels:
             coarse_operators.append(self._coarsest[1])
         matrices = [matrix for level in self._levels for matrix in (level.prolongation, level.restriction)]
-        matrices += list(self._tentatives) + coarse_operators
+        matrices += coarse_operators   # the tentative prolongators are host arrays between setups
         vectors = [vector for level in self._levels
                    for vector in (level.weights, level.residual, level.residual_low, level.coarse_solution,
                                   level.coarse_rhs)
@@ -969,22 +994,27 @@ class MultigridPreconditioner:
                    for cached, current in ((indptr, operator.indptr), (indices, operator.indices),
                                            (cached_nonzero, nonzero)))
 
-    def _tentative(self, depth, n_unknowns, dtype):
-        """Backend tentative prolongator of the cached aggregates at depth (columns normalised to unit length)."""
-        if depth < len(self._tentatives) and self._tentatives[depth].dtype == dtype:
-            return self._tentatives[depth]
+    def _tentative(self, depth, n_unknowns):
+        """Backend HIERARCHY_DTYPE tentative prolongator of the cached aggregates at depth (columns normalised to unit
+        length): its host arrays are built once per aggregation (_host_tentatives) and uploaded per call, so the caller
+        frees the device copy once P is built (gpu: one transfer of ~12 bytes per row per setup)."""
+        if depth == len(self._host_tentatives):   # levels are built in order: depth 0 first
+            aggregate, n_aggregates = self._aggregates[depth]
+            member = aggregate >= 0
+            sizes = np.bincount(aggregate[member], minlength=n_aggregates)
+            indptr = np.zeros(n_unknowns + 1, dtype=np.int32)
+            indptr[1:] = np.cumsum(member)
+            self._host_tentatives.append(((1.0 / np.sqrt(sizes[aggregate[member]])).astype(HIERARCHY_DTYPE),
+                                          aggregate[member].astype(np.int32), indptr, n_aggregates))
+        elif depth > len(self._host_tentatives):
+            raise RuntimeError(f'multigrid: level {depth} built before level {len(self._host_tentatives)}')
+        values, columns, indptr, n_aggregates = self._host_tentatives[depth]
+        if indptr.size != n_unknowns + 1:
+            raise RuntimeError(f'multigrid: the kept aggregates of level {depth} cover {indptr.size - 1} rows, the '
+                               f'operator has {n_unknowns}')
         xp = self._xp
-        aggregate, n_aggregates = self._aggregates[depth]
-        member = aggregate >= 0
-        sizes = np.bincount(aggregate[member], minlength=n_aggregates)
-        indptr = np.zeros(n_unknowns + 1, dtype=np.int32)
-        indptr[1:] = np.cumsum(member)
-        tentative = self._sparse.csr_matrix(
-            (xp.asarray(1.0 / np.sqrt(sizes[aggregate[member]]), dtype=dtype),
-             xp.asarray(aggregate[member].astype(np.int32)), xp.asarray(indptr)), shape=(n_unknowns, n_aggregates))
-        del self._tentatives[depth:]
-        self._tentatives.append(tentative)
-        return tentative
+        return self._sparse.csr_matrix((xp.asarray(values), xp.asarray(columns), xp.asarray(indptr)),
+                                       shape=(n_unknowns, n_aggregates))
 
     def _row_l1(self, matrix, dtype):
         """(rows,) sum_j |a_ij| of a CSR block (one product with a ones vector of `dtype`)."""
@@ -1006,7 +1036,7 @@ class MultigridPreconditioner:
         row blocks b (P_b = T_b - W_F,b A_F,b T, A_c = sum_b P_b^T (A_b P)) so no full A T or A P is ever held; on the
         gpu A_c in column chunks c of P (_column_ranges: rows c of A_c = (sum_b P_b^T (A_b P_c))^T)."""
         n_unknowns = operator.shape[0]
-        tentative = self._tentative(depth, n_unknowns, HIERARCHY_DTYPE)
+        tentative = self._tentative(depth, n_unknowns)
         weights = self._smoother_weights(operator)   # the cycle's smoother: the full operator
         diagonal = operator.diagonal()
         blocks = []
@@ -1017,7 +1047,7 @@ class MultigridPreconditioner:
             del filtered, filtered_weights
         del diagonal
         prolongation = self._stack_rows(blocks, tentative.shape[1])
-        del blocks
+        del blocks, tentative   # T goes before the Galerkin products (its host arrays stay: _host_tentatives)
         n_coarse = prolongation.shape[1]
         column_ranges = self._column_ranges(n_coarse)
         restriction = None

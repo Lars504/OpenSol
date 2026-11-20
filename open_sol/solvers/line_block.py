@@ -146,13 +146,15 @@ def _item_bytes(precision):
 def operator_bytes(n_blocks, block_size, n_unknowns, n_entries, n_terms, precision, complex_operator=False,
                    n_matrix_terms=0, matrix_entries=0) -> int:
     """Device bytes kept by set_operator: the (n_blocks, 3, b, b) operator cache (+ a complex one and row norms per
-    matrix term), padded row norms / pad identity / diagonal terms, the complex128 CSRs of the residual, the slot index."""
+    matrix term), padded row norms / pad identity / diagonal terms, the CSRs of the residual (K complex128, float64 when
+    real; the matrix terms complex128), the slot index."""
     complex_bytes, real_bytes = _item_bytes(precision)
     padded = int(n_blocks) * int(block_size)
     cache = 3 * padded * int(block_size) * (complex_bytes if complex_operator else real_bytes)
     matrix = int(n_matrix_terms) * (3 * padded * int(block_size) * complex_bytes + padded * 8)
+    operator_csr = int(n_entries) * ((16 if complex_operator else 8) + 4)
     return (cache + matrix + padded * (8 + real_bytes) + int(n_terms) * int(n_unknowns) * 8
-            + (int(n_entries) + int(matrix_entries)) * (16 + 4) + (int(n_matrix_terms) + 1) * (int(n_unknowns) + 1) * 4
+            + operator_csr + int(matrix_entries) * (16 + 4) + (int(n_matrix_terms) + 1) * (int(n_unknowns) + 1) * 4
             + int(n_unknowns) * 8)
 
 
@@ -420,7 +422,10 @@ class LineBlockSolver:
             self._matrix_device = tuple(sparse_module(self.backend).csr_matrix(term.astype(np.complex128))
                                         for term, _ in checked_terms)
         self._bind_layout(layout, terms)
-        self._operator_device = sparse_module(self.backend).csr_matrix(matrix.astype(np.complex128))
+        # residual CSR of K: a real K stays float64 (applied to the float64 view of the complex columns,
+        # _times_complex), never a complex128 copy of real data
+        self._operator_device = sparse_module(self.backend).csr_matrix(
+            matrix.astype(np.complex128 if complex_operator else np.float64))
         self.owner = owner
 
     def factorize_operators(self, operators, layout, owner=None) -> LineBlockFactor:
@@ -822,7 +827,7 @@ class LineBlockSolver:
                                     for index, operator in enumerate(chunk.operators.device)])
         n_chunk, n_rhs, n_unknowns = solution.shape
         columns = cp.ascontiguousarray(solution.reshape(n_chunk * n_rhs, n_unknowns).T)
-        product = cp.asarray(self._operator_device @ columns).T.reshape(n_chunk, n_rhs, n_unknowns)
+        product = _times_complex(self._operator_device, columns).T.reshape(n_chunk, n_rhs, n_unknowns)
         for index, term in enumerate(self._matrix_device):
             product = product + (chunk.matrix_coefficients[:, index, None, None]
                                  * cp.asarray(term @ columns).T.reshape(n_chunk, n_rhs, n_unknowns))
@@ -833,6 +838,21 @@ class LineBlockSolver:
         from ..core.backend import to_host
         cp = self._xp()
         return to_host((cp.linalg.norm(residual, axis=2) / rhs_norms).max(axis=1))
+
+
+def _times_complex(matrix, columns):
+    """matrix @ columns, complex128 (n, k), of C-contiguous complex128 columns (n, k) and a backend CSR: a complex one
+    directly; a float64 one on the float64 view (n, 2k) of the columns (re / im interleaved), so neither cupyx nor scipy
+    casts the real matrix to complex128 per product (cusparse _cast_common_type), and the product read back as
+    complex128 (C order first: a cuSPARSE product may come back in F order)."""
+    from ..core.backend import array_module_of
+    if matrix.dtype != np.float64:
+        return array_module_of(columns).asarray(matrix @ columns)
+    if columns.dtype != np.complex128 or not columns.flags.c_contiguous:
+        raise ValueError(f'line_block residual: columns must be C-contiguous complex128, got {columns.dtype}')
+    xp = array_module_of(columns)
+    product = xp.ascontiguousarray(xp.asarray(matrix @ columns.view(np.float64)))
+    return product.view(np.complex128)
 
 
 # --- kept-factor sweep (core.kernels raw twin 'solvers.line_block_kept_sweep') ---------------------------------------

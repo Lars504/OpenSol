@@ -159,8 +159,12 @@ class FEMDiffusionSystemCommon:
         self._solution = None
         if not self._free.size:
             return
+        from ..solvers.pcg import PCGSolver
         dtype = self._solve_dtype()
-        operator = sparse_module(self.backend).csr_matrix(self._reduced.astype(dtype))   # gpu: one device copy
+        if isinstance(self.linear_solver, PCGSolver):   # the previous run-backend operator goes before the new copy
+            self.linear_solver.release_operator()
+        # gpu: one device copy (no host cast copy of a float64 operator first); cpu: an owned copy for the solver
+        operator = sparse_module(self.backend).csr_matrix(self._reduced.astype(dtype, copy=self.backend != 'gpu'))
         self.linear_solver.factorize(operator)
         self._solution = array_module(self.backend).asarray(self.values[self._full_ids(self._free)], dtype=dtype)
 
@@ -983,7 +987,7 @@ def fem_system_estimate(n_dofs, entries_per_dof, local_dofs, n_elements, element
                                solver_host_bytes(n_active, entries, complex_values=False, symmetric=True,
                                                  mixed=host_direct_precision(host_direct) == 'mixed')))
         build_extra = refactor_extra = csr_bytes
-    else:   # pcg keeps the run-backend operator; a re-assembly makes the new copy before the old one goes
+    else:   # pcg keeps the run-backend operator; a re-assembly releases the old binding before the new copy (_factorize)
         from ..solvers.pcg import DTYPE_PRECISIONS, PRECISION_DTYPES, workspace_bytes   # numpy only
         pcg_precision = 'mixed' if mixed else DTYPE_PRECISIONS[precision]
         value_bytes = np.dtype(PRECISION_DTYPES[pcg_precision]).itemsize   # _solve_dtype: float32 only at 'single'
@@ -994,13 +998,18 @@ def fem_system_estimate(n_dofs, entries_per_dof, local_dofs, n_elements, element
         items.append((f'FEM operator, solution and CG workspace (run backend, pcg {pcg_precision})',
                       device_csr + vectors + workspace_bytes(n_active, pcg_precision, jacobi=jacobi,
                                                              csr_entries=entries)))
-        refactor_extra = device_csr
+        # Jacobi / mixed: the old binding is gone before the new copy, so only the new inverse diagonal's temporaries
+        refactor_extra = 2 * value_bytes * n_active
         if multigrid:
             from ..solvers import multigrid as amg
             items.append(('multigrid hierarchy (operators, prolongations, vectors)',
                           amg.hierarchy_bytes(n_active, value_bytes, entries_per_dof)))
+            host_items.append(('multigrid aggregates and tentative prolongators (host, kept)',
+                               amg.kept_host_bytes(n_active)))
             build_extra = amg.setup_extra_bytes(n_active, value_bytes, entries_per_dof)
-            refactor_extra += build_extra
+            # the old fine operator (hierarchy level 0) is dropped when the setup starts: its peak is the new copy
+            # (the kept operator item) and the setup transients
+            refactor_extra = build_extra
     if refactorizes:
         transient_items.append(('refactorisation', 'FEM operator copy and solver setup (run backend)', refactor_extra))
     return MemoryEstimate.from_items(items, build_extra=build_extra, host_items=host_items,

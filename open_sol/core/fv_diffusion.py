@@ -805,6 +805,7 @@ class DiffusionSystem:
         kept plain pattern runs the fused kernels (FUSED_REASSEMBLY)."""
         dtype = self.dtype
         xp = self.xp
+        self._release_assembly()
         c_xx = xp.array(c_xx, dtype=dtype)   # owned copies: the flux / dissipation post-processing reads them later
         c_yy = xp.array(c_yy, dtype=dtype)
         if self.cross_term_dirty:
@@ -882,6 +883,11 @@ class DiffusionSystem:
         solve_data = xp.empty_like(effective_data)
         _eliminate_fixed_entries(
             effective_data, pattern.entry_rows, pattern.indices, free_flat, solve_data)
+        # the per-entry assembly maps go before the solver setup when the re-assemblies on this pattern run the fused
+        # kernels (indptr / indices only; fixed_region_outflow rebuilds its entry rows transiently); a system that
+        # re-assembles through build_laplacian (c_xy, phi wrap, cut cells) keeps them: no rebuild (a sync) per step
+        if self._fused_pattern():
+            pattern.release_assembly_maps()
         solve_data[diagonal_positions] += fixed.ravel().astype(dtype)
         self.A_solve = sparse_module(self.backend).csr_matrix((solve_data, pattern.indices, pattern.indptr),
                                                               shape=(n_window, n_window))
@@ -896,6 +902,21 @@ class DiffusionSystem:
         self._keep_assembly(operator, conduction_diagonal, azimuthal_diagonal, fixed_values, free, capacity_over_dt,
                             loss_anchor_cells, rhs_drive, face_terms, face_conductances_xy, wrap_conductance,
                             (c_xx, c_yy, c_zz), cross, reference)
+
+    def _release_assembly(self) -> None:
+        """Drop the previous assembly before a full one builds its successor (both paths reproduce every array), so a
+        re-assembly never holds two operators, two sets of assembly vectors or (a PCGSolver: release_operator) the
+        solver's binding beside the new ones while the solver sets up (a multigrid setup is the peak; the estimate books
+        one assembly). Kept: what the anchor shortcut compares (assembled coefficients, C/dt, anchor code) and the
+        solution. A failed assembly leaves operator_dirty set, so every reader raises until the next one."""
+        self._operator_dirty = True   # not the setter: the change marks steer this assembly's anchor shortcut
+        self.operator_full = self.A_solve = None
+        self._conduction_diagonal = self.azimuthal_diagonal = self._loss_anchor_cells = None
+        self.fixed_values = self.free = self.rhs_offset = self.rhs_drive = self.inverse_diagonal = None
+        self.face_terms = self.face_conductances = self.wrap_conductance = self.cross = None
+        self._lower_cell_shares = None
+        if isinstance(self.linear_solver, PCGSolver):
+            self.linear_solver.release_operator()
 
     def _keep_assembly(self, operator, conduction_diagonal, azimuthal_diagonal, fixed_values, free, capacity_over_dt,
                        loss_anchor_cells, rhs_drive, face_terms, face_conductances, wrap_conductance, coefficients,
@@ -925,11 +946,15 @@ class DiffusionSystem:
         wrap, c_xy term, cut-cell walls or held edges) and window-shaped coefficients and C/dt."""
         pattern = self.pattern
         window_shape = tuple(self.window_shape)
-        return (self.fused_reassembly and pattern is not None and pattern.matches(window_shape)
-                and not self._kxy_active and not self.wrap_sign and self.held_wall is None
-                and self._insulated_wall_test is None and self.apertures is None
+        return (self._fused_pattern() and pattern is not None and pattern.matches(window_shape)
                 and tuple(c_xx.shape) == window_shape and tuple(c_yy.shape) == window_shape
                 and (capacity_over_dt is None or tuple(getattr(capacity_over_dt, 'shape', ())) == window_shape))
+
+    def _fused_pattern(self) -> bool:
+        """The operator-term conditions of _fused_reassembly_applies: fused_reassembly and a plain 5 / 7-point operator
+        (no c_xy term, phi wrap, held edges, cut-cell walls or apertures)."""
+        return (self.fused_reassembly and not self._kxy_active and not self.wrap_sign and self.held_wall is None
+                and self._insulated_wall_test is None and self.apertures is None)
 
     def _fused_geometry_factors(self):
         """(packed 1D face-area / length factors, offsets) of the window (core.fv_diffusion_fused), built once per
@@ -1247,7 +1272,7 @@ class DiffusionSystem:
         and marks (rhs_drive / rhs_offset never change), else the operator is dirtied so the next read or step
         re-assembles from the owner's restored inputs (a read's re-assembly is undone the same way)."""
         write_host_into(self.unknown, state['unknown'])
-        if state['assembly'] != self.n_assemblies:
+        if state['assembly'] != self.n_assemblies or self.operator_full is None:   # None: released by a failed one
             self.operator_dirty = True
             self.cross_term_dirty = True
             self._pending_anchor_check = None   # the next (full) assembly checks anchors again
@@ -1380,8 +1405,10 @@ class DiffusionSystem:
         mask_flat = mask_window.ravel()
         unknown = self.unknown.astype(np.float64)
         # Off-diagonal entries A_rc = -g_rc from a masked row to an unmasked column: sum A_rc (u_c - u_r) = g (u_r - u_c).
-        crossing = mask_flat[pattern.entry_rows] & ~mask_flat[pattern.indices]
-        crossing_rows = pattern.entry_rows[crossing]
+        entry_rows = pattern.entry_rows   # rebuilt transiently (released after the assembly)
+        crossing = mask_flat[entry_rows] & ~mask_flat[pattern.indices]
+        crossing_rows = entry_rows[crossing]
+        del entry_rows
         crossing_columns = pattern.indices[crossing]
         crossing_coupling = self.operator_full.data[crossing].astype(np.float64)
         edge_outflow = self.xp.sum(crossing_coupling * (unknown[crossing_columns] - unknown[crossing_rows]))
