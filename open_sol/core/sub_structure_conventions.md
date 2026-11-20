@@ -292,7 +292,13 @@ A new accepted sync joins this list.
   phasor) overrides `_indicator_flux`.
 - Two assembly paths: the first assembly and every wrap / c_xy / cut-cell case through `build_laplacian`, re-assemblies
   on the kept plain pattern through `fv_diffusion_fused` (selftest diffusion_fused_reassembly). A new operator term
-  goes into both paths or makes `_fused_reassembly_applies` refuse it; `_keep_assembly` stores what both keep.
+  goes into both paths or makes `_fused_pattern` refuse it; `_keep_assembly` stores what both keep.
+- One assembly at a time: every full assembly starts with `_release_assembly` (operators, assembly vectors, the
+  PCGSolver binding), keeping only what the anchor shortcut compares (assembled c, C/dt, anchor code). A new kept
+  assembly array joins both `_release_assembly` and `_keep_assembly`; nothing may read the previous assembly inside
+  assemble except those. The `LaplacianPattern` assembly maps (slot_positions, entry_rows) are released after the
+  first elimination where `_fused_pattern` holds and rebuilt transiently on access (fixed_region_outflow); systems
+  re-assembling through build_laplacian keep them (no rebuild sync per step; estimate: `conformal=`, cross_term, wrap).
 - c_xy cross term (2D Cartesian only): never drop its diagonal part (row sums would act as a spurious exchange with
   u = 0 at window / region corners). Definite on graded cells only for c_xy^2 < c_xx c_yy x 4 r / (1 + r)^2 per axis
   (r = neighbour width ratio), stricter than the continuum bound. Whether c_xy is nonzero is decided (one sync) only
