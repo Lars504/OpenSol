@@ -682,7 +682,7 @@ def _memory_estimate(settings_values, mesh, context):
     cudss = cudss_back_end(context.solvers)
     if cudss:   # DiffusionDirectSolver on the kept A_solve, refactorised per saturation iteration
         parts.append(cudss_diffusion_estimate(window_cells, 5 * window_cells, 2, cudss, input_copy=False,
-                                              refactorizes=bool(saturation)))
+                                              refactorizes=bool(saturation), symmetric_known=True))
     return combine(parts)
 
 
@@ -752,7 +752,7 @@ def _triangle_memory_estimate(settings_values, mesh, context):
                                     direct=linear_solver_direct(context), multigrid=linear_solver_multigrid(context),
                                     cudss=cudss_back_end(context.solvers), refactorizes=bool(saturation),
                                     kept_terms=False, precision=linear_solver_precision(context),
-                                    mixed=linear_solver_mixed(context))
+                                    mixed=linear_solver_mixed(context), symmetric_known=False)
     own = MemoryEstimate.from_items(host_items=(
         ('curl quadrature cache (float64)', (2 * local + 3) * points * FLOAT64_BYTES * elements),
         ('quadrature point state of one evaluation (float64)', _FEM_POINT_STATE * points * FLOAT64_BYTES * elements)))
