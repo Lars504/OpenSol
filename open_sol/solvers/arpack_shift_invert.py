@@ -182,9 +182,9 @@ def _values_on_pattern(base, matrix):
 class ShiftPencil:
     """Host terms (K_1, ..., K_m, M) of K - sigma M = sum_i a_i K_i - sigma M on one canonical CSR pattern (a real term
     float64 in a complex pencil too), their diagonals, M itself (dtype, for host products) and, on a cuDSS
-    factorization with at least device_min_entries stored
-    entries, their DevicePencil (else device None: the host route); symmetric_known: the caller vouches that every term
-    is (complex) symmetric, so no symmetry check is made (device or host route)."""
+    factorization with at least device_min_entries stored entries, their DevicePencil (else device None: the host
+    route); symmetric_known: the caller vouches that every term is (complex) symmetric, so no symmetry check is made
+    (device or host route)."""
 
     def __init__(self, stiffness_terms, mass, dtype, symmetric, device_runtime=None, device_min_entries=0,
                  symmetric_known=False):
