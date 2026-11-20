@@ -72,13 +72,13 @@ ACOUSTIC_PROPERTY_ARRAYS = {name: (name,) for name in (*ACOUSTIC_SCHEMA, *MONOCL
                                                         *PHOTOELASTIC_TENSOR_ARRAYS)}
 _COEFFICIENT_MATERIALS = frozenset(ACOUSTIC_SCHEMA) - {'gruneisen', 'photoelastic_p11', 'photoelastic_p12'}
 # the coefficients kernel's material inputs, in its argument order (a parked one: the host rebuild reads them all)
-_COEFFICIENT_INPUTS = ('rho', 'sound_speed', 'shear_speed', 'youngs_modulus', 'poisson_ratio', 'c11', 'c12', 'c22',
-                       'c66', 'acoustic_damping')
+COEFFICIENT_INPUTS = ('rho', 'sound_speed', 'shear_speed', 'youngs_modulus', 'poisson_ratio', 'c11', 'c12', 'c22',
+                      'c66', 'acoustic_damping')
 # MaterialGrid arrays a model build may park on the host (park_arrays; definition._parked_material_arrays decides):
 # the coefficient inputs (read only by coefficient rebuilds), gruneisen (read every step by a heat pulse or the heating
 # slot), the photoelastic arrays (acousto-optic transforms) and the piezo arrays (field slots, bound charge, stiffened
 # dt); never c16 / c26 (the monoclinic stress kernel reads them every step)
-PARKABLE_ARRAYS = (*_COEFFICIENT_INPUTS, 'gruneisen', 'photoelastic_p11', 'photoelastic_p12',
+PARKABLE_ARRAYS = (*COEFFICIENT_INPUTS, 'gruneisen', 'photoelastic_p11', 'photoelastic_p12',
                    *PHOTOELASTIC_TENSOR_ARRAYS, *PIEZO_ARRAYS)
 _DAMPING = 'acoustic_damping'                     # its presence keeps the va arrays (AcousticPhysics._set_storage)
 _NORMAL_STIFFNESS = frozenset({'c11', 'c22'})     # set in a cell: c22 is its own array, else the c11 one
@@ -831,7 +831,7 @@ class AcousticPhysics(PhysicsSolver):
         """Effective c11 / c12 / c22 / c66c and the velocity coefficients at self.dt, in place: the coefficients kernel
         on the run backend, or its numpy twin on host copies when a coefficient input is parked (_rebuild_on_host)."""
         materials = self.materials
-        if not materials.parked.isdisjoint(_COEFFICIENT_INPUTS):
+        if not materials.parked.isdisjoint(COEFFICIENT_INPUTS):
             self._rebuild_on_host()
             return
         keep = self._no_rigid if self._rigid_keep is None else self._rigid_keep
@@ -853,7 +853,7 @@ class AcousticPhysics(PhysicsSolver):
         downloaded, the shares and rigid keep mask too) into host outputs, then written into the device arrays in
         place (the step graphs keep their pointers)."""
         materials = self.materials
-        inputs = tuple(to_host(getattr(materials, name)) for name in _COEFFICIENT_INPUTS)
+        inputs = tuple(to_host(getattr(materials, name)) for name in COEFFICIENT_INPUTS)
         has_keep = self._rigid_keep is not None
         keep = to_host(self._rigid_keep) if has_keep else np.ones(1, dtype=bool)
         separate_c22, lossy = self.c22 is not self.c11, self.va_x is not None
