@@ -369,6 +369,11 @@ def _check_kerr_linearization(results):
 
 
 _TANGENT_TOLERANCE = 1e-8   # relative: round-off of the 4-point formula (exact for degree <= 4; carriers degree 5)
+# (d) of nlfd_newton_tangent: real_gmres on its complex64 basis (the Newton steps) at GMRES_SINGLE_MIN_TOLERANCE vs the
+# complex128 one at 1e-13: true residual and solution within 10 x that tolerance (fp32 Arnoldi relation ~1e-7 |H|,
+# the map's condition ~2)
+_SINGLE_GMRES_TOLERANCE = 1e-5
+_SINGLE_GMRES_SIZE = 400
 
 
 class _TangentStore:
@@ -473,8 +478,42 @@ def _check_newton_tangent(results):
     worst = max(errors.values()) if errors else math.inf
     if worst > _TANGENT_TOLERANCE:
         violations.append(f'tangent != finite difference: {errors}')
-    return _result(violations, {'relative_errors': errors, 'peak_carrier_density': peak}, measured=worst,
-                   tolerance=_TANGENT_TOLERANCE)
+    gmres_errors = _single_gmres_errors(rng, violations)
+    return _result(violations, {'relative_errors': errors, 'peak_carrier_density': peak,
+                                'single_gmres': gmres_errors}, measured=worst, tolerance=_TANGENT_TOLERANCE)
+
+
+def _single_gmres_errors(rng, violations) -> dict:
+    """(d) of nlfd_newton_tangent: iteration.real_gmres with the complex64 basis of the Newton steps against the
+    complex128 one on a random real-linear map v -> v + M v + N conj(v) (|M|, |N| ~0.3: well conditioned), its true
+    residual, and its refusal below GMRES_SINGLE_MIN_TOLERANCE; violations appended."""
+    from .iteration import GMRES_SINGLE_MIN_TOLERANCE, real_gmres
+    size = _SINGLE_GMRES_SIZE
+    first, second = (0.2 / math.sqrt(size) * _random_complex(rng, (size, size)) for _ in range(2))
+
+    def real_linear(vector):
+        return vector + first @ vector + second @ np.conj(vector)
+
+    rhs = _random_complex(rng, size)
+    reference, _, reference_residual = real_gmres(real_linear, rhs, 1e-13, max_iterations=10 * size)
+    single, products, estimate = real_gmres(real_linear, rhs, GMRES_SINGLE_MIN_TOLERANCE, max_iterations=10 * size,
+                                            single_basis=True)
+    errors = {'solution': float(np.linalg.norm(single - reference) / np.linalg.norm(reference)),
+              'true_residual': float(np.linalg.norm(real_linear(single) - rhs) / np.linalg.norm(rhs)),
+              'estimated_residual': float(estimate), 'reference_residual': float(reference_residual),
+              'products': int(products)}
+    if single.dtype != np.complex128:
+        violations.append(f'single-basis GMRES returned {single.dtype}, not complex128')
+    if not (errors['solution'] <= _SINGLE_GMRES_TOLERANCE and errors['true_residual'] <= _SINGLE_GMRES_TOLERANCE
+            and estimate <= GMRES_SINGLE_MIN_TOLERANCE and reference_residual <= 1e-12):
+        violations.append(f'single-basis GMRES vs complex128: {errors}')
+    try:
+        real_gmres(real_linear, rhs, 0.1 * GMRES_SINGLE_MIN_TOLERANCE, single_basis=True)
+    except ValueError:
+        pass
+    else:
+        violations.append(f'single-basis GMRES accepted a tolerance below {GMRES_SINGLE_MIN_TOLERANCE:g}')
+    return errors
 
 
 def _check_bloch_parity(results):
@@ -651,8 +690,10 @@ NLFD_CPU_SELFTESTS = (
                     'an H_z channel, each against the 4-point central difference of the polarisation along random '
                     'complex tangent fields (conjugated slots take conj V: a real-direction derivative), and (c) the '
                     'adjoint transpose adjoint.carrier_cotangents: Re(c . dP[V]) = Re(sum_m g_m . V_m) for a random '
-                    'cotangent c. measured = worst relative deviation; error = measured + failed checks; tolerance '
-                    f'{_TANGENT_TOLERANCE:g}.',
+                    'cotangent c, and (d) iteration.real_gmres on the complex64 basis of the Newton steps against the '
+                    'complex128 one on a random real-linear map v + M v + N conj(v) (solution and true residual within '
+                    f'{_SINGLE_GMRES_TOLERANCE:g}, refused below its tolerance floor). measured = worst relative '
+                    f'deviation of (a)-(c); error = measured + failed checks; tolerance {_TANGENT_TOLERANCE:g}.',
         specs=lambda: {},
         check=_check_newton_tangent,
     ),

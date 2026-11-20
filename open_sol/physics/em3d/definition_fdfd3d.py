@@ -334,10 +334,13 @@ def _memory_estimate(settings_values, mesh, context):
     cudss_items, external_items, external_extra = _cudss_eigen_items(factorization, unknowns, _ROW_ENTRIES * unknowns,
                                                                      general, 'the curl-curl operator',
                                                                      fill=FactorFill(cudss_counted))
-    # the Arnoldi basis (device Krylov-Schur where it runs, first pass only) and the filter's device A copy
+    # the Arnoldi basis (device Krylov-Schur where it runs, first pass only; a mixed LDL^T of D A is polished: complex64
+    # rows, eigenfrequency solve_resonances single_basis) and the filter's device A copy
     search_host, search_transient = resonance_search_items(solver_backend(context.spec), unknowns, n_wanted, n_basis,
                                                            own_cudss=factorization in CUDSS_FACTORIZATIONS,
-                                                           filter_entries=_ROW_ENTRIES * unknowns)
+                                                           filter_entries=_ROW_ENTRIES * unknowns,
+                                                           single_basis=polished_mixed_search(factorization, unknowns,
+                                                                                              not general))
     host_items = factor_items + (
         (f'operator A and its CSC copy ({_ROW_ENTRIES} entries per row)',
          2 * (_ROW_ENTRIES * COMPLEX128_CSR_ENTRY_BYTES * unknowns + row_bytes)),

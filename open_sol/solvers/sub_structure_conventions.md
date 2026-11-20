@@ -12,7 +12,14 @@ Root rules: structure_conventions.md "Solver roles".
 - Shared helpers, never a local copy (grep these modules first): cudss_factor (CSR canonicalisation `canonical_csr` /
   `csr_rows`, the GMRES-IR loop `gmres_refine` on any array module, the probed-factor base `ProbedFactor` of cuDSS and
   host_direct), sparse_direct (`ExactSolveRecord`, `require_backend_operator`, `recycled_gmres`, `cudss_precision`),
-  pcg (`DeviceCsrProduct`, the capturable gpu CSR product; the CPU CG numbers of definition_helpers' warning).
+  pcg (`DeviceCsrProduct`, the capturable gpu CSR product; the CPU CG numbers of definition_helpers' warning),
+  device_matrices (`device_matrix`: the device copy of a host matrix that products read beside a factor; estimators
+  `device_matrix_bytes`, `device_product_bytes`).
+- Real stays real on the device: a cupyx CSR of a real matrix times a complex cupy operand casts the MATRIX to
+  complex128 on every product (cusparse `_cast_common_type`), so a stored float64 copy silently costs a complex copy
+  per call. Real matrices meeting complex vectors go through `device_matrix` (float64 view of the operand), never a
+  bare `cupyx...csr_matrix(real) @ complex`; a complex128 upload of a real matrix (`astype(np.complex128)` before the
+  upload) is the same waste kept for good.
 - Naming: `PhysicsSolver` (core.solver_base) is the physics runtime; objects here are named by role (PCGSolver is a
   LinearSolver).
 
@@ -217,9 +224,20 @@ internals: cudss_factor.py header; MUMPS / PARDISO: section "host_direct"; nvmat
 - Tolerance floors (`tolerance_floor=`; grep `ARPACK_TOLERANCE_FLOOR`, each with its reason at the constant) only
   where nothing needs round-off eigenvalues: PML / CPML problems whose PML-mode clusters run into MAX_RESTARTS at
   machine precision, Rayleigh-polished solves. Everything else passes 0 (machine precision).
-- `eigs_device(single_basis=True)` (complex64 basis) only on a tolerance >= SINGLE_BASIS_MIN_TOLERANCE (ValueError
-  below): its Arnoldi relation holds to fp32. Caller: solve_resonances' polished mixed search (`refine`); estimators
-  book it through `memory_estimates.polished_mixed_search`. One search keeps one basis dtype (a resume checks it).
+- `eigs_device(single_basis=True)` / `eigs(single_basis=True)` (complex64 basis on the device Krylov-Schur; host
+  ARPACK ignores it) only on a tolerance >= SINGLE_BASIS_MIN_TOLERANCE (ValueError below, on every path, so a misuse
+  fails at any size): its Arnoldi relation holds to fp32. Callers: solve_resonances' polished mixed search
+  (`refine`; estimators book it through `memory_estimates.polished_mixed_search`), other eigs callers through
+  `arnoldi_basis_bytes(single_basis=True)`. One search keeps one basis dtype (a resume checks it).
+- Device B of the shift-invert maps: `device_factor_matvec(factorization, B, symmetric=)` and
+  `ShiftPencil.device_mass` store B through `device_matrix` (float64 when real, also a complex-typed B with zero
+  imaginary parts; a diagonal B as its vector; symmetric: lower triangle + diagonal, probed). Estimators book
+  `device_matrix_bytes(n, B entries, symmetric, real, diagonal)`, never a complex128 CSR of a real B. The symmetric
+  storage applies L^T by cuSPARSE's transposed product (slower than an untransposed SpMV): fine beside a factor solve
+  per application, not for a product-bound loop.
+- ShiftPencil keeps a real term (K_i or M) float64 inside a complex pencil (DevicePencil term bytes 8, not 16, for
+  `device_pencil_bytes(term_value_bytes=)`); a complex pencil whose terms and coefficients are all real factors real
+  on the DevicePencil route (factorize_pencil judges the combined values), complex on the host route.
 - 'auto' -> cuDSS only where a role sets `eigen_role(auto_factorizations=)` (grep it): a CudssFactorization has no
   transposed LU solve, no recycling and no inertia of an LU / complex factor, so only roles whose consumers all cope
   get it; the rest stay superlu (unchecked). A runtime resolved from 'auto' falls back to SuperLU for good on
@@ -228,7 +246,9 @@ internals: cudss_factor.py header; MUMPS / PARDISO: section "host_direct"; nvmat
 - cuDSS memory items (this role and sparse_direct): only through the cudss_factor helpers: per plan
   `operator_copy_bytes` + `solve_buffer_bytes` (kept), `solve_peak_bytes` as a transient (CUDSS_SOLVE_PHASE, or inside
   the phase of an own factor), refreshing callers `index_map_bytes` (run item) + `refresh_peak_bytes` (transient), the
-  factor an external item from `factor_device_bytes` (a counted `FactorFill` wherever the mesh gives one). Refit the
+  factor an external item from `factor_device_bytes` (a counted `FactorFill` wherever the mesh gives one). A mixed
+  plan's factor-dtype copy shares the value-dtype copy's index arrays (`operator_copy_bytes` counts one index set; an
+  estimator subtracting index arrays shared with its own maps subtracts one set, `fem.diffusion`). Refit the
   factor rule from cudss_permanent_bytes / eigen_permanent_bytes and *_lu_entries, never from *_factor_device_bytes
   (those include the pool copies the estimators book as items: counted twice).
 

@@ -37,7 +37,7 @@ open_sol/
 │                    # electrostatics), mechanics, membrane, semiconductor, acoustics, fluid, magnetic
 ├── solvers/         # solver roles, SolverTypes (definition.py) and the role runtimes (pcg + multigrid, line_block,
 │                    # sparse_direct, banded, arpack_shift_invert, block_eigen, cudss_factor, host_direct,
-│                    # explicit_kernels)
+│                    # explicit_kernels; device_matrices: device copies of host matrices for products)
 ├── coupling/        # CouplingTerm / CouplingGroup, DynamicMaterialUpdate, MultiphysicsRunner, SlotSum, the coupling
 │                    # type definitions per partner family (definitions_*.py) and their self-tests
 ├── model/           # spec, schema (registry), expressions, geometry, validate, meshing, builder (-> Session),
@@ -353,6 +353,10 @@ first bring the background physics (those without the study's hook) to a station
   ModalPencil, a harmonic system's factor) calls its `release()` before dropping or replacing it, or passes it as
   `previous=` to the next factorisation of the same pattern. Host direct threads, the PARDISO / OpenBLAS clash and
   its memory guard: host_direct.py header (rules across files: solvers sub file "host_direct").
+- Real stays real on the device: a cupyx CSR of real values times a complex cupy operand casts the matrix to complex128
+  on every product, so real matrices meet complex vectors through `solvers.device_matrices.device_matrix` (float64,
+  symmetric ones as lower triangle + diagonal; solvers sub file "Layout and imports"), never a complex upload of a
+  real matrix.
 - A traceback keeps a failed build's frames and locals alive: inside `except` record only text, call
   `release_session` after the block; an exception kept or re-raised later goes through
   `gpu_memory.drop_exception_frames` first.
