@@ -88,7 +88,7 @@ def _device_basis_for_widening(kept_decomposition, wider_basis):
     n_unknowns = int(kept_basis.shape[1])
     held_bytes = int(kept_basis.nbytes)
     device_held = 0 if parked else held_bytes
-    wider_bytes = (int(wider_basis) + 1) * 16 * n_unknowns
+    wider_bytes = (int(wider_basis) + 1) * kept_basis.itemsize * n_unknowns   # complex64 rows: single_basis
     room = pool_room_bytes()   # None before a budget (scripts): the allocation itself decides
     growth = f'{format_bytes(held_bytes)} to {format_bytes(wider_bytes)} of GPU memory'
     if room is not None and wider_bytes > room + device_held:
@@ -130,6 +130,9 @@ FILTER_DEVICE_BLOCK_COLUMNS = 4
 # 44k Nedelec unknowns: 609 serial products took 2.3 s, ~10 % of the run)
 HOST_MASS_THREADS = 8
 HOST_MASS_THREAD_MIN_ENTRIES = 500_000
+# a symmetric search keeps the device B as its lower triangle (_DeviceSymmetricMass: ~0.27 GiB less than the full CSR
+# on the 690k-unknown nanobeam eighth model); B's symmetry is probed first, |u^T B v - v^T B u| <= this x |u| |B v|
+_MASS_SYMMETRY_TOLERANCE = 1e-10
 _MASS_POOL = []   # the ThreadPoolExecutor of _mass_pool, made on first use
 
 
@@ -262,13 +265,27 @@ class _PencilMass:
             return out
         return self.diagonal.reshape((-1,) + (1,) * (np.ndim(vectors) - 1)) * vectors
 
-    def device_matrix(self):
-        """cupyx complex128 CSR copy of a sparse B (None for a diagonal B): one upload the device solves and the
-        resonance filter share."""
+    def device_matrix(self, symmetric=False):
+        """Device copy of a sparse B (None for a diagonal B), one upload the device solves and the resonance filter
+        share: a complex128 cupyx CSR, symmetric (B^T = B, probed) a _DeviceSymmetricMass of half its bytes."""
         if self.matrix is None:
             return None
+        if symmetric:
+            self.check_symmetric()
+            return _DeviceSymmetricMass(self.matrix)
         import cupyx.scipy.sparse
         return cupyx.scipy.sparse.csr_matrix(self.matrix)
+
+    def check_symmetric(self):
+        """ValueError unless u^T B v = v^T B u for two random vectors (to _MASS_SYMMETRY_TOLERANCE of |u| |B v|)."""
+        random = np.random.default_rng(_START_VECTOR_SEED)
+        probes = random.standard_normal((self.size, 2))
+        products = self.times(probes)
+        forward, backward = probes[:, 0] @ products[:, 1], probes[:, 1] @ products[:, 0]
+        scale = np.linalg.norm(probes[:, 0]) * np.linalg.norm(products[:, 1])
+        if not abs(forward - backward) <= _MASS_SYMMETRY_TOLERANCE * scale:
+            raise ValueError(f'solve_resonances(symmetric=True) needs a symmetric sparse mass matrix: u^T B v - v^T B u '
+                             f'= {abs(forward - backward):.3g}, |u| |B v| = {scale:.3g}')
 
     def device_times(self, device_matrix=None):
         """Callable v -> B v on cupy vectors (B uploaded once; device_matrix: a sparse B's device_matrix already
@@ -279,6 +296,45 @@ class _PencilMass:
             return lambda vector: diagonal * vector
         matrix = self.device_matrix() if device_matrix is None else device_matrix
         return lambda vector: matrix @ vector
+
+
+class _DeviceSymmetricMass:
+    """A symmetric sparse B on the device as its strict lower triangle L (cupyx CSR) and diagonal d: B X = L X + L^T X
+    + d X, L^T read through cuSPARSE's transposed product on L's arrays (no copy)."""
+
+    def __init__(self, matrix):
+        import cupy as cp
+        import cupyx.scipy.sparse
+        import scipy.sparse
+        lower = scipy.sparse.tril(matrix, k=-1, format='csr')
+        lower.sum_duplicates()   # sorted, no duplicates: cupyx then never re-sorts per product
+        self.lower = cupyx.scipy.sparse.csr_matrix(lower)
+        self.lower.has_canonical_format = True
+        self.upper = self.lower.T   # csc view of the same arrays
+        self.diagonal = cp.asarray(matrix.diagonal(), dtype=np.complex128)
+        self.shape = matrix.shape
+
+    def __matmul__(self, columns):
+        product = self.lower @ columns
+        product += self.upper @ columns
+        product += (self.diagonal if columns.ndim == 1 else self.diagonal[:, None]) * columns
+        return product
+
+    def bilinear(self, left, right):
+        """(k,) column sums of left * (B right) for (n, k) blocks by untransposed L products only (u^T L^T w = w^T L u):
+        the resonance filter's measures, without a transposed cuSPARSE block product and its work buffer."""
+        return ((left * (self.lower @ right)).sum(axis=0) + (right * (self.lower @ left)).sum(axis=0)
+                + (left * (self.diagonal[:, None] * right)).sum(axis=0))
+
+
+def device_mass_bytes(n_unknowns, entries, symmetric) -> int:
+    """Pool bytes of _PencilMass.device_matrix for `entries` stored entries: a complex128 CSR, symmetric the strict lower
+    triangle's CSR + the complex128 diagonal."""
+    n_unknowns, entries = int(n_unknowns), int(entries)
+    indptr = 4 * (n_unknowns + 1)
+    if not symmetric:
+        return 20 * entries + indptr
+    return 20 * ((entries - n_unknowns) // 2) + indptr + 16 * n_unknowns
 
 
 def solve_resonances(host_operator, mass, omega_target, energy_weights, in_window, n_resonances, field_of=None,
@@ -365,8 +421,8 @@ def solve_resonances(host_operator, mass, omega_target, energy_weights, in_windo
     start_vector[~free] = 0.0
     target_wavelength = 2.0 * math.pi * C0 / omega_target
     # a sparse B (FEM) goes to the device once: the device solves and the resonance filter read the same copy (two
-    # copies held ~0.58 GB beside the factor on the 690k-unknown nanobeam eighth model)
-    device_mass = b_mass.device_matrix() if on_device and scaled_b is b_mass else None
+    # copies held ~0.58 GB beside the factor on the 690k-unknown nanobeam eighth model); symmetric: its lower triangle
+    device_mass = (b_mass.device_matrix(symmetric=bool(symmetric)) if on_device and scaled_b is b_mass else None)
     if on_device:
         b_times = scaled_b.device_times(device_mass)
         solves_before = (factorization.n_solves, factorization.solve_seconds)
@@ -409,7 +465,8 @@ def solve_resonances(host_operator, mass, omega_target, energy_weights, in_windo
                 basis_kept = basis_kept or kept_decomposition is not None
                 theta, vectors, pass_applications, converged, kept_decomposition = eigen_solver.eigs_device(
                     apply_on_backend, n_unknowns, n_wanted, start_vector, tolerance_floor=tolerance_floor,
-                    default_basis=default_basis, resume=kept_decomposition, matvec_on_host=host_device)
+                    default_basis=default_basis, resume=kept_decomposition, matvec_on_host=host_device,
+                    single_basis=refine)   # a polished mixed search: complex64 basis (SINGLE_BASIS_MIN_TOLERANCE)
                 # the filter runs beside the factor without the device basis: its rows wait on the host for a widening
                 kept_decomposition = _parked_decomposition(
                     kept_decomposition, widenings < MAX_WIDENINGS and n_wanted < n_free - 2)
@@ -538,7 +595,12 @@ def _energy_weights(energy_weights, n_unknowns):
         if energy_weights.shape != (n_unknowns, n_unknowns):
             raise ValueError(f'solve_resonances needs an ({n_unknowns}, {n_unknowns}) energy matrix, got shape '
                              f'{energy_weights.shape}')
-        return energy_weights.tocsr()
+        energy_weights = energy_weights.tocsr()
+        if np.iscomplexobj(energy_weights.data):   # the filter applies W to Re v and Im v (real products)
+            if np.any(energy_weights.data.imag != 0.0):
+                raise ValueError('solve_resonances needs a real energy matrix W, got complex values')
+            energy_weights = energy_weights.real
+        return energy_weights.astype(np.float64, copy=False)
     energy_weights = np.asarray(energy_weights, dtype=np.float64).ravel()
     if energy_weights.size != n_unknowns:
         raise ValueError(f'solve_resonances needs one energy weight per unknown ({n_unknowns}), got '
@@ -576,9 +638,10 @@ class _ResonanceFilter:
         self.region = None if in_region is None else xp.asarray(in_region, dtype=np.float64)[:, None]
         self.row_scale = None if row_scale is None else xp.asarray(row_scale)[:, None]
 
-    def _applied_form(self, matrix, diagonal, kept=None):
+    def _applied_form(self, matrix, diagonal, kept=None, real=False):
         """The operator measures applies: a diagonal column as stored, a sparse one on the host as is, on the device
-        `kept` (an uploaded copy the caller holds) or a fresh complex128 upload the caller frees after use."""
+        `kept` (an uploaded copy the caller holds) or a fresh upload the caller frees after use (complex128; real: the
+        float64 W as stored)."""
         if diagonal or not self.on_gpu:
             return matrix
         if kept is not None:
@@ -587,7 +650,7 @@ class _ResonanceFilter:
         import cupyx.scipy.sparse
         csr = matrix.tocsr()
         data = cp.asarray(csr.data)
-        if data.dtype != np.complex128:   # a complex cuSPARSE product of the complex vectors (W is real)
+        if not real and data.dtype != np.complex128:   # a complex cuSPARSE product of the complex vectors
             data = data.astype(np.complex128)
         return cupyx.scipy.sparse.csr_matrix((data, cp.asarray(csr.indices), cp.asarray(csr.indptr)), shape=csr.shape)
 
@@ -609,11 +672,17 @@ class _ResonanceFilter:
 
         def to_host(parts):   # one read per block and operator
             return parts.get() if xp is not np else parts
-        weights = self._applied_form(self.weights, self.weights_diagonal)
+        weights = self._applied_form(self.weights, self.weights_diagonal, real=True)
         for block in blocks:
             columns = columns_of(block)
-            energies = (xp.abs(columns) ** 2 * weights if self.weights_diagonal
-                        else xp.real(xp.conj(columns) * (weights @ columns)))
+            if self.weights_diagonal:
+                energies = xp.abs(columns) ** 2 * weights
+            else:   # W real: Re(conj(v) W v) = Re v W Re v + Im v W Im v, one real product (no complex copy of W)
+                n_block = columns.shape[1]
+                parts = xp.concatenate((columns.real, columns.imag), axis=1)
+                products = weights @ parts
+                energies = parts[:, :n_block] * products[:, :n_block] + parts[:, n_block:] * products[:, n_block:]
+                del parts, products
             del columns
             region = (xp.zeros(energies.shape[1], dtype=np.float64) if self.region is None
                       else xp.sum(energies * self.region, axis=0))
@@ -628,11 +697,16 @@ class _ResonanceFilter:
                 applied_by = self._applied_form(matrix, diagonal, kept)
                 for block in blocks:
                     columns = columns_of(block)
-                    applied = applied_by * columns if diagonal else applied_by @ columns
                     scaled = columns if self.row_scale is None else self.row_scale * columns   # D v (v^T D = (D v)^T)
-                    parts = to_host(xp.stack((xp.sum(xp.conj(columns) * applied, axis=0),
-                                              xp.sum(scaled * applied, axis=0))))
-                    del columns, applied, scaled
+                    if isinstance(applied_by, _DeviceSymmetricMass):
+                        parts = to_host(xp.stack((applied_by.bilinear(xp.conj(columns), columns),
+                                                  applied_by.bilinear(scaled, columns))))
+                    else:
+                        applied = applied_by * columns if diagonal else applied_by @ columns
+                        parts = to_host(xp.stack((xp.sum(xp.conj(columns) * applied, axis=0),
+                                                  xp.sum(scaled * applied, axis=0))))
+                        del applied
+                    del columns, scaled
                     result[names[0]][block], result[names[1]][block] = parts
                 del applied_by
         return result

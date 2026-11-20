@@ -829,14 +829,16 @@ class ArpackShiftInvertSolver:
         return theta, vectors, applications[0], converged
 
     def eigs_device(self, matvec, n_unknowns, n_wanted, start_vector=None, tolerance_floor=0.0,
-                    max_restarts=MAX_RESTARTS, default_basis=0, resume=None, matvec_on_host=False, reserve_basis=0):
+                    max_restarts=MAX_RESTARTS, default_basis=0, resume=None, matvec_on_host=False, reserve_basis=0,
+                    single_basis=False):
         """eigs on the GPU (S5b): (theta, host vectors, applications, converged, state) of the n_wanted largest-|theta|
         eigenpairs of `matvec` (cupy complex128 (n,) -> cupy array; matvec_on_host: numpy -> numpy) by Krylov-Schur with
         the basis on the device (module header "Device Krylov-Schur"); tolerance, basis and restarts as eigs; resume =
         the state of an earlier call on the same matvec (a widening: its Krylov decomposition kept, expanded to the
         larger basis, in place when its storage holds it; a state whose basis the caller moved to the host (numpy
-        rows) is uploaded into the new storage); reserve_basis: allocate rows for a later basis that large.
-        Too small for a device basis (device_arnoldi_fits without the host rule): host eigs, state None."""
+        rows) is uploaded into the new storage); reserve_basis: allocate rows for a later basis that large; single_basis:
+        a complex64 basis (tolerance >= SINGLE_BASIS_MIN_TOLERANCE, else ValueError). Too small for a device basis
+        (device_arnoldi_fits without the host rule): host eigs, state None."""
         import cupy as cp
         basis_size = arnoldi_basis_size(n_wanted, n_unknowns, self.subspace_size, default_basis)
         if not device_arnoldi_fits(n_unknowns, basis_size):
@@ -847,9 +849,13 @@ class ArpackShiftInvertSolver:
         self.last_arnoldi = 'device Krylov-Schur'
         start = time.perf_counter()
         tolerance = max(self.tolerance, float(tolerance_floor)) or float(np.finfo(np.float64).eps)
+        if single_basis and tolerance < SINGLE_BASIS_MIN_TOLERANCE:
+            raise ValueError(f'eigs_device: a complex64 basis needs a tolerance >= {SINGLE_BASIS_MIN_TOLERANCE:g}, got '
+                             f'{tolerance:g}')
         search = _KrylovSchur(matvec, int(n_unknowns), int(n_wanted), basis_size, tolerance, start_vector, resume,
                               matvec_on_host=matvec_on_host,
-                              capacity=min(int(reserve_basis), int(n_unknowns) // DEVICE_ARNOLDI_MIN_RATIO - 1))
+                              capacity=min(int(reserve_basis), int(n_unknowns) // DEVICE_ARNOLDI_MIN_RATIO - 1),
+                              basis_dtype=np.complex64 if single_basis else np.complex128)
         try:
             theta, vectors, converged = search.run(int(max_restarts))
         finally:
@@ -958,21 +964,33 @@ class ArpackShiftInvertSolver:
 
 _ONE, _ZERO, _MINUS_ONE = np.complex128(1.0), np.complex128(0.0), np.complex128(-1.0)
 _UNIT_ROW_FLOOR = 1e-300   # |w|^2 floor of the device normalisation (a breakdown is caught on the host afterwards)
-_UNIT_ROW_KERNEL = []
+_UNIT_ROW_KERNELS = {}     # basis dtype -> ElementwiseKernel
+# eigs_device(single_basis=True): a complex64 basis (rows, CGS2 by cuBLAS cgemv, restarts), the matvec fed complex128
+# and H complex128 on the host. Its Arnoldi relation holds to ~1e-7 |H| (fp32 rows and projections), so the tolerance
+# must stay above this: the polished mixed search (eigenfrequency: ARPACK to MIXED_ARPACK_TOLERANCE 1e-6, its solves
+# ~3e-8 off already, float64 Rayleigh quotients afterwards). Half the basis bytes: ~0.6 GiB of the widened pass on the
+# 690k-unknown nanobeam eighth model (byte count)
+SINGLE_BASIS_MIN_TOLERANCE = 1e-6
 
 
-def _unit_row_kernel():
-    """ElementwiseKernel row = w / sqrt(|w|^2), |w|^2 read on the device from slot `slot` of a float64 array (no sync)."""
-    if not _UNIT_ROW_KERNEL:
+def _unit_row_kernel(dtype=np.complex128):
+    """ElementwiseKernel row = w / sqrt(|w|^2) of a complex128 / complex64 w, |w|^2 read on the device from slot `slot`
+    of the real view of the same precision (no sync)."""
+    dtype = np.dtype(dtype)
+    if dtype not in _UNIT_ROW_KERNELS:
         import cupy as cp
-        _UNIT_ROW_KERNEL.append(cp.ElementwiseKernel(
-            'complex128 w, raw float64 squared, int64 slot', 'complex128 row',
-            f'row = w * (1.0 / sqrt(fmax(squared[slot], {_UNIT_ROW_FLOOR!r})))', 'open_sol_krylov_unit_row'))
-    return _UNIT_ROW_KERNEL[0]
+        complex_name, real_name = {np.dtype(np.complex128): ('complex128', 'float64'),
+                                   np.dtype(np.complex64): ('complex64', 'float32')}[dtype]
+        _UNIT_ROW_KERNELS[dtype] = cp.ElementwiseKernel(
+            f'{complex_name} w, raw {real_name} squared, int64 slot', f'{complex_name} row',
+            f'row = w * ({"float" if real_name == "float32" else "double"})'
+            f'(1.0 / sqrt(fmax((double)squared[slot], {_UNIT_ROW_FLOOR!r})))',
+            f'open_sol_krylov_unit_row_{complex_name}')
+    return _UNIT_ROW_KERNELS[dtype]
 
 
 def _gram_schmidt(basis, vector, coefficients, correction):
-    """CGS2 of a cupy complex128 vector (in place) against the orthonormal device rows of basis (k, n): both classical
+    """CGS2 of a cupy vector (in place; the basis dtype) against the orthonormal device rows of basis (k, n): both classical
     passes always, cuBLAS gemv on the rows as F-order (n, k) columns; coefficients (k,) = the summed projections. No
     host read (the caller packs it)."""
     from cupy import cublas
@@ -990,28 +1008,32 @@ class _KrylovSchur:
     numpy matvec, fed from the packed read of the previous step."""
 
     def __init__(self, matvec, n_unknowns, n_wanted, basis_size, tolerance, start_vector, resume,
-                 matvec_on_host=False, capacity=0):
+                 matvec_on_host=False, capacity=0, basis_dtype=np.complex128):
         import cupy as cp
         import cupyx
         self.matvec = matvec
         self.matvec_on_host = bool(matvec_on_host)
+        # basis rows, product, projections and |w|^2 in basis_dtype (complex64: SINGLE_BASIS_MIN_TOLERANCE); the matvec
+        # gets complex128 rows, H stays complex128 on the host
+        dtype = self.basis_dtype = np.dtype(basis_dtype)
+        real_dtype = np.float32 if dtype == np.complex64 else np.float64
         # per application: the product w, the second-pass projections, one packed device buffer [coefficients (m + 1
         # slots), |w|^2 (real part of slot m + 1), host matvec: the next unit row] and its pinned host twin
-        self._product = cp.empty(n_unknowns, dtype=np.complex128)
-        self._correction = cp.empty(basis_size + 1, dtype=np.complex128)
+        self._product = cp.empty(n_unknowns, dtype=dtype)
+        self._correction = cp.empty(basis_size + 1, dtype=dtype)
         self._norm_slot = basis_size + 1
         packed_size = basis_size + 2 + (n_unknowns if self.matvec_on_host else 0)
-        self._packed = cp.zeros(packed_size, dtype=np.complex128)
-        self._packed_real = self._packed.view(np.float64)
-        self._host_packed = cupyx.empty_pinned((packed_size,), dtype=np.complex128)
+        self._packed = cp.zeros(packed_size, dtype=dtype)
+        self._packed_real = self._packed.view(real_dtype)
+        self._host_packed = cupyx.empty_pinned((packed_size,), dtype=dtype)
         self._host_row = None   # matvec_on_host: (basis row, its host copy in the pinned buffer) of the next application
         # E4, device matvec: the H columns of an expansion and their |w|^2 stay on the device (row j = column j:
         # coefficients in slots 0..j, |w|^2 in the real part of slot m + 1), one read per expansion into a pinned twin
         self._columns = self._columns_real = self._host_columns = None
         if not self.matvec_on_host:
-            self._columns = cp.zeros((basis_size, basis_size + 2), dtype=np.complex128)
-            self._columns_real = self._columns.reshape(-1).view(np.float64)
-            self._host_columns = cupyx.empty_pinned((basis_size, basis_size + 2), dtype=np.complex128)
+            self._columns = cp.zeros((basis_size, basis_size + 2), dtype=dtype)
+            self._columns_real = self._columns.reshape(-1).view(real_dtype)
+            self._host_columns = cupyx.empty_pinned((basis_size, basis_size + 2), dtype=dtype)
         self.n_unknowns = n_unknowns
         self.n_wanted = n_wanted
         self.basis_size = basis_size   # m: Arnoldi vectors before each restart (V holds m + 1 rows)
@@ -1024,18 +1046,20 @@ class _KrylovSchur:
         self._state = None
         if resume is not None and resume[1].shape[1] < basis_size:   # a widening: the earlier decomposition kept
             kept_basis, kept_hessenberg = resume
+            if kept_basis.dtype != dtype:
+                raise ValueError(f'eigs_device: resumed a {kept_basis.dtype} basis as {dtype} (one search, one dtype)')
             self.size = kept_hessenberg.shape[1]
             if isinstance(kept_basis, np.ndarray):   # moved to the host by the caller: never two device bases
-                self.basis = cp.empty((basis_size + 1, n_unknowns), dtype=np.complex128)
+                self.basis = cp.empty((basis_size + 1, n_unknowns), dtype=dtype)
                 self.basis[:self.size + 1].set(np.ascontiguousarray(kept_basis[:self.size + 1]))
             elif kept_basis.shape[0] >= basis_size + 1:   # its storage reserved the rows: expanded in place, no copy
                 self.basis = kept_basis
             else:   # a second basis next to the first while copying (the caller drops the first afterwards)
-                self.basis = cp.empty((max(basis_size, capacity) + 1, n_unknowns), dtype=np.complex128)
+                self.basis = cp.empty((max(basis_size, capacity) + 1, n_unknowns), dtype=dtype)
                 self.basis[:self.size + 1] = kept_basis[:self.size + 1]
             self.hessenberg[:self.size + 1, :self.size] = kept_hessenberg
             return
-        self.basis = cp.empty((max(basis_size, capacity) + 1, n_unknowns), dtype=np.complex128)   # V rows (+ reserve)
+        self.basis = cp.empty((max(basis_size, capacity) + 1, n_unknowns), dtype=dtype)   # V rows (+ reserve)
         if start_vector is None:
             start_vector = self._random.standard_normal(n_unknowns) + 1j * self._random.standard_normal(n_unknowns)
         vector = cp.asarray(start_vector, dtype=np.complex128)
@@ -1078,8 +1102,8 @@ class _KrylovSchur:
             return
         for column in range(self.size, self.basis_size):
             # the next row came with the previous read (else one transfer: restarts, resume)
-            product = self.matvec(self._host_vector(column))
-            self._product.set(np.ascontiguousarray(product, dtype=np.complex128))
+            product = self.matvec(np.asarray(self._host_vector(column), dtype=np.complex128))
+            self._product.set(np.ascontiguousarray(product, dtype=self.basis_dtype))
             self.applications += 1
             coefficients, norm = self._orthogonalized(column + 1)
             self.hessenberg[:column + 1, column] = coefficients
@@ -1099,15 +1123,16 @@ class _KrylovSchur:
         while self.size < self.basis_size:
             first = self.size
             for column in range(first, self.basis_size):
-                self._product[...] = self.matvec(self.basis[column])
+                self._product[...] = self.matvec(self._operand(column))   # complex64 basis: the product cast down
                 self.applications += 1
                 rows = column + 1
                 _gram_schmidt(self.basis[:rows], self._product, self._columns[column, :rows],
                               self._correction[:rows])
-                flat = self._product.view(np.float64)
-                squared_slot = 2 * (column * row_slots + self._norm_slot)   # real part, float64 view of the rows
+                flat = self._product.view(self._columns_real.dtype)
+                squared_slot = 2 * (column * row_slots + self._norm_slot)   # real part, real view of the rows
                 device_vector_dot(flat, flat, out=self._columns_real[squared_slot])
-                _unit_row_kernel()(self._product, self._columns_real, np.int64(squared_slot), self.basis[rows])
+                _unit_row_kernel(self.basis_dtype)(self._product, self._columns_real, np.int64(squared_slot),
+                                                   self.basis[rows])
             host = self._host_columns[first:self.basis_size]
             self._columns[first:self.basis_size].get(out=host)
             self.size = self.basis_size
@@ -1129,10 +1154,10 @@ class _KrylovSchur:
         from .pcg import device_vector_dot
         coefficients = self._packed[:rows]
         _gram_schmidt(self.basis[:rows], self._product, coefficients, self._correction[:rows])
-        flat = self._product.view(np.float64)
-        squared_slot = 2 * self._norm_slot   # real part of the norm slot in the float64 view
+        flat = self._product.view(self._packed_real.dtype)
+        squared_slot = 2 * self._norm_slot   # real part of the norm slot in the real view
         device_vector_dot(flat, flat, out=self._packed_real[squared_slot])
-        _unit_row_kernel()(self._product, self._packed_real, np.int64(squared_slot), self.basis[rows])
+        _unit_row_kernel(self.basis_dtype)(self._product, self._packed_real, np.int64(squared_slot), self.basis[rows])
         if self.matvec_on_host:
             self._packed[self._norm_slot + 1:] = self.basis[rows]
         size = self._packed.size if self.matvec_on_host else self._norm_slot + 1
@@ -1149,12 +1174,17 @@ class _KrylovSchur:
             return self._host_row[1]
         return cp.asnumpy(self.basis[row])
 
+    def _operand(self, row):
+        """basis[row] as the matvec takes it: complex128 (a complex64 basis row cast up)."""
+        vector = self.basis[row]
+        return vector if vector.dtype == np.complex128 else vector.astype(np.complex128)
+
     def _fresh_direction(self, rows):
         """A unit random device vector orthogonal to the first `rows` basis rows (after an invariant subspace)."""
         import cupy as cp
         vector = cp.asarray(self._random.standard_normal(self.n_unknowns)
-                            + 1j * self._random.standard_normal(self.n_unknowns))
-        scratch = cp.empty((2, rows), dtype=np.complex128)
+                            + 1j * self._random.standard_normal(self.n_unknowns), dtype=self.basis_dtype)
+        scratch = cp.empty((2, rows), dtype=self.basis_dtype)
         _gram_schmidt(self.basis[:rows], vector, scratch[0], scratch[1])
         return vector / cp.linalg.norm(vector)
 
@@ -1177,7 +1207,7 @@ class _KrylovSchur:
         """Keep the leading `keep` Schur vectors: V_keep = V_m Q[:, :keep], H = [T_keep; (b Q)_keep], p = keep."""
         import cupy as cp
         keep, size = self.keep, self.basis_size
-        coefficient_rows = cp.asarray(np.ascontiguousarray(unitary[:, :keep].T))
+        coefficient_rows = cp.asarray(np.ascontiguousarray(unitary[:, :keep].T), dtype=self.basis_dtype)
         for start, stop in _column_chunks(self.n_unknowns, size):   # in place: each chunk read before it is written
             self.basis[:keep, start:stop] = coefficient_rows @ self.basis[:size, start:stop]
         self.basis[keep] = self.basis[size]
@@ -1191,7 +1221,7 @@ class _KrylovSchur:
     def _vectors(self, coefficients):
         """Host (n, k) Ritz vectors V_m C of an (m, k) coefficient matrix (device products by column chunks)."""
         import cupy as cp
-        coefficient_rows = cp.asarray(np.ascontiguousarray(coefficients.T))
+        coefficient_rows = cp.asarray(np.ascontiguousarray(coefficients.T), dtype=self.basis_dtype)
         vectors = np.empty((self.n_unknowns, coefficient_rows.shape[0]), dtype=np.complex128)
         for start, stop in _column_chunks(self.n_unknowns, self.basis_size):
             vectors[start:stop] = cp.asnumpy(coefficient_rows @ self.basis[:self.basis_size, start:stop]).T

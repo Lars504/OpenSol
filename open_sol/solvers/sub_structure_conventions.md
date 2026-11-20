@@ -217,6 +217,9 @@ internals: cudss_factor.py header; MUMPS / PARDISO: section "host_direct"; nvmat
 - Tolerance floors (`tolerance_floor=`; grep `ARPACK_TOLERANCE_FLOOR`, each with its reason at the constant) only
   where nothing needs round-off eigenvalues: PML / CPML problems whose PML-mode clusters run into MAX_RESTARTS at
   machine precision, Rayleigh-polished solves. Everything else passes 0 (machine precision).
+- `eigs_device(single_basis=True)` (complex64 basis) only on a tolerance >= SINGLE_BASIS_MIN_TOLERANCE (ValueError
+  below): its Arnoldi relation holds to fp32. Caller: solve_resonances' polished mixed search (`refine`); estimators
+  book it through `memory_estimates.polished_mixed_search`. One search keeps one basis dtype (a resume checks it).
 - 'auto' -> cuDSS only where a role sets `eigen_role(auto_factorizations=)` (grep it): a CudssFactorization has no
   transposed LU solve, no recycling and no inertia of an LU / complex factor, so only roles whose consumers all cope
   get it; the rest stay superlu (unchecked). A runtime resolved from 'auto' falls back to SuperLU for good on

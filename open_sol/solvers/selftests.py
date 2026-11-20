@@ -269,6 +269,7 @@ def _check_eigsh_on_eigenvalue(results_by_name):
 
 _CUDSS_SHIFT = 2.0 + 0.1j         # inside the spectrum of the sparse_direct case operator
 _CUDSS_EIGENPAIRS = 6
+_SINGLE_BASIS_EIGEN_TOLERANCE = 1e-5   # eigs_device(single_basis=True) at tolerance 1e-6 vs SuperLU's eigenvalues
 _RESONANT_MODE = (5, 4)           # K (1 + i eta) - lambda_54 I: a drive on a lightly damped Laplacian mode
 _RESONANT_LOSS_FACTOR = 1e-6      # eta = 1 / Q: eps32 kappa(E) ~ 0.7, so plain float64 refinement nearly stalls
 
@@ -298,8 +299,8 @@ def _check_arpack_cudss(results_by_name):
     no double fallback), release and the cpu-only backend misfit."""
     import scipy.sparse
     import scipy.sparse.linalg
-    from .arpack_shift_invert import (ArpackShiftInvertSolver, backend_misfit, device_arnoldi_fits,
-                                      device_factor_matvec)
+    from .arpack_shift_invert import (SINGLE_BASIS_MIN_TOLERANCE, ArpackShiftInvertSolver, backend_misfit,
+                                      device_arnoldi_fits, device_factor_matvec)
     from .cudss_factor import ACCEPT_RESIDUAL, BACKWARD_ERROR_TOLERANCE, MIXED_MAX_REFINEMENTS, CudssFactorization
     skipped = skip_without_cudss()
     if skipped is not None:
@@ -361,6 +362,29 @@ def _check_arpack_cudss(results_by_name):
                 or widened[0] is not reserved[0] or np.size(in_place_theta) != 2 * _CUDSS_EIGENPAIRS):
             failed.append('cudss_eigs_device_in_place')
         eigenvalues['cudss_eigs_device_in_place'] = _CUDSS_SHIFT + 1.0 / np.asarray(in_place_theta)
+        # single_basis: a complex64 basis at SINGLE_BASIS_MIN_TOLERANCE, its widening resumed from the host rows (as
+        # eigenfrequency parks them), both near SuperLU's; refused below that tolerance
+        single_theta, _vectors, _applications, converged, single_kept = solver.eigs_device(
+            factor.solve, n_unknowns, _CUDSS_EIGENPAIRS, start, tolerance_floor=SINGLE_BASIS_MIN_TOLERANCE,
+            single_basis=True)
+        if not converged or single_kept is None or single_kept[0].dtype != np.complex64:
+            failed.append('cudss_eigs_device_single_basis')
+        else:
+            parked = (single_kept[0][:single_kept[1].shape[1] + 1].get(), single_kept[1])
+            single_wider, _vectors, _applications, converged, _kept = solver.eigs_device(
+                factor.solve, n_unknowns, 2 * _CUDSS_EIGENPAIRS, start, tolerance_floor=SINGLE_BASIS_MIN_TOLERANCE,
+                resume=parked, single_basis=True)
+            if not converged or np.size(single_wider) != 2 * _CUDSS_EIGENPAIRS:
+                failed.append('cudss_eigs_device_single_basis_resumed')
+            single_errors = {
+                'first': _matched_error(_CUDSS_SHIFT + 1.0 / np.asarray(single_theta), eigenvalues['superlu_eigs']),
+                'resumed': _matched_error(_CUDSS_SHIFT + 1.0 / np.asarray(single_wider), eigenvalues['superlu_eigs'])}
+            details['single_basis_relative_errors'] = single_errors
+            if not max(single_errors.values()) <= _SINGLE_BASIS_EIGEN_TOLERANCE:
+                failed.append('cudss_eigs_device_single_basis_accuracy')
+        _refused(failed, 'cudss_single_basis_tolerance_refused',
+                 lambda: solver.eigs_device(factor.solve, n_unknowns, _CUDSS_EIGENPAIRS, start, single_basis=True),
+                 ValueError)
         # eigs with device_factor_matvec (B = I) of the cuDSS factor: the device Krylov-Schur, no host solves
         routed_theta, _vectors, _applications, converged = solver.eigs(
             factor.solve_host, n_unknowns, _CUDSS_EIGENPAIRS, start,
@@ -2534,7 +2558,9 @@ SOLVER_SELFTEST_CASES = (
                     'equilibrated operator, float64 refinement to 1e-12): the complex symmetric solve against spsolve '
                     'and factorization cudss_mixed eigs (complex64 LU) matched to SuperLU; the device Krylov-Schur '
                     '(eigs_device on the cudss LU) and its widening resumed to twice the eigenpairs (copied, and in '
-                    'place on rows reserved by the first pass) matched to SuperLU, as eigs_device around the host SuperLU solve and eigs on device_factor_matvec of the '
+                    'place on rows reserved by the first pass) matched to SuperLU, a complex64 basis (single_basis, '
+                    f'tolerance 1e-6) and its widening resumed from host rows within {_SINGLE_BASIS_EIGEN_TOLERANCE:g} '
+                    'of SuperLU and refused at machine precision, as eigs_device around the host SuperLU solve and eigs on device_factor_matvec of the '
                     'cudss LU, a device_arnoldi runtime below the host-matvec size rule on host ARPACK; cudss_mixed below mixed_min_unknowns resolved to cudss; every solve converged, the probe '
                     'residual within the cuDSS accept tolerance, the device bytes counted, no solve after release, '
                     'cudss and cudss_mixed misfits on the cpu backend only. Passes as skipped without nvmath-python.',

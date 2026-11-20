@@ -28,7 +28,8 @@ from ..em.definition_fdfd import (MIN_REGION_FRACTION_PARAM, resonance_region_me
 from ..em.eigenfrequency import (REGION_COLUMN, ResonanceRegion, ResonanceTable, resonance_filter_time_item,
                                  resonance_table_result)
 from ..em.memory_estimates import (EIGEN_PHASE, EIGEN_ROLE, _study_values, cudss_factor_items, eigen_mixed,
-                                   host_factor_items, own_cudss_search_items, resonance_search_items)
+                                   host_factor_items, own_cudss_search_items, polished_mixed_search,
+                                   resonance_search_items)
 from .boundaries3d import AXES, FACE_TYPES_3D, MIRROR_TYPES_3D
 from .definition import (_BC_CHOICE_LABELS, _BC_TIP, _MATERIAL_PROPERTIES, _MATERIAL_SCHEMA,
                          _OPTIONAL_MATERIAL_SCHEMA, _PML_VISIBLE_3D, _SLOT_ARRAYS, _apply_pec, _boundary_config,
@@ -499,7 +500,10 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
     search_host, search_transient = resonance_search_items(solver_backend(context.spec), unknowns, n_wanted, n_basis,
                                                            own_cudss=factorization in CUDSS_FACTORIZATIONS,
                                                            filter_entries=row_entries * unknowns,
-                                                           sparse_mass_entries=row_entries * unknowns)
+                                                           sparse_mass_entries=row_entries * unknowns,
+                                                           symmetric_mass=symmetric,
+                                                           single_basis=polished_mixed_search(factorization, unknowns,
+                                                                                              symmetric))
     host_items = factor_items + (
         (f'element assembly blocks ({n_local} x {n_local} per element: rows, columns, K and M)',
          n_elements * n_local * n_local * (2 * FLOAT64_BYTES + 2 * COMPLEX128_BYTES)),   # int64 indices
