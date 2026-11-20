@@ -47,8 +47,7 @@ plot, imports of `viz.common` / `DARK_CMAPS`, canvas cell edges) live in the gui
   see-through passes skip them.
 - Per-sample arrays of a `ViewerLayer` follow every layer rebuild (the class docstring lists them): a new one joins all.
 - One page shows one animation clock per thing: api drops the phasor partner when the deformed shape oscillates
-  (`ViewerMotion.oscillate`) or a volume is attached, `viewer_data` refuses a phasor page with volumes, and the page's
-  terrain does not open on phasor, motion or volume pages.
+  (`ViewerMotion.oscillate`) or a volume is attached, and `viewer_data` refuses a phasor page with volumes.
 - Page start-up runs top to bottom and a block's top-level code may call shared functions (limits, syncControls,
   updateReadout) that read another block's state: such state is declared with the page constants near the top (as
   the waves `PHASOR` / `SMOOTH_OK` / `wave`), never inside a later block (a `const` read before its line throws and
@@ -57,11 +56,13 @@ plot, imports of `viz.common` / `DARK_CMAPS`, canvas cell edges) live in the gui
   recordings take the canvases only); a new overlay part also reserves its room in `viewInsets`, a new movable part
   is a `MOVABLE` entry plus a `placePart` call in its draw function.
 - Key bindings live in each block's own keydown listener; taken: V flow, Shift+V arrows / particles (2D flow pages)
-  and view cycling (3D volume pages; never on the same page), C contours, R terrain, D deform animation, G objects,
-  M mirror, O revolve.
-- Pages open flat (no automatic terrain). A revolution page opens on the drawn half (Mirror off), then mirrors and
+  and view cycling (3D volume pages; never on the same page), C contours, R 3D (revolution pages), D deform animation,
+  G objects, M mirror.
+- Planar maps have no value relief (removed: it never earned its place); the only lifted / lit planar map is the
+  deformed shape (motion: Deform amplitude, an out-of-plane membrane lit by `uShade`). The 3D button exists only on
+  revolution pages and is the revolve turn. A revolution page opens on the drawn half (Mirror off), then mirrors and
   revolves (`REVOLVE_AT_OPEN`, `runRevolveIntro`; skipped with a page view, after any user input, or when this browser
-  last turned Revolve off: store key 'revolve'). Flow opens as arrows; its browser memory is `FLOW_STORE` (renamed when the
+  last turned 3D off: store key 'revolve'). Flow opens as arrows; its browser memory is `FLOW_STORE` (renamed when the
   defaults change, so stored untouched defaults do not pin the old ones).
 - Revolution (field_viewer `// ---- revolution ----`, api `_viewer_revolution`): the page's mirror faces are
   `unfold_faces` (api `_page_mirror_faces`, also the `_hide_void` crop), so an axisymmetric map's far half is the x_lo

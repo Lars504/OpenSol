@@ -1733,7 +1733,7 @@ class Results:
         snapshot / state) for flow arrows (the default) or moving particles; a 2D map of an axisymmetric (r, z)
         physics or a spherical (r, theta) domain opens on the drawn half, then mirrors and turns about its rotation
         axis into a 3D view inside see-through surfaces of revolution of the domain and the objects
-        (_viewer_revolution; Revolve, remembered by the browser); a field of a
+        (_viewer_revolution; the 3D button, remembered by the browser); a field of a
         2D solid_mechanics / membrane physics is drawn on
         the deformed body (its displacement u_x / u_y or w_re, plus the imaginary parts when held, per frame; a Deform
         magnification; the solid's void cells, youngs_modulus <= 0, hidden and cropped away; modes and frequency

@@ -1338,7 +1338,7 @@ _RESULTS_NOTES = (
         f"{_figure_choices('legend_color')}, background {_figure_choices('background')}, export_scale "
         f"{_figure_choices('export_scale')} (PNG pixels per screen pixel), materials {{material name: {{'color': "
         "'#rrggbb', 'alpha': 0 .. 1}} (each key optional; colour of its outlines, edges, see-through surfaces and "
-        'legend swatch; alpha the opacity of its surfaces (Glass faces, Revolve bodies; default see-through), 1 draws '
+        'legend swatch; alpha the opacity of its surfaces (Glass faces, 3D bodies of revolution; default see-through), 1 draws '
         'them solid, 0 hides the material; '
         'ValueError for a name not drawn on the page).',
         'Stored states (live, closed and loaded alike): snapshots() -> [(time, label, [physics.component keys])] '

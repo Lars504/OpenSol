@@ -14,7 +14,7 @@ ray-marches: slices, isosurfaces, shells, a cloud). `figure_settings` checks the
 sizes, colour and axis limits, colour bar and label places). 2D maps whose layers carry `ViewerVectors` (with a
 `ViewerFlow` naming them) get flow arrows or moving particles (a Flow button). A `ViewerRevolution` marks a 2D map as
 the meridional half plane of a body of revolution: the page can turn it about the rotation axis into a 3D view inside
-see-through surfaces of revolution (a Revolve button; the far half is the map's mirror image across the axis, when
+see-through surfaces of revolution (its 3D button; the far half is the map's mirror image across the axis, when
 the caller passes that ViewerMirror).
 """
 
