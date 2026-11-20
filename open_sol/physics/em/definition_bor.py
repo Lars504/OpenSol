@@ -693,8 +693,8 @@ def _time_estimate(settings_values, mesh, context):
     if eigen_solved(context.spec, context.name):
         eigenpairs = resonance_eigenpairs(context)
         assembly = te.TimeEstimate((te.TimeItem('BOR assembly', 'assembly', 1.0, 'exact', assembly_ops),
-                                    resonance_filter_time_item(context.backend, unknowns, nnz,
-                                                               eigenpairs * n_orders)))   # one search per order
+                                    resonance_filter_time_item(context.backend, unknowns, nnz, eigenpairs * n_orders,
+                                                               symmetric=True)))   # one search per order
         common = dict(unknowns=unknowns, nnz=nnz, value_bytes=16, solves=n_orders, eigenpairs=eigenpairs)
         if line_block:
             return te.combine((assembly, kept_line_block_factors(context, unknowns, nnz, n_orders, block),

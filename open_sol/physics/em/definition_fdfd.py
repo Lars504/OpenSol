@@ -990,7 +990,7 @@ def _triangle_time_estimate(settings_values, mesh, context):
         return te.combine((te.TimeEstimate((te.TimeItem('FEM Helmholtz assembly', 'assembly', 1.0, 'exact',
                                                         assembly_ops),
                                             resonance_filter_time_item(context.backend, unknowns, 3.0 * nnz,
-                                                                       eigenpairs))),   # A, M and W
+                                                                       eigenpairs, symmetric=True))),   # A, M and W
                            context.solver_work('eigen', unknowns=unknowns, nnz=nnz, value_bytes=16, solves=1.0,
                                                factorizations=1.0, eigenpairs=eigenpairs,
                                                factor_scale=FEM_FDFD_LU_FILL[order], **host)))
