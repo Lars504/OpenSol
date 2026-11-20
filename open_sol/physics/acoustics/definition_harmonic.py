@@ -800,7 +800,7 @@ def _memory_estimate(settings_values, mesh, context):
             feature.enabled and feature.type == 'background_pressure_field' for feature in physics_spec.features)
         run_items = [('device pencil terms, index maps and per-frequency transients',
                       device_pencil_bytes(entries, term_value_bytes, symmetric=True)),
-                     ('kept device solution (complex128 + int64 ids per full dof)', KEPT_SOLUTION_BYTES_PER_DOF * dofs),
+                     ('kept device solution (complex128 + int32 ids per full dof)', KEPT_SOLUTION_BYTES_PER_DOF * dofs),
                      # the device publish (R6): int64 element dofs, active dof / element masks, the centroid basis
                      ('device publish maps (element dofs, active masks, centroid basis)',
                       _INT64_BYTES * local * elements + dofs + elements + FLOAT64_BYTES * local)]

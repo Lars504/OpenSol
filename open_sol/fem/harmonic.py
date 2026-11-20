@@ -308,7 +308,7 @@ class HarmonicSystemBase:
         self._extra_slots = None        # (DevicePencil, block indptr, indices, slots) of _extra_on_device
         self._solution = None           # system numbering of the last solve
         self._device_values = None      # cupy full-numbering values of the last direct cuDSS solve (device_values, R6)
-        self._device_ids = None         # (pencil, cupy full ids of its free / fixed system dofs) of _keep_device_values
+        self._device_ids = None         # (pencil, cupy int32 full ids of its free / fixed dofs) of _keep_device_values
         self._reduced = None            # (ReducedHarmonicModel, its load, its held values) of plan_reduced, or None
         self._held_offsets_of = None    # plan_reduced(held_offsets_of=): f(omega) -> full-numbering held offsets, or None
         self._coordinates = None        # (reduced coordinates y, held values) of the last reduced solve, or None
@@ -546,15 +546,19 @@ class HarmonicSystemBase:
     def _keep_device_values(self, free_device, fixed_value) -> None:
         """device_values of the last direct solve: the cupy free-dof solution and the held values scattered into the
         full numbering on the device (index arrays uploaded once per assembly); none when a subclass transforms
-        values (_physical_values)."""
+        values (_physical_values). The ids are int32 (KEPT_SOLUTION_BYTES_PER_DOF): ValueError at >= 2^31 full dofs."""
         if type(self)._physical_values is not HarmonicSystemBase._physical_values:
             return
         import cupy as cp
         pencil = self.pencil
         cached = self._device_ids
         if cached is None or cached[0] is not pencil:
-            cached = self._device_ids = (pencil, cp.asarray(self.global_ids[pencil.free]),
-                                         cp.asarray(self.global_ids[pencil.fixed]))
+            if self.values.size >= 2 ** 31:
+                raise ValueError(f'harmonic system: {self.values.size} dofs exceed the int32 device ids of the kept '
+                                 'device solution (< 2^31)')
+            self._device_ids = None   # the previous assembly's ids go first
+            cached = self._device_ids = (pencil, cp.asarray(self.global_ids[pencil.free].astype(np.int32)),
+                                         cp.asarray(self.global_ids[pencil.fixed].astype(np.int32)))
         _, free_ids, fixed_ids = cached
         full = cp.zeros(self.values.size, dtype=cp.complex128)
         full[free_ids] = free_device

@@ -792,8 +792,9 @@ _SOLVE_BYTES_PER_DOF = 256   # load_vector (zeros, frequency load gather, bounda
 _HOST_REDUCED_BYTES = 128    # HarmonicPencil._data per stored entry beside its term gathers: K + j omega C - omega^2 M
 _INT32 = 4
 # R6: a direct cuDSS solve of HarmonicSystemBase keeps its solution in the pool for _publish: complex128 full-numbering
-# values + int64 free / fixed and system ids, bytes per full-numbering dof (a memory run item of the physics)
-KEPT_SOLUTION_BYTES_PER_DOF = 32
+# values + the int32 full ids of its free / fixed system dofs (harmonic._keep_device_values; at most one per full dof),
+# bytes per full-numbering dof (a memory run item of the physics)
+KEPT_SOLUTION_BYTES_PER_DOF = 16 + 4
 
 
 def numpy_calls(count) -> tuple:
