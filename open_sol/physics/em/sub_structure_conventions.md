@@ -262,7 +262,10 @@ type's vocabulary and refusals are in its help texts and validation.
   `stretched_cell_areas`; a failed symmetry check, e.g. eps_xy, gives a general LU). Not recyclable: a system change
   keeps the factor as `_cudss_previous` (for its plan; its device memory stays during the next assembly) and
   refactorises it in place (`previous=`). An adjoint solve on a general LU factorises the transpose
-  (`_transposed_solve`: one extra factor outside the pool, not estimated). Triangles: `factorize_host(symmetric=True,
+  (`_transposed_solve`): when A^T has A's pattern (5-point Bloch) the driven LU itself is refactorised into it and
+  back (one LU on the device, its four slots `_factorization` / `_transposed_factorization` / `_cudss_previous` /
+  `_transposed_previous` hold one object: a new driven or transposed factorisation takes the kept one as previous and
+  passes the same options), else a second LU is kept (eps_xy). Triangles: `factorize_host(symmetric=True,
   row_scale=system.equilibration, previous=)`. Automatic = cuDSS on the gpu with nvmath (B1a, solvers sub file); an
   'auto' runtime that cuDSS refuses falls back to SuperLU and fdfd_2d / fdfd_2d_fem / fdfd_bor / fdfd_conical free
   `_cudss_previous`. Deferred checks: fdfd_2d driven + transposed factorize and host_fdfd `_factorize_operator` refresh

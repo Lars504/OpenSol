@@ -474,8 +474,8 @@ def fdfd_memory_estimate(polarization):
     """PhysicsType.memory_estimate of em_fdfd_<polarization> (solvers/fdfd_2d, harmonic, operators; the resolved
     sparse_direct back end of context.solvers): the system and solution are run items (an eigen search on the gpu:
     the system an ASSEMBLY_PHASE item, parked during the search), its assembly an ASSEMBLY_PHASE item; a cuDSS factor
-    is external. Triangles:
-    _fdfd_fem_memory_estimate."""
+    is external (an adjoint solve on a Bloch-phase LU refactorises it into the transpose's, one LU; with eps_xy a
+    second LU is booked). Triangles: _fdfd_fem_memory_estimate."""
     def estimate(settings_values, mesh, context):
         if getattr(mesh, 'kind', 'tensor') == 'triangles':
             return _fdfd_fem_memory_estimate(settings_values, mesh, context)
@@ -543,14 +543,16 @@ def fdfd_memory_estimate(polarization):
                                     solve_peak_bytes(n_cells, COMPLEX128_BYTES, mixed)))
             external_items, external_extra = cudss_factor_items('the Helmholtz operator', n_cells, entries,
                                                                 mixed=mixed, general=general)
-            if general and _has_adjoint_objective(context):   # _transposed_solve: a second factor, kept per system
-                transposed_kept = cudss_kept_bytes(n_cells, entries, mixed, symmetric=False)
-                run_items.append(('cuDSS operator copies of the transposed (adjoint) LU', transposed_kept))
+            adjoint_lu = general and _has_adjoint_objective(context)
+            if adjoint_lu and off_diagonal_run:   # _transposed_solve: the eps_xy pattern may differ from its transpose:
+                transposed_kept = cudss_kept_bytes(n_cells, entries, mixed, symmetric=False)   # a second LU (upper
+                run_items.append(('cuDSS operator copies of the transposed (adjoint) LU', transposed_kept))   # figure)
                 later_bytes += transposed_kept
                 transposed, _ = cudss_factor_items('the transposed operator (adjoint)', n_cells, entries, mixed=mixed,
                                                    general=True)
                 external_items += transposed
-            if not single_solve:   # _cudss_previous refactorised in place at the next system
+            # else the 5-point Bloch pattern is its transpose's: the adjoint refactorises the one LU in place
+            if not single_solve or (adjoint_lu and not off_diagonal_run):   # a refactorisation on the planned pattern
                 run_items.append(('cuDSS index maps of the refactorisations', index_map_bytes(n_cells, entries)))
                 transient_items.append((REFACTOR_PHASE, 'cuDSS refactorisation on the planned pattern (refresh peak)',
                                         refresh_peak_bytes(entries, n_unknowns=n_cells, mixed=mixed)))

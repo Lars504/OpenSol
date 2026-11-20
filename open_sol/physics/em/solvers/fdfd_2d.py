@@ -780,6 +780,8 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
                 solution = self._solve_line_block(flat_rhs)
                 self.last_linear_text = LINE_BLOCK_TEXT if solution is not None else _SPARSE_DIRECT_TEXT
             return solution if solution is not None else self._solve_reference(flat_rhs, transpose)
+        if transpose and self._transposed_factorization is not None:   # the transpose's LU of this system (the
+            return self._checked_transposed_solve(flat_rhs)            # driven LU may have been refactorised into it)
         if self._factorization is not None and not self._factorization_current:
             initial_guess = self.solution if self.solved_omega == self.omega and not transpose else None
             solution, iterations = self.linear_solver.solve_recycled(self._factorization, self.system.operator,
@@ -792,9 +794,14 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
         if self._factorization is None:
             options = {}
             if self.linear_solver.back_end in CUDSS_BACK_ENDS:   # LDL^T of D A (LU when not symmetric), plan reused
-                options = {'previous': self._cudss_previous, 'symmetric': True,   # K1: checked by the solve below
+                previous, self._cudss_previous = self._cudss_previous, None
+                if previous is None:   # one LU on the device (_transposed_solve): the adjoint's, refactorised back
+                    previous, self._transposed_previous = self._transposed_previous, None
+                if previous is None:
+                    previous, self._transposed_factorization = self._transposed_factorization, None
+                options = {'previous': previous, 'symmetric': True,   # K1: checked by the solve below
                            'symmetrizer': self._symmetrizer(self.system.omega), 'defer_check': True}
-                self._cudss_previous = None
+                del previous
             elif self.linear_solver.back_end in HOST_DIRECT_BACK_ENDS:   # host LDL^T of D A (LU when not symmetric):
                 self._release_kept_cudss()   # recyclable and transposes natively, like SuperLU
                 options = {'symmetric': True, 'symmetrizer': self._symmetrizer(self.system.omega)}
@@ -806,15 +813,27 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
             self.host_factor_bytes = self._factorization.host_bytes
             self._factored_omega = self.system.omega
             self._factorization_current = True
+        if transpose and _is_cudss(self._factorization) and not self._factorization.symmetric:
+            return self._checked_transposed_solve(flat_rhs)
         try:
-            if transpose and _is_cudss(self._factorization) and not self._factorization.symmetric:
-                return self._transposed_solve(flat_rhs)
             return self._factorization.solve(flat_rhs, transpose=transpose)
         except CudssAccuracyError as error:   # a refreshed factor's deferred check missed at this, its first solve
-            if not fell_back_to_superlu(self.linear_solver, error, flat_rhs.size):   # B1b: 'auto' -> SuperLU for good
-                raise
-            self._drop_cudss_factors()
-            return self._solve_linear(flat_rhs, transpose)   # refactorised on SuperLU (fall_back changed back_end)
+            return self._fall_back_solve(error, flat_rhs, transpose)
+
+    def _checked_transposed_solve(self, flat_rhs):
+        """_transposed_solve inside _solve_linear's deferred-check catch (K1)."""
+        try:
+            return self._transposed_solve(flat_rhs)
+        except CudssAccuracyError as error:
+            return self._fall_back_solve(error, flat_rhs, True)
+
+    def _fall_back_solve(self, error, flat_rhs, transpose):
+        """A refreshed factor's deferred check missed at its first solve: an 'auto' runtime falls back to SuperLU for
+        good (B1b), every cuDSS factor is dropped and the solve redone there; else the error is raised."""
+        if not fell_back_to_superlu(self.linear_solver, error, flat_rhs.size):
+            raise error
+        self._drop_cudss_factors()
+        return self._solve_linear(flat_rhs, transpose)   # refactorised on SuperLU (fall_back changed back_end)
 
     def _drop_cudss_factors(self):
         """Release every cuDSS factor of this physics (driven, transposed, kept for a plan) after an 'auto' fall_back."""
@@ -848,12 +867,22 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
 
     def _transposed_solve(self, flat_rhs):
         """x of system.operator^T x = flat_rhs by a cuDSS LU of the transpose (the adjoint solve when the driven factor
-        is a general LU: Bloch phase, hz eps_xy couplings), factorised on first use per system, plan reused."""
+        is a general LU: Bloch phase, gyration_z), factorised on first use per system, plan reused. One LU on the device
+        when A^T has A's pattern (the 5-point Bloch operator: structurally symmetric): the driven factor is refactorised
+        into the transpose's (the same plan and options), a later driven solve of this system refactorises it back
+        (one numeric refactorisation per switch; a forward -> adjoint -> new system sequence costs no more
+        factorisations than two kept LUs did); another pattern (eps_xy couplings) keeps a second LU, as before."""
         if self._transposed_factorization is None:
+            transposed = self.system.operator.T.tocsr()
             previous, self._transposed_previous = self._transposed_previous, None
-            self._transposed_factorization = self.linear_solver.factorize(
-                self.system.operator.T.tocsr(), *self._grid_shape_and_periodicity(), previous=previous,
-                defer_check=True)   # K1: solved inside _solve_linear's catch
+            if previous is None and _is_cudss(self._factorization) and _same_device_pattern(transposed,
+                                                                                            self.system.operator):
+                previous, self._factorization = self._factorization, None
+                self._factorization_current = False
+            self._transposed_factorization = self.linear_solver.factorize(   # the driven options: one plan for both
+                transposed, *self._grid_shape_and_periodicity(), previous=previous, symmetric=True,
+                symmetrizer=self._symmetrizer(self.system.omega), defer_check=True)   # K1: _checked_transposed_solve
+            del transposed, previous
         return self._transposed_factorization.solve(flat_rhs)
 
     def solve_summary(self):
@@ -1524,6 +1553,17 @@ def _host_sparse(operator):
 def _is_cudss(factorization) -> bool:
     """Whether a driven factor is a cudss_factor.CudssFactorization (both precisions: back_end 'cudss')."""
     return getattr(factorization, 'back_end', None) == 'cudss'
+
+
+def _same_device_pattern(first, second) -> bool:
+    """Whether two cupyx CSR matrices have one canonical pattern (cudss_factor.canonical_csr; compared on the device,
+    one host sync per comparison)."""
+    import cupy as cp
+    from ....solvers.cudss_factor import canonical_csr
+    first, second = canonical_csr(first), canonical_csr(second)
+    return (first.shape == second.shape and first.indices.size == second.indices.size
+            and bool(cp.array_equal(first.indptr, second.indptr))
+            and bool(cp.array_equal(first.indices, second.indices)))
 
 
 def _outer_wall_rows(boundary_config, polarization):
