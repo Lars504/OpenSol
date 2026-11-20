@@ -13,8 +13,8 @@ from .study import (_PARITY_SECTORS_PARAM, _background_fixed_point_params, _back
 STUDY_NAME = EIGENFREQUENCY_STUDY
 _RESONANCE_STAGE = 'Resonance solve'
 # the eigen-solved types (missing-physics remedy and texts)
-_SOLVED_TYPES_TEXT = ('em_fdfd_ez, em_fdfd_hz, em_fdfd_bor, em_fdfd_conical, em_fdfd_3d, solid_mechanics, '
-                      'solid_mechanics_3d or membrane')
+_SOLVED_TYPES_TEXT = ('em_fdfd_ez, em_fdfd_hz, em_fdfd_bor, em_fdfd_conical, em_fdfd_sphere, em_fdfd_3d, '
+                      'solid_mechanics, solid_mechanics_3d or membrane')
 SEARCH_CHOICES = ('nearest', 'targets', 'band')   # setting search (PhysicsType.eigen_searches lists a type's)
 _TARGETS_SEARCH = (('search', ('targets',)),)     # visible_if
 _BAND_SEARCH = (('search', ('band',)),)
@@ -200,7 +200,11 @@ _DESCRIPTION = (
     "of its double 'linear' solver, accuracy by the CG tolerance); tetrahedra nearest target_frequency (> 0 also for a "
     'free body, its 0 Hz modes dropped). membrane: -div(T (1 + j eta) grad w) = rho_s omega^2 w nearest '
     'target_frequency (complex with loss_factor / PML), labels "resonance k: f = <Hz> Hz[, Q = ...]", scaled to 1 m '
-    'real at the peak; clamps held at 0, loads ignored.')
+    'real at the peak; clamps held at 0, loads ignored. em_fdfd_sphere (1D spherical): shift-invert per multipole '
+    'term (each listed order, er before hr) on its radial operator with the outgoing-wave term frozen at the target, '
+    'then every resonance refined with the exact outgoing condition at its own complex omega (no PML; materials at '
+    'the target), labels "resonance k: l = <l> <family>, lambda = ...", fields scaled to a peak sphere-RMS |E| of 1 '
+    'V/m.')
 
 
 def _time_counts(values):

@@ -1,5 +1,5 @@
 {
-  "title": "Analytic: effective index of symmetric slabs on the b-V curve (2.5D)",
+  "title": "Effective index of symmetric slabs on the b-V curve (2.5D, analytic)",
   "description": "Three effective_index features (em_fdfd_hz, stationary, no source: only the permittivity they write matters) collapse a symmetric silica / core / silica stack (n_clad = 1.444, n_core = 2.0, 1.55 um) to one index: TE0 (slab mode 1, E along the layers), TM0 (slab_polarization tm, mode 1) and TE1 (mode 2), each on its own third of the domain. The sweep runs the normalised index b over 0.1-0.9; each film thickness is chosen so that its mode lands exactly at that b, so all three must return the same n_eff.\nAnalytic (symmetric slab dispersion, V = k0 d NA, NA = sqrt(n_core^2 - n_clad^2)): V sqrt(1 - b) = m pi + 2 atan(p sqrt(b / (1 - b))), p = 1 (TE) or (n_core / n_clad)^2 (TM), so d = (m pi + 2 atan(p sqrt(b / (1 - b)))) / (k0 NA sqrt(1 - b)); then n_eff = sqrt(n_clad^2 + b NA^2).\nSweep tab: derived n_TE0, n_TM0, n_TE1 (mean sqrt(eps_xx) over each region) vs b with the dashed n_eff(b); the validation messages (info) list each feature's n_eff.\nExpected agreement: ~1e-3 absolute in n_eff (the feature's automatic slab cell of about wavelength / (100 n_core)); float32 permittivity adds ~1e-7.",
   "version": 1,
   "parameters": [

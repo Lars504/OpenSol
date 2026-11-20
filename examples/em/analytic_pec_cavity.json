@@ -1,5 +1,5 @@
 {
-  "title": "Analytic: PEC cavity resonances (E_z and H_z)",
+  "title": "PEC cavity resonances (E_z and H_z, analytic)",
   "description": "A lossless PEC rectangular cavity rung by a gaussian pulse, once in E_z (physics 'em') and once in H_z (physics 'em_hz') (FDTD).\nAnalytic: f_mn = c/2 sqrt((m/a)^2 + (n/b)^2); E_z (TM) modes need m, n >= 1, H_z (TE) modes m, n >= 0 (not both 0), each with its own cavity size.\nProbes tab: FFT of em.probe (peaks at f11_ez, f21_ez, f12_ez, ...) and of em_hz.probe (f10_hz, f01_hz, f11_hz).\nDerived values tab: A11_ez_lockin, B10_hz_lockin etc. vs their references.\nDFT tab: em.map_11 / em.map_21 = the sin*sin mode patterns; em_hz.map_10 / em_hz.map_11 (quantity hz_intensity) = the cos*cos patterns.",
   "version": 1,
   "parameters": [

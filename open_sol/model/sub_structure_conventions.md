@@ -117,8 +117,8 @@ templates, describe. Current state, no changelog.
 - 1D models (root file "1D models"): `DomainMap(line=True)` on every kind (`_line_domain_map`), so the polar path
   carries them. Objects select the cells whose centres lie on the drawing's x axis: circles about the origin = shells /
   layers, rectangles across y = 0. Not yet: GUI (forms, canvas, Add physics: `schema.type_spaces` ignores 1, GUI
-  solver_misfit calls pass no grid), 1D EM (slab_modes), point-source units in 1D (the 1D slab's P unit reads W/m;
-  it is W/m^2, the help says so: `SPACES` has no 1D entry).
+  solver_misfit calls pass no grid), 1D EM other than em_fdfd_sphere (slab_modes), point-source units in 1D (the 1D
+  slab's P unit reads W/m; it is W/m^2, the help says so: `SPACES` has no 1D entry).
 - Arrays (kind 'array'; `geometry._array_copies`; root file "Arrays, coordinates"): copy values = base + i pitch
   (exact float sums, so written-out copies mesh identically); the resolved array's values['inputs'] = the copies. So
   code walking composites treats an array as a union (`geometry.UNION_KINDS`; `composite_inputs` of a resolved array =

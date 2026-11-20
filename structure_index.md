@@ -15,20 +15,20 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - open_sol/model/: lines 233-303
 - open_sol/physics/: lines 305-307
 - open_sol/physics/acoustics/: lines 309-327
-- open_sol/physics/em/: lines 329-442
-- open_sol/physics/em/solvers/: lines 444-466
-- open_sol/physics/em3d/: lines 468-504
-- open_sol/physics/eme/: lines 506-523
-- open_sol/physics/fluid/: lines 525-536
-- open_sol/physics/heat/: lines 538-563
-- open_sol/physics/magnetic/: lines 565-596
-- open_sol/physics/mechanics/: lines 598-683
-- open_sol/physics/membrane/: lines 685-703
-- open_sol/physics/nlfd/: lines 705-724
-- open_sol/physics/potential/: lines 726-743
-- open_sol/physics/semiconductor/: lines 745-758
-- open_sol/solvers/: lines 760-775
-- open_sol/viz/: lines 777-786
+- open_sol/physics/em/: lines 329-446
+- open_sol/physics/em/solvers/: lines 448-471
+- open_sol/physics/em3d/: lines 473-509
+- open_sol/physics/eme/: lines 511-528
+- open_sol/physics/fluid/: lines 530-541
+- open_sol/physics/heat/: lines 543-568
+- open_sol/physics/magnetic/: lines 570-601
+- open_sol/physics/mechanics/: lines 603-688
+- open_sol/physics/membrane/: lines 690-708
+- open_sol/physics/nlfd/: lines 710-729
+- open_sol/physics/potential/: lines 731-748
+- open_sol/physics/semiconductor/: lines 750-763
+- open_sol/solvers/: lines 765-780
+- open_sol/viz/: lines 782-791
 
 ## open_sol/
 
@@ -357,6 +357,7 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - `definition_nonlinear.py`: C5 model features of the FDTD types em_fdtd_ez / _hz: 'nonlinear_medium' (chi2 with poling, Kerr, two-photon absorption and TPA free carriers; solvers/fdtd_nonlinear) and 'gain_medium' (four-level gain; solvers/fdtd_gain) on the selected ...
 - `definition_phase_change.py`: C5 model feature 'phase_change_medium' of the in-plane EM types (em_fdtd_* / em_fdfd_*): a crystallinity state (physics/em/phase_change.py) whose mixed amorphous / crystalline permittivity replaces eps / sigma_e on the selected cells, ...
 - `definition_resonance.py`: EM resonance_monitor (A6) over the shared row of model.definition_resonance: the ResonanceProbe declarations of the FDTD EM types (em_fdtd_ez / _hz here, em_fdtd_3d through em_resonance_probe), the EM source pulse ends, and register() for ...
+- `definition_sphere.py`: Model definition of 'em_fdfd_sphere' (spherically symmetric FDFD: the radial equation of each multipole term on a spherical (r, theta) or 1D spherical domain, exact outgoing-wave boundary; spherical_multipoles, solvers/fdfd_sphere) with ...
 - `design_density.py`: Density design regions of the optimization study (C7): rho in [0, 1] per design cell -> area-weighted conic filter -> tanh projection -> eps = eps_min + rho_bar (eps_max - eps_min), and the transposed chain rule of a dJ/d eps per cell
 - `dispersion.py`: Complex permittivity eps(omega) of the FDTD material arrays in the exp(+j omega t) convention (lossy: Im < 0), one component at a time; H_z face values come from yee_grid.face_average of eps, sigma_e and the mask weights.
 - `effective_index.py`: Effective-index (2.5D) collapse of a vertical layer stack (B4): the guided mode of the stack, solved by the A3 slab mode solver on a fine 1D grid across the layers, gives n_eff; a 2D top view then uses eps = n_eff^2
@@ -388,6 +389,7 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - `renderer_bor.py`: Renderer of the body-of-revolution FDFD (solvers/fdfd_bor.BORPhysics): window-shaped float32 centre fields of the shown driven solve or resonance (Re and modulus per component, |E|, |E|^2, |H|), absorbed power and materials.
 - `renderer_conical.py`: Renderer of the conical FDFD (solvers/fdfd_conical.ConicalPhysics): window-shaped float32 centre fields of the shown driven solve or resonance (Re and modulus per component, |E|, |E|^2, |H|, S_z), absorbed power and materials.
 - `renderer_fdtd_bor.py`: Renderer of the body-of-revolution FDTD (solvers/fdtd_bor.BORFDTDPhysics): window-shaped float32 instantaneous centre fields of the standing wave, their moduli, materials, and the frequency_domain phasors (Re / modulus per component, |E|) ...
+- `renderer_sphere.py`: Renderer of the spherically symmetric FDFD (solvers/fdfd_sphere.SpherePhysics): window-shaped float32 radial profiles of the shown solution (sphere-RMS amplitudes of E_r, E_t, H_r, H_t summed over every solved multipole term), |E|, |E|^2, ...
 - `results.py`: Result dicts of EM monitors (numpy arrays, builtin floats / ints / str) for plots, export and the GUI.
 - `selftests.py`: Analytic E_z-polarisation EM self-test cases (line-current Hankel field and far-field isotropy; the plane-wave, Fresnel and Drude Mie cylinder cases come from selftests_hz's polarisation-generic factories), the wall-plane case of both FDTD ...
 - `selftests_adjoint.py`: Finite-difference validation of the FDFD adjoint sensitivity (adjoint_objective features, output fields eps_sensitivity / eps_xy_sensitivity) in em_fdfd_ez and em_fdfd_hz (also with eps_xy); no physics imports.
@@ -434,10 +436,12 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - `selftests_resonance.py`: Self-tests of the FDTD resonance_monitor (A6): core.resonance harmonic inversion of a synthetic damped-sinusoid signal (CPU) and the ring-down of a lossy PEC cavity against its exact discrete Yee resonances, single-point, joint and on a ...
 - `selftests_resonance_region.py`: Self-tests of the resonance region energy fraction: eigenfrequency.solve_resonances and fem.harmonic_resonances on two decoupled Dirichlet chains (CPU, no model run), and the em_fdfd_ez resonance_table region on a PEC box split by a ...
 - `selftests_shg_overlap.py`: Self-tests of the em_modes shg_overlap feature (nonlinear_overlap): plane-wave modes of a fully periodic anisotropic cross-section as a model run with the Voigt contraction, and the fixed ring crystal on CPU; exact references.
+- `selftests_sphere.py`: Self-tests of the spherically symmetric FDFD (em_fdfd_sphere): CPU checks of physics/em/spherical_multipoles (Mie coefficients and cross sections of a dielectric sphere, a PEC sphere cavity vs Bessel zeros, dipole powers in vacuum and the ...
 - `selftests_symmetry.py`: Model-run self-tests of the symmetry tools of the 2D EM types: mirror unfolding and totals (half vs full domain, symmetry 2.5), TFSF boxes opening onto a mirror plane (FDFD and FDTD), parity sectors (scripted, inside one study, with a ...
 - `sheet_conductivity.py`: 2D-material sheet conductivity sigma_s(omega) [S] of the FDFD conducting_sheet (host numpy, scipy inside a function): 'constant' or 'graphene_kubo' (Kubo intraband Drude + interband with temperature smearing), and the ConductingSheet ...
 - `slab_modes.py`: 1D slab (line-cut) eigenmodes of the 2D Yee stencil for mode sources and monitors (A3): numpy, scipy imported lazily with numpy fallbacks, never cupy. exp(+j omega t): a mode toward +normal varies as exp(-j k s), Re k > 0 (propagating) or ...
 - `sources.py`: Electromagnetic source injection for 2D FDTD (E_z and H_z polarisations): TFSF plane waves and current-calibrated soft sources
+- `spherical_multipoles.py`: Spherically symmetric frequency-domain EM (em_fdfd_sphere): the radial equation of one multipole term (family 'er' / 'hr', order l) on the radial cells of a 1D spherical domain, its exact outgoing-wave boundary, plane-wave (Mie) and dipole ...
 - `subpixel_smoothing.py`: Kottke / Farjadpour averaging of one 2D EM physics' current eps on the build's interface locations (core.interface_geometry): 1 / eps_d = n_d^2 <1/eps> + (1 - n_d^2) / <eps> over the two materials of the location (E_z: <eps>), reapplied in ...
 - `yee_grid.py`: Shared Yee spacing of the FDTD kernels and frequency-domain operators, and the face-material helpers that DEFINE the H_z face material (E_x / E_y faces); every engine, FDFD and mode solver must use them (xp passed explicitly).
 
@@ -450,6 +454,7 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - `fdfd_bor_fem.py`: Body-of-revolution resonances on a TriangleDomain (em_fdfd_bor on a 'triangles' mesh, eigenfrequency study only): FEMBORPhysics solves physics/em/fem_bor per azimuthal order on the host and exposes the selected resonance per element ...
 - `fdfd_conical.py`: Conical FDFD on a Domain (symmetry 2.9: a z-invariant structure at a fixed out-of-plane wave number k_z, all six components): ConicalPhysics assembles and solves on the host (physics/em/conical) and keeps float32 centre fields (run ...
 - `fdfd_conical_fem.py`: Conical resonances on a TriangleDomain (em_fdfd_conical on a 'triangles' mesh, eigenfrequency study only): FEMConicalPhysics solves physics/em/fem_conical at the k_z setting on the host and exposes the selected resonance per element ...
+- `fdfd_sphere.py`: Spherically symmetric FDFD on a spherical Domain (x = r - radius_min; y = theta over the whole 0..pi, one cell across on a 1D line): SpherePhysics solves the radial equation of every listed multipole term (spherical_multipoles) on the host ...
 - `fdtd_2d_base.py`: _YeeEngine2DBase: shared part of the 2D FDTD Yee engines (curl spacings, field sets, solver contract, J.E window) plus PEC-mask and dispersive-region helpers.
 - `fdtd_bor.py`: Body-of-revolution FDTD on a Domain (x = r from the x_lo window edge = the axis, y = z; one azimuthal order m, or the driven order sum of point currents at phi = 0): BORFDTDPhysics steps fdtd_bor.BORTimeStepper / BOROrderSum on the ...
 - `fdtd_conformal_kernels.py`: Sparse conformal-PEC corrections of the 2D FDTD H updates (physics/em/conformal_pec): launched right after the Yee H kernel of each field set, on the listed faces (E_z) / cells (H_z) only, with the same db and curl spacings; core.kernels ...

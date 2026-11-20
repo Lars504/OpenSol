@@ -6,7 +6,7 @@ from dataclasses import MISSING, dataclass, field, fields, is_dataclass
 
 from ..core.constants import FACES, FACES_3D
 from .expressions import (ExpressionError, compile_expression, is_identifier, is_reserved_name,
-                          rename_in_expression)
+                          rename_in_expression, reserved_name_message)
 from .schema import (INTERFACE_VARIABLES, MESH_PARAMS, known_physics, output_field_names, scalar_output_names,
                      state_field_names)
 
@@ -714,7 +714,7 @@ class ModelSpec:
             return
         _check_new_name(new, [other.name for other in self.parameters], 'parameter')
         if is_reserved_name(new):
-            raise ValueError(f'{new!r} is a reserved name')
+            raise ValueError(reserved_name_message(new))
         if new in state_field_names(self, registry) or new in output_field_names(self, registry):
             raise ValueError(f'{new!r} is a physics field name')
         if new in scalar_output_names(self, registry):

@@ -33,7 +33,7 @@ open_sol/
 │                    # estimates, DiffusionSystem, metric, mirror planes, cut cells, grid transfers, resonance finder
 ├── materials/       # library Materials (one file each), REGISTRY, crystal tensors
 ├── physics/<pkg>/   # one package per physics family (solvers, renderers, definition*.py, selftests*.py): em (2D
-│                    # FDTD / FDFD, modes, BOR, conical), em3d, eme, nlfd, heat, potential (electric_currents,
+│                    # FDTD / FDFD, modes, BOR, conical, spherical), em3d, eme, nlfd, heat, potential (electric_currents,
 │                    # electrostatics), mechanics, membrane, semiconductor, acoustics, fluid, magnetic
 ├── solvers/         # solver roles, SolverTypes (definition.py) and the role runtimes (pcg + multigrid, line_block,
 │                    # sparse_direct, banded, arpack_shift_invert, block_eigen, cudss_factor, host_direct,
@@ -435,8 +435,8 @@ first bring the background physics (those without the study's hook) to a station
 - `open_sol/physics/em/`: type catalogue, imports, FDTD and shared EM (engines, sources, boundaries, Bloch, TFSF,
   monitors, slab modes, mode ports), nonlinear / gain and phase-change media, harmonic FDTD, FDFD (ports,
   eigenfrequency, adjoint, design regions, conducting sheets), cross-section modes, conical k_z, em_modes, body of
-  revolution (FDFD, FDTD), the triangle paths and decisions, subpixel smoothing, definitions and self-tests, effective
-  index.
+  revolution (FDFD, FDTD), spherical multipoles, the triangle paths and decisions, subpixel smoothing, definitions
+  and self-tests, effective index.
 - `open_sol/physics/eme/`: layout, sections / mode cache / normalisation, interfaces and cascade, model layer, meshes
   and cuDSS (decision), cascade adjoint, self-tests.
 - `open_sol/physics/nlfd/`: coupling to em_fdfd, channels (Bloch k, mirror parity), adding a nonlinear term,

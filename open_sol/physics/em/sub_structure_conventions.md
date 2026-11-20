@@ -11,6 +11,8 @@ type's vocabulary and refusals are in its help texts and validation.
 - `em_modes` (xy = waveguide cross-section; no other EM type in its model, except em_fdfd_ez / _hz in a thermal_noise
   study), `em_fdfd_bor` / `em_fdtd_bor` ((r, z) half plane; no other EM type), `em_fdfd_conical` (z-invariant
   structure at out-of-plane k_z): the 'modes' material vocabulary.
+- `em_fdfd_sphere` (spherical domains over theta 0..pi only: the (r, theta) half disc or the 1D radial line; registered
+  last; 'ez' vocabulary without eps_zz): multipole terms on the radial line, section "Spherical multipoles".
 - Gyration (`schema.GYRATION_PROPERTY_NAMES`): a type reads a component only by declaring its material Param;
   validation refuses a non-zero one in a model holding an EM type that does not (`definition_common._material_issues`).
 - Root rule "allocate where needed": poles comply in E_z, H_z and FDFD (masks cropped to their box); not yet: H_z
@@ -512,6 +514,34 @@ type's vocabulary and refusals are in its help texts and validation.
   (BORTimeStepper has the same), never x / h of one stepper.
 - Order-sum references: the phi = 0 pattern adds the order amplitudes coherently, so an order cut errs by amplitude
   terms, not power shares, and a phi current needs one order more (`selftests_fdtd_bor_orders._MODEL_ORDERS`).
+
+## Spherical multipoles (em_fdfd_sphere; spherical_multipoles, solvers/fdfd_sphere, renderer_sphere, definition_sphere)
+- Formulation (unit-mean-square vector spherical harmonics, the er / hr radial equations, nodes on the radial cell
+  edges, the Riccati-Hankel outgoing term, sources, resonance refinement): `spherical_multipoles` header. Families are
+  named by the radial field that exists (er = electric multipoles, Mie a_l; hr = magnetic, b_l), never TE / TM. Mie
+  coefficients are the complex conjugates of Bohren & Huffman's (exp(+j omega t)); cross sections and |a| agree.
+- Only the radial line is solved: on the half disc the materials of each radial row must be constant along theta
+  (`_radial_profile`, a run error otherwise) and the shown fields are the radial profiles broadcast over theta, so
+  theta cells only draw the picture; estimates count mesh.nx radial cells for the solve, every window cell for the
+  display fields. `coordinate_grids` holds 'cartesian' only because the schema requires one; the geometry setting is
+  fixed to 'axisymmetric' so `_check_coordinate_grid` refuses slabs, cylinders and polar (r, phi).
+- No BoundaryConfig, no PML: the outer 'radiation' end is the exact outgoing term per multipole term with the last
+  cell's medium continued to infinity (it must not be PEC; plane waves need it lossless: `_lossless_exterior`).
+- Shown fields are sphere-RMS sums over every solved term and source class (`SpherePhysics._show`): non-negative
+  magnitudes, so no parity and no Re / phase; a probe phase exists only for one term and class (`single_phasors`).
+  e_intensity / q_abs are sphere means, so Session integrals over the whole-shell metric volumes are 3D integrals
+  (em_heat_joule hands a 1D spherical heat physics the exact angle-averaged power).
+- Source classes (`_source_classes`): plane wave (m = +-1), radial dipoles (m = 0, er only), tangential dipoles (m =
+  +-1) are solved apart on one factor per term; a plane wave beside dipoles is refused (their interference is not
+  modelled). A new source class keeps its m set orthogonal to the others or is refused beside them.
+- Resonances: `solve_term_resonances` per term on the pencil with the radiation term frozen at the target, then
+  `refine_resonance` at each resonance's own complex omega (factorisations counted on the eigen role; materials
+  frozen at the target); closed (pec / pmc) ends skip the refinement. The resonance_table's pml_fraction is 0.
+- The 'linear' role is DIRECT_LINEAR_ROLE (cusolver_qr refused), the tridiagonal operator factorised per term and
+  wavelength, nothing kept. Not yet: anisotropic eps, a banded complex solver, coherent plane wave + dipole, off-axis
+  sources, the true angular pattern on the half disc, a template.
+- Self-tests: selftests_sphere (tolerances first estimates); examples em/analytic_sphere_* (Mie vs the 3D tfsf / FDFD
+  / FEM sphere examples, PEC cavity, whispering-gallery FSR, dipole normalisation).
 
 ## Subpixel smoothing (subpixel_smoothing.py, geometry in model/subpixel_geometry.py)
 - Switch, honouring types and the no-MaterialGrid rule: root "Physics definitions"; formula, locations and kinds:

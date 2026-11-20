@@ -1,0 +1,133 @@
+{
+  "title": "Lowest TM and TE modes of a PEC sphere cavity (spherical multipoles, eigenfrequency, analytic)",
+  "description": "A vacuum sphere of radius a = 1 um with a perfect-metal wall (bc_x_hi pec) on the spherical (r, theta) half disc of em_fdfd_sphere, 2 nm radial cells, 90 theta cells (display only), multipole_order 1, both families, eigenfrequency study near 1.8 um with one resonance per term: row 0 = the electric family (er, TM_101: E_r != 0), row 1 = the magnetic family (hr, TE_101: H_r != 0). A closed cavity: real resonances, Q = inf.\nAnalytic: TM_l: (x j_l(x))' = 0, TE_l: j_l(x) = 0 at x = k a; l = 1: x_TM = 2.743707, x_TE = 4.493409, so lambda = 2 pi a / x = 2.29004 um and 1.39831 um.\nDerived values tab: lambda_TM101 (row 0) and lambda_TE101 (row 1) vs those values (second order: ~1e-5 at 2 nm).\nField tab (Snapshot slider): resonance 1 has |E_r| and |E_t| (E_t vanishes on the wall), resonance 2 only |E_t| (zero on the wall) and |H_r|, |H_t|.",
+  "version": 2,
+  "parameters": [
+    {
+      "name": "a_s",
+      "expression": "1*um",
+      "description": "cavity radius"
+    },
+    {
+      "name": "dx_cell",
+      "expression": "2*nm",
+      "description": "uniform radial cell size"
+    },
+    {
+      "name": "x_tm",
+      "expression": 2.743707269992,
+      "description": "first zero of (x j_1(x))'"
+    },
+    {
+      "name": "x_te",
+      "expression": 4.493409457909,
+      "description": "first zero of j_1(x)"
+    },
+    {
+      "name": "lambda_tm",
+      "expression": "2*pi*a_s/x_tm",
+      "description": "TM_101 wavelength (2.29004 um)"
+    },
+    {
+      "name": "lambda_te",
+      "expression": "2*pi*a_s/x_te",
+      "description": "TE_101 wavelength (1.39831 um)"
+    }
+  ],
+  "domain": {
+    "size_x": "a_s",
+    "size_y": "pi",
+    "coordinates": "spherical",
+    "radius_min": 0.0,
+    "angle_min": 0.0
+  },
+  "geometry": [],
+  "selections": [],
+  "materials": [],
+  "physics": [
+    {
+      "name": "em",
+      "type": "em_fdfd_sphere",
+      "settings": {
+        "bc_x_hi": "pec",
+        "wavelength": "1.8*um",
+        "multipole_order": 1,
+        "multipole_family": "both"
+      },
+      "features": [
+        {
+          "name": "resonances",
+          "type": "resonance_table",
+          "selection": [],
+          "params": {},
+          "enabled": true
+        }
+      ],
+      "every": 1,
+      "solvers": {}
+    }
+  ],
+  "couplings": [],
+  "mesh": {
+    "mode": "nonuniform",
+    "dx": "dx_cell",
+    "max_ratio": 1.15,
+    "wavelength_min": null,
+    "points_per_wavelength": 20.0,
+    "refinements": [],
+    "axes": [
+      {
+        "axis": "y",
+        "max_ratio": null,
+        "bands": [],
+        "edges": [],
+        "segments": [
+          {
+            "cells": 90,
+            "end": null,
+            "profile": "uniform",
+            "ratio": 1.0
+          }
+        ]
+      }
+    ]
+  },
+  "solver_defaults": {
+    "backend": "cpu",
+    "precision": "auto",
+    "subpixel_smoothing": false,
+    "conformal_boundaries": false,
+    "memory_check": "error"
+  },
+  "study": {
+    "type": "eigenfrequency",
+    "settings": {
+      "n_resonances": 1
+    },
+    "stored_fields": [],
+    "sweep": null
+  },
+  "derived_values": [
+    {
+      "name": "lambda_TM101",
+      "expression": "wavelength",
+      "selection": [],
+      "operation": "at",
+      "source": "em.resonances",
+      "at": 0,
+      "reference": "lambda_tm",
+      "tolerance": 0.0005
+    },
+    {
+      "name": "lambda_TE101",
+      "expression": "wavelength",
+      "selection": [],
+      "operation": "at",
+      "source": "em.resonances",
+      "at": 1,
+      "reference": "lambda_te",
+      "tolerance": 0.0005
+    }
+  ],
+  "analytic_curves": []
+}

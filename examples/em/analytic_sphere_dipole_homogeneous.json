@@ -1,0 +1,222 @@
+{
+  "title": "Radial and tangential dipole emission in a homogeneous medium (spherical multipoles, analytic)",
+  "description": "Two current elements (moment 1e-12 A m) at r = 0.3 um in a homogeneous dielectric of n = 1.5, one radial, one tangential (em_fdfd_sphere dipole_source; each is the sum of its multipole terms: the radial one excites only the electric family with m = 0, the tangential one both families with m = +-1, and the two are solved apart since their m sets are orthogonal). Half disc to 0.6 um, 1 nm radial cells, 90 theta cells, the medium continued to infinity by the exact outgoing condition, multipole orders 1..16 (n k r ~ 2.8: the terms fall off fast beyond l ~ 6), frequency_domain study at 0.8, 1.0 and 1.2 um.\nAnalytic: an element in an unbounded medium emits P = eta k^2 (I d)^2 / (12 pi), eta = eta0 / n, k = n k0, i.e. n times its vacuum power, wherever it sits and whatever its orientation; the Purcell factor (power over that of the same medium) is 1.\nDerived values tab: P_radial / P_tangential at 1 um vs n eta0 k0^2 (I d)^2 / (12 pi) and their purcell series vs 1 (pins the angular couplings and the source normalisation; ~1e-4). Put a sphere of another index around the origin (a circle material) to see the Purcell factor change with the distance to its surface.",
+  "version": 2,
+  "parameters": [
+    {
+      "name": "n_m",
+      "expression": 1.5,
+      "description": "refractive index of the medium"
+    },
+    {
+      "name": "r_d",
+      "expression": "0.3*um",
+      "description": "radius of both dipoles"
+    },
+    {
+      "name": "r_out",
+      "expression": "0.6*um",
+      "description": "outer end of the radial line"
+    },
+    {
+      "name": "dx_cell",
+      "expression": "1*nm",
+      "description": "uniform radial cell size"
+    },
+    {
+      "name": "Id",
+      "expression": 1e-12,
+      "description": "current moment I d of both elements [A m]"
+    },
+    {
+      "name": "lambda0",
+      "expression": "1*um",
+      "description": "reference wavelength of the derived values"
+    },
+    {
+      "name": "k_vac",
+      "expression": "2*pi/lambda0",
+      "description": "vacuum wave number at lambda0 (k0 is the Bessel function K_0)"
+    },
+    {
+      "name": "P_ref",
+      "expression": "n_m*sqrt(mu0_const/eps0_const)*k_vac**2*Id**2/(12*pi)",
+      "description": "power in the unbounded medium at lambda0"
+    }
+  ],
+  "domain": {
+    "size_x": "r_out",
+    "size_y": "pi",
+    "coordinates": "spherical",
+    "radius_min": 0.0,
+    "angle_min": 0.0
+  },
+  "geometry": [
+    {
+      "name": "emitter",
+      "kind": "point",
+      "params": {
+        "x": "r_d",
+        "y": 0.0
+      }
+    }
+  ],
+  "selections": [],
+  "materials": [
+    {
+      "name": "medium",
+      "library": null,
+      "properties": {
+        "eps_r": "n_m**2"
+      },
+      "dispersion": null,
+      "selection": [
+        "all"
+      ]
+    }
+  ],
+  "physics": [
+    {
+      "name": "em",
+      "type": "em_fdfd_sphere",
+      "settings": {
+        "multipole_orders": [
+          1.0,
+          2.0,
+          3.0,
+          4.0,
+          5.0,
+          6.0,
+          7.0,
+          8.0,
+          9.0,
+          10.0,
+          11.0,
+          12.0,
+          13.0,
+          14.0,
+          15.0,
+          16.0
+        ],
+        "multipole_family": "both"
+      },
+      "features": [
+        {
+          "name": "radial",
+          "type": "dipole_source",
+          "selection": [
+            "emitter"
+          ],
+          "params": {
+            "orientation": "radial",
+            "current_moment": "Id",
+            "phase": 0.0
+          },
+          "enabled": true
+        },
+        {
+          "name": "tangential",
+          "type": "dipole_source",
+          "selection": [
+            "emitter"
+          ],
+          "params": {
+            "orientation": "tangential",
+            "current_moment": "Id",
+            "phase": 0.0
+          },
+          "enabled": true
+        }
+      ],
+      "every": 1,
+      "solvers": {}
+    }
+  ],
+  "couplings": [],
+  "mesh": {
+    "mode": "nonuniform",
+    "dx": "dx_cell",
+    "max_ratio": 1.15,
+    "wavelength_min": null,
+    "points_per_wavelength": 20.0,
+    "refinements": [],
+    "axes": [
+      {
+        "axis": "y",
+        "max_ratio": null,
+        "bands": [],
+        "edges": [],
+        "segments": [
+          {
+            "cells": 90,
+            "end": null,
+            "profile": "uniform",
+            "ratio": 1.0
+          }
+        ]
+      }
+    ]
+  },
+  "solver_defaults": {
+    "backend": "cpu",
+    "precision": "auto",
+    "subpixel_smoothing": false,
+    "conformal_boundaries": false,
+    "memory_check": "error"
+  },
+  "study": {
+    "type": "frequency_domain",
+    "settings": {
+      "wavelengths": [
+        "0.8*um",
+        "1.0*um",
+        "1.2*um"
+      ]
+    },
+    "stored_fields": [],
+    "sweep": null
+  },
+  "derived_values": [
+    {
+      "name": "P_radial",
+      "expression": "power",
+      "selection": [],
+      "operation": "at",
+      "source": "em.radial",
+      "at": "lambda0",
+      "reference": "P_ref",
+      "tolerance": 0.002
+    },
+    {
+      "name": "P_tangential",
+      "expression": "power",
+      "selection": [],
+      "operation": "at",
+      "source": "em.tangential",
+      "at": "lambda0",
+      "reference": "P_ref",
+      "tolerance": 0.002
+    },
+    {
+      "name": "F_radial",
+      "expression": "purcell",
+      "selection": [],
+      "operation": "at",
+      "source": "em.radial",
+      "at": "lambda0",
+      "reference": 1.0,
+      "tolerance": 0.002
+    },
+    {
+      "name": "F_tangential",
+      "expression": "purcell",
+      "selection": [],
+      "operation": "at",
+      "source": "em.tangential",
+      "at": "lambda0",
+      "reference": 1.0,
+      "tolerance": 0.002
+    }
+  ],
+  "analytic_curves": []
+}

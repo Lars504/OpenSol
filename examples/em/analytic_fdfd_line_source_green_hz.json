@@ -1,5 +1,5 @@
 {
-  "title": "Analytic: magnetic line-current Green's function, H_z (FDFD)",
+  "title": "Magnetic line-current Green's function, H_z (FDFD, analytic)",
   "description": "A z-directed magnetic line current K_m in vacuum (all-CPML 4 x 4 um box, stationary study at 1 um, the source in a cell centre), swept over dx_cell; the dual of the E_z example.\nAnalytic: H_z = (omega eps0 K_m / 4) H0^(2)(k r).\nLine profile tab: pick the analytic curve 'hankel_axis' to plot |H_z| along +x from the source with the exact Hankel modulus dashed.\nDerived values tab: |H_z| (H_axis, H_diag) and phase (phase_axis, phase_diag = arg H0^(2)(k r)) at r = 1 um along x and r = 0.99 um along the diagonal vs their analytic references.\nSweep tab: each derived value vs dx_cell with the reference dashed (2nd-order convergence expected).\nField tab: |H_z| and Re H_z of the last (finest) run.",
   "version": 1,
   "parameters": [

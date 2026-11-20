@@ -15,16 +15,21 @@ _RUN_DIR_SUFFIX = '_out'          # CLI default run directory '<model stem>_out'
 MULTIPHYSICS_FOLDER = 'multiphysics'   # listed last, after a separator
 MULTIPHYSICS_LABEL = 'Multiphysics'   # an area folder's submenu of its models with several physics types
 AXISYMMETRIC_LABEL = 'Axisymmetric'
+SPHERICAL_LABEL = 'Spherical'
 # ExampleModel.space values, in menu order -> submenu tooltip
 EXAMPLE_SPACES = {'1D': 'One-dimensional models (a line along x).',
                   '2D': 'Planar and cross-section models (the drawing is a plane of the 3D object).',
                   '3D': 'Three-dimensional models.',
                   AXISYMMETRIC_LABEL: 'Cylinder symmetry: the drawing is the (r, z) half-plane, rotated about its '
-                                      'left edge.'}
+                                      'left edge.',
+                  SPHERICAL_LABEL: "Spherical grid: the drawing is the (r, theta) half disc (domain coordinates "
+                                   "'spherical'), rotated about the polar axis."}
 _FOLDER_LABELS = {'acoustics': 'Acoustics', 'em': 'Electromagnetics',
                   'fluid': 'Fluid flow', 'heat': 'Heat transfer', 'magnetic': 'Magnetic fields',
                   'mechanics': 'Solid mechanics', 'multiphysics': 'Multiphysics', 'potential': 'Electric potential',
                   'semiconductor': 'Semiconductor'}
+# physics label prefix a folder's single-physics groups drop (the folder label already says it): 'Frequency domain (...)'
+_FOLDER_GROUP_PREFIXES = {'em': 'Electromagnetic Waves, '}
 
 
 def _listed_folder(name):
@@ -45,7 +50,8 @@ def _model_dimension(domain):
 
 @dataclass(frozen=True)
 class ExampleModel:
-    """One listed example; group = its distinct physics type labels joined by ' + '; space = an EXAMPLE_SPACES key."""
+    """One listed example; group = its distinct physics type labels joined by ' + ' (one type: less the folder's
+    _FOLDER_GROUP_PREFIXES); space = an EXAMPLE_SPACES key."""
     path: Path
     relative_path: str        # POSIX path below the examples directory
     title: str
@@ -69,10 +75,12 @@ class ExampleCatalog:
         self._read = {}           # path -> ((mtime_ns, size), ExampleModel or None)
 
     def folders(self):
-        """[(folder name, menu label)] of the subfolders, by label, the multiphysics folder last; no file is read."""
+        """[(folder name, menu label)] of the subfolders holding a model file (run directories left behind do not
+        count), by label, the multiphysics folder last; no file is read."""
         if not self.directory.is_dir():
             return []
-        names = [entry.name for entry in os.scandir(self.directory) if entry.is_dir() and _listed_folder(entry.name)]
+        names = [entry.name for entry in os.scandir(self.directory)
+                 if entry.is_dir() and _listed_folder(entry.name) and self._model_files(Path(entry.path))]
         labelled = [(name, _FOLDER_LABELS.get(name, name.replace('_', ' ').capitalize())) for name in names]
         return sorted(labelled, key=lambda item: (item[0] == MULTIPHYSICS_FOLDER, item[1].casefold()))
 
@@ -127,15 +135,16 @@ class ExampleCatalog:
 
     def _model_space(self, domain, physics_list):
         """EXAMPLE_SPACES key of a raw model, None when its domain is no object: 3D / 1D from the domain sizes, else
-        Axisymmetric when every registered physics instance runs only axisymmetric (settings over the type defaults,
-        model.schema.instance_spaces: heat 'geometry', the BOR types) or the grid is spherical, else 2D."""
+        Spherical for a spherical (r, theta) grid, else Axisymmetric when every registered physics instance runs only
+        axisymmetric (settings over the type defaults, model.schema.instance_spaces: heat 'geometry', the BOR types),
+        else 2D."""
         dimension = _model_dimension(domain)
         if dimension is None:
             return None
         if dimension != 2:
             return f'{dimension}D'
         if isinstance(domain, dict) and domain.get('coordinates') == 'spherical':   # schema.COORDINATE_SPACES
-            return AXISYMMETRIC_LABEL
+            return SPHERICAL_LABEL
         shared = None
         for physics in physics_list:
             if not isinstance(physics, dict):
@@ -163,6 +172,9 @@ class ExampleCatalog:
         type_names = sorted({str(physics.get('type', '')) for physics in physics_list
                              if isinstance(physics, dict) and physics.get('type')})
         group = ' + '.join(self._physics_label(name) for name in type_names)
+        prefix = _FOLDER_GROUP_PREFIXES.get(Path(self._relative(path)).parts[0], '')
+        if len(type_names) == 1 and prefix and group.startswith(prefix):
+            group = group[len(prefix)].upper() + group[len(prefix) + 1:]
         space = self._model_space(model_dict.get('domain'), physics_list)
         if space is None:
             return None, "not a model file ('domain' is not an object)"

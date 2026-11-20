@@ -1,0 +1,260 @@
+{
+  "title": "Plane-wave scattering by a small dielectric sphere (spherical multipoles, Mie, analytic)",
+  "description": "The sphere of em/tfsf_sphere_mie_3d (eps = 4, r = 60 nm, vacuum) solved by em_fdfd_sphere on a spherical domain (coordinates spherical, size_y pi, angle_min 0: the drawing is the meridional half disc, every ring of cells at one radius a whole shell) from the centre to 100 nm, 1 nm radial cells (60 inside the sphere, its surface on a cell edge) and 90 theta cells (mesh axis y: the spherically symmetric solution does not depend on theta, so they only draw the picture; one radial line is solved), the outer end 'radiation' = the exact outgoing spherical wave of each multipole term (no PML, so the vacuum shell can be thin). A plane_wave (E along x, along +z, 1 V/m) in a frequency_domain study over 0.8-1.3 um, multipole orders 1..4, both families (er: electric multipoles a_l, hr: magnetic b_l); runs in well under a second on the cpu backend.\nAnalytic (Mie, dipole terms, as in the 3D example; m = 2, x = 2 pi r / lambda): Q_sca = sigma_sca / (pi r^2) = (6 / x^2) (|a1|^2 + |b1|^2) with |a1|^2 = 1 / (1 + (M_a / N_a)^2) from the closed-form psi1 / chi1; Q_sca(1 um) = 0.01422 (Rayleigh 0.01347). The model also carries l = 2..4 (a2 ~1e-4 of Q).\nDerived values tab: Q_sca_1000 = sigma_sca / (pi r^2) at 1 um vs the Mie value (the same name as in the 3D example: compare the two runs; the 3D FDTD reaches a few %, this radial solve ~1e-4); A_over_S = sigma_abs / sigma_sca (lossless sphere: 0 to round-off, the discrete flux balance is exact); Q_ext_1000 = sigma_ext / (pi r^2) (= Q_sca here).\nSpectra / Curves tab: em.wave series sigma_sca vs the dashed dipole Mie spectrum (~1 / lambda^4). Field tab: the sphere-mean |E|^2 and the sphere-RMS |E_r|, |E_t| summed over the solved terms (last wavelength), drawn over the half disc (the same at every theta).",
+  "version": 2,
+  "parameters": [
+    {
+      "name": "dx_cell",
+      "expression": "1*nm",
+      "description": "uniform radial cell size (60 cells per sphere radius)"
+    },
+    {
+      "name": "r_s",
+      "expression": "60*nm",
+      "description": "sphere radius"
+    },
+    {
+      "name": "r_out",
+      "expression": "100*nm",
+      "description": "outer end of the radial line (vacuum shell 40 nm, then the exact outgoing condition)"
+    },
+    {
+      "name": "eps_s",
+      "expression": 4.0,
+      "description": "sphere relative permittivity"
+    },
+    {
+      "name": "m_s",
+      "expression": "sqrt(eps_s)",
+      "description": "sphere refractive index (relative to vacuum)"
+    },
+    {
+      "name": "lambda0",
+      "expression": "1*um",
+      "description": "reference wavelength of the derived values"
+    },
+    {
+      "name": "kr",
+      "expression": "2*pi*r_s",
+      "description": "2 pi r: size parameter x = kr / lambda"
+    },
+    {
+      "name": "mkr",
+      "expression": "m_s*kr",
+      "description": "m x lambda: inner size parameter m x = mkr / lambda"
+    },
+    {
+      "name": "xs0",
+      "expression": "kr/lambda0",
+      "description": "size parameter at lambda0 (0.377)"
+    },
+    {
+      "name": "qs0",
+      "expression": "mkr/lambda0",
+      "description": "inner size parameter m x at lambda0"
+    },
+    {
+      "name": "psi_x0",
+      "expression": "sin(xs0)/xs0 - cos(xs0)",
+      "description": "psi1(x) at lambda0"
+    },
+    {
+      "name": "dpsi_x0",
+      "expression": "cos(xs0)/xs0 - sin(xs0)/xs0**2 + sin(xs0)",
+      "description": "psi1'(x) at lambda0"
+    },
+    {
+      "name": "chi_x0",
+      "expression": "cos(xs0)/xs0 + sin(xs0)",
+      "description": "chi1(x) at lambda0"
+    },
+    {
+      "name": "dchi_x0",
+      "expression": "cos(xs0) - sin(xs0)/xs0 - cos(xs0)/xs0**2",
+      "description": "chi1'(x) at lambda0"
+    },
+    {
+      "name": "psi_q0",
+      "expression": "sin(qs0)/qs0 - cos(qs0)",
+      "description": "psi1(m x) at lambda0"
+    },
+    {
+      "name": "dpsi_q0",
+      "expression": "cos(qs0)/qs0 - sin(qs0)/qs0**2 + sin(qs0)",
+      "description": "psi1'(m x) at lambda0"
+    },
+    {
+      "name": "na_0",
+      "expression": "m_s*psi_q0*dpsi_x0 - psi_x0*dpsi_q0",
+      "description": "a1 = na / (na - i ma): numerator at lambda0"
+    },
+    {
+      "name": "ma_0",
+      "expression": "m_s*psi_q0*dchi_x0 - chi_x0*dpsi_q0",
+      "description": "a1: imaginary part of the denominator at lambda0"
+    },
+    {
+      "name": "nb_0",
+      "expression": "psi_q0*dpsi_x0 - m_s*psi_x0*dpsi_q0",
+      "description": "b1 = nb / (nb - i mb): numerator at lambda0"
+    },
+    {
+      "name": "mb_0",
+      "expression": "psi_q0*dchi_x0 - m_s*chi_x0*dpsi_q0",
+      "description": "b1: imaginary part of the denominator at lambda0"
+    },
+    {
+      "name": "Q_mie0",
+      "expression": "6/xs0**2*(1/(1 + (ma_0/na_0)**2) + 1/(1 + (mb_0/nb_0)**2))",
+      "description": "Mie dipole Q_sca at lambda0 (0.01422)"
+    },
+    {
+      "name": "Q_rayleigh0",
+      "expression": "(8/3)*xs0**4*((eps_s - 1)/(eps_s + 2))**2",
+      "description": "Rayleigh Q_sca at lambda0 for comparison (0.01347)"
+    }
+  ],
+  "domain": {
+    "size_x": "r_out",
+    "size_y": "pi",
+    "coordinates": "spherical",
+    "radius_min": 0.0,
+    "angle_min": 0.0
+  },
+  "geometry": [
+    {
+      "name": "sphere",
+      "kind": "circle",
+      "params": {
+        "cx": 0.0,
+        "cy": 0.0,
+        "r": "r_s"
+      }
+    }
+  ],
+  "selections": [],
+  "materials": [
+    {
+      "name": "sphere_material",
+      "library": null,
+      "properties": {
+        "eps_r": "eps_s"
+      },
+      "dispersion": null,
+      "selection": [
+        "sphere"
+      ]
+    }
+  ],
+  "physics": [
+    {
+      "name": "em",
+      "type": "em_fdfd_sphere",
+      "settings": {
+        "multipole_orders": [
+          1.0,
+          2.0,
+          3.0,
+          4.0
+        ],
+        "multipole_family": "both"
+      },
+      "features": [
+        {
+          "name": "wave",
+          "type": "plane_wave",
+          "selection": [],
+          "params": {
+            "amplitude": 1.0
+          },
+          "enabled": true
+        }
+      ],
+      "every": 1,
+      "solvers": {}
+    }
+  ],
+  "couplings": [],
+  "mesh": {
+    "mode": "nonuniform",
+    "dx": "dx_cell",
+    "max_ratio": 1.15,
+    "wavelength_min": null,
+    "points_per_wavelength": 20.0,
+    "refinements": [],
+    "axes": [
+      {
+        "axis": "y",
+        "max_ratio": null,
+        "bands": [],
+        "edges": [],
+        "segments": [
+          {
+            "cells": 90,
+            "end": null,
+            "profile": "uniform",
+            "ratio": 1.0
+          }
+        ]
+      }
+    ]
+  },
+  "solver_defaults": {
+    "backend": "cpu",
+    "precision": "auto",
+    "subpixel_smoothing": false,
+    "conformal_boundaries": false,
+    "memory_check": "error"
+  },
+  "study": {
+    "type": "frequency_domain",
+    "settings": {
+      "wavelength_start": "0.8*um",
+      "wavelength_stop": "1.3*um",
+      "n_wavelengths": 11
+    },
+    "stored_fields": [],
+    "sweep": null
+  },
+  "derived_values": [
+    {
+      "name": "Q_sca_1000",
+      "expression": "sigma_sca/(pi*r_s**2)",
+      "selection": [],
+      "operation": "at",
+      "source": "em.wave",
+      "at": "lambda0",
+      "reference": "Q_mie0",
+      "tolerance": 0.002
+    },
+    {
+      "name": "Q_ext_1000",
+      "expression": "sigma_ext/(pi*r_s**2)",
+      "selection": [],
+      "operation": "at",
+      "source": "em.wave",
+      "at": "lambda0",
+      "reference": "Q_mie0",
+      "tolerance": 0.002
+    },
+    {
+      "name": "A_over_S",
+      "expression": "sigma_abs/sigma_sca",
+      "selection": [],
+      "operation": "at",
+      "source": "em.wave",
+      "at": "lambda0",
+      "reference": 0.0,
+      "tolerance": 1e-08
+    }
+  ],
+  "analytic_curves": [
+    {
+      "name": "mie_spectrum",
+      "target": "em.wave",
+      "series": "sigma_sca",
+      "expression": "pi*r_s**2*6*(wavelength/kr)**2*(1/(1 + ((m_s*(sin((mkr/wavelength))/(mkr/wavelength) - cos((mkr/wavelength)))*(cos((kr/wavelength)) - sin((kr/wavelength))/(kr/wavelength) - cos((kr/wavelength))/(kr/wavelength)**2) - (cos((kr/wavelength))/(kr/wavelength) + sin((kr/wavelength)))*(cos((mkr/wavelength))/(mkr/wavelength) - sin((mkr/wavelength))/(mkr/wavelength)**2 + sin((mkr/wavelength))))/(m_s*(sin((mkr/wavelength))/(mkr/wavelength) - cos((mkr/wavelength)))*(cos((kr/wavelength))/(kr/wavelength) - sin((kr/wavelength))/(kr/wavelength)**2 + sin((kr/wavelength))) - (sin((kr/wavelength))/(kr/wavelength) - cos((kr/wavelength)))*(cos((mkr/wavelength))/(mkr/wavelength) - sin((mkr/wavelength))/(mkr/wavelength)**2 + sin((mkr/wavelength)))))**2) + 1/(1 + (((sin((mkr/wavelength))/(mkr/wavelength) - cos((mkr/wavelength)))*(cos((kr/wavelength)) - sin((kr/wavelength))/(kr/wavelength) - cos((kr/wavelength))/(kr/wavelength)**2) - m_s*(cos((kr/wavelength))/(kr/wavelength) + sin((kr/wavelength)))*(cos((mkr/wavelength))/(mkr/wavelength) - sin((mkr/wavelength))/(mkr/wavelength)**2 + sin((mkr/wavelength))))/((sin((mkr/wavelength))/(mkr/wavelength) - cos((mkr/wavelength)))*(cos((kr/wavelength))/(kr/wavelength) - sin((kr/wavelength))/(kr/wavelength)**2 + sin((kr/wavelength))) - m_s*(sin((kr/wavelength))/(kr/wavelength) - cos((kr/wavelength)))*(cos((mkr/wavelength))/(mkr/wavelength) - sin((mkr/wavelength))/(mkr/wavelength)**2 + sin((mkr/wavelength)))))**2))",
+      "tolerance": 0.003
+    }
+  ]
+}
