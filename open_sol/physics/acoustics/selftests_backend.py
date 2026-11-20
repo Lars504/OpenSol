@@ -34,7 +34,9 @@ _NUMBA_SPEED_SHAPE = (512, 512)
 _NUMBA_TOLERANCE = 1e-5   # relative to the peak output: float32 round-off of a different operation order
 _NUMBA_PERIODIC_SETS = ((0, 0), (1, 0), (0, 1), (1, 1))
 _NUMBA_LAYERS = ((3, 2), (2, 3))   # (lo, hi) absorbing cells along x, along y
-_NUMBA_VELOCITY_VARIANTS = {'velocity': False, 'velocity_axisymmetric': True}
+# key -> axisymmetric (the _lossless keys: va unread, v = 0 on faces with vb = 0)
+_NUMBA_VELOCITY_VARIANTS = {'velocity': False, 'velocity_axisymmetric': True, 'velocity_lossless': False,
+                            'velocity_axisymmetric_lossless': True}
 # key -> (axisymmetric, strain_accumulator, monoclinic)
 _NUMBA_STRESS_VARIANTS = {'stress': (False, False, False), 'stress_axisymmetric': (True, False, False),
                           'stress_strain': (False, True, False), 'stress_strain_monoclinic': (False, True, True)}
@@ -76,7 +78,9 @@ class _RandomStrip:
 
     def velocity(self, axisymmetric, periodic):
         fields = [self.array() for _ in range(6 if axisymmetric else 5)]
-        coefficients = (self.array(0.9, 1.0), self.array(0.05, 0.15), self.array(0.9, 1.0), self.array(0.05, 0.15))
+        pinned = [self.rng.random(self.shape) < 0.2 for _ in range(2)]   # faces with vb = 0 (the lossless branch)
+        coefficients = (self.array(0.9, 1.0), np.where(pinned[0], np.float32(0.0), self.array(0.05, 0.15)),
+                        self.array(0.9, 1.0), np.where(pinned[1], np.float32(0.0), self.array(0.05, 0.15)))
         return (*fields, *coefficients, *self.common(), *((self.radial,) if axisymmetric else ()), *self.psi(),
                 DTYPE(1.0), *self.ints, *(np.int32(flag) for flag in periodic))
 
@@ -122,7 +126,8 @@ def _check_updates_numba(results_by_name):
 _UPDATES_NUMBA_CASE = SelfTestCase(
     name='elastic_waves_kernels_numba', label='Elastic waves: numba vs numpy velocity / stress updates (CPU)',
     description=('The numba twins of the elastic_waves single-precision velocity and stress updates (planar, '
-                 'axisymmetric, strain-accumulating and monoclinic variants) against their numpy twins on random '
+                 'axisymmetric, lossless velocity (no va arrays), strain-accumulating and monoclinic variants) '
+                 'against their numpy twins on random '
                  f'{_NUMBA_SHAPE[0]} x {_NUMBA_SHAPE[1]} inputs with x / y absorbing slabs and corners without shear, '
                  'for every periodic set; measured = error = the worst max |numba - numpy| over every written array '
                  f'relative to its peak, tolerance {_NUMBA_TOLERANCE:g}. Details: ms per call of both on a '
