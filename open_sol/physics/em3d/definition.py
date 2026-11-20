@@ -8,15 +8,16 @@ from ...core.domain import containing_cell
 from ...core.memory_estimate import COMPLEX64_BYTES, COMPLEX128_BYTES, FLOAT32_BYTES, BOOL_BYTES, MemoryEstimate
 from ...core.kernels import numba_available
 from ...core.time_estimate import Elementwise, PythonCalls, explicit_step_estimate
-from ...model.definition_helpers import (HALF_STORAGE_STEPPER_ROLE, resolved_stepper_precision, selected_material_data,
-                                         validate_points_inside, wavelength_range_issues)
+from ...model.definition_helpers import (HALF_STORAGE_STEPPER_ROLE, parkable_material_arrays,
+                                         resolved_stepper_precision, selected_material_data, validate_points_inside,
+                                         wavelength_range_issues)
 from ...solvers.explicit_kernels import stepper_precision
 from ...model.definition_resonance import resonance_monitor_feature
-from ...model.expressions import FIELD_COORDINATE_NAMES, ExpressionError, referenced_names
+from ...model.expressions import ExpressionError, referenced_names
 from ...model.geometry import expand_entities
 from ...core.renderer import FieldInfo
 from ...model.schema import (FREQUENCY_DOMAIN_STUDY, DomainRequirements, FeatureType, Issue, Param, PhysicsType,
-                             array_owner, feature_path, solver_backend)
+                             array_owner, feature_path)
 from ..em.definition_common import (EM_FAMILY, FLUX_PARAMS, POINT_SOURCE_SIGN, _monitor_wavelengths,
                                     _q_accum_referenced, background_permittivity, boundary_settings_params,
                                     em_material_params, make_pole,
@@ -235,36 +236,10 @@ _TRACK_ABSORPTION = next(param for param in settings_params(_BC_HELP, 'unused', 
 # ---- parked material arrays ----
 def _parked_material_arrays(spec, registry, physics_spec, parameters) -> tuple:
     """MaterialGrid arrays em_fdtd_3d moves to the host after its finalize (FDTDEngine3D.park_arrays: the uint16 index
-    and tables hold them; its field arrays are allocated only after): MATERIAL_ARRAYS on the gpu backend when nothing
-    rewrites them during the run (no enabled coupling into the physics, every em material property of every material
-    a constant or an x / y / z expression of the parameters: no DynamicMaterialUpdate) minus those another physics on
-    the same mesh registers; () otherwise (also for model errors, which validate reports)."""
-    try:
-        if solver_backend(spec) != 'gpu':
-            return ()
-        name = physics_spec.name
-        if any(coupling.enabled and coupling.target == name for coupling in spec.couplings):
-            return ()
-        from ...materials import effective_material_data
-        own_properties = {param.name for param in _MATERIAL_PROPERTIES}
-        static_names = set(parameters) | FIELD_COORDINATE_NAMES
-        for material in spec.materials:
-            properties, _ = effective_material_data(material.library, material.properties, material.dispersion)
-            for property_name, value in properties.items():
-                if property_name in own_properties and value is not None \
-                        and not referenced_names(value) <= static_names:
-                    return ()
-        mesh_name = spec.mesh_of(physics_spec).name
-        shared = set()
-        for other in spec.physics:
-            if other.name == name or spec.mesh_of(other).name != mesh_name:
-                continue
-            other_type = registry.physics_type(other.type)
-            shared.update(other_type.material_schema)
-            shared.update(other_type.optional_material_schema)
-        return tuple(array for array in MATERIAL_ARRAYS if array not in shared)
-    except (ValueError, KeyError, TypeError, ExpressionError):
-        return ()
+    and tables hold them; its field arrays are allocated only after): MATERIAL_ARRAYS under the shared rule
+    (definition_helpers.parkable_material_arrays over the em material properties)."""
+    return parkable_material_arrays(spec, registry, physics_spec, parameters,
+                                    {param.name for param in _MATERIAL_PROPERTIES}, MATERIAL_ARRAYS)
 
 
 # ---- create ----
