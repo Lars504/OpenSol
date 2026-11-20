@@ -10,11 +10,11 @@ import numpy as np
 from ...core import time_estimate as te
 from ...core.backend import to_host
 from ...core.constants import FACE_LABELS, FACES_3D
-from ...core.memory_estimate import (COMPLEX64_BYTES, COMPLEX128_BYTES, COMPLEX128_CSR_ENTRY_BYTES, FLOAT64_BYTES,
-                                     INT32_BYTES, MemoryEstimate, host_counted_lu_bytes, host_lu_bytes,
+from ...core.memory_estimate import (COMPLEX64_BYTES, COMPLEX128_BYTES, COMPLEX128_CSR_ENTRY_BYTES, FLOAT32_BYTES,
+                                     FLOAT64_BYTES, INT32_BYTES, MemoryEstimate, host_counted_lu_bytes, host_lu_bytes,
                                      solver_job_items)
 from ...model.definition_helpers import (DISCRETIZATION_PARAM, eigen_factorization, eigen_role, eigen_subspace_size,
-                                         element_order)
+                                         element_order, parkable_material_arrays)
 from ...model.schema import DomainRequirements, FeatureType, Issue, Param, PhysicsType, solver_backend
 from ...solvers.arpack_shift_invert import (CUDSS_FACTORIZATIONS, LDLT_FACTORIZATIONS, MIXED_EIGEN_MIN_UNKNOWNS,
                                             MIXED_FACTORIZATIONS, arnoldi_basis_size)
@@ -22,7 +22,7 @@ from ...solvers.sparse_direct import vector_3d_size_issue
 from ..em.definition_common import (DEFAULT_WAVELENGTH, EIGENFREQUENCY_STUDY, EM_FAMILY, _refractive_index,
                                     all_solved_wavelengths, boundary_settings_params, make_validate_physics,
                                     object_result, physics_counter, HOST_DIRECT_NAMES, resonance_eigenpairs,
-                                    shortest_solved_wavelength, source_slot_docs)
+                                    shortest_solved_wavelength, source_slot_docs, state_arrays_read)
 from ..em.definition_fdfd import (MIN_REGION_FRACTION_PARAM, resonance_region_memory_estimate,
                                   validate_resonance_table)
 from ..em.eigenfrequency import (REGION_COLUMN, ResonanceRegion, ResonanceTable, resonance_filter_time_item,
@@ -32,9 +32,10 @@ from ..em.memory_estimates import (EIGEN_PHASE, EIGEN_ROLE, _study_values, cudss
                                    resonance_search_items)
 from .boundaries3d import AXES, FACE_TYPES_3D, MIRROR_TYPES_3D
 from .definition import (_BC_CHOICE_LABELS, _BC_TIP, _MATERIAL_PROPERTIES, _MATERIAL_SCHEMA,
-                         _OPTIONAL_MATERIAL_SCHEMA, _PML_VISIBLE_3D, _SLOT_ARRAYS, _apply_pec, _boundary_config,
-                         _ignored_bloch_issues, _pec_memory, _validate_pec, _validate_z_faces,
+                         _OPTIONAL_MATERIAL_SCHEMA, _PML_VISIBLE_3D, _SLOT_ARRAYS, _allocated_arrays, _apply_pec,
+                         _boundary_config, _ignored_bloch_issues, _pec_memory, _validate_pec, _validate_z_faces,
                          write_dispersive_regions_3d)
+from .physics3d import MATERIAL_ARRAYS
 from .definition_sources3d import domain_sizes
 from .fdfd3d import ARNOLDI_BASIS_PER_WANTED, FDFDPhysics3D
 from .fem3d import YEE_EQUIVALENT_UNKNOWNS
@@ -150,7 +151,27 @@ def _create(ctx, physics_spec, settings_values):
     else:
         physics = FDFDPhysics3D(ctx.domain, wavelength=settings_values['wavelength'], eigen_solver=eigen_solver)
     write_dispersive_regions_3d(ctx, physics)
+    materials = ctx.domain.materials
+    materials.park([name for name in _parked_material_arrays(ctx.spec, ctx.registry, physics_spec, ctx.parameters)
+                    if name in materials.property_names()])
     return physics
+
+
+def _parked_material_arrays(spec, registry, physics_spec, parameters) -> tuple:
+    """MaterialGrid arrays em_fdfd_3d moves to the host at create (tensor grids; the assembly reads them through
+    to_host, the renderer's eps_r window and state() through device_array: em3d sub file "em_fdfd_3d"): the em3d
+    material arrays under the shared rule (definition_helpers.parkable_material_arrays), minus those whose state field
+    a material expression or field_transfer reads (em definition_common.state_arrays_read)."""
+    try:
+        if spec.mesh_of(physics_spec).kind != 'tensor':
+            return ()
+    except (KeyError, ValueError, AttributeError):   # reported by validate
+        return ()
+    arrays = parkable_material_arrays(spec, registry, physics_spec, parameters,
+                                      {param.name for param in _MATERIAL_PROPERTIES},
+                                      MATERIAL_ARRAYS)
+    read = state_arrays_read(spec, registry, physics_spec.name, arrays)
+    return tuple(array for array in arrays if array not in read)
 
 
 # ---- features ----
@@ -355,7 +376,15 @@ def _memory_estimate(settings_values, mesh, context):
         # fdfd3d: the selected resonance's E / H stay on the host on either backend (renderer: one float32 upload)
         ('resonance fields (6 x complex64, host)', 6 * COMPLEX64_BYTES * n_cells),
     )
-    return MemoryEstimate.from_items((), host_items=host_items, transient_items=cudss_items + tuple(search_transient),
+    # parked MaterialGrid arrays (meshing books them nowhere else): on the device while the build paints them, on the
+    # host from create
+    parked = [name for name in _parked_material_arrays(context.spec, context.registry, context.physics_spec,
+                                                       context.parameters) if name in _allocated_arrays(context)]
+    parked_bytes = FLOAT32_BYTES * len(parked) * n_cells
+    if parked:
+        host_items += ((f"material arrays parked on the host ({', '.join(parked)}, float32)", parked_bytes),)
+    return MemoryEstimate.from_items((), build_extra=parked_bytes, host_items=host_items,
+                                     transient_items=cudss_items + tuple(search_transient),
                                      external_items=external_items, external_extra=external_extra)
 
 
@@ -629,6 +658,7 @@ EM_FDFD_3D = PhysicsType(
     shortest_wavelength=shortest_solved_wavelength,
     validate=_validate,
     memory_estimate=_memory_estimate,
+    parked_material_arrays=_parked_material_arrays,
     time_estimate=_time_estimate,
     dimensions=(3,),
     subpixel_smoothing=True,

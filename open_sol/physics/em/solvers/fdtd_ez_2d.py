@@ -4,8 +4,8 @@ import numpy as np
 
 from ....core.constants import EPS0
 from . import fdtd_ez_2d_kernels as _kernels
-from .fdtd_2d_base import (_YeeEngine2DBase, _box_overlap, _bounding_box, _union_box, material_row_blocks,
-                           material_state)
+from ..materials import material_state
+from .fdtd_2d_base import _YeeEngine2DBase, _box_overlap, _bounding_box, _union_box, material_row_blocks
 from .fdtd_conformal_kernels import conformal_h_ez, sparse_launch
 
 
@@ -61,7 +61,7 @@ class FDTDEngine2D_Ez(_YeeEngine2DBase):
 
     def state(self):
         """Public fields; jz_total is None without a Drude pole, q_accum None before accumulation is enabled; parked
-        eps_r / sigma_e read as device copies (fdtd_2d_base.material_state)."""
+        eps_r / sigma_e read as device copies (materials.material_state)."""
         return material_state({
             'ez': self.fields.ez,
             'hx': self.fields.hx,

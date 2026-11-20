@@ -1,6 +1,7 @@
 """EM MaterialGrid arrays per polarisation (register_em_arrays), the DrudePole / LorentzPole dispersion poles and the
 TFSF box outline warnings."""
 import math
+from collections.abc import Mapping
 
 import numpy as np
 from ...core.backend import host_copy, write_host_into
@@ -22,6 +23,38 @@ EM_MATERIAL_SCHEMAS = {
     'hz': {'eps_xx': 1.0, 'eps_yy': 1.0, 'mu_r': 1.0, 'sigma_e': 0.0, 'sigma_m': 0.0},
     'modes': {'eps_r': 1.0, 'eps_xx': 1.0, 'eps_yy': 1.0, 'mu_r': 1.0, 'sigma_e': 0.0, 'sigma_m': 0.0},
 }
+
+
+class LazyState(Mapping):
+    """A state() dict whose entries named in `readers` are made on access (`readers[name]()` per read: e.g. a device
+    copy of a parked MaterialGrid array), the others as stored; keys and order those of `state`."""
+
+    def __init__(self, state, readers):
+        self._state = state
+        self._readers = readers
+
+    def __getitem__(self, name):
+        value = self._state[name]   # KeyError for an unknown key
+        reader = self._readers.get(name)
+        return value if reader is None else reader()
+
+    def __contains__(self, name):
+        return name in self._state
+
+    def __iter__(self):
+        return iter(self._state)
+
+    def __len__(self):
+        return len(self._state)
+
+
+def material_state(state, materials) -> Mapping:
+    """`state` itself, or a LazyState reading its parked MaterialGrid entries (MaterialGrid.park) through
+    device_array (a full-grid device copy per read)."""
+    parked = [name for name in state if name in materials.parked]
+    if not parked:
+        return state
+    return LazyState(state, {name: (lambda name=name: materials.device_array(name)) for name in parked})
 
 
 def register_em_arrays(materials, polarization):

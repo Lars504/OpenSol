@@ -5,7 +5,8 @@ import numpy as np
 from ....core.constants import EPS0
 from ..yee_grid import face_average, face_pec, face_shares
 from . import fdtd_hz_2d_kernels as _kernels
-from .fdtd_2d_base import _YeeEngine2DBase, _box_overlap, _bounding_box, _union_box, material_state
+from ..materials import material_state
+from .fdtd_2d_base import _YeeEngine2DBase, _box_overlap, _bounding_box, _union_box
 from .fdtd_conformal_kernels import conformal_hz, sparse_launch
 
 
@@ -97,7 +98,7 @@ class FDTDEngine2D_Hz(_YeeEngine2DBase):
     def state(self):
         """Public fields: hz, eps_xx, eps_yy, sigma_e, q_accum (None before accumulation), q_accum_time; the staggered
         ex / ey are not state (the renderer gives them collocated); parked material arrays read as device copies
-        (fdtd_2d_base.material_state)."""
+        (materials.material_state)."""
         return material_state({
             'hz': self.fields.hz,
             'eps_xx': self.materials.eps_xx,

@@ -947,13 +947,13 @@ def fdtd_parked_material_arrays(polarization, spec, registry, physics_spec, para
             values = resolve_values(physics_type.settings, settings, parameters)
             if values.get('track_absorption') or _q_accum_referenced(spec, physics_spec.name, registry):
                 arrays.discard('sigma_e')
-        arrays -= _state_arrays_read(spec, registry, physics_spec.name, arrays)
+        arrays -= state_arrays_read(spec, registry, physics_spec.name, arrays)
     except (KeyError, ValueError, TypeError, ExpressionError):   # reported by validate
         return ()
     return parkable_material_arrays(spec, registry, physics_spec, parameters, own_properties, tuple(sorted(arrays)))
 
 
-def _state_arrays_read(spec, registry, physics_name, arrays) -> set:
+def state_arrays_read(spec, registry, physics_name, arrays) -> set:
     """The names of `arrays` whose state field of physics_name a material expression references or an enabled
     field_transfer out of it takes."""
     names = {name: field for name, (physics, field) in state_field_names(spec, registry).items()

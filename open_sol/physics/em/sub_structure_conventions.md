@@ -71,7 +71,7 @@ type's vocabulary and refusals are in its help texts and validation.
   while accumulating) lists what `EMPhysics(park_arrays=)` moves to the host at create, before the engine allocates
   (the build peak never holds both). Readers of such an array go through `MaterialGrid.device_array(name, index)`
   (renderer windows, mode port rows, TFSF outline region, harmonic energy window, subpixel gathers: whole array),
-  `material_state` (state(): a device copy per read), `xp.asarray` of a line (sheet calibrations), a host reduction
+  `materials.material_state` (state(): a device copy per read), `xp.asarray` of a line (sheet calibrations), a host reduction
   (`_single_value`, `_all_zero`, `_bounding_box`, `material_values`: the Courant check) or uploaded x-row blocks
   (`material_row_blocks`: H and ez E rebuilds; the hz E rebuild reads neighbours: whole uploads); per-step readers
   keep their own device copy (ez sigma_e on the ohmic box, hz sigma_e for q_accum_hz). A new reader of a PARKABLE
