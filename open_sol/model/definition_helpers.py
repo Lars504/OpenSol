@@ -15,11 +15,12 @@ from ..fem.squeeze_film import SLIP_MODELS, VEIJOLA_KNUDSEN_LIMIT
 from ..solvers.host_direct import HOST_DIRECT_BACK_ENDS, HOST_DIRECT_DOUBLE_BACK_ENDS, HOST_DIRECT_MIXED_BACK_ENDS
 from ..solvers.pcg import CG_ITERATIONS_PER_AXIS_CELL, SOLVER_DTYPE_NAMES, auto_max_iterations
 from ..solvers.roles import SolverRole, resolved_precision
-from .expressions import TIME_NAMES, Expression, ExpressionError, evaluate_scalar, referenced_names
+from .expressions import (FIELD_COORDINATE_NAMES, TIME_NAMES, Expression, ExpressionError, evaluate_scalar,
+                          referenced_names)
 from .geometry import (bounding_box, domain_size_z, expand_entities, perimeter_weights, point_z,
                        preview_pixel_centers)
 from .schema import (EIGENFREQUENCY_STUDY, FREE_MESH_KINDS, FREQUENCY_RESPONSE_STUDY, Issue, Param, feature_path,
-                     known_physics, state_field_names)
+                     known_physics, solver_backend, state_field_names)
 
 
 def evaluates_to(value, parameters, predicate):
@@ -1251,6 +1252,44 @@ def cross_term_materials(vctx, prefix):
     return [material.name for material, properties, _ in selected_material_data(vctx.spec)
             if evaluates_to(properties.get(f'{prefix}_xy'), vctx.parameters, lambda value: value != 0.0)]
 
+
+
+def parkable_material_arrays(spec, registry, physics_spec, parameters, own_properties, arrays,
+                             read_by_couplings_out=()) -> tuple:
+    """The MaterialGrid arrays of `arrays` a time-stepping solver may move to the host once its coefficients are built
+    (MaterialGrid.park; PhysicsType.parked_material_arrays, the one rule every parking type shares): on the gpu backend
+    when nothing rewrites them during the run (no enabled coupling into the physics; every property of own_properties
+    of every material a constant or an x / y / z expression of the parameters, so no DynamicMaterialUpdate), minus the
+    arrays another physics on the same mesh registers (material_schema, optional_material_schema) and, when an enabled
+    coupling reads the physics, `read_by_couplings_out` (arrays its transforms read); () otherwise (also for model
+    errors, which validate reports)."""
+    try:
+        if solver_backend(spec) != 'gpu':
+            return ()
+        name = physics_spec.name
+        if any(coupling.enabled and coupling.target == name for coupling in spec.couplings):
+            return ()
+        from ..materials import effective_material_data   # lazy: materials imports physics.em
+        static_names = set(parameters) | FIELD_COORDINATE_NAMES
+        for material in spec.materials:
+            properties, _ = effective_material_data(material.library, material.properties, material.dispersion)
+            for property_name, value in properties.items():
+                if property_name in own_properties and value is not None \
+                        and not referenced_names(value) <= static_names:
+                    return ()
+        mesh_name = spec.mesh_of(physics_spec).name
+        shared = set()
+        for other in spec.physics:
+            if other.name == name or spec.mesh_of(other).name != mesh_name:
+                continue
+            other_type = registry.physics_type(other.type)
+            shared.update(other_type.material_schema)
+            shared.update(other_type.optional_material_schema)
+        if any(coupling.enabled and coupling.source == name for coupling in spec.couplings):
+            shared.update(read_by_couplings_out)
+        return tuple(array for array in arrays if array not in shared)
+    except (ValueError, KeyError, TypeError, ExpressionError):
+        return ()
 
 # ---- 'geometry' setting: planar or axisymmetric (r, z) (heat, potential, magnetic; names in core.constants) ----
 AXISYMMETRIC_SPACE_SETTINGS = {AXISYMMETRIC: {GEOMETRY_SETTING: AXISYMMETRIC}}   # PhysicsType.space_settings

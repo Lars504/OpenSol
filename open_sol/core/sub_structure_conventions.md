@@ -43,7 +43,8 @@ coordinate rules stay in the root file.
 - `MaterialGrid.park(names)` (em3d sub file "Parked material arrays"): parked arrays are host numpy; `assign` /
   `assign_window` write them there and `device_array(name, index)` uploads (a view when not parked). Code reading a
   MaterialGrid array as a device array (`getattr(materials, name)` into a kernel or xp expression) breaks on a parked
-  one: a parking solver's rule excludes the meshes where such readers run.
+  one: a parking solver's rule excludes the meshes where such readers run. The rule is shared:
+  `model.definition_helpers.parkable_material_arrays` (a new parking type calls it, never a copy).
 - `release_all`'s full `gc.collect` walks every tracked object (~25 ms): a sweep (`study._run_sweep`) freezes the gc
   after its first value (`freeze_collect_baseline` / `thaw_collect_baseline`), never undoing a freeze of its caller
   (selftest_cache freezes for the whole selftest).
@@ -65,7 +66,7 @@ A new accepted sync joins this list.
   material arrays per index rebuild, one face kind's geometry upload per subpixel refresh.
 - laminar_flow: the velocity check once per lattice check interval (>= 100 steps).
 - Probe tables: `monitors.park_probe_rows` right after the time loops' per-chunk sync (study `_run_time_dependent`,
-  `_run_harmonic_pulse`), one transfer per table holding >= PROBE_PARK_ROWS rows; a HarmonicProbeRecord's stacked
+  `_run_harmonic_pulse`; `Simulation.run` per chunk), one transfer per table holding >= PROBE_PARK_ROWS rows; a HarmonicProbeRecord's stacked
   transfer every HARMONIC_PARK_VALUES device values (between frequency solves).
 - Mechanics: per Newton iteration of a device tangent (fem.elasticity3d.TangentAssembler3D(device=True)) the
   displacement up / force down and the operator norm of `CudssFactorization.refactorize_device_values` (its scatter
@@ -251,8 +252,8 @@ A new accepted sync joins this list.
   boundaries (`park_probe_rows`, a weak registry of live tables): `n_rows` counts every row, the device counter and
   `device_rows` only those since the last park, the same device table and launch stay (step graphs keep their
   pointers). Code reading samples goes through `column_values`, never `_samples` rows by absolute index; a park
-  between a record and its `stamp` / `rewrite_last_row` would lose that row (never inside a step). Scripts
-  (`Simulation.run`) do not park: their tables grow on the device as before. Per-probe FieldProbe buffers (cpu
+  between a record and its `stamp` / `rewrite_last_row` would lose that row (never inside a step). Scripts park in
+  `Simulation.run` (chunks of at most PROBE_PARK_ROWS ticks; a script stepping solvers itself does not). Per-probe FieldProbe buffers (cpu
   engines, probes no table took over) never park. Estimate: `definition_resonance.point_trace_items`.
 
 ## Resonance finder (`resonance`, host numpy; the shared row is `model.definition_resonance`)
