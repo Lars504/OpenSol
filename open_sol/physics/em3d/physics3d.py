@@ -55,9 +55,13 @@ class EM3DSlots:
             valid = [slot for slot, array in PERMITTIVITY_SLOTS.items() if array in self.permittivity_arrays]
             raise ValueError(f"{self.type_label} accepts the source slots of its allocated permittivity arrays "
                              f"({', '.join(valid)}), got {name!r}")
-        target = getattr(self.domain.materials, array_name)
-        xp = self.domain.xp
-        xp.copyto(target, xp.asarray(array, dtype=target.dtype))
+        materials = self.domain.materials
+        target = getattr(materials, array_name)
+        if array_name in materials.parked:   # host array (MaterialGrid.park): one transfer
+            np.copyto(target, np.asarray(to_host(array), dtype=target.dtype))
+        else:
+            xp = self.domain.xp
+            xp.copyto(target, xp.asarray(array, dtype=target.dtype))
         self.materials_changed((array_name,))
 
 
@@ -112,8 +116,8 @@ def check_pole(pole):
 
 class _EngineState(Mapping):
     """state() of EMPhysics3D, values made on access only: 'q_accum' a full-grid float32 copy of the engine's loss-box
-    accumulator (0 outside it; None before accumulation), under half_storage the six components float32 copies in V/m
-    / A/m; the rest as stored."""
+    accumulator (0 outside it; None before accumulation), 'eps_r' the device array (a device copy when parked), under
+    half_storage the six components float32 copies in V/m / A/m; the rest as stored."""
 
     def __init__(self, state, engine):
         self._state = state
@@ -123,6 +127,8 @@ class _EngineState(Mapping):
         value = self._state[name]
         if name == 'q_accum':
             return self._engine.q_grid(self._engine.q_accum)
+        if name == 'eps_r':   # a device copy when parked (MaterialGrid.device_array)
+            return self._engine.domain.materials.device_array('eps_r')
         if name not in COMPONENT_AXES or self._engine.precision == 'single':
             return value
         return value.astype(DTYPE) * DTYPE(self._engine.field_scale(name))
@@ -148,12 +154,14 @@ class EMPhysics3D(EM3DSlots, PhysicsSolver):
     # items whose placement or weights read Cartesian widths refuse a sector (_require_cartesian)
     coordinate_grids = ('cartesian', 'polar')
 
-    def __init__(self, domain, precision='single'):
+    def __init__(self, domain, precision='single', park_arrays=()):
         if getattr(domain, 'dimensions', 2) != 3:
             raise ValueError('EMPhysics3D needs a Domain3D (a model with domain size_z)')
         self.domain = domain
         self.boundary_config = solver_boundary_config_3d(domain)
-        self.engine = FDTDEngine3D(domain, self.boundary_config, precision)
+        # park_arrays: MaterialGrid arrays parked on the host at finalize (FDTDEngine3D; readers here take them through
+        # device_array or the engine tables)
+        self.engine = FDTDEngine3D(domain, self.boundary_config, precision, park_arrays=park_arrays)
         self.fields = self.engine.fields
         self.sources = []
         self.monitors = []
@@ -188,7 +196,7 @@ class EMPhysics3D(EM3DSlots, PhysicsSolver):
         fields = self.fields
         self.engine.deposit_pole_work()
         state = {'ex': fields.ex, 'ey': fields.ey, 'ez': fields.ez, 'hx': fields.hx, 'hy': fields.hy, 'hz': fields.hz,
-                 'eps_r': self.domain.materials.eps_r, 'q_accum': None}   # q_accum: made on access (_EngineState)
+                 'eps_r': None, 'q_accum': None}   # eps_r, q_accum: made on access (_EngineState)
         return _EngineState(state, self.engine)
 
     def take_absorbed_power(self, merge_previous: bool = False):
@@ -329,8 +337,8 @@ class EMPhysics3D(EM3DSlots, PhysicsSolver):
         last = state['last_q_accum']
         if last is None:
             engine.last_q_accum = None
-        elif engine.last_q_accum is None:
-            engine.last_q_accum = self.domain.xp.empty(last.shape, dtype=last.dtype)
+        elif engine.last_q_accum is None:   # a host array (engine3d reset_q_accum)
+            engine.last_q_accum = np.empty(last.shape, dtype=last.dtype)
 
         def fill():
             write_host_into(engine.q_accum, state['q_accum'])

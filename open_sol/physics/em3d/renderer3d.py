@@ -105,7 +105,7 @@ class EMRenderer3D(YeeRenderer3D):
             if values.dtype != DTYPE or scale != 1.0:   # half_storage: float16 in stored units
                 values = values.astype(DTYPE) * DTYPE(scale)
         elif component == 'eps_r':
-            values = self.domain.materials.eps_r[window]
+            values = self.domain.materials.device_array('eps_r', window)   # parked: only the window moves
         elif component == 'absorbed_power':
             values = self._absorbed_power(window)
         elif component == 'h_abs':

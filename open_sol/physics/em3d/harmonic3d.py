@@ -87,11 +87,13 @@ class HarmonicAccumulator3D:
         """Device float64 0-d EM energy [J] in the physical window (Bloch k != 0: of both field sets, |F|^2; axis-first:
         core.kernels.axis_first_reduce)."""
         materials, window = physics.domain.materials, self.window
+        # parked material arrays (engine3d park_arrays): window copies uploaded per call (one per chunk of the pulse)
+        eps, mu = materials.device_array('eps_r', window), materials.device_array('mu_r', window)
         energy = None
         for field_set in (physics.fields, physics.fields.imag):
             if field_set is None:
                 continue
-            term = axis_first_reduce(_FIELD_ENERGY_3D, materials.eps_r[window], materials.mu_r[window],
+            term = axis_first_reduce(_FIELD_ENERGY_3D, eps, mu,
                                      *(getattr(field_set, name)[window] for name in ('ex', 'ey', 'ez', 'hx', 'hy', 'hz')),
                                      *self._widths)
             energy = term if energy is None else energy + term

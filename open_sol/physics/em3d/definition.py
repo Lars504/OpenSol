@@ -12,11 +12,11 @@ from ...model.definition_helpers import (HALF_STORAGE_STEPPER_ROLE, resolved_ste
                                          validate_points_inside, wavelength_range_issues)
 from ...solvers.explicit_kernels import stepper_precision
 from ...model.definition_resonance import resonance_monitor_feature
-from ...model.expressions import ExpressionError, referenced_names
+from ...model.expressions import FIELD_COORDINATE_NAMES, ExpressionError, referenced_names
 from ...model.geometry import expand_entities
 from ...core.renderer import FieldInfo
 from ...model.schema import (FREQUENCY_DOMAIN_STUDY, DomainRequirements, FeatureType, Issue, Param, PhysicsType,
-                             array_owner, feature_path)
+                             array_owner, feature_path, solver_backend)
 from ..em.definition_common import (EM_FAMILY, FLUX_PARAMS, POINT_SOURCE_SIGN, _monitor_wavelengths,
                                     _q_accum_referenced, background_permittivity, boundary_settings_params,
                                     em_material_params, make_pole,
@@ -32,7 +32,7 @@ from .definition_sources3d import (SOURCE_FEATURES, box_corners, box_edge_issues
                                    window_axes)
 from .engine3d import _INDEX_CHUNK_CELLS, COMPONENT_AXES, STEP_GRAPHS   # the chunk the estimate books
 from .monitors3d import DFT_PLANE_QUANTITY, dft_plane_result, flux_result
-from .physics3d import EMPhysics3D, PERMITTIVITY_SLOTS
+from .physics3d import EMPhysics3D, MATERIAL_ARRAYS, PERMITTIVITY_SLOTS
 from .renderer3d import EMRenderer3D
 
 TYPE_NAME = 'em_fdtd_3d'
@@ -232,11 +232,47 @@ _TRACK_ABSORPTION = next(param for param in settings_params(_BC_HELP, 'unused', 
                          if param.name == 'track_absorption')
 
 
+# ---- parked material arrays ----
+def _parked_material_arrays(spec, registry, physics_spec, parameters) -> tuple:
+    """MaterialGrid arrays em_fdtd_3d moves to the host after its finalize (FDTDEngine3D.park_arrays: the uint16 index
+    and tables hold them; its field arrays are allocated only after): MATERIAL_ARRAYS on the gpu backend when nothing
+    rewrites them during the run (no enabled coupling into the physics, every em material property of every material
+    a constant or an x / y / z expression of the parameters: no DynamicMaterialUpdate) minus those another physics on
+    the same mesh registers; () otherwise (also for model errors, which validate reports)."""
+    try:
+        if solver_backend(spec) != 'gpu':
+            return ()
+        name = physics_spec.name
+        if any(coupling.enabled and coupling.target == name for coupling in spec.couplings):
+            return ()
+        from ...materials import effective_material_data
+        own_properties = {param.name for param in _MATERIAL_PROPERTIES}
+        static_names = set(parameters) | FIELD_COORDINATE_NAMES
+        for material in spec.materials:
+            properties, _ = effective_material_data(material.library, material.properties, material.dispersion)
+            for property_name, value in properties.items():
+                if property_name in own_properties and value is not None \
+                        and not referenced_names(value) <= static_names:
+                    return ()
+        mesh_name = spec.mesh_of(physics_spec).name
+        shared = set()
+        for other in spec.physics:
+            if other.name == name or spec.mesh_of(other).name != mesh_name:
+                continue
+            other_type = registry.physics_type(other.type)
+            shared.update(other_type.material_schema)
+            shared.update(other_type.optional_material_schema)
+        return tuple(array for array in MATERIAL_ARRAYS if array not in shared)
+    except (ValueError, KeyError, TypeError, ExpressionError):
+        return ()
+
+
 # ---- create ----
 def _create(ctx, physics_spec, settings_values):
-    """EMPhysics3D with the dispersive poles of every material region and absorption tracking; finalize happens in the
-    builder."""
-    physics = EMPhysics3D(ctx.domain, precision=stepper_precision(ctx.solvers(physics_spec.name)))
+    """EMPhysics3D with the dispersive poles of every material region, absorption tracking and the material arrays it
+    parks on the host at finalize (_parked_material_arrays); finalize happens in the builder."""
+    physics = EMPhysics3D(ctx.domain, precision=stepper_precision(ctx.solvers(physics_spec.name)),
+                          park_arrays=_parked_material_arrays(ctx.spec, ctx.registry, physics_spec, ctx.parameters))
     write_dispersive_regions_3d(ctx, physics)
     if settings_values['track_absorption'] or _q_accum_referenced(ctx.spec, physics_spec.name, ctx.registry):
         physics.engine.enable_q_accum = True
@@ -713,9 +749,10 @@ def _memory_estimate(settings_values, mesh, context):
         items.append(('absorption accumulator (q_accum, float32 on the loss box)', FLOAT32_BYTES * loss_cells))
     trace_items, run_items, host_items = _point_trace_items(context, mesh)
     transient_items = []
-    if q_accum:   # reset_q_accum allocates the last window lazily; a transfer reads the full-grid state()['q_accum']
+    if q_accum:   # reset_q_accum keeps the last window on the host; a transfer reads the full-grid state()['q_accum']
         # copy and take_absorbed_power returns a new full-grid mean (a coupling out of this physics reads both)
-        run_items.append(('last absorption window (float32 on the loss box)', FLOAT32_BYTES * loss_cells))
+        host_items = tuple(host_items) + (('last absorption window (float32 on the loss box)',
+                                           FLOAT32_BYTES * loss_cells),)
         name = context.physics_spec.name
         transfers = any(coupling.enabled and coupling.source == name for coupling in context.spec.couplings)
         transient_items.append(('absorbed power transfer', 'full-grid q_accum copy and mean power density (float32)',
@@ -727,9 +764,40 @@ def _memory_estimate(settings_values, mesh, context):
                           3 * n_wavelengths * COMPLEX64_BYTES * window))
     index_bytes_per_cell = (_INDEX_VARYING_BYTES_PER_CELL if _materials_vary(context, n_cells)
                             else _INDEX_UNIFORM_BYTES_PER_CELL)
-    return MemoryEstimate.from_items(items + trace_items,
-                                     build_extra=index_bytes_per_cell * min(n_cells, _INDEX_CHUNK_CELLS),
-                                     host_items=host_items, run_items=run_items, transient_items=transient_items)
+    chunk_cells = min(n_cells, _INDEX_CHUNK_CELLS)
+    index_build = index_bytes_per_cell * chunk_cells
+    # parked material arrays (engine3d park_arrays; meshing books them nowhere else): on the device through the build
+    # until the first index build, the fields allocated only after; on the host for the run, a rebuild uploads chunks
+    parked = [name for name in _parked_material_arrays(context.spec, context.registry, context.physics_spec,
+                                                       context.parameters) if name in _allocated_arrays(context)]
+    build_extra = index_build
+    if parked:
+        parked_bytes = FLOAT32_BYTES * len(parked) * n_cells
+        field_bytes_total = n_sets * 6 * field_bytes * n_cells
+        build_extra = (max(index_build, parked_bytes + index_build - field_bytes_total)
+                       + FLOAT32_BYTES * len(parked) * chunk_cells)
+        host_items = tuple(host_items) + ((f"material arrays parked on the host ({', '.join(parked)}, float32)",
+                                           parked_bytes),)
+        if n_wavelengths:   # the pulse's energy check uploads the eps_r / mu_r window once per chunk
+            transient_items.append(('harmonic energy check', 'eps_r and mu_r window uploads (float32)',
+                                    2 * FLOAT32_BYTES * window))
+    return MemoryEstimate.from_items(items + trace_items, build_extra=build_extra, host_items=host_items,
+                                     run_items=run_items, transient_items=transient_items)
+
+
+def _allocated_arrays(context) -> frozenset:
+    """The MaterialGrid arrays of the engine in this model: _MATERIAL_SCHEMA and the optional arrays a material
+    triggers (meshing.optional_material_arrays: a trigger property set to anything but None)."""
+    from ...materials import effective_material_data
+    set_names = set()
+    for material in context.spec.materials:
+        try:
+            properties, _ = effective_material_data(material.library, material.properties, material.dispersion)
+        except (ValueError, TypeError):   # reported by validate
+            continue
+        set_names.update(name for name, value in properties.items() if value is not None)
+    return frozenset(_MATERIAL_SCHEMA) | {array for array, (_, triggers) in _OPTIONAL_MATERIAL_SCHEMA.items()
+                                          if not set_names.isdisjoint(triggers)}
 
 
 EM_FDTD_3D = PhysicsType(
@@ -772,6 +840,7 @@ EM_FDTD_3D = PhysicsType(
     shortest_wavelength=make_source_shortest_wavelength({feature.name: feature for feature in _FEATURES}),
     validate=_validate,
     memory_estimate=_memory_estimate,
+    parked_material_arrays=_parked_material_arrays,
     time_estimate=_time_estimate,
     dimensions=(3,),
     solver_roles={'stepper': HALF_STORAGE_STEPPER_ROLE},

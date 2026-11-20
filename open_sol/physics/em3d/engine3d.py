@@ -37,7 +37,7 @@ import warnings
 from dataclasses import replace
 
 import numpy as np
-from ...core.backend import to_host
+from ...core.backend import array_module_of, host_copy, to_host
 
 from ...core.constants import C0, DTYPE, ETA0
 from ...core.grid3d import finest_physical_widths_3d
@@ -129,12 +129,41 @@ def _mirror_rows(domain, config):
 class Fields3D:
     """Six (nx, ny, nz) Yee components (layout in the module header): float32, or float16 under half_storage (stored
     in the engine's field units: FDTDEngine3D.field_scale) of array module xp; `imag` = the imaginary set under Bloch k
-    != 0, else None."""
+    != 0, else None. allocate False: the components are None until allocate() (an engine parking its material
+    arrays allocates them after the first index build)."""
 
-    def __init__(self, shape, dtype, xp):
+    def __init__(self, shape, dtype, xp, allocate=True):
+        self._layout = (shape, dtype, xp)
         for name in ('ex', 'ey', 'ez', 'hx', 'hy', 'hz'):
-            setattr(self, name, xp.zeros(shape, dtype=dtype))
+            setattr(self, name, None)
         self.imag = None
+        if allocate:
+            self.allocate()
+
+    def allocate(self):
+        """Zero components (this set and the imaginary one) where not yet allocated."""
+        shape, dtype, xp = self._layout
+        for name in ('ex', 'ey', 'ez', 'hx', 'hy', 'hz'):
+            if getattr(self, name) is None:
+                setattr(self, name, xp.zeros(shape, dtype=dtype))
+        if self.imag is not None:
+            self.imag.allocate()
+
+    @property
+    def allocated(self) -> bool:
+        return self.ex is not None
+
+
+class _UploadedChunks:
+    """A parked (host) material array read chunk by chunk onto the device: material_index3d reads its arrays only as
+    array[chunk], so an index rebuild never holds a whole parked array on the device."""
+
+    def __init__(self, host, xp):
+        self.host = host
+        self.xp = xp
+
+    def __getitem__(self, key):
+        return self.xp.asarray(self.host[key])
 
 
 class _PoleRegion:
@@ -162,9 +191,11 @@ class _PoleRegion:
 class FDTDEngine3D:
     """Yee stepping on a Domain3D (BoundaryConfig3D faces cpml / pec / pmc / periodic / mirrors); materials from the
     MaterialGrid arrays eps_r, sigma_e, mu_r (+ eps_xx, eps_yy, sigma_m when allocated) through the material index
-    (rebuild_materials after any change). precision 'single' | 'half_storage' (fp16 fields, see set_field_scale)."""
+    (rebuild_materials after any change). precision 'single' | 'half_storage' (fp16 fields, see set_field_scale).
+    park_arrays: MaterialGrid arrays to park on the host after the first index build (MaterialGrid.park; the field
+    arrays are allocated only then, so the build peak never holds both; em3d definition _parked_material_arrays)."""
 
-    def __init__(self, domain, config, precision='single'):
+    def __init__(self, domain, config, precision='single', park_arrays=()):
         if precision not in FIELD_DTYPES:
             raise ValueError(f"em_fdtd_3d stepper precision must be one of {', '.join(FIELD_DTYPES)}, got "
                              f'{precision!r}')
@@ -207,14 +238,15 @@ class FDTDEngine3D:
         self.shares = tuple(tuple(xp.asarray(share) for share in face_shares(widths, periodic, np.float32))
                             for widths, periodic in zip(self.widths, self.periodic))
         self._radial_h, self._radial_e = self._radial_factors()
-        self.fields = Fields3D(self.shape, FIELD_DTYPES[precision], xp)
+        self.park_arrays = tuple(park_arrays)
+        self.fields = Fields3D(self.shape, FIELD_DTYPES[precision], xp, allocate=not self.park_arrays)
         # Bloch k != 0 (symmetry 2.8): the imaginary set (own CPML psi, pole states), wraps mixing the two (kernels3d);
         # a sector whose phases are all 0 or pi steps the real set alone
         self.bloch_angles = config.bloch_phase_angles(tuple(float(np.sum(widths)) for widths in self.widths))
         real_wrap = self.polar and _real_phases(self.bloch_angles)
         self.cpml_imag = []
         if config.has_bloch_phase and not real_wrap:
-            self.fields.imag = Fields3D(self.shape, FIELD_DTYPES[precision], xp)
+            self.fields.imag = Fields3D(self.shape, FIELD_DTYPES[precision], xp, allocate=not self.park_arrays)
             self.cpml_imag = [replace(layer, psi_first=xp.zeros_like(layer.psi_first),
                                       psi_second=xp.zeros_like(layer.psi_second)) for layer in self.cpml]
         self._wrap_args = {set_sign: _wrap_arguments(self.bloch_angles, set_sign, real=real_wrap)
@@ -233,8 +265,8 @@ class FDTDEngine3D:
         self.region_by_mask = {}     # id(cropped mask) -> _PoleRegion (the physics keeps the masks alive)
         self.time = 0.0
         self.n_step = 0
-        # J.E accounting (EM loss protocol): q_accum [J/m^3] over the current window and the last completed window, both
-        # on the loss box q_box (origin, shape: the bounding box of the sigma_e > 0 cells and the pole region windows,
+        # J.E accounting (EM loss protocol): q_accum [J/m^3] over the current window and the last completed window (a
+        # host numpy copy: read only at a transfer, a render or the end-of-run merge), both on the loss box q_box (origin, shape: the bounding box of the sigma_e > 0 cells and the pole region windows,
         # grown, never shrunk, when a rebuild or a new pole reaches outside it; allocated at the first enable), the box
         # of the sigma_e > 0 cells (refreshed per rebuild) and pending pole work
         self._enable_q_accum = False
@@ -345,9 +377,12 @@ class FDTDEngine3D:
     def rebuild_materials(self):
         """Material index + tables (material_index3d: continuous values re-quantised to fit the uint16 index, errors
         in quantisation_errors), PEC regions and pec walls, the subpixel face overrides, then the ohmic loss box (the
-        pole corrections read the new index and tables directly)."""
+        pole corrections read the new index and tables directly). Parked arrays are read chunk by chunk from the
+        host; after the first build the park_arrays go to the host and the field arrays are allocated."""
         materials = self.domain.materials
-        arrays = {name: getattr(materials, name) for name in self.material_arrays}
+        parked = materials.parked
+        arrays = {name: _UploadedChunks(getattr(materials, name), self.xp) if name in parked
+                  else getattr(materials, name) for name in self.material_arrays}
         tables, self.quantisation_errors, deltas = build_material_index(
             arrays, self._x_chunks(), self.material_id, MAX_MATERIAL_IDS - 1, self._quantisation_deltas)
         self._quantisation_deltas.update(deltas)
@@ -374,6 +409,10 @@ class FDTDEngine3D:
                 self.quantisation_errors['subpixel-smoothed face eps'] = self.subpixel_smoothing.quantisation_error
         if self._enable_q_accum:
             self._refresh_ohmic_box()
+        del arrays
+        if not self.fields.allocated:
+            materials.park([name for name in self.park_arrays if name in materials.property_names()])
+            self.fields.allocate()
 
     def _x_chunks(self):
         per_chunk = max(1, _INDEX_CHUNK_CELLS // (self.ny * self.nz))
@@ -776,8 +815,8 @@ class FDTDEngine3D:
         self.q_box = (lower, new_shape)
 
     def _regrid(self, values, old_box, new_box):
-        """A zero array of new_box (origin, shape) holding `values` of old_box where they overlap."""
-        out = self.xp.zeros(new_box[1], dtype=DTYPE)
+        """A zero array of new_box (origin, shape) holding `values` of old_box where they overlap (values' module)."""
+        out = array_module_of(values).zeros(new_box[1], dtype=DTYPE)
         selection = tuple(slice(start, start + count) for start, count in zip(*old_box))
         target, source = self._box_overlap(new_box, selection)
         if target is not None:
@@ -807,13 +846,13 @@ class FDTDEngine3D:
         return tuple(target), tuple(source)
 
     def q_selection(self, values, selection):
-        """float32 values of a q_box array (q_accum / last_q_accum) over a full-grid selection (explicit slices or ints
-        per axis; ints drop): a new array, 0 outside the loss box."""
+        """float32 device values of a q_box array (q_accum, the host last_q_accum) over a full-grid selection (explicit
+        slices or ints per axis; ints drop): a new array, 0 outside the loss box."""
         shape = tuple(int(wanted.stop) - int(wanted.start) for wanted in selection if isinstance(wanted, slice))
         out = self.xp.zeros(shape, dtype=DTYPE)
         target, source = self._box_overlap(self.q_box, selection)
         if target is not None:
-            out[target] = values[source]
+            out[target] = self.xp.asarray(values[source])
         return out
 
     def q_grid(self, values):
@@ -830,7 +869,7 @@ class FDTDEngine3D:
             self.q_box = box
             self.q_accum = self.xp.zeros(box[1], dtype=DTYPE)
         if self.last_q_accum is not None and self.last_q_accum.shape != box[1]:
-            self.last_q_accum = self.xp.zeros(box[1], dtype=DTYPE)
+            self.last_q_accum = np.zeros(box[1], dtype=DTYPE)
         fill()
         self._fit_q_box()
 
@@ -902,12 +941,11 @@ class FDTDEngine3D:
         self._pole_work_pending = False
 
     def reset_q_accum(self) -> None:
-        """Start a new accumulation window; a non-empty one is kept as last_q_accum / last_q_accum_time."""
+        """Start a new accumulation window; a non-empty one is kept as last_q_accum (host copy: one transfer of the
+        loss box) / last_q_accum_time."""
         self.deposit_pole_work()
         if self.q_accum_time > 0.0:
-            if self.last_q_accum is None:
-                self.last_q_accum = self.xp.empty_like(self.q_accum)
-            self.xp.copyto(self.last_q_accum, self.q_accum)
+            self.last_q_accum = host_copy(self.q_accum)
             self.last_q_accum_time = self.q_accum_time
         if self.q_accum is not None:
             self.q_accum.fill(DTYPE(0.0))
@@ -922,7 +960,7 @@ class FDTDEngine3D:
             return None
         self.deposit_pole_work()
         if merge_previous and self.last_q_accum is not None:
-            self.q_accum += self.last_q_accum
+            self.q_accum += self.xp.asarray(self.last_q_accum)
             window += float(self.last_q_accum_time)
             self.q_accum_time = window
         power_density = self.q_grid(self.q_accum)

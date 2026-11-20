@@ -2423,7 +2423,14 @@ def _mesh_memory(spec, parameters, registry, shapes, mesh, mesh_name, on_mesh, s
     present_types = mesh_material_types(spec, registry, mesh_name)
     view = _spec_with_physics(spec, on_mesh) if several else spec
     regions = _material_region_infos(view, shapes, mesh, present_types)
-    parts = [_model_arrays_estimate(spec, registry, mesh, present_types, None if not several else names)]
+    parked = set()   # MaterialGrid arrays a solver parks on the host after finalize: its own estimate books them
+    for physics_spec in on_mesh:
+        physics_type = _registered_physics_type(registry, physics_spec)
+        if physics_type is not None and physics_type.parked_material_arrays is not None \
+                and mesh.kind in physics_type.grids:
+            parked.update(physics_type.parked_material_arrays(spec, registry, physics_spec, parameters))
+    parts = [_model_arrays_estimate(spec, registry, mesh, present_types, None if not several else names,
+                                    parked=frozenset(parked))]
     if mesh.kind == 'tensor':   # subpixel smoothing and conformal boundaries are moot on triangles
         parts += [subpixel_memory_estimate(view, registry, shapes, mesh),
                   conformal_memory_estimate(view, registry, shapes, mesh)]
@@ -2608,14 +2615,16 @@ def optional_material_arrays(spec, physics_types) -> dict:
     return {array: default for array, (default, triggers) in candidates.items() if not set_names.isdisjoint(triggers)}
 
 
-def _model_arrays_estimate(spec, registry, mesh, present_types, names=None):
+def _model_arrays_estimate(spec, registry, mesh, present_types, names=None, parked=frozenset()):
     """Model-level device arrays of one mesh: the present types' MaterialGrid arrays (material_schema union + the
-    triggered optional arrays), value + mask per state-dependent material property (DynamicMaterialUpdate), one
-    transfer array per enabled coupling into its physics; run items: fixed-point and solution-feedback copies, the
-    stored-cut plane fetches of 3D snapshots. names: the physics on the mesh (None: every physics, one mesh)."""
+    triggered optional arrays; without `parked`, which the parking solver's estimate books), value + mask per
+    state-dependent material property (DynamicMaterialUpdate), one transfer array per enabled coupling into its
+    physics; run items: fixed-point and solution-feedback copies, the stored-cut plane fetches of 3D snapshots. names:
+    the physics on the mesh (None: every physics, one mesh)."""
     n_cells = int(mesh.n_cells)
     arrays = list(dict.fromkeys(name for physics_type in present_types for name in physics_type.material_schema))
     arrays += [name for name in optional_material_arrays(spec, present_types) if name not in arrays]
+    arrays = [name for name in arrays if name not in parked]
     n_all_updates = n_updates = _state_dependent_property_count(spec, registry)
     if names is not None:   # several meshes: the updates of properties a type on this mesh reads
         n_updates = _state_dependent_property_count(

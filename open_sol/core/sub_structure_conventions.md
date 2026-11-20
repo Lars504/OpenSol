@@ -40,6 +40,10 @@ coordinate rules stay in the root file.
   heuristics uncalibrated: refit from summary.json host_direct_lu_entries / host_direct_peak_bytes); a cuDSS 'linear'
   back end is the caller's `fem.diffusion.cudss_diffusion_estimate(input_copy=False)` (core may not import
   solvers.cudss_factor).
+- `MaterialGrid.park(names)` (em3d sub file "Parked material arrays"): parked arrays are host numpy; `assign` /
+  `assign_window` write them there and `device_array(name, index)` uploads (a view when not parked). Code reading a
+  MaterialGrid array as a device array (`getattr(materials, name)` into a kernel or xp expression) breaks on a parked
+  one: a parking solver's rule excludes the meshes where such readers run.
 - `release_all`'s full `gc.collect` walks every tracked object (~25 ms): a sweep (`study._run_sweep`) freezes the gc
   after its first value (`freeze_collect_baseline` / `thaw_collect_baseline`), never undoing a freeze of its caller
   (selftest_cache freezes for the whole selftest).
@@ -56,7 +60,8 @@ A new accepted sync joins this list.
 - EM: the FDFD solve (scipy_splu: one rhs / solution transfer each); one HarmonicModeMonitor transfer per solve; one
   grid-row transfer per FDFD port mode re-solve (per reassembly) and per FDTD mode-port recalibration after the first
   step (material drift check, re-solve above `mode_ports._RESOLVE_DRIFT`); the E_z ohmic-box refresh per
-  `materials_changed` of sigma_e.
+  `materials_changed` of sigma_e; em_fdtd_3d: the last absorption window's host copy per window reset (loss box), the
+  chunk uploads of parked material arrays per index rebuild, one face kind's geometry upload per subpixel refresh.
 - laminar_flow: the velocity check once per lattice check interval (>= 100 steps).
 - Mechanics: per Newton iteration of a device tangent (fem.elasticity3d.TangentAssembler3D(device=True)) the
   displacement up / force down and the operator norm of `CudssFactorization.refactorize_device_values` (its scatter
