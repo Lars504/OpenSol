@@ -390,8 +390,7 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
 
 
 def _memory_estimate(settings_values, mesh, context):
-    """MagneticFields3D (float32 full grid; J with a coil, mu_eff when saturating) + the zero source window + the 3D
-    window DiffusionSystem + one bool window mask per bh_curve material; build extra: the external ring values / mask,
+    """MagneticFields3D (float32 full grid; J with a coil, mu_eff when saturating) + the 3D window DiffusionSystem + one bool window mask per bh_curve material; build extra: the external ring values / mask,
     the mu_dc check masks and the J update; run items: the face drives and rhs (coils or remanence), the saturation
     loop (state, proposal, Anderson history; one state component); transient: the field-update and scalar temporaries;
     a cuDSS 'linear' factor (fem.diffusion.cudss_diffusion_estimate). Tetrahedra: _tetrahedra_memory_estimate."""
@@ -414,7 +413,6 @@ def _memory_estimate(settings_values, mesh, context):
     n_fields = len(MAGNETIC_3D_FIELD_NAMES) + len(MAGNETIC_3D_CURRENT_NAMES) * int(coils) + int(saturation)
     own = MemoryEstimate.from_items(
         ((f'fields ({n_fields} x float32)', n_fields * FLOAT32_BYTES * int(mesh.n_cells)),
-         ('zero source (float32 window)', FLOAT32_BYTES * window_cells),
          ('B-H curve masks (bool window)', BOOL_BYTES * window_cells * n_curves)),
         build_extra=((value_bytes + BOOL_BYTES) * window_cells * int(external) + 2 * BOOL_BYTES * window_cells
                      + _COIL_UPDATE_ARRAYS * FLOAT64_BYTES * window_cells * int(coils)

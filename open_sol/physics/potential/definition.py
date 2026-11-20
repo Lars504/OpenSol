@@ -882,7 +882,7 @@ def _make_memory_estimate(kind):
     """memory_estimate: PotentialFields2D (float32 full grid; + q_joule with currents, + rho_ion with electrostatics)
     plus the window DiffusionSystem (a set xy coefficient: 9-point pattern) and a cuDSS 'linear' factor
     (fem.diffusion.cudss_diffusion_estimate); element meshes: on the active elements; driven terminals: the basis solutions
-    (DC + one per waveform), the superposition buffer and two zero sources (run items, first step); tetrahedra: the
+    (DC + one per waveform) and the superposition buffer (run items, first step); tetrahedra: the
     3D fields (+ E_z and the z flux) per element + the FEM 3D system; a 3D tensor mesh (refused by validate) nothing."""
     spec = KINDS[kind]
     n_fields = 7 + int(spec.with_joule) + int(spec.with_ions)
@@ -902,7 +902,7 @@ def _make_memory_estimate(kind):
             return MemoryEstimate()
         n_waveforms = _driven_waveform_count(context.physics_spec) if spec.with_ions else 0
         window_cells = window_cell_count(mesh)
-        driven_bytes = ((n_waveforms + 2) * 5 + 2) * FLOAT32_BYTES * window_cells if n_waveforms else 0
+        driven_bytes = (n_waveforms + 2) * 5 * FLOAT32_BYTES * window_cells if n_waveforms else 0
         fields = MemoryEstimate.from_items(
             ((f'fields ({n_fields} x float32)', n_fields * FLOAT32_BYTES * int(mesh.n_cells)),),
             run_items=((f'driven terminal bases ({n_waveforms} waveforms + DC, superposition)', driven_bytes),))

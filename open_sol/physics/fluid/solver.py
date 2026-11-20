@@ -211,21 +211,28 @@ class FluidPhysics(PhysicsSolver):
         self._lattice_x = xp.zeros(self.window_shape, dtype=DTYPE)
         self._lattice_y = xp.zeros(self.window_shape, dtype=DTYPE)
         self._deviation = xp.zeros(self.window_shape, dtype=DTYPE)
-        self._saved_x = xp.zeros(self.window_shape, dtype=DTYPE)
-        self._saved_y = xp.zeros(self.window_shape, dtype=DTYPE)
+        # steady march only: the velocity of the previous check; the transient health check passes the macros
+        # themselves (change 0, no 8 bytes per cell)
+        stationary = self.time_mode == 'stationary'
+        self._saved_x = xp.zeros(self.window_shape, dtype=DTYPE) if stationary else self._lattice_x
+        self._saved_y = xp.zeros(self.window_shape, dtype=DTYPE) if stationary else self._lattice_y
         # _velocity_change: uint32 bits of (max |du_x|, max |du_y|, max u^2) from one velocity_check launch
         self._check_maxima = xp.zeros(3, dtype=np.uint32)
         self._check_launch = ((min(VELOCITY_CHECK_BLOCKS, (wx * wy + BLOCK_SIZE - 1) // BLOCK_SIZE),), (BLOCK_SIZE,))
         self._fluid = xp.zeros(self.window_shape, dtype=np.bool_)
         self._mass_density = xp.zeros(self.window_shape, dtype=DTYPE)
-        self._omega_plus = xp.ones(self.window_shape, dtype=DTYPE)
-        self._omega_minus = xp.ones(self.window_shape, dtype=DTYPE)
+        # per-cell rates and lattice forces: always on the cpu (host twins: one numba signature); on the gpu only while
+        # a stride 1 needs them (_update_relaxation / _prepare_lattice allocate, _drop_cell_arrays frees: 8 bytes per
+        # cell each pair)
+        host = xp is np
+        self._omega_plus = xp.ones(self.window_shape, dtype=DTYPE) if host else None
+        self._omega_minus = xp.ones(self.window_shape, dtype=DTYPE) if host else None
         # one fluid viscosity on the gpu: the kernel reads these 1-element rates (relaxation_stride 0, _update_relaxation)
         self._uniform_omega_plus = xp.ones(1, dtype=DTYPE)
         self._uniform_omega_minus = xp.ones(1, dtype=DTYPE)
         self._relaxation_stride = np.int32(1)
-        self._force_lattice_x = xp.zeros(self.window_shape, dtype=DTYPE)
-        self._force_lattice_y = xp.zeros(self.window_shape, dtype=DTYPE)
+        self._force_lattice_x = xp.zeros(self.window_shape, dtype=DTYPE) if host else None
+        self._force_lattice_y = xp.zeros(self.window_shape, dtype=DTYPE) if host else None
         # gpu, no force or (steady) one lattice force on every fluid cell: the kernel reads these (force_stride 0)
         self._uniform_force_x = xp.zeros(1, dtype=DTYPE)
         self._uniform_force_y = xp.zeros(1, dtype=DTYPE)
@@ -238,7 +245,6 @@ class FluidPhysics(PhysicsSolver):
         self._no_wall_row = xp.full(1, -1, dtype=np.int32)        # kernel stand-ins while halfway (no wall links)
         self._no_wall_fraction = xp.zeros(N_DIRECTIONS - 1, dtype=DTYPE)
         self._wall_mask = self._wall_row = self._wall_fraction = None
-        self._kinematic_viscosity = None   # float64 window [m^2/s], 0 in solid cells
         self._grid_args = (np.int32(wx), np.int32(wy), np.int32(self.face_length))
         self._publish_grid = (np.int32(ny), np.int32(x_start), np.int32(y_start))   # full-grid row, window origin
         self._launch = ((wx * wy + BLOCK_SIZE - 1) // BLOCK_SIZE,), (BLOCK_SIZE,)
@@ -487,9 +493,8 @@ class FluidPhysics(PhysicsSolver):
         fluid to rest. Raises when no cell is fluid or a fluid cell has no density."""
         xp = self.xp
         materials = self.domain.materials
-        viscosity = materials.viscosity[self.window].astype(np.float64)
-        density = materials.rho[self.window].astype(np.float64)
-        fluid = viscosity > 0.0
+        fluid = materials.viscosity[self.window] > 0.0
+        density = materials.rho[self.window]
         n_fluid, n_without_density = (int(value) for value in
                                       to_host(xp.stack([fluid.sum(), (fluid & ~(density > 0.0)).sum()])))
         if n_fluid == 0:
@@ -498,7 +503,6 @@ class FluidPhysics(PhysicsSolver):
         if n_without_density:
             raise ValueError(f"laminar flow '{self.name}': {n_without_density} fluid cells (viscosity > 0) have no "
                              'density rho > 0; set rho on every fluid material')
-        kinematic = xp.where(fluid, viscosity / xp.where(fluid, density, 1.0), 0.0)
         keep = fluid & self._fluid   # cells fluid before and after keep their state; new fluid cells start at rest
         for array in (*self._populations, self._lattice_x, self._lattice_y, self._deviation):
             stored = half_bits(array)   # fp16 bits x keep: 0 bits = +0.0, no cupy float16 kernel
@@ -506,14 +510,14 @@ class FluidPhysics(PhysicsSolver):
         xp.copyto(self._fluid, fluid)
         if self._locator is not None:
             self._refresh_wall_links()
-        xp.copyto(self._mass_density, xp.where(fluid, density, 0.0).astype(DTYPE))
+        xp.copyto(self._mass_density, xp.where(fluid, density, DTYPE(0.0)))
         # host face rows of the mass density (> 0 exactly on fluid cells) for the face values: one transfer per refresh
         density_rows = {'x_lo': self._mass_density[0, :], 'x_hi': self._mass_density[-1, :],
                         'y_lo': self._mass_density[:, 0], 'y_hi': self._mass_density[:, -1]}
         edge_rows = np.array(to_host(xp.concatenate([density_rows[face] for face in FACES])))
         offsets = np.cumsum([0] + [density_rows[face].size for face in FACES])
         self._edge_density = {face: edge_rows[offsets[index]:offsets[index + 1]] for index, face in enumerate(FACES)}
-        self._kinematic_viscosity = kinematic
+        kinematic = self._kinematic_viscosity()
         nu_max, nu_min = (float(value) for value in to_host(xp.stack([
             kinematic.max(), xp.where(fluid, kinematic, np.inf).min()])))
         self.dt_lbm = (self.relaxation_time - 0.5) * self.dx ** 2 / (3.0 * nu_max)
@@ -526,6 +530,28 @@ class FluidPhysics(PhysicsSolver):
         self._lattice_dirty = False
         self._relaxation_dt = None   # relaxation rates are rebuilt by _prepare_lattice
         self._force_dirty = self._faces_dirty = True
+
+    def _kinematic_viscosity(self):
+        """float64 window kinematic viscosity viscosity / rho [m^2/s] of the materials, 0 off the fluid mask: rebuilt at
+        each use (lattice refresh, relaxation rates of a new dt), never kept (8 bytes per cell)."""
+        xp = self.xp
+        materials = self.domain.materials
+        fluid = self._fluid
+        viscosity = materials.viscosity[self.window].astype(np.float64)
+        density = materials.rho[self.window].astype(np.float64)
+        return xp.where(fluid, viscosity / xp.where(fluid, density, 1.0), 0.0)
+
+    def _drop_cell_arrays(self, *names):
+        """Free per-cell gpu arrays (rates, lattice forces) a stride 0 no longer reads: step graphs that keep one are
+        dropped with it (a stride 1 graph holds its pointer)."""
+        dropped = [getattr(self, name) for name in names if getattr(self, name) is not None]
+        if not dropped:
+            return
+        for key in [key for key, entry in self._step_graphs.items()
+                    if any(value is array for value in entry[1][1] for array in dropped)]:
+            del self._step_graphs[key]
+        for name in names:
+            setattr(self, name, None)
 
     def _refresh_wall_links(self):
         """Wall rows / fractions of the current fluid mask (host bisection on the drawn geometry; skipped while the
@@ -572,17 +598,32 @@ class FluidPhysics(PhysicsSolver):
         if self._relaxation_dt != dt:
             self._update_relaxation(dt)
         if self._force_dirty:
+            self._refresh_forces(dt)
+        if self._faces_dirty:
+            self._update_face_values(dt)
+            self._faces_dirty = False
+
+    def _refresh_forces(self, dt):
+        """Lattice forces of time step dt from the coupled and applied SI forces and their stride; on the gpu the
+        per-cell forces exist only while stride 1 reads them (no force, or a steady force uniform on the fluid: the
+        1-element forces, the per-cell pair freed)."""
+        xp = self.xp
+        if xp is not np and not self._force_present:
+            self._drop_cell_arrays('_force_lattice_x', '_force_lattice_y')
+        else:
+            if self._force_lattice_x is None:
+                self._force_lattice_x = xp.empty(self.window_shape, dtype=DTYPE)
+                self._force_lattice_y = xp.empty(self.window_shape, dtype=DTYPE)
             scale = DTYPE(dt * dt / self.dx)
             window = self.window
             fields = self.fields
             for coupled, applied, out in ((fields.body_force_x, fields.body_force_x_ext, self._force_lattice_x),
                                           (fields.body_force_y, fields.body_force_y_ext, self._force_lattice_y)):
                 force_to_lattice(coupled[window], applied[window], self._fluid, self._mass_density, scale, out)
-            self._force_stride = self._lattice_force_stride()
-            self._force_dirty = False
-        if self._faces_dirty:
-            self._update_face_values(dt)
-            self._faces_dirty = False
+        self._force_stride = self._lattice_force_stride()
+        if not self._force_stride and xp is not np:
+            self._drop_cell_arrays('_force_lattice_x', '_force_lattice_y')
+        self._force_dirty = False
 
     def _lattice_force_stride(self):
         """0 on the gpu when the lattice force is absent or (steady: one host sync per force refresh, never per
@@ -611,7 +652,7 @@ class FluidPhysics(PhysicsSolver):
         """TRT rates per cell: tau+ = 1/2 + 3 nu dt / dx^2, (tau+ - 1/2)(tau- - 1/2) = 3/16; one fluid viscosity on the
         gpu: the 1-element rates too (relaxation_stride 0, 8 bytes per cell and step fewer)."""
         xp = self.xp
-        tau_offset = 3.0 * self._kinematic_viscosity * dt / self.dx ** 2
+        tau_offset = 3.0 * self._kinematic_viscosity() * dt / self.dx ** 2
         smallest, largest = (float(value) for value in to_host(xp.stack([
             xp.where(self._fluid, tau_offset, np.inf).min(), xp.where(self._fluid, tau_offset, -np.inf).max()])))
         if smallest < MIN_TAU_OFFSET:
@@ -622,13 +663,18 @@ class FluidPhysics(PhysicsSolver):
         if smallest < TAU_OFFSET_WARNING:
             self.runtime_warnings.append(f'lattice relaxation time 0.5 + {smallest:.3g} in the least viscous fluid: '
                                          'close to the stability limit (raise relaxation_time)')
-        tau_offset = xp.where(self._fluid, tau_offset, 0.5)
-        xp.copyto(self._omega_plus, (1.0 / (0.5 + tau_offset)).astype(DTYPE))
-        xp.copyto(self._omega_minus, (1.0 / (0.5 + MAGIC_LAMBDA / tau_offset)).astype(DTYPE))
         uniform = smallest == largest and xp is not np   # host twins keep the per-cell arrays (one numba signature)
         if uniform:   # the per-cell float64 expressions on the same double: the same float32 rates
             self._uniform_omega_plus.fill(DTYPE(1.0 / (0.5 + smallest)))
             self._uniform_omega_minus.fill(DTYPE(1.0 / (0.5 + MAGIC_LAMBDA / smallest)))
+            self._drop_cell_arrays('_omega_plus', '_omega_minus')   # gpu: only the 1-element rates are read
+        else:
+            if self._omega_plus is None:
+                self._omega_plus = xp.empty(self.window_shape, dtype=DTYPE)
+                self._omega_minus = xp.empty(self.window_shape, dtype=DTYPE)
+            tau_offset = xp.where(self._fluid, tau_offset, 0.5)
+            xp.copyto(self._omega_plus, (1.0 / (0.5 + tau_offset)).astype(DTYPE))
+            xp.copyto(self._omega_minus, (1.0 / (0.5 + MAGIC_LAMBDA / tau_offset)).astype(DTYPE))
         self._relaxation_stride = np.int32(0 if uniform else 1)
         self._relaxation_dt = dt
 
@@ -785,7 +831,8 @@ class FluidPhysics(PhysicsSolver):
     def _fixed_block(self, key, kept, block):
         """Run block() eagerly at the first use of a key (loads the kernel modules outside a capture) and when capture
         failed, else replay its CUDA graph; populations, macros, rates, forces and face tables are rewritten in place,
-        never reassigned while a graph of them lives (as em3d engine3d._fixed_block)."""
+        never reassigned while a graph of them lives (as em3d engine3d._fixed_block; freed per-cell rates / forces drop
+        their graphs first: _drop_cell_arrays)."""
         entry = self._step_graphs.get(key)
         if entry is None:
             if len(self._step_graphs) >= _MAX_STEP_GRAPHS:
