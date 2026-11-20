@@ -36,7 +36,9 @@ plot, imports of `viz.common` / `DARK_CMAPS`, canvas cell edges) live in the gui
   (`CMAPS` / `CMAP_CHOICES`), recording (`// ---------- video` block) and `.empty[hidden]` CSS: change both (the head
   comment of each page says so).
 - Plot settings (field_viewer only): the page takes the keys and checks from `DATA.figure_rules` (`FIGURE_CHOICES` /
-  `_RANGES` / `_LIMITS` / `_LENGTHS` of field_viewer.py); a new setting also needs its default in the page's
+  `_RANGES` / `_LIMITS` / `_LENGTHS` / `_VALUES` of field_viewer.py; `_VALUES` and colour limits are in the field unit
+  and remembered per file only for the same quantity, `fieldUnitKey`; a numeric choice ('auto' | 4) is read back from
+  its select by `FIGURE_CHOICES`); a new setting also needs its default in the page's
   `FIGURE_STYLE`, an `fs_<key>` panel input and a line in describe's export_html entry (choices and ranges there are
   read from `FIGURE_*`; defaults are prose). `FIGURE_MATERIALS` ({name: {color, alpha}}) is the exception: no
   `FIGURE_STYLE` entry or fs_<key> input; the page keeps it in `matStyle` (geometry block: per-file memory, Materials
@@ -45,6 +47,12 @@ plot, imports of `viz.common` / `DARK_CMAPS`, canvas cell edges) live in the gui
   directly. Opacity 1 is solid: `drawGeometry` / `drawRevolution(view, proj, solid=true)` draw those surfaces opaque
   with depth writes (polygon offset, so edges and rings stay on top) before flow and everything see-through; the
   see-through passes skip them.
+- Contours: the labelled lines are the bold (major) ones of `contourLevels`; their labels are traced on the CPU
+  (`contourLines`, cached on the shown values) and placed per draw (`placeContourLabels`, before the field pass and
+  after `setMotionUniforms`, so they follow the deformed shape); the field shader cuts each label's box out of the
+  lines (`uLab[CONTOUR_LABEL_MAX]`: the GLSL array size must match) and `drawContourLabels` writes the text. A new
+  way of changing the shown values (mix, scale) also enters `shownLayerValues` and the cache key, or the labels sit
+  off their lines; anything animating them belongs in `contourLabelsAnimating`.
 - Per-sample arrays of a `ViewerLayer` follow every layer rebuild (the class docstring lists them): a new one joins all.
 - One page shows one animation clock per thing: api drops the phasor partner when the deformed shape oscillates
   (`ViewerMotion.oscillate`) or a volume is attached, and `viewer_data` refuses a phasor page with volumes.

@@ -181,6 +181,16 @@ body.present .app { padding: 10px; gap: 10px; }
           <option value="top">Top</option><option value="bottom">Bottom</option><option value="off">Off</option></select>
         <label for="fs_colorbar_length">Bar length</label>
         <input type="number" id="fs_colorbar_length" class="wide" min="0.1" max="1" step="0.05" placeholder="auto" title="Length of the colour bar as a fraction of the view, 0.1 - 1 (empty: automatic; applied as typed)">
+        <h2 id="fs_contourhead">Contour lines</h2>
+        <label for="fs_contour_step">Step / label every</label>
+        <input type="number" id="fs_contour_step" step="any" min="0" placeholder="auto" title="Interval between contour lines, in the field's unit, as 25 m on a map (empty: automatic, the Contours density; a log scale keeps its decades; Enter applies)">
+        <select id="fs_contour_label_every" title="Contour lines per labelled (bolder) one, as every 4th for 100 m labels on 25 m lines; Auto: the labelled interval nearest the colour bar's tick step">
+          <option value="auto">Auto</option><option value="1">Every line</option><option value="2">Every 2nd</option>
+          <option value="3">Every 3rd</option><option value="4">Every 4th</option><option value="5">Every 5th</option>
+          <option value="10">Every 10th</option></select>
+        <label for="fs_contour_labels">Labels</label>
+        <select id="fs_contour_labels" class="wide" title="The value written into a gap of each labelled contour line, upright, spaced along it (none while the field animates)">
+          <option value="on">On</option><option value="off">Off</option></select>
         <h2 id="fs_axishead">Axis limits</h2>
         <label for="fs_x_min">x min / max</label>
         <input type="number" id="fs_x_min" step="any" title="Empty: automatic, the grey value; Enter applies"><input type="number" id="fs_x_max" step="any" title="Empty: automatic, the grey value; Enter applies">
@@ -393,13 +403,15 @@ function cmapStoreKey() { return DIVERGING ? 'cmap_signed' : SCALAR_KIND === 'ot
 const LENGTH_SCALE = DATA.length_scale || 1;   // m per length unit of the page
 const FIGURE_STYLE = { font_size: 11, title_size: 26, title: 'top_left', colorbar: 'bottom_right', colorbar_length: null,
   horizontal_axis: 'bottom', vertical_axis: 'left', scale_bar: 'on', scale_bar_color: 'auto', legend_color: 'auto',
-  background: 'theme', export_scale: 1 };
+  background: 'theme', export_scale: 1, contour_labels: 'on', contour_label_every: 'auto' };
 // the rules come from Python (viz.field_viewer FIGURE_CHOICES / _RANGES / _LIMITS / _LENGTHS), the defaults are the page's
 const FIGURE_CHOICES = DATA.figure_rules.choices;
 const FIGURE_RANGES = DATA.figure_rules.ranges;
 const FIGURE_LENGTHS = DATA.figure_rules.lengths;   // positive lengths (m)
+const FIGURE_VALUES = DATA.figure_rules.values;     // positive values in the field unit (contour_step)
 const LIMIT_KEYS = DATA.figure_rules.limits.flatMap((name) => [name + '_min', name + '_max']);
-const FILE_KEYS = [...LIMIT_KEYS, ...FIGURE_LENGTHS];   // values of this model: remembered per file, not for every page
+const FILE_KEYS = [...LIMIT_KEYS, ...FIGURE_LENGTHS, ...FIGURE_VALUES];   // values of this model: remembered per file, not for every page
+function fieldUnitKey(k) { return k.startsWith('color') || FIGURE_VALUES.includes(k); }   // kept only for the same quantity
 const FIGURE_DEFAULTS = Object.assign({}, FIGURE_STYLE, Object.fromEntries(FILE_KEYS.map((k) => [k, null])));
 const LIMITS_STORE = 'limits:' + location.pathname;
 const QUANTITY_KEY = Q.label + '|' + (Q.unit || '');
@@ -407,7 +419,7 @@ function validSetting(k, v) {
   if (k in FIGURE_CHOICES) return FIGURE_CHOICES[k].includes(v);
   if (v === null) return FIGURE_DEFAULTS[k] === null;
   if (typeof v !== 'number' || !isFinite(v)) return false;
-  if (FIGURE_LENGTHS.includes(k)) return v > 0;
+  if (FIGURE_LENGTHS.includes(k) || FIGURE_VALUES.includes(k)) return v > 0;
   return !(k in FIGURE_RANGES) || (v >= FIGURE_RANGES[k][0] && v <= FIGURE_RANGES[k][1]);
 }
 function storedJson(key) { try { const v = JSON.parse(store(key) || 'null'); return v && typeof v === 'object' ? v : {}; }
@@ -417,7 +429,7 @@ const fig = (() => {
   const out = Object.assign({}, FIGURE_DEFAULTS), style = storedJson('style'), kept = storedJson(LIMITS_STORE);
   for (const k of Object.keys(FIGURE_STYLE)) if (k in style && validSetting(k, style[k])) out[k] = style[k];
   for (const k of FILE_KEYS) if (typeof kept[k] === 'number' && validSetting(k, kept[k])
-      && (!k.startsWith('color') || kept.quantity === QUANTITY_KEY)) { out[k] = kept[k]; rememberedLimits.add(k); }
+      && (!fieldUnitKey(k) || kept.quantity === QUANTITY_KEY)) { out[k] = kept[k]; rememberedLimits.add(k); }
   for (const [k, v] of Object.entries(DATA.figure || {})) if (k in FIGURE_DEFAULTS && validSetting(k, v)) {
     out[k] = v; rememberedLimits.delete(k); }
   return out;
@@ -498,6 +510,8 @@ const CAN_MIRROR = MIRROR_IMAGES.length > 1;
 // from start-up on: DATA.revolution of a 2D map that is a meridional half plane (axis: the u of the rotation axis)
 const REVOLUTION = DATA.revolution && PLANAR && is2d ? DATA.revolution : null;
 let revolveFade = 0;                          // 0 .. 1: the surfaces of revolution fade in / out as the view turns
+let contourCache = null;                      // the labelled contour lines of the shown values (scalars block)
+let contourLabels = [];                       // the labels placed for this draw: gaps in the lines, text on the overlay
 const REV_PROFILES = REVOLUTION ? REVOLUTION.profiles.map(f32) : [];   // per profile (u, v) pairs, length units
 // a revolution page opens flat on the drawn half (Mirror off), then shows its mirror images and turns into the
 // revolved view (the intro at the end of the page), unless this browser turned 3D off or the page has a view
@@ -707,6 +721,7 @@ in float vT; in float vOk; in vec3 vViewPos; in vec3 vPlace; in float vVal;
 uniform vec3 uStops[9]; uniform int uLine; uniform vec4 uLineColor; uniform float uShade;
 uniform vec3 uClipLo; uniform vec3 uClipHi;
 uniform int uContour; uniform float uC0; uniform float uCStep; uniform float uCMajor; uniform float uCWidth;
+uniform int uLabCount; uniform vec4 uLab[48]; uniform float uLabHalfH;   // contour label gaps: centre px, direction x half width
 out vec4 outColor;
 vec3 cmap(float t) {
   t = clamp(t, 0.0, 1.0) * 8.0;
@@ -723,7 +738,14 @@ void main() {
     // screen-space change of k; none where the field is flat (a level the whole region sits on) or where the levels
     // crowd closer than ~2 px (a moire otherwise)
     float k = (vVal - uC0) / uCStep, w = fwidth(k);
-    if (w > 1e-6 && vT > 0.0 && vT < 1.0) {
+    bool gap = false;                 // inside a label's box (scalars block, placeContourLabels): no line there
+    for (int i = 0; i < 48; i++) {
+      if (i >= uLabCount) break;
+      vec2 q = uLab[i].zw, d = gl_FragCoord.xy - uLab[i].xy;
+      float hw2 = dot(q, q);
+      if (abs(dot(d, q)) < hw2 && abs(q.x * d.y - q.y * d.x) < uLabHalfH * sqrt(hw2)) { gap = true; break; }
+    }
+    if (!gap && w > 1e-4 && vT > 0.0 && vT < 1.0) {   // w: levels per px (a plateau's rounding noise stays below)
       float d = abs(fract(k + 0.5) - 0.5) / w;   // px to the nearest level
       bool major = abs(mod(floor(k + 0.5), uCMajor)) < 0.5;
       float hw = (major ? 0.85 : 0.5) * uCWidth;
@@ -771,7 +793,7 @@ function setupGL() {
   for (const name of ['uView', 'uProj', 'uCenter', 'uLo', 'uHi', 'uLog', 'uSigned', 'uStretch',
                       'uStops', 'uLine', 'uLineColor', 'uShade', 'uMirA', 'uMirB', 'uValSign', 'uPhase',
                       'uClipLo', 'uClipHi', 'uMixA', 'uMixB', 'uContour', 'uC0', 'uCStep', 'uCMajor', 'uCWidth',
-                      'uDispDir', 'uDispW', 'uAmp'])
+                      'uLabCount', 'uLab', 'uLabHalfH', 'uDispDir', 'uDispW', 'uAmp'])
     uni[name] = gl.getUniformLocation(prog, name);
   const aPos = gl.getAttribLocation(prog, 'aPos'), aVal = gl.getAttribLocation(prog, 'aVal');
   const aVal2 = gl.getAttribLocation(prog, 'aVal2');
@@ -945,10 +967,10 @@ function draw() {
   gl.uniform3fv(uni.uCenter, center); gl.uniform3fv(uni.uStretch, stretch());
   gl.uniform1f(uni.uLo, lo); gl.uniform1f(uni.uHi, hi);
   gl.uniform1i(uni.uLog, logScale ? 1 : 0); gl.uniform1i(uni.uSigned, DIVERGING ? 1 : 0);
-  setContourUniforms(lo, hi, logScale);
   gl.uniform3fv(uni.uStops, new Float32Array(CMAPS[state.cmap].map(hexRgb).flat()));
   gl.uniform1f(uni.uShade, motionLit() ? 1 : 0);
   setMotionUniforms();
+  setContourUniforms(lo, hi, logScale, view, proj);   // after the motion weights: labels follow the deformed shape
   drawMotionOutlines(view, proj, 'rest'); gl.useProgram(prog);   // the rest shape under the body
   gl.disable(gl.BLEND);
   gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(1, 1);   // fills behind their mesh lines
@@ -1355,7 +1377,7 @@ function drawScaleBar(c, view, proj) {
   c.fillText(text, left + 0.5 * width, top);
   c.fillRect(left + 0.5 * (width - bar), top + 1.3 * F, bar, thick);
 }
-function drawOverlay(view, proj) { drawHeading(actx); drawColorbar(actx); drawMaterials(actx); drawScaleBar(actx, view, proj); }
+function drawOverlay(view, proj) { drawContourLabels(actx); drawHeading(actx); drawColorbar(actx); drawMaterials(actx); drawScaleBar(actx, view, proj); }
 function composite(target) {
   // the GL view with its overlay (axes, heading, colour bar) on a 2D canvas: call right after draw() (the GL buffer
   // is not preserved)
@@ -2853,6 +2875,7 @@ function syncSettings() {
   $('settingsbtn').title = 'Font sizes, colour and axis limits, colour bar and label places of the picture'
     + (limited ? ' (limits are set)' : '');
   $('range').disabled = fig.color_max !== null || (DIVERGING && fig.color_min !== null);   // the limit it scales is given
+  syncScalars();                               // the Contours density gives way to a contour step
   $('hint').style.display = fig.colorbar === 'bottom_left' || fig.colorbar === 'bottom' ? 'none' : '';
 }
 function applySettings(boundsChanged) {
@@ -2868,7 +2891,7 @@ for (const k of SETTING_KEYS) {
     // typing: a ranged number (font sizes, bar length) is applied while typed, once it is a valid value; the limits
     // wait for Enter / leaving the field (half-typed numbers would crop and refit the view)
     let value;
-    if (el.tagName === 'SELECT') value = typeof FIGURE_DEFAULTS[k] === 'number' ? +el.value : el.value;
+    if (el.tagName === 'SELECT') value = FIGURE_CHOICES[k].includes(el.value) ? el.value : +el.value;   // 'auto' or 4
     else if (el.value.trim() === '') value = null;
     else value = Number((+el.value / shownPer(k)).toPrecision(7));
     if (value === null && FIGURE_DEFAULTS[k] !== null) { if (!typing) syncSettings(); return; }   // a size cannot be empty: as before
@@ -2883,6 +2906,7 @@ for (const k of SETTING_KEYS) {
   if (k in FIGURE_RANGES) el.addEventListener('input', () => take(true));
 }
 $('fs_colorhead').textContent = 'Colour limits' + (Q.unit ? ' (' + Q.unit + ')' : '');
+$('fs_contourhead').textContent = 'Contour lines' + (Q.unit ? ' (' + Q.unit + ')' : '');
 $('fs_axishead').textContent = 'Axis limits (' + lengthUnit + ')';
 $('fs_scalehead').textContent = 'Scale bar (' + lengthUnit + ')';
 // what needs one plane seen face-on (axis label sides, the scale bar) is offered for planar views only; the material
@@ -3360,11 +3384,15 @@ function normalSign(I) {
   }
   return I.normalSign;
 }
-function setMotionLayer(u, L, I) {
-  if (!MOTION) return;
+function setMotionWeights(I) {
+  // motionW: the channel weights in mirror image I (the normal displacement flips with normalSign)
   const flip = normalSign(I);
   for (let k = 0; k < 4; k++)
     motionW[k] = motionPhase[k] * (k < MOTION_CHANNELS && MOTION_COMPONENTS[k % MOTION_COMPONENTS.length] === 'n' ? flip : 1);
+}
+function setMotionLayer(u, L, I) {
+  if (!MOTION) return;
+  setMotionWeights(I);
   gl.uniform3fv(u.uDispDir, L.motionDirs); gl.uniform4fv(u.uDispW, motionW);
 }
 // body outlines: the boundary edges of the drawn triangles (edges of one valued triangle only) of frame 0, drawn as
@@ -3674,24 +3702,250 @@ function niceStep(lo, hi, count) {
   const raw = (hi - lo) / Math.max(count, 1), p = Math.pow(10, Math.floor(Math.log10(raw)));
   return [1, 2, 5, 10].map((m) => m * p).find((s) => s >= raw * (1 - 1e-9));
 }
+function contourStepGiven() { return fig.contour_step !== null && !(state.log && LOG_OK); }   // the Plot settings step applies
+function labelMultiple(step, target) {
+  // contour lines per labelled one for a given step: the multiple of step that is a round number (1, 2, 2.5, 5 x 10^n)
+  // nearest target (log distance); 1 when none is
+  let best = 1, err = Infinity;
+  for (let m = 1; m <= 50; m++) {
+    const v = m * step, r = v / Math.pow(10, Math.floor(Math.log10(v) + 1e-9));
+    if (![1, 2, 2.5, 5, 10].some((n) => Math.abs(r - n) < 1e-6 * n)) continue;
+    const e = Math.abs(Math.log(v / target));
+    if (e < err) { best = m; err = e; }
+  }
+  return best;
+}
 function contourLevels(lo, hi, logScale) {
   // { c0, step, major }: levels c0 + k step in the value the shader counts (log10 on a log scale), every major-th one
-  // bold: on the colour bar's ticks (about 4 over the range, as drawColorbar's default bar), decades on a log scale.
-  // c0 a bold level just below lo keeps k small (float32 in the shader)
-  const n = CONTOUR_COUNTS[state.contourDensity];
+  // bold and labelled. Automatic: bold on the colour bar's ticks (about 4 over the range, as drawColorbar's default
+  // bar), decades on a log scale, the Contours density between; the Plot settings contour_step (linear scale) and
+  // contour_label_every replace the step and the major count. c0, a labelled level at or just below lo, keeps k small
+  // (float32 in the shader) and puts the labels on multiples of their interval (0, 100, 200 m)
   const a = logScale ? Math.log10(lo) : lo, b = logScale ? Math.log10(hi) : hi;
   if (!(b > a) || !isFinite(a) || !isFinite(b)) return null;
-  const bold = logScale ? Math.max(1, niceStep(a, b, 4)) : niceStep(a, b, 4);
-  let best = 1;
-  for (const sub of [1, 2, 4, 5, 10]) if (Math.abs((b - a) / (bold / sub) - n) < Math.abs((b - a) / (bold / best) - n)) best = sub;
-  return { c0: Math.floor(a / bold) * bold, step: bold / best, major: best };
+  const bold = logScale ? Math.max(1, niceStep(a, b, 4)) : niceStep(a, b, 4), every = fig.contour_label_every;
+  let step, major;
+  if (contourStepGiven()) {
+    step = fig.contour_step;
+    if ((b - a) / step > 1e5) return null;   // lines far below a pixel apart (and k past float32's resolution)
+    major = every !== 'auto' ? every : labelMultiple(step, bold);
+  } else {
+    const n = CONTOUR_COUNTS[state.contourDensity];
+    let best = 1;
+    for (const sub of [1, 2, 4, 5, 10]) if (Math.abs((b - a) / (bold / sub) - n) < Math.abs((b - a) / (bold / best) - n)) best = sub;
+    step = bold / best; major = every !== 'auto' ? every : best;
+  }
+  return { c0: Math.floor(a / (step * major)) * step * major, step, major };
 }
-function setContourUniforms(lo, hi, logScale) {
+function setContourUniforms(lo, hi, logScale, view, proj) {
   const C = state.contours ? contourLevels(lo, hi, logScale) : null;
   gl.uniform1i(uni.uContour, C ? 1 : 0);
+  placeContourLabels(C, lo, hi, logScale, view, proj);
+  gl.uniform1i(uni.uLabCount, contourLabels.length);
   if (!C) return;
   gl.uniform1f(uni.uC0, C.c0); gl.uniform1f(uni.uCStep, C.step); gl.uniform1f(uni.uCMajor, C.major);
   gl.uniform1f(uni.uCWidth, 1.6 * pixelRatio);
+  if (!contourLabels.length) return;
+  const boxes = new Float32Array(4 * CONTOUR_LABEL_MAX), H = canvas.height;
+  contourLabels.forEach((B, k) => boxes.set([B.x, H - B.y, B.ux * B.hw, -B.uy * B.hw], 4 * k));   // GL px: y up
+  gl.uniform4fv(uni.uLab, boxes); gl.uniform1f(uni.uLabHalfH, contourLabels[0].hh);
+}
+
+// contour labels: the labelled (major) levels are traced on the CPU over each layer's triangles (marching triangles
+// on the values the shader shows: the frame, its phasor partner or next frame by the wave mix, log10 on a log scale)
+// and joined into polylines of edge points (vertex a, vertex b, fraction t), cached until the values or the levels
+// change. Every draw places the labels along those lines in screen space: the point moved like the vertices (mirror
+// image, deformed shape), spaced CONTOUR_LABEL_SPACING font sizes apart, staggered per level, only on straight enough
+// stretches inside the canvas and the axis limits and clear of each other (at most CONTOUR_LABEL_MAX, the shader's
+// box array). The field shader leaves the contour lines out inside each label's box (uLab) and the overlay writes
+// the value there, upright, in the line's own ink. None while the field animates (playback, a turning phasor, the
+// deform animation): they would lag the moving lines.
+const CONTOUR_LABEL_MAX = 48, CONTOUR_LABEL_SPACING = 26;
+function contourLabelsAnimating() { return (state.playing && NF > 1) || (PHASOR && wave.playing) || (!!MOTION && motion.animate); }
+function shownLayerValues(i, logScale) {
+  // per vertex of layer i the value the shader counts (NaN without a value): the frame mixed with its partner
+  const A = frameValues(state.frame)[i], n = A.length / 2, out = new Float64Array(n);
+  const mixB = WAVE_SECOND ? wave.mixB : 0, mixA = WAVE_SECOND ? wave.mixA : 1;
+  const B = mixB !== 0 ? (PHASOR ? quadValues(state.frame) : frameValues((state.frame + 1) % NF))[i] : null;
+  for (let k = 0; k < n; k++) {
+    if (A[2 * k + 1] < 0.999 || (B && B[2 * k + 1] < 0.999)) { out[k] = NaN; continue; }
+    const v = A[2 * k] * mixA + (B ? B[2 * k] * mixB : 0);
+    out[k] = logScale ? Math.log10(Math.max(v, 1e-37)) : v;
+  }
+  return out;
+}
+function contourPolylines(L, vals, levels) {
+  // [{ li, pts: Float64Array (a, b, t)* }]: the polylines of the levels (ascending) over L's triangles; a point lies on
+  // edge (a < b) at fraction t from a. A vertex on a level counts as above it, so every crossed triangle has two
+  // crossed edges and neighbours share their points (joined by edge and level)
+  const tri = L.tri, n = L.n, nl = levels.length, segs = [], ends = new Map();
+  const point = (p, q, c, out) => {   // the crossing of edge (p, q) by level c: key, a, b, t
+    const a = Math.min(p, q), b = Math.max(p, q), va = vals[a], vb = vals[b];
+    out.push(a * n + b, a, b, (c - va) / (vb - va));
+  };
+  for (let k = 0; k < tri.length; k += 3) {
+    const i0 = tri[k], i1 = tri[k + 1], i2 = tri[k + 2], v0 = vals[i0], v1 = vals[i1], v2 = vals[i2];
+    if (!(v0 === v0 && v1 === v1 && v2 === v2)) continue;
+    const low = Math.min(v0, v1, v2), high = Math.max(v0, v1, v2);
+    let li = 0, hi = nl;
+    while (li < hi) { const m = (li + hi) >> 1; if (levels[m] > low) hi = m; else li = m + 1; }   // first level above low
+    for (; li < nl && levels[li] <= high; li++) {
+      const c = levels[li], s = [], b0 = v0 < c, b1 = v1 < c, b2 = v2 < c;
+      if (b0 !== b1) point(i0, i1, c, s);
+      if (b1 !== b2) point(i1, i2, c, s);
+      if (b2 !== b0) point(i2, i0, c, s);
+      if (s.length !== 8) continue;
+      const id = segs.length;
+      segs.push({ li, p: s });
+      for (const e of [0, 1]) {
+        const key = s[4 * e] * nl + li, list = ends.get(key);
+        if (list) list.push(2 * id + e); else ends.set(key, [2 * id + e]);
+      }
+    }
+  }
+  const used = new Uint8Array(segs.length), out = [];
+  const pts = (S, e) => S.p.slice(4 * e + 1, 4 * e + 4);
+  const walk = (id, e, into) => {   // from the end e of segment id onwards, the points of the following segments
+    for (;;) {
+      const S = segs[id], next = (ends.get(S.p[4 * e] * nl + S.li) || []).find((x) => (x >> 1) !== id && !used[x >> 1]);
+      if (next === undefined) return;
+      id = next >> 1; e = 1 - (next & 1); used[id] = 1;
+      into.push(...pts(segs[id], e));
+    }
+  };
+  for (let id = 0; id < segs.length; id++) {
+    if (used[id]) continue;
+    used[id] = 1;
+    const S = segs[id], ahead = [...pts(S, 0), ...pts(S, 1)], back = [];
+    walk(id, 1, ahead); walk(id, 0, back);
+    const line = [];
+    for (let k = back.length - 3; k >= 0; k -= 3) line.push(back[k], back[k + 1], back[k + 2]);
+    out.push({ li: S.li, pts: Float64Array.from(line.concat(ahead)) });
+  }
+  return out;
+}
+function labelLevels(C, a, b, signed) {
+  // the labelled levels (counted values) strictly inside (a, b), or (-b, b) / (a, -a) as well when a mirror image
+  // shows the values negated (signed)
+  const S = C.step * C.major, lo = signed ? Math.min(a, -b) : a, hi = signed ? Math.max(b, -a) : b, out = [];
+  for (let j = Math.ceil(lo / S - 1e-9); j * S < hi - 1e-9 * S; j++) if (j * S > lo + 1e-9 * S) out.push(j * S);
+  return out.length > 400 ? out.filter((v, k) => k % Math.ceil(out.length / 400) === 0) : out;
+}
+function contourLines(C, a, b, logScale) {
+  // the cached polylines per layer of the labelled levels of the shown values
+  const signed = !logScale && !Q.phase && images().some((I) => I.sign < 0);
+  const levels = labelLevels(C, a, b, signed);
+  const key = [state.frame, WAVE_SECOND ? wave.mixA.toFixed(5) + ',' + wave.mixB.toFixed(5) : '', logScale, levels.join(',')].join('|');
+  if (contourCache && contourCache.key === key) return contourCache;
+  contourCache = { key, levels, layers: LAYERS.map((L, i) => levels.length ? contourPolylines(L, shownLayerValues(i, logScale), levels) : []) };
+  return contourCache;
+}
+function contourLabelText(v, logScale, scale) {
+  // a level (counted value) as written on its line: the colour bar's unit and factor, a log scale's values with an SI prefix
+  if (logScale) return fmtValue(Math.pow(10, v), Q.unit);
+  const x = Number((v / scale.factor).toPrecision(6));
+  return (x === 0 ? '0' : String(x)) + (scale.unit ? ' ' + scale.unit : '');
+}
+function contourInk(t) {
+  // the colour of a contour line over the colour map at t (as the field shader: darker over light colours, lighter
+  // over dark ones), CSS
+  const stops = CMAPS[state.cmap].map(hexRgb), x = Math.min(Math.max(t, 0), 1) * 8, i = Math.min(Math.floor(x), 7), f = x - i;
+  const base = [0, 1, 2].map((c) => stops[i][c] + (stops[i + 1][c] - stops[i][c]) * f);
+  const lum = 0.2126 * base[0] + 0.7152 * base[1] + 0.0722 * base[2];
+  const ink = base.map((v) => lum > 0.42 ? v * 0.28 : v + (1 - v) * 0.75);
+  return 'rgb(' + ink.map((v) => Math.round(255 * v)).join(',') + ')';
+}
+function placeContourLabels(C, lo, hi, logScale, view, proj) {
+  contourLabels = [];
+  if (!C || fig.contour_labels !== 'on' || contourLabelsAnimating()) return;
+  const a = logScale ? Math.log10(lo) : lo, b = logScale ? Math.log10(hi) : hi;
+  const lines = contourLines(C, a, b, logScale);
+  if (!lines.levels.length) return;
+  const px = pixelRatio, F = Math.round(0.95 * fig.font_size * px), W = canvas.width, H = canvas.height;
+  const font = F + 'px ' + themeColors.font, spacing = CONTOUR_LABEL_SPACING * F, hh = 0.62 * F, margin = 0.5 * F;
+  const scale = barScale(lo, hi, Q.unit), f = stretch(), widths = new Map();
+  actx.font = font;
+  // clip = P V (q - centre) stretch, as the vertex shader
+  const M = new Float64Array(16);
+  for (let r = 0; r < 4; r++) for (let c = 0; c < 4; c++) {
+    let sum = 0; for (let k = 0; k < 4; k++) sum += proj[k * 4 + r] * view[c * 4 + k]; M[c * 4 + r] = sum; }
+  const tol = 1e-6 * LARGEST, inside = (q) => [0, 1, 2].every((c) => q[c] >= clipLo[c] - tol && q[c] <= clipHi[c] + tol);
+  const D = MOTION && motionGain() > 0 ? motionFrame(state.frame) : null;
+  for (const I of images()) {
+    if (I.sign < 0 && (Q.phase || logScale)) continue;
+    for (const L of LAYERS) {
+      if (!L.visible || selfImage(L, I)) continue;
+      let w = null;
+      if (D) { setMotionWeights(I); w = motionW; }
+      const pos = L.pos, disp = D ? D[L.index] : null, dirs = L.motionDirs;
+      const place = (v, out) => {   // vertex v moved (deformed shape) and mirrored: true coordinates
+        for (let c = 0; c < 3; c++) {
+          let p = pos[3 * v + c];
+          if (disp) for (let k = 0; k < 4; k++) p += disp[4 * v + k] * w[k] * dirs[3 * k + c];
+          out[c] = p * I.a[c] + I.b[c];
+        }
+      };
+      const qa = [0, 0, 0], qb = [0, 0, 0];
+      for (const P of lines.layers[L.index]) {
+        const level = lines.levels[P.li] * (I.sign < 0 ? -1 : 1);
+        if (!(level > a && level < b)) continue;
+        const text = contourLabelText(level, logScale, scale);
+        if (!widths.has(text)) widths.set(text, actx.measureText(text).width);
+        const hw = 0.5 * widths.get(text) + 0.45 * F;
+        // screen polyline (device px, y down) with true coordinates; a point behind the eye ends a run
+        const X = [], Y = [], T = [];
+        const flush = () => { if (X.length > 1) labelRun(X, Y, T, P.li, level, text, hw); X.length = Y.length = T.length = 0; };
+        const labelRun = (X, Y, T, li, level, text, hw) => {
+          const m = X.length, S = new Float64Array(m);
+          for (let k = 1; k < m; k++) S[k] = S[k - 1] + Math.hypot(X[k] - X[k - 1], Y[k] - Y[k - 1]);
+          const total = S[m - 1];
+          if (total < 2 * hw + 2 * F) return;
+          let k = 0;
+          const at = (s) => {   // [x, y, segment index] at arc length s (k advances monotonically)
+            while (k < m - 2 && S[k + 1] < s) k++;
+            while (k > 0 && S[k] > s) k--;
+            const g = S[k + 1] > S[k] ? (s - S[k]) / (S[k + 1] - S[k]) : 0;
+            return [X[k] + (X[k + 1] - X[k]) * g, Y[k] + (Y[k + 1] - Y[k]) * g, k, g];
+          };
+          let s = Math.max(hw, Math.min(spacing * (0.3 + 0.4 * ((li * 0.618) % 1)), 0.5 * total));
+          while (s <= total - hw && contourLabels.length < CONTOUR_LABEL_MAX) {
+            const A = at(s - hw), B = at(s + hw), Pm = at(s);
+            const dx = B[0] - A[0], dy = B[1] - A[1], chord = Math.hypot(dx, dy);
+            const q = T[Pm[2]].map((v, c) => v + (T[Pm[2] + 1][c] - v) * Pm[3]);
+            const ok = chord > 1.8 * hw
+              && [A, B, Pm].every((p) => p[0] > margin && p[0] < W - margin && p[1] > margin && p[1] < H - margin)
+              && inside(q) && inside(T[A[2]]) && inside(T[Math.min(B[2] + 1, m - 1)])
+              && contourLabels.every((o) => Math.hypot(o.x - Pm[0], o.y - Pm[1]) > o.hw + hw + 0.6 * F
+                                            && (o.level !== level || Math.hypot(o.x - Pm[0], o.y - Pm[1]) > 0.5 * spacing));
+            if (!ok) { s += 0.35 * hw; continue; }
+            let ux = dx / chord, uy = dy / chord;
+            if (ux < 0) { ux = -ux; uy = -uy; }   // upright text
+            contourLabels.push({ x: Pm[0], y: Pm[1], ux, uy, hw, hh, level, text, font, ink: contourInk((level - a) / (b - a)) });
+            s += spacing;
+          }
+        };
+        for (let k = 0; k < P.pts.length; k += 3) {
+          place(P.pts[k], qa); place(P.pts[k + 1], qb);
+          const t = P.pts[k + 2], q = [0, 1, 2].map((c) => qa[c] + (qb[c] - qa[c]) * t);
+          const e = [0, 1, 2].map((c) => (q[c] - center[c]) * f[c]);
+          const cx = M[0] * e[0] + M[4] * e[1] + M[8] * e[2] + M[12], cy = M[1] * e[0] + M[5] * e[1] + M[9] * e[2] + M[13];
+          const cw = M[3] * e[0] + M[7] * e[1] + M[11] * e[2] + M[15];
+          if (!(cw > 1e-12)) { flush(); continue; }
+          X.push((cx / cw + 1) * 0.5 * W); Y.push((1 - cy / cw) * 0.5 * H); T.push(q);
+        }
+        flush();
+      }
+    }
+  }
+}
+function drawContourLabels(c) {
+  for (const B of contourLabels) {
+    c.save();
+    c.translate(B.x, B.y); c.rotate(Math.atan2(B.uy, B.ux));
+    c.font = B.font; c.fillStyle = B.ink; c.textAlign = 'center'; c.textBaseline = 'middle';
+    c.fillText(B.text, 0, 0.05 * B.hh);
+    c.restore();
+  }
 }
 
 const TWEEN_SECONDS = 1.1;
@@ -3760,7 +4014,7 @@ function drawBackdrop() {
 // controls
 function syncScalars() {
   $('contours').setAttribute('aria-pressed', String(state.contours));
-  $('contourn').value = state.contourDensity; $('contourn').disabled = !state.contours;
+  $('contourn').value = state.contourDensity; $('contourn').disabled = !state.contours || contourStepGiven();
 }
 $('contours').onclick = () => { state.contours = !state.contours; store(CONTOUR_STORE, state.contours ? 'on' : 'off'); syncScalars(); };
 $('contourn').onchange = (e) => { state.contourDensity = e.target.value; store('contour_density', state.contourDensity); };

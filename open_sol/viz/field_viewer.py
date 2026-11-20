@@ -76,11 +76,15 @@ FIGURE_CHOICES = {
     'legend_color': ('auto', 'white', 'black'),                                  # material legend text
     'background': ('theme', 'white'),
     'export_scale': (1, 2, 4),                                                   # PNG pixels per screen pixel
+    'contour_labels': ('on', 'off'),                                             # values written into labelled lines
+    'contour_label_every': ('auto', 1, 2, 3, 4, 5, 10),                          # contour lines per labelled one
 }
 FIGURE_RANGES = {'font_size': (6.0, 40.0), 'title_size': (8.0, 72.0),            # CSS px
                  'colorbar_length': (0.1, 1.0)}                                  # fraction of the view side
 FIGURE_LIMITS = ('color', 'x', 'y', 'z')   # <name>_min / <name>_max: colour limits (field unit), axis limits (m)
 FIGURE_LENGTHS = ('scale_bar_length',)     # positive lengths (m)
+FIGURE_VALUES = ('contour_step',)          # positive values in the field unit (contour_step: the interval between
+#                                            contour lines on a linear colour scale; None = automatic)
 FIGURE_MATERIALS = 'materials'             # {material name: {'color': '#rrggbb', 'alpha': 0 .. 1}} (each key optional)
 _HEX_COLOR = re.compile(r'#[0-9a-fA-F]{6}')
 MOTION_COMPONENTS = ('u', 'v', 'n')        # displacement along a layer's first / second axis and along its normal
@@ -1098,13 +1102,13 @@ def _volume_bytes(values, offset, scale, masked):
 
 
 def figure_settings(figure) -> dict:
-    """The checked Plot settings {key: value} of a page (FIGURE_CHOICES / _RANGES / _LIMITS / _LENGTHS keys and
-    FIGURE_MATERIALS; None values = automatic, dropped); ValueError for an unknown key, a value outside its choices /
+    """The checked Plot settings {key: value} of a page (FIGURE_CHOICES / _RANGES / _LIMITS / _LENGTHS / _VALUES keys
+    and FIGURE_MATERIALS; None values = automatic, dropped); ValueError for an unknown key, a value outside its choices /
     range or min >= max, a material entry other than {'color': '#rrggbb', 'alpha': 0 .. 1} (viewer_data checks the
     names against the page's materials)."""
     figure = dict(figure or {})
     limit_keys = tuple(f'{name}_{end}' for name in FIGURE_LIMITS for end in ('min', 'max'))
-    known = (*FIGURE_CHOICES, *FIGURE_RANGES, *limit_keys, *FIGURE_LENGTHS, FIGURE_MATERIALS)
+    known = (*FIGURE_CHOICES, *FIGURE_RANGES, *limit_keys, *FIGURE_LENGTHS, *FIGURE_VALUES, FIGURE_MATERIALS)
     unknown = sorted(set(figure) - set(known))
     if unknown:
         raise ValueError(f"unknown figure setting(s) {', '.join(map(repr, unknown))}; known: {', '.join(known)}")
@@ -1132,6 +1136,8 @@ def figure_settings(figure) -> dict:
             raise ValueError(f'figure setting {key} = {number:g} is outside {FIGURE_RANGES[key]}')
         if key in FIGURE_LENGTHS and not number > 0.0:
             raise ValueError(f'figure setting {key} = {number:g} is not a positive length')
+        if key in FIGURE_VALUES and not number > 0.0:
+            raise ValueError(f'figure setting {key} = {number:g} is not a positive value')
         checked[key] = number
     for name in FIGURE_LIMITS:
         low, high = checked.get(f'{name}_min'), checked.get(f'{name}_max')
@@ -1284,7 +1290,7 @@ def viewer_data(frames, quantity, title='', subtitle='', frame_kind='labelled', 
         'length_unit': unit, 'length_scale': float(scale),   # m per length unit of the page
         'figure': figure or None,
         'figure_rules': {'choices': FIGURE_CHOICES, 'ranges': FIGURE_RANGES, 'limits': FIGURE_LIMITS,
-                         'lengths': FIGURE_LENGTHS},
+                         'lengths': FIGURE_LENGTHS, 'values': FIGURE_VALUES},
         'quantity': {'label': quantity.label, 'unit': quantity.unit, 'signed': bool(quantity.signed),
                      'phase': bool(quantity.phase)},
         'layers': [_layer_geometry(layer, scale) for layer in first],

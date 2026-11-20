@@ -1336,7 +1336,13 @@ _RESULTS_NOTES = (
         'true-length bar on a face-on map in place of the axes), scale_bar_length (m, > 0; default a round length '
         f"near a fifth of the view), scale_bar_color {_figure_choices('scale_bar_color')}, legend_color "
         f"{_figure_choices('legend_color')}, background {_figure_choices('background')}, export_scale "
-        f"{_figure_choices('export_scale')} (PNG pixels per screen pixel), materials {{material name: {{'color': "
+        f"{_figure_choices('export_scale')} (PNG pixels per screen pixel), contour_step (field unit, > 0: the "
+        'interval between contour lines on a linear colour scale, as 25 m on a map; default about 12 levels over the '
+        "range, the Contours density), contour_label_every "
+        f"{_figure_choices('contour_label_every')} (contour lines per labelled, bolder one, as every 4th for 100 m "
+        "labels on 25 m lines; 'auto': the labelled interval nearest the colour bar's tick step), contour_labels "
+        f"{_figure_choices('contour_labels')} (default 'on': the value written into a gap of the labelled lines, "
+        f"upright and spaced along them; none while the field animates), materials {{material name: {{'color': "
         "'#rrggbb', 'alpha': 0 .. 1}} (each key optional; colour of its outlines, edges, see-through surfaces and "
         'legend swatch; alpha the opacity of its surfaces (Glass faces, 3D bodies of revolution; default see-through), 1 draws '
         'them solid, 0 hides the material; '
