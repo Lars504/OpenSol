@@ -639,21 +639,42 @@ def cudss_factorization(host_operator, back_end, previous=None, real=False, symm
 
 # DevicePencil pool bytes per stored entry of the full pattern beside its term values: the factor's device index maps
 # (refactorize_device_values: rows, columns, lower take, the lower triangle's rows / indices; a lower-stored pencil's
-# refactorize_device_lower: the lower triangle's rows / indices alone) and one frequency's transients (the combined
-# values and the product of the term being added to them, DevicePencil.combined; complex128)
+# refactorize_device_lower: the lower triangle's rows / indices alone) and one frequency's transient (the combined
+# values in the stored layout, DevicePencil.combined: complex128, each term added in place by _pencil_axpy_kernel)
 DEVICE_PENCIL_MAP_BYTES = 14
-DEVICE_PENCIL_TRANSIENT_BYTES = 32
+DEVICE_PENCIL_TRANSIENT_BYTES = 16
 LOWER_STORED_FRACTION = 0.55   # lower triangle + diagonal / all entries of a symmetric FEM pattern (rounded up)
 DEVICE_PENCIL_LOWER_MAP_BYTES = 8 * LOWER_STORED_FRACTION
 
 
 def device_pencil_bytes(entries, term_value_bytes, symmetric=False) -> int:
     """Estimated pool bytes of a DevicePencil of `entries` stored entries whose terms take term_value_bytes (one value
-    size per term, e.g. (16, 8) for complex K and real M) plus its factor's maps and per-frequency transients; a
-    symmetric pencil keeps its terms on the lower triangle only (R4) and its factor the lower triangle's maps."""
-    term_bytes = sum(int(size) for size in term_value_bytes) * (LOWER_STORED_FRACTION if symmetric else 1.0)
+    size per term, e.g. (16, 8) for complex K and real M: ShiftPencil keeps real terms float64) plus its factor's maps
+    and per-frequency transient; a symmetric pencil keeps its terms on the lower triangle only (R4), its factor the
+    lower triangle's maps and combines the lower triangle's values."""
+    fraction = LOWER_STORED_FRACTION if symmetric else 1.0
+    term_bytes = sum(int(size) for size in term_value_bytes) * fraction
     map_bytes = DEVICE_PENCIL_LOWER_MAP_BYTES if symmetric else DEVICE_PENCIL_MAP_BYTES
-    return int(math.ceil(int(entries) * (term_bytes + map_bytes + DEVICE_PENCIL_TRANSIENT_BYTES)))
+    return int(math.ceil(int(entries) * (term_bytes + map_bytes + DEVICE_PENCIL_TRANSIENT_BYTES * fraction)))
+
+
+_PENCIL_AXPY_KERNELS = {}   # complex total -> ElementwiseKernel of DevicePencil.combined (built on first use)
+
+
+def _pencil_axpy_kernel(complex_total):
+    """ElementwiseKernel total += c X of one pencil term in place (one pass, no c X temporary): a complex128 total with
+    c = (c_re, c_im) and a real or complex term, else float64 total, c and term."""
+    if complex_total not in _PENCIL_AXPY_KERNELS:
+        import cupy as cp
+        if complex_total:
+            kernel = cp.ElementwiseKernel('float64 c_re, float64 c_im, T term', 'complex128 total',
+                                          'total += complex<double>(c_re, c_im) * complex<double>(term)',
+                                          'open_sol_pencil_axpy_complex')
+        else:
+            kernel = cp.ElementwiseKernel('float64 c, T term', 'float64 total', 'total += c * (double)term',
+                                          'open_sol_pencil_axpy_real')
+        _PENCIL_AXPY_KERNELS[complex_total] = kernel
+    return _PENCIL_AXPY_KERNELS[complex_total]
 
 
 class DevicePencil:
@@ -724,9 +745,13 @@ class DevicePencil:
             isinstance(coefficient, complex) or np.iscomplexobj(coefficient) for coefficient in coefficients)
         total = cp.zeros(self.stored_terms[0].size if self.stored_terms else 0,
                          dtype=np.complex128 if complex_values else np.float64)
+        axpy = _pencil_axpy_kernel(complex_values)
         for coefficient, term in zip(coefficients, self.stored_terms):
-            if coefficient != 0:
-                total += coefficient * term
+            if coefficient != 0:   # in place, one pass: no c X_k temporary beside the combined values
+                if complex_values:
+                    axpy(float(np.real(coefficient)), float(np.imag(coefficient)), term, total)
+                else:
+                    axpy(float(coefficient), term, total)
         return total
 
     def slots(self, rows, columns):
