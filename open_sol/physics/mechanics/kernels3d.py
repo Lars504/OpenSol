@@ -541,12 +541,12 @@ void elastic_direction_product(
 }
 """,
     # Total nodal load [N] = applied + per adjacent solid element: thermal beta_a dT s_ka A_perp_a / 4 (lower-side
-    # nodes -, upper-side +) and body force (coupled + applied) times volume / 8; has_applied_body 0: no applied
-    # per-element body force (applied_body an unread dummy).
+    # nodes -, upper-side +) and body force (coupled + applied) times volume / 8; has_applied_load / has_applied_body
+    # 0: no applied nodal load / per-element body force (applied_load / applied_body unread dummies).
     'elastic_load': r"""
 extern "C" __global__
 void elastic_load(
-    real_t* __restrict__ load, const real_t* __restrict__ applied_load,
+    real_t* __restrict__ load, const real_t* __restrict__ applied_load, int has_applied_load,
     const real_t* __restrict__ lam, const real_t* __restrict__ mu,
     const float* __restrict__ alpha_xx, const float* __restrict__ alpha_yy, const float* __restrict__ alpha_zz,
     const float* __restrict__ rise, const float* __restrict__ rise_ext,
@@ -561,7 +561,9 @@ void elastic_load(
     int i, j, k;
     node_ijk(node, nyn, nzn, &i, &j, &k);
     const int n_elements = ex * ey * ez;
-    real_t acc[3] = {applied_load[3 * node], applied_load[3 * node + 1], applied_load[3 * node + 2]};
+    real_t acc[3] = {(real_t)0, (real_t)0, (real_t)0};
+    if (has_applied_load)
+        for (int a = 0; a < 3; ++a) acc[a] = applied_load[3 * node + a];
     for (int di = 0; di < 2; ++di) {
         const int ei = i - 1 + di;
         if (ei < 0 || ei >= ex) continue;
@@ -1082,8 +1084,9 @@ def _window_values_host(full, window, dtype):
     return full[window].astype(dtype)
 
 
-def _elastic_load_host(out, applied_load, lame_lambda, mu, alpha_xx, alpha_yy, alpha_zz, rise, rise_ext, body_x, body_y,
-                       body_z, applied_body, has_applied_body, wx, wy, wz, ex, ey, ez, ox, oy, oz, ny_full, nz_full):
+def _elastic_load_host(out, applied_load, has_applied_load, lame_lambda, mu, alpha_xx, alpha_yy, alpha_zz, rise,
+                       rise_ext, body_x, body_y, body_z, applied_body, has_applied_body, wx, wy, wz, ex, ey, ez, ox, oy,
+                       oz, ny_full, nz_full):
     ex, ey, ez, ox, oy, oz = (int(value) for value in (ex, ey, ez, ox, oy, oz))
     dtype = out.dtype
     window = (slice(ox, ox + ex), slice(oy, oy + ey), slice(oz, oz + ez))
@@ -1101,7 +1104,8 @@ def _elastic_load_host(out, applied_load, lame_lambda, mu, alpha_xx, alpha_yy, a
     thermal = tuple(np.where(solid, 0.25 * (2.0 * shear * alphas[axis] + lam * alpha_sum) * temperature_change
                              * areas[axis], 0) for axis in range(3))
     body = tuple(np.where(solid, eighth_volume * bodies[axis], 0) for axis in range(3))
-    load = applied_load.reshape(ex + 1, ey + 1, ez + 1, 3).copy()
+    load = (applied_load.reshape(ex + 1, ey + 1, ez + 1, 3).copy() if int(has_applied_load)
+            else np.zeros((ex + 1, ey + 1, ez + 1, 3), dtype=dtype))
     for corner in _CORNERS:   # lower-side nodes of an element take -, upper-side + of the thermal term
         target = load[corner[0]:corner[0] + ex, corner[1]:corner[1] + ey, corner[2]:corner[2] + ez]
         for axis in range(3):
@@ -1277,16 +1281,17 @@ class BrickKernels:
 
     def load(self, out, applied_load, lame_lambda, mu, alphas, temperature_rise, temperature_rise_ext, body_forces,
              applied_body_force, widths):
-        """out = applied nodal load + thermal load + body forces (coupled full-grid + applied per element, None: none)
-        [N]."""
+        """out = applied nodal load (None: none) + thermal load + body forces (coupled full-grid + applied per element,
+        None: none) [N]."""
         full = [self._full_grid(array, label) for array, label in zip(
             (*alphas, temperature_rise, temperature_rise_ext, *body_forces),
             ('alpha_xx', 'alpha_yy', 'alpha_zz', 'temperature_rise', 'temperature_rise_ext',
              'body_force_x', 'body_force_y', 'body_force_z'))]
-        has_applied = applied_body_force is not None
+        has_load, has_body = applied_load is not None, applied_body_force is not None
         self._launch('elastic_load', self._node_blocks,
-                     (out, applied_load, lame_lambda, mu, *full, applied_body_force if has_applied else lame_lambda,
-                      _MASK_ON if has_applied else _MASK_OFF, *widths, *self._element_args, *self._window_args))
+                     (out, applied_load if has_load else lame_lambda, _MASK_ON if has_load else _MASK_OFF,
+                      lame_lambda, mu, *full, applied_body_force if has_body else lame_lambda,
+                      _MASK_ON if has_body else _MASK_OFF, *widths, *self._element_args, *self._window_args))
 
     def outputs(self, output_arrays, unknown, lame_lambda, mu, alphas, temperature_rise, temperature_rise_ext,
                 widths, thermal=True):

@@ -1669,15 +1669,17 @@ def _memory_estimate(settings_values, mesh, context):
     n_fields = len(OUTPUT_ARRAYS_3D) + len(INPUT_ARRAYS_3D)
     fields = MemoryEstimate.from_items(((f'fields ({n_fields} x float32)',
                                          n_fields * FLOAT32_BYTES * int(mesh.n_cells)),))
-    # unknown, applied load, load, rhs, CG unknown (+ held values with a prescribed displacement other than 0: no u_fix
-    # or K u_fix vectors, system3d builds K u_fix per rhs on the CG unknown); the matrix-free PCGSolver workspace
+    # unknown, load, rhs, CG unknown (+ applied load with a boundary_load, + held values with a prescribed displacement
+    # other than 0: no u_fix or K u_fix vectors, system3d builds K u_fix per rhs on the CG unknown); the matrix-free
+    # PCGSolver workspace
     # (residual, two directions of the fused iteration, product, preconditioned; mixed: float32 + the float64 outer
     # vectors; the fused iteration's block partial sums are negligible)
     multigrid = linear_solver_multigrid(context)   # multigrid3d: no fused iteration (one direction vector)
     features = [feature for feature in context.physics_spec.features if feature.enabled]
     prescribed = any(feature.type in _PRESCRIBING_FEATURES and any(
         not _zero_hold(feature.params.get(name)) for name in _DISPLACEMENTS) for feature in features)
-    vectors = ((5 + int(prescribed)) * value_bytes * dofs
+    traction = any(feature.type == 'boundary_load' for feature in features)
+    vectors = ((4 + int(prescribed) + int(traction)) * value_bytes * dofs
                + workspace_bytes(dofs, 'mixed' if mixed else SOLVER_PRECISIONS[precision], jacobi=False,
                                  fused=not multigrid))
     masks = 2 * BOOL_BYTES * dofs   # held, free (the rigid-check key is bit-packed on the host)

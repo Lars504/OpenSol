@@ -66,7 +66,7 @@ class ElasticSystem3D(ElasticSystemBase):
         # their prescribed displacement [m]: None until a hold writes a value other than a scalar 0 (all held at 0:
         # no array, no K u_fix product); unconnected dofs are pinned at 0
         self.held_values = None
-        self.applied_load = xp.zeros((*node_shape, 3), dtype=dtype)      # nodal forces of the load features [N]
+        self.applied_load = None   # (*node_shape, 3) nodal forces of the load features [N]: the first traction
         self.applied_body_force = None   # (3, *element_shape) feature body forces [N/m^3]: the first add_body_force
         self.load_full = xp.zeros(n_dofs, dtype=dtype)                   # total nodal load of the last build_rhs
         self.rhs = xp.zeros(n_dofs, dtype=dtype)
@@ -190,6 +190,8 @@ class ElasticSystem3D(ElasticSystemBase):
         areas = self.face_node_areas(face)
         for component, traction in enumerate((t_x, t_y, t_z)):
             if traction:
+                if self.applied_load is None:   # the first nodal load
+                    self.applied_load = self.xp.zeros((*self.node_shape, 3), dtype=self.dtype)
                 self.applied_load[nodes + (component,)] += float(traction) * areas
 
     def add_body_force(self, mask_window, f_x, f_y, f_z) -> None:
@@ -220,6 +222,8 @@ class ElasticSystem3D(ElasticSystemBase):
             if tuple(values.shape) != self.element_shape:
                 raise ValueError(f'{self.label()}: {name} must have the window element shape {self.element_shape}, '
                                  f'got {tuple(values.shape)}')
+        # the operator stays in the solve dtype: float32 lambda / mu would perturb K by ~6e-8 relative, above the 1e-8
+        # .. 1e-9 a float64 solve is asked for (the exact self-test cases); 'mixed' iterates on float32 copies instead
         lame_lambda = xp.ascontiguousarray(lame_lambda, dtype=dtype)
         mu = xp.ascontiguousarray(mu, dtype=dtype)
         kernels, widths = self.kernels, self.widths_device

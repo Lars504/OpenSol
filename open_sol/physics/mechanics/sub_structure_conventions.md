@@ -176,7 +176,8 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
 - ElasticSystem3D keeps no u_fix / K u_fix vectors: `held_values` exists only once a hold writes a value other than a
   scalar 0 (`_held_values_for`; None = every held value 0), K u_fix is one product per `build_rhs` on the CG unknown
   (`_solution`, which also resets `_reaction_key`), and `solve` rewrites the fixed dofs of unknown
-  (`_write_fixed_values`). `applied_body_force` likewise waits for the first body force (`body_force_target`). A new
+  (`_write_fixed_values`). `applied_body_force` / `applied_load` likewise wait for the first body force
+  (`body_force_target`) / traction (the load kernel's has_applied_* flags skip them). A new
   writer of held values goes through `_held_values_for`; the estimate books both by feature (`_PRESCRIBING_FEATURES`,
   body_force). The reduced inverse node blocks are float32 at every solve precision (`kernels3d.PRECONDITIONER_DTYPE`,
   its error argument at the constant): formed / inverted in the solve dtype in a transient, every kernel reading them
