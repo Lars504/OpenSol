@@ -14,91 +14,92 @@ Topics (describe(topic) or python -m open_sol describe <topic>): spec, expressio
 
 Line ranges in api_reference.md (Read with offset / limit; Grep '^## ' lists the same headings). Sections over 400 lines also list their subsections. "Help: shared `<key>`" (a line, or the end of a param line) stands for the text under "#### `<key>`" in Shared help texts (Grep it); every occurrence of a repeated long text points there.
 
-- lines 103-453: Model spec
-- lines 455-572: Expressions
-- lines 574-840: Geometry
-- lines 842-997: Materials
-- lines 999-1045: Mesh
-- lines 1047-1183: Solvers
-- lines 1185-1871: Shared help texts
-- lines 1873-1995: Physics type `drift_diffusion` - Semiconductor (drift-diffusion, 2D)
-- lines 1997-2191: Physics type `elastic_waves` - Elastic and Acoustic Waves, time domain (2D, in-plane)
-- lines 2193-2288: Physics type `electric_currents` - Electric Currents
-- lines 2290-2437: Physics type `electrostatics` - Electrostatics
-- lines 2439-2619: Physics type `em_eme` - Electromagnetic Waves, eigenmode expansion (2D)
-- lines 2621-2776: Physics type `em_eme_3d` - Electromagnetic Waves, eigenmode expansion (3D)
-- lines 2778-2865: Physics type `em_fdfd_3d` - Electromagnetic Waves, frequency domain (3D)
-- lines 2867-3026: Physics type `em_fdfd_bor` - Electromagnetic Waves, frequency domain (axisymmetric, azimuthal order m)
-- lines 3028-3165: Physics type `em_fdfd_conical` - Electromagnetic Waves, frequency domain (out-of-plane wave number k_z)
-- lines 3167-3418: Physics type `em_fdfd_ez` - Electromagnetic Waves, frequency domain (2D, electric field out of plane)
-- lines 3420-3691: Physics type `em_fdfd_hz` - Electromagnetic Waves, frequency domain (2D, magnetic field out of plane)
-- lines 3693-4082: Physics type `em_fdfd_nonlinear` - Nonlinear optics, frequency domain (2D, harmonic channels)
-- lines 4084-4329: Physics type `em_fdtd_3d` - Electromagnetic Waves, time domain (3D)
-- lines 4331-4519: Physics type `em_fdtd_bor` - Electromagnetic Waves, time domain (axisymmetric, azimuthal order m)
-- lines 4521-4821: Physics type `em_fdtd_ez` - Electromagnetic Waves, time domain (2D, electric field out of plane)
-- lines 4823-5131: Physics type `em_fdtd_hz` - Electromagnetic Waves, time domain (2D, magnetic field out of plane)
-- lines 5133-5275: Physics type `em_modes` - Electromagnetic Waves, cross-section modes
-- lines 5277-5524: Physics type `heat` - Heat Transfer in Solids
-- lines 5526-5651: Physics type `laminar_flow` - Laminar Flow (2D)
-- lines 5653-5792: Physics type `magnetic_fields_ac` - Magnetic Fields, AC (2D)
-- lines 5794-5913: Physics type `magnetostatics` - Magnetostatics (2D)
-- lines 5915-6029: Physics type `magnetostatics_3d` - Magnetostatics (3D)
-- lines 6031-6270: Physics type `membrane` - Membrane
-- lines 6272-6449: Physics type `pressure_acoustics` - Pressure Acoustics, frequency domain
-- lines 6451-6800: Physics type `solid_mechanics` - Solid Mechanics (2D)
-- lines 6802-7218: Physics type `solid_mechanics_3d` - Solid Mechanics (3D)
-  - lines 6810-6835: Settings (PhysicsSpec.settings)
-  - lines 6837-6947: Material properties (MaterialSpec.properties)
-  - lines 6949-6990: Fields
-  - lines 6992-6997: Source slots
-  - lines 6999-7005: Feature `solid_mechanics_3d.fixed` - Fixed
-  - lines 7007-7013: Feature `solid_mechanics_3d.roller` - Roller
-  - lines 7015-7023: Feature `solid_mechanics_3d.displacement` - Displacement
-  - lines 7025-7031: Feature `solid_mechanics_3d.fixed_domain` - Fixed (domain)
-  - lines 7033-7041: Feature `solid_mechanics_3d.prescribed_displacement_domain` - Prescribed displacement (domain)
-  - lines 7043-7055: Feature `solid_mechanics_3d.boundary_load` - Boundary load
-  - lines 7057-7069: Feature `solid_mechanics_3d.body_force` - Body force
-  - lines 7071-7079: Feature `solid_mechanics_3d.temperature_change` - Temperature change
-  - lines 7081-7089: Feature `solid_mechanics_3d.solid_probe` - Solid probe
-  - lines 7091-7097: Feature `solid_mechanics_3d.frequency_probe` - Frequency probe
-  - lines 7099-7105: Feature `solid_mechanics_3d.resonance_table` - Resonance table
-  - lines 7107-7115: Feature `solid_mechanics_3d.mode_shapes` - Mode shapes
-  - lines 7117-7136: Feature `solid_mechanics_3d.squeeze_film_damping` - Squeeze-film damping
-  - lines 7138-7146: Feature `solid_mechanics_3d.thermoelastic_damping` - Thermoelastic damping
-  - lines 7148-7161: Feature `solid_mechanics_3d.electrode` - Electrode
-  - lines 7163-7176: Feature `solid_mechanics_3d.electrode_domain` - Electrode (domain)
-  - lines 7178-7192: Feature `solid_mechanics_3d.admittance` - Admittance
-  - lines 7194-7218: Feature `solid_mechanics_3d.optomechanical_coupling` - Optomechanical coupling
-- lines 7220-7226: Coupling type `acoustics_em_acousto_optic` - Acousto-optic effect (elastic waves -> electromagnetic waves)
-- lines 7228-7234: Coupling type `currents_heat_joule` - Joule heating (electric currents -> heat)
-- lines 7236-7244: Coupling type `electrostatics_acoustics_piezo` - Piezoelectric coupling (electrostatics <-> elastic waves)
-- lines 7246-7254: Coupling type `electrostatics_em_pockels` - Pockels effect (electrostatics -> electromagnetic waves)
-- lines 7256-7262: Coupling type `em_acoustics_photoacoustic` - Photoacoustic heating (electromagnetic waves -> elastic waves)
-- lines 7264-7270: Coupling type `em_heat_joule` - Joule heating (electromagnetic waves -> heat)
-- lines 7272-7282: Coupling type `em_semiconductor_generation` - Photogeneration (electromagnetic waves -> semiconductor)
-- lines 7284-7290: Coupling type `em_solid_optical_force` - Optical force (electromagnetic waves -> solid mechanics)
-- lines 7292-7304: Coupling type `field_transfer` - Field transfer
-- lines 7306-7312: Coupling type `fluid_heat_convection` - Convective heat transport (laminar flow -> heat)
-- lines 7314-7320: Coupling type `heat_em_phase_change` - Phase change (heat -> electromagnetic waves)
-- lines 7322-7328: Coupling type `heat_em_thermo_optic` - Thermo-optic effect (heat -> electromagnetic waves)
-- lines 7330-7336: Coupling type `heat_solid_thermal_strain` - Thermal expansion (heat -> solid mechanics)
-- lines 7338-7344: Coupling type `magnetic_heat_induction` - Induction heating (magnetic fields AC -> heat)
-- lines 7346-7352: Coupling type `magnetic_solid_lorentz_force` - Lorentz force (magnetic fields -> solid mechanics)
-- lines 7354-7366: Coupling type `semiconductor_em_plasma_dispersion` - Free-carrier plasma dispersion (semiconductor -> electromagnetic waves)
-- lines 7368-7376: Coupling type `solid_em_strain_optic` - Strain-optic effect (solid mechanics -> electromagnetic waves)
-- lines 7378-7386: Coupling type `solid_membrane_tension` - Film prestress (solid mechanics -> membrane)
-- lines 7388-7414: Study type `eigenfrequency` - Eigenfrequency
-- lines 7416-7442: Study type `frequency_domain` - Frequency domain
-- lines 7444-7480: Study type `frequency_response` - Frequency response
-- lines 7482-7496: Study type `mode_analysis` - Mode analysis
-- lines 7498-7513: Study type `nonlinear_frequency_domain` - Nonlinear frequency domain
-- lines 7515-7531: Study type `optimization` - Optimization
-- lines 7533-7550: Study type `optomechanics` - Optomechanics
-- lines 7552-7569: Study type `stationary` - Stationary
-- lines 7571-7594: Study type `thermal_noise` - Thermal noise
-- lines 7596-7611: Study type `time_dependent` - Time dependent
-- lines 7613-7681: Templates
-- lines 7683-7938: Results, reports and files
+- lines 104-454: Model spec
+- lines 456-573: Expressions
+- lines 575-841: Geometry
+- lines 843-998: Materials
+- lines 1000-1046: Mesh
+- lines 1048-1184: Solvers
+- lines 1186-1872: Shared help texts
+- lines 1874-2004: Physics type `drift_diffusion` - Semiconductor (drift-diffusion, 2D)
+- lines 2006-2200: Physics type `elastic_waves` - Elastic and Acoustic Waves, time domain (2D, in-plane)
+- lines 2202-2305: Physics type `electric_currents` - Electric Currents
+- lines 2307-2462: Physics type `electrostatics` - Electrostatics
+- lines 2464-2644: Physics type `em_eme` - Electromagnetic Waves, eigenmode expansion (2D)
+- lines 2646-2801: Physics type `em_eme_3d` - Electromagnetic Waves, eigenmode expansion (3D)
+- lines 2803-2890: Physics type `em_fdfd_3d` - Electromagnetic Waves, frequency domain (3D)
+- lines 2892-3051: Physics type `em_fdfd_bor` - Electromagnetic Waves, frequency domain (axisymmetric, azimuthal order m)
+- lines 3053-3190: Physics type `em_fdfd_conical` - Electromagnetic Waves, frequency domain (out-of-plane wave number k_z)
+- lines 3192-3443: Physics type `em_fdfd_ez` - Electromagnetic Waves, frequency domain (2D, electric field out of plane)
+- lines 3445-3716: Physics type `em_fdfd_hz` - Electromagnetic Waves, frequency domain (2D, magnetic field out of plane)
+- lines 3718-4107: Physics type `em_fdfd_nonlinear` - Nonlinear optics, frequency domain (2D, harmonic channels)
+- lines 4109-4354: Physics type `em_fdtd_3d` - Electromagnetic Waves, time domain (3D)
+- lines 4356-4544: Physics type `em_fdtd_bor` - Electromagnetic Waves, time domain (axisymmetric, azimuthal order m)
+- lines 4546-4846: Physics type `em_fdtd_ez` - Electromagnetic Waves, time domain (2D, electric field out of plane)
+- lines 4848-5156: Physics type `em_fdtd_hz` - Electromagnetic Waves, time domain (2D, magnetic field out of plane)
+- lines 5158-5300: Physics type `em_modes` - Electromagnetic Waves, cross-section modes
+- lines 5302-5549: Physics type `heat` - Heat Transfer in Solids
+- lines 5551-5684: Physics type `laminar_flow` - Laminar Flow (2D)
+- lines 5686-5825: Physics type `magnetic_fields_ac` - Magnetic Fields, AC (2D)
+- lines 5827-5946: Physics type `magnetostatics` - Magnetostatics (2D)
+- lines 5948-6062: Physics type `magnetostatics_3d` - Magnetostatics (3D)
+- lines 6064-6303: Physics type `membrane` - Membrane
+- lines 6305-6498: Physics type `pressure_acoustics` - Pressure Acoustics, frequency domain
+- lines 6500-6857: Physics type `solid_mechanics` - Solid Mechanics (2D)
+- lines 6859-7283: Physics type `solid_mechanics_3d` - Solid Mechanics (3D)
+  - lines 6867-6892: Settings (PhysicsSpec.settings)
+  - lines 6894-7004: Material properties (MaterialSpec.properties)
+  - lines 7006-7047: Fields
+  - lines 7049-7054: Source slots
+  - lines 7056-7062: Feature `solid_mechanics_3d.fixed` - Fixed
+  - lines 7064-7070: Feature `solid_mechanics_3d.roller` - Roller
+  - lines 7072-7078: Feature `solid_mechanics_3d.symmetry` - Symmetry
+  - lines 7080-7088: Feature `solid_mechanics_3d.displacement` - Displacement
+  - lines 7090-7096: Feature `solid_mechanics_3d.fixed_domain` - Fixed (domain)
+  - lines 7098-7106: Feature `solid_mechanics_3d.prescribed_displacement_domain` - Prescribed displacement (domain)
+  - lines 7108-7120: Feature `solid_mechanics_3d.boundary_load` - Boundary load
+  - lines 7122-7134: Feature `solid_mechanics_3d.body_force` - Body force
+  - lines 7136-7144: Feature `solid_mechanics_3d.temperature_change` - Temperature change
+  - lines 7146-7154: Feature `solid_mechanics_3d.solid_probe` - Solid probe
+  - lines 7156-7162: Feature `solid_mechanics_3d.frequency_probe` - Frequency probe
+  - lines 7164-7170: Feature `solid_mechanics_3d.resonance_table` - Resonance table
+  - lines 7172-7180: Feature `solid_mechanics_3d.mode_shapes` - Mode shapes
+  - lines 7182-7201: Feature `solid_mechanics_3d.squeeze_film_damping` - Squeeze-film damping
+  - lines 7203-7211: Feature `solid_mechanics_3d.thermoelastic_damping` - Thermoelastic damping
+  - lines 7213-7226: Feature `solid_mechanics_3d.electrode` - Electrode
+  - lines 7228-7241: Feature `solid_mechanics_3d.electrode_domain` - Electrode (domain)
+  - lines 7243-7257: Feature `solid_mechanics_3d.admittance` - Admittance
+  - lines 7259-7283: Feature `solid_mechanics_3d.optomechanical_coupling` - Optomechanical coupling
+- lines 7285-7291: Coupling type `acoustics_em_acousto_optic` - Acousto-optic effect (elastic waves -> electromagnetic waves)
+- lines 7293-7299: Coupling type `currents_heat_joule` - Joule heating (electric currents -> heat)
+- lines 7301-7309: Coupling type `electrostatics_acoustics_piezo` - Piezoelectric coupling (electrostatics <-> elastic waves)
+- lines 7311-7319: Coupling type `electrostatics_em_pockels` - Pockels effect (electrostatics -> electromagnetic waves)
+- lines 7321-7327: Coupling type `em_acoustics_photoacoustic` - Photoacoustic heating (electromagnetic waves -> elastic waves)
+- lines 7329-7335: Coupling type `em_heat_joule` - Joule heating (electromagnetic waves -> heat)
+- lines 7337-7347: Coupling type `em_semiconductor_generation` - Photogeneration (electromagnetic waves -> semiconductor)
+- lines 7349-7355: Coupling type `em_solid_optical_force` - Optical force (electromagnetic waves -> solid mechanics)
+- lines 7357-7369: Coupling type `field_transfer` - Field transfer
+- lines 7371-7377: Coupling type `fluid_heat_convection` - Convective heat transport (laminar flow -> heat)
+- lines 7379-7385: Coupling type `heat_em_phase_change` - Phase change (heat -> electromagnetic waves)
+- lines 7387-7393: Coupling type `heat_em_thermo_optic` - Thermo-optic effect (heat -> electromagnetic waves)
+- lines 7395-7401: Coupling type `heat_solid_thermal_strain` - Thermal expansion (heat -> solid mechanics)
+- lines 7403-7409: Coupling type `magnetic_heat_induction` - Induction heating (magnetic fields AC -> heat)
+- lines 7411-7417: Coupling type `magnetic_solid_lorentz_force` - Lorentz force (magnetic fields -> solid mechanics)
+- lines 7419-7431: Coupling type `semiconductor_em_plasma_dispersion` - Free-carrier plasma dispersion (semiconductor -> electromagnetic waves)
+- lines 7433-7441: Coupling type `solid_em_strain_optic` - Strain-optic effect (solid mechanics -> electromagnetic waves)
+- lines 7443-7451: Coupling type `solid_membrane_tension` - Film prestress (solid mechanics -> membrane)
+- lines 7453-7479: Study type `eigenfrequency` - Eigenfrequency
+- lines 7481-7507: Study type `frequency_domain` - Frequency domain
+- lines 7509-7545: Study type `frequency_response` - Frequency response
+- lines 7547-7561: Study type `mode_analysis` - Mode analysis
+- lines 7563-7578: Study type `nonlinear_frequency_domain` - Nonlinear frequency domain
+- lines 7580-7596: Study type `optimization` - Optimization
+- lines 7598-7615: Study type `optomechanics` - Optomechanics
+- lines 7617-7634: Study type `stationary` - Stationary
+- lines 7636-7659: Study type `thermal_noise` - Thermal noise
+- lines 7661-7676: Study type `time_dependent` - Time dependent
+- lines 7678-7746: Templates
+- lines 7748-8003: Results, reports and files
 
 ## Model spec
 
@@ -1006,7 +1007,7 @@ ModelSpec.meshes sets the cell sizes, one MeshSpec per mesh; each physics runs o
 - No physics boundary configuration -> no PML. EM CPML cells (pml_cells per cpml face; dx wide on a uniform grid, on a graded one growing by max_ratio from the window edge cell up to the base size) are added outside the domain, so the physical domain keeps its size and the grid grows.
 - Several physics may define the boundary configuration when they agree (equal face types, CPML and Bloch settings), else a validation error. E_z and H_z pec / pmc walls are half a cell apart (E_z pec at the outermost cell centre, H_z pec on its inner face); symmetric / antisymmetric mirror planes coincide.
 - A uniform mesh has ceil(size / dx) cells per axis, so the meshed window (Domain.physical_extent) can be one cell larger than size_x / size_y.
-- nonuniform and auto fall back to a uniform grid when no refinement is finer than the base size, or at the finest target when an enabled feature requires a uniform mesh (laminar_flow.wall, laminar_flow.slip_wall, laminar_flow.inlet_velocity, laminar_flow.pressure, laminar_flow.periodic); the note in check.json mesh says why.
+- nonuniform and auto fall back to a uniform grid when no refinement is finer than the base size, or at the finest target when an enabled feature requires a uniform mesh (laminar_flow.wall, laminar_flow.slip_wall, laminar_flow.symmetry, laminar_flow.inlet_velocity, laminar_flow.pressure, laminar_flow.periodic); the note in check.json mesh says why.
 - Refinements apply in nonuniform and auto modes only: each refines the columns and rows spanned by its object plus margin to its dx; rectangle edges inside the domain become cell edges (no staircase), so a gap between two such edges narrower than dx (but >= 0.25 dx) gets cells of its width, which can set the time step; auto mode adds one refinement per material object by its refractive index. MeshSpec.axes adds a per-axis max_ratio, coordinate bands and custom edges or uniform / geometric / tanh segments (replacing that axis, PML padding as usual); outer_dx grows the cells beyond the refined core. The RefinementSpec and MeshAxisSpec fields are listed under spec.
 - Time step with EM: dt = courant_factor * dx / (c * sqrt(2)) on a uniform mesh (3D: c * sqrt(3); graded: the limit of the finest cells); the merged courant factor is the smallest declared (default 0.99). check.json study shows dt_estimate and n_steps.
 - Limits: 400,000,000 cells and 50,000 cells per axis, PML cells included; a larger mesh fails before any meshing.
@@ -1680,11 +1681,11 @@ Sets mu_dc_xx and mu_dc_yy (component entries override it); unset = 1 (vacuum). 
 
 #### `magnetic_fields_ac.magnetic_insulation`
 
-A = 0 on the selected outer faces (the default of every face no feature sets): no normal flux, field lines run along the face. The mirror of an ODD current distribution (J_z changes sign across the plane, e.g. midway between a conductor and its return) or a distant boundary. Axisymmetric: psi = 0, so no net flux crosses an x_hi face (the return flux lies inside it); x_lo (the axis) is a validation error. Anchors the solve.
+A = 0 on the selected outer faces (the default of every face no feature sets): no normal flux, field lines run along the face. The mirror of an ODD current distribution (J_z changes sign across the plane, e.g. midway between a conductor and its return) or a distant boundary, but never a model mirror plane itself (double totals by hand for the odd half model; on another physics' mirror plane the magnetic fields unfold odd). Axisymmetric: psi = 0, so no net flux crosses an x_hi face (the return flux lies inside it); x_lo (the axis) is a validation error. Anchors the solve.
 
 #### `magnetic_fields_ac.symmetry`
 
-dA/dn = 0 (Neumann) on the selected outer faces: no tangential flux, field lines cross at right angles. The mirror of an EVEN current distribution (J_z equal on both sides) or a face next to an ideal iron yoke. Does not anchor: with symmetry on all four faces add an external_field or fixed_potential. Axisymmetric: refused on x_lo (the axis).
+dA/dn = 0 (Neumann) on the selected outer faces, which become model mirror planes: no tangential flux, field lines cross at right angles; the mirror of an EVEN current distribution (J_z equal on both sides, e.g. the midplane z = 0 of a solenoid). Fields unfold across the face (A, J and B normal to it even, B along it odd; Results.field(unfold=True)), integrals of derived values reaching it double, max / min include the image, the totals count the image (energy, eddy_loss, magnetic_loss x 2 per mirror plane; a coil or conductor reaching the face joins its image: see coil), so no longer the plain face of a half model next to ideal iron. Both y faces (a 1D slice) count x 4. Errors: another magnetic face feature on the face, an external_field, another physics with mirror bc settings not mirroring the face, non-Cartesian domains, parity sectors. Does not anchor: with symmetry on all four faces add an external_field or fixed_potential. Axisymmetric: refused on x_lo (the axis) and x_hi (the cylinder r = r_max has no mirror image).
 
 #### `magnetic_fields_ac.external_field`
 
@@ -1796,7 +1797,7 @@ Temperature change for thermal strain without a heat physics (field temperature_
 
 #### `solid_mechanics.optomechanical_coupling`
 
-Vacuum optomechanical coupling between one optical mode and every vibration mode of the optomechanics study (2D plane strain, or guided 2.5D modes with scattering backward; rho needed in every solid cell). g_om = d omega_optical / d alpha for the displacement alpha Q, Q = the mode shape with |Q| = 1 at the reference node. Moving boundary: each interior face between cells of different permittivity adds Q_n [eps0 (eps_lo - eps_hi) |E_par|^2 - (1/eps_lo - 1/eps_hi) |D_n|^2 / eps0] x its length (staircase interfaces). Photoelastic: eps0 E* d eps E dA per solid cell, d eps_ii = -eps_ii^2 (p11 S_ii + p12 (S_jj + S_kk)), shear d eps_xy = -eps_xx eps_yy 2 p44 S_xy (pairs E_x, E_y at the cell centres; none for em_fdfd_ez), S the mode strain (S_zz = S_xz = S_yz = 0). A material with a {"model": "crystal"} entry with photoelastic data and no photoelastic_* property uses the crystal's full rotated p: Delta(1/eps)_I = p_IJ S_J (Voigt, engineering shear), d eps_ij = -eps_ii eps_jj Delta(1/eps)_ij (xz / yz rows pair E_x / E_y with E_z: em_modes only); its stiffness stays isotropic. Subpixel smoothing: face jumps and photoelastic eps unsmoothed; fields, D_n and mode energy smoothed. em_fdfd_ez: g_om = -(omega / 2) Re[(I_mb + I_pe) / sum eps0 eps |E_z|^2 dA]; em_fdfd_hz: the same over sum mu0 mu |H_z|^2 dA (E_par on its Yee face, |D_n|^2 the mean of the four nearest normal-E faces, photoelastic over the E_x / E_y faces); em_modes (group_index on): d beta / d alpha = omega (I_mb + I_pe) / (4 P), g_om = -(C0 / n_group) d beta / d alpha (a ring at fixed azimuthal order), dn_eff_dx = d n_eff / d alpha at fixed omega (a bent em_modes: bend-mapped eps, exact for bend_model 'exact'). m_eff = length x Q^T M Q (x 2 per EM mirror face), x_zpf = sqrt(hbar / (2 m_eff Omega)), g0 = g_om x_zpf. Result 'table', one row per vibration mode: mechanical_mode, frequency, effective_mass, zero_point_motion, g_om_moving_boundary, g_om_photoelastic, g_om, dn_eff_dx, g0_moving_boundary, g0_photoelastic, g0, brillouin_gain (Hz, kg, m, rad/s/m, 1/m; g0 columns = g0 / 2 pi in Hz, signed, total = moving boundary + photoelastic); brillouin_gain [1/(W m)] = 2 Q_m |kappa|^2 / (omega m' Omega^2), m' = m_eff / length, kappa = d beta / d alpha (forward; scattering backward: see it), bulk limit g_B / area; em_modes with mechanical_quality_factor or quality_from only, else NaN. Extras optical_physics, optical_mode, optical_frequency, optical_wavelength, n_eff, n_group, length, mirror_factor, scattering, axial_wavenumber (None forward), normalisation, reference_node. Lossy or open optical modes: |E|^2 forms, real part (no quasi-normal-mode correction). An EM mirror face needs a solid roller on it (odd vibration modes do not couple). Field om_integrand (optomechanics study): the moving-boundary g_om density of the shown mode (first coupling) in rad/s/m^3, summing to g_om_moving_boundary. em_fdfd_bor optics (resonance ~ exp(-j m phi) on triangles; solid axisymmetric on triangles or solid_mechanics_3d on tetrahedra): integrals carry 2 pi r over the window elements (PML ring, PEC and interfaces touching them left out); moving boundary on the curved element edges (isotropic eps_phiphi), q . n [eps0 Delta eps |E_par|^2 - Delta(1/eps) |D_n|^2 / eps0], |E_par|^2 = |E_phi|^2 + |E_t|^2 and |D_n|^2 two-side means, q . n of the solid side; photoelastic with the cylindrical strains (rr, phiphi = u_r / r, zz, rz), isotropic p only; U = sum eps0 eps |E|^2 2 pi r dA. A solid azimuthal_order m >= 1 couples through the ring mean of cos(m phi) (~0); a 3D solid is sampled on 64 angles per (r, z) about the axis (axis_x, axis_y) and phi-averaged. m_eff = Q^T M Q in kg (no length / mirror factors; a pec / pmc z mirror plane counts the drawn half), normalisation point: the nearest solid dof (triangles only), no om_integrand, dn_eff_dx and brillouin_gain NaN; extras optical_azimuthal_order, optical_q_factor, solid_mesh, mechanical_azimuthal_order, prescribed_normal_displacement, prescribed_g_om.
+Vacuum optomechanical coupling between one optical mode and every vibration mode of the optomechanics study (2D plane strain, or guided 2.5D modes with scattering backward; rho needed in every solid cell). g_om = d omega_optical / d alpha for the displacement alpha Q, Q = the mode shape with |Q| = 1 at the reference node. Moving boundary: each interior face between cells of different permittivity adds Q_n [eps0 (eps_lo - eps_hi) |E_par|^2 - (1/eps_lo - 1/eps_hi) |D_n|^2 / eps0] x its length (staircase interfaces). Photoelastic: eps0 E* d eps E dA per solid cell, d eps_ii = -eps_ii^2 (p11 S_ii + p12 (S_jj + S_kk)), shear d eps_xy = -eps_xx eps_yy 2 p44 S_xy (pairs E_x, E_y at the cell centres; none for em_fdfd_ez), S the mode strain (S_zz = S_xz = S_yz = 0). A material with a {"model": "crystal"} entry with photoelastic data and no photoelastic_* property uses the crystal's full rotated p: Delta(1/eps)_I = p_IJ S_J (Voigt, engineering shear), d eps_ij = -eps_ii eps_jj Delta(1/eps)_ij (xz / yz rows pair E_x / E_y with E_z: em_modes only); its stiffness stays isotropic. Subpixel smoothing: face jumps and photoelastic eps unsmoothed; fields, D_n and mode energy smoothed. em_fdfd_ez: g_om = -(omega / 2) Re[(I_mb + I_pe) / sum eps0 eps |E_z|^2 dA]; em_fdfd_hz: the same over sum mu0 mu |H_z|^2 dA (E_par on its Yee face, |D_n|^2 the mean of the four nearest normal-E faces, photoelastic over the E_x / E_y faces); em_modes (group_index on): d beta / d alpha = omega (I_mb + I_pe) / (4 P), g_om = -(C0 / n_group) d beta / d alpha (a ring at fixed azimuthal order), dn_eff_dx = d n_eff / d alpha at fixed omega (a bent em_modes: bend-mapped eps, exact for bend_model 'exact'). m_eff = length x Q^T M Q (x 2 per EM mirror face), x_zpf = sqrt(hbar / (2 m_eff Omega)), g0 = g_om x_zpf. Result 'table', one row per vibration mode: mechanical_mode, frequency, effective_mass, zero_point_motion, g_om_moving_boundary, g_om_photoelastic, g_om, dn_eff_dx, g0_moving_boundary, g0_photoelastic, g0, brillouin_gain (Hz, kg, m, rad/s/m, 1/m; g0 columns = g0 / 2 pi in Hz, signed, total = moving boundary + photoelastic); brillouin_gain [1/(W m)] = 2 Q_m |kappa|^2 / (omega m' Omega^2), m' = m_eff / length, kappa = d beta / d alpha (forward; scattering backward: see it), bulk limit g_B / area; em_modes with mechanical_quality_factor or quality_from only, else NaN. Extras optical_physics, optical_mode, optical_frequency, optical_wavelength, n_eff, n_group, length, mirror_factor, scattering, axial_wavenumber (None forward), normalisation, reference_node. Lossy or open optical modes: |E|^2 forms, real part (no quasi-normal-mode correction). An EM mirror face needs a solid roller or symmetry feature on it (odd vibration modes do not couple; a solid symmetry face needs the optics to mirror it). Field om_integrand (optomechanics study): the moving-boundary g_om density of the shown mode (first coupling) in rad/s/m^3, summing to g_om_moving_boundary. em_fdfd_bor optics (resonance ~ exp(-j m phi) on triangles; solid axisymmetric on triangles or solid_mechanics_3d on tetrahedra): integrals carry 2 pi r over the window elements (PML ring, PEC and interfaces touching them left out); moving boundary on the curved element edges (isotropic eps_phiphi), q . n [eps0 Delta eps |E_par|^2 - Delta(1/eps) |D_n|^2 / eps0], |E_par|^2 = |E_phi|^2 + |E_t|^2 and |D_n|^2 two-side means, q . n of the solid side; photoelastic with the cylindrical strains (rr, phiphi = u_r / r, zz, rz), isotropic p only; U = sum eps0 eps |E|^2 2 pi r dA. A solid azimuthal_order m >= 1 couples through the ring mean of cos(m phi) (~0); a 3D solid is sampled on 64 angles per (r, z) about the axis (axis_x, axis_y) and phi-averaged. m_eff = Q^T M Q in kg (no length factor; x 2 per model mirror plane, i.e. a solid symmetry face on a pec / pmc z wall of the optics, extra mirror_factor; a pec / pmc z face the solid holds by a roller only counts the drawn half), normalisation point: the nearest solid dof (triangles only), no om_integrand, dn_eff_dx and brillouin_gain NaN; extras optical_azimuthal_order, optical_q_factor, solid_mesh, mechanical_azimuthal_order, prescribed_normal_displacement, prescribed_g_om.
 
 #### `solid_mechanics.optomechanical_coupling.optical_physics`
 
@@ -1872,11 +1873,11 @@ Run the study once per symmetric / antisymmetric combination of the model's k mi
 
 ## Physics type `drift_diffusion` - Semiconductor (drift-diffusion, 2D)
 
-Stationary drift-diffusion per unit z length (or axisymmetric, setting geometry), finite volumes on the physical window: Poisson -div(eps0 eps_dc grad psi) = q (p - n + N_D - N_A) and continuity div J_n = q (R - G), div J_p = q (G - R) with Scharfetter-Gummel face currents (D = mu V_T, Boltzmann statistics), solved fully coupled by Newton with sparse direct solves. psi (output V) is referred to the intrinsic level, equilibrium Fermi level at 0 V: neutral n-type silicon at 1e22 1/m^3 has V = V_T asinh(N_D / 2 n_i) = +0.36 V, an ohmic contact adds its voltage. Cells with n_intrinsic > 0 are semiconductor, the others insulators (Poisson only, e.g. oxide or air). Outer faces are insulating (zero normal D and current). At least one ohmic contact. Recombination: SRH (mid-gap trap) + radiative + Auger features; generation: generation features + the coupled slot. Each solve continues from the last solution, ramping voltages (max_bias_step) and generation, the first from equilibrium; a failed step is halved, a solve that cannot converge raises. Outputs: J = Jn + Jp (face currents averaged to the centres), phi_n = V - V_T ln(N / n_i), phi_p = V + V_T ln(P / n_i), space_charge q (P - N + N_D - N_A), recombination R (0 in contacts and insulators); all edge-extended into an EM PML ring. Contact currents are exact face sums; the electron currents into all contacts sum to q times the integral of G - R. Optics: semiconductor_em_plasma_dispersion (carriers -> EM index contribution) and em_semiconductor_generation (absorption -> G), iterated by a stationary study. LIMITS: homojunctions only, constant mobilities (an expression may make them field- or state-dependent), no Fermi-Dirac statistics or incomplete ionisation, no transient (time_dependent re-solves the steady state when an input changed). Needs about 1-3 cells per Debye length sqrt(eps V_T / (q N)) near junctions (13 nm at 1e23 1/m^3). Triangle meshes: box method on the P1 nodes (edge-averaged elements, curved outlines faceted); a node takes the volume-weighted mean of its semiconductor elements (a junction on element edges has mixed doping at its nodes); a contact holds every node of its semiconductor elements, a gate every node of its elements; V, N, P, phi_n / phi_p are nodal (linear across an insulator element next to the semiconductor), E and J per element; non-Delaunay edges (negative coefficient, e.g. obtuse triangles at an interface) give one run warning. Linear solver: host SuperLU or cuDSS (cusolver_qr: tensor only); Automatic = cuDSS on the GPU backend with nvmath-python (a Jacobian cuDSS refuses switches the run to host SuperLU, with a warning), else host SuperLU; cudss_mixed falls back to double when float64 refinement misses 1e-12; MUMPS / PARDISO (opt-in) keep the host SuperLU size limits and raise on a refusal.
+Stationary drift-diffusion per unit z length (or axisymmetric, setting geometry), finite volumes on the physical window: Poisson -div(eps0 eps_dc grad psi) = q (p - n + N_D - N_A) and continuity div J_n = q (R - G), div J_p = q (G - R) with Scharfetter-Gummel face currents (D = mu V_T, Boltzmann statistics), solved fully coupled by Newton with sparse direct solves. psi (output V) is referred to the intrinsic level, equilibrium Fermi level at 0 V: neutral n-type silicon at 1e22 1/m^3 has V = V_T asinh(N_D / 2 n_i) = +0.36 V, an ohmic contact adds its voltage. Cells with n_intrinsic > 0 are semiconductor, the others insulators (Poisson only, e.g. oxide or air). Outer faces are insulating (zero normal D and current); a symmetry feature makes them model mirror planes (a half device: fields unfold, contact currents and gate charges reaching the plane count twice). At least one ohmic contact. Recombination: SRH (mid-gap trap) + radiative + Auger features; generation: generation features + the coupled slot. Each solve continues from the last solution, ramping voltages (max_bias_step) and generation, the first from equilibrium; a failed step is halved, a solve that cannot converge raises. Outputs: J = Jn + Jp (face currents averaged to the centres), phi_n = V - V_T ln(N / n_i), phi_p = V + V_T ln(P / n_i), space_charge q (P - N + N_D - N_A), recombination R (0 in contacts and insulators); all edge-extended into an EM PML ring. Contact currents are exact face sums; the electron currents into all contacts sum to q times the integral of G - R. Optics: semiconductor_em_plasma_dispersion (carriers -> EM index contribution) and em_semiconductor_generation (absorption -> G), iterated by a stationary study. LIMITS: homojunctions only, constant mobilities (an expression may make them field- or state-dependent), no Fermi-Dirac statistics or incomplete ionisation, no transient (time_dependent re-solves the steady state when an input changed). Needs about 1-3 cells per Debye length sqrt(eps V_T / (q N)) near junctions (13 nm at 1e23 1/m^3). Triangle meshes: box method on the P1 nodes (edge-averaged elements, curved outlines faceted); a node takes the volume-weighted mean of its semiconductor elements (a junction on element edges has mixed doping at its nodes); a contact holds every node of its semiconductor elements, a gate every node of its elements; V, N, P, phi_n / phi_p are nodal (linear across an insulator element next to the semiconductor), E and J per element; non-Delaunay edges (negative coefficient, e.g. obtuse triangles at an interface) give one run warning. Linear solver: host SuperLU or cuDSS (cusolver_qr: tensor only); Automatic = cuDSS on the GPU backend with nvmath-python (a Jacobian cuDSS refuses switches the run to host SuperLU, with a warning), else host SuperLU; cudss_mixed falls back to double when float64 refinement misses 1e-12; MUMPS / PARDISO (opt-in) keep the host SuperLU size limits and raise on a refusal.
 
 - Default instance name `semiconductor`; studies stationary, time_dependent (default {"type": "stationary"})
 - Backends gpu, cpu; mesh kinds tensor, triangles; refinement indicator fields V; dispersion poles not used
-- Features: doping, ohmic_contact, gate, auger_recombination, generation
+- Features: doping, ohmic_contact, gate, auger_recombination, symmetry, generation
 
 ### Settings (PhysicsSpec.settings)
 
@@ -1932,7 +1933,7 @@ Output fields (primary V; [state] = also a state field):
 - `generation` - Coupled generation rate (1/(m^3 s)) [state]
 - `generation_ext` - Applied generation rate (1/(m^3 s)) [state]
 
-Scalar outputs: current_<contact> (A/m) per enabled ohmic_contact: its total current of the last solve, as its table result; charge_<gate> (C/m) per enabled gate: its free charge, as its table result; geometry 'axisymmetric': whole-ring A and C. Example derived value {"name": "I_anode", "expression": "semiconductor_current_anode"}; a sweep of a contact voltage gives the I-V curve (with reuse_build each point continues from the previous state).
+Scalar outputs: current_<contact> (A/m) per enabled ohmic_contact: its total current of the last solve, as its table result; charge_<gate> (C/m) per enabled gate: its free charge, as its table result; geometry 'axisymmetric': whole-ring A and C. Under a mirror plane of the model (a symmetry feature of any physics, an EM bc_<face> symmetric / antisymmetric) the unfolded structure's: x 2 per mirror plane the contact's or gate's held cells reach. Example derived value {"name": "I_anode", "expression": "semiconductor_current_anode"}; a sweep of a contact voltage gives the I-V curve (with reuse_build each point continues from the previous state).
 
 ### Source slots
 
@@ -1952,7 +1953,7 @@ Params:
 
 ### Feature `drift_diffusion.ohmic_contact` - Ohmic contact
 
-Holds every selected semiconductor cell (other selected cells stay insulators) at charge-neutral equilibrium with its own doping, shifted by the voltage: n p = n_i^2, n - p = N_D - N_A, V = voltage + V_T asinh((N_D - N_A) / 2 n_i), at the cell centres (the drop starts at the outermost held centres). A later contact or gate takes shared cells (validation warns). Result 'table', one row [feature, voltage, current, electron_current, hole_current] (units '', V, A/m x 3; A when axisymmetric) and the same extras: the current out of the contact into the device (positive = conventional current leaving the contact), summed over the face currents between its held cells and their neighbours (triangle meshes: through the contact outline).
+Holds every selected semiconductor cell (other selected cells stay insulators) at charge-neutral equilibrium with its own doping, shifted by the voltage: n p = n_i^2, n - p = N_D - N_A, V = voltage + V_T asinh((N_D - N_A) / 2 n_i), at the cell centres (the drop starts at the outermost held centres). A later contact or gate takes shared cells (validation warns). Result 'table', one row [feature, voltage, current, electron_current, hole_current] (units '', V, A/m x 3; A when axisymmetric) and the same extras: the current out of the contact into the device (positive = conventional current leaving the contact), summed over the face currents between its held cells and their neighbours (triangle meshes: through the contact outline); under a mirror plane of the model the unfolded structure's, x 2 per plane its held cells (nodes) reach.
 
 - Category domain_condition; selection domain entities, at least 1; mesh kinds tensor, triangles; result kind `table`
 
@@ -1962,7 +1963,7 @@ Params:
 
 ### Feature `drift_diffusion.gate` - Gate
 
-Holds every selected cell at V = voltage - work_function_difference (an ideal conductor: the value sits on its faces). The cells must be insulating (n_intrinsic 0; run error otherwise): put the gate on an oxide. No current flows into a gate. Result 'table', one row [feature, voltage, charge] (units '', V, C/m; C when axisymmetric) and the extras voltage and charge: the free charge on the gate, its outward D flux.
+Holds every selected cell at V = voltage - work_function_difference (an ideal conductor: the value sits on its faces). The cells must be insulating (n_intrinsic 0; run error otherwise): put the gate on an oxide. No current flows into a gate. Result 'table', one row [feature, voltage, charge] (units '', V, C/m; C when axisymmetric) and the extras voltage and charge: the free charge on the gate, its outward D flux; x 2 per mirror plane of the model its cells (nodes) reach.
 
 - Category domain_condition; selection domain entities, at least 1; mesh kinds tensor, triangles; result kind `table`
 
@@ -1983,6 +1984,14 @@ Params:
   C_n (eeh process); silicon 2.8e-43 (2.8e-31 cm^6/s), GaAs ~1e-42.
 - `hole_coefficient` [m^6/s] (default 9.9e-44; >= 0) - Hole Auger coefficient
   C_p (ehh process); silicon 9.9e-44 (9.9e-32 cm^6/s).
+
+### Feature `drift_diffusion.symmetry` - Symmetry
+
+Even mirror plane on outer faces (x_lo ... y_hi): the face is insulating (zero normal D, electron and hole current, as an unreferenced face, so the solve is unchanged) and becomes a model mirror plane (core.mirror): fields unfold V, N, P, phi_n, phi_p, doping, space charge and rates even across it (the normal E / J components odd, the tangential ones even; Unfold mirror planes, Results.field(unfold=True)), field derived integrals reaching it count twice (the unfolded device), max / min include the image (triangle meshes refuse max / min over a selection reaching the plane), and the current of an ohmic contact / the charge of a gate whose held cells (triangle meshes: nodes) reach the plane is the unfolded one: x 2 per such plane (table results and scalar outputs; a contact off the plane keeps its own value, its image is another contact). Doping, generation, contacts and gates on the plane are mirrored with it (a contact across the plane is drawn as its half). Errors: the x_lo axis of geometry axisymmetric (its r < 0 side unfolds without a feature; the ring weights already count the revolution) and its x_hi cylinder (no mirror image), polar domains, another physics with mirror bc settings (EM) that does not set the face symmetric / antisymmetric, parity_sectors (no odd drift-diffusion mirror feature).
+
+- Category boundary_condition; selection boundary entities, at least 1, outer faces only; mesh kinds tensor, triangles; result none
+
+Params: none
 
 ### Feature `drift_diffusion.generation` - Generation
 
@@ -2006,8 +2015,8 @@ Params:
 
 - `geometry` (default "planar"; planar | axisymmetric) - Geometry
   planar: plane strain per unit z length. axisymmetric (x = r, y = z; spec notes): (r, z) waves without torsion (v_phi = 0); the hoop stress s_tt (field and probe component stt) is stepped with c_tt = c11, c_rt = c_zt = c12 (exact for isotropic solids and fluids, approximate for c_ij crystals: validation warns); an x-face density is the ring-volume mean of its two cells. The stiffness must be positive definite in 3D (isotropic: shear_speed < 0.866 sound_speed). Point sources are per unit ring length (the axis cell is a ring of radius dx / 2), traction sheets per area (a vertical line is a cylinder, a horizontal one a disc or annulus); pressure = -(s_rr + s_zz + s_tt) / 3; the stable step is a few % shorter (see courant); an absorbing x_hi stretches only the radial derivatives. x_lo is the axis (bc_x_lo rigid and no other physics padding the grid at x_lo, else validation errors).
-- `bc_x_lo`, `bc_x_hi`, `bc_y_lo`, `bc_y_hi` (default "absorbing"; absorbing | rigid | periodic) - Left edge / Right edge / Bottom edge / Top edge
-  absorbing: CPML in the outermost pml_cells cells, backed by a rigid wall; these lie inside the domain unless another physics (an EM CPML) pads the grid there: keep sources, probes and objects out (validation warns). rigid: slip wall (normal velocity and shear stress 0; also a mirror symmetry plane), also where another physics pads the grid (the padding stays idle). periodic: wraps to the opposite face (set both; an error where another physics pads the grid). A traction-free surface is a material boundary: cells without density and stiffness are vacuum. geometry axisymmetric: x_lo must be rigid (the axis: v_r = 0, s_rz = 0); a rigid x_hi is a slip wall on r = r_max, an absorbing one a radial CPML.
+- `bc_x_lo`, `bc_x_hi`, `bc_y_lo`, `bc_y_hi` (default "absorbing"; absorbing | rigid | periodic | symmetric) - Left edge / Right edge / Bottom edge / Top edge
+  absorbing: CPML in the outermost pml_cells cells, backed by a rigid wall; these lie inside the domain unless another physics (an EM CPML) pads the grid there: keep sources, probes and objects out (validation warns). rigid: slip wall (normal velocity and shear stress 0; also the even mirror on a plane another physics sets), also where another physics pads the grid (the padding stays idle). symmetric: the same slip wall as a model mirror plane: fields unfold across it (v normal to it and sxy odd, stresses and pressure even), field derived integrals reaching it count twice, and another physics with mirror bc settings (EM) must set the face symmetric / antisymmetric; there is no antisymmetric elastic face, so parity_sectors cannot swap it (use rigid for a face only an EM plane mirrors); not on x_lo / x_hi of geometry axisymmetric. periodic: wraps to the opposite face (set both; an error where another physics pads the grid). A traction-free surface is a material boundary: cells without density and stiffness are vacuum. geometry axisymmetric: x_lo must be rigid (the axis: v_r = 0, s_rz = 0; it unfolds for display without a mirror); a rigid x_hi is a slip wall on r = r_max, an absorbing one a radial CPML.
 - `pml_cells` [cells] (int; default 20; >= 2) - Absorbing layer thickness
   CPML cells per absorbing layer (polynomial grading of order 2, kappa 1); typically 10-30, about one wavelength at the lowest frequency of interest.
 - `pml_reflection` [1] (default 0.0001; (0, 0.5]) - Absorbing layer reflection
@@ -2192,11 +2201,11 @@ Params:
 
 ## Physics type `electric_currents` - Electric Currents
 
-Quasi-static -div(sigma_dc grad V) = s, s the current_source features plus the coupled slot, finite volumes on the physical window, outputs edge-extended into an EM PML ring. Unreferenced outer faces are insulated (zero normal current); a later boundary feature on a face wins (validation warning). Needs an anchor: a voltage or terminal touching every conducting region (a pure Neumann problem is singular). 2D units per m of depth: currents A/m, conductances S/m, resistances Ohm m (axisymmetric and 3D: whole totals). E_x / E_y and J_x / J_y are face fluxes averaged to the cell centres (E = 0 in non-conducting cells, E and J = 0 in held cells; J_x / J_y include the xy cross flux, E stays -grad V); q_joule [W/m^3] = each face dissipation split between its two cells by half-cell resistance, so its window integral equals the sum over voltage / terminal features of V * current plus V times the current_source and inward current_density (currents_heat_joule hands it to heat). A stationary study iterates it with the couplings and state-dependent properties (sigma_dc of heat_T); time_dependent re-solves only when sigma_dc, a boundary condition, a held potential or a source changed (sigma_dc(T) is rewritten right after each heat step: leave every at 1 so the currents re-solve before the Joule power goes to heat). Triangle meshes (planar or axisymmetric): elements of the discretization order, V nodal; a voltage on objects holds their outline edges, a terminal every node of its elements, object current_density / surface_charge is an outline edge source (both sides), a probe reads the point's node; held currents / charges are reactions (exact Gauss balance); E, J / D and q_joule are element means (q_joule integrates to V * I); electrolytes linear only (none in terminal elements; a selected voltage object carries ions); no waveforms or azimuthal_order. 3D models (size_z set) need a tetrahedra mesh (a 3D tensor mesh is a validation error): elements of the discretization order, diagonal sigma_dc_xx / _yy / _zz (sigma_dc_zz set by the isotropic sigma_dc; sigma_dc_xy is a validation error); a voltage on objects holds their interface faces, a terminal every node of its elements, object current_density is a sheet source on the interface faces (both sides); held currents are reactions in A (exact Gauss balance; the integral of q_joule equals the sum of V * I); E, J_x / J_y and q_joule are element means, plus 3D-only output fields E_z, J_z, sigma_dc_zz (not in expressions), sampled on the uniform mesh lattice. Not in 3D (validation errors): electrolytes, voltage waveforms, Stern layers, axisymmetric / azimuthal_order, mirror faces of the model.
+Quasi-static -div(sigma_dc grad V) = s, s the current_source features plus the coupled slot, finite volumes on the physical window, outputs edge-extended into an EM PML ring. Unreferenced outer faces are insulated (zero normal current); a later boundary feature on a face wins (validation warning). Needs an anchor: a voltage or terminal touching every conducting region (a pure Neumann problem is singular). 2D units per m of depth: currents A/m, conductances S/m, resistances Ohm m (axisymmetric and 3D: whole totals). E_x / E_y and J_x / J_y are face fluxes averaged to the cell centres (E = 0 in non-conducting cells, E and J = 0 in held cells; J_x / J_y include the xy cross flux, E stays -grad V); q_joule [W/m^3] = each face dissipation split between its two cells by half-cell resistance, so its window integral equals the sum over voltage / terminal features of V * current plus V times the current_source and inward current_density (currents_heat_joule hands it to heat). A stationary study iterates it with the couplings and state-dependent properties (sigma_dc of heat_T); time_dependent re-solves only when sigma_dc, a boundary condition, a held potential or a source changed (sigma_dc(T) is rewritten right after each heat step: leave every at 1 so the currents re-solve before the Joule power goes to heat). Triangle meshes (planar or axisymmetric): elements of the discretization order, V nodal; a voltage on objects holds their outline edges, a terminal every node of its elements, object current_density / surface_charge is an outline edge source (both sides), a probe reads the point's node; held currents / charges are reactions (exact Gauss balance); E, J / D and q_joule are element means (q_joule integrates to V * I); electrolytes linear only (none in terminal elements; a selected voltage object carries ions); no waveforms or azimuthal_order. 3D models (size_z set) need a tetrahedra mesh (a 3D tensor mesh is a validation error): elements of the discretization order, diagonal sigma_dc_xx / _yy / _zz (sigma_dc_zz set by the isotropic sigma_dc; sigma_dc_xy is a validation error); a voltage on objects holds their interface faces, a terminal every node of its elements, object current_density is a sheet source on the interface faces (both sides); held currents are reactions in A (exact Gauss balance; the integral of q_joule equals the sum of V * I); E, J_x / J_y and q_joule are element means, plus 3D-only output fields E_z, J_z, sigma_dc_zz (not in expressions), sampled on the uniform mesh lattice. Mirror planes of the model (symmetry faces, x_lo ... z_hi) count held totals of the unfolded structure as in 2D. Not in 3D (validation errors): electrolytes, voltage waveforms, Stern layers, axisymmetric / azimuthal_order.
 
 - Default instance name `currents`; studies stationary, time_dependent (default {"type": "stationary"})
 - Backends gpu, cpu; mesh kinds tensor, triangles, tetrahedra; refinement indicator fields V; dispersion poles not used
-- Features: voltage, terminal, current_density, current_source, potential_probe
+- Features: voltage, terminal, current_density, symmetry, current_source, potential_probe
 
 ### Settings (PhysicsSpec.settings)
 
@@ -2233,7 +2242,7 @@ Output fields (primary V; [state] = also a state field):
 - `J_z` - Current density z (A/m^2)
 - `sigma_dc_zz` - DC conductivity zz (S/m)
 
-Scalar outputs: current_<feature> (A/m; axisymmetric and 3D: A) per enabled voltage / terminal: its table result current of the last solve. Example derived value {"name": "I_anode", "expression": "currents_current_anode"}; a voltage sweep gives the I-V curve. A name equal to an output field (a terminal named source) gets none. Under an EM mirror face of the model: the unfolded structure's value, x 2 per mirror plane the voltage face or terminal touches (a face on the opposite side does not touch).
+Scalar outputs: current_<feature> (A/m; axisymmetric and 3D: A) per enabled voltage / terminal: its table result current of the last solve. Example derived value {"name": "I_anode", "expression": "currents_current_anode"}; a voltage sweep gives the I-V curve. A name equal to an output field (a terminal named source) gets none. Under a mirror plane of the model (a symmetry feature of any physics, an EM bc_<face> symmetric / antisymmetric): the unfolded structure's value, x 2 per mirror plane the voltage face or terminal touches (a face on the opposite side does not touch).
 
 ### Source slots
 
@@ -2241,7 +2250,7 @@ Scalar outputs: current_<feature> (A/m; axisymmetric and 3D: A) per enabled volt
 
 ### Feature `electric_currents.voltage` - Voltage
 
-Fixed potential (Dirichlet): outer faces at the face (half-cell conductance 2 sigma_dc / dx); on object perimeters the boundary cells inside the object are held, the value on their faces toward the free cells (the window edge is no perimeter: select the outer face). Anchors the solve. Result 'table', one row [feature, voltage, current] (units '', V, A/m; axisymmetric and 3D A) and the extras voltage and current: positive = current (electrostatics: free charge, the outward D flux) leaving the held faces / cells into the domain (a source injected inside a terminal is subtracted). A cell held by two features counts for each (the later voltage holds it; validation warns on possible overlaps); an outer face replaced by a later feature counts only for that one. E and J / D read 0 inside held cells (ideal conductor): the surface current / charge is this result.
+Fixed potential (Dirichlet): outer faces at the face (half-cell conductance 2 sigma_dc / dx); on object perimeters the boundary cells inside the object are held, the value on their faces toward the free cells (the window edge is no perimeter: select the outer face). Anchors the solve. Result 'table', one row [feature, voltage, current] (units '', V, A/m; axisymmetric and 3D A) and the extras voltage and current: positive = current (electrostatics: free charge, the outward D flux) leaving the held faces / cells into the domain (a source injected inside a terminal is subtracted). A cell held by two features counts for each (the later voltage holds it; validation warns on possible overlaps); an outer face replaced by a later feature counts only for that one. E and J / D read 0 inside held cells (ideal conductor): the surface current / charge is this result. Under a mirror plane of the model (a symmetry feature, an EM mirror face): the unfolded structure's, x 2 per plane a held face lies on or meets, or held cells reach (the image joins the region).
 
 - Category boundary_condition; selection boundary entities, at least 1, outer faces and object perimeters; mesh kinds tensor, triangles, tetrahedra; result kind `table`
 
@@ -2251,7 +2260,7 @@ Params:
 
 ### Feature `electric_currents.terminal` - Terminal
 
-Holds every selected cell at the voltage (current flows in or out freely), the value on their faces toward the free cells (half-cell conductance 2 sigma_dc / dx of the free neighbour, whatever the held cells' own); anchors the solve. A metal with its own sigma_dc is equipotential anyway: a terminal feeds current in and reads it out (its cells need no sigma_dc). Result 'table', one row [feature, voltage, current] (units '', V, A/m; axisymmetric and 3D A) and the extras voltage and current: positive = current (electrostatics: free charge, the outward D flux) leaving the held faces / cells into the domain (a source injected inside a terminal is subtracted). A cell held by two features counts for each (the later voltage holds it; validation warns on possible overlaps); an outer face replaced by a later feature counts only for that one. E and J / D read 0 inside held cells (ideal conductor): the surface current / charge is this result.
+Holds every selected cell at the voltage (current flows in or out freely), the value on their faces toward the free cells (half-cell conductance 2 sigma_dc / dx of the free neighbour, whatever the held cells' own); anchors the solve. A metal with its own sigma_dc is equipotential anyway: a terminal feeds current in and reads it out (its cells need no sigma_dc). Result 'table', one row [feature, voltage, current] (units '', V, A/m; axisymmetric and 3D A) and the extras voltage and current: positive = current (electrostatics: free charge, the outward D flux) leaving the held faces / cells into the domain (a source injected inside a terminal is subtracted). A cell held by two features counts for each (the later voltage holds it; validation warns on possible overlaps); an outer face replaced by a later feature counts only for that one. E and J / D read 0 inside held cells (ideal conductor): the surface current / charge is this result. Under a mirror plane of the model (a symmetry feature, an EM mirror face): the unfolded structure's, x 2 per plane a held face lies on or meets, or held cells reach (the image joins the region).
 
 - Category domain_condition; selection domain entities, at least 1; mesh kinds tensor, triangles, tetrahedra; result kind `table`
 
@@ -2268,6 +2277,14 @@ Prescribed normal current density. Outer faces: a Neumann condition; object peri
 Params:
 - `current_density` [A/m^2] (default 10000) - Inward current density
   > 0 injects current into the domain or the object, < 0 extracts it.
+
+### Feature `electric_currents.symmetry` - Symmetry
+
+Even mirror plane on outer faces (x_lo ... z_hi): the face is insulated (zero normal current, as an unreferenced face, so the solve is unchanged) and becomes a model mirror plane (core.mirror): fields unfold V even across it (the normal E / J component odd, the tangential one even; Unfold mirror planes, Results.field(unfold=True)), field derived integrals reaching it count twice (the unfolded structure), max / min include the image (element meshes refuse max / min over a selection reaching the plane), and the current of a voltage / terminal whose held face lies on or meets the plane, or whose held cells (element nodes) reach it, is the unfolded one: x 2 per such plane (table result and scalar output; a region off the plane keeps its own value, its image is another region). A current_source on the plane is half the source of the unfolded model; an antisymmetric bias about the plane is a voltage 0 face instead (the odd mirror of V, not unfolded). Runs on tensor, triangle and tetrahedron meshes (3D: z faces too; displays unfold x / y only). Errors: a voltage or current_density feature on the same face, the x_lo axis of geometry axisymmetric (its r < 0 side unfolds without a feature; the ring weights already count the revolution) and its x_hi cylinder (no mirror image), polar / spherical domains (a 1D slab mirrors), another physics with mirror bc settings (EM) that does not set the face symmetric / antisymmetric, parity_sectors (no odd potential mirror feature).
+
+- Category boundary_condition; selection boundary entities, at least 1, outer faces only; mesh kinds tensor, triangles, tetrahedra; result none
+
+Params: none
 
 ### Feature `electric_currents.current_source` - Current source
 
@@ -2289,11 +2306,11 @@ Params: none
 
 ## Physics type `electrostatics` - Electrostatics
 
-Quasi-static -div(eps0 eps_dc grad V) = rho_free + rho_ion, rho_free the charge_density features plus the coupled slot, rho_ion the electrolyte features, finite volumes on the physical window, outputs edge-extended into an EM PML ring. Unreferenced outer faces are insulated (zero normal D); a later boundary feature on a face wins (validation warning). Needs an anchor: one voltage, terminal or electrolyte anywhere (every cell is a dielectric) (a pure Neumann problem is singular). 2D units per m of depth: charges C/m, capacitances F/m (charge / voltage of a terminal with the others at 0 V) (axisymmetric and 3D: whole totals). E_x / E_y and D_x / D_y are face fluxes averaged to the cell centres (E = D / (eps0 eps_dc) without eps_dc_xy, both 0 in held cells; D_x / D_y include the xy cross flux, E stays -grad V). A stationary study iterates it with the couplings and state-dependent properties (eps_dc of heat_T); time_dependent re-solves only when eps_dc, a boundary condition, a held potential or a source changed (a state-dependent eps_dc re-solves at the cadence of the physics it reads; a voltage or terminal waveform writes its superposition every step instead). Triangle meshes (planar or axisymmetric): elements of the discretization order, V nodal; a voltage on objects holds their outline edges, a terminal every node of its elements, object current_density / surface_charge is an outline edge source (both sides), a probe reads the point's node; held currents / charges are reactions (exact Gauss balance); E, J / D and q_joule are element means (q_joule integrates to V * I); electrolytes linear only (none in terminal elements; a selected voltage object carries ions); no waveforms or azimuthal_order. 3D models (size_z set) need a tetrahedra mesh (a 3D tensor mesh is a validation error): elements of the discretization order, diagonal eps_dc_xx / _yy / _zz (eps_dc_zz set by the isotropic eps_dc; eps_dc_xy is a validation error); a voltage on objects holds their interface faces, a terminal every node of its elements, object surface_charge is a sheet source on the interface faces (both sides); held charges are reactions in C (exact Gauss balance); E, D_x / D_y are element means, plus 3D-only output fields E_z, D_z, eps_dc_zz (not in expressions), sampled on the uniform mesh lattice. Not in 3D (validation errors): electrolytes, voltage waveforms, Stern layers, axisymmetric / azimuthal_order, mirror faces of the model.
+Quasi-static -div(eps0 eps_dc grad V) = rho_free + rho_ion, rho_free the charge_density features plus the coupled slot, rho_ion the electrolyte features, finite volumes on the physical window, outputs edge-extended into an EM PML ring. Unreferenced outer faces are insulated (zero normal D); a later boundary feature on a face wins (validation warning). Needs an anchor: one voltage, terminal or electrolyte anywhere (every cell is a dielectric) (a pure Neumann problem is singular). 2D units per m of depth: charges C/m, capacitances F/m (charge / voltage of a terminal with the others at 0 V) (axisymmetric and 3D: whole totals). E_x / E_y and D_x / D_y are face fluxes averaged to the cell centres (E = D / (eps0 eps_dc) without eps_dc_xy, both 0 in held cells; D_x / D_y include the xy cross flux, E stays -grad V). A stationary study iterates it with the couplings and state-dependent properties (eps_dc of heat_T); time_dependent re-solves only when eps_dc, a boundary condition, a held potential or a source changed (a state-dependent eps_dc re-solves at the cadence of the physics it reads; a voltage or terminal waveform writes its superposition every step instead). Triangle meshes (planar or axisymmetric): elements of the discretization order, V nodal; a voltage on objects holds their outline edges, a terminal every node of its elements, object current_density / surface_charge is an outline edge source (both sides), a probe reads the point's node; held currents / charges are reactions (exact Gauss balance); E, J / D and q_joule are element means (q_joule integrates to V * I); electrolytes linear only (none in terminal elements; a selected voltage object carries ions); no waveforms or azimuthal_order. 3D models (size_z set) need a tetrahedra mesh (a 3D tensor mesh is a validation error): elements of the discretization order, diagonal eps_dc_xx / _yy / _zz (eps_dc_zz set by the isotropic eps_dc; eps_dc_xy is a validation error); a voltage on objects holds their interface faces, a terminal every node of its elements, object surface_charge is a sheet source on the interface faces (both sides); held charges are reactions in C (exact Gauss balance); E, D_x / D_y are element means, plus 3D-only output fields E_z, D_z, eps_dc_zz (not in expressions), sampled on the uniform mesh lattice. Mirror planes of the model (symmetry faces, x_lo ... z_hi) count held totals of the unfolded structure as in 2D. Not in 3D (validation errors): electrolytes, voltage waveforms, Stern layers, axisymmetric / azimuthal_order.
 
 - Default instance name `electrostatics`; studies stationary, time_dependent (default {"type": "stationary"})
 - Backends gpu, cpu; mesh kinds tensor, triangles, tetrahedra; refinement indicator fields V; dispersion poles not used
-- Features: voltage, terminal, surface_charge, charge_density, potential_probe, electrolyte
+- Features: voltage, terminal, surface_charge, symmetry, charge_density, potential_probe, electrolyte
 
 ### Settings (PhysicsSpec.settings)
 
@@ -2350,7 +2367,7 @@ Output fields (primary V; [state] = also a state field):
 - `D_z` - Electric displacement z (C/m^2)
 - `eps_dc_zz` - DC relative permittivity zz (1)
 
-Scalar outputs: charge_<feature> (C/m; axisymmetric and 3D: C) per enabled voltage / terminal: its table result charge of the last solve. Example {"name": "C_top", "expression": "electrostatics_charge_top / V_top"} = the capacitance (F/m) with every other electrode at 0 V. Per enabled electrolyte: ionic_strength_<feature> (mol/L, 1/2 sum z_i^2 c_i) and debye_length_<feature> (m; bulk, linearised, at the mean eps_dc of its cells), constants of the build. Under an EM mirror face of the model: the unfolded structure's value, x 2 per mirror plane the voltage face or terminal touches.
+Scalar outputs: charge_<feature> (C/m; axisymmetric and 3D: C) per enabled voltage / terminal: its table result charge of the last solve. Example {"name": "C_top", "expression": "electrostatics_charge_top / V_top"} = the capacitance (F/m) with every other electrode at 0 V. Per enabled electrolyte: ionic_strength_<feature> (mol/L, 1/2 sum z_i^2 c_i) and debye_length_<feature> (m; bulk, linearised, at the mean eps_dc of its cells), constants of the build. Under a mirror plane of the model (as currents): the unfolded structure's value, x 2 per mirror plane the voltage face or terminal touches.
 
 ### Source slots
 
@@ -2358,7 +2375,7 @@ Scalar outputs: charge_<feature> (C/m; axisymmetric and 3D: C) per enabled volta
 
 ### Feature `electrostatics.voltage` - Voltage
 
-Fixed potential (Dirichlet): outer faces at the face (half-cell conductance 2 eps0 eps_dc / dx); on object perimeters the boundary cells inside the object are held, the value on their faces toward the free cells (the window edge is no perimeter: select the outer face). Anchors the solve. Result 'table', one row [feature, voltage, charge] (units '', V, C/m; axisymmetric and 3D C) and the extras voltage and charge: positive = current (electrostatics: free charge, the outward D flux) leaving the held faces / cells into the domain (a source injected inside a terminal is subtracted). A cell held by two features counts for each (the later voltage holds it; validation warns on possible overlaps); an outer face replaced by a later feature counts only for that one. E and J / D read 0 inside held cells (ideal conductor): the surface current / charge is this result.
+Fixed potential (Dirichlet): outer faces at the face (half-cell conductance 2 eps0 eps_dc / dx); on object perimeters the boundary cells inside the object are held, the value on their faces toward the free cells (the window edge is no perimeter: select the outer face). Anchors the solve. Result 'table', one row [feature, voltage, charge] (units '', V, C/m; axisymmetric and 3D C) and the extras voltage and charge: positive = current (electrostatics: free charge, the outward D flux) leaving the held faces / cells into the domain (a source injected inside a terminal is subtracted). A cell held by two features counts for each (the later voltage holds it; validation warns on possible overlaps); an outer face replaced by a later feature counts only for that one. E and J / D read 0 inside held cells (ideal conductor): the surface current / charge is this result. Under a mirror plane of the model (a symmetry feature, an EM mirror face): the unfolded structure's, x 2 per plane a held face lies on or meets, or held cells reach (the image joins the region).
 
 - Category boundary_condition; selection boundary entities, at least 1, outer faces and object perimeters; mesh kinds tensor, triangles, tetrahedra; result kind `table`
 
@@ -2377,7 +2394,7 @@ Params:
 
 ### Feature `electrostatics.terminal` - Terminal
 
-Holds every selected cell at the voltage (charge flows in or out freely), the value on their faces toward the free cells (half-cell conductance 2 eps0 eps_dc / dx of the free neighbour, whatever the held cells' own); anchors the solve. Electrostatics has no conductors of its own: a terminal is the conductor (its cells need no eps_dc) and its free charge is read out. Result 'table', one row [feature, voltage, charge] (units '', V, C/m; axisymmetric and 3D C) and the extras voltage and charge: positive = current (electrostatics: free charge, the outward D flux) leaving the held faces / cells into the domain (a source injected inside a terminal is subtracted). A cell held by two features counts for each (the later voltage holds it; validation warns on possible overlaps); an outer face replaced by a later feature counts only for that one. E and J / D read 0 inside held cells (ideal conductor): the surface current / charge is this result.
+Holds every selected cell at the voltage (charge flows in or out freely), the value on their faces toward the free cells (half-cell conductance 2 eps0 eps_dc / dx of the free neighbour, whatever the held cells' own); anchors the solve. Electrostatics has no conductors of its own: a terminal is the conductor (its cells need no eps_dc) and its free charge is read out. Result 'table', one row [feature, voltage, charge] (units '', V, C/m; axisymmetric and 3D C) and the extras voltage and charge: positive = current (electrostatics: free charge, the outward D flux) leaving the held faces / cells into the domain (a source injected inside a terminal is subtracted). A cell held by two features counts for each (the later voltage holds it; validation warns on possible overlaps); an outer face replaced by a later feature counts only for that one. E and J / D read 0 inside held cells (ideal conductor): the surface current / charge is this result. Under a mirror plane of the model (a symmetry feature, an EM mirror face): the unfolded structure's, x 2 per plane a held face lies on or meets, or held cells reach (the image joins the region).
 
 - Category domain_condition; selection domain entities, at least 1; mesh kinds tensor, triangles, tetrahedra; result kind `table`
 
@@ -2399,6 +2416,14 @@ Prescribed surface charge. Outer faces: a Neumann condition D.n = surface_charge
 Params:
 - `surface_charge` [C/m^2] (default 1e-06) - Surface charge
   > 0 raises V.
+
+### Feature `electrostatics.symmetry` - Symmetry
+
+Even mirror plane on outer faces (x_lo ... z_hi): the face is insulated (zero normal D, as an unreferenced face, so the solve is unchanged) and becomes a model mirror plane (core.mirror): fields unfold V even across it (the normal E / D component odd, the tangential one even; Unfold mirror planes, Results.field(unfold=True)), field derived integrals reaching it count twice (the unfolded structure), max / min include the image (element meshes refuse max / min over a selection reaching the plane), and the charge of a voltage / terminal whose held face lies on or meets the plane, or whose held cells (element nodes) reach it, is the unfolded one: x 2 per such plane (table result and scalar output; a region off the plane keeps its own value, its image is another region). A charge_density on the plane is half the source of the unfolded model; an antisymmetric bias about the plane is a voltage 0 face instead (the odd mirror of V, not unfolded). Runs on tensor, triangle and tetrahedron meshes (3D: z faces too; displays unfold x / y only). Errors: a voltage or surface_charge feature on the same face, the x_lo axis of geometry axisymmetric (its r < 0 side unfolds without a feature; the ring weights already count the revolution) and its x_hi cylinder (no mirror image), polar / spherical domains (a 1D slab mirrors), another physics with mirror bc settings (EM) that does not set the face symmetric / antisymmetric, parity_sectors (no odd potential mirror feature).
+
+- Category boundary_condition; selection boundary entities, at least 1, outer faces only; mesh kinds tensor, triangles, tetrahedra; result none
+
+Params: none
 
 ### Feature `electrostatics.charge_density` - Charge density
 
@@ -5385,7 +5410,7 @@ Params:
 
 ### Feature `heat.symmetry` - Symmetry
 
-Even mirror plane on outer faces: the face stays insulated (the solve is unchanged) and becomes a model mirror plane: fields unfold T even across it (Results.field(unfold=True)), field derived integrals reaching it count twice, max / min include the image. A heat source on the plane is half the source of the unfolded model; a plane held at T_face is a temperature face instead. Errors: another heat face feature on the same face, the x_lo axis of geometry axisymmetric, a polar / spherical domain, an EM physics whose mirror bc is not symmetric / antisymmetric there, parity_sectors.
+Even mirror plane on outer faces: the face stays insulated (the solve is unchanged) and becomes a model mirror plane: fields unfold T even across it (Results.field(unfold=True)), field derived integrals reaching it count twice, max / min include the image. A heat source on the plane is half the source of the unfolded model; a plane held at T_face is a temperature face instead. Errors: another heat face feature on the same face, the x_lo axis of geometry axisymmetric (it unfolds without a feature) and its x_hi cylinder, a polar / spherical domain (a 1D slab mirrors), an EM physics whose mirror bc is not symmetric / antisymmetric there, parity_sectors.
 
 - Category boundary_condition; selection boundary entities, at least 1, outer faces only; mesh kinds tensor, triangles, tetrahedra; result none
 
@@ -5525,11 +5550,11 @@ Params:
 
 ## Physics type `laminar_flow` - Laminar Flow (2D)
 
-2D incompressible laminar flow per unit z length: D2Q9 lattice Boltzmann (TRT collision with the magic parameter 3/16, He-Luo incompressible equilibrium, Guo forcing) on the window, which needs a uniform mesh of square cells (no PML; outputs edge-extended into an EM PML ring). Solid cells (no viscosity) are no-slip halfway bounce-back walls (solver_defaults.conformal_boundaries: interpolated Bouzidi bounce-back at the drawn wall position); unreferenced outer faces are fixed no-slip walls. Steady flow is exact for Poiseuille channels, second-order otherwise; valid at lattice Mach < 0.2 and laminar Reynolds numbers. A steady solve needs ~ L^2 lattice steps (L = longest window axis in cells; a 500-cell axis ~1e6), each one GPU kernel (cpu backend: the numba twin when installed, else the far slower numpy twin; half_storage GPU only). pressure is gauge pressure. Heat: fluid_heat_convection; buoyancy is a field_transfer of heat T into body_force_y.
+2D incompressible laminar flow per unit z length: D2Q9 lattice Boltzmann (TRT collision with the magic parameter 3/16, He-Luo incompressible equilibrium, Guo forcing) on the window, which needs a uniform mesh of square cells (no PML; outputs edge-extended into an EM PML ring). Solid cells (no viscosity) are no-slip halfway bounce-back walls (solver_defaults.conformal_boundaries: interpolated Bouzidi bounce-back at the drawn wall position); unreferenced outer faces are fixed no-slip walls, symmetry faces free-slip model mirror planes (a drawn half). On a mirror plane of another physics (EM bc symmetric / antisymmetric, a heat symmetry face) the flow face must be free slip (validation warns; a periodic pair there is an error). Steady flow is exact for Poiseuille channels, second-order otherwise; valid at lattice Mach < 0.2 and laminar Reynolds numbers. A steady solve needs ~ L^2 lattice steps (L = longest window axis in cells; a 500-cell axis ~1e6), each one GPU kernel (cpu backend: the numba twin when installed, else the far slower numpy twin; half_storage GPU only). pressure is gauge pressure. Heat: fluid_heat_convection; buoyancy is a field_transfer of heat T into body_force_y.
 
 - Default instance name `fluid`; studies stationary, time_dependent (default {"type": "stationary"})
 - Backends gpu, cpu; mesh kinds tensor; refinement indicator fields u_x, u_y; dispersion poles not used
-- Features: wall, slip_wall, inlet_velocity, pressure, periodic, body_force, initial_velocity, flow_probe
+- Features: wall, slip_wall, symmetry, inlet_velocity, pressure, periodic, body_force, initial_velocity, flow_probe
 
 ### Settings (PhysicsSpec.settings)
 
@@ -5578,7 +5603,15 @@ Params:
 
 ### Feature `laminar_flow.slip_wall` - Slip wall (symmetry)
 
-Free slip (specular reflection of the populations): zero normal velocity and shear stress, a symmetry plane.
+Free slip (specular reflection of the populations): zero normal velocity and shear stress, a symmetry line of the flow, but no model mirror plane (results do not unfold, integrals do not double): the symmetry feature is the same face as one.
+
+- Category boundary_condition; selection boundary entities, at least 1, outer faces only; requires a uniform mesh (see mesh); result none
+
+Params: none
+
+### Feature `laminar_flow.symmetry` - Symmetry
+
+Even mirror plane on outer faces (x_lo ... y_hi): the free-slip face of slip_wall (specular reflection of the lattice populations, the exact mirror of the lattice: zero normal velocity, zero shear stress) that also becomes a model mirror plane (core.mirror): fields unfold across it (the velocity along the plane and the pressure even, the velocity normal to it and the vorticity odd; Unfold mirror planes, Results.field(unfold=True)), field derived integrals reaching it count twice (the unfolded structure, e.g. the flow rate of a half channel), max / min include the image. A parabolic velocity inlet reaching the plane takes the unfolded run's shape (the half parabola, as beside a slip_wall). Solid objects may touch the plane (their mirror links are halfway bounce-back, also with conformal_boundaries). Warnings: a body force component normal to the plane (gravity, a coupled buoyancy: its image is the opposite force). Errors: another flow face feature on the same face (also a periodic pair through it), a polar / spherical domain, another physics with mirror bc settings (EM) that does not set the face symmetric / antisymmetric, parity_sectors (laminar flow has no odd mirror feature). A coupled heat physics must be insulated on the plane (heat validation warns); fluid_heat_convection carries nothing through it.
 
 - Category boundary_condition; selection boundary entities, at least 1, outer faces only; requires a uniform mesh (see mesh); result none
 
@@ -5594,7 +5627,7 @@ Params:
 - `velocity` [m/s] (default 0.001; may use x, y, t) - Inflow velocity
   Normal velocity into the domain (< 0 outflow); with profile 'parabolic' the mean over each run of fluid cells along the face; x, y at the centres of the face cells. Typical microfluidics 1e-4 - 1e-2. Stationary flow re-marches to a steady state after each change in t.
 - `profile` (default "uniform"; uniform | parabolic) - Profile
-  uniform: the value per cell; parabolic: the value times the discrete Poiseuille shape s (w - s) of each run of fluid cells along the face, mean 1 (peak 1.5 x the value).
+  uniform: the value per cell; parabolic: the value times the discrete Poiseuille shape s (w - s) of each run of fluid cells along the face, mean 1 (peak 1.5 x the value); a run ending on a slip_wall / symmetry face takes the half parabola s (2 w - s) of its mirror image.
 
 ### Feature `laminar_flow.pressure` - Pressure
 
@@ -5707,7 +5740,7 @@ Output fields (primary B_abs; [state] = also a state field):
 - `mu_dc_yy` - Static relative permeability yy (1) [state]
 - `sigma_dc_xx` - Static conductivity (S/m) [state]
 
-Scalar outputs: energy: time-averaged magnetic energy (1/4) Re(A^H K A) of the free cells; eddy_loss: time-averaged ohmic loss, the integral of q_eddy = sigma_dc |E|^2 / 2 over the conducting cells (stranded coils excluded); magnetic_loss: (omega / 2) Im(A^H K A), the mu_dc_loss dissipation (the integral of q_magnetic only approximately at material interfaces); planar per m (J/m, W/m), axisymmetric whole rings (J, W); per enabled coil <coil>_current_re, <coil>_current_im, <coil>_voltage_re, <coil>_voltage_im, <coil>_resistance, <coil>_inductance, <coil>_power as its table result.
+Scalar outputs: Totals of the model unfolded over its mirror planes (a symmetry face: x 2 per plane; coils reaching a plane join their image). energy: time-averaged magnetic energy (1/4) Re(A^H K A) of the free cells; eddy_loss: time-averaged ohmic loss, the integral of q_eddy = sigma_dc |E|^2 / 2 over the conducting cells (stranded coils excluded); magnetic_loss: (omega / 2) Im(A^H K A), the mu_dc_loss dissipation (the integral of q_magnetic only approximately at material interfaces); planar per m (J/m, W/m), axisymmetric whole rings (J, W); per enabled coil <coil>_current_re, <coil>_current_im, <coil>_voltage_re, <coil>_voltage_im, <coil>_resistance, <coil>_inductance, <coil>_power as its table result.
 
 ### Source slots
 
@@ -5763,7 +5796,7 @@ Params:
 
 ### Feature `magnetic_fields_ac.coil` - Coil or conductor
 
-Coil or conductor carrying a time-harmonic current (param conductor). Go / return pairs: two coils at +I / -I (or phase 180). Result 'table': one row [feature, current_re, current_im, voltage_re, voltage_im, resistance, inductance, power] of the latest solve (also scalars <feature>_<key>): the complex current and loop voltage (stranded: R_dc I + j omega flux linkage), Z = V / I: resistance Re Z, inductance Im Z / omega, power Re(V I*) / 2; planar per m of length (A, V/m, Ohm/m, H/m, W/m), axisymmetric whole rings (A, V, Ohm, H, W). With several conductors each Z includes the mutual terms (series +I / -I: the resistances and inductances add to the loop values).
+Coil or conductor carrying a time-harmonic current (param conductor). Go / return pairs: two coils at +I / -I (or phase 180). Result 'table': one row [feature, current_re, current_im, voltage_re, voltage_im, resistance, inductance, power] of the latest solve (also scalars <feature>_<key>): the complex current and loop voltage (stranded: R_dc I + j omega flux linkage), Z = V / I: resistance Re Z, inductance Im Z / omega, power Re(V I*) / 2; planar per m of length (A, V/m, Ohm/m, H/m, W/m), axisymmetric whole rings (A, V, Ohm, H, W). With several conductors each Z includes the mutual terms (series +I / -I: the resistances and inductances add to the loop values). Mirror planes of the model (a symmetry face): a conductor reaching a plane joins its image and reports the unfolded conductor (extra mirror_factor = 2 per plane reached): stranded in series (turns, current and J stay the drawn cross-section's; flux linkage, resistance and voltage x mirror_factor), solid in parallel (the drive is the drawn part's; current and power x mirror_factor, resistance and inductance / mirror_factor). A solid conductor reaching a plane where magnetic insulation makes A odd is a build error; a conductor off the planes has image conductors of its own, not included.
 
 - Category domain_condition; selection domain entities, at least 1; mesh kinds tensor, triangles; result kind `table`
 
@@ -5773,7 +5806,7 @@ Params:
 - `drive` (default "current"; current | voltage; visible when conductor in (solid)) - Drive
   'current': one circuit row, the solve finds v; 'voltage': the solve finds the current. Stranded coils are current-driven.
 - `current` [A] (default 1; visible when conductor in (stranded) or drive in (current)) - Current amplitude
-  Peak, per turn (solid: total), > 0 along +z (axisymmetric: counter-clockwise seen from +z).
+  Peak, per turn (solid: total; a conductor reaching a mirror plane reports mirror_factor times it), > 0 along +z (axisymmetric: counter-clockwise seen from +z).
 - `voltage` [V/m, V axisymmetric] (default 0.001; visible when drive in (voltage)) - Voltage amplitude
   Peak loop voltage: planar v (per m of length), axisymmetric around the ring (v = voltage / (2 pi r)).
 - `phase` [deg] (default 0) - Phase
@@ -5838,7 +5871,7 @@ Output fields (primary B_abs; [state] = also a state field):
 - `mu_dc_xx` - Static relative permeability xx (1) [state]
 - `mu_dc_yy` - Static relative permeability yy (1) [state]
 
-Scalar outputs: energy: field energy of the free cells, (1/2) A^T K A = integral of B^2 / (2 mu0 mu_dc) (J/m planar, J axisymmetric; with remanence the energy of B alone, not the co-energy; held cells and the external-field ring excluded, held-free faces count their free half cell; saturating: the secant value at the converged nu; triangle mesh: the integral of H dB over the elements outside fixed_potential regions); <coil>_flux_linkage (Wb/m, Wb) and <coil>_inductance (H/m, H) of every enabled coil, as its table result.
+Scalar outputs: Totals of the model unfolded over its mirror planes (a symmetry face: x 2 per plane; coils reaching a plane join their image). energy: field energy of the free cells, (1/2) A^T K A = integral of B^2 / (2 mu0 mu_dc) (J/m planar, J axisymmetric; with remanence the energy of B alone, not the co-energy; held cells and the external-field ring excluded, held-free faces count their free half cell; saturating: the secant value at the converged nu; triangle mesh: the integral of H dB over the elements outside fixed_potential regions); <coil>_flux_linkage (Wb/m, Wb) and <coil>_inductance (H/m, H) of every enabled coil, as its table result.
 
 ### Source slots
 
@@ -5894,7 +5927,7 @@ Params:
 
 ### Feature `magnetostatics.coil` - Coil
 
-Stranded coil: J = turns current / area uniform over the selected cells (area = their cross-section; no skin or proximity effects: use the solid conductors of magnetic_fields_ac). A planar coil without a return is a net current per m of depth returning through the insulation faces: model a go / return pair as two coils with opposite currents. Result 'table': one row [feature, current, turns, flux_linkage, inductance] of the latest solve (also scalars <feature>_flux_linkage / _inductance): flux_linkage = turns / area * integral of A over the coil (axisymmetric 2 pi psi: the flux through each turn), Wb/m planar or Wb; inductance = flux_linkage / current, H/m or H (nan at zero current). Series coils at +I / -I: their inductances add to the loop inductance 2 W / I^2 (W the energy scalar); with several currents a coil's value includes the mutual flux.
+Stranded coil: J = turns current / area uniform over the selected cells (area = their cross-section; no skin or proximity effects: use the solid conductors of magnetic_fields_ac). A planar coil without a return is a net current per m of depth returning through the insulation faces: model a go / return pair as two coils with opposite currents. Result 'table': one row [feature, current, turns, flux_linkage, inductance] of the latest solve (plus mirror_factor; also scalars <feature>_flux_linkage / _inductance): flux_linkage = mirror_factor * turns / area * integral of A over the coil (axisymmetric 2 pi psi: the flux through each turn), Wb/m planar or Wb; inductance = flux_linkage / current, H/m or H (nan at zero current). Series coils at +I / -I: their inductances add to the loop inductance 2 W / I^2 (W the energy scalar); with several currents a coil's value includes the mutual flux. A coil whose cells reach a mirror plane of the model joins its image in series (mirror_factor 2 per plane reached; turns and current stay the drawn cross-section's); a coil off the planes has image coils of its own, not included.
 
 - Category domain_condition; selection domain entities, at least 1; mesh kinds tensor, triangles; result kind `table`
 
@@ -5960,7 +5993,7 @@ Output fields (primary B_abs; [state] = also a state field):
 - `mu_dc_yy` - Static relative permeability yy (1) [state]
 - `mu_dc_zz` - Static relative permeability zz (1) [state]
 
-Scalar outputs: energy [J]: field energy of the free cells, the sum over faces of B_n^2 / (2 mu0 mu_face) times the face volume (held cells and the external-field ring excluded, held-free faces count their free half cell; with remanence the energy of B alone; saturating: the secant value; tetrahedra: exact integrals of the element fields); <coil>_flux_linkage [Wb] and <coil>_inductance [H] of every enabled coil, as its table result.
+Scalar outputs: Totals of the model unfolded over its mirror planes (a symmetry face: x 2 per plane; coils reaching a plane join their image). energy [J]: field energy of the free cells, the sum over faces of B_n^2 / (2 mu0 mu_face) times the face volume (held cells and the external-field ring excluded, held-free faces count their free half cell; with remanence the energy of B alone; saturating: the secant value; tetrahedra: exact integrals of the element fields); <coil>_flux_linkage [Wb] and <coil>_inductance [H] of every enabled coil, as its table result.
 
 ### Source slots
 
@@ -5968,7 +6001,7 @@ Scalar outputs: energy [J]: field energy of the free cells, the sum over faces o
 
 ### Feature `magnetostatics_3d.magnetic_insulation` - Magnetic insulation
 
-B.n = 0 on the selected outer faces (z_lo / z_hi included; the default of every face no feature sets): field lines run along the face (Neumann on phi_m); the mirror plane of a field parallel to it, or a distant boundary. Does not anchor: without a symmetry face, external field or ideal iron the window corner cell is held at phi_m = 0 (it reads B = 0; tetrahedra: the window node nearest the lower corner).
+B.n = 0 on the selected outer faces (z_lo / z_hi included; the default of every face no feature sets): field lines run along the face (Neumann on phi_m); the mirror plane of a field parallel to it, or a distant boundary, but never a model mirror plane itself (on another physics' mirror plane the fields unfold with phi_m even). Does not anchor: without a symmetry face, external field or ideal iron the window corner cell is held at phi_m = 0 (it reads B = 0; tetrahedra: the window node nearest the lower corner).
 
 - Category boundary_condition; selection boundary entities, at least 1, outer faces only; mesh kinds tensor, tetrahedra; result none
 
@@ -5976,7 +6009,7 @@ Params: none
 
 ### Feature `magnetostatics_3d.symmetry` - Symmetry (field normal)
 
-phi_m = 0 (Dirichlet) on the selected outer faces: no tangential H, field lines cross at right angles; the mirror plane of a field normal to it (midway between a magnet and its mirror image) or a face next to ideal iron. The reverse of 2D magnetostatics (this type solves for the scalar potential). Anchors the solve.
+phi_m = 0 (Dirichlet) on the selected outer faces, which become model mirror planes: no tangential H, field lines cross at right angles; the mirror plane of a field normal to it (midway between a magnet and its mirror image, the midplane of a coil normal to its axis). Fields unfold across the face (phi_m and B, H along it odd, B normal to it even; Results.field(unfold=True)), integrals of derived values reaching it double, max / min include the image, the energy scalar counts the image (x 2 per mirror plane) and a coil whose winding reaches the face joins its image in series (flux linkage and inductance x 2 per plane reached, result extra mirror_factor). So no longer the plain face next to ideal iron (use ideal_iron). Errors: another magnetic face feature on the face, an external_field, another physics with mirror bc settings not mirroring the face, parity sectors. The reverse of 2D magnetostatics (this type solves for the scalar potential). Anchors the solve.
 
 - Category boundary_condition; selection boundary entities, at least 1, outer faces only; mesh kinds tensor, tetrahedra; result none
 
@@ -6271,11 +6304,11 @@ Params:
 
 ## Physics type `pressure_acoustics` - Pressure Acoustics, frequency domain
 
-Frequency-domain pressure acoustics: -div(grad p / rho) - omega^2 p / (rho c^2) = j omega q (exp(+j omega t), peak amplitudes), p the complex pressure, rho / c the material rho and sound_speed (every fluid element needs both > 0; no losses but impedance and PML). Complex Lagrange P2 / P1 on triangles (planar or axisymmetric) or tetrahedra (3D). K and M are assembled once; each frequency is one complex symmetric factorisation by the linear role (back_end 'auto': cudss_mixed on the gpu backend when nvmath-python is installed, else host SuperLU; MUMPS / PARDISO opt-in). Outer faces default to sound hard (also mirror planes); boundary features act on the window edge of outer faces and on object outlines (2D) / interfaces (3D). Probe and surface series per frequency are complex: <c>_re / _im / _abs / _phase. v_* = j grad p / (omega rho) per element. Snapshots per frequency are labelled "f = <Hz> Hz".
+Frequency-domain pressure acoustics: -div(grad p / rho) - omega^2 p / (rho c^2) = j omega q (exp(+j omega t), peak amplitudes), p the complex pressure, rho / c the material rho and sound_speed (every fluid element needs both > 0; no losses but impedance and PML). Complex Lagrange P2 / P1 on triangles (planar or axisymmetric) or tetrahedra (3D). K and M are assembled once; each frequency is one complex symmetric factorisation by the linear role (back_end 'auto': cudss_mixed on the gpu backend when nvmath-python is installed, else host SuperLU; MUMPS / PARDISO opt-in). Outer faces default to sound hard; the symmetry / antisymmetry features make outer faces even / odd model mirror planes (sound hard / soft); boundary features act on the window edge of outer faces and on object outlines (2D) / interfaces (3D). Probe and surface series per frequency are complex: <c>_re / _im / _abs / _phase. v_* = j grad p / (omega rho) per element. Snapshots per frequency are labelled "f = <Hz> Hz".
 
 - Default instance name `pressure_acoustics`; studies frequency_response (default {"type": "frequency_response", "settings": {"frequency_start": 100, "frequency_stop": 1000, "n_frequencies": 10}})
 - Backends gpu, cpu; mesh kinds triangles, tetrahedra; refinement indicator fields p_abs; dispersion poles not used
-- Features: background_pressure_field, rigid_obstacle, sound_hard, sound_soft, prescribed_pressure, impedance, vibrating_boundary, point_source, frequency_probe, surface_pressure
+- Features: background_pressure_field, rigid_obstacle, sound_hard, sound_soft, prescribed_pressure, impedance, vibrating_boundary, symmetry, antisymmetry, point_source, frequency_probe, surface_pressure
 
 ### Settings (PhysicsSpec.settings)
 
@@ -6362,7 +6395,7 @@ Params: none
 
 ### Feature `pressure_acoustics.sound_hard` - Sound hard wall
 
-n . grad p = 0 (total field): the default of every outer face without a PML or other condition, also a mirror plane. A later feature on the same face wins, so this resets an earlier one.
+n . grad p = 0 (total field): the default of every outer face without a PML or other condition (the symmetry feature makes such a face a model mirror plane). A later feature on the same face wins, so this resets an earlier one.
 
 - Category boundary_condition; selection boundary entities, at least 1, outer faces only; mesh kinds triangles, tetrahedra; result none
 
@@ -6416,6 +6449,22 @@ Params:
 - `phase` [deg] (default 0) - Phase
   Phase of the wall motion (phasors exp(+j omega t)).
 
+### Feature `pressure_acoustics.symmetry` - Symmetry
+
+Even mirror plane on outer faces (x_lo ... z_hi): the face is sound hard (n . grad p = 0, as an unset face; the total field with a background, so the solve is unchanged) and becomes a model mirror plane (core.mirror): fields unfold p even across it (v normal to it odd; Unfold mirror planes, Results.field(unfold=True)) and field derived integrals reaching it count twice. Feature results count the unfolded structure: a surface_pressure selection reaching the plane doubles its area, weight_integral and p_weighted (the weight mirrored onto the image; p_mean is the mean over both halves), a selected outer face that is the plane counts once; object outline pieces lying on the plane are dropped by every boundary feature and surface_pressure (inside the unfolded object); a point source on the plane coincides with its image, so the unfolded model holds twice its flow rate (validation info). With a background_pressure_field the incident wave must itself be even about the plane: a plane wave travelling along it, or a standing wave whose rigid plane is the face or whose axis lies along it (validation errors otherwise; an expression is not checked). Errors: another pressure_acoustics boundary feature or a PML on the face, the x_lo axis (it unfolds without a feature) and the x_hi cylinder r = r_max (no mirror image) of geometry 'axisymmetric', a polar domain, another physics with mirror bc settings (EM) that does not set the face symmetric / antisymmetric. parity_sectors swaps it with antisymmetry. symmetry and antisymmetry on one face: the last one wins (warning).
+
+- Category boundary_condition; selection boundary entities, at least 1, outer faces only; mesh kinds triangles, tetrahedra; result none
+
+Params: none
+
+### Feature `pressure_acoustics.antisymmetry` - Antisymmetry
+
+Odd mirror plane on outer faces (x_lo ... z_hi): p = 0 is held on the face (sound soft, the total field; with a background p_s = -p_b there) and the face becomes a model mirror plane of sign -1 (core.mirror): fields unfold p odd (v normal to it even). Feature results count the unfolded structure: a surface_pressure selection reaching the plane doubles its area and weight_integral, while its p_mean / p_weighted get no part from that plane (p cancels with its image); a point source on the plane radiates nothing (validation warns). Session integrals of the signed p_re / p_im reaching the plane still double (core.mirror assumes an even integrand there). A background_pressure_field must be odd about the plane: a plane or standing wave never is (validation error), an expression is not checked. With symmetry it gives parity_sectors (a source without definite parity runs both; frequency_probe and surface_pressure combine as linear phasors; a background is refused). Other errors as symmetry.
+
+- Category boundary_condition; selection boundary entities, at least 1, outer faces only; mesh kinds triangles, tetrahedra; result none
+
+Params: none
+
 ### Feature `pressure_acoustics.point_source` - Point source
 
 Monopole Q exp(j phase): the load j omega Q phi_i(x0) (axisymmetric: divided by 2 pi, the per-radian solve). Must lie in a fluid element.
@@ -6454,7 +6503,7 @@ Params:
 
 - Default instance name `solid`; studies stationary, time_dependent, eigenfrequency, optomechanics, frequency_response (default {"type": "stationary"})
 - Backends gpu, cpu; mesh kinds tensor, triangles; refinement indicator fields u_abs; dispersion poles not used
-- Features: fixed, roller, displacement, fixed_domain, prescribed_displacement_domain, boundary_load, segment_load, body_force, temperature_change, solid_probe, frequency_probe, resonance_table, thermoelastic_damping, optomechanical_coupling, electrode, electrode_domain, admittance
+- Features: fixed, roller, symmetry, displacement, fixed_domain, prescribed_displacement_domain, boundary_load, segment_load, body_force, temperature_change, solid_probe, frequency_probe, resonance_table, thermoelastic_damping, optomechanical_coupling, electrode, electrode_domain, admittance
 
 ### Settings (PhysicsSpec.settings)
 
@@ -6468,7 +6517,7 @@ Params:
 - `axial_force` [N] (default 0; visible when out_of_plane in (generalized_plane_strain)) - Axial force
   Generalized plane strain: net force along +z on the drawn cross-section (integral of stress_zz over the solid cells; a mirrored model: of the drawn part). 0 = free ends; > 0 pulls.
 - `bending` (default "xy"; xy | x | y | none; visible when out_of_plane in (generalized_plane_strain)) - Out-of-plane bending
-  Generalized plane strain: free terms of eps_zz = e0 + e1 x + e2 y. xy: e1 and e2 (set by bending_moment_y / _x); x: e1 only; y: e2 only; none: uniform e0. A mirrored model (moments and force of the drawn part) holds the term across a mirror plane at 0: mirror on an x face: y; on a y face: x; on both: none. Each free term adds one solve per assembly.
+  Generalized plane strain: free terms of eps_zz = e0 + e1 x + e2 y. xy: e1 and e2 (set by bending_moment_y / _x); x: e1 only; y: e2 only; none: uniform e0. A mirrored model (moments and force of the drawn part) holds the term across a mirror plane at 0: mirror on an x face: y; on a y face: x; on both: none (a symmetry face: a validation error otherwise). Each free term adds one solve per assembly.
 - `bending_moment_x` [N m] (default 0; visible when out_of_plane in (generalized_plane_strain)) - Bending moment about x
   Generalized plane strain, bending xy or y: M_x = integral of y stress_zz dA over the drawn solid cells, about the drawing origin (x = y = 0); an axial force F through (x_F, y_F) gives M_x = y_F F.
 - `bending_moment_y` [N m] (default 0; visible when out_of_plane in (generalized_plane_strain)) - Bending moment about y
@@ -6615,7 +6664,15 @@ Params: none
 
 ### Feature `solid_mechanics.roller` - Roller
 
-Normal displacement 0 (u_x on x faces, u_y on y faces), tangential free (zero shear traction; u_z of guided modes free); a mirror plane. Rollers on one x and one y face hold a solid. Outer faces only (on an object boundary use Fixed (domain)); every node of the face, corners included. Result: the reaction table, as fixed.
+Normal displacement 0 (u_x on x faces, u_y on y faces), tangential free (zero shear traction; u_z of guided modes free); the Symmetry feature holds the same and makes the face a model mirror plane. Rollers on one x and one y face hold a solid. Outer faces only (on an object boundary use Fixed (domain)); every node of the face, corners included. Result: the reaction table, as fixed.
+
+- Category boundary_condition; selection boundary entities, at least 1, outer faces only; mesh kinds tensor, triangles; result kind `table`
+
+Params: none
+
+### Feature `solid_mechanics.symmetry` - Symmetry
+
+Even mirror plane on outer faces (x_lo ... y_hi; geometry axisymmetric: y_lo / y_hi only): the face is held as by a Roller (normal displacement 0, zero shear traction; u_z of guided modes and U_phi of an azimuthal order free), the mirror image of a body deforming symmetrically about it, and becomes a model mirror plane (core.mirror). Fields unfold across the plane as the even mirror of the displacement (the normal displacement and the shear components with one index along the normal flip, everything else keeps: Unfold mirror planes, Results.field(unfold=True)); field derived integrals reaching the plane count twice (the unfolded structure), max / min include the image, a mean is unchanged. It counts as a support for the rigid-body checks (it holds the normal direction). Every load, material, initial stress and coupled field of the drawn part has its mirror image in the unfolded model, so they need nothing on the plane. Results the solid reports itself are those of the drawn part: support reaction tables (this one: the normal force the mirrored part exerts across the plane on the drawn one; another support meeting the plane: the unfolded structure carries twice its components along the plane, its component normal to the plane cancels); inputs are those of the drawn part too (thickness, the generalized plane strain axial_force and bending moments). Optomechanics: m_eff (and so g0) of the unfolded body, x 2 per mirror plane (planar optics mirror the face themselves; em_fdfd_bor optics need a pec / pmc wall there); ratios (eigenfrequencies, thermoelastic Q) are those of the unfolded structure. Errors: another face feature of this solid on the same face, piezoelectric on, a material whose stiffness tensor changes sign under the reflection (its image would be another crystal cut, e.g. a monoclinic c16), a uniform shear initial stress with an index along the normal, an elastic PML on a face meeting the plane (its absorbing layer crosses the plane, where the hold covers the window face only), a periodic face, a polar domain, another physics with mirror bc settings (EM) that does not set the face symmetric / antisymmetric, parity_sectors (the solid has no odd mirror feature), x_lo / x_hi of geometry axisymmetric (the axis unfolds without a feature in Unfold mirror planes; the cylinder r = R is no mirror plane), a generalized plane strain bending term varying across the plane (bending x or xy with an x face, y or xy with a y face), a segment_load lying on the plane with a component normal to it (a tangential one is half the line load of the unfolded model), with em_fdfd_bor optics a mirror plane without a pec / pmc optical wall. Warning: a uniform body force normal to the plane (its image points the other way). Result 'table' of the latest solve, row [feature, F_x, F_y], extras F_x, F_y: the force the support exerts on the solid, sum of K u - f over its held dofs (0 for unheld components; a dof held by two supports counts in both, the later value holds it); N/m per m of depth, N with the thickness setting or axisymmetric (whole ring). After a frequency_response on triangles: the complex reaction per frequency instead (columns frequency, F_x_re, F_x_im, F_y_re, F_y_im).
 
 - Category boundary_condition; selection boundary entities, at least 1, outer faces only; mesh kinds tensor, triangles; result kind `table`
 
@@ -6805,7 +6862,7 @@ Params:
 
 - Default instance name `solid`; studies stationary, time_dependent, eigenfrequency, frequency_response, optomechanics (default {"type": "stationary"})
 - Backends gpu, cpu; mesh kinds tensor, tetrahedra; refinement indicator fields u_abs; dispersion poles not used
-- Features: fixed, roller, displacement, fixed_domain, prescribed_displacement_domain, boundary_load, body_force, temperature_change, solid_probe, frequency_probe, resonance_table, mode_shapes, squeeze_film_damping, thermoelastic_damping, electrode, electrode_domain, admittance, optomechanical_coupling
+- Features: fixed, roller, symmetry, displacement, fixed_domain, prescribed_displacement_domain, boundary_load, body_force, temperature_change, solid_probe, frequency_probe, resonance_table, mode_shapes, squeeze_film_damping, thermoelastic_damping, electrode, electrode_domain, admittance, optomechanical_coupling
 
 ### Settings (PhysicsSpec.settings)
 
@@ -7006,7 +7063,15 @@ Params: none
 
 ### Feature `solid_mechanics_3d.roller` - Roller
 
-Normal displacement 0 (u_x on x faces, u_y on y, u_z on z), tangential free (zero shear traction); a mirror plane (warning on a face of a crystal not mirror symmetric there). Rollers on one x, one y and one z face hold a solid. Outer faces only (on an object boundary use Fixed (domain)); every node of the face, edges and corners included. Result: the reaction table, as fixed.
+Normal displacement 0 (u_x on x faces, u_y on y, u_z on z), tangential free (zero shear traction); the Symmetry feature holds the same and makes the face a model mirror plane (warning on a face of a crystal not mirror symmetric there). Rollers on one x, one y and one z face hold a solid. Outer faces only (on an object boundary use Fixed (domain)); every node of the face, edges and corners included. Result: the reaction table, as fixed.
+
+- Category boundary_condition; selection boundary entities, at least 1, outer faces only; mesh kinds tensor, tetrahedra; result kind `table`
+
+Params: none
+
+### Feature `solid_mechanics_3d.symmetry` - Symmetry
+
+Even mirror plane on outer faces (x_lo ... z_hi): the face is held as by a Roller (normal displacement 0, zero shear traction), the mirror image of a body deforming symmetrically about it, and becomes a model mirror plane (core.mirror). Fields unfold across the plane as the even mirror of the displacement (the normal displacement and the shear components with one index along the normal flip, everything else keeps: Unfold mirror planes, Results.field(unfold=True)); field derived integrals reaching the plane count twice (the unfolded structure), max / min include the image, a mean is unchanged. It counts as a support for the rigid-body checks (it holds the normal direction). Every load, material, initial stress and coupled field of the drawn part has its mirror image in the unfolded model, so they need nothing on the plane. Results the solid reports itself are those of the drawn part: support reaction tables (this one: the normal force the mirrored part exerts across the plane on the drawn one; another support meeting the plane: the unfolded structure carries twice its components along the plane, its component normal to the plane cancels), squeeze-film gas_damping / gas_stiffness (gamma_gas and q_gas are ratios: unfolded) and the mode_shapes surface (the plane face included); ratios (eigenfrequencies, thermoelastic Q) are those of the unfolded structure. Errors: another face feature of this solid on the same face, piezoelectric on, a material whose stiffness tensor changes sign under the reflection (its image would be another crystal cut, e.g. a monoclinic c16), a uniform shear initial stress with an index along the normal, an elastic PML on a face meeting the plane (its absorbing layer crosses the plane, where the hold covers the window face only), a periodic face, a polar domain, another physics with mirror bc settings (EM) that does not set the face symmetric / antisymmetric, parity_sectors (the solid has no odd mirror feature), an optomechanical_coupling (its rings about the optical axis need the whole body), a squeeze film whose gap side is the plane; at run time a squeeze film whose rim on the plane is vented (vents must seal that axis: 'window_sealed', '<axis>_sealed' or 'none'). Warning: a uniform body force normal to the plane (its image points the other way). Outer faces only (on an object boundary use Fixed (domain)); every node of the face, edges and corners included. Result 'table' of the latest solve, row [feature, F_x, F_y, F_z] (N), extras F_x, F_y, F_z: the force the support exerts on the solid, sum of K u - f over its held dofs (0 for unheld components; a dof held by two supports counts in both, the later value holds it). After a frequency_response on tetrahedra: the complex reaction per frequency instead (columns frequency, F_x_re, F_x_im, F_y_re, F_y_im, F_z_re, F_z_im).
 
 - Category boundary_condition; selection boundary entities, at least 1, outer faces only; mesh kinds tensor, tetrahedra; result kind `table`
 
@@ -7905,7 +7970,7 @@ Produced by: em_eme.eme_length_sweep, em_eme.adjoint_objective, em_eme.design_re
 
 #### Result kind `table`
 
-Produced by: drift_diffusion.ohmic_contact, drift_diffusion.gate, elastic_waves.resonance_monitor, electric_currents.voltage, electric_currents.terminal, electrostatics.voltage, electrostatics.terminal, em_eme.eme_ports, em_eme.eme_section_table, em_eme.eme_periodic, em_eme_3d.eme_ports, em_eme_3d.eme_section_table, em_eme_3d.eme_periodic, em_fdfd_3d.resonance_table, em_fdfd_bor.mode_source, em_fdfd_bor.resonance_table, em_fdfd_conical.resonance_table, em_fdfd_ez.mode_source, em_fdfd_ez.resonance_table, em_fdfd_hz.mode_source, em_fdfd_hz.resonance_table, em_fdfd_nonlinear.mode_source, em_fdtd_3d.resonance_monitor, em_fdtd_3d.mode_source, em_fdtd_bor.resonance_monitor, em_fdtd_bor.mode_source, em_fdtd_ez.mode_source, em_fdtd_ez.resonance_monitor, em_fdtd_hz.mode_source, em_fdtd_hz.resonance_monitor, em_modes.mode_table, em_modes.bend_overlap, magnetic_fields_ac.coil, magnetostatics.coil, magnetostatics_3d.coil, membrane.resonance_table, membrane.squeeze_film_damping, solid_mechanics.fixed, solid_mechanics.roller, solid_mechanics.displacement, solid_mechanics.fixed_domain, solid_mechanics.prescribed_displacement_domain, solid_mechanics.resonance_table, solid_mechanics.thermoelastic_damping, solid_mechanics.optomechanical_coupling, solid_mechanics.electrode, solid_mechanics.electrode_domain, solid_mechanics_3d.fixed, solid_mechanics_3d.roller, solid_mechanics_3d.displacement, solid_mechanics_3d.fixed_domain, solid_mechanics_3d.prescribed_displacement_domain, solid_mechanics_3d.resonance_table, solid_mechanics_3d.squeeze_film_damping, solid_mechanics_3d.thermoelastic_damping, solid_mechanics_3d.electrode, solid_mechanics_3d.electrode_domain, solid_mechanics_3d.optomechanical_coupling
+Produced by: drift_diffusion.ohmic_contact, drift_diffusion.gate, elastic_waves.resonance_monitor, electric_currents.voltage, electric_currents.terminal, electrostatics.voltage, electrostatics.terminal, em_eme.eme_ports, em_eme.eme_section_table, em_eme.eme_periodic, em_eme_3d.eme_ports, em_eme_3d.eme_section_table, em_eme_3d.eme_periodic, em_fdfd_3d.resonance_table, em_fdfd_bor.mode_source, em_fdfd_bor.resonance_table, em_fdfd_conical.resonance_table, em_fdfd_ez.mode_source, em_fdfd_ez.resonance_table, em_fdfd_hz.mode_source, em_fdfd_hz.resonance_table, em_fdfd_nonlinear.mode_source, em_fdtd_3d.resonance_monitor, em_fdtd_3d.mode_source, em_fdtd_bor.resonance_monitor, em_fdtd_bor.mode_source, em_fdtd_ez.mode_source, em_fdtd_ez.resonance_monitor, em_fdtd_hz.mode_source, em_fdtd_hz.resonance_monitor, em_modes.mode_table, em_modes.bend_overlap, magnetic_fields_ac.coil, magnetostatics.coil, magnetostatics_3d.coil, membrane.resonance_table, membrane.squeeze_film_damping, solid_mechanics.fixed, solid_mechanics.roller, solid_mechanics.symmetry, solid_mechanics.displacement, solid_mechanics.fixed_domain, solid_mechanics.prescribed_displacement_domain, solid_mechanics.resonance_table, solid_mechanics.thermoelastic_damping, solid_mechanics.optomechanical_coupling, solid_mechanics.electrode, solid_mechanics.electrode_domain, solid_mechanics_3d.fixed, solid_mechanics_3d.roller, solid_mechanics_3d.symmetry, solid_mechanics_3d.displacement, solid_mechanics_3d.fixed_domain, solid_mechanics_3d.prescribed_displacement_domain, solid_mechanics_3d.resonance_table, solid_mechanics_3d.squeeze_film_damping, solid_mechanics_3d.thermoelastic_damping, solid_mechanics_3d.electrode, solid_mechanics_3d.electrode_domain, solid_mechanics_3d.optomechanical_coupling
 
 - `kind`: 'table', str; the producing feature may add further keys, listed in its description
 - `columns`: column names, list of str
