@@ -13,6 +13,7 @@ from ..core.backend import array_module_of, cp, to_host
 from ..core.box_values import BoxValues
 from ..core.constants import DTYPE
 from ..core.kernels import axis_first_reduce
+from ..coupling.coupling_term import TransferredPhysics, state_revisions
 from ..coupling.material_update import DynamicMaterialUpdate, TimeDependentUpdate
 from ..materials import effective_material_data
 from ..simulation import Simulation
@@ -99,6 +100,10 @@ class _SharedBuild:
         self.parameter_followers = []    # sweep_reuse.ParameterFollower of follow_parameters (Session.set_sweep_value)
         self.conformal_locators = {}     # honouring physics names -> the build's GeometryLocator
         self.transfers = {}              # (source mesh, target mesh, kind, axisymmetric) -> GridTransfer
+        # (transfer key, transform side) -> {physics name: TransferredPhysics} shared by every coupling term and
+        # dynamic material update reading through that transfer: a source field interpolated once per revision, one
+        # target-shaped buffer per (physics, field)
+        self.transfer_views = {}
         self.contexts = weakref.WeakValueDictionary()   # mesh name -> BuildContext
 
 
@@ -177,6 +182,7 @@ class BuildContext:
         updates, parameter followers, conformal locators): Session.close, without relying on gc."""
         shared = self._shared
         shared.solver_records, shared.transfers, shared.conformal_locators = {}, {}, {}
+        shared.transfer_views = {}
         shared.time_updates.clear()
         shared.parameter_followers.clear()
         shared.range_checks.clear()
@@ -200,12 +206,22 @@ class BuildContext:
     def transfer(self, kind, source_mesh, target_mesh, axisymmetric=False):
         """Cached GridTransfer ('interpolate' | 'conservative') between two meshes of this build
         (model.mesh_transfer.make_transfer; axisymmetric: r-weighted conservative measures)."""
-        key = (source_mesh, target_mesh, kind, bool(axisymmetric) and kind == 'conservative')
+        key = _transfer_key(kind, source_mesh, target_mesh, axisymmetric)
         cached = self._shared.transfers.get(key)
         if cached is None:
             cached = self._shared.transfers[key] = make_transfer(
                 kind, self.context_of_mesh(source_mesh).domain, self.context_of_mesh(target_mesh).domain, key[3])
         return cached
+
+    def transfer_views(self, kind, source_mesh, target_mesh, axisymmetric=False, side='target'):
+        """The {physics name: TransferredPhysics} dict of transfer(kind, source_mesh, target_mesh, axisymmetric) for
+        transforms on `side` ('target': sources seen on the target mesh; 'source': targets seen on the source mesh),
+        shared by every coupling and dynamic material update of the build (CouplingTerm views=): a field read by
+        several of them is interpolated once per source revision into one buffer. Sound because no transform hands
+        a view's array itself to a slot that keeps it by reference (contributors copy into their buffers,
+        field_transfer evaluates into its own)."""
+        return self._shared.transfer_views.setdefault(
+            (_transfer_key(kind, source_mesh, target_mesh, axisymmetric), side), {})
 
     def conformal_locator_of(self, physics_name):
         """The GeometryLocator when solver_defaults.conformal_boundaries reaches this physics, else None (the same one
@@ -496,11 +512,13 @@ class BuildContext:
         into a persistent buffer, S7.2); see _check_dynamic_range for when its running range under mask is checked
         against bounds_param (host sync; check_dynamic_ranges at the study end)."""
         names = expression.names
-        readers = {}   # state name of a physics on another mesh -> [GridTransfer, its output buffer]
+        readers = {}   # state name of a physics on another mesh -> (GridTransfer, shared views: transfer_views)
         for name, physics, _ in state_references:
             physics_mesh = self.mesh_of_physics(physics)
             if physics_mesh != self.mesh_name:
-                readers[name] = [self.transfer('interpolate', physics_mesh, self.mesh_name), None]
+                readers[name] = (self.transfer('interpolate', physics_mesh, self.mesh_name),
+                                 self.transfer_views('interpolate', physics_mesh, self.mesh_name))
+        domain = self.domain
         base = {name: self.parameters[name] for name in names if name in self.parameters}
         if not names.isdisjoint(FIELD_COORDINATE_NAMES):   # 2D (X, Y), 3D (X, Y, Z)
             base.update(self.masks.dynamic_coordinates())
@@ -518,11 +536,16 @@ class BuildContext:
             if clock is not None:
                 namespace['t'] = float(clock.t)
             for name, physics, field_name in state_references:
-                value = physics_by_name[physics].state()[field_name]
                 reader = readers.get(name)
-                if reader is not None:
-                    reader[1] = value = reader[0].apply(value, out=reader[1])
-                namespace[name] = value
+                if reader is None:
+                    namespace[name] = physics_by_name[physics].state()[field_name]
+                    continue
+                transfer, views = reader
+                view = views.get(physics)
+                if view is None:
+                    view = views[physics] = TransferredPhysics(physics_by_name[physics], transfer, domain)
+                view.refresh(state_revisions(physics_by_name, (physics,)))
+                namespace[name] = view.transferred(field_name)
             value = expression.evaluate(namespace, xp=xp)
             if not isinstance(value, xp.ndarray):   # t and parameters only: one number for every cell
                 value = xp.asarray(value, dtype=DTYPE)
@@ -1182,6 +1205,11 @@ def _check_dynamic_range(running_extremes, n_evaluations, checked_solve_counts, 
         _check_running_range(text, bounds_param, running_extremes, ' inside its region')
 
 
+def _transfer_key(kind, source_mesh, target_mesh, axisymmetric):
+    """Cache key of a GridTransfer between two meshes (r weights only change a conservative one)."""
+    return source_mesh, target_mesh, kind, bool(axisymmetric) and kind == 'conservative'
+
+
 def _create_coupling(ctx, coupling_spec):
     coupling_type = ctx.registry.coupling_type(coupling_spec.type)
     if coupling_type.create is None:
@@ -1206,7 +1234,8 @@ def _create_coupling(ctx, coupling_spec):
                                     coupling_spec, values, every)
     axisymmetric = bool(getattr(ctx.sim.physics[coupling_spec.target], 'axisymmetric', False))
     transfer = ctx.transfer(transfer_kind(coupling_type), source_mesh, target_mesh, axisymmetric)
-    shared_views = {}   # one TransferredPhysics per physics for every term: the source interpolated once per revision
+    # one TransferredPhysics per physics for every term of every coupling through this transfer
+    shared_views = ctx.transfer_views(transfer_kind(coupling_type), source_mesh, target_mesh, axisymmetric, side)
     for term in getattr(coupling, 'terms', (coupling,)):
         if not hasattr(term, 'set_mesh_transfers') or (term.source, term.target) != (coupling_spec.source,
                                                                                       coupling_spec.target):
