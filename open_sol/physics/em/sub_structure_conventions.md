@@ -66,14 +66,17 @@ type's vocabulary and refusals are in its help texts and validation.
   corrections): the view is replaced when the layout turns per cell. cb / cb_x / cb_y are per cell and never
   reallocated (pole, media and port box views). Selftest em_operators_consistency part F: both layouts bit for bit.
 - Parked material arrays (model path, gpu; core sub file "GPU memory"): `definition_common.
-  fdtd_parked_material_arrays` (the shared `parkable_material_arrays` rule over `EMPhysics.PARKABLE_ARRAYS`: mu_r,
-  sigma_m) lists what `EMPhysics(park_arrays=)` moves to the host at create, before the engine allocates (the build
-  peak never holds both). Every reader of such an array goes through `MaterialGrid.device_array(name, index)` (mode
-  port rows, TFSF outline region, harmonic energy window, sheet calibration lines via `xp.asarray`), a host reduction
-  (`fdtd_2d_base._single_value`, `material_values`: a scalar when uniform, the Courant check) or uploaded x-row blocks
-  (`material_row_blocks`: the H rebuild); a new reader of a PARKABLE array does too, else it breaks on the gpu model
-  path only (the cpu backend never parks). Estimate: host item + build peak in `fdtd_memory_estimate`; the
-  `em_fdtd_cpu_gpu*` parity cases compare parked (gpu) with unparked (cpu) runs.
+  fdtd_parked_material_arrays` (the shared `parkable_material_arrays` rule over `EMPhysics.PARKABLE_ARRAYS`: every
+  material array; the permittivity arrays and sigma_e stay with a nonlinear / gain / phase-change medium, hz sigma_e
+  while accumulating) lists what `EMPhysics(park_arrays=)` moves to the host at create, before the engine allocates
+  (the build peak never holds both). Readers of such an array go through `MaterialGrid.device_array(name, index)`
+  (renderer windows, mode port rows, TFSF outline region, harmonic energy window, subpixel gathers: whole array),
+  `material_state` (state(): a device copy per read), `xp.asarray` of a line (sheet calibrations), a host reduction
+  (`_single_value`, `_all_zero`, `_bounding_box`, `material_values`: the Courant check) or uploaded x-row blocks
+  (`material_row_blocks`: H and ez E rebuilds; the hz E rebuild reads neighbours: whole uploads); per-step readers
+  keep their own device copy (ez sigma_e on the ohmic box, hz sigma_e for q_accum_hz). A new reader of a PARKABLE
+  array does the same, else it breaks on the gpu model path only (the cpu backend never parks). Estimate:
+  `_parked_fdtd_items`; the `em_fdtd_cpu_gpu*` parity cases compare parked (gpu) with unparked (cpu) runs.
 - Yee edge: on a non-periodic axis the last face row is never updated and cell 0 reads its missing lo face as 0, so
   the grid edge is PMC (ez) / PEC (hz) half a cell beyond the outermost centres (only cpml sides see it).
 - Times: a source injects at the centre time of the update it follows (E: t+dt/2; H: t), never the new field time

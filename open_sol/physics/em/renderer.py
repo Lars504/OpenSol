@@ -86,8 +86,8 @@ class _FDTDRendererBase(_EMRendererBase):
         if self.field_info(component).requires_study:
             return self._harmonic_field(component)
         window = self.domain.physical_window()
-        if component in self.material_names:
-            return getattr(self.domain.materials, component)[window]
+        if component in self.material_names:   # a parked (host) array: only the window moves
+            return self.domain.materials.device_array(component, window)
         if component == 'carrier_density':
             return self._carrier_density(window)
         if component == 'population_inversion':

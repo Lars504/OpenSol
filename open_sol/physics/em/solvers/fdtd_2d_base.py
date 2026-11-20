@@ -3,6 +3,7 @@ plus PEC-mask and dispersive-region helpers."""
 import ctypes
 import math
 import warnings
+from collections.abc import Mapping
 
 import numpy as np
 from ....core.backend import check_backend_array, host_copy, to_host, write_host_into
@@ -100,6 +101,38 @@ def material_row_blocks(materials, names, nx, ny) -> list:
         return [slice(0, nx)]
     per_block = max(1, PARKED_BLOCK_CELLS // ny)
     return [slice(start, min(start + per_block, nx)) for start in range(0, nx, per_block)]
+
+
+class LazyState(Mapping):
+    """A state() dict whose entries named in `readers` are made on access (`readers[name]()` per read: e.g. a device
+    copy of a parked MaterialGrid array), the others as stored; keys and order those of `state`."""
+
+    def __init__(self, state, readers):
+        self._state = state
+        self._readers = readers
+
+    def __getitem__(self, name):
+        value = self._state[name]   # KeyError for an unknown key
+        reader = self._readers.get(name)
+        return value if reader is None else reader()
+
+    def __contains__(self, name):
+        return name in self._state
+
+    def __iter__(self):
+        return iter(self._state)
+
+    def __len__(self):
+        return len(self._state)
+
+
+def material_state(state, materials) -> Mapping:
+    """`state` itself, or a LazyState reading its parked MaterialGrid entries (MaterialGrid.park) through
+    device_array (a full-grid device copy per read)."""
+    parked = [name for name in state if name in materials.parked]
+    if not parked:
+        return state
+    return LazyState(state, {name: (lambda name=name: materials.device_array(name)) for name in parked})
 
 
 def material_values(materials, name):
@@ -338,7 +371,7 @@ class _YeeEngine2DBase(PhysicsSolver):
             if getattr(array, 'shape', None) != (self.nx, self.ny):
                 raise ValueError(f"inject_source({name!r}, ...) array must have shape {(self.nx, self.ny)}, got "
                                  f"{getattr(array, 'shape', None)}")
-            self.xp.copyto(getattr(self.materials, slots[name]), self.xp.asarray(array, dtype=DTYPE))
+            self.materials.assign(slots[name], None, array)   # a parked (host) array: one transfer
             self._permittivity_written()
         else:
             accepted = ', '.join(repr(slot) for slot in (source_slot, *slots))

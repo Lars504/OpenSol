@@ -4,7 +4,8 @@ import numpy as np
 
 from ....core.constants import EPS0
 from . import fdtd_ez_2d_kernels as _kernels
-from .fdtd_2d_base import _YeeEngine2DBase, _box_overlap, _bounding_box, _union_box
+from .fdtd_2d_base import (_YeeEngine2DBase, _box_overlap, _bounding_box, _union_box, material_row_blocks,
+                           material_state)
 from .fdtd_conformal_kernels import conformal_h_ez, sparse_launch
 
 
@@ -34,6 +35,9 @@ class FDTDEngine2D_Ez(_YeeEngine2DBase):
         # leave PEC cells at 0); advance re-zeroes only _pec_box after injection.
         self._pec_keep = None
         self._pec_box = None
+        # device copy of sigma_e on _ohmic_box while accumulating with a parked (host) sigma_e (MaterialGrid.park), the
+        # per-step ohmic loss reads it; None otherwise (the loss reads the MaterialGrid view)
+        self._ohmic_sigma_e = None
         self._sigma_e_changed()   # _ohmic_box; the first E rebuild checks the ca layout
         self._rebuild_e_coefficients()
         self._rebuild_h_coefficients()
@@ -55,9 +59,10 @@ class FDTDEngine2D_Ez(_YeeEngine2DBase):
 
     # --- PhysicsSolver contract -----------------------------------------------
 
-    def state(self) -> dict:
-        """Public fields; jz_total is None without a Drude pole, q_accum None before accumulation is enabled."""
-        return {
+    def state(self):
+        """Public fields; jz_total is None without a Drude pole, q_accum None before accumulation is enabled; parked
+        eps_r / sigma_e read as device copies (fdtd_2d_base.material_state)."""
+        return material_state({
             'ez': self.fields.ez,
             'hx': self.fields.hx,
             'hy': self.fields.hy,
@@ -66,7 +71,7 @@ class FDTDEngine2D_Ez(_YeeEngine2DBase):
             'jz_total': self._jz_totals[0],
             'q_accum': self.q_accum,
             'q_accum_time': self.q_accum_time,
-        }
+        }, self.materials)
 
     # --- time stepping ------------------------------------------------------------
 
@@ -211,18 +216,32 @@ class FDTDEngine2D_Ez(_YeeEngine2DBase):
                                  xp.asarray(face_extra, dtype=self.dtype), sparse_launch(len(face_cell)))
 
     def _sigma_e_changed(self):
-        """Bounding box of the sigma_e > 0 cells for the ohmic loss (one host sync; never on the eps_r_update path)."""
+        """Bounding box of the sigma_e > 0 cells for the ohmic loss (one host sync; never on the eps_r_update path), then
+        the box copy of a parked sigma_e while accumulating."""
         self._ohmic_box = _bounding_box(self.materials.sigma_e)
+        self._refresh_ohmic_sigma_e()
+
+    def _q_accum_enabled(self) -> None:
+        self._refresh_ohmic_sigma_e()
+
+    def _refresh_ohmic_sigma_e(self) -> None:
+        """Device copy of a parked sigma_e on _ohmic_box while accumulating (one upload of the box), else None."""
+        self._ohmic_sigma_e = None
+        if self._enable_q_accum and self._ohmic_box is not None and 'sigma_e' in self.materials.parked:
+            self._ohmic_sigma_e = self.materials.device_array('sigma_e', self._ohmic_box)
 
     def _rebuild_e_coefficients(self):
         # One fused kernel writes ca / cb in place (cb alone while ca is the uniform 1): no allocations on the
-        # thermo-optic 'eps_r_update' path.
+        # thermo-optic 'eps_r_update' path; parked eps_r / sigma_e (MaterialGrid.park) are read in uploaded x-row blocks.
         materials = self.materials
         ca, uniform = self._ca_layout(1)
-        if uniform:
-            _kernels.cb_coefficients(materials.sigma_e, materials.eps_r, self._dt_real, self._real(EPS0), self.cb)
-        else:
-            _kernels.e_coefficients(materials.sigma_e, materials.eps_r, self._dt_real, self._real(EPS0), ca, self.cb)
+        dt, eps0 = self._dt_real, self._real(EPS0)
+        for rows in material_row_blocks(materials, self._E_COEFFICIENT_MATERIALS, self.nx, self.ny):
+            sigma_e, eps_r = materials.device_array('sigma_e', rows), materials.device_array('eps_r', rows)
+            if uniform:
+                _kernels.cb_coefficients(sigma_e, eps_r, dt, eps0, self.cb[rows])
+            else:
+                _kernels.e_coefficients(sigma_e, eps_r, dt, eps0, ca[rows], self.cb[rows])
         if self.subpixel_smoothing is not None:   # averaged eps on the interface cells, before the PEC fold
             self.subpixel_smoothing.correct_fdtd(self)
         self._fold_pec_keep()
@@ -367,7 +386,10 @@ class FDTDEngine2D_Ez(_YeeEngine2DBase):
 
     def _nonlinear_components(self, with_eps=False):
         """The E component the C5 media (nonlinear, gain) act on: E_z at the cell centres, n0^2 = eps_r (with_eps
-        changes nothing here: eps_r always exists)."""
+        changes nothing here: eps_r always exists); refused on a parked eps_r (the media read it as a device array)."""
+        if 'eps_r' in self.materials.parked:
+            raise ValueError('em_fdtd_ez: nonlinear / gain media need eps_r on the device, but it is parked on the host '
+                             '(EMPhysics park_arrays; the model path never parks it with such a medium)')
         return [{'name': 'ez', 'axis': None, 'periodic': None, 'widths': None, 'field': self.fields.ez,
                  'cb': self.cb, 'eps': self.materials.eps_r, 'eps_scale': 1.0}]
 
@@ -386,8 +408,8 @@ class FDTDEngine2D_Ez(_YeeEngine2DBase):
                                      self.q_accum[drude_box])
         ohmic_box = self._ohmic_box
         if ohmic_box is not None:
-            _kernels.q_accum_ohmic(self.materials.sigma_e[ohmic_box], ez[ohmic_box], self._dt_real,
-                                   self.q_accum[ohmic_box])
+            sigma_e = self.materials.sigma_e[ohmic_box] if self._ohmic_sigma_e is None else self._ohmic_sigma_e
+            _kernels.q_accum_ohmic(sigma_e, ez[ohmic_box], self._dt_real, self.q_accum[ohmic_box])
         for lorentz in self.lorentz_poles:
             box = lorentz['box']
             _kernels.q_accum_lorentz_half(lorentz['dp'][0], ez[box], self.q_accum[box])

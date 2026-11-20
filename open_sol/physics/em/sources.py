@@ -398,16 +398,18 @@ def _carrier_angular_frequency(temporal) -> float:
     return 2.0 * np.pi * float(frequency)
 
 
-def _line_cell_permittivity(axis, position, span, background, sigma_e, dispersive_regions, omega):
+def _line_cell_permittivity(axis, position, span, background, sigma_e, dispersive_regions, omega, xp=None):
     """complex128 eps(omega) of the cells [span) of a grid line (axis 'x': along x at y-cell `position`; span None =
-    whole line): background - j sigma_e/(omega eps0) + chi of each region [(pole, box | None, cropped mask | None)]."""
+    whole line): background - j sigma_e/(omega eps0) + chi of each region [(pole, box | None, cropped mask | None)];
+    on xp (None: background's module; a host background or sigma_e line, MaterialGrid.park, is uploaded)."""
     along_axis = 0 if axis == 'x' else 1
     lo, hi = span if span is not None else (0, background.shape[along_axis])
 
     def line(array):
         return array[lo:hi, position] if axis == 'x' else array[position, lo:hi]
 
-    permittivity = complex_permittivity(line(background), line(sigma_e), (), omega, xp=array_module_of(background))
+    permittivity = complex_permittivity(line(background), line(sigma_e), (), omega,
+                                        xp=array_module_of(background) if xp is None else xp)
     for pole, box, cropped_mask in dispersive_regions:
         susceptibility = complex(pole.susceptibility(omega))
         if box is None:
@@ -577,7 +579,7 @@ class SheetCurrentCalibration:
     def _row_permittivity(self, row, cell_eps, materials):
         source = self.source
         return _line_cell_permittivity(source.axis, row, source.span, cell_eps, materials.sigma_e,
-                                       self.physics.dispersive_regions, self.omega)
+                                       self.physics.dispersive_regions, self.omega, xp=self.physics.domain.xp)
 
     def apply(self, engine, materials):
         source = self.source

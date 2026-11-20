@@ -5,7 +5,7 @@ import numpy as np
 from ....core.constants import EPS0
 from ..yee_grid import face_average, face_pec, face_shares
 from . import fdtd_hz_2d_kernels as _kernels
-from .fdtd_2d_base import _YeeEngine2DBase, _box_overlap, _bounding_box, _union_box
+from .fdtd_2d_base import _YeeEngine2DBase, _box_overlap, _bounding_box, _union_box, material_state
 from .fdtd_conformal_kernels import conformal_hz, sparse_launch
 
 
@@ -89,20 +89,23 @@ class FDTDEngine2D_Hz(_YeeEngine2DBase):
         # (grid, block, box ints) of q_accum_hz on the cells that can receive loss, (None,) for none; None = stale
         # (refreshed at the next accumulation after finalize, a sigma_e change or a new pole / nonlinear region)
         self._loss_box_args = None
+        # full-grid device copy of a parked sigma_e read by q_accum_hz while accumulating (_refresh_loss_sigma_e)
+        self._loss_sigma_e = None
 
     # --- PhysicsSolver contract -----------------------------------------------
 
-    def state(self) -> dict:
+    def state(self):
         """Public fields: hz, eps_xx, eps_yy, sigma_e, q_accum (None before accumulation), q_accum_time; the staggered
-        ex / ey are not state (the renderer gives them collocated)."""
-        return {
+        ex / ey are not state (the renderer gives them collocated); parked material arrays read as device copies
+        (fdtd_2d_base.material_state)."""
+        return material_state({
             'hz': self.fields.hz,
             'eps_xx': self.materials.eps_xx,
             'eps_yy': self.materials.eps_yy,
             'sigma_e': self.materials.sigma_e,
             'q_accum': self.q_accum,
             'q_accum_time': self.q_accum_time,
-        }
+        }, self.materials)
 
     def _permittivity_written(self) -> None:
         """eps_xx_update / eps_yy_update (inject_source): E face coefficients rebuilt at the next step."""
@@ -116,11 +119,20 @@ class FDTDEngine2D_Hz(_YeeEngine2DBase):
     # --- loss accounting ------------------------------------------------------
 
     def _q_accum_enabled(self) -> None:
-        """1-element no-pole stand-ins for q_accum_hz, then the pole power totals when a pole exists."""
+        """1-element no-pole stand-ins for q_accum_hz, then the pole power totals when a pole exists and the device
+        copy of a parked sigma_e."""
         if self._no_pole_power is None:
             self._no_pole_power = self.xp.zeros(1, dtype=self.dtype)
             self._no_pole_cell = self.xp.zeros(1, dtype=np.bool_)
         self._ensure_pole_power_totals()
+        self._refresh_loss_sigma_e()
+
+    def _refresh_loss_sigma_e(self) -> None:
+        """Full-grid device copy of a parked sigma_e (MaterialGrid.park) while accumulating: q_accum_hz reads every
+        cell of its loss box each step (the model path never parks sigma_e with accumulation on), else None."""
+        self._loss_sigma_e = None
+        if self._enable_q_accum and 'sigma_e' in self.materials.parked:
+            self._loss_sigma_e = self.materials.device_array('sigma_e')
 
     def _ensure_pole_power_totals(self) -> None:
         """Allocate the full-grid face pole power totals (field dtype) once accumulation is on and a pole exists."""
@@ -391,7 +403,7 @@ class FDTDEngine2D_Hz(_YeeEngine2DBase):
             (self.q_accum, ex, ey,
              self._pole_power_x if with_pole_power else self._no_pole_power,
              self._pole_power_y if with_pole_power else self._no_pole_power,
-             self.materials.sigma_e,
+             self.materials.sigma_e if self._loss_sigma_e is None else self._loss_sigma_e,
              self._pole_cell if with_pole_power else self._no_pole_cell,
              self._cell_dx_real, self._cell_dy_real,
              self._nx_i32, self._ny_i32, self._periodic_x_i32, self._periodic_y_i32,
@@ -419,6 +431,7 @@ class FDTDEngine2D_Hz(_YeeEngine2DBase):
 
     def _sigma_e_changed(self) -> None:
         self._loss_box_args = None   # refreshed at the next accumulation
+        self._refresh_loss_sigma_e()
 
     def _component_arrays(self, component):
         """(E field, face cb, face pole power total or None, keep mask or None) of 'ex' / 'ey'."""
@@ -430,7 +443,8 @@ class FDTDEngine2D_Hz(_YeeEngine2DBase):
 
     def _rebuild_e_coefficients(self):
         """cb (+ a per-face ca, + eps_x / eps_y once allocated) of both E face sets from the face-averaged eps_xx /
-        eps_yy / sigma_e (one fused launch)."""
+        eps_yy / sigma_e (one fused launch; the face means read neighbour cells, so parked arrays (MaterialGrid.park)
+        are uploaded whole for the launch: transient full-grid copies)."""
         materials = self.materials
         ca_x, ca_y, ca_uniform = self._ca_layout(2)
         with_eps = self.eps_x is not None
@@ -438,7 +452,7 @@ class FDTDEngine2D_Hz(_YeeEngine2DBase):
         _kernels.e_face_coefficients(
             self._k_grid, self._k_block,
             (ca_x, self.cb_x, eps_x, ca_y, self.cb_y, eps_y,
-             materials.eps_xx, materials.eps_yy, materials.sigma_e,
+             *(materials.device_array(name) for name in ('eps_xx', 'eps_yy', 'sigma_e')),
              self._lower_share_y, self._upper_share_y, self._lower_share_x, self._upper_share_x,
              self._nx_i32, self._ny_i32, self._periodic_x_i32, self._periodic_y_i32,
              np.int32(not ca_uniform), np.int32(with_eps), self._dt_real, self._real(EPS0)))

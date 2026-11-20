@@ -57,7 +57,8 @@ _POLARIZATION_CLASSES = {'ez': (Fields2D_Ez, FDTDEngine2D_Ez, EMRenderer),
 _CALIBRATION_MATERIALS = {'ez': frozenset({'eps_r', 'sigma_e', 'mu_r', 'sigma_m'}),
                           'hz': frozenset({'eps_xx', 'eps_yy', 'sigma_e', 'mu_r', 'sigma_m'})}
 # MaterialGrid arrays EMPhysics(park_arrays=) may move to the host (each reader goes through device_array or host rows)
-PARKABLE_ARRAYS = {'ez': frozenset({'mu_r', 'sigma_m'}), 'hz': frozenset({'mu_r', 'sigma_m'})}
+PARKABLE_ARRAYS = {'ez': frozenset({'eps_r', 'sigma_e', 'mu_r', 'sigma_m'}),
+                   'hz': frozenset({'eps_xx', 'eps_yy', 'sigma_e', 'mu_r', 'sigma_m'})}
 # explicit_kernels stepper precision -> field dtype of the 2D engines (half_storage: em_fdtd_3d and others only)
 _FIELD_DTYPES = {'single': np.dtype(np.float32), 'double': np.dtype(np.float64)}
 
@@ -264,15 +265,18 @@ class EMPhysics(PhysicsSolver):
         required_y = xp.asarray((light_step_squared / dy_cells ** 2).astype(DTYPE))
         materials = self.domain.materials
         if self.polarization == 'ez':
-            permittivity, permittivity_label = materials.eps_r, 'eps_r'
+            permittivity, permittivity_label = material_values(materials, 'eps_r'), 'eps_r'
         else:
-            permittivity, permittivity_label = xp.minimum(materials.eps_xx, materials.eps_yy), 'min(eps_xx, eps_yy)'
+            permittivity, permittivity_label = self._in_plane_minimum_permittivity(), 'min(eps_xx, eps_yy)'
         cell_mu_r = material_values(materials, 'mu_r')
         pole_term = self._pole_stability_term(dt)
         requirement = required_x[:, None] + required_y[None, :]
         if pole_term is not None:
             requirement = requirement + cell_mu_r * pole_term
-        stability_ratio = permittivity * cell_mu_r   # permittivity is a device array: a new one
+        if np.ndim(permittivity) == 0 and np.ndim(cell_mu_r) == 0:   # both parked and uniform
+            stability_ratio = xp.full(requirement.shape, permittivity * cell_mu_r, dtype=DTYPE)
+        else:
+            stability_ratio = permittivity * cell_mu_r   # a new device array
         stability_ratio /= requirement
         worst_ratio = float(stability_ratio.min())
         if worst_ratio >= 1.0 - 1e-6:
@@ -294,6 +298,17 @@ class EMPhysics(PhysicsSolver):
                          f'{y_centers[iy]:.4g}) m is below (C0 dt)^2 (1/dx^2 + 1/dy^2) = {required:.4g}{pole_text} '
                          f'there, so the time step is unstable; lower courant_factor to <= {stable_factor:.3f}, or '
                          f'raise {" / ".join(self.permittivity_arrays)} / mu_r')
+
+    def _in_plane_minimum_permittivity(self):
+        """hz Courant check: min(eps_xx, eps_yy) per cell on the device, from the host when both are parked (a DTYPE
+        scalar when uniform, else one upload of the minimum)."""
+        materials = self.domain.materials
+        if not {'eps_xx', 'eps_yy'} <= materials.parked:
+            return self.xp.minimum(material_values(materials, 'eps_xx'), material_values(materials, 'eps_yy'))
+        minimum = np.minimum(materials.eps_xx, materials.eps_yy)
+        if minimum.min() == minimum.max():
+            return DTYPE(minimum.flat[0])
+        return self.xp.asarray(minimum)
 
     def _pole_stability_term(self, dt):
         """Per-cell sum of _pole_step_term x the region weight over _pole_stability_regions (run-backend DTYPE (nx, ny);
