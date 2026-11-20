@@ -308,6 +308,8 @@ def _check_fem_cudss(results_by_name):
                                   'n_eff_found': [[value.real, value.imag] for value in found],
                                   'single_residual': result.info.get('single_residual'),
                                   'rayleigh_change': result.info.get('rayleigh_change'),
+                                  # cudss_mixed: polished, so a complex64 device basis (fem_modes single_basis)
+                                  'arnoldi': result.info.get('arnoldi'),
                                   'operator_applications': result.info['operator_applications'],
                                   'factor_seconds': result.info['factor_seconds'],
                                   'eigen_seconds': result.info['eigen_seconds']}

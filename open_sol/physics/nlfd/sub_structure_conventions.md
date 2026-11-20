@@ -39,6 +39,14 @@ iterate media). Its table entry is the host representative tensor (validation an
 come from `site_tensor` (`MixingTerm.components` of a sheet term only filter / describe). Kerr operator terms and
 carriers read a phasor's `bulk_terms` only; absorption and the adjoint read the sheet terms too.
 
+## Krylov precision
+- The Newton steps run `iteration.real_gmres(single_basis=True)` (complex64 basis, forcing raised to
+  GMRES_SINGLE_MIN_TOLERANCE); the pump-depleted adjoint keeps complex128 (it solves to the iteration tolerance). A new
+  real_gmres caller below that floor passes single_basis=False (ValueError otherwise). Float32 rows meet only float32
+  operands (a float64 operand makes matmul copy the basis to float64); the estimator (`definition._memory_estimate`
+  Newton items, the adjoint's excess over them) and the time recipe (`krylov`) count the complex64 rows. Checked by
+  (d) of nlfd_newton_tangent and the newton model cases.
+
 ## Self-tests
 - selftests_sheets / selftests_backend import private spec builders and checks of selftests / selftests_sheets /
   selftests_adjoint: changing one changes those cases too. What each reference relies on (strip layout, tolerances,
