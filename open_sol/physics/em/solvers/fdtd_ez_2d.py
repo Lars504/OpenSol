@@ -216,8 +216,8 @@ class FDTDEngine2D_Ez(_YeeEngine2DBase):
                                  xp.asarray(face_extra, dtype=self.dtype), sparse_launch(len(face_cell)))
 
     def _sigma_e_changed(self):
-        """Bounding box of the sigma_e > 0 cells for the ohmic loss (one host sync; never on the eps_r_update path), then
-        the box copy of a parked sigma_e while accumulating."""
+        """Bounding box of the sigma_e > 0 cells for the ohmic loss (one host sync; never on the eps_r_update path),
+        then the box copy of a parked sigma_e while accumulating."""
         self._ohmic_box = _bounding_box(self.materials.sigma_e)
         self._refresh_ohmic_sigma_e()
 
@@ -232,7 +232,8 @@ class FDTDEngine2D_Ez(_YeeEngine2DBase):
 
     def _rebuild_e_coefficients(self):
         # One fused kernel writes ca / cb in place (cb alone while ca is the uniform 1): no allocations on the
-        # thermo-optic 'eps_r_update' path; parked eps_r / sigma_e (MaterialGrid.park) are read in uploaded x-row blocks.
+        # thermo-optic 'eps_r_update' path; parked eps_r / sigma_e (MaterialGrid.park) are read in uploaded x-row
+        # blocks.
         materials = self.materials
         ca, uniform = self._ca_layout(1)
         dt, eps0 = self._dt_real, self._real(EPS0)
@@ -388,8 +389,8 @@ class FDTDEngine2D_Ez(_YeeEngine2DBase):
         """The E component the C5 media (nonlinear, gain) act on: E_z at the cell centres, n0^2 = eps_r (with_eps
         changes nothing here: eps_r always exists); refused on a parked eps_r (the media read it as a device array)."""
         if 'eps_r' in self.materials.parked:
-            raise ValueError('em_fdtd_ez: nonlinear / gain media need eps_r on the device, but it is parked on the host '
-                             '(EMPhysics park_arrays; the model path never parks it with such a medium)')
+            raise ValueError('em_fdtd_ez: nonlinear / gain media need eps_r on the device, but it is parked on the '
+                             'host (EMPhysics park_arrays; the model path never parks it with such a medium)')
         return [{'name': 'ez', 'axis': None, 'periodic': None, 'widths': None, 'field': self.fields.ez,
                  'cb': self.cb, 'eps': self.materials.eps_r, 'eps_scale': 1.0}]
 
