@@ -346,9 +346,9 @@ def _memory_estimate(settings_values, mesh, context):
          FLOAT32_BYTES * max(min(FIELD_BLOCK_SLICES // 3, slices), 1) * points)]
     run_items, features = [], [feature for feature in context.physics_spec.features if feature.enabled]
     if any(feature.type == 'adjoint_objective' for feature in features):   # one EpsSensitivity per physics
-        run_items.append(('adjoint sensitivity cache (3 x float64 + float32)',
-                          (3 * FLOAT64_BYTES + FLOAT32_BYTES) * n_cells))
-        host_items += (('host adjoint gradients and density (4 x float64)', 4 * FLOAT64_BYTES * n_cells),
+        # solver3d._cascade_sensitivity: the float64 cell gradients stay host, the float32 density is on the device
+        run_items.append(('adjoint sensitivity density (float32)', FLOAT32_BYTES * n_cells))
+        host_items += (('host adjoint gradients (kept) and density (4 x float64)', 4 * FLOAT64_BYTES * n_cells),
                        ('adjoint slice products block (complex128)',
                         3 * COMPLEX128_BYTES * FIELD_BLOCK_SLICES * points))
     host_items += length_sweep_host_items(features, n_modes)
