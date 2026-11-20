@@ -19,26 +19,29 @@ class AcousticRenderer(PhysicsRenderer):
     the cell centres, physical units also under half_storage); stt only in an axisymmetric physics."""
 
     name = 'acoustics'
-    # Mirror parity (core.mirror, symmetry 2.5): a 'rigid' face on an EM mirror plane is the even mirror (v_n = 0,
-    # shear 0 on the window face: AcousticPhysics._pins), so v is polar, sxy axial_z (odd on both planes), the normal
-    # stresses even; v / sxy are raw hi-face / corner samples (staggered).
+    # Mirror parity (core.mirror, symmetry 2.5): the slip wall (bc rigid / symmetric) on a mirror plane is the even
+    # mirror (v_n = 0, shear 0 on the window face: AcousticPhysics._pins), and core.mirror gives elastic_waves s = +1
+    # everywhere (no odd face): v polar, sxy axial_z (odd on both planes), the normal / hoop stresses, pressure and
+    # strains scalar (even at s = +1; linear signed, so parity sectors combine them); v / sxy are raw hi-face / corner
+    # samples (staggered). The (r, z) axis (AXIS_UNFOLD_TYPES +1): v_r odd with 0 on the axis face, v_z even, s_rz odd
+    # with 0 on the axis corners, s_rr / s_zz / s_tt even, as the rotation by pi.
     field_infos = {
         'pressure': FieldInfo('pressure', 'Pressure', unit='Pa', signed=True, cmap='RdBu_r', primary=True,
-                              parity='even'),
-        'sxx': FieldInfo('sxx', 'Normal stress xx', unit='Pa', signed=True, cmap='RdBu_r', parity='even'),
-        'syy': FieldInfo('syy', 'Normal stress yy', unit='Pa', signed=True, cmap='RdBu_r', parity='even'),
+                              parity='scalar'),
+        'sxx': FieldInfo('sxx', 'Normal stress xx', unit='Pa', signed=True, cmap='RdBu_r', parity='scalar'),
+        'syy': FieldInfo('syy', 'Normal stress yy', unit='Pa', signed=True, cmap='RdBu_r', parity='scalar'),
         'sxy': FieldInfo('sxy', 'Shear stress xy', unit='Pa', signed=True, cmap='RdBu_r', parity='axial_z',
                          staggered='xy'),
-        'stt': FieldInfo('stt', 'Hoop stress (axisymmetric)', unit='Pa', signed=True, cmap='RdBu_r', parity='even'),
+        'stt': FieldInfo('stt', 'Hoop stress (axisymmetric)', unit='Pa', signed=True, cmap='RdBu_r', parity='scalar'),
         'vx': FieldInfo('vx', 'Particle velocity x', unit='m/s', signed=True, cmap='RdBu_r', parity='polar_x',
                         staggered='x'),
         'vy': FieldInfo('vy', 'Particle velocity y', unit='m/s', signed=True, cmap='RdBu_r', parity='polar_y',
                         staggered='y'),
         'v_abs': FieldInfo('v_abs', 'Particle speed |v|', unit='m/s', cmap='inferno'),
         'elastic_strain_xx': FieldInfo('elastic_strain_xx', 'Elastic strain xx', unit='1', signed=True, cmap='RdBu_r',
-                                       parity='even'),
+                                       parity='scalar'),
         'elastic_strain_yy': FieldInfo('elastic_strain_yy', 'Elastic strain yy', unit='1', signed=True, cmap='RdBu_r',
-                                       parity='even'),
+                                       parity='scalar'),
     }
 
     def __init__(self, acoustic_physics):

@@ -141,14 +141,21 @@ A new accepted sync joins this list.
   grid checks the domain's `grid_kind`.
 
 ## Mirror planes (`mirror`, numpy only)
-- Model mirror planes = the EM bc_<face> 'symmetric' / 'antisymmetric' faces plus the faces of the enabled
-  `MIRROR_FEATURES` (a magnetic-only model has none, a membrane half model has its symmetry face). Per physics
+- Model mirror planes = the EM bc_<face> 'symmetric' / 'antisymmetric' faces, elastic_waves bc 'symmetric'
+  (`EVEN_ONLY_BC_TYPES`: no odd face, so sector_specs refuses it) plus the faces of the enabled `MIRROR_FEATURES`: the
+  `symmetry` feature of every non-EM type (its natural even face; magnetostatics_3d -1), membrane / pressure_acoustics
+  also `antisymmetry` (-1). magnetic_insulation never is (it is also the far boundary). A new mirror feature validates
+  through `definition_helpers.mirror_feature_issues` (Cartesian domain, not the axisymmetric axis, EM partners mirror
+  the face) and `own_mirror_face_conflicts` (no other face feature of the type there). Per physics
   (`mirror_faces(spec, physics)`) a face the physics does not set itself unfolds even, so its own face there must be
   insulated (`definition_helpers.mirror_face_issues` warns), except the `FACE_FEATURE_SIGNS` types, signed by their own
   face feature on the plane.
 - Totals take `mirror_faces`, displays (`unfold_field` callers) `unfold_faces`: it adds the x_lo rotation axis of an
-  axisymmetric `AXIS_UNFOLD_TYPES` physics, which ring weights already count, so it never doubles a total. A new axis
-  type needs every field even under the axis image (E_r / A_phi flip).
+  axisymmetric `AXIS_UNFOLD_TYPES` physics with that type's sign, which ring weights already count, so it never
+  doubles a total. The true image at phi = pi is a rotation by pi about the axis, which one mirror sign reproduces only
+  when no field mixes in-plane and azimuthal vector parts: +1 for scalar / (r, z) vector types, -1 for the A_phi
+  magnetic types; never the BOR EM types (E_phi beside E_r / E_z). A new axis type needs every renderer field's
+  parity right under its sign.
 - `FieldInfo.parity` names a renderer field's image rule (`image_sign`; '' = even when unsigned, else unknown:
   `unfold_field` raises); `staggered` = axes of hi-face samples (plane value 0 when odd, else the nearest sample: exact
   only for odd staggered components); `plane_signs` (`plane_signs_text`) replaces the face signs for one field (the
@@ -157,7 +164,8 @@ A new accepted sync joins this list.
 - Every total over a selection, line, plane or box touching a plane goes through `touch_factor` (2 per touched face;
   mirror-even integrands; callers: grep `touch_factor`). heat reports no feature totals.
 - Parity sectors: `sector_specs` = 2^k spec copies (MIRROR_FEATURES swapped and split per face by
-  `_swap_mirror_features`; a type without features of both signs, heat, raises, reported by study validation
+  `_swap_mirror_features`; a type without features of both signs (heat and the other symmetry-only types) raises,
+  reported by study validation
   `_parity_sector_issues`). The drawn source alone = the mean of the unfolded sector fields (linear signed components
   only) and mean / 2^k of quadratic totals over regions / surfaces symmetric about every plane (never a line off a
   plane); `combine_sector_result` holds the rule per feature result kind (None = not combined). Study loop:

@@ -3,7 +3,7 @@ settings, features, material vocabulary, validation) plus their template and sel
 registry (physics/potential/__init__.py must not import it)."""
 from dataclasses import dataclass
 
-from ...core.mirror import mirror_faces
+from ...core.mirror import feature_mirror_faces, mirror_faces
 from ...core.memory_estimate import (BOOL_BYTES, FLOAT32_BYTES, FLOAT64_BYTES, MemoryEstimate, combine,
                                      diffusion_system_estimate, window_cell_count)
 from ...core import time_estimate as te
@@ -21,8 +21,9 @@ from ...model.definition_helpers import (AXISYMMETRIC_SPACE_SETTINGS, AZIMUTHAL_
                                          linear_solver_direct, linear_solver_mixed, linear_solver_multigrid,
                                          linear_solver_precision, make_apply_inward_flux, make_point_probe,
                                          mapped_domain_issues, material_follows_state,
-                                         mirror_face_issues, on_tetrahedra, on_triangles, optional_material_param,
-                                         reports_model_checks, validate_points_inside, validated_linear_precision)
+                                         mirror_face_issues, mirror_feature_issues, on_tetrahedra, on_triangles,
+                                         optional_material_param, own_mirror_face_conflicts, reports_model_checks,
+                                         validate_points_inside, validated_linear_precision)
 from ...model.expressions import is_identifier
 from ...model.geometry import expand_entities
 from ...model.schema import FREE_MESH_KINDS, FeatureType, Issue, Param, PhysicsType, feature_path
@@ -49,7 +50,9 @@ _NEWTON_WINDOW_ARRAYS = 12
 _IONIC_DIAGONAL_ARRAYS = 6   # the same for the tangent write of every assembly (linear model: charge, screening, drive)
 _FEM_IONIC_ARRAYS = 6        # triangles: k, k V_bulk, held mask, mean V, charge, one concentration (per element)
 _FLOAT32_NEWTON_TOLERANCE = 1e-3   # smallest nonlinear_tolerance float32 CG meets (~1e-6 of V: 4e-5 V_T at 1 V)
-# a potential boundary feature on an EM mirror plane (definition_helpers.mirror_face_issues)
+_SYMMETRY_FEATURE = 'symmetry'   # core.mirror.MIRROR_FEATURES of both kinds: its outer faces are model mirror planes
+# a potential boundary feature on a mirror plane another physics makes (definition_helpers.mirror_face_issues; the
+# type's own symmetry faces refuse it: own_mirror_face_conflicts)
 _MIRROR_FACE_CONSEQUENCE = (
     'its fields unfold even there (an insulated face). A voltage face is the odd mirror of V - V_face instead (an '
     'antisymmetric bias about the plane, exact for the Dirichlet half cell), a flux face a sheet source of twice its '
@@ -246,7 +249,8 @@ _HELD_SIGN_TEXT = (
     'domain (a source injected inside a terminal is subtracted). A cell held by two features counts for each (the '
     'later voltage holds it; validation warns on possible overlaps); an outer face replaced by a later feature counts '
     'only for that one. E and J / D read 0 inside held cells (ideal conductor): the surface current / charge is this '
-    'result.')
+    'result. Under a mirror plane of the model (a symmetry feature, an EM mirror face): the unfolded structure\'s, x '
+    '2 per plane a held face lies on or meets, or held cells reach (the image joins the region).')
 _HELD_RESULT_TEXT = {
     'currents': ("Result 'table', one row [feature, voltage, current] (units '', V, A/m; axisymmetric and 3D A) and "
                  f'the extras voltage and current: {_HELD_SIGN_TEXT}'),
@@ -692,16 +696,16 @@ _SCALAR_OUTPUTS_HELP = {
     'currents': 'current_<feature> (A/m; axisymmetric and 3D: A) per enabled voltage / terminal: its table result '
                 'current of the last solve. Example derived value {"name": "I_anode", "expression": '
                 '"currents_current_anode"}; a voltage sweep gives the I-V curve. A name equal to an output field (a '
-                "terminal named source) gets none. Under an EM mirror face of the model: the unfolded structure's "
-                'value, x 2 per mirror plane the voltage face or terminal touches (a face on the opposite side does '
-                'not touch).',
+                "terminal named source) gets none. Under a mirror plane of the model (a symmetry feature of any "
+                "physics, an EM bc_<face> symmetric / antisymmetric): the unfolded structure's value, x 2 per mirror "
+                'plane the voltage face or terminal touches (a face on the opposite side does not touch).',
     'electrostatics': 'charge_<feature> (C/m; axisymmetric and 3D: C) per enabled voltage / terminal: its table '
                       'result charge of the last solve. Example {"name": "C_top", "expression": '
                       '"electrostatics_charge_top / V_top"} = the capacitance (F/m) with every other electrode at 0 '
                       'V. Per enabled electrolyte: ionic_strength_<feature> (mol/L, 1/2 sum z_i^2 c_i) and '
                       'debye_length_<feature> (m; bulk, linearised, at the mean eps_dc of its cells), constants of '
-                      "the build. Under an EM mirror face of the model: the unfolded structure's value, x 2 per mirror "
-                      'plane the voltage face or terminal touches.',
+                      "the build. Under a mirror plane of the model (as currents): the unfolded structure's value, x 2 "
+                      'per mirror plane the voltage face or terminal touches.',
 }
 
 
@@ -770,7 +774,10 @@ def _make_validate(kind):
                                 'singular whatever the sources)'))
         issues.extend(cg_solver_issues(vctx, physics_spec, path))
         issues.extend(face_conflicts(vctx, physics_spec, boundary_features, path))
-        issues.extend(mirror_face_issues(vctx, physics_spec, boundary_features, path, _MIRROR_FACE_CONSEQUENCE))
+        own_mirrors = feature_mirror_faces(vctx.spec, physics_spec)   # its symmetry faces: no other face feature there
+        issues.extend(own_mirror_face_conflicts(vctx, physics_spec, boundary_features, own_mirrors))
+        issues.extend(mirror_face_issues(vctx, physics_spec, boundary_features, path, _MIRROR_FACE_CONSEQUENCE,
+                                         faces=[face for face in mirror_faces(vctx.spec) if face not in own_mirrors]))
         issues.extend(held_object_conflicts(vctx, physics_spec, held_features, frozenset({flux_feature}), path))
         issues.extend(_material_issues(vctx, physics_spec, kind, path))
         if KINDS[kind].with_ions:
@@ -794,6 +801,17 @@ def _make_validate(kind):
     return validate_physics
 
 
+def _make_validate_symmetry(kind):
+    """validate of the symmetry feature: the shared mirror-feature rules (definition_helpers.mirror_feature_issues:
+    Cartesian domain, not the axisymmetric x_lo axis, EM partners mirror the face); the face conflicts are reported
+    by the physics validate (own_mirror_face_conflicts)."""
+    settings = _SETTINGS[kind]
+
+    def validate_symmetry(vctx, physics_spec, feature_spec, values):
+        return mirror_feature_issues(vctx, physics_spec, feature_spec, settings)
+    return validate_symmetry
+
+
 def _triangle_issues(vctx, physics_spec, order, path):
     """Rules on a triangle mesh (FEMPotentialPhysics): azimuthal_order 0, no voltage waveforms, linear
     electrolytes only."""
@@ -812,9 +830,9 @@ def _triangle_issues(vctx, physics_spec, order, path):
 
 
 def _three_d_issues(vctx, physics_spec, settings_values, names, path):
-    """Rules of a 3D model (FEMPotentialPhysics3D): a tetrahedron mesh, planar geometry and
-    azimuthal_order 0, no mirror planes, no voltage waveforms, no xy coefficient materials (Stern layers:
-    _validate_electrostatic_voltage; electrolytes: their FeatureType grids)."""
+    """Rules of a 3D model (FEMPotentialPhysics3D): a tetrahedron mesh, planar geometry and azimuthal_order 0, no
+    voltage waveforms, no xy coefficient materials (Stern layers: _validate_electrostatic_voltage; electrolytes: their
+    FeatureType grids). Mirror planes are fine: held fluxes take FEMPotentialPhysics3D.mirror_factor."""
     issues = []
     if not on_tetrahedra(vctx, physics_spec):
         issues.append(Issue('error', path, f'{names.label} in a 3D model runs on a tetrahedron mesh only (MeshSpec '
@@ -823,11 +841,6 @@ def _three_d_issues(vctx, physics_spec, settings_values, names, path):
     if is_axisymmetric(settings_values) or azimuthal_order_of(settings_values):
         issues.append(Issue('error', path, "geometry 'axisymmetric' and azimuthal_order need a 2D model (this model is "
                                            "3D: size_z is set); use geometry 'planar' and azimuthal_order 0"))
-    mirrors = sorted(mirror_faces(vctx.spec))
-    if mirrors:
-        issues.append(Issue('error', path, f"the mirror face(s) {', '.join(mirrors)} of the model are not supported by "
-                                           f'{names.label} in 3D (held currents / charges are not unfolded there): use '
-                                           'a full domain'))
     issues.extend(Issue('error', feature_path(physics_spec, feature),
                         'a voltage waveform needs a 2D model on a tensor mesh; in 3D use waveform none')
                   for feature in physics_spec.features if isinstance(feature.params, dict) and _is_driven(feature))
@@ -849,7 +862,9 @@ def _make_create(kind):
             physics.set_mirror_faces(mirror_faces(ctx.spec))
             return physics
         if ctx.domain.grid_kind == 'tetrahedra':   # FEM 3D (fem.diffusion3d): discretization order, diagonal tensors
-            return FEMPotentialPhysics3D(ctx.domain, kind, order=element_order(values), linear_solver=linear_solver)
+            physics = FEMPotentialPhysics3D(ctx.domain, kind, order=element_order(values), linear_solver=linear_solver)
+            physics.set_mirror_faces(mirror_faces(ctx.spec))
+            return physics
         if ctx.spec.is_3d:
             raise ValueError(f"{_KIND_NAMES[kind].label} in a 3D model needs a tetrahedron mesh (MeshSpec kind "
                              "'tetrahedra')")
@@ -975,6 +990,32 @@ def _make_time_estimate(kind):
     return estimate
 
 
+# ---- symmetry feature texts ----
+_SYMMETRY_TEXTS = {   # kind -> (natural face, flux vector, held quantity, flux feature, source feature)
+    'currents': ('zero normal current', 'J', 'current', 'current_density', 'current_source'),
+    'electrostatics': ('zero normal D', 'D', 'charge', 'surface_charge', 'charge_density'),
+}
+_SYMMETRY_DESCRIPTION = {
+    kind: ('Even mirror plane on outer faces (x_lo ... z_hi): the face is insulated ({natural}, as an unreferenced '
+           'face, so the solve is unchanged) and becomes a model mirror plane (core.mirror): fields unfold V even '
+           'across it (the normal E / {vector} component odd, the tangential one even; Unfold mirror planes, '
+           'Results.field(unfold=True)), field derived integrals reaching it count twice (the unfolded structure), '
+           'max / min include the image (element meshes refuse max / min over a selection reaching the plane), and the '
+           '{quantity} of a voltage / terminal whose held face lies on or meets '
+           'the plane, or whose held cells (element nodes) reach it, is the unfolded one: x 2 per such plane (table '
+           'result and scalar output; a region off the plane keeps its own value, its image is another region). A '
+           '{source} on the plane is half the source of the unfolded model; an antisymmetric bias about the plane '
+           'is a voltage 0 face instead (the odd mirror of V, not unfolded). Runs on tensor, triangle and '
+           'tetrahedron meshes (3D: z faces too; displays unfold x / y only). Errors: a voltage or {flux} feature on '
+           'the same face, the x_lo axis of geometry axisymmetric (its r < 0 side unfolds without a feature; the ring '
+           'weights already count the revolution) and its x_hi cylinder (no mirror image), polar / spherical '
+           'domains (a 1D slab mirrors), another physics with '
+           'mirror bc settings (EM) that does not set the face symmetric / antisymmetric, parity_sectors (no odd '
+           'potential mirror feature).').format(natural=natural, vector=vector, quantity=quantity, flux=flux,
+                                                 source=source)
+    for kind, (natural, vector, quantity, flux, source) in _SYMMETRY_TEXTS.items()}
+
+
 # ---- type descriptions ----
 _COMMON_DESCRIPTION = (
     'finite volumes on the physical window, outputs edge-extended into an EM PML ring. Unreferenced outer faces are '
@@ -1031,14 +1072,15 @@ _TETRAHEDRA_DESCRIPTION = {
            f'node of its elements, object {flux} is a sheet source on the interface faces (both sides); held '
            f'{quantity}s are reactions in {unit} (exact Gauss balance{balance}); E, {outputs} are element means, plus '
            f'3D-only output fields E_z, {flux_z}, {prefix}_zz (not in expressions), sampled on the uniform mesh '
-           'lattice. Not in 3D (validation errors): electrolytes, voltage waveforms, Stern layers, axisymmetric / '
-           'azimuthal_order, mirror faces of the model.')
+           'lattice. Mirror planes of the model (symmetry faces, x_lo ... z_hi) count held totals of the unfolded '
+           'structure as in 2D. Not in 3D (validation errors): electrolytes, voltage waveforms, Stern layers, '
+           'axisymmetric / azimuthal_order.')
     for kind, (prefix, flux, quantity, unit, outputs, flux_z, balance) in _TETRAHEDRA_TEXTS.items()}
 
 
 def _make_mesh_method(kind):
     """mesh_method: how the type solves on mesh_kind (finite volumes, triangles, tetrahedra) and, as problems, the
-    element-mesh and 3D rules validation reports (3D tensor mesh, electrolytes, waveforms, Stern layers, mirrors)."""
+    element-mesh and 3D rules validation reports (3D tensor mesh, electrolytes, waveforms, Stern layers)."""
     names = _KIND_NAMES[kind]
 
     def mesh_method(spec, physics_spec, settings_values, mesh_kind, parameters):
@@ -1065,8 +1107,6 @@ def _make_mesh_method(kind):
         if three_d and any(feature.type == 'voltage' and feature.params.get('stern_thickness') not in (None, 0, 0.0)
                            for feature in features):
             problems.append('A Stern layer needs a 2D model.')
-        if three_d and mirror_faces(spec):
-            problems.append('Mirror faces of the model are not supported in 3D: use a full domain.')
         return text, problems
     return mesh_method
 
@@ -1145,6 +1185,11 @@ def _potential_physics_type(kind):
                                 f'the solve. {_TERMINAL_BODY_TEXT[kind]} {_HELD_RESULT_TEXT[kind]}',
                     apply=_apply_terminal, result=held_result, grids=_FEM_GRIDS),
         flux_feature_type,
+        FeatureType(_SYMMETRY_FEATURE, 'Symmetry', 'boundary_condition', 'boundary', allow_interior=False,
+                    summary='Makes the selected domain edges mirror planes, so only half (or a quarter) of a '
+                            'structure that is the same on both sides of them needs to be drawn.',
+                    description=_SYMMETRY_DESCRIPTION[kind], validate=_make_validate_symmetry(kind),
+                    grids=_FEM_GRIDS),
         source_feature_type,
         FeatureType('potential_probe', 'Potential probe', 'probe', 'point',
                     object_kinds=('point',), max_entities=1, result_kind='timeseries',

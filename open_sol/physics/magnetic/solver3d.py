@@ -23,6 +23,7 @@ from .kept_preconditioner import KeptPreconditionerSolver, kept_preconditioner_s
 from .fields import (MAGNETIC_3D_CURRENT_NAMES, MAGNETIC_3D_FIELD_NAMES, MAGNETIC_3D_PERMEABILITY_NAME,
                      MAGNETIC_3D_PROBE_COMPONENTS, MagneticFields3D)
 from .materials import MAGNETIC_3D_SCHEMA, PERMEABILITY_3D_ARRAYS, REMANENCE_3D_ARRAYS, SATURATION_ARRAY
+from .mirror_totals import MirrorTotals, tensor_touched_faces
 from .renderer import MagneticRenderer3D
 from .saturation import (ANDERSON_DEPTH, TENSOR_NONLINEAR_METHODS, bh_curve, refuse_curve_conflicts,
                          Float32StallWatch, saturation_permeability, tabulated_reluctivity)
@@ -36,19 +37,22 @@ _AXES = 'xyz'
 @dataclass(frozen=True, eq=False)
 class CoilRegion3D:
     """Runtime object of a stranded coil: axis index (0, 1, 2), turns, current [A] (> 0 counter-clockwise seen from
-    +axis), axial length h [m] and T per ampere [1/m] (float64 window array of the run backend, along the axis)."""
+    +axis), axial length h [m], T per ampere [1/m] (float64 window array of the run backend, along the axis) and
+    mirror_factor (2 per model mirror plane its winding reaches: its image joins it in series)."""
     name: str
     axis_index: int
     turns: int
     current: float
     axial_length: float
     per_ampere: object
+    mirror_factor: float = 1.0
 
 
-class MagneticPhysics3D(DiffusionPhysicsBase):
+class MagneticPhysics3D(MirrorTotals, DiffusionPhysicsBase):
     """3D magnetostatics div(mu_dc (grad u - w)) = 0 on the physical window of a Cartesian Domain3D: one DiffusionSystem
     solve per change (a saturation loop when a cell saturates); phi_m = u / mu0, B from the face fluxes, H = (B - B_r)
-    / (mu0 mu_dc), J = curl T, edge-extended into any PML shell."""
+    / (mu0 mu_dc), J = curl T, edge-extended into any PML shell; energy and coil results of the model unfolded over its
+    mirror planes (set_mirror_faces)."""
 
     name = 'magnetic'
     type_label = 'magnetostatics_3d'
@@ -261,11 +265,12 @@ class MagneticPhysics3D(DiffusionPhysicsBase):
             raise ValueError(f"coil '{name}': axis must be 'x', 'y' or 'z', got {axis!r}")
         system = self.system
         mask_window = system.window_mask(mask, f"coil '{name}'")
+        mask_host = to_host(mask_window)
         per_ampere, axial_length = coil_drive_per_ampere(
-            to_host(mask_window), axis, (system.dx_window, system.dy_window, system.dz_window), int(turns),
-            f"coil '{name}'")
+            mask_host, axis, (system.dx_window, system.dy_window, system.dz_window), int(turns), f"coil '{name}'")
         coil = CoilRegion3D(name, _AXES.index(axis), int(turns), float(current), axial_length,
-                            self.xp.asarray(per_ampere, dtype=np.float64))
+                            self.xp.asarray(per_ampere, dtype=np.float64),
+                            self._coil_mirror_factor(name, tensor_touched_faces(mask_host)))
         self.coils.append(coil)
         self._write_current_density()
         self._drive_stale = True
@@ -287,27 +292,31 @@ class MagneticPhysics3D(DiffusionPhysicsBase):
         return True
 
     def coil_results(self, coil: CoilRegion3D, flows=None) -> dict:
-        """current, turns, flux_linkage [Wb] = sum over the faces normal to the coil axis of B_n A times the integral of
-        T / I across the face (with a ring or held cells, up to their boundary term: decision 5), inductance =
-        flux_linkage / current [H] (nan at zero current), energy [J] (field_energy); flows: _total_face_flows() when
-        already computed."""
+        """current, turns (the drawn winding's), flux_linkage [Wb] = mirror_factor x the sum over the faces normal to
+        the coil axis of B_n A times the integral of T / I across the face (with a ring or held cells, up to their
+        boundary term: decision 5; its images on the mirror planes it reaches join it in series), inductance =
+        flux_linkage / current [H] (nan at zero current), energy [J] (field_energy), mirror_factor; flows:
+        _total_face_flows() when already computed."""
         system = self.system
         if system.n_solves == 0:
             raise RuntimeError(f"{self.type_label} '{self.name}': coil '{coil.name}' needs a solve first")
         flows = self._total_face_flows() if flows is None else flows
         integral = face_drive_integrals_3d(coil.per_ampere, coil.axis_index, system.geometry_3d, ~system.fixed_user)
-        linkage = float(self.xp.sum(flows[coil.axis_index] * integral, dtype=self.xp.float64))
+        linkage = coil.mirror_factor * float(self.xp.sum(flows[coil.axis_index] * integral, dtype=self.xp.float64))
         inductance = linkage / coil.current if coil.current != 0.0 else float('nan')
         return {'current': coil.current, 'turns': coil.turns, 'flux_linkage': linkage, 'inductance': inductance,
-                'energy': self.field_energy(flows)}
+                'energy': self.field_energy(flows), 'mirror_factor': coil.mirror_factor}
 
     def field_energy(self, flows=None) -> float:
         """Energy [J] = sum over the faces touching a free cell of (B_n A)^2 / (2 mu0 conductance), i.e. of B_n^2 / (2 mu0
         mu_face) times the face volume A d (held-free faces: the free half cell; held cells and the ring excluded; with
-        remanence the energy of B alone, not the magnet's co-energy)."""
+        remanence the energy of B alone, not the magnet's co-energy), times window_mirror_factor (the images on the
+        model mirror planes)."""
         system = self.system
         flows = self._total_face_flows() if flows is None else flows
-        return face_flow_energy_3d(flows, system.face_conductances, system.face_terms, ~system.fixed_user) / (2.0 * MU0)
+        return (self.window_mirror_factor
+                * face_flow_energy_3d(flows, system.face_conductances, system.face_terms, ~system.fixed_user)
+                / (2.0 * MU0))
 
     def add_probe(self, ix: int, iy: int, iz: int, component: str = 'B_abs') -> FieldProbe:
         """Record field `component` (B_abs [T] or phi_m [A]) at full-grid cell (ix, iy, iz) whenever step records."""

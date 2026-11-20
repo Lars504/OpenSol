@@ -6,12 +6,14 @@ import math
 from dataclasses import replace
 
 from ...core import time_estimate as te
+from ...core.mirror import mirror_faces
 from ...core.memory_estimate import (COMPLEX128_CSR_ENTRY_BYTES, FLOAT32_BYTES, FLOAT64_BYTES, FLOAT64_CSR_ENTRY_BYTES,
                                      MemoryEstimate, combine, host_lu_bytes, phase_before_items, window_cell_count)
 from ...model.definition_helpers import (AXISYMMETRIC_SPACE_SETTINGS, CUDSS_LINEAR_ROLE, axisymmetric_issues,
                                          coupling_target, evaluates_to, geometry_param, held_object_conflicts,
                                          host_direct_back_end, is_axisymmetric, linear_solver_cudss,
-                                         material_follows_state, numpy_calls, reports_model_checks, resolved_back_end)
+                                         material_follows_state, mirror_feature_issues, numpy_calls,
+                                         reports_model_checks, resolved_back_end)
 from ...model.expressions import ExpressionError, is_identifier, referenced_names
 from ...model.schema import (STATIONARY_STUDY, TIME_DEPENDENT_STUDY, FeatureType, Issue, Param, PhysicsType,
                               resolve_values)
@@ -27,6 +29,7 @@ from .solver_fem import FEMDriftDiffusionPhysics, fem_linear_size_issue
 
 DRIFT_DIFFUSION_TYPE_NAME = 'drift_diffusion'
 _HELD_FEATURES = frozenset({'ohmic_contact', 'gate'})
+_SYMMETRY_FEATURE = 'symmetry'   # core.mirror.MIRROR_FEATURES['drift_diffusion']: its outer faces are mirror planes
 _BOTH_GRIDS = ('tensor', 'triangles')   # the type and every feature run on triangle meshes too (solver_fem.py)
 
 
@@ -195,8 +198,10 @@ def _scalar_outputs(settings_values, physics_spec):
 _SCALAR_OUTPUTS_HELP = (
     'current_<contact> (A/m) per enabled ohmic_contact: its total current of the last solve, as its table result; '
     "charge_<gate> (C/m) per enabled gate: its free charge, as its table result; geometry 'axisymmetric': whole-ring "
-    'A and C. Example derived value {"name": "I_anode", "expression": "semiconductor_current_anode"}; a sweep of a '
-    'contact voltage gives the I-V curve (with reuse_build each point continues from the previous state).')
+    'A and C. Under a mirror plane of the model (a symmetry feature of any physics, an EM bc_<face> symmetric / '
+    "antisymmetric) the unfolded structure's: x 2 per mirror plane the contact's or gate's held cells reach. Example "
+    'derived value {"name": "I_anode", "expression": "semiconductor_current_anode"}; a sweep of a contact voltage '
+    'gives the I-V curve (with reuse_build each point continues from the previous state).')
 
 
 # ---- validation (CPU only) ----
@@ -243,6 +248,13 @@ def _linear_solver_issues(vctx, physics_spec, settings_values, path):
     return [] if issue is None else [Issue(issue[0], path, issue[1])]
 
 
+def _validate_symmetry(vctx, physics_spec, feature_spec, values):
+    """symmetry: the shared mirror-feature rules (definition_helpers.mirror_feature_issues: Cartesian domain, not the
+    axisymmetric x_lo axis, EM partners mirror the face). drift_diffusion has no other face feature, so nothing can
+    conflict on the face; contacts / gates / doping / generation reaching it are mirrored with it."""
+    return mirror_feature_issues(vctx, physics_spec, feature_spec, _SETTINGS)
+
+
 def _validate_physics(vctx, physics_spec, settings_values):
     path = ('physics', physics_spec.name)
     issues = []
@@ -260,10 +272,12 @@ def _validate_physics(vctx, physics_spec, settings_values):
 # ---- factory callbacks ----
 def _create(ctx, physics_spec, values):
     physics_class = FEMDriftDiffusionPhysics if ctx.domain.grid_kind == 'triangles' else DriftDiffusionPhysics
-    return physics_class(ctx.domain, temperature=values['temperature'],
-                         linear_solver=ctx.solvers(physics_spec.name)['linear'],
-                         tolerance=values['tolerance'], max_newton_iterations=values['max_iterations'],
-                         max_bias_step=values['max_bias_step'], axisymmetric=is_axisymmetric(values))
+    physics = physics_class(ctx.domain, temperature=values['temperature'],
+                            linear_solver=ctx.solvers(physics_spec.name)['linear'],
+                            tolerance=values['tolerance'], max_newton_iterations=values['max_iterations'],
+                            max_bias_step=values['max_bias_step'], axisymmetric=is_axisymmetric(values))
+    physics.set_mirror_faces(mirror_faces(ctx.spec))   # contact currents / gate charges of the unfolded structure
+    return physics
 
 
 # Host bytes per window cell of one Newton step: ~47 COO entries (drift_diffusion._COUPLED_LAYOUT: 20 face blocks x 2
@@ -555,7 +569,9 @@ _DESCRIPTION = (
     'coupled by Newton with sparse direct solves. psi (output V) is referred to the intrinsic level, equilibrium '
     'Fermi level at 0 V: neutral n-type silicon at 1e22 1/m^3 has V = V_T asinh(N_D / 2 n_i) = +0.36 V, an ohmic '
     'contact adds its voltage. Cells with n_intrinsic > 0 are semiconductor, the others insulators (Poisson only, '
-    'e.g. oxide or air). Outer faces are insulating (zero normal D and current). At least one ohmic contact. '
+    'e.g. oxide or air). Outer faces are insulating (zero normal D and current); a symmetry feature makes them model '
+    'mirror planes (a half device: fields unfold, contact currents and gate charges reaching the plane count twice). '
+    'At least one ohmic contact. '
     'Recombination: SRH (mid-gap trap) + radiative + Auger features; generation: generation features + the coupled '
     'slot. Each solve continues from the last solution, ramping voltages (max_bias_step) and generation, the first '
     'from equilibrium; a failed step is halved, a solve that cannot converge raises. Outputs: J = Jn + Jp (face '
@@ -582,7 +598,8 @@ _CONTACT_RESULT = (
     "Result 'table', one row [feature, voltage, current, electron_current, hole_current] (units '', V, A/m x 3; A "
     'when axisymmetric) and the same extras: the current out of the contact into the device (positive = '
     'conventional current leaving the contact), summed over the face currents between its held cells and their '
-    'neighbours (triangle meshes: through the contact outline).')
+    "neighbours (triangle meshes: through the contact outline); under a mirror plane of the model the unfolded "
+    "structure's, x 2 per plane its held cells (nodes) reach.")
 
 
 def _features():
@@ -640,7 +657,7 @@ def _features():
                                 '0; run error otherwise): put the gate on an oxide. No current flows into a gate. '
                                 "Result 'table', one row [feature, voltage, charge] (units '', V, C/m; C when "
                                 'axisymmetric) and the extras voltage and charge: the free charge on the gate, its '
-                                'outward D flux.',
+                                'outward D flux; x 2 per mirror plane of the model its cells (nodes) reach.',
                     apply=_apply_gate, result=_gate_result, grids=_BOTH_GRIDS),
         FeatureType('auger_recombination', 'Auger recombination', 'domain_condition', 'domain',
                     params=(Param('electron_coefficient', 'float', 2.8e-43, label='Electron Auger coefficient',
@@ -659,6 +676,27 @@ def _features():
                                 'n_i^2) adds to the recombination. Constants per feature, no x, y (float32 subnormal, '
                                 'so no material property); triangles: a node takes the semiconductor-volume mean.',
                     apply=_apply_auger, grids=_BOTH_GRIDS),
+        FeatureType(_SYMMETRY_FEATURE, 'Symmetry', 'boundary_condition', 'boundary', allow_interior=False,
+                    summary='Makes the selected domain edges mirror planes, so only half (or a quarter) of a device '
+                            'that is the same on both sides of them needs to be drawn.',
+                    description='Even mirror plane on outer faces (x_lo ... y_hi): the face is insulating (zero '
+                                'normal D, electron and hole current, as an unreferenced face, so the solve is '
+                                'unchanged) and becomes a model mirror plane (core.mirror): fields unfold V, N, P, '
+                                'phi_n, phi_p, doping, space charge and rates even across it (the normal E / J '
+                                'components odd, the tangential ones even; Unfold mirror planes, '
+                                'Results.field(unfold=True)), field derived integrals reaching it count twice (the '
+                                'unfolded device), max / min include the image (triangle meshes refuse max / min over '
+                                'a selection reaching the plane), and the current of an ohmic contact '
+                                '/ the charge of a gate whose held cells (triangle meshes: nodes) reach the plane is '
+                                'the unfolded one: x 2 per such plane (table results and scalar outputs; a contact off '
+                                'the plane keeps its own value, its image is another contact). Doping, generation, '
+                                'contacts and gates on the plane are mirrored with it (a contact across the plane is '
+                                'drawn as its half). Errors: the x_lo axis of geometry axisymmetric (its r < 0 side '
+                                'unfolds without a feature; the ring weights already count the revolution) and its x_hi '
+                                'cylinder (no mirror image), polar domains, another '
+                                'physics with mirror bc settings (EM) that does not set the face symmetric / '
+                                'antisymmetric, parity_sectors (no odd drift-diffusion mirror feature).',
+                    validate=_validate_symmetry, grids=_BOTH_GRIDS),
         FeatureType('generation', 'Generation', 'domain_condition', 'domain',
                     params=(Param('rate', 'float', 1e27, label='Generation rate', unit='1/(m^3 s)', min=0.0,
                                   field_dependent=True,

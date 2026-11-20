@@ -45,7 +45,12 @@ BAR_SIZE = (1.0 * UM, 0.5 * UM, 0.75 * UM)
 BAR_CELL = 0.25 * UM
 BAR_CONDUCTIVITIES = {'sigma_dc_xx': 2e6, 'sigma_dc_yy': 3e6, 'sigma_dc_zz': 5e6}   # S/m
 BAR_VOLTAGE = 0.1
-BAR_RUNS = {'x_quadratic': ('x', 'quadratic'), 'z_linear': ('z', 'linear')}
+# run -> (axis, discretization, symmetry faces): 'z_linear_mirror' is the z_linear bar with a symmetry feature on x_lo
+# and y_lo (model mirror planes; both voltage faces meet them), so its held currents, the current_left scalar and the
+# integral of q_joule are those of the unfolded bar, 4 times the drawn one (FEMPotentialPhysics3D.mirror_factor, the
+# tetrahedra Session touch factor)
+BAR_RUNS = {'x_quadratic': ('x', 'quadratic', ()), 'z_linear': ('z', 'linear', ()),
+            'z_linear_mirror': ('z', 'linear', ('x_lo', 'y_lo'))}
 # current: exact (linear V, float64 reactions); joule: the float32 per-element q_joule (first estimates)
 BAR_TOLERANCES = {'current': 1e-9, 'balance': 1e-9, 'scalar': 1e-9, 'joule': 1e-6}
 
@@ -157,39 +162,44 @@ def _check_coax(results_by_name):
 
 
 # ---- resistor bar ----
-def resistor_spec(axis, discretization) -> ModelSpec:
-    """Anisotropic bar with BAR_VOLTAGE on <axis>_lo and 0 V on <axis>_hi; derived P_joule = int q_joule and the
-    left current scalar output."""
+def resistor_spec(axis, discretization, mirrors=()) -> ModelSpec:
+    """Anisotropic bar with BAR_VOLTAGE on <axis>_lo and 0 V on <axis>_hi (a symmetry feature on the `mirrors` faces);
+    derived P_joule = int q_joule and the left current scalar output."""
+    mirror_text = f", symmetry {' '.join(mirrors)}" if mirrors else ''
+    mirror_features = [FeatureSpec('mirror', 'symmetry', list(mirrors), {})] if mirrors else []
     return _model(
-        f'Self-test: anisotropic resistor bar on tetrahedra ({axis}, {discretization})', BAR_SIZE, 'currents',
-        CURRENTS_TYPE_NAME,
+        f'Self-test: anisotropic resistor bar on tetrahedra ({axis}, {discretization}{mirror_text})', BAR_SIZE,
+        'currents', CURRENTS_TYPE_NAME,
         [FeatureSpec('left', 'voltage', [f'{axis}_lo'], {'voltage': BAR_VOLTAGE}),
-         FeatureSpec('right', 'voltage', [f'{axis}_hi'], {'voltage': 0.0})],
+         FeatureSpec('right', 'voltage', [f'{axis}_hi'], {'voltage': 0.0}), *mirror_features],
         discretization, _tetrahedra_mesh(BAR_CELL),
         materials=[MaterialSpec('resistor', properties=dict(BAR_CONDUCTIVITIES), selection=['all'])],
         derived=[DerivedValueSpec('P_joule', 'q_joule', [], 'integral'),
                  DerivedValueSpec('I_left', 'currents_current_left', [], 'mean')])
 
 
-def _bar_expected_current(axis):
-    """I [A] = sigma_aa A V / L along axis (float32 sigma)."""
+def _bar_expected_current(axis, mirrors=()):
+    """I [A] = sigma_aa A V / L along axis (float32 sigma), x 2 per mirror plane (the unfolded bar: every symmetry face
+    here is parallel to the axis, so the voltage faces meet it)."""
     index = _AXES.index(axis)
     area = math.prod(size for other, size in enumerate(BAR_SIZE) if other != index)
-    return float32_value(BAR_CONDUCTIVITIES[f'sigma_dc_{axis}{axis}']) * area * BAR_VOLTAGE / BAR_SIZE[index]
+    return (float32_value(BAR_CONDUCTIVITIES[f'sigma_dc_{axis}{axis}']) * area * BAR_VOLTAGE / BAR_SIZE[index]
+            * 2.0 ** len(mirrors))
 
 
 def _check_resistor(results_by_name):
     """Per run: the left current against sigma A V / L, the balance I_left + I_right = 0, the current_left scalar
     output, and int q_joule = V I_left; tolerance 1 on the errors over BAR_TOLERANCES."""
     relative, tolerances, measured = {}, {}, {}
-    for run, (axis, _) in BAR_RUNS.items():
+    for run, (axis, _, mirrors) in BAR_RUNS.items():
         results = results_by_name[run]
         derived = results.summary()['derived']
         current_left = _held_flux(results, 'currents', 'left', 'current')
         current_right = _held_flux(results, 'currents', 'right', 'current')
         power = float(derived['P_joule'])
-        measured[run] = {'I_left_A': current_left, 'I_expected_A': _bar_expected_current(axis), 'P_joule_W': power}
-        for name, value in (('current', abs(current_left / _bar_expected_current(axis) - 1.0)),
+        expected = _bar_expected_current(axis, mirrors)
+        measured[run] = {'I_left_A': current_left, 'I_expected_A': expected, 'P_joule_W': power}
+        for name, value in (('current', abs(current_left / expected - 1.0)),
                             ('balance', abs(current_left + current_right) / abs(current_left)),
                             ('scalar', abs(float(derived['I_left']) / current_left - 1.0)),
                             ('joule', abs(power / (BAR_VOLTAGE * current_left) - 1.0))):
@@ -227,7 +237,10 @@ FEM_3D_SELFTEST_CASES = (
         description=(f'Electric currents on builtin tetrahedra (Kuhn cubes of {BAR_CELL / UM:g} um) of a '
                      f'{BAR_SIZE[0] / UM:g} x {BAR_SIZE[1] / UM:g} x {BAR_SIZE[2] / UM:g} um bar with sigma_dc (xx, yy, '
                      f'zz) = (2e6, 3e6, 5e6) S/m, {BAR_VOLTAGE:g} V and 0 V on the x faces (quadratic) or z faces '
-                     '(linear): the left current against sigma_aa A V / L, I_left + I_right = 0 (exact: linear V; '
+                     '(linear; a third run adds a symmetry feature on x_lo and y_lo: mirror planes of the model that '
+                     'both voltage faces meet, so every current, the scalar and the q_joule integral are those of the '
+                     'unfolded bar, x 4): the left current against sigma_aa A V / L, I_left + I_right = 0 (exact: '
+                     'linear V; '
                      f"{BAR_TOLERANCES['current']:g}), the current_left scalar output read by a derived value, and the "
                      f'derived integral of q_joule against V I_left (element dissipation densities, float32; '
                      f"{BAR_TOLERANCES['joule']:g}). error = the largest relative error over its tolerance; tolerance "

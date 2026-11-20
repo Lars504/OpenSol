@@ -226,8 +226,9 @@ class PotentialPhysics(DiffusionPhysicsBase):
         self._set_insulated_wall_locator(locator)
 
     def set_mirror_faces(self, faces):
-        """Mirror planes of the model (core.mirror.mirror_faces: an EM mirror face on the window edge, where this
-        physics' face is the even mirror): held_flux of a region touching one counts its image too (x 2 per face)."""
+        """Mirror planes of the model (core.mirror.mirror_faces: an EM mirror face or a symmetry feature face on the
+        window edge, where this physics' face is the even, insulated mirror): held_flux of a region touching one counts
+        its image too (x 2 per face)."""
         self.mirror_faces = frozenset(faces)
 
     def __init__(self, domain, kind: str = 'currents', tol: float = 1e-8, max_iter: int = 5000,

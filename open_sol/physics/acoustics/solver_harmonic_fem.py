@@ -17,6 +17,9 @@ scattered-field background pressure and complex probe / surface records per freq
 # term (the PML absorbs p_s only). All per frequency: extra loads and held-value shifts on the assembled pencil
 # (HarmonicSystemBase.set_frequency_load / set_held_offsets), no re-assembly. Probes and surface means use p_b evaluated
 # exactly at their points.
+# Mirror planes (set_mirror_faces, the core.mirror signs of p): the faces themselves are the definition's (symmetry =
+# the default sound-hard face, antisymmetry = sound soft); here object entities on a plane are dropped from boundaries
+# and surface monitors, and surface monitors reaching a plane count the unfolded surface (_mirror_factors).
 import math
 import time
 from dataclasses import dataclass, replace
@@ -33,7 +36,7 @@ from ...fem.diffusion import window_face_edges
 from ...fem.dofs import lagrange_dofs
 from ...fem.elements import lagrange_basis, lagrange_values
 from ...fem.harmonic import FACES_2D, RING_ANGLE, HarmonicCondition, ScalarHarmonicSystem
-from ...fem.mesher import window_inset
+from ...fem.mesher import MERGE_TOLERANCE, window_inset
 from ...fem.pml import DEFAULT_PML_REFLECTION, pml_ring
 from ...fem.reduced_outputs import field_policy, wants_fields
 from ...fem.renderer import FEMFieldRenderer
@@ -56,13 +59,16 @@ THREE_D_ONLY_FIELDS = ('v_z_re', 'v_z_im')
 STATE_NAMES = ('p_abs', 'p_re', 'p_im')   # per-element centroid values of the total pressure (D12)
 
 
+# Mirror parity (core.mirror): p is a scalar of the plane sign (symmetry +1 even, antisymmetry -1 odd; the (r, z) axis
+# +1), v = j grad p / (omega rho) is polar (normal component -s, tangential s); |p|, spl, |v| unsigned (even); no phase
+# fields. The p / v samples are nodal / per element (not staggered).
 def _pressure_info(name, label, signed=False, primary=False):
     return FieldInfo(name, label, unit='Pa', signed=signed, cmap='RdBu_r' if signed else 'viridis', primary=primary,
-                     parity='even' if signed else '')
+                     parity='scalar' if signed else '')
 
 
 def _velocity_info(name, label):
-    return FieldInfo(name, label, unit='m/s', signed=True, cmap='RdBu_r')
+    return FieldInfo(name, label, unit='m/s', signed=True, cmap='RdBu_r', parity=f"polar_{name.split('_')[1]}")
 
 
 FIELD_INFOS = {
@@ -210,7 +216,9 @@ class FrequencyProbe:
 @dataclass(frozen=True, eq=False)
 class SurfaceMonitor:
     """Surface mean / weighted integral of p over mesh entities (2D edges, 3D faces) chosen on one side: unit / weight
-    loads (full numbering), measure and weight integral (whole rings / per metre of depth in planar 2D), records."""
+    loads (full numbering), measure and weight integral (whole rings / per metre of depth in planar 2D), records; over
+    model mirror planes the loads carry the per-entity integrand factors and the measures the unfolded ones
+    (AcousticHarmonicBase._mirror_factors)."""
     name: str
     side: str
     entities: np.ndarray
@@ -222,6 +230,7 @@ class SurfaceMonitor:
     mean_record: HarmonicProbeRecord
     weighted_record: HarmonicProbeRecord
     quadrature: object = None   # (points (k, q, d), unit weights (k, q), weight x unit weights) of p_b, None: loads
+    integrand_factors: object = None   # float64 per mesh entity: the p integrand factor, None: 1 everywhere
 
 
 @dataclass(frozen=True, eq=False)
@@ -269,6 +278,7 @@ class AcousticHarmonicBase(PhysicsSolver):
         self.pml_reflection = float(pml_reflection)
         self.pml_frequency = None if pml_frequency is None else float(pml_frequency)
         self.finalize_notes = []
+        self.mirror_planes = {}   # {face: sign}: the model's mirror planes (set_mirror_faces; kept over prepare)
         self.prepare(domain)
 
     def _label(self) -> str:
@@ -367,8 +377,25 @@ class AcousticHarmonicBase(PhysicsSolver):
                 'assembly_seconds': self.assembly_seconds}
 
     # --- definition API -----------------------------------------------------
+    def set_mirror_faces(self, faces) -> None:
+        """The model's mirror planes {face: sign of p} (core.mirror.mirror_faces of this physics; before the features
+        apply): object entities lying on one are dropped from boundaries and surface monitors (inside the unfolded
+        object), surface results count the unfolded structure (_mirror_factors). Kept over prepare."""
+        planes = {}
+        for face, sign in dict(faces).items():
+            if face not in self.faces or int(sign) not in (1, -1):
+                raise ValueError(f'{self._label()}: mirror plane {face!r}: {sign!r} must be one of '
+                                 f"{', '.join(self.faces)} with sign +1 / -1")
+            if face in self.pml_faces:
+                raise ValueError(f'{self._label()}: {face} carries a PML, so it cannot be a mirror plane')
+            if self._axisymmetric and face == 'x_lo':
+                raise ValueError(f'{self._label()}: x_lo is the rotation axis (r = 0), not a mirror plane')
+            planes[face] = int(sign)
+        self.mirror_planes = planes
+
     def add_boundary(self, target, kind, value=0.0, power=0, impedance=None) -> None:
-        """Boundary condition on an outer face (name) or mesh entities (module header kinds)."""
+        """Boundary condition on an outer face (name) or mesh entities (module header kinds; entities on a mirror
+        plane are dropped)."""
         if isinstance(target, str):
             if target not in self.faces:
                 raise ValueError(f"{self._label()}: unknown face {target!r}; expected one of {', '.join(self.faces)}")
@@ -376,7 +403,7 @@ class AcousticHarmonicBase(PhysicsSolver):
                 raise ValueError(f'{self._label()}: {target} carries a PML (its inner side), so it takes no boundary '
                                  'condition: turn the PML off there or remove the feature')
         else:
-            target = np.unique(np.asarray(target, dtype=np.int64))
+            target = self._off_mirror_planes(np.unique(np.asarray(target, dtype=np.int64)))
         self.boundaries.append(AcousticBoundary(target, kind, value, int(power), impedance))
         self._system_dirty = True
 
@@ -416,9 +443,10 @@ class AcousticHarmonicBase(PhysicsSolver):
         return record
 
     def add_surface_monitor(self, name, faces=(), entities=None, member=None, side='all', weight=1.0) -> SurfaceMonitor:
-        """Mean and weight-weighted integral of p over outer faces (their window side) and object entities, on the
-        entities whose outward normal (out of the member elements; else out of their first element) points to `side`;
-        weight: a number or a function of points (..., d)."""
+        """Mean and weight-weighted integral of p over outer faces (their window side) and object entities (those on
+        a mirror plane dropped), on the entities whose outward normal (out of the member elements; else out of their
+        first element) points to `side`; weight: a number or a function of points (..., d). Over mirror planes the
+        records and measures are those of the unfolded surface (_mirror_factors)."""
         if side not in SIDES:
             raise ValueError(f"{self._label()}: side must be one of {', '.join(SIDES)}, got {side!r}")
         axis, sign = (None, 0.0) if side == 'all' else ('xyz'.index(side[1]), 1.0 if side[0] == '+' else -1.0)
@@ -429,7 +457,7 @@ class AcousticHarmonicBase(PhysicsSolver):
             if axis is None or sign * FACE_NORMALS[face][axis] > 0.0:
                 parts.append(self._window_face_entities(face))
         if entities is not None and len(entities):
-            entities = np.unique(np.asarray(entities, dtype=np.int64))
+            entities = self._off_mirror_planes(np.unique(np.asarray(entities, dtype=np.int64)))
             if axis is not None:
                 normals = self._entity_normals(entities, None if member is None
                                                else np.asarray(to_host(member), dtype=bool).reshape(-1))
@@ -438,22 +466,30 @@ class AcousticHarmonicBase(PhysicsSolver):
         selected = np.unique(np.concatenate(parts)).astype(np.int64) if parts else np.zeros(0, dtype=np.int64)
         if not selected.size:
             raise ValueError(f"{self._label()}: surface '{name}' selects no boundary on side {side}")
-        unit_load = np.real(self._entity_load(selected, 1.0))
-        weight_load = self._entity_load(selected, _as_entity_callable(weight))
+        measure, integrand = self._mirror_factors(selected)
+        entity_weight = _as_entity_callable(weight)
+        unit_load = np.real(self._entity_load(selected, _factored(1.0, integrand)))
+        weight_load = self._entity_load(selected, _factored(entity_weight, integrand))
+        if measure is integrand:   # no mirror plane, or only even ones touched: one set of loads
+            area_load, weight_measure_load = unit_load, weight_load
+        else:
+            area_load = np.real(self._entity_load(selected, _factored(1.0, measure)))
+            weight_measure_load = self._entity_load(selected, _factored(entity_weight, measure))
         quadrature = self._entity_quadrature(selected)
         if quadrature is not None:   # B6: the background integrals of _record become dot products
             points, unit_weights = quadrature
-            quadrature = (points, unit_weights,
-                          unit_weights * _weight_values(_as_entity_callable(weight), points, selected))
+            if integrand is not None:
+                unit_weights = unit_weights * integrand[selected][:, None]
+            quadrature = (points, unit_weights, unit_weights * _weight_values(entity_weight, points, selected))
         ring = self._ring()
         integral_unit = 'Pa m' if self.dimensions == 2 and not self._axisymmetric else 'Pa m^2'
         monitor = SurfaceMonitor(
             name=name, side=side, entities=selected, weight=weight, unit_load=unit_load, weight_load=weight_load,
-            area=ring * float(unit_load.sum()), weight_integral=ring * complex(weight_load.sum()).real,
+            area=ring * float(area_load.sum()), weight_integral=ring * complex(weight_measure_load.sum()).real,
             mean_record=HarmonicProbeRecord('p_mean', unit='Pa', label=f'Mean pressure on {name}'),
             weighted_record=HarmonicProbeRecord('p_weighted', unit=integral_unit,
                                                 label=f'Weighted pressure integral on {name}'),
-            quadrature=quadrature)
+            quadrature=quadrature, integrand_factors=integrand)
         self.surface_monitors.append(monitor)
         return monitor
 
@@ -467,6 +503,57 @@ class AcousticHarmonicBase(PhysicsSolver):
         result['components'] = list(result['components']) + list(weighted['components'])
         result.update(area=monitor.area, weight_integral=monitor.weight_integral, side=monitor.side)
         return result
+
+    # --- mirror planes ---------------------------------------------------------
+    def _plane_contact(self, entities) -> tuple:
+        """({face: bool per entity, every corner on that mirror plane}, {face: bool per entity, a corner on it}) of
+        mesh entities (2D edges, 3D faces) over self.mirror_planes (MERGE_TOLERANCE x the longest window side)."""
+        corners = self._entity_corners(np.asarray(entities, dtype=np.int64))   # (k, c, d)
+        bounds = np.asarray(self.mesh.window, dtype=np.float64).reshape(2, -1)
+        slack = MERGE_TOLERANCE * float(np.max(bounds[1] - bounds[0]))
+        on, touching = {}, {}
+        for face in self.mirror_planes:
+            axis = 'xyz'.index(face[0])
+            close = np.abs(corners[..., axis] - bounds[1 if face.endswith('_hi') else 0, axis]) <= slack
+            on[face], touching[face] = close.all(axis=1), close.any(axis=1)
+        return on, touching
+
+    def _off_mirror_planes(self, entities) -> np.ndarray:
+        """Object entities without those lying on a mirror plane: an outline piece on the plane (an object cut by it
+        or drawn against it) is inside the unfolded object, so no boundary acts there."""
+        if not self.mirror_planes or not len(entities):
+            return entities
+        on, _ = self._plane_contact(entities)
+        return entities[~np.logical_or.reduce(list(on.values()))]
+
+    def _mirror_factors(self, selected) -> tuple:
+        """(measure, integrand) float64 factors per mesh entity (the selected ones set, 1 elsewhere) of a surface
+        monitor over the mirror planes, (None, None) when its selection reaches none: per plane P of sign s that a
+        selected entity off P reaches with a corner, every selected entity off P counts 2 in the measure (its image
+        joins the unfolded surface; the weight mirrored onto it) and 1 + s in the p integrand (the image carries s p:
+        cancels on an odd plane); entities on P (a selected outer face that is the plane) count once. One array for
+        both when they agree."""
+        if not self.mirror_planes or not len(selected):
+            return None, None
+        on, touching = self._plane_contact(selected)
+        measure, integrand = np.ones(len(selected)), np.ones(len(selected))
+        reached = False
+        for face, sign in self.mirror_planes.items():
+            off = ~on[face]
+            if not (touching[face] & off).any():
+                continue
+            reached = True
+            measure[off] *= 2.0
+            integrand[off] *= 1.0 + sign
+        if not reached:
+            return None, None
+        full_measure = np.ones(self._n_entities())
+        full_measure[selected] = measure
+        if np.array_equal(measure, integrand):
+            return full_measure, full_measure
+        full_integrand = np.ones(self._n_entities())
+        full_integrand[selected] = integrand
+        return full_measure, full_integrand
 
     # --- frequency_response study hooks ---------------------------------------
     def reset_frequency_response(self):
@@ -822,12 +909,12 @@ class AcousticHarmonicBase(PhysicsSolver):
             points, unit_weights, weighted_weights = monitor.quadrature
             values = background.values(points, omega)
             return complex(np.sum(unit_weights * values)), complex(np.sum(weighted_weights * values))
-        weight = _as_entity_callable(monitor.weight)
+        weight, factors = _as_entity_callable(monitor.weight), monitor.integrand_factors
         mean = complex(np.sum(self._entity_load(
-            monitor.entities, lambda points, kept: background.values(points, omega))))
+            monitor.entities, _factored(lambda points, kept: background.values(points, omega), factors))))
         weighted = complex(np.sum(self._entity_load(
-            monitor.entities, lambda points, kept: _weight_values(weight, points, kept)
-            * background.values(points, omega))))
+            monitor.entities, _factored(lambda points, kept: _weight_values(weight, points, kept)
+                                        * background.values(points, omega), factors))))
         return mean, weighted
 
     def _element_velocity(self):
@@ -912,6 +999,10 @@ class AcousticHarmonicBase(PhysicsSolver):
     def _entity_pairs(self, entities) -> np.ndarray:
         raise NotImplementedError
 
+    def _entity_corners(self, entities) -> np.ndarray:
+        """(k, c, d) corner points [m] of mesh entities (2D edge ends, 3D face corners)."""
+        raise NotImplementedError
+
     def _n_entities(self) -> int:
         raise NotImplementedError
 
@@ -952,6 +1043,17 @@ class AcousticHarmonicBase(PhysicsSolver):
 def _weight_values(weight, points, kept):
     """Weight of a surface monitor at points (k, q, d): a number, or its edge / face coefficient form."""
     return weight(points, kept) if callable(weight) else weight
+
+
+def _factored(value, factors):
+    """Edge / face coefficient form of value (a number or such a form) times float64 factors per mesh entity; value
+    itself when factors is None."""
+    if factors is None:
+        return value
+
+    def scaled(points, kept):
+        return np.broadcast_to(factors[kept][:, None] * _weight_values(value, points, kept), points.shape[:-1])
+    return scaled
 
 
 def oriented_normals(normals, midpoints, pairs, member, centroids) -> np.ndarray:
@@ -1029,6 +1131,9 @@ class PressureAcousticsFEMPhysics(AcousticHarmonicBase):
 
     def _entity_pairs(self, entities) -> np.ndarray:
         return self.mesh.edge_elements[np.asarray(entities, dtype=np.int64)]
+
+    def _entity_corners(self, entities) -> np.ndarray:
+        return self.mesh.points[self.mesh.edges[np.asarray(entities, dtype=np.int64)]]
 
     def _n_entities(self) -> int:
         return self.mesh.n_edges

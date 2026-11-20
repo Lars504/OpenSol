@@ -4,11 +4,11 @@ at module level."""
 import numpy as np
 
 from ...core.constants import FACES
-from ...core.mirror import MIRROR_SIGNS
+from ...core.mirror import MIRROR_SIGNS, feature_mirror_faces, mirror_faces
 from ...model.definition_helpers import evaluates_to
 from ...model.geometry import expand_entities
 from ...model.schema import FeatureType, Issue, Param, feature_path, subpixel_smoothing_physics
-from .definition_common import OPTOMECHANICS_STUDY, TED_FEATURE, plain_value
+from .definition_common import OPTOMECHANICS_STUDY, ROLLER_FEATURES, TED_FEATURE, plain_value
 from .optomechanics import (NORMALISATIONS, OPTOMECHANICS_TABLE_COLUMNS, SCATTERING, OptomechanicalCoupling,
                             optomechanical_table_result)
 from .selftests_optomechanics import (SILICON_DISK_G0_DESCRIPTION, SILICON_DISK_G0_LABEL, SILICON_RING_G0_DESCRIPTION,
@@ -129,7 +129,8 @@ _DESCRIPTION = (
     'mechanical_quality_factor or quality_from only, else NaN. Extras optical_physics, optical_mode, '
     'optical_frequency, optical_wavelength, n_eff, n_group, length, mirror_factor, scattering, axial_wavenumber (None '
     'forward), normalisation, reference_node. Lossy or open optical modes: |E|^2 forms, real part (no '
-    'quasi-normal-mode correction). An EM mirror face needs a solid roller on it (odd vibration modes do not couple). '
+    'quasi-normal-mode correction). An EM mirror face needs a solid roller or symmetry feature on it (odd vibration '
+    'modes do not couple; a solid symmetry face needs the optics to mirror it). '
     'Field om_integrand (optomechanics study): the moving-boundary g_om density of the shown mode (first coupling) in '
     'rad/s/m^3, summing to g_om_moving_boundary. em_fdfd_bor optics (resonance ~ exp(-j m phi) on triangles; solid '
     'axisymmetric on triangles or solid_mechanics_3d on tetrahedra): integrals carry 2 pi r over the window elements '
@@ -138,8 +139,9 @@ _DESCRIPTION = (
     '|D_n|^2 two-side means, q . n of the solid side; photoelastic with the cylindrical strains (rr, phiphi = u_r / r, '
     'zz, rz), isotropic p only; U = sum eps0 eps |E|^2 2 pi r dA. A solid azimuthal_order m >= 1 couples through the '
     'ring mean of cos(m phi) (~0); a 3D solid is sampled on 64 angles per (r, z) about the axis (axis_x, axis_y) and '
-    'phi-averaged. m_eff = Q^T M Q in kg (no length / mirror factors; a pec / pmc z mirror plane counts the drawn '
-    'half), normalisation point: the nearest solid dof (triangles only), no om_integrand, dn_eff_dx and brillouin_gain '
+    'phi-averaged. m_eff = Q^T M Q in kg (no length factor; x 2 per model mirror plane, i.e. a solid symmetry face '
+    'on a pec / pmc z wall of the optics, extra mirror_factor; a pec / pmc z face the solid holds by a roller only '
+    'counts the drawn half), normalisation point: the nearest solid dof (triangles only), no om_integrand, dn_eff_dx and brillouin_gain '
     'NaN; extras optical_azimuthal_order, optical_q_factor, solid_mesh, mechanical_azimuthal_order, '
     'prescribed_normal_displacement, prescribed_g_om.')
 
@@ -174,7 +176,8 @@ def _crystal_regions(ctx):
 
 def _apply(ctx, solver, feature_spec, values, selection):
     """OptomechanicalCoupling on the solid (the optomechanics study evaluates it), with the crystal regions (tensor
-    meshes), the prescribed q . n and the 3D axis point (em_fdfd_bor optics)."""
+    meshes), the prescribed q . n, the 3D axis point and the m_eff factor 2^(model mirror planes) (em_fdfd_bor optics:
+    the planar path counts the optics' own mirror faces)."""
     reference = ((values['reference_x'], values['reference_y']) if values['normalisation'] == 'point' else None)
     tensor = getattr(ctx.domain, 'grid_kind', 'tensor') == 'tensor'
     coupling = OptomechanicalCoupling(feature_spec.name, values['optical_physics'], values['optical_mode'],
@@ -183,7 +186,8 @@ def _apply(ctx, solver, feature_spec, values, selection):
                                       _crystal_regions(ctx) if values['photoelastic'] and tensor else (),
                                       prescribed_normal_displacement=values['prescribed_normal_displacement'],
                                       axis_point=(values['axis_x'], values['axis_y'], 0.0),
-                                      quality_from=values['quality_from'] or None)
+                                      quality_from=values['quality_from'] or None,
+                                      mirror_factor=float(2 ** len(mirror_faces(ctx.spec))))
     solver.optomechanical_couplings.append(coupling)
     return coupling
 
@@ -193,16 +197,45 @@ def _result(session, solver, coupling, feature_spec, options):
 
 
 def _roller_faces(vctx, physics_spec):
-    """Outer faces held by an enabled roller (or fixed) feature of the solid."""
+    """Outer faces held by an enabled roller / symmetry (or fixed) feature of the solid."""
     faces = set()
     for feature in physics_spec.features:
-        if not feature.enabled or feature.type not in ('roller', 'fixed'):
+        if not feature.enabled or feature.type not in (*ROLLER_FEATURES, 'fixed'):
             continue
         try:
             faces.update(entity for entity in expand_entities(vctx.spec, feature.selection) if entity in FACES)
         except (ValueError, TypeError):
             continue
     return faces
+
+
+def _crystal_mirror_issues(vctx, physics_spec, values, path):
+    """Error per symmetry face of the solid and material whose crystal photoelastic tensor (used with photoelastic on)
+    has an entry that changes sign under the reflection (its image would be another crystal cut)."""
+    from ...materials.crystal_tensors import MIRROR_RELATIVE, VOIGT_PAIRS
+    axes = sorted({face[0] for face in feature_mirror_faces(vctx.spec, physics_spec)})
+    if not (axes and values['photoelastic']):
+        return []
+    issues = []
+    for material in vctx.spec.materials:
+        try:
+            tensor = crystal_photoelastic_tensor(material)
+        except (ValueError, TypeError, KeyError):   # reported at the material
+            continue
+        if tensor is None or not material.selection:
+            continue
+        tensor = np.abs(np.asarray(tensor, dtype=np.float64))
+        scale = float(tensor.max())
+        for axis in axes:
+            index = 'xyz'.index(axis)
+            counts = np.array([sum(component == index for component in pair) for pair in VOIGT_PAIRS])
+            odd = (counts[:, None] + counts[None, :]) % 2 == 1
+            if scale > 0.0 and float(tensor[odd].max(initial=0.0)) > MIRROR_RELATIVE * scale:
+                issues.append(Issue('error', path, f"material '{material.name}' has a crystal photoelastic tensor that "
+                                                   f'is not symmetric under {axis} -> -{axis}, so the overlap of the '
+                                                   'drawn part is not half the unfolded one: model the full width '
+                                                   'across the symmetry plane'))
+    return issues
 
 
 def _quality_from_issues(physics_spec, values, path):
@@ -371,8 +404,9 @@ def _material_issues(vctx, path, values, optical):
 
 def _pairing_issues(vctx, physics_spec, values, optical, settings, path):
     """Optics / solid pairing: em_fdfd_bor (on a triangles mesh) with an axisymmetric triangle solid or a
-    solid_mechanics_3d on tetrahedra, the planar types with a planar 2D solid (errors); the em_fdfd_bor-only params; an
-    info per em_fdfd_bor pec / pmc z face the solid holds by a roller (a mirror plane: m_eff of the drawn half)."""
+    solid_mechanics_3d on tetrahedra, the planar types with a planar 2D solid (errors); the em_fdfd_bor-only params;
+    em_fdfd_bor: an error per model mirror plane (a symmetry face: m_eff x 2) that is no pec / pmc z wall of the optics,
+    an info per pec / pmc z face the solid holds by a roller only (a mirror plane: m_eff of the drawn half)."""
     issues = []
     solid_3d = physics_spec.type == _SOLID_3D_TYPE
     raw = physics_spec.settings if isinstance(physics_spec.settings, dict) else {}
@@ -408,12 +442,22 @@ def _pairing_issues(vctx, physics_spec, values, optical, settings, path):
         if solid_mesh not in (None, _TRIANGLES):
             issues.append(Issue('error', path, f"with em_fdfd_bor optics the solid '{physics_spec.name}' runs on a "
                                                f'triangles mesh (this one: {solid_mesh})'))
+    planes = mirror_faces(vctx.spec)
+    for face in planes:
+        if face not in ('y_lo', 'y_hi') or settings.get(f'bc_{face}') not in _BOR_WALL_TYPES:
+            issues.append(Issue('error', path, f"{face} is a mirror plane of the model (a symmetry face), but "
+                                               f"em_fdfd_bor '{name}' has no pec / pmc wall there (bc_{face} = "
+                                               f"{settings.get(f'bc_{face}')!r}): its resonance is not the mirrored "
+                                               'one, and m_eff would count the image (x 2); set a pec / pmc z wall, '
+                                               'or remove the symmetry face'))
+    own = feature_mirror_faces(vctx.spec, physics_spec)
     rollers = _roller_faces(vctx, physics_spec)
     for face in ('y_lo', 'y_hi'):
-        if settings.get(f'bc_{face}') in _BOR_WALL_TYPES and face in rollers:
+        if settings.get(f'bc_{face}') in _BOR_WALL_TYPES and face in rollers and face not in planes and face not in own:
             issues.append(Issue('info', path, f"optical face {face} of '{name}' is a {settings[f'bc_{face}']} wall and "
                                               'the solid holds it by a roller: if it is a mirror plane, m_eff is that of '
-                                              'the drawn half (the whole body: twice it, g0 / sqrt(2))'))
+                                              'the drawn half (the whole body: twice it, g0 / sqrt(2)); a Symmetry '
+                                              'feature there counts the whole body'))
     return issues
 
 
@@ -473,6 +517,7 @@ def _validate(vctx, physics_spec, feature_spec, values):
         issues.extend(_backward_issues(physics_spec, feature_spec, values, path))
     if physics_spec.type != _SOLID_3D_TYPE:   # the material preview is the 2D drawing
         issues.extend(_material_issues(vctx, path, values, optical))
+        issues.extend(_crystal_mirror_issues(vctx, physics_spec, values, path))
     if name in subpixel_smoothing_physics(vctx.spec, vctx.registry)[0]:
         issues.append(Issue('info', path, f"subpixel smoothing averages the interface permittivity of '{name}', the g0 "
                                           'overlap keeps the staircase: its moving-boundary jumps and photoelastic '
@@ -484,8 +529,8 @@ def _validate(vctx, physics_spec, feature_spec, values):
     for face in FACES:
         if settings.get(f'bc_{face}') in MIRROR_SIGNS and face not in rollers:
             issues.append(Issue('warning', path, f"optical face {face} of '{name}' is a mirror, but no solid roller "
-                                                 'holds that face: the mirrored vibration modes are not the even ones '
-                                                 'the optical mirror implies'))
+                                                 'or symmetry holds that face: the mirrored vibration modes are not '
+                                                 'the even ones the optical mirror implies'))
     return issues
 
 

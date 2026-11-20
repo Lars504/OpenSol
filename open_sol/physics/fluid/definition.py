@@ -6,16 +6,17 @@ import math
 from ...core.constants import FACES
 from ...core.memory_estimate import (BOOL_BYTES, FLOAT32_BYTES, FLOAT64_BYTES, MemoryEstimate, combine,
                                      window_cell_count)
+from ...core.mirror import feature_mirror_faces, mirror_faces
 from ...core.monitors import probe_result
 from ...core.time_estimate import TimeEstimate, explicit_step_estimate
 from ...model.definition_helpers import (HALF_STORAGE_STEPPER_ROLE, evaluates_to, face_conflicts,
-                                         optional_material_param, plain_number, point_cells, reports_model_checks,
-                                         resolved_stepper_precision, selected_material_data, uses_time,
-                                         validate_points_inside)
+                                         mirror_feature_issues, optional_material_param, own_mirror_face_conflicts,
+                                         plain_number, point_cells, reports_model_checks, resolved_stepper_precision,
+                                         selected_material_data, uses_time, validate_points_inside)
 from ...solvers.explicit_kernels import stepper_precision
 from ...model.geometry import expand_entities
 from ...model.schema import (STATIONARY_STUDY, TIME_DEPENDENT_STUDY, FeatureType, Issue, Param, PhysicsType,
-                              feature_path)
+                              coupling_writes, feature_path)
 from .lattice import N_DIRECTIONS
 from .renderer import FluidRenderer
 from .selftests import HEATED_MICROCHANNEL_DESCRIPTION, HEATED_MICROCHANNEL_LABEL, heated_microchannel_spec
@@ -24,11 +25,23 @@ from .solver import (FLUID_PROPERTY_ARRAYS, FLUID_SCHEMA, MACH_WARNING, MIN_TAU_
 
 FLUID_TYPE_NAME = 'laminar_flow'   # = selftests.FLUID_TYPE_NAME (selftests never import the definition)
 _BOUNDARY_FEATURES = frozenset({'wall', 'slip_wall', 'inlet_velocity', 'pressure', 'periodic'})
+# core.mirror.MIRROR_FEATURES['laminar_flow']: the slip face kind (the exact even mirror of the lattice) whose outer
+# faces are model mirror planes; another face feature on them is an error (own_mirror_face_conflicts), not the
+# face_conflicts warning of _BOUNDARY_FEATURES
+_SYMMETRY_FEATURE = 'symmetry'
+# face kinds of the enabled face features (a face without one is a no-slip wall): the mirror-plane checks and the
 # run-time estimate of a steady march (a priori, never fitted): the slowest shear mode the faces allow decays as
 # exp(-t / tau), the march stops once the remaining change is below tolerance x peak (ln(1 / tolerance) decay times)
-# on two checks in a row; face kinds of the mode rule (a face without a feature is a no-slip wall)
-_FACE_FEATURE_KINDS = {'wall': 'wall', 'slip_wall': 'slip', 'inlet_velocity': 'inlet', 'pressure': 'pressure',
-                       'periodic': 'periodic'}
+# on two checks in a row
+_FACE_FEATURE_KINDS = {'wall': 'wall', 'slip_wall': 'slip', _SYMMETRY_FEATURE: 'slip', 'inlet_velocity': 'inlet',
+                       'pressure': 'pressure', 'periodic': 'periodic'}
+# what a non-slip flow face on a mirror plane of another physics mirrors to (warning text)
+_MIRROR_PLANE_FACE_TEXT = {
+    'wall': 'a no-slip wall (also every face without a flow condition), so the unfolded flow has a thin no-slip plate '
+            'on the plane',
+    'inlet': 'a velocity inlet, so the unfolded flow has a sheet injecting fluid to both sides of the plane',
+    'pressure': 'a pressure face, so the unfolded flow has a plane held at that pressure feeding both sides',
+}
 
 # ---- settings ----
 _SETTINGS = (
@@ -196,6 +209,77 @@ def _flow_probe_result(session, solver, probe, feature_spec, options):
 
 
 # ---- validation (CPU only) ----
+def _validate_symmetry(vctx, physics_spec, feature_spec, values):
+    """symmetry: the shared mirror-feature rules (definition_helpers.mirror_feature_issues)."""
+    return mirror_feature_issues(vctx, physics_spec, feature_spec, _SETTINGS)
+
+
+def _mirror_plane_issues(vctx, physics_spec, own_mirrors):
+    """Flow faces on the model's mirror planes that this physics does not make itself (EM bc symmetric /
+    antisymmetric, the symmetry feature of another physics): the even mirror of the flow is a free-slip face there
+    (symmetry or slip_wall); a wall / inlet / pressure face mirrors another structure (warning), a periodic pair through
+    the plane none (error)."""
+    planes = [face for face in mirror_faces(vctx.spec) if face in FACES and face not in own_mirrors]
+    if not planes:
+        return []
+    kinds = _face_kinds_of(vctx.spec, physics_spec)
+    path = ('physics', physics_spec.name)
+    name = physics_spec.name
+    issues = []
+    for face in planes:
+        kind = kinds[face]
+        if kind == 'slip':
+            continue
+        if kind == 'periodic':
+            issues.append(Issue('error', path, f"{face} is a mirror plane of the model, but '{name}' wraps its flow "
+                                               'through that face (periodic pair), and no mirror image has flow '
+                                               'through the plane: remove the periodic pair or the mirror plane'))
+            continue
+        issues.append(Issue('warning', path, f"{face} is a mirror plane of the model, where the mirror image of the "
+                                             'flow needs a free-slip face (no flow through it, no shear), but '
+                                             f"'{name}' has {_MIRROR_PLANE_FACE_TEXT[kind]}. Add {face} to a "
+                                             f"symmetry feature of '{name}' for the mirror image of the drawn half"))
+    return issues
+
+
+def _normal_force_issues(vctx, physics_spec):
+    """Warning per body_force feature and per coupling into body_force_<axis> along the normal axis of a model mirror
+    plane: the flow's even mirror images that force component as the opposite one, so a force along the normal that is
+    the same on both sides (gravity, buoyancy from an even temperature) has no mirror symmetry there."""
+    axes = sorted({face[0] for face in mirror_faces(vctx.spec) if face in FACES})
+    if not axes:
+        return []
+    consequence = ('so the unfolded model pushes the mirror image the opposite way (the even mirror of the flow '
+                   'needs a force odd about the plane): a normal force that is the same on both sides, such as '
+                   'gravity or buoyancy, has no mirror symmetry there. Keep that component zero (odd about the plane), '
+                   'or draw the full model across the plane')
+    issues = []
+    body_force = LAMINAR_FLOW.feature_type('body_force')
+    for feature in physics_spec.features:
+        if not feature.enabled or feature.type != 'body_force':
+            continue
+        values = vctx.values(body_force.params, feature.params)
+        if values is None:   # reported by the param checks
+            continue
+        normal = [axis for axis in axes if plain_number(values[f'f_{axis}'], vctx.parameters) != 0.0]
+        if normal:
+            components = ', '.join(f'f_{axis}' for axis in normal)
+            issues.append(Issue('warning', feature_path(physics_spec, feature),
+                                f'{components} of this body force is normal to a mirror plane of the model '
+                                f'({"/".join(normal)} faces), {consequence}'))
+    for coupling in vctx.spec.couplings:
+        if not coupling.enabled or coupling.target != physics_spec.name:
+            continue
+        slots = coupling_writes(vctx, coupling)
+        normal = [axis for axis in axes if f'body_force_{axis}' in slots]
+        if normal:
+            components = ', '.join(f'body_force_{axis}' for axis in normal)
+            issues.append(Issue('warning', ('coupling', coupling.name),
+                                f"coupling '{coupling.name}' writes {components} of '{physics_spec.name}', normal to a "
+                                f'mirror plane of the model ({"/".join(normal)} faces), {consequence}'))
+    return issues
+
+
 def _validate_periodic(vctx, physics_spec, feature_spec, values):
     """The selection must be both faces of one axis."""
     try:
@@ -319,6 +403,10 @@ def _validate_flow(vctx, physics_spec, settings_values):
                                           'solved as a steady state'))
     issues.extend(_mesh_issues(vctx, path))
     issues.extend(face_conflicts(vctx, physics_spec, _BOUNDARY_FEATURES, path))
+    own_mirrors = feature_mirror_faces(vctx.spec, physics_spec)
+    issues.extend(own_mirror_face_conflicts(vctx, physics_spec, _BOUNDARY_FEATURES, own_mirrors))
+    issues.extend(_mirror_plane_issues(vctx, physics_spec, own_mirrors))
+    issues.extend(_normal_force_issues(vctx, physics_spec))
     fluids = fluid_materials(vctx)
     if _time_mode(vctx, settings_values) == 'transient':
         issues.extend(_wave_step_issues(vctx, fluids, path))
@@ -354,23 +442,29 @@ def _steps_in_time(settings_values):
     return settings_values['time_mode'] == 'transient'
 
 
-def _face_kinds(context):
+def _face_kinds_of(spec, physics_spec):
     """{outer face: 'wall' | 'slip' | 'inlet' | 'pressure' | 'periodic'} of the enabled face features (later ones win,
-    as they apply in order); a face without one is a no-slip wall."""
+    as they apply in order; symmetry is a slip face); a face without one is a no-slip wall."""
     kinds = {face: 'wall' for face in FACES}
-    for feature in context.physics_spec.features:
+    for feature in physics_spec.features:
         if not feature.enabled or feature.type not in _FACE_FEATURE_KINDS:
             continue
         try:
-            faces = [name for name in expand_entities(context.spec, feature.selection) if name in FACES]
+            faces = [name for name in expand_entities(spec, feature.selection) if name in FACES]
         except (ValueError, KeyError, TypeError):   # reported by the selection checks
             continue
         kinds.update((face, _FACE_FEATURE_KINDS[feature.type]) for face in faces)
     return kinds
 
 
+def _face_kinds(context):
+    """_face_kinds_of the physics of a time-estimate context."""
+    return _face_kinds_of(context.spec, context.physics_spec)
+
+
 def _shear_free_counts(face_kinds):
-    """Faces with a slip_wall / pressure feature per axis (x, y), as FluidPhysics._shear_free_counts after the build."""
+    """Faces with a slip_wall / symmetry / pressure feature per axis (x, y), as FluidPhysics._shear_free_counts after
+    the build."""
     return tuple(sum(face_kinds[f'{axis}_{side}'] in ('slip', 'pressure') for side in ('lo', 'hi')) for axis in 'xy')
 
 
@@ -485,8 +579,29 @@ _FEATURES = (
                 summary='Wall without friction on the selected domain edges: no flow through it, free flow along it. '
                         'Use it on a symmetry line.',
                 description='Free slip (specular reflection of the populations): zero normal velocity and shear '
-                            'stress, a symmetry plane.',
+                            'stress, a symmetry line of the flow, but no model mirror plane (results do not unfold, '
+                            'integrals do not double): the symmetry feature is the same face as one.',
                 apply=_apply_slip),
+    FeatureType(_SYMMETRY_FEATURE, 'Symmetry', 'boundary_condition', 'boundary', **_FACE_ONLY,
+                summary='Makes the selected domain edges mirror planes, so only half (or a quarter) of a flow that '
+                        'is the same on both sides of them needs to be drawn.',
+                description='Even mirror plane on outer faces (x_lo ... y_hi): the free-slip face of slip_wall '
+                            '(specular reflection of the lattice populations, the exact mirror of the lattice: zero '
+                            'normal velocity, zero shear stress) that also becomes a model mirror plane '
+                            '(core.mirror): fields unfold across it (the velocity along the plane and the pressure '
+                            'even, the velocity normal to it and the vorticity odd; Unfold mirror planes, '
+                            'Results.field(unfold=True)), field derived integrals reaching it count twice (the '
+                            'unfolded structure, e.g. the flow rate of a half channel), max / min include the image. '
+                            "A parabolic velocity inlet reaching the plane takes the unfolded run's shape (the half "
+                            'parabola, as beside a slip_wall). Solid objects may touch the plane (their mirror links '
+                            'are halfway bounce-back, also with conformal_boundaries). Warnings: a body force '
+                            'component normal to the plane (gravity, a coupled buoyancy: its image is the opposite '
+                            'force). Errors: another flow face feature on the same face (also a periodic pair through '
+                            'it), a polar / spherical domain, another physics with mirror bc settings (EM) that does '
+                            'not set the face symmetric / antisymmetric, parity_sectors (laminar flow has no odd '
+                            'mirror feature). A coupled heat physics must be insulated on the plane (heat validation '
+                            'warns); fluid_heat_convection carries nothing through it.',
+                apply=_apply_slip, validate=_validate_symmetry),
     FeatureType('inlet_velocity', 'Velocity inlet', 'boundary_condition', 'boundary', **_FACE_ONLY,
                 params=(_velocity_param('velocity', 'Inflow velocity', 1e-3,
                                         "Normal velocity into the domain (< 0 outflow); with profile 'parabolic' the "
@@ -498,7 +613,8 @@ _FEATURES = (
                               choice_labels=(('uniform', 'Uniform'), ('parabolic', 'Parabolic (fully developed)')),
                               help='uniform: the value per cell; parabolic: the value times the discrete Poiseuille '
                                    'shape s (w - s) of each run of fluid cells along the face, mean 1 (peak 1.5 x the '
-                                   'value).',
+                                   'value); a run ending on a slip_wall / symmetry face takes the half parabola s (2 w '
+                                   '- s) of its mirror image.',
                               tip='Uniform: the same speed across the edge. Parabolic: the fully developed profile of '
                                   'a channel, zero at its walls.')),
                 summary='Flow entering through the selected domain edges at a given speed.',
@@ -587,12 +703,15 @@ LAMINAR_FLOW = PhysicsType(
                 'parameter 3/16, He-Luo incompressible equilibrium, Guo forcing) on the window, which needs a uniform '
                 'mesh of square cells (no PML; outputs edge-extended into an EM PML ring). Solid cells (no viscosity) '
                 'are no-slip halfway bounce-back walls (solver_defaults.conformal_boundaries: interpolated Bouzidi '
-                'bounce-back at the drawn wall position); unreferenced outer faces are fixed no-slip walls. Steady '
-                'flow is exact for Poiseuille channels, second-order otherwise; valid at lattice Mach < 0.2 and '
-                'laminar Reynolds numbers. A steady solve needs ~ L^2 lattice steps (L = longest window axis in cells; '
-                'a 500-cell axis ~1e6), each one GPU kernel (cpu backend: the numba twin when installed, else the far '
-                'slower numpy twin; half_storage GPU only). pressure is gauge pressure. Heat: fluid_heat_convection; '
-                'buoyancy is a field_transfer of heat T into body_force_y.',
+                'bounce-back at the drawn wall position); unreferenced outer faces are fixed no-slip walls, symmetry '
+                'faces free-slip model mirror planes (a drawn half). On a mirror plane of another physics (EM bc '
+                'symmetric / antisymmetric, a heat symmetry face) the flow face must be free slip (validation warns; '
+                'a periodic pair there is an error). Steady flow is exact for Poiseuille channels, second-order '
+                'otherwise; valid at lattice Mach < 0.2 and laminar Reynolds numbers. A steady solve needs ~ L^2 '
+                'lattice steps (L = longest window axis in cells; a 500-cell axis ~1e6), each one GPU kernel (cpu '
+                'backend: the numba twin when installed, else the far slower numpy twin; half_storage GPU only). '
+                'pressure is gauge pressure. Heat: fluid_heat_convection; buoyancy is a field_transfer of heat T into '
+                'body_force_y.',
     settings=_SETTINGS,
     features=_FEATURES,
     material_properties=_MATERIAL_PROPERTIES,

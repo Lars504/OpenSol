@@ -21,6 +21,13 @@ electrolytes, snapshots and sweep reuse: the docstrings of `solver.py`, `solver_
   field_transfer sees no step at the CPML.
 - Probes sample only after a re-solve or at dt = inf (`step`): sampling every finite-dt tick would store one copy per
   EM step.
+- Mirror planes: every solver gets `set_mirror_faces(mirror_faces(spec))` at create (EM mirror faces and every
+  MIRROR_FEATURES face, its own `symmetry` included); `held_flux` alone scales by `mirror_factor(region)`, the region
+  fluxes and driven basis fluxes stay drawn-half values. `FEMPotentialMixin.mirror_factor` serves triangles and
+  tetrahedra (`_held_points`, `_plane_tolerance`: MERGE_TOLERANCE / fem.mesh3d PLANE_TOLERANCE). The `symmetry` feature
+  has no apply (the unset face is already the insulated even mirror); a voltage / current_density / surface_charge on
+  the type's own symmetry face errors (`own_mirror_face_conflicts`), `mirror_face_issues` warns only on other
+  physics' planes.
 - Help texts are shared by both kinds and formatted per kind (`_KIND_NAMES`, `_COMMON_DESCRIPTION`, `_XY_HELP_TEXTS`,
   ...): an edit must read right for both (electrostatics has no q_joule and every cell conducts).
 

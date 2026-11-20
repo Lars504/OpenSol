@@ -4,16 +4,19 @@ features, material Params and validate_magnetic_common are shared with definitio
 create builds MagneticFEMPhysics (stage 5, solver_fem.py). Imports no cupy at module level."""
 from ...core.memory_estimate import (BOOL_BYTES, FLOAT32_BYTES, FLOAT64_BYTES, MemoryEstimate, combine,
                                      diffusion_system_estimate, window_cell_count)
+from ...core.mirror import feature_mirror_faces, mirror_faces
 from ...core.time_estimate import HeldValues, diffusion_time_estimate
 from ...fem.diffusion import cudss_back_end, cudss_diffusion_estimate, fem_diffusion_estimate, fem_time_system
 from ...fem.magnetostatics import PLANAR_DEGREES
 from ...fem.quadrature import triangle_rule
 from ...model.definition_helpers import (AXISYMMETRIC_SPACE_SETTINGS, CG_DIFFUSION_LINEAR_ROLE, DISCRETIZATION_PARAM,
                                          DISCRETIZATION_SETTING, axisymmetric_issues, cg_solver_issues, element_order,
-                                         evaluates_to, face_conflicts, geometry_param, held_object_conflicts,
+                                         enabled_feature_entities, evaluates_to, face_conflicts, geometry_param,
+                                         held_object_conflicts,
                                          is_axisymmetric, linear_solver_direct, linear_solver_mixed,
                                          linear_solver_multigrid, linear_solver_precision, make_point_probe,
-                                         on_triangles, reports_model_checks, selected_material_data,
+                                         mirror_feature_issues, on_triangles, own_mirror_face_conflicts,
+                                         reports_model_checks, selected_material_data,
                                          single_precision_contrast_issues, validate_points_inside)
 from ...model.geometry import expand_entities
 from ...model.schema import FeatureType, Issue, Param, PhysicsType, feature_path, resolve_values
@@ -162,13 +165,21 @@ _MATERIAL_PROPERTIES = (
 _INSULATION_DESCRIPTION = (
     'A = 0 on the selected outer faces (the default of every face no feature sets): no normal flux, field lines run '
     'along the face. The mirror of an ODD current distribution (J_z changes sign across the plane, e.g. midway between '
-    'a conductor and its return) or a distant boundary. Axisymmetric: psi = 0, so no net flux crosses an x_hi face '
-    '(the return flux lies inside it); x_lo (the axis) is a validation error. Anchors the solve.')
+    'a conductor and its return) or a distant boundary, but never a model mirror plane itself (double totals by hand '
+    'for the odd half model; on another physics\' mirror plane the magnetic fields unfold odd). Axisymmetric: psi = '
+    '0, so no net flux crosses an x_hi face (the return flux lies inside it); x_lo (the axis) is a validation error. '
+    'Anchors the solve.')
 _SYMMETRY_DESCRIPTION = (
-    'dA/dn = 0 (Neumann) on the selected outer faces: no tangential flux, field lines cross at right angles. The '
-    'mirror of an EVEN current distribution (J_z equal on both sides) or a face next to an ideal iron yoke. Does not '
-    'anchor: with symmetry on all four faces add an external_field or fixed_potential. Axisymmetric: refused on x_lo '
-    '(the axis).')
+    'dA/dn = 0 (Neumann) on the selected outer faces, which become model mirror planes: no tangential flux, field '
+    'lines cross at right angles; the mirror of an EVEN current distribution (J_z equal on both sides, e.g. the '
+    'midplane z = 0 of a solenoid). Fields unfold across the face (A, J and B normal to it even, B along it odd; '
+    'Results.field(unfold=True)), integrals of derived values reaching it double, max / min include the image, the '
+    'totals count the image (energy, eddy_loss, magnetic_loss x 2 per mirror plane; a coil or conductor reaching the '
+    'face joins its image: see coil), so no longer the plain face of a half model next to ideal iron. Both y faces '
+    '(a 1D slice) count x 4. Errors: another magnetic face feature on the face, an external_field, another physics '
+    'with mirror bc settings not mirroring the face, non-Cartesian domains, parity sectors. Does not anchor: with '
+    'symmetry on all four faces add an external_field or fixed_potential. Axisymmetric: refused on x_lo (the axis) '
+    'and x_hi (the cylinder r = r_max has no mirror image).')
 _EXTERNAL_FIELD_DESCRIPTION = (
     "Uniform applied flux density (B_x, B_y), selection 'all' only, one per physics: the outermost window cells are "
     'held at the external potential (planar A = B_x y - B_y x, exact for a uniform field; axisymmetric psi = B_y r^2 / '
@@ -190,21 +201,25 @@ _COIL_DESCRIPTION = (
     'proximity effects: use the solid conductors of magnetic_fields_ac). A planar coil without a return is a net '
     'current per m of depth returning through the insulation faces: model a go / return pair as two coils with '
     "opposite currents. Result 'table': one row [feature, current, turns, flux_linkage, inductance] of the latest "
-    'solve (also scalars <feature>_flux_linkage / _inductance): flux_linkage = turns / area * integral of A over the '
-    'coil (axisymmetric 2 pi psi: the flux through each turn), Wb/m planar or Wb; inductance = flux_linkage / current, '
-    'H/m or H (nan at zero current). Series coils at +I / -I: their inductances add to the loop inductance 2 W / I^2 (W '
-    "the energy scalar); with several currents a coil's value includes the mutual flux.")
+    'solve (plus mirror_factor; also scalars <feature>_flux_linkage / _inductance): flux_linkage = mirror_factor * '
+    'turns / area * integral of A over the coil (axisymmetric 2 pi psi: the flux through each turn), Wb/m planar or '
+    'Wb; inductance = flux_linkage / current, H/m or H (nan at zero current). Series coils at +I / -I: their '
+    "inductances add to the loop inductance 2 W / I^2 (W the energy scalar); with several currents a coil's value "
+    'includes the mutual flux. A coil whose cells reach a mirror plane of the model joins its image in series '
+    "(mirror_factor 2 per plane reached; turns and current stay the drawn cross-section's); a coil off the planes has "
+    'image coils of its own, not included.')
 _PROBE_DESCRIPTION = ('A (planar A_z, axisymmetric A_phi) [T m] of the cell containing the point, one sample per '
                       're-solve plus one at the end (stationary: per fixed-point iteration, all at t = 0); triangle '
                       'mesh: at the mesh node of the point, once per solve.')
 _SLOT_DOCS = ('A/m^2', 'J_z (axisymmetric J_phi; field J_coupled), added to the current_source and coil features '
                        '(field J_applied); each transfer replaces it.')
 _SCALARS_HELP = (
-    'energy: field energy of the free cells, (1/2) A^T K A = integral of B^2 / (2 mu0 mu_dc) (J/m planar, J '
-    'axisymmetric; with remanence the energy of B alone, not the co-energy; held cells and the external-field ring '
-    'excluded, held-free faces count their free half cell; saturating: the secant value at the converged nu; triangle '
-    'mesh: the integral of H dB over the elements outside fixed_potential regions); <coil>_flux_linkage (Wb/m, Wb) '
-    'and <coil>_inductance (H/m, H) of every enabled coil, as its table result.')
+    'Totals of the model unfolded over its mirror planes (a symmetry face: x 2 per plane; coils reaching a plane join '
+    'their image). energy: field energy of the free cells, (1/2) A^T K A = integral of B^2 / (2 mu0 mu_dc) (J/m '
+    'planar, J axisymmetric; with remanence the energy of B alone, not the co-energy; held cells and the '
+    'external-field ring excluded, held-free faces count their free half cell; saturating: the secant value at the '
+    'converged nu; triangle mesh: the integral of H dB over the elements outside fixed_potential regions); '
+    '<coil>_flux_linkage (Wb/m, Wb) and <coil>_inductance (H/m, H) of every enabled coil, as its table result.')
 _PHYSICS_DESCRIPTION = (
     '2D magnetostatics, finite volumes (Jacobi-PCG): -div(nu grad A) = J, nu = 1 / (mu0 mu_dc); planar A_z of '
     'currents J_z (c_xx = nu_yy, c_yy = nu_xx: B_y = -dA/dx sees mu_yy), axisymmetric psi = r A_phi (setting '
@@ -310,15 +325,73 @@ def _validate_whole_window(vctx, physics_spec, feature_spec, values):
     return []
 
 
+def _type_settings(vctx, physics_spec):
+    """Settings Params of the physics' own type (magnetostatics or magnetic_fields_ac share the face / domain
+    features)."""
+    return vctx.registry.physics_type(physics_spec.type).settings
+
+
 def _validate_external_field(vctx, physics_spec, feature_spec, values):
     """Selection 'all' only; axisymmetric: B_x = 0."""
     path = feature_path(physics_spec, feature_spec)
     issues = _validate_whole_window(vctx, physics_spec, feature_spec, values)
-    # magnetostatics or magnetic_fields_ac (they share this feature): read the physics' own type settings
-    settings = vctx.registry.physics_type(physics_spec.type).settings
-    if is_axisymmetric(vctx.values(settings, physics_spec.settings)) and values.get('B_x', 0.0) != 0.0:
+    if (is_axisymmetric(vctx.values(_type_settings(vctx, physics_spec), physics_spec.settings))
+            and values.get('B_x', 0.0) != 0.0):
         issues.append(Issue('error', path, 'an axisymmetric external field is axial only: set B_x (= B_r) to 0 and '
                                            'the axial field in B_y'))
+    return issues
+
+
+def _validate_symmetry(vctx, physics_spec, feature_spec, values):
+    """symmetry: a model mirror plane (core.mirror.MIRROR_FEATURES): the shared mirror-feature rules
+    (definition_helpers.mirror_feature_issues; the axisymmetric x_lo is also refused by the type's axis rule)."""
+    return mirror_feature_issues(vctx, physics_spec, feature_spec, _type_settings(vctx, physics_spec),
+                                 axis_rule=False)
+
+
+def mirror_plane_issues(vctx, physics_spec, face_feature_types, axisymmetric=False):
+    """Model mirror planes (core.mirror.mirror_faces) seen by a magnetic physics (2D and 3D): no other face feature on
+    its own symmetry faces (error), no external_field with any mirror plane (error: its held outer ring replaces the
+    face there), never another physics' mirror on the axisymmetric axis x_lo or the r_max cylinder x_hi (error), and a
+    warning per mirror plane of another physics on a face no magnetic face feature sets (the default insulation then
+    fixes the image parity)."""
+    path = ('physics', physics_spec.name)
+    own_mirrors = feature_mirror_faces(vctx.spec, physics_spec)
+    issues = own_mirror_face_conflicts(vctx, physics_spec, face_feature_types - {'symmetry'}, own_mirrors)
+    faces = mirror_faces(vctx.spec)
+    if not faces:
+        return issues
+    for feature in physics_spec.features:
+        if feature.enabled and feature.type == 'external_field':
+            issues.append(Issue('error', feature_path(physics_spec, feature),
+                                f"{', '.join(sorted(faces))} {'is a' if len(faces) == 1 else 'are'} model mirror "
+                                f"plane{'' if len(faces) == 1 else 's'}, but external_field holds the outer cells (or "
+                                'nodes) of every face at the applied potential, which replaces the mirror condition '
+                                'there: model the full window, or drop the external field'))
+    other_faces = [face for face in sorted(faces) if face not in own_mirrors]
+    if axisymmetric and 'x_lo' in other_faces:
+        issues.append(Issue('error', path, f"x_lo is the rotation axis (r = 0) of axisymmetric '{physics_spec.name}', "
+                                           'but another physics makes it a model mirror plane: the ring weights '
+                                           'already count the whole revolution, so its totals would double. Remove '
+                                           'that mirror (an EM bc_x_lo or a symmetry feature on x_lo)'))
+        other_faces.remove('x_lo')
+    if axisymmetric and 'x_hi' in other_faces:
+        issues.append(Issue('error', path, f"x_hi is the cylinder r = r_max of axisymmetric '{physics_spec.name}', but "
+                                           'another physics makes it a model mirror plane: a body of revolution has '
+                                           'no mirror image across it (the ring weights and the 1 / r of the psi form '
+                                           'are not symmetric about it). Remove that mirror (an EM bc_x_hi or a '
+                                           'symmetry feature on x_hi)'))
+        other_faces.remove('x_hi')
+    set_faces = {face for _, entities in enabled_feature_entities(vctx, physics_spec, face_feature_types)
+                 for face in entities}
+    unset = [face for face in other_faces if face not in set_faces]
+    if unset:
+        issues.append(Issue('warning', path, f"{', '.join(unset)} {'is a' if len(unset) == 1 else 'are'} model mirror "
+                                             f"plane{'' if len(unset) == 1 else 's'} of another physics, where "
+                                             f"'{physics_spec.name}' keeps its default magnetic insulation: its "
+                                             'fields unfold as the image of that face kind and its totals count the '
+                                             'image. Set a magnetic_insulation or symmetry feature there to choose '
+                                             'the image parity explicitly'))
     return issues
 
 
@@ -521,6 +594,7 @@ def validate_magnetic_common(vctx, physics_spec, settings_values, type_text):
                                            'or add an external_field or fixed_potential'))
     issues.extend(cg_solver_issues(vctx, physics_spec, path))
     issues.extend(face_conflicts(vctx, physics_spec, _FACE_FEATURES, path))
+    issues.extend(mirror_plane_issues(vctx, physics_spec, _FACE_FEATURES, axisymmetric))
     issues.extend(held_object_conflicts(vctx, physics_spec, frozenset({'fixed_potential'}),
                                         frozenset({'current_source', 'coil'}), path))
     if axisymmetric:
@@ -530,8 +604,9 @@ def validate_magnetic_common(vctx, physics_spec, settings_values, type_text):
 
 # ---- physics factory callbacks ----
 def _create(ctx, physics_spec, values):
-    """MagneticPhysics (tensor) or MagneticFEMPhysics (triangles, the discretization order) plus one add_bh_curve per
-    material region with a bh_curve (2D regions keep their masks until the build releases its caches)."""
+    """MagneticPhysics (tensor) or MagneticFEMPhysics (triangles, the discretization order) with the model mirror
+    faces (core.mirror.mirror_faces, this physics' signs) plus one add_bh_curve per material region with a bh_curve
+    (2D regions keep their masks until the build releases its caches)."""
     nonlinear = {'nonlinear_tolerance': values['nonlinear_tolerance'],
                  'nonlinear_max_iterations': values['nonlinear_max_iterations'],
                  'nonlinear_method': values['nonlinear_method']}
@@ -545,6 +620,7 @@ def _create(ctx, physics_spec, values):
         from .solver import MagneticPhysics   # lazy: the solver imports cupy
         solver = MagneticPhysics(ctx.domain, axisymmetric=is_axisymmetric(values), linear_solver=linear_solver,
                                  nonlinear_relaxation=values['nonlinear_relaxation'], **nonlinear)
+    solver.set_mirror_faces(mirror_faces(ctx.spec, physics_spec.name))   # before the coils: their image factors
     for region in ctx.material_regions:
         raw_rows = region.properties.get(BH_CURVE_PROPERTY)
         if raw_rows is not None:
@@ -695,9 +771,11 @@ _FEATURES = (
                         'midplane between a current and its return. Every edge without another condition has it.',
                 description=_INSULATION_DESCRIPTION, apply=_apply_insulation, grids=_BOTH_GRIDS),
     FeatureType('symmetry', 'Symmetry (field normal)', 'boundary_condition', 'boundary', allow_interior=False,
-                summary='Makes the magnetic field cross the selected domain edges at right angles, as on the midplane '
-                        'of two equal currents or next to ideal iron.',
-                description=_SYMMETRY_DESCRIPTION, apply=_apply_symmetry, grids=_BOTH_GRIDS),
+                summary='Mirror plane: the model continues as its mirror image beyond the selected domain edges, '
+                        'where the magnetic field crosses at right angles, as on the midplane of two equal currents. '
+                        'Only the half on one side needs to be drawn; totals count both halves.',
+                description=_SYMMETRY_DESCRIPTION, apply=_apply_symmetry, validate=_validate_symmetry,
+                grids=_BOTH_GRIDS),
     FeatureType('external_field', 'External magnetic field', 'domain_condition', 'domain', max_entities=1,
                 params=(Param('B_x', 'float', 0.0, label='Applied flux density x', unit='T',
                               help='Axisymmetric: must be 0 (B_r).',

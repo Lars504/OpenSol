@@ -9,6 +9,7 @@ import numpy as np
 
 from ...core import time_estimate as te
 from ...core.constants import FACES_3D
+from ...core.mirror import feature_mirror_faces, mirror_faces
 from ...core.memory_estimate import (BOOL_BYTES, COMPLEX128_CSR_ENTRY_BYTES, FLOAT32_BYTES, FLOAT64_BYTES,
                                      FLOAT64_CSR_ENTRY_BYTES, INT32_BYTES, MemoryEstimate, combine,
                                      host_counted_lu_bytes, host_real_lu_bytes)
@@ -23,7 +24,7 @@ from ...model.definition_helpers import (CG_ELASTIC_3D_LINEAR_ROLE, DISCRETIZATI
                                          cg_solver_issues, cudss_external, eigen_factorization, eigen_role,
                                          eigen_search_counts, eigen_subspace_size, host_direct_back_end,
                                          element_order, linear_solver_mixed, linear_solver_multigrid,
-                                         linear_solver_precision, on_tetrahedra,
+                                         linear_solver_precision, on_tetrahedra, own_mirror_face_conflicts,
                                          point_cells, reduced_sweep_memory_items, validate_points_inside,
                                          validated_linear_precision)
 from ...model.schema import (STATIONARY_STUDY, TIME_DEPENDENT_STUDY, DomainRequirements, FeatureType, Issue, Param,
@@ -35,17 +36,19 @@ from ...solvers.pcg import workspace_bytes
 from ...solvers.sparse_direct import CUDSS_BACK_ENDS, SPLU_3D_LIMIT_UNKNOWNS, SPLU_3D_WARN_UNKNOWNS
 from .definition_common import (DENSITY_PARAM, EIGENFREQUENCY_STUDY, ELECTRODE_CONNECTION_HELP,
                                 ELECTRODE_VOLTAGE_HELP, GEOMETRIC_NONLINEARITY_PARAMS, INITIAL_STRESS_PROPERTIES_3D,
-                                LOSS_PROPERTIES, MATERIAL_PROPERTIES, MODAL_STUDIES,
-                                PIEZO_MATERIAL_PROPERTIES_3D, STIFFNESS_TENSOR_PROPERTIES_3D,
-                                STRESS_STIFFENING_PARAM, SUPPORT_FEATURES, TED_MATERIAL_PROPERTIES, apply_body_force,
+                                LOSS_PROPERTIES, MATERIAL_PROPERTIES, MODAL_STUDIES, PIEZO_MATERIAL_PROPERTIES_3D,
+                                ROLLER_FEATURES, STIFFNESS_TENSOR_PROPERTIES_3D, STRESS_STIFFENING_PARAM,
+                                SUPPORT_FEATURES, SYMMETRY_FEATURE, SYMMETRY_HELP, TED_MATERIAL_PROPERTIES,
+                                apply_body_force,
                                 apply_temperature_change, background_context, displacement_param, eigen_search_issues,
                                 electrode_result,
                                 follow_held_values, follow_load, following, free_body_allowed, frequency_probe_feature,
                                 material_issues, materials_setting, modal_kept_count, modal_resonance_count,
-                                modal_study_issues,
-                                nonlinear_state_infos, outer_faces, piezo_material_issues, plain_value, prestress_issues,
+                                modal_study_issues, model_mirror_issues,
+                                nonlinear_state_infos, outer_faces, piezo_material_issues, plain_value,
+                                pml_crossing_issues, prestress_issues,
                                 register_support, resonance_table_feature, solid_linear_solver, solid_study,
-                                stiffness_follows_state, support_holders, support_result,
+                                stiffness_follows_state, support_holders, support_result, symmetry_issues,
                                 thermoelastic_damping_feature, union_masks)
 from .definition_frequency_response import ADMITTANCE_FEATURE, FREQUENCY_RESPONSE_STUDY, frequency_response_issues
 from .definition_optomechanics import OPTOMECHANICAL_COUPLING_FEATURE, OPTOMECHANICS_STUDY
@@ -363,7 +366,8 @@ def _apply_electrode_domain(ctx, solver, feature_spec, values, selection):
 
 def _apply_squeeze_film(ctx, solver, feature_spec, values, selection):
     """squeeze_film.SqueezeFilmDamping on the window faces of the selected outer face and the interface faces of the
-    selected objects, registered with the tetrahedra solver (evaluated per resonance after each eigen solve)."""
+    selected objects, registered with the tetrahedra solver (evaluated per resonance after each eigen solve); the model
+    mirror planes refuse a vented rim on them."""
     from .squeeze_film import SqueezeFilmDamping
     side = values['gap_side']
     if side == 'auto':
@@ -377,7 +381,8 @@ def _apply_squeeze_film(ctx, solver, feature_spec, values, selection):
     ambient = values['ambient_pressure']
     film = SqueezeFilmDamping(feature_spec.name, np.concatenate(faces) if faces else np.zeros(0, np.int64), side,
                               values['gap'], values['viscosity'], ambient if ambient > 0.0 else None,
-                              mean_free_path=values['mean_free_path'], slip=values['slip'], vents=values['vents'])
+                              mean_free_path=values['mean_free_path'], slip=values['slip'], vents=values['vents'],
+                              mirror_planes=tuple(mirror_faces(ctx.spec)))
     return solver.add_squeeze_film(film)
 
 
@@ -424,7 +429,7 @@ def _held_components(vctx, feature):
         values = vctx.values(SOLID_MECHANICS_3D.feature_type(feature.type).params, feature.params)
         return [] if values is None else [('domain', axis) for axis in _AXES if values[f'u_{axis}'] is not None]
     faces = outer_faces(vctx, feature, FACES_3D)
-    if feature.type == 'roller':
+    if feature.type in ROLLER_FEATURES:
         return [(face, face[0]) for face in faces]
     faces += _selected_objects(vctx, feature)
     if feature.type == 'fixed':
@@ -796,9 +801,44 @@ def _pml_issues(vctx, physics_spec, settings_values, path, tetrahedra):
     return issues
 
 
+_FACE_FEATURES = ('fixed', 'roller', 'displacement', 'boundary_load', 'electrode', _SQUEEZE_FILM)   # on outer faces
+_OPTOMECHANICAL_FEATURE = 'optomechanical_coupling'   # = definition_optomechanics._FEATURE
+
+
+def _validate_symmetry(vctx, physics_spec, feature_spec, values):
+    """symmetry: the shared solid rules (definition_common.symmetry_issues), then errors for an elastic PML (tetrahedra)
+    on a face meeting the plane, an optomechanical_coupling (its ring sampling about the em_fdfd_bor axis needs the
+    whole body) and a squeeze film whose gap side is the plane (the gap would lie beyond the mirror)."""
+    issues = symmetry_issues(vctx, physics_spec, feature_spec, SOLID_MECHANICS_3D.settings, FACES_3D,
+                             STIFFNESS_TENSOR_ARRAYS_3D)
+    settings = vctx.values(SOLID_MECHANICS_3D.settings, physics_spec.settings)
+    if not settings:   # reported at the physics
+        return issues
+    path = feature_path(physics_spec, feature_spec)
+    faces = outer_faces(vctx, feature_spec, FACES_3D)
+    if on_tetrahedra(vctx, physics_spec):
+        issues.extend(pml_crossing_issues(path, faces, _pml_faces(settings)))
+    for feature in physics_spec.features:
+        if not feature.enabled:
+            continue
+        if feature.type == _OPTOMECHANICAL_FEATURE:
+            issues.append(Issue('error', path, f"optomechanical_coupling '{feature.name}' samples the 3D modes on "
+                                               'whole rings about the em_fdfd_bor axis, which a mirrored 3D solid does '
+                                               'not hold: model the full body (the optics may keep their pec / pmc '
+                                               'mirror wall)'))
+        elif feature.type == _SQUEEZE_FILM and isinstance(feature.params, dict):
+            side = feature.params.get('gap_side')
+            if side in faces:
+                issues.append(Issue('error', path, f"squeeze film '{feature.name}' has its gap beyond the symmetry "
+                                                   f'face {side} (gap_side): a mirror plane has no gap; select the '
+                                                   'film face on another side'))
+    return issues
+
+
 def _mirror_issues(vctx, physics_spec):
     """Warning per Roller feature (a possible half-model symmetry plane) and selected material whose c_IJ / piezo_e* /
-    eps_dc_* entries are not symmetric under the reflection normal to its faces (crystal_tensors.mirror_violation)."""
+    eps_dc_* entries are not symmetric under the reflection normal to its faces (crystal_tensors.mirror_violation; a
+    Symmetry feature's are errors: definition_common.symmetry_issues)."""
     from ...materials import effective_material_data   # lazy: physics -> materials stays out of module import time
     from ...materials.crystal_tensors import (FULL_PERMITTIVITY_PROPERTIES, FULL_PIEZO_PROPERTIES,
                                               FULL_STIFFNESS_PROPERTIES, mirror_violation)
@@ -947,6 +987,9 @@ def _validate_solid_3d_rules(vctx, physics_spec, settings_values, path, tetrahed
     issues.extend(_pml_issues(vctx, physics_spec, settings_values, path, tetrahedra))
     issues.extend(_piezo_issues(vctx, physics_spec, settings_values, path, tetrahedra))
     issues.extend(_mirror_issues(vctx, physics_spec))
+    own_mirrors = feature_mirror_faces(vctx.spec, physics_spec)   # its symmetry faces (model mirror planes)
+    issues.extend(own_mirror_face_conflicts(vctx, physics_spec, _FACE_FEATURES, own_mirrors))
+    issues.extend(model_mirror_issues(vctx, physics_spec, path, FACES_3D))
     issues.extend(_electrode_edge_issues(vctx, physics_spec, settings_values, path))
     issues.extend(_squeeze_film_issues(vctx, physics_spec, settings_values, tetrahedra))
     issues.extend(_linear_type_issues(vctx, physics_spec, path, tetrahedra))
@@ -1862,12 +1905,31 @@ _FEATURES = (
                 apply=_apply_fixed, result=_support_result, memory_estimate=_support_memory, grids=_GRIDS),
     FeatureType('roller', 'Roller', 'boundary_condition', 'boundary', allow_interior=False, result_kind='table',
                 summary='Lets the selected domain faces slide along themselves but not move away from or into the '
-                        'domain. Also the symmetry condition of a mirror-symmetric model.',
+                        'domain. For a mirror-symmetric model use Symmetry, which holds the same and unfolds the '
+                        'results.',
                 description='Normal displacement 0 (u_x on x faces, u_y on y, u_z on z), tangential free (zero shear '
-                            'traction); a mirror plane (warning on a face of a crystal not mirror symmetric there). '
-                            'Rollers on one x, one y and one z face hold a solid. '
-                            f'{_OUTER_FACES_TEXT} {_SUPPORT_RESULT_REF}',
+                            'traction); the Symmetry feature holds the same and makes the face a model mirror plane '
+                            '(warning on a face of a crystal not mirror symmetric there). Rollers on one x, one y and '
+                            f'one z face hold a solid. {_OUTER_FACES_TEXT} {_SUPPORT_RESULT_REF}',
                 apply=_apply_roller, result=_support_result, memory_estimate=_support_memory, grids=_GRIDS),
+    FeatureType(SYMMETRY_FEATURE, 'Symmetry', 'boundary_condition', 'boundary', allow_interior=False,
+                result_kind='table',
+                summary='Makes the selected domain faces mirror planes, so only half (or a quarter, an eighth) of a '
+                        'structure that is the same on both sides of them needs to be drawn.',
+                description='Even mirror plane on outer faces (x_lo ... z_hi): the face is held as by a Roller (normal '
+                            'displacement 0, zero shear traction), the mirror image of a body deforming '
+                            'symmetrically about it, and becomes a model mirror plane (core.mirror). '
+                            + SYMMETRY_HELP.format(
+                                own_results=', squeeze-film gas_damping / gas_stiffness (gamma_gas and q_gas are '
+                                            'ratios: unfolded) and the mode_shapes surface (the plane face '
+                                            'included)',
+                                own_errors=', an optomechanical_coupling (its rings about the optical axis need the '
+                                           'whole body), a squeeze film whose gap side is the plane; at run time a '
+                                           'squeeze film whose rim on the plane is vented (vents must seal that '
+                                           "axis: 'window_sealed', '<axis>_sealed' or 'none')")
+                            + f' {_OUTER_FACES_TEXT} {_SUPPORT_RESULT_TEXT}',
+                apply=_apply_roller, result=_support_result, validate=_validate_symmetry,
+                memory_estimate=_support_memory, grids=_GRIDS),
     FeatureType('displacement', 'Displacement', 'boundary_condition', 'boundary',
                 params=following(tuple(displacement_param(f'u_{axis}', axis) for axis in _AXES)), result_kind='table',
                 summary='Moves the selected domain faces by a given displacement, for example to stretch a sample.',

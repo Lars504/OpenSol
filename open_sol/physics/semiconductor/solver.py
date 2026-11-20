@@ -10,6 +10,7 @@ from ...core.backend import to_host
 from ...core.constants import DTYPE
 from ...core.fv_diffusion import edge_extension_views, host_copies, write_host_copies
 from ...core.gpu_memory import format_bytes
+from ...core.mirror import touch_factor
 from ...core.solver_base import PhysicsSolver
 from ...solvers.sparse_direct import HOST_FACTOR_BACK_ENDS, SparseDirectSolver, size_issue
 from .drift_diffusion import COMPONENTS, DriftDiffusionSystem, thermal_voltage
@@ -71,6 +72,7 @@ class DriftDiffusionPhysics(PhysicsSolver):
     axisymmetric (r, z); re-solves (Newton with continuation) only after a material, doping or generation change."""
 
     name = 'semiconductor'
+    mirror_faces = frozenset()   # model mirror faces on the window edge (set_mirror_faces): held totals join images
 
     def __init__(self, domain, temperature=300.0, linear_solver='auto', tolerance=1e-8, max_newton_iterations=50,
                  max_bias_step=0.1, axisymmetric=False):
@@ -243,15 +245,46 @@ class DriftDiffusionPhysics(PhysicsSolver):
         start (one ramp of the sweep step instead of a cold solve)."""
         self._dirty = True
 
+    def set_mirror_faces(self, faces) -> None:
+        """Mirror planes of the model on the window edge (core.mirror.mirror_faces: EM mirror faces, symmetry feature
+        faces; the insulating outer face there is the even mirror): contact currents and gate charges of a region
+        whose held cells reach one count its image too (x 2 per face)."""
+        self.mirror_faces = frozenset(faces)
+
     def contact_currents(self, region: ContactRegion):
-        """(electron, hole) current [current_unit] out of the contact into the domain, from the last solve."""
+        """(electron, hole) current [current_unit] out of the contact into the domain, from the last solve; x
+        mirror_factor of its held cells (the unfolded structure's)."""
         self._require_solve(region.name)
-        return self.system.contact_currents(region.index)
+        system = self.system
+        factor = self.mirror_factor(system.contact_cells & (system.contact_index == region.index))
+        electron, hole = system.contact_currents(region.index)
+        return electron * factor, hole * factor
 
     def gate_charge(self, region: GateRegion) -> float:
-        """Free charge [charge_unit] on the gate (its outward D flux) from the last solve."""
+        """Free charge [charge_unit] on the gate (its outward D flux) from the last solve; x mirror_factor of its held
+        cells."""
         self._require_solve(region.name)
-        return self.system.gate_charge(region.index)
+        system = self.system
+        factor = self.mirror_factor(system.gate_cells & (system.gate_index == region.index))
+        return system.gate_charge(region.index) * factor
+
+    def mirror_factor(self, member) -> float:
+        """core.mirror.touch_factor of the mirror faces reached by the held sites `member` (bool per site of the last
+        solve): a held region touching a plane joins its image there."""
+        if not self.mirror_faces:
+            return 1.0
+        return touch_factor(self.mirror_faces, self._touched_faces(member))
+
+    def _touched_faces(self, member) -> set:
+        """Mirror faces whose window edge cell layer holds a `member` cell (flat window index i * wy + j)."""
+        grid = np.asarray(member, dtype=bool).reshape(self.system.shape)
+        touched = set()
+        for face in self.mirror_faces:
+            layer = [slice(None), slice(None)]
+            layer['xy'.index(face[0])] = 0 if face.endswith('lo') else -1
+            if bool(grid[tuple(layer)].any()):
+                touched.add(face)
+        return touched
 
     @property
     def current_unit(self) -> str:
@@ -266,14 +299,13 @@ class DriftDiffusionPhysics(PhysicsSolver):
     # --- reporting ----------------------------------------------------------------
 
     def scalars(self) -> dict:
-        """current_<contact> (electron + hole, current_unit) and charge_<gate> (charge_unit) of the last solve; {}
-        before one."""
+        """current_<contact> (electron + hole, current_unit) and charge_<gate> (charge_unit) of the last solve, the
+        unfolded structure's under mirror planes (contact_currents / gate_charge); {} before one."""
         if self.n_solves == 0:
             return {}
-        values = {f'{CONTACT_CURRENT_PREFIX}{region.name}': float(sum(self.system.contact_currents(region.index)))
+        values = {f'{CONTACT_CURRENT_PREFIX}{region.name}': float(sum(self.contact_currents(region)))
                   for region in self.contacts}
-        values.update({f'{GATE_CHARGE_PREFIX}{region.name}': float(self.system.gate_charge(region.index))
-                       for region in self.gates})
+        values.update({f'{GATE_CHARGE_PREFIX}{region.name}': float(self.gate_charge(region)) for region in self.gates})
         return values
 
     def warm_start_fields(self) -> dict:

@@ -17,6 +17,11 @@ docstrings; back ends, fallbacks and estimates: `_linear_solve` / `_factor_solve
   keep insulators off the contact columns.
 - A contact current is a difference of majority-carrier SG terms, so it has a float64 round-off floor ~1e-16 of q D N /
   h, independent of the Newton tolerance (~1e-12 A/m at N_D 1e24, 2 nm cells; shockley_diode_iv: 3 % at ~2e-11 A/m).
+- Mirror planes: `set_mirror_faces(mirror_faces(spec))` at create; `contact_currents` / `gate_charge` (so table
+  results and scalars) multiply by `mirror_factor` of the region's held sites (tensor: the window edge cell layer;
+  triangles: a held node on the window line), the core stays drawn-half. The `symmetry` feature has no apply: every
+  outer face is already insulating, the exact even mirror of the FV cells and of the box method. Covered by
+  examples/semiconductor/analytic_photoconductor_gain.
 
 ## Self-tests
 - Tensor-mesh physics is checked by the examples (examples/semiconductor, examples/multiphysics); cases cover only what

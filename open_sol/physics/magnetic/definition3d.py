@@ -4,6 +4,7 @@ reduced scalar potential; settings, features, material vocabulary, validation, m
 template and selftests; registered through definition.py. On a 'tetrahedra' mesh the create builds MagneticFEMPhysics3D
 (solver_fem3d.py). Imports no cupy at module level (the solver inside create)."""
 from ...core.constants import MU0
+from ...core.mirror import mirror_faces
 from ...core.memory_estimate import (BOOL_BYTES, FLOAT32_BYTES, FLOAT64_BYTES, MemoryEstimate, combine,
                                      diffusion_system_estimate, window_cell_count)
 from ...core.time_estimate import HeldValues, diffusion_time_estimate
@@ -13,8 +14,9 @@ from ...fem.diffusion3d import fem_diffusion_estimate_3d
 from ...model.definition_helpers import (CG_DIFFUSION_LINEAR_ROLE, DISCRETIZATION_PARAM, cg_solver_issues,
                                          element_order, evaluates_to, face_conflicts, held_object_conflicts,
                                          linear_solver_direct, linear_solver_mixed, linear_solver_multigrid,
-                                         linear_solver_precision, point_cells, reports_model_checks,
-                                         single_precision_contrast_issues, validate_points_inside)
+                                         linear_solver_precision, mirror_feature_issues, point_cells,
+                                         reports_model_checks, single_precision_contrast_issues,
+                                         validate_points_inside)
 from ...model.schema import FeatureType, Issue, Param, PhysicsType, resolve_values
 from ...solvers.roles import resolved_precision
 from .definition_magnetostatics import (_ANDERSON_STATE_ARRAYS, _BH_CURVE, _CURVE_PROPOSAL_ARRAYS, _MU_DC_TIP,
@@ -22,7 +24,7 @@ from .definition_magnetostatics import (_ANDERSON_STATE_ARRAYS, _BH_CURVE, _CURV
                                         _curve_material_issues, _face_setter,
                                         _material_property as _material_property_2d, _method_misfit,
                                         _scalar_outputs, _selected_material_properties, _validate_whole_window,
-                                        kept_preconditioner_bytes, saturation_iterations)
+                                        kept_preconditioner_bytes, mirror_plane_issues, saturation_iterations)
 from .fields import MAGNETIC_3D_CURRENT_NAMES, MAGNETIC_3D_FIELD_NAMES, MAGNETIC_3D_PROBE_COMPONENTS
 from .materials import (BH_CURVE_PROPERTY, MAGNETIC_3D_PROPERTY_ARRAYS, MAGNETIC_3D_SCHEMA,
                         OPTIONAL_MAGNETIC_3D_SCHEMA, REMANENCE_3D_ARRAYS, SATURATION_ARRAY)
@@ -32,6 +34,7 @@ from .selftests_3d import NEEDLE_3D_DESCRIPTION, NEEDLE_3D_LABEL, needle_3d_spec
 
 MAGNETOSTATICS_3D_TYPE_NAME = 'magnetostatics_3d'   # = selftests_3d.MAGNETOSTATICS_3D_TYPE_NAME (not imported)
 _FACE_FEATURES = frozenset({'magnetic_insulation', 'symmetry'})
+_SETTINGS = (*_NONLINEAR_SETTINGS, DISCRETIZATION_PARAM)
 _GRIDS = ('tensor', 'tetrahedra')   # PhysicsType / FeatureType grids: MagneticPhysics3D, MagneticFEMPhysics3D
 
 
@@ -79,13 +82,20 @@ _MATERIAL_PROPERTIES = (
 # ---- feature texts ----
 _INSULATION_DESCRIPTION = (
     'B.n = 0 on the selected outer faces (z_lo / z_hi included; the default of every face no feature sets): field '
-    'lines run along the face (Neumann on phi_m); the mirror plane of a field parallel to it, or a distant boundary. '
+    'lines run along the face (Neumann on phi_m); the mirror plane of a field parallel to it, or a distant boundary, '
+    'but never a model mirror plane itself (on another physics\' mirror plane the fields unfold with phi_m even). '
     'Does not anchor: without a symmetry face, external field or ideal iron the window corner cell is held at phi_m = '
     '0 (it reads B = 0; tetrahedra: the window node nearest the lower corner).')
 _SYMMETRY_DESCRIPTION = (
-    'phi_m = 0 (Dirichlet) on the selected outer faces: no tangential H, field lines cross at right angles; the mirror '
-    'plane of a field normal to it (midway between a magnet and its mirror image) or a face next to ideal iron. The '
-    'reverse of 2D magnetostatics (this type solves for the scalar potential). Anchors the solve.')
+    'phi_m = 0 (Dirichlet) on the selected outer faces, which become model mirror planes: no tangential H, field lines '
+    'cross at right angles; the mirror plane of a field normal to it (midway between a magnet and its mirror image, '
+    'the midplane of a coil normal to its axis). Fields unfold across the face (phi_m and B, H along it odd, B normal '
+    'to it even; Results.field(unfold=True)), integrals of derived values reaching it double, max / min include the '
+    'image, the energy scalar counts the image (x 2 per mirror plane) and a coil whose winding reaches the face joins '
+    'its image in series (flux linkage and inductance x 2 per plane reached, result extra mirror_factor). So no longer '
+    'the plain face next to ideal iron (use ideal_iron). Errors: another magnetic face feature on the face, an '
+    'external_field, another physics with mirror bc settings not mirroring the face, parity sectors. The reverse of '
+    '2D magnetostatics (this type solves for the scalar potential). Anchors the solve.')
 _EXTERNAL_FIELD_DESCRIPTION = (
     "Uniform applied flux density (B_x, B_y, B_z), selection 'all' only, one per physics: the outermost window cells "
     '(all six faces) are held at phi_m = -B . r / mu0 (r from the window corner), exact for a uniform field on any '
@@ -113,10 +123,11 @@ _COIL_DESCRIPTION = (
 _PROBE_DESCRIPTION = ('Value in the cell containing the point (z unset: mid-height; tetrahedra: at the point), one '
                       'sample per re-solve plus one at the end of the run (stationary: all at t = 0).')
 _SCALARS_HELP = (
-    'energy [J]: field energy of the free cells, the sum over faces of B_n^2 / (2 mu0 mu_face) times the face volume '
-    '(held cells and the external-field ring excluded, held-free faces count their free half cell; with remanence the '
-    'energy of B alone; saturating: the secant value; tetrahedra: exact integrals of the element fields); '
-    '<coil>_flux_linkage [Wb] and <coil>_inductance [H] of every enabled coil, as its table result.')
+    'Totals of the model unfolded over its mirror planes (a symmetry face: x 2 per plane; coils reaching a plane join '
+    'their image). energy [J]: field energy of the free cells, the sum over faces of B_n^2 / (2 mu0 mu_face) times '
+    'the face volume (held cells and the external-field ring excluded, held-free faces count their free half cell; '
+    'with remanence the energy of B alone; saturating: the secant value; tetrahedra: exact integrals of the element '
+    'fields); <coil>_flux_linkage [Wb] and <coil>_inductance [H] of every enabled coil, as its table result.')
 _PHYSICS_DESCRIPTION = (
     '3D magnetostatics by the reduced scalar potential, finite volumes (7-point stencil): H = T - grad phi_m (T the '
     'coil fields), B = mu0 mu_dc H + B_r, div B = 0, solved for u = mu0 phi_m with per-axis mu_dc (no cross terms) '
@@ -138,6 +149,11 @@ _PHYSICS_SUMMARY = ('Static magnetic fields of coils, permanent magnets, magneti
 
 # ---- feature apply / result callbacks (worker thread, GPU) ----
 _apply_insulation, _apply_symmetry = _face_setter('neumann'), _face_setter('dirichlet')
+
+
+def _validate_symmetry(vctx, physics_spec, feature_spec, values):
+    """symmetry: a model mirror plane (core.mirror.MIRROR_FEATURES, sign -1): the shared mirror-feature rules."""
+    return mirror_feature_issues(vctx, physics_spec, feature_spec, _SETTINGS)
 
 
 def _apply_external_field(ctx, solver, feature_spec, values, selection):
@@ -268,8 +284,8 @@ def _single_precision_coil_issues(vctx, physics_spec, path):
 
 
 def _validate_magnetostatics_3d(vctx, physics_spec, settings_values):
-    """At most one external field; CG limit / direct size, face and held-object conflicts, the coil precision
-    warning (else the single-precision mu contrast warning), the saturation rules."""
+    """At most one external field; CG limit / direct size, face, mirror-plane (mirror_plane_issues) and held-object
+    conflicts, the coil precision warning (else the single-precision mu contrast warning), the saturation rules."""
     path = ('physics', physics_spec.name)
     issues = []
     n_external = sum(1 for feature in physics_spec.features if feature.enabled and feature.type == 'external_field')
@@ -278,6 +294,7 @@ def _validate_magnetostatics_3d(vctx, physics_spec, settings_values):
                                            'holds the same outer ring)'))
     issues.extend(cg_solver_issues(vctx, physics_spec, path))
     issues.extend(face_conflicts(vctx, physics_spec, _FACE_FEATURES, path))
+    issues.extend(mirror_plane_issues(vctx, physics_spec, _FACE_FEATURES))
     issues.extend(held_object_conflicts(vctx, physics_spec, frozenset({'ideal_iron'}), frozenset({'coil'}), path))
     coil_issues = _single_precision_coil_issues(vctx, physics_spec, path)
     issues.extend(coil_issues or single_precision_contrast_issues(vctx, physics_spec, path, _PERMEABILITY_NAMES,
@@ -302,6 +319,7 @@ def _create(ctx, physics_spec, values):
     else:
         from .solver3d import MagneticPhysics3D   # lazy: the solver imports cupy
         solver = MagneticPhysics3D(ctx.domain, linear_solver=linear_solver, **nonlinear)
+    solver.set_mirror_faces(mirror_faces(ctx.spec, physics_spec.name))   # before the coils: their image factors
     for region in ctx.material_regions:
         raw_rows = region.properties.get(BH_CURVE_PROPERTY)
         if raw_rows is not None:
@@ -428,9 +446,11 @@ _FEATURES = (
                         'face without another condition has it.',
                 description=_INSULATION_DESCRIPTION, apply=_apply_insulation, grids=_GRIDS),
     FeatureType('symmetry', 'Symmetry (field normal)', 'boundary_condition', 'boundary', allow_interior=False,
-                summary='Makes the magnetic field cross the selected domain faces at right angles, as on the midplane '
-                        'between a magnet and its mirror image or next to ideal iron.',
-                description=_SYMMETRY_DESCRIPTION, apply=_apply_symmetry, grids=_GRIDS),
+                summary='Mirror plane: the model continues as its mirror image beyond the selected domain faces, '
+                        'where the magnetic field crosses at right angles, as on the midplane between a magnet and '
+                        'its mirror image. Only the half on one side needs to be drawn; totals count both halves.',
+                description=_SYMMETRY_DESCRIPTION, apply=_apply_symmetry, validate=_validate_symmetry,
+                grids=_GRIDS),
     FeatureType('external_field', 'External magnetic field', 'domain_condition', 'domain', max_entities=1,
                 params=(Param('B_x', 'float', 0.0, label='Applied flux density x', unit='T',
                               help='Component of the uniform applied flux density.',
@@ -491,7 +511,7 @@ MAGNETOSTATICS_3D = PhysicsType(
     dimensions=(3,),
     description=_PHYSICS_DESCRIPTION,
     summary=_PHYSICS_SUMMARY,
-    settings=(*_NONLINEAR_SETTINGS, DISCRETIZATION_PARAM),   # the 2D Param objects (decision 10); 'newton' refused
+    settings=_SETTINGS,   # the 2D Param objects (decision 10); 'newton' refused
     features=_FEATURES,
     grids=_GRIDS,   # tetrahedra: MagneticFEMPhysics3D (solver_fem3d.py)
     material_properties=_MATERIAL_PROPERTIES,

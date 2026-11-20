@@ -28,7 +28,11 @@ WEIGHTS = np.array([4 / 9] + [1 / 9] * 4 + [1 / 36] * 4)
 # halfway bounce-back off solid neighbours and the face rules, then collide and write g* of this step plus the
 # macroscopic lattice velocity (j + F/2, rho0 = 1) and density deviation rho - 1. Face values (face, component,
 # position): component 0 / 1 = lattice velocity x / y of a wall or velocity face, 2 = density deviation of a pressure
-# face. A corner diagonal takes the y face's rule when that face is a wall or slip face, else the x face's.
+# face. Slip faces are the exact even mirror (specular: the mirrored population of the ghost's image, the upstream
+# cell along the face; halfway bounce-back where that image is solid, since the ghost then mirrors a solid cell). A
+# corner diagonal takes the y face's rule when that face is a wall or the x face is slip, else the x face's: beside a
+# slip face the ghost mirrors into the other face's ghost (its rule is the mirror's), and two slip faces give the
+# double mirror, the opposite population of the cell (the slip rule's bounce-back).
 # Pressure faces: anti-bounce-back f_q = -f*_qbar + 2 e+_q(rho_w, u_b) - 2 Lambda+ (c_q . grad)(3 w_q c_q . u); the last
 # (TRT second-order) term uses the previous step's velocity gradient at the link midpoint r - c_q / 2 (half a cell
 # along the face for a diagonal), read from the neighbours' post-collision populations (velocity arrays are rewritten
@@ -58,13 +62,20 @@ __constant__ int LINK_MIRROR_Y[9] = {0, 1, 4, 3, 2, 8, 7, 6, 5};
 __constant__ float LINK_WEIGHT[9] = {4.f / 9.f, 1.f / 9.f, 1.f / 9.f, 1.f / 9.f, 1.f / 9.f,
                                      1.f / 36.f, 1.f / 36.f, 1.f / 36.f, 1.f / 36.f};
 
-// lattice velocity u = sum c g* - F/2 of window cell (i, j) from its post-collision populations; false outside / solid
+// lattice velocity u = sum c g* - F/2 of window cell (i, j) from its post-collision populations; a cell beyond a slip
+// face (kind 1: the exact even mirror) reads its image inside, the velocity normal to that face negated; false outside
+// otherwise / solid
 __device__ bool neighbour_velocity(const pop_t* g_in, const bool* fluid, const float* force_x, const float* force_y,
-                                   const int force_stride, int i, int j, const int wx, const int wy,
-                                   const bool periodic_x, const bool periodic_y, float* u)
+                                   const int force_stride, const int* face_kind, int i, int j, const int wx,
+                                   const int wy, const bool periodic_x, const bool periodic_y, float* u)
 {
     if (periodic_x) i = ((i % wx) + wx) % wx;
     if (periodic_y) j = ((j % wy) + wy) % wy;
+    float sign_x = 1.f, sign_y = 1.f;
+    if (i < 0 && face_kind[0] == 1) { i = -1 - i; sign_x = -1.f; }
+    else if (i >= wx && face_kind[1] == 1) { i = 2 * wx - 1 - i; sign_x = -1.f; }
+    if (j < 0 && face_kind[2] == 1) { j = -1 - j; sign_y = -1.f; }
+    else if (j >= wy && face_kind[3] == 1) { j = 2 * wy - 1 - j; sign_y = -1.f; }
     if (i < 0 || i >= wx || j < 0 || j >= wy) return false;
     const int s = i * wy + j;
     if (!fluid[s]) return false;
@@ -72,55 +83,57 @@ __device__ bool neighbour_velocity(const pop_t* g_in, const bool* fluid, const f
     const pop_t* p = g_in + s;
     float g[9];
     for (int q = 1; q < 9; ++q) g[q] = POP_LOAD(p[q * n_cells]);
-    u[0] = g[1] - g[3] + g[5] - g[6] - g[7] + g[8] - 0.5f * force_x[s * force_stride];
-    u[1] = g[2] - g[4] + g[5] + g[6] - g[7] - g[8] - 0.5f * force_y[s * force_stride];
+    u[0] = sign_x * (g[1] - g[3] + g[5] - g[6] - g[7] + g[8] - 0.5f * force_x[s * force_stride]);
+    u[1] = sign_y * (g[2] - g[4] + g[5] + g[6] - g[7] - g[8] - 0.5f * force_y[s * force_stride]);
     return true;
 }
 
 // velocity gradient {du_x/dx, du_y/dx, du_x/dy, du_y/dy} of outer face `face`, half a cell from boundary cell (i, j)
 // towards `side` (-1 / 0 / +1 along the face: the link midpoint; at the cell the curvature d_t^2 u_n costs ~1 % of a
 // Poiseuille flow rate). Side links difference the two rows (normal derivative averaged over both); side 0 or no fluid
-// side neighbour: central at the cell (one-sided second order next to solids / window ends). Normal derivative of the
-// tangential component one-sided inward, the normal one from continuity (d_n u_n = -d_t u_t).
+// side neighbour: central at the cell (one-sided second order next to solids / window ends; a slip face end reads the
+// mirror image, so the half model's face cell next to its plane takes the whole model's differences). Normal
+// derivative of the tangential component one-sided inward, the normal one from continuity (d_n u_n = -d_t u_t).
 __device__ void face_velocity_gradient(const pop_t* g_in, const bool* fluid, const float* force_x,
-                                       const float* force_y, const int fs, const int face, const int i, const int j,
-                                       const int side, const float* u0, const int wx, const int wy,
-                                       const bool periodic_x, const bool periodic_y, float* gradient)
+                                       const float* force_y, const int fs, const int* face_kind, const int face,
+                                       const int i, const int j, const int side, const float* u0, const int wx,
+                                       const int wy, const bool periodic_x, const bool periodic_y, float* gradient)
 {
     const bool x_face = face < 2;
     const int ti = x_face ? 0 : 1, tj = x_face ? 1 : 0;
     const int inward = (face % 2 == 0) ? 1 : -1;
     const int ni = x_face ? inward : 0, nj = x_face ? 0 : inward;
     float up[2], um[2], u2[2], u_side[2], u_inward[2], tangential[2] = {0.f, 0.f}, normal[2] = {0.f, 0.f};
-    const bool has_side = side != 0 && neighbour_velocity(g_in, fluid, force_x, force_y, fs, i + side * ti,
-                                                          j + side * tj, wx, wy, periodic_x, periodic_y, u_side);
-    const bool has_plus = !has_side && neighbour_velocity(g_in, fluid, force_x, force_y, fs, i + ti, j + tj, wx, wy,
-                                                          periodic_x, periodic_y, up);
-    const bool has_minus = !has_side && neighbour_velocity(g_in, fluid, force_x, force_y, fs, i - ti, j - tj, wx, wy,
-                                                           periodic_x, periodic_y, um);
+    const bool has_side = side != 0 && neighbour_velocity(g_in, fluid, force_x, force_y, fs, face_kind,
+                                                          i + side * ti, j + side * tj, wx, wy, periodic_x,
+                                                          periodic_y, u_side);
+    const bool has_plus = !has_side && neighbour_velocity(g_in, fluid, force_x, force_y, fs, face_kind, i + ti,
+                                                          j + tj, wx, wy, periodic_x, periodic_y, up);
+    const bool has_minus = !has_side && neighbour_velocity(g_in, fluid, force_x, force_y, fs, face_kind, i - ti,
+                                                           j - tj, wx, wy, periodic_x, periodic_y, um);
     if (has_side) {
         for (int c = 0; c < 2; ++c) tangential[c] = side * (u_side[c] - u0[c]);
     } else if (has_plus && has_minus) {
         for (int c = 0; c < 2; ++c) tangential[c] = 0.5f * (up[c] - um[c]);
     } else if (has_plus) {
-        if (neighbour_velocity(g_in, fluid, force_x, force_y, fs, i + 2 * ti, j + 2 * tj, wx, wy,
+        if (neighbour_velocity(g_in, fluid, force_x, force_y, fs, face_kind, i + 2 * ti, j + 2 * tj, wx, wy,
                                periodic_x, periodic_y, u2)) {
             for (int c = 0; c < 2; ++c) tangential[c] = 0.5f * (-3.f * u0[c] + 4.f * up[c] - u2[c]);
         } else {
             for (int c = 0; c < 2; ++c) tangential[c] = up[c] - u0[c];
         }
     } else if (has_minus) {
-        if (neighbour_velocity(g_in, fluid, force_x, force_y, fs, i - 2 * ti, j - 2 * tj, wx, wy,
+        if (neighbour_velocity(g_in, fluid, force_x, force_y, fs, face_kind, i - 2 * ti, j - 2 * tj, wx, wy,
                                periodic_x, periodic_y, u2)) {
             for (int c = 0; c < 2; ++c) tangential[c] = 0.5f * (3.f * u0[c] - 4.f * um[c] + u2[c]);
         } else {
             for (int c = 0; c < 2; ++c) tangential[c] = u0[c] - um[c];
         }
     }
-    if (neighbour_velocity(g_in, fluid, force_x, force_y, fs, i + ni, j + nj, wx, wy, periodic_x, periodic_y,
-                           u_inward)) {
+    if (neighbour_velocity(g_in, fluid, force_x, force_y, fs, face_kind, i + ni, j + nj, wx, wy, periodic_x,
+                           periodic_y, u_inward)) {
         for (int c = 0; c < 2; ++c) normal[c] = inward * (u_inward[c] - u0[c]);
-        if (has_side && neighbour_velocity(g_in, fluid, force_x, force_y, fs, i + ni + side * ti,
+        if (has_side && neighbour_velocity(g_in, fluid, force_x, force_y, fs, face_kind, i + ni + side * ti,
                                            j + nj + side * tj, wx, wy, periodic_x, periodic_y, u2)) {
             for (int c = 0; c < 2; ++c) normal[c] = 0.5f * (normal[c] + inward * (u2[c] - u_side[c]));
         }
@@ -155,7 +168,8 @@ __device__ __noinline__ float face_link(const pop_t* __restrict__ g_in, const fl
     int face;
     if (out_x && out_y) {
         const int face_y = sj < 0 ? 2 : 3;
-        face = face_kind[face_y] <= 1 ? face_y : (si < 0 ? 0 : 1);
+        const int face_x = si < 0 ? 0 : 1;
+        face = (face_kind[face_y] == 0 || face_kind[face_x] == 1) ? face_y : face_x;
     } else if (out_x) {
         face = si < 0 ? 0 : 1;
     } else {
@@ -169,12 +183,14 @@ __device__ __noinline__ float face_link(const pop_t* __restrict__ g_in, const fl
     const float weight = LINK_WEIGHT[q];
     if (kind == 1) {
         // specular: the mirrored population of the ghost cell's mirror image, the upstream cell along the face
-        // (cell n itself for the normal link; n where that cell is outside the window or solid)
+        // (cell n itself for the normal link); halfway bounce-back where that image is solid or outside the window
+        // (the ghost is the image of a solid cell, or of the ghost of a second slip face at a corner)
         const int mi = face < 2 ? i : si;
         const int mj = face < 2 ? sj : j;
         const bool upstream = mi >= 0 && mi < wx && mj >= 0 && mj < wy && fluid[mi * wy + mj];
         const int mirrored = face < 2 ? LINK_MIRROR_X[q] : LINK_MIRROR_Y[q];
-        return POP_LOAD(g_in[mirrored * n_cells + (upstream ? mi * wy + mj : n)]);
+        return upstream ? POP_LOAD(g_in[mirrored * n_cells + mi * wy + mj])
+                        : POP_LOAD(g_in[LINK_OPPOSITE[q] * n_cells + n]);
     }
     if (kind == 3) {
         // gradient at the link midpoint r - c_q / 2 (tangential offset -c_t / 2), du_x/dx, du_y/dx, du_x/dy, du_y/dy;
@@ -183,8 +199,8 @@ __device__ __noinline__ float face_link(const pop_t* __restrict__ g_in, const fl
         const float old_y = velocity_y[n];
         const float old_velocity[2] = {old_x, old_y};
         float gradient[4];
-        face_velocity_gradient(g_in, fluid, force_x, force_y, force_stride, face, i, j, face < 2 ? -link_y : -link_x,
-                               old_velocity, wx, wy, periodic_x, periodic_y, gradient);
+        face_velocity_gradient(g_in, fluid, force_x, force_y, force_stride, face_kind, face, i, j,
+                               face < 2 ? -link_y : -link_x, old_velocity, wx, wy, periodic_x, periodic_y, gradient);
         const float cu = link_x * old_x + link_y * old_y;
         const float directional_shear = link_x * link_x * gradient[0] + link_x * link_y * (gradient[1] + gradient[2])
                                         + link_y * link_y * gradient[3];
@@ -348,6 +364,7 @@ _MIRROR_Y = (0, 1, 4, 3, 2, 8, 7, 6, 5)
 _WEIGHTS32 = tuple(np.float32(value) for value in WEIGHTS)
 _PAIR_FIRST = (1, 2, 5, 6)
 _ZERO = np.float32(0.0)
+_ONE, _MINUS_ONE = np.float32(1.0), np.float32(-1.0)   # mirror-image velocity signs (float32: no promotion)
 
 
 def _padded(array, periodic_x, periodic_y):
@@ -362,24 +379,36 @@ def _shifted(padded, di, dj, wx, wy):
     return padded[..., 1 + di:1 + di + wx, 1 + dj:1 + dj + wy]
 
 
-def _neighbour_velocity_host(lattice_velocity, fluid, i, j, wx, wy, periodic_x, periodic_y):
-    """(valid, u_x, u_y) at window cells (i, j) (element arrays) of the kernel's neighbour_velocity: valid False outside
-    the window or in solids (their values are those of a clamped cell)."""
+def _neighbour_velocity_host(lattice_velocity, fluid, kinds, i, j, wx, wy, periodic_x, periodic_y):
+    """(valid, u_x, u_y) at window cells (i, j) (element arrays) of the kernel's neighbour_velocity: beyond a slip face
+    the mirror image inside (normal velocity negated); valid False outside otherwise or in solids (their values are
+    those of a clamped cell)."""
     if periodic_x:
         i = i % wx
     if periodic_y:
         j = j % wy
+    sign_x = sign_y = _ONE
+    if kinds[0] == FACE_SLIP or kinds[1] == FACE_SLIP:
+        lo, hi = (i < 0) & (kinds[0] == FACE_SLIP), (i >= wx) & (kinds[1] == FACE_SLIP)
+        i = np.where(lo, -1 - i, np.where(hi, 2 * wx - 1 - i, i))
+        sign_x = np.where(lo | hi, _MINUS_ONE, _ONE)
+    if kinds[2] == FACE_SLIP or kinds[3] == FACE_SLIP:
+        lo, hi = (j < 0) & (kinds[2] == FACE_SLIP), (j >= wy) & (kinds[3] == FACE_SLIP)
+        j = np.where(lo, -1 - j, np.where(hi, 2 * wy - 1 - j, j))
+        sign_y = np.where(lo | hi, _MINUS_ONE, _ONE)
     inside = (i >= 0) & (i < wx) & (j >= 0) & (j < wy)
     clamped_i, clamped_j = np.clip(i, 0, wx - 1), np.clip(j, 0, wy - 1)
     valid = inside & fluid[clamped_i, clamped_j]
-    return valid, lattice_velocity[0][clamped_i, clamped_j], lattice_velocity[1][clamped_i, clamped_j]
+    return (valid, sign_x * lattice_velocity[0][clamped_i, clamped_j],
+            sign_y * lattice_velocity[1][clamped_i, clamped_j])
 
 
-def _face_velocity_gradient_host(lattice_velocity, fluid, face, i, j, side, old_x, old_y, wx, wy, periodic_x,
+def _face_velocity_gradient_host(lattice_velocity, fluid, kinds, face, i, j, side, old_x, old_y, wx, wy, periodic_x,
                                  periodic_y):
     """(du_x/dx, du_y/dx, du_x/dy, du_y/dy) float32 element arrays of the kernel's face_velocity_gradient."""
     def at(di, dj):
-        return _neighbour_velocity_host(lattice_velocity, fluid, i + di, j + dj, wx, wy, periodic_x, periodic_y)
+        return _neighbour_velocity_host(lattice_velocity, fluid, kinds, i + di, j + dj, wx, wy, periodic_x,
+                                        periodic_y)
     x_face = face < 2
     ti, tj = np.where(x_face, 0, 1), np.where(x_face, 1, 0)
     inward = np.where(face % 2 == 0, 1, -1)
@@ -422,28 +451,29 @@ def _face_link_values(q, populations, fluid, lattice_velocity, kinds, face_value
     out_x = (source_i < 0) | (source_i >= wx)
     out_y = (source_j < 0) | (source_j >= wy)
     face_x, face_y = np.where(source_i < 0, 0, 1), np.where(source_j < 0, 2, 3)
-    face = np.where(out_x & out_y, np.where(kinds[face_y] <= FACE_SLIP, face_y, face_x),
-                    np.where(out_x, face_x, face_y))
+    corner_y = (kinds[face_y] == FACE_WALL) | (kinds[face_x] == FACE_SLIP)
+    face = np.where(out_x & out_y, np.where(corner_y, face_y, face_x), np.where(out_x, face_x, face_y))
     kind = kinds[face]
     x_face = face < 2
     position = np.where(x_face, j, i)
     bounce = populations[opposite, i, j]
     # wall / velocity faces: moving bounce-back with the face velocity
     values = bounce + 6.0 * weight * (cx * face_values[face, 0, position] + cy * face_values[face, 1, position])
-    # slip: the mirrored population of the upstream cell along the face (own cell where that is outside / solid)
+    # slip: the mirrored population of the upstream cell along the face (halfway bounce-back where that is outside /
+    # solid)
     mirror_i, mirror_j = np.where(x_face, i, source_i), np.where(x_face, source_j, j)
     upstream = (mirror_i >= 0) & (mirror_i < wx) & (mirror_j >= 0) & (mirror_j < wy)
     upstream &= fluid[np.clip(mirror_i, 0, wx - 1), np.clip(mirror_j, 0, wy - 1)]
     mirrored = np.where(x_face, _MIRROR_X[q], _MIRROR_Y[q])
-    values = np.where(kind == FACE_SLIP, populations[mirrored, np.where(upstream, mirror_i, i),
-                                                     np.where(upstream, mirror_j, j)], values)
+    specular = populations[mirrored, np.where(upstream, mirror_i, i), np.where(upstream, mirror_j, j)]
+    values = np.where(kind == FACE_SLIP, np.where(upstream, specular, bounce), values)
     pressure = np.nonzero(kind == FACE_PRESSURE)[0]
     if pressure.size:
         cell_i, cell_j, pressure_face = i[pressure], j[pressure], face[pressure]
         side = np.where(pressure_face < 2, -cy, -cx)   # link midpoint offset along the face
         old_x, old_y = velocity_x[cell_i, cell_j], velocity_y[cell_i, cell_j]
-        gradient = _face_velocity_gradient_host(lattice_velocity, fluid, pressure_face, cell_i, cell_j, side, old_x,
-                                                old_y, wx, wy, periodic_x, periodic_y)
+        gradient = _face_velocity_gradient_host(lattice_velocity, fluid, kinds, pressure_face, cell_i, cell_j, side,
+                                                old_x, old_y, wx, wy, periodic_x, periodic_y)
         cu = cx * old_x + cy * old_y
         shear = cx * cx * gradient[0] + cx * cy * (gradient[1] + gradient[2]) + cy * cy * gradient[3]
         values[pressure] = (-bounce[pressure]
@@ -567,13 +597,23 @@ def _numba_step_helpers(numba):
     if '_numba_face_velocity_gradient' not in globals():
         zero, half = np.float32(0.0), np.float32(0.5)
         three, four = np.float32(3.0), np.float32(4.0)
+        plus_one, minus_one = np.float32(1.0), np.float32(-1.0)
 
         @numba.njit(cache=True)
-        def neighbour_velocity(g_in, fluid, force_x, force_y, i, j, wx, wy, periodic_x, periodic_y):
+        def neighbour_velocity(g_in, fluid, force_x, force_y, face_kind, i, j, wx, wy, periodic_x, periodic_y):
             if periodic_x:
                 i = ((i % wx) + wx) % wx
             if periodic_y:
                 j = ((j % wy) + wy) % wy
+            sign_x, sign_y = plus_one, plus_one
+            if i < 0 and face_kind[0] == FACE_SLIP:
+                i, sign_x = -1 - i, minus_one
+            elif i >= wx and face_kind[1] == FACE_SLIP:
+                i, sign_x = 2 * wx - 1 - i, minus_one
+            if j < 0 and face_kind[2] == FACE_SLIP:
+                j, sign_y = -1 - j, minus_one
+            elif j >= wy and face_kind[3] == FACE_SLIP:
+                j, sign_y = 2 * wy - 1 - j, minus_one
             if i < 0 or i >= wx or j < 0 or j >= wy:
                 return False, zero, zero
             if not fluid[i, j]:
@@ -582,11 +622,11 @@ def _numba_step_helpers(numba):
                   - half * force_x[i, j])
             uy = (g_in[2, i, j] - g_in[4, i, j] + g_in[5, i, j] + g_in[6, i, j] - g_in[7, i, j] - g_in[8, i, j]
                   - half * force_y[i, j])
-            return True, ux, uy
+            return True, sign_x * ux, sign_y * uy
 
         @numba.njit(cache=True)
-        def face_velocity_gradient(g_in, fluid, force_x, force_y, face, i, j, side, u0x, u0y, wx, wy, periodic_x,
-                                   periodic_y):
+        def face_velocity_gradient(g_in, fluid, force_x, force_y, face_kind, face, i, j, side, u0x, u0y, wx, wy,
+                                   periodic_x, periodic_y):
             x_face = face < 2
             ti = 0 if x_face else 1
             tj = 1 if x_face else 0
@@ -597,43 +637,44 @@ def _numba_step_helpers(numba):
             has_side, side_x, side_y = False, zero, zero
             if side != 0:
                 has_side, side_x, side_y = _numba_neighbour_velocity(
-                    g_in, fluid, force_x, force_y, i + side * ti, j + side * tj, wx, wy, periodic_x, periodic_y)
+                    g_in, fluid, force_x, force_y, face_kind, i + side * ti, j + side * tj, wx, wy, periodic_x,
+                    periodic_y)
             has_plus, plus_x, plus_y = False, zero, zero
             has_minus, minus_x, minus_y = False, zero, zero
             if not has_side:
                 has_plus, plus_x, plus_y = _numba_neighbour_velocity(
-                    g_in, fluid, force_x, force_y, i + ti, j + tj, wx, wy, periodic_x, periodic_y)
+                    g_in, fluid, force_x, force_y, face_kind, i + ti, j + tj, wx, wy, periodic_x, periodic_y)
                 has_minus, minus_x, minus_y = _numba_neighbour_velocity(
-                    g_in, fluid, force_x, force_y, i - ti, j - tj, wx, wy, periodic_x, periodic_y)
+                    g_in, fluid, force_x, force_y, face_kind, i - ti, j - tj, wx, wy, periodic_x, periodic_y)
             tangential_x, tangential_y, normal_x, normal_y = zero, zero, zero, zero
             if has_side:
                 tangential_x, tangential_y = side_f * (side_x - u0x), side_f * (side_y - u0y)
             elif has_plus and has_minus:
                 tangential_x, tangential_y = half * (plus_x - minus_x), half * (plus_y - minus_y)
             elif has_plus:
-                ok, far_x, far_y = _numba_neighbour_velocity(g_in, fluid, force_x, force_y, i + 2 * ti, j + 2 * tj,
-                                                             wx, wy, periodic_x, periodic_y)
+                ok, far_x, far_y = _numba_neighbour_velocity(g_in, fluid, force_x, force_y, face_kind, i + 2 * ti,
+                                                             j + 2 * tj, wx, wy, periodic_x, periodic_y)
                 if ok:
                     tangential_x = half * (-three * u0x + four * plus_x - far_x)
                     tangential_y = half * (-three * u0y + four * plus_y - far_y)
                 else:
                     tangential_x, tangential_y = plus_x - u0x, plus_y - u0y
             elif has_minus:
-                ok, far_x, far_y = _numba_neighbour_velocity(g_in, fluid, force_x, force_y, i - 2 * ti, j - 2 * tj,
-                                                             wx, wy, periodic_x, periodic_y)
+                ok, far_x, far_y = _numba_neighbour_velocity(g_in, fluid, force_x, force_y, face_kind, i - 2 * ti,
+                                                             j - 2 * tj, wx, wy, periodic_x, periodic_y)
                 if ok:
                     tangential_x = half * (three * u0x - four * minus_x + far_x)
                     tangential_y = half * (three * u0y - four * minus_y + far_y)
                 else:
                     tangential_x, tangential_y = u0x - minus_x, u0y - minus_y
-            ok, inward_x, inward_y = _numba_neighbour_velocity(g_in, fluid, force_x, force_y, i + ni, j + nj, wx, wy,
-                                                               periodic_x, periodic_y)
+            ok, inward_x, inward_y = _numba_neighbour_velocity(g_in, fluid, force_x, force_y, face_kind, i + ni,
+                                                               j + nj, wx, wy, periodic_x, periodic_y)
             if ok:
                 normal_x, normal_y = inward_f * (inward_x - u0x), inward_f * (inward_y - u0y)
                 if has_side:
                     corner_ok, corner_x, corner_y = _numba_neighbour_velocity(
-                        g_in, fluid, force_x, force_y, i + ni + side * ti, j + nj + side * tj, wx, wy, periodic_x,
-                        periodic_y)
+                        g_in, fluid, force_x, force_y, face_kind, i + ni + side * ti, j + nj + side * tj, wx, wy,
+                        periodic_x, periodic_y)
                     if corner_ok:
                         normal_x = half * (normal_x + inward_f * (corner_x - side_x))
                         normal_y = half * (normal_y + inward_f * (corner_y - side_y))
@@ -711,7 +752,9 @@ def _step_numba(bouzidi):
                             continue
                         if out_x and out_y:
                             face_y = 2 if sj < 0 else 3
-                            face = face_y if face_kind[face_y] <= FACE_SLIP else (0 if si < 0 else 1)
+                            face_x = 0 if si < 0 else 1
+                            corner_y = face_kind[face_y] == FACE_WALL or face_kind[face_x] == FACE_SLIP
+                            face = face_y if corner_y else face_x
                         elif out_x:
                             face = 0 if si < 0 else 1
                         else:
@@ -725,12 +768,12 @@ def _step_numba(bouzidi):
                             if mi >= 0 and mi < wx and mj >= 0 and mj < wy and fluid[mi, mj]:
                                 g[q] = g_in[mirrored, mi, mj]
                             else:
-                                g[q] = g_in[mirrored, i, j]
+                                g[q] = g_in[opposite, i, j]   # halfway bounce-back
                         elif kind == FACE_PRESSURE:
                             side = -cy_int[q] if face < 2 else -cx_int[q]
                             gradient_0, gradient_1, gradient_2, gradient_3 = _numba_face_velocity_gradient(
-                                g_in, fluid, force_x, force_y, face, i, j, side, old_x, old_y, wx, wy, periodic_x,
-                                periodic_y)
+                                g_in, fluid, force_x, force_y, face_kind, face, i, j, side, old_x, old_y, wx, wy,
+                                periodic_x, periodic_y)
                             cxq, cyq, weight = cx_real[q], cy_real[q], weight_table[q]
                             cu = cxq * old_x + cyq * old_y
                             shear = (cxq * cxq * gradient_0 + cxq * cyq * (gradient_1 + gradient_2)

@@ -542,7 +542,7 @@ class OptomechanicalCoupling:
 
     def __init__(self, name, optical_physics, optical_mode, length, moving_boundary=True, photoelastic=True,
                  reference_point=None, quality_factor=None, scattering='forward', crystal_regions=(),
-                 prescribed_normal_displacement=None, axis_point=(0.0, 0.0, 0.0), quality_from=None):
+                 prescribed_normal_displacement=None, axis_point=(0.0, 0.0, 0.0), quality_from=None, mirror_factor=1.0):
         if scattering not in SCATTERING:
             raise ValueError(f"scattering must be one of {', '.join(SCATTERING)}, got {scattering!r}")
         self.name = name
@@ -551,6 +551,9 @@ class OptomechanicalCoupling:
         self.prescribed_normal_displacement = (None if prescribed_normal_displacement is None
                                                else float(prescribed_normal_displacement))
         self.axis_point = tuple(float(value) for value in axis_point)
+        # em_fdfd_bor optics: 2^(model mirror planes) multiplying m_eff (the unfolded body; the planar path counts the
+        # optical physics' own mirror faces instead)
+        self.mirror_factor = float(mirror_factor)
         # (host full-grid bool mask, (6, 6) Voigt p in model axes) of the crystal materials: their full photoelastic tensor
         self.crystal_regions = tuple(crystal_regions)
         self.backward = scattering == 'backward'   # guided vibration modes at k_z = 2 Re beta, the twin overlap

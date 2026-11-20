@@ -12,20 +12,23 @@ from ...core.constants import FACE_LABELS, FACES, FACES_3D
 from ...core.harmonic_probe import harmonic_probe_result
 from ...core.memory_estimate import (COMPLEX128_BYTES, COMPLEX128_CSR_ENTRY_BYTES, FLOAT32_BYTES, FLOAT64_BYTES,
                                      MemoryEstimate, host_lu_bytes)
+from ...core.mirror import feature_mirror_faces, mirror_faces
 from ...fem.diffusion import FEM_FILL_FACTOR, lagrange_entries_per_dof
 from ...fem.diffusion3d import FEM_FILL_FACTOR_3D
 from ...fem.pml import DEFAULT_PML_REFLECTION
 from ...model.definition_helpers import (AXISYMMETRIC, AXISYMMETRIC_SPACE_SETTINGS, DIFFUSION_DIRECT_BACK_ENDS,
                                          DISCRETIZATION_PARAM, KEPT_SOLUTION_BYTES_PER_DOF, axisymmetric_issues,
-                                         cudss_external, dof_map_bytes, element_order, element_term_ops, frequency_sweep_counts,
-                                         geometry_param, harmonic_frequency_items, host_direct_back_end,
-                                         is_axisymmetric, numpy_calls, plain_number, reduced_sweep_memory_items,
+                                         cudss_external, dof_map_bytes, element_order, element_term_ops,
+                                         face_conflicts, frequency_sweep_counts, geometry_param,
+                                         harmonic_frequency_items, host_direct_back_end, is_axisymmetric,
+                                         mirror_face_issues, mirror_feature_issues, numpy_calls,
+                                         own_mirror_face_conflicts, plain_number, reduced_sweep_memory_items,
                                          reduced_sweep_time_items,
                                          reports_model_checks, resolved_back_end, scalar_harmonic_build_items,
                                          scalar_harmonic_build_items_3d, selected_material_data,
                                          shell_element_fraction, study_frequencies, validate_points_inside)
 from ...model.expressions import Expression, ExpressionError
-from ...model.geometry import expand_entities
+from ...model.geometry import expand_entities, point_z
 from ...model.schema import (FREQUENCY_RESPONSE_STUDY, DomainRequirements, FeatureType, Issue, Param, PhysicsType,
                              SolverRole, feature_path, resolve_values)
 from ...solvers.host_direct import factor_label, host_direct_precision, solver_host_bytes, superlu_bytes_scale
@@ -40,6 +43,16 @@ TYPE_NAME = 'pressure_acoustics'       # = selftests_harmonic.TYPE_NAME (selftes
 INSTANCE_NAME = 'pressure_acoustics'
 _TETRAHEDRA = 'tetrahedra'
 _BOUNDARY_FEATURES = ('sound_hard', 'sound_soft', 'prescribed_pressure', 'impedance', 'vibrating_boundary')
+# core.mirror.MIRROR_FEATURES['pressure_acoustics'] (symmetry +1, antisymmetry -1): their outer faces are model mirror
+# planes; symmetry = the sound-hard face (p even), antisymmetry = sound soft (p odd)
+_SYMMETRY, _ANTISYMMETRY = 'symmetry', 'antisymmetry'
+_MIRROR_FEATURE_TYPES = (_SYMMETRY, _ANTISYMMETRY)
+_PLANE_RTOL = 1e-9   # a point / rigid plane on a mirror plane: within this x the longest domain side
+# a boundary feature on another physics' mirror plane (definition_helpers.mirror_face_issues)
+_MIRROR_FACE_CONSEQUENCE = (
+    'the even mirror image of the pressure there is the default sound-hard face (p unfolds even); sound_soft is the '
+    'odd mirror (give this physics an antisymmetry face for that), prescribed_pressure, impedance and '
+    'vibrating_boundary have no mirror image. Remove the feature for the mirror image of the drawn half')
 _MIN_ELEMENTS_PER_WAVELENGTH = {1: 10.0, 2: 5.0}   # resolution warning (P1 / P2, the industry rule of thumb)
 _DIRECTIONS = ('+x', '-x', '+y', '-y', '+z', '-z', 'custom')
 _MOTION_POWERS = {'acceleration': 0, 'velocity': 1, 'displacement': 2}   # (j omega)^power x amplitude = acceleration
@@ -359,7 +372,8 @@ def _apply_probe(ctx, solver, feature_spec, values, selection):
 
 
 def _probe_result(session, solver, record, feature_spec, options):
-    return harmonic_probe_result(record)
+    """harmonic_probe_result + sector_rule 'linear' (parity sectors: the drawn point's phasor is the sector mean)."""
+    return {**harmonic_probe_result(record), 'sector_rule': 'linear'}
 
 
 def _apply_surface(ctx, solver, feature_spec, values, selection):
@@ -371,7 +385,8 @@ def _apply_surface(ctx, solver, feature_spec, values, selection):
 
 
 def _surface_result(session, solver, monitor, feature_spec, options):
-    return solver.surface_result(monitor)
+    """The monitor's 'xy' result + sector_rule 'linear' (p_mean / p_weighted are linear in p: the sector mean)."""
+    return {**solver.surface_result(monitor), 'sector_rule': 'linear'}
 
 
 # ---- study frequencies (CPU) ----
@@ -398,8 +413,8 @@ def _pml_faces(settings_values, three_d=True) -> tuple:
 
 def _create(ctx, physics_spec, values):
     """PressureAcousticsFEMPhysics (triangles) / PressureAcousticsFEMPhysics3D (tetrahedra) with the 'linear'
-    sparse_direct runtime, the element order and the PML (reference frequency: pml_frequency or the lowest study
-    frequency)."""
+    sparse_direct runtime, the element order, the PML (reference frequency: pml_frequency or the lowest study
+    frequency) and the model's mirror planes (core.mirror signs of this physics)."""
     from ...model.schema import get_registry
     three_d = _three_d(ctx)
     reference = values['pml_frequency']
@@ -411,10 +426,13 @@ def _create(ctx, physics_spec, values):
                    pml_frequency=reference)
     if three_d:
         from .solver_harmonic_fem3d import PressureAcousticsFEMPhysics3D   # lazy: solver code at create only
-        return PressureAcousticsFEMPhysics3D(ctx.domain, element_order(values), **options)
-    from .solver_harmonic_fem import PressureAcousticsFEMPhysics
-    return PressureAcousticsFEMPhysics(ctx.domain, element_order(values), axisymmetric=is_axisymmetric(values),
-                                       **options)
+        physics = PressureAcousticsFEMPhysics3D(ctx.domain, element_order(values), **options)
+    else:
+        from .solver_harmonic_fem import PressureAcousticsFEMPhysics
+        physics = PressureAcousticsFEMPhysics(ctx.domain, element_order(values), axisymmetric=is_axisymmetric(values),
+                                              **options)
+    physics.set_mirror_faces(mirror_faces(ctx.spec, physics_spec.name))   # before the features apply
+    return physics
 
 
 def _domain_requirements(settings_values):
@@ -451,7 +469,7 @@ def _pml_issues(vctx, physics_spec, settings_values, path, band):
         issues.append(Issue('error', path, 'a PML needs a reference frequency: set pml_frequency, or run a '
                                            'frequency_response study (its lowest frequency is the default)'))
     for feature in physics_spec.features:
-        if feature.enabled and feature.type in _BOUNDARY_FEATURES:
+        if feature.enabled and feature.type in _BOUNDARY_FEATURES + _MIRROR_FEATURE_TYPES:
             held = [face for face in _outer_faces(vctx, feature) if face in faces]
             if held:
                 issues.append(Issue('error', feature_path(physics_spec, feature),
@@ -519,8 +537,147 @@ def _resolution_issues(vctx, physics_spec, settings_values, path, band):
                                    'waves disperse')]
 
 
+def _parity_sectors_on(vctx) -> bool:
+    """True when the study setting parity_sectors resolves on."""
+    study = vctx.spec.study
+    try:
+        params = vctx.registry.study_type(study.type).params
+    except (KeyError, ValueError):   # reported at the study
+        return False
+    values = vctx.values(params, study.settings or {})
+    return bool(values and values.get('parity_sectors'))
+
+
+def _plane_coordinates(vctx) -> dict:
+    """{face: coordinate [m]} of the outer faces of a Cartesian domain [0, size] (z faces in 3D); {} when the sizes do
+    not resolve (reported at the geometry)."""
+    sizes = vctx.domain_size
+    if sizes is None:
+        return {}
+    sizes = (*sizes, vctx.size_z) if vctx.spec.is_3d else tuple(sizes)
+    coordinates = {}
+    for axis, size in zip('xyz', sizes):
+        if size is not None:
+            coordinates.update({f'{axis}_lo': 0.0, f'{axis}_hi': float(size)})
+    return coordinates
+
+
+def _background_mirror_issues(vctx, physics_spec, planes, coordinates):
+    """The background wave of the last background_pressure_field against the mirror planes {face: sign of p}: a plane
+    wave must travel along every even plane, a standing wave have its rigid plane on an even plane normal to its axis,
+    neither is ever odd (errors); an expression is not checked (info); parity_sectors refuse a background (each sector
+    would need the parity part of p_b)."""
+    backgrounds = [feature for feature in physics_spec.features
+                   if feature.enabled and feature.type == 'background_pressure_field']
+    if not backgrounds:
+        return []
+    feature = backgrounds[-1]
+    path = feature_path(physics_spec, feature)
+    issues = []
+    if _parity_sectors_on(vctx):
+        issues.append(Issue('error', path, 'parity_sectors with a background_pressure_field: a sector run takes the '
+                                           'background as it is, not its parity part, so the sectors do not combine '
+                                           'to the drawn incident wave; an incident wave even about every plane needs '
+                                           'no sectors (switch parity_sectors off), else model the full structure'))
+    values = vctx.values(_BACKGROUND_PARAMS, feature.params)
+    if not values:   # reported by the param checks
+        return issues
+    even = sorted(face for face, sign in planes.items() if sign > 0)
+    odd = sorted(face for face, sign in planes.items() if sign < 0)
+    if values['wave'] == 'expression':
+        parts = ([f"even about {', '.join(even)}"] if even else []) + ([f"odd about {', '.join(odd)}"] if odd else [])
+        issues.append(Issue('info', path, f"the expression background must be {' and '.join(parts)} (p_b at the "
+                                          'mirror image = +p_b / -p_b), which is not checked: otherwise the half '
+                                          'model solves the mirrored model lit by p_b and its image'))
+        return issues
+    wave = values['wave']
+    if odd:
+        issues.append(Issue('error', path, f"a {wave} is never odd about a plane, but {', '.join(odd)} "
+                                           f"{'is an' if len(odd) == 1 else 'are'} antisymmetry (odd) mirror "
+                                           f"plane(s) of '{physics_spec.name}': use an expression background odd "
+                                           'about it, or a symmetry face'))
+    try:
+        direction = _direction_vector(values, 3 if vctx.spec.is_3d else 2)
+    except ValueError:   # reported by _validate_background
+        return issues
+    scale = max(coordinates.values(), default=0.0)
+    for face in even:
+        axis = 'xyz'.index(face[0])
+        if axis >= len(direction):
+            continue
+        if wave == 'plane_wave' and abs(direction[axis]) > _PLANE_RTOL:
+            issues.append(Issue('error', path, f'the plane wave travels with a component {direction[axis]:.4g} normal '
+                                               f'to the mirror plane {face}, so its mirror image travels another way '
+                                               'and the unfolded model is lit by both: choose a direction along the '
+                                               'plane (normal incidence onto it: a standing_wave with its rigid plane '
+                                               'on the face), or model the full structure'))
+        elif wave == 'standing_wave' and abs(direction[axis]) > 0.5 and face in coordinates:
+            plane = coordinates[face]
+            if abs(values['plane_position'] - plane) > _PLANE_RTOL * scale:
+                issues.append(Issue('error', path, f"the standing wave along {face[0]} is even only about its rigid "
+                                                   f"plane {face[0]} = {values['plane_position']:.10g} m (at every "
+                                                   f'frequency), not about the mirror plane {face} at {face[0]} = '
+                                                   f'{plane:.10g} m: set plane_position to {plane:.10g}, or model the '
+                                                   'full structure'))
+    return issues
+
+
+def _point_source_mirror_issues(vctx, physics_spec, planes, coordinates):
+    """Per point source on mirror planes: on an odd one a warning (p = 0 is held there: it radiates nothing), on even
+    ones an info (the source coincides with its images: the unfolded model holds 2^n x its flow rate)."""
+    scale = max(coordinates.values(), default=0.0)
+    size_z = vctx.size_z if vctx.spec.is_3d else None
+    issues = []
+    for feature in physics_spec.features:
+        if not feature.enabled or feature.type != 'point_source':
+            continue
+        for name in vctx.objects(feature.selection):
+            shape = vctx.shapes.get(name)
+            if shape is None or shape.kind != 'point':
+                continue
+            position = {'x': shape.values['x'], 'y': shape.values['y']}
+            if size_z is not None:
+                position['z'] = point_z(shape.values, size_z)
+            on = [face for face in sorted(planes) if face in coordinates and face[0] in position
+                  and abs(position[face[0]] - coordinates[face]) <= _PLANE_RTOL * scale]
+            odd = [face for face in on if planes[face] < 0]
+            if odd:
+                issues.append(Issue('warning', feature_path(physics_spec, feature),
+                                    f"point '{name}' lies on the antisymmetry (odd) mirror plane {', '.join(odd)}, "
+                                    'where p = 0 is held: it radiates nothing (its odd part is zero)'))
+            elif on:
+                issues.append(Issue('info', feature_path(physics_spec, feature),
+                                    f"point '{name}' lies on the mirror plane(s) {', '.join(on)}: the source and its "
+                                    f'image(s) coincide, so the unfolded model holds {2 ** len(on)} x its flow rate'))
+    return issues
+
+
+def _mirror_issues(vctx, physics_spec, settings_values, path):
+    """Mirror planes: a boundary feature on an own symmetry / antisymmetry face (error), two of those on one face
+    (warning: the last wins), boundary features (warning) and PML (error) on the mirror planes of other physics (own
+    faces with a PML: _pml_issues), the background wave and point sources against every plane."""
+    own = feature_mirror_faces(vctx.spec, physics_spec)
+    issues = own_mirror_face_conflicts(vctx, physics_spec, _BOUNDARY_FEATURES, own)
+    issues += face_conflicts(vctx, physics_spec, _MIRROR_FEATURE_TYPES, path)
+    others = [face for face in mirror_faces(vctx.spec) if face not in own]
+    issues += mirror_face_issues(vctx, physics_spec, _BOUNDARY_FEATURES, path, _MIRROR_FACE_CONSEQUENCE, faces=others)
+    padded = [face for face in others if settings_values.get(f'pml_{face}')]
+    if padded:
+        issues.append(Issue('error', path, f"PML on {', '.join(padded)}, a mirror plane of the model (of another "
+                                           'physics): the pressure would unfold across an absorbing face as across a '
+                                           'mirror; turn the PML off there (the face is then sound hard, the even '
+                                           'mirror)'))
+    planes = mirror_faces(vctx.spec, physics_spec.name)
+    if planes:
+        coordinates = _plane_coordinates(vctx)
+        issues += _background_mirror_issues(vctx, physics_spec, planes, coordinates)
+        issues += _point_source_mirror_issues(vctx, physics_spec, planes, coordinates)
+    return issues
+
+
 def _validate(vctx, physics_spec, settings_values):
-    """Physics rules: geometry / dimension, scipy, PML, background features, materials, resolution, the (r, z) axis."""
+    """Physics rules: geometry / dimension, scipy, PML, mirror planes, background features, materials, resolution, the
+    (r, z) axis."""
     path = ('physics', physics_spec.name)
     if not settings_values:
         return []
@@ -533,6 +690,7 @@ def _validate(vctx, physics_spec, settings_values):
                                            'operators, and scipy is not installed: pip install scipy'))
     band = study_frequency_band(vctx.spec, vctx.registry, vctx.parameters)
     issues.extend(_pml_issues(vctx, physics_spec, settings_values, path, band))
+    issues.extend(_mirror_issues(vctx, physics_spec, settings_values, path))
     backgrounds = [feature for feature in physics_spec.features
                    if feature.enabled and feature.type == 'background_pressure_field']
     if len(backgrounds) > 1:
@@ -569,6 +727,11 @@ def _validate_background(vctx, physics_spec, feature_spec, values):
         issues.append(Issue('error', path, 'geometry axisymmetric: the background wave must travel along the axis '
                                            '(direction +y or -y); an oblique wave is not rotationally symmetric'))
     return issues
+
+
+def _validate_mirror_feature(vctx, physics_spec, feature_spec, values):
+    """symmetry / antisymmetry: the shared mirror-feature rules (definition_helpers.mirror_feature_issues)."""
+    return mirror_feature_issues(vctx, physics_spec, feature_spec, _SETTINGS)
 
 
 def _validate_surface(vctx, physics_spec, feature_spec, values):
@@ -792,8 +955,8 @@ _FEATURES = (
                 summary='A rigid wall: no air moves through it. Every outer edge is a sound-hard wall unless something '
                         'else is set there.',
                 description='n . grad p = 0 (total field): the default of every outer face without a PML or other '
-                            'condition, also a mirror plane. A later feature on the same face wins, so this resets an '
-                            'earlier one.'),
+                            'condition (the symmetry feature makes such a face a model mirror plane). A later feature '
+                            'on the same face wins, so this resets an earlier one.'),
     FeatureType('sound_soft', 'Sound soft boundary', 'boundary_condition', 'boundary',
                 apply=_make_boundary_apply('soft'), grids=_GRIDS,
                 summary='A pressure-release surface where the sound pressure is zero, like the surface of water seen '
@@ -816,6 +979,45 @@ _FEATURES = (
                         'loudspeaker membrane or a piston.',
                 description='Inward normal motion as a load: n_out . grad p / rho = j omega v_in (velocity), = a_in '
                             '(acceleration), = -omega^2 d_in (displacement); the wall is sound hard otherwise.'),
+    FeatureType(_SYMMETRY, 'Symmetry', 'boundary_condition', 'boundary', allow_interior=False,
+                apply=_make_boundary_apply('hard'), validate=_validate_mirror_feature, grids=_GRIDS,
+                summary='Makes the selected domain edges mirror planes, so only half (or a quarter) of a structure '
+                        'that is the same on both sides of them needs to be drawn.',
+                description='Even mirror plane on outer faces (x_lo ... z_hi): the face is sound hard (n . grad p = 0, '
+                            'as an unset face; the total field with a background, so the solve is unchanged) and '
+                            'becomes a model mirror plane (core.mirror): fields unfold p even across it (v normal to '
+                            'it odd; Unfold mirror planes, Results.field(unfold=True)) and field derived integrals '
+                            'reaching it count twice. Feature results count the unfolded structure: a surface_pressure '
+                            'selection reaching the plane doubles its area, weight_integral and p_weighted (the weight '
+                            'mirrored onto the image; p_mean is the mean over both halves), a selected outer face that '
+                            'is the plane counts once; object outline pieces lying on the plane are dropped by every '
+                            'boundary feature and surface_pressure (inside the unfolded object); a point source on the '
+                            'plane coincides with its image, so the unfolded model holds twice its flow rate '
+                            '(validation info). With a background_pressure_field the incident wave must itself be even '
+                            'about the plane: a plane wave travelling along it, or a standing wave whose rigid plane '
+                            'is the face or whose axis lies along it (validation errors otherwise; an expression is '
+                            'not checked). Errors: another pressure_acoustics boundary feature or a PML on the face, '
+                            "the x_lo axis (it unfolds without a feature) and the x_hi cylinder r = r_max (no mirror "
+                            "image) of geometry 'axisymmetric', a polar domain, another physics with mirror bc "
+                            'settings (EM) that does not set the face symmetric / antisymmetric. parity_sectors swaps '
+                            'it with antisymmetry. symmetry and antisymmetry on one face: the last one wins '
+                            '(warning).'),
+    FeatureType(_ANTISYMMETRY, 'Antisymmetry', 'boundary_condition', 'boundary', allow_interior=False,
+                apply=_make_boundary_apply('soft'), validate=_validate_mirror_feature, grids=_GRIDS,
+                summary='Makes the selected domain edges mirror planes across which the sound pressure changes sign, '
+                        'for the half of a structure whose sound field is opposite on the two sides.',
+                description='Odd mirror plane on outer faces (x_lo ... z_hi): p = 0 is held on the face (sound soft, '
+                            'the total field; with a background p_s = -p_b there) and the face becomes a model mirror '
+                            'plane of sign -1 (core.mirror): fields unfold p odd (v normal to it even). Feature '
+                            'results count the unfolded structure: a surface_pressure selection reaching the plane '
+                            'doubles its area and weight_integral, while its p_mean / p_weighted get no part from that '
+                            'plane (p cancels with its image); a point source on the plane radiates nothing '
+                            '(validation warns). Session integrals of the signed p_re / p_im reaching the plane '
+                            'still double (core.mirror assumes an even integrand there). A background_pressure_field '
+                            'must be odd about the plane: a plane or standing wave never is (validation error), an '
+                            'expression is not checked. With symmetry it gives parity_sectors (a source without '
+                            'definite parity runs both; frequency_probe and surface_pressure combine as linear '
+                            'phasors; a background is refused). Other errors as symmetry.'),
     FeatureType('point_source', 'Point source', 'source', 'point', params=_POINT_SOURCE_PARAMS,
                 object_kinds=('point',), max_entities=1, apply=_apply_point_source, validate=validate_points_inside,
                 grids=_GRIDS,
@@ -858,10 +1060,11 @@ PRESSURE_ACOUSTICS = PhysicsType(
                 'triangles (planar or axisymmetric) or tetrahedra (3D). K and M are assembled once; each frequency is '
                 "one complex symmetric factorisation by the linear role (back_end 'auto': cudss_mixed on the gpu "
                 'backend when nvmath-python is installed, else host SuperLU; MUMPS / PARDISO opt-in). Outer faces '
-                'default to sound hard (also mirror planes); boundary features act on the window edge of outer faces '
-                'and on object outlines (2D) / interfaces (3D). Probe and surface series per frequency are complex: '
-                '<c>_re / _im / _abs / _phase. v_* = j grad p / (omega rho) per element. Snapshots per frequency are '
-                'labelled "f = <Hz> Hz".',
+                'default to sound hard; the symmetry / antisymmetry features make outer faces even / odd model mirror '
+                'planes (sound hard / soft); boundary features act on the window edge of outer faces and on object '
+                'outlines (2D) / interfaces (3D). Probe and surface series per frequency are complex: <c>_re / _im / '
+                '_abs / _phase. v_* = j grad p / (omega rho) per element. Snapshots per frequency are labelled "f = '
+                '<Hz> Hz".',
     settings=_SETTINGS,
     features=_FEATURES,
     material_properties=_MATERIAL_PROPERTIES,

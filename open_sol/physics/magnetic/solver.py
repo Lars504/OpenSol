@@ -14,6 +14,7 @@ from ...core.fv_diffusion import (BCSide, DiffusionPhysicsBase, DiffusionSystem,
 from .fields import MagneticFields2D
 from .kept_preconditioner import KeptPreconditionerSolver, kept_preconditioner_solver
 from .materials import MAGNETIC_SCHEMA, PERMEABILITY_ARRAYS, REMANENCE_ARRAYS, SATURATION_ARRAY
+from .mirror_totals import MirrorTotals, tensor_touched_faces
 from .renderer import MagneticRenderer
 from .saturation import (ANDERSON_DEPTH, TENSOR_NONLINEAR_METHODS, bh_curve, refuse_curve_conflicts,
                          Float32StallWatch, saturation_reluctivity, tabulated_reluctivity)
@@ -26,12 +27,14 @@ _DERIVED_FIELDS = ('B_x', 'B_y', 'B_abs', 'H_x', 'H_y', 'w_mag')
 @dataclass(frozen=True, eq=False)
 class CoilRegion:
     """Runtime object of a stranded coil: window cells, turns, build current [A] (> 0 along +z / +phi; the live one is
-    the solver's, set_coil_current), cross-section area [m^2] (the r-z area when axisymmetric)."""
+    the solver's, set_coil_current), cross-section area [m^2] (the r-z area when axisymmetric) and mirror_factor (2 per
+    model mirror plane it reaches: its image joins it in series)."""
     name: str
     mask_window: object     # bool window mask of the run backend
     turns: int
     current: float
     area: float
+    mirror_factor: float = 1.0
 
 
 def face_drive_terms(system, drive_x, drive_y):
@@ -66,9 +69,10 @@ def face_divergence_source(face_drive_x, face_drive_y):
     return -(face_drive_x[1:, :] - face_drive_x[:-1, :]) - (face_drive_y[:, 1:] - face_drive_y[:, :-1])
 
 
-class MagneticPhysics(DiffusionPhysicsBase):
+class MagneticPhysics(MirrorTotals, DiffusionPhysicsBase):
     """2D magnetostatics -curl(nu curl A) = J on the physical window (c_xx = nu_yy / r, c_yy = nu_xx / r; r = 1
-    planar): one DiffusionSystem solve per change; A, B, H and w_mag edge-extended into the PML ring."""
+    planar): one DiffusionSystem solve per change; A, B, H and w_mag edge-extended into the PML ring; energy and coil
+    results of the model unfolded over its mirror planes (set_mirror_faces)."""
 
     name = 'magnetic'
     type_label = 'magnetostatics'           # message prefix (MagneticACPhysics: magnetic_fields_ac)
@@ -294,7 +298,8 @@ class MagneticPhysics(DiffusionPhysicsBase):
         area = float(xp.sum(xp.where(mask_window, system.cell_area, 0.0)))
         if not area > 0.0:
             raise ValueError(f"coil '{name}' selects no window cell")
-        coil = CoilRegion(name, mask_window, int(turns), float(current), area)
+        coil = CoilRegion(name, mask_window, int(turns), float(current), area,
+                          self._coil_mirror_factor(name, tensor_touched_faces(to_host(mask_window))))
         self._applied_source_window += xp.where(mask_window, DTYPE(coil.turns * coil.current / area), DTYPE(0.0))
         self._source_dirty = True
         self.coils.append(coil)
@@ -333,22 +338,25 @@ class MagneticPhysics(DiffusionPhysicsBase):
         system.set_fixed(self.xp.asarray(mask), self.xp.asarray(values, dtype=system.dtype))
 
     def coil_results(self, coil: CoilRegion) -> dict:
-        """current, turns, flux_linkage [Wb/m planar, Wb axisymmetric] = turns / area * integral of A (2 pi psi) over
-        the coil, inductance = flux_linkage / current [H/m, H] (nan at zero current)."""
+        """current, turns (the drawn cross-section's), flux_linkage [Wb/m planar, Wb axisymmetric] = mirror_factor x
+        turns / area * integral of A (2 pi psi) over the coil (its images on the mirror planes it reaches join it in
+        series), inductance = flux_linkage / current [H/m, H] (nan at zero current), mirror_factor."""
         system = self.system
         if system.n_solves == 0:
             raise RuntimeError(f"magnetostatics '{self.name}': coil '{coil.name}' needs a solve first")
         weight = 2.0 * math.pi if self._axisymmetric else 1.0
         integral = float(self.xp.sum(self.xp.where(coil.mask_window, system.unknown2d * system.cell_area, 0.0)))
-        linkage = coil.turns * weight * integral / coil.area
+        linkage = coil.mirror_factor * coil.turns * weight * integral / coil.area
         current = self._coil_currents.get(coil, coil.current)
         inductance = linkage / current if current != 0.0 else float('nan')
-        return {'current': current, 'turns': coil.turns, 'flux_linkage': linkage, 'inductance': inductance}
+        return {'current': current, 'turns': coil.turns, 'flux_linkage': linkage, 'inductance': inductance,
+                'mirror_factor': coil.mirror_factor}
 
     def field_energy(self) -> float:
-        """Energy (1/2) u^T K u of the free cells [J/m planar, J axisymmetric (x 2 pi)]: every face touching a free cell
-        (held-free faces: the free half cell) and outer faces of free cells (the axis face with its factor 2); with
-        remanence the energy of B alone (not the magnet co-energy)."""
+        """Energy (1/2) u^T K u of the free cells [J/m planar, J axisymmetric (x 2 pi)] times window_mirror_factor (the
+        images on the model mirror planes): every face touching a free cell (held-free faces: the free half cell) and
+        outer faces of free cells (the axis face with its factor 2); with remanence the energy of B alone (not the
+        magnet co-energy)."""
         system = self.system
         xp = self.xp
         unknown = system.unknown2d
@@ -362,7 +370,7 @@ class MagneticPhysics(DiffusionPhysicsBase):
             conducting = (conductance > 0) & free[cells]
             total += xp.sum(xp.where(conducting, (conductance * unknown[cells] - rhs) ** 2
                                      / xp.where(conducting, conductance, 1.0), 0.0))
-        return 0.5 * (2.0 * math.pi if self._axisymmetric else 1.0) * float(total)
+        return 0.5 * (2.0 * math.pi if self._axisymmetric else 1.0) * self.window_mirror_factor * float(total)
 
     def rebuild_operator(self) -> None:
         """Re-assemble the operator, held-cell elimination, anchor check and Jacobi preconditioner."""

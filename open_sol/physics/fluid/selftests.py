@@ -327,7 +327,8 @@ def startup_case(precision):
 
 # FLUID_CASES: every analytic case (selftests_backend wraps them in its cpu-vs-gpu parity cases); SELFTEST_CASES
 # registers only those no example checks: the force channel is examples/fluid/couette_poiseuille + falling_film
-# (periodic faces, walls, body force, steady), the pressure channel poiseuille_channel_pressure, the plug flow
+# (periodic faces, walls, body force, steady), the pressure channel poiseuille_channel_pressure (as a half channel on a
+# symmetry face: the mirror plane, its corner links with the pressure faces, the doubled flow rate), the plug flow
 # slug_flow_graetz (slip faces, velocity inlet, initial_velocity start, fluid_heat_convection).
 _COVERED_BY_EXAMPLES = frozenset({'fluid_poiseuille_force', 'fluid_poiseuille_pressure',
                                   'fluid_heat_convection_plug'})

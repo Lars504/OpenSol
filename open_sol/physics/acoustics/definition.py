@@ -9,7 +9,7 @@ import numpy as np
 from ...core.constants import DTYPE, EPS0, FACE_LABELS, FACES
 from ...core.memory_estimate import FLOAT32_BYTES, INT32_BYTES, MemoryEstimate
 from ...core.time_estimate import explicit_step_estimate
-from ...core.mirror import mirror_faces
+from ...core.mirror import MIRROR_SIGNS, mirror_faces
 from ...core.monitors import probe_result
 from ...model.definition_helpers import (AXISYMMETRIC, AXISYMMETRIC_SPACE_SETTINGS, HALF_STORAGE_STEPPER_ROLE,
                                          axisymmetric_issues, geometry_param, is_axisymmetric, optional_material_param,
@@ -18,7 +18,7 @@ from ...model.definition_helpers import (AXISYMMETRIC, AXISYMMETRIC_SPACE_SETTIN
 from ...model.definition_resonance import ResonanceProbe, point_trace_items, resonance_monitor_feature
 from ...model.expressions import Expression, ExpressionError
 from ...model.geometry import line_orientation
-from ...model.schema import TIME_DEPENDENT_STUDY, FeatureType, Issue, Param, PhysicsType, feature_path
+from ...model.schema import TIME_DEPENDENT_STUDY, FeatureType, Issue, Param, PhysicsType, feature_path, known_physics
 from ..mechanics.material_params import (PHOTOELASTIC_P11_PARAM, PHOTOELASTIC_P12_PARAM, POISSON_RATIO_PARAM,
                                          YOUNGS_MODULUS_PARAM)
 from .axisymmetric import KERNEL_ROWS, radial_stability_factor
@@ -46,16 +46,28 @@ def _target_type(spec, physics_name):
         return None
 
 # ---- settings ----
+# 'symmetric' = the rigid slip wall that also makes the face a model mirror plane (core.mirror.own_mirror_faces reads
+# the value; there is no 'antisymmetric' face: the odd mirror v_t = 0, s_nn = 0 needs samples on the lo face); the
+# solver takes it as 'rigid' (_solver_faces)
+_SYMMETRIC_FACE = 'symmetric'
+_BOUNDARY_CHOICES = (*BOUNDARY_TYPES, _SYMMETRIC_FACE)
 _BC_HELP = ('absorbing: CPML in the outermost pml_cells cells, backed by a rigid wall; these lie inside the domain unless '
             'another physics (an EM CPML) pads the grid there: keep sources, probes and objects out (validation '
-            'warns). rigid: slip wall (normal velocity and shear stress 0; also a mirror symmetry plane), also where '
-            'another physics pads the grid (the padding stays idle). periodic: wraps to the opposite face (set both; '
-            'an error where another physics pads the grid). A traction-free surface is a material boundary: cells '
-            'without density and stiffness are vacuum. geometry axisymmetric: x_lo must be rigid (the axis: v_r = 0, '
-            's_rz = 0); a rigid x_hi is a slip wall on r = r_max, an absorbing one a radial CPML.')
+            'warns). rigid: slip wall (normal velocity and shear stress 0; also the even mirror on a plane another '
+            'physics sets), also where another physics pads the grid (the padding stays idle). symmetric: the same '
+            'slip wall as a model mirror plane: fields unfold across it (v normal to it and sxy odd, stresses and '
+            'pressure even), field derived integrals reaching it count twice, and another physics with mirror bc '
+            'settings (EM) must set the face symmetric / antisymmetric; there is no antisymmetric elastic face, so '
+            'parity_sectors cannot swap it (use rigid for a face only an EM plane mirrors); not on x_lo / x_hi of '
+            'geometry axisymmetric. periodic: wraps to the opposite face (set both; an error where another physics '
+            'pads the grid). A traction-free surface is a material boundary: cells without density and stiffness are '
+            'vacuum. geometry axisymmetric: x_lo must be rigid (the axis: v_r = 0, s_rz = 0; it unfolds for display '
+            'without a mirror); a rigid x_hi is a slip wall on r = r_max, an absorbing one a radial CPML.')
 _BC_TIP = ('What happens at this edge of the domain.\n\n'
            '- Absorbing: waves leave without reflection through a damping layer inside the outer cells.\n'
            '- Rigid wall: the edge does not move; fluids slide along it.\n'
+           '- Symmetry plane: a rigid wall that is also a mirror, so only half of a symmetric structure needs to be '
+           'drawn.\n'
            '- Periodic: the domain repeats; set the opposite edge to periodic too.')
 _GEOMETRY_PARAM = geometry_param(
     'plane strain per unit z length',
@@ -71,8 +83,9 @@ _GEOMETRY_PARAM = geometry_param(
     'Rigid wall, which is the axis condition.',
     axis_text='bc_x_lo rigid and no other physics padding the grid at x_lo, else validation errors')
 _SETTINGS = (_GEOMETRY_PARAM,) + tuple(
-    Param(f'bc_{face}', 'choice', 'absorbing', label=FACE_LABELS[face], choices=BOUNDARY_TYPES,
-          choice_labels=(('absorbing', 'Absorbing'), ('rigid', 'Rigid wall'), ('periodic', 'Periodic')),
+    Param(f'bc_{face}', 'choice', 'absorbing', label=FACE_LABELS[face], choices=_BOUNDARY_CHOICES,
+          choice_labels=(('absorbing', 'Absorbing'), ('rigid', 'Rigid wall'), ('periodic', 'Periodic'),
+                         (_SYMMETRIC_FACE, 'Symmetry plane')),
           help=_BC_HELP, tip=_BC_TIP)
     for face in FACES) + (
     Param('pml_cells', 'int', 20, label='Absorbing layer thickness', unit='cells', min=2,
@@ -696,16 +709,50 @@ def _material_issues(vctx, physics_spec, path):
 
 
 def _mirror_plane_issues(vctx, values, path):
-    """Warning per EM mirror face (core.mirror) whose acoustic face is not rigid: only the slip wall on the window face
-    is the even mirror image of the unfolded model (Results unfold elastic_waves fields even)."""
+    """Warning per model mirror face (core.mirror: EM bc, mirror features, a symmetric face) whose acoustic face is
+    not a slip wall (rigid / symmetric): only the slip wall on the window face is the even mirror image of the unfolded
+    model (Results unfold elastic_waves fields even)."""
     if not values:
         return []
-    faces = [face for face in mirror_faces(vctx.spec) if face in FACES and values[f'bc_{face}'] != 'rigid']
+    faces = [face for face in mirror_faces(vctx.spec)
+             if face in FACES and values[f'bc_{face}'] not in ('rigid', _SYMMETRIC_FACE)]
     if not faces:
         return []
-    return [Issue('warning', path, f"EM mirror plane(s) {', '.join(faces)}: this physics is not rigid there, but the "
-                                   'unfolded (mirrored) model needs the slip wall (rigid) on the plane, so its '
+    return [Issue('warning', path, f"mirror plane(s) {', '.join(faces)} of the model: this physics is not rigid there, "
+                                   'but the unfolded (mirrored) model needs the slip wall (rigid) on the plane, so its '
                                    'unfolded fields and doubled totals are wrong otherwise')]
+
+
+def _symmetric_face_issues(vctx, physics_spec, values, path):
+    """bc 'symmetric' faces (own model mirror planes): errors on x_hi of geometry axisymmetric (x_lo: the axis rule)
+    and for another physics with mirror bc settings (EM bc_<face> symmetric / antisymmetric) that does not set the
+    face to one of those (its fields would unfold and its integrals double as a mirror it does not solve; the rule of
+    definition_helpers.mirror_feature_issues for a face that is no feature)."""
+    faces = [face for face in FACES if values.get(f'bc_{face}') == _SYMMETRIC_FACE]
+    if not faces:
+        return []
+    issues = []
+    if is_axisymmetric(values) and 'x_hi' in faces:
+        issues.append(Issue('error', path, "bc_x_hi symmetric: x_hi is the cylinder r = r_max of geometry "
+                                           "'axisymmetric', not a mirror plane (its image across r = r_max is no part "
+                                           'of the body of revolution); use rigid'))
+    for other, other_type in known_physics(vctx.spec, vctx.registry):
+        if other.name == physics_spec.name:
+            continue
+        bc_params = {param.name for param in other_type.settings
+                     if param.name.startswith('bc_') and set(MIRROR_SIGNS) <= set(param.choices or ())}
+        partners = [face for face in faces if f'bc_{face}' in bc_params]
+        other_values = vctx.values(other_type.settings, other.settings) if partners else None
+        for face in partners if other_values else ():   # no values: reported at that physics
+            value = other_values.get(f'bc_{face}')
+            if value not in MIRROR_SIGNS:
+                issues.append(Issue('error', path, f"bc_{face} symmetric makes {face} a model mirror plane, but "
+                                                   f"'{other.name}' sets bc_{face} = {value!r}: its fields would "
+                                                   'unfold (and its integrals reaching the face double) as a mirror '
+                                                   f'it does not solve. Set its bc_{face} to symmetric or '
+                                                   f'antisymmetric, or this bc_{face} to rigid (a slip wall that is '
+                                                   'no mirror plane)'))
+    return issues
 
 
 def _layer_issues(vctx, physics_spec, values, path):
@@ -839,7 +886,12 @@ def _planar_only_issues(vctx):
 def _axisymmetric_physics_issues(vctx, physics_spec, values, path):
     """The axis rules (bc_x_lo rigid, no padding at x_lo) and the shared partner warning."""
     issues = axisymmetric_issues(vctx, physics_spec, path, 'elastic_waves')
-    if values.get('bc_x_lo') != 'rigid':
+    if values.get('bc_x_lo') == _SYMMETRIC_FACE:
+        issues.append(Issue('error', path, 'geometry axisymmetric: x_lo is the axis r = 0, not a mirror plane (the '
+                                           'ring weights already count the whole revolution; its r < 0 side unfolds '
+                                           "for display without a mirror), so bc_x_lo must be 'rigid', not "
+                                           "'symmetric'"))
+    elif values.get('bc_x_lo') != 'rigid':
         issues.append(Issue('error', path, f"geometry axisymmetric: x_lo is the axis r = 0, so bc_x_lo must be 'rigid' "
                                            f"(v_r = 0, s_rz = 0 there), got {values.get('bc_x_lo')!r}"))
     mesh = vctx.mesh
@@ -902,6 +954,7 @@ def _validate_physics(vctx, physics_spec, settings_values):
     if any(issue.level == 'error' for issue in issues):
         return issues
     issues += _layer_issues(vctx, physics_spec, values, path)
+    issues += _symmetric_face_issues(vctx, physics_spec, values, path)
     issues += _mirror_plane_issues(vctx, values, path)
     if reports_model_checks(vctx, physics_spec, PHYSICS_TYPE_NAME):
         issues += _material_issues(vctx, physics_spec, path)
@@ -940,10 +993,16 @@ def _validate_heat_pulse(vctx, physics_spec, feature_spec, values):
 
 
 # ---- factory, memory ----
+def _solver_faces(values) -> dict:
+    """AcousticPhysics faces of the bc settings: 'symmetric' is the 'rigid' slip wall (the mirror plane is model
+    metadata: core.mirror reads the setting)."""
+    return {face: 'rigid' if values[f'bc_{face}'] == _SYMMETRIC_FACE else values[f'bc_{face}'] for face in FACES}
+
+
 def _create(ctx, physics_spec, values):
     envelope = (HeatingPulse(values['heating_pulse_width'], values['heating_pulse_delay'])
                 if values['heating_envelope'] == 'gaussian' else None)
-    return AcousticPhysics(ctx.domain, faces={face: values[f'bc_{face}'] for face in FACES},
+    return AcousticPhysics(ctx.domain, faces=_solver_faces(values),
                            pml_cells=values['pml_cells'], pml_reflection=values['pml_reflection'],
                            courant=values['courant'], heating_envelope=envelope,
                            axisymmetric=is_axisymmetric(values),

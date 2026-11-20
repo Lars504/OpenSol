@@ -57,6 +57,21 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   `_loads_dirty` (it also drops the frequency response's kept `_harmonic_drive`), so loads never change between a solve
   and a read. n_solves doubles as the couplings' revision counter.
 
+## Mirror planes (feature symmetry, both types)
+- `symmetry` (`definition_common.SYMMETRY_FEATURE`) = the Roller apply / result whose faces are model mirror planes
+  (s = +1). It is in `SUPPORT_FEATURES` and `ROLLER_FEATURES`: code testing `feature.type == 'roller'` for the normal
+  hold tests ROLLER_FEATURES instead.
+- Validation (`definition_common.symmetry_issues` + `pml_crossing_issues`, a PML on a face of another axis crosses the
+  plane): errors for piezoelectric, materials failing `mirror_violation`, uniform shear initial stress with a normal
+  index; 2D generalized plane strain bending terms across the plane, 3D optomechanical_coupling and a squeeze film gap
+  side on the plane. Physics level: `own_mirror_face_conflicts`, `model_mirror_issues` (warning per model mirror plane
+  no Roller / Symmetry / Fixed holds).
+- Results the solid reports itself stay those of the drawn part (support / harmonic reaction tables, squeeze-film c /
+  k); the optomechanics m_eff is the unfolded body's (a solid symmetry face forces the optics to mirror it; em_fdfd_bor
+  optics: `OptomechanicalCoupling.mirror_factor` from `mirror_faces(ctx.spec)`). Parity sectors raise (no odd solid
+  feature). A vented squeeze-film rim on a plane raises in `_vent_edges`.
+- Axis: `AXIS_UNFOLD_TYPES['solid_mechanics']` +1 is right for every renderer field at azimuthal_order 0.
+
 ## Anisotropic stiffness (`stiffness.py`, c_ij entries)
 - Voigt conventions, the Lame fallback per component and the formulations: `stiffness.py` header; which entry
   allocates which arrays: `materials.OPTIONAL_STIFFNESS_SCHEMA`. c11 / c12 / c22 / c66 / c16 / c26 are elastic_waves'

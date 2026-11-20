@@ -22,6 +22,23 @@ solver_harmonic_fem.py header and the fem sub file "Complex scalar harmonic syst
 - No `domain_requirements`: absorbing layers lie inside the window, so elastic_waves never conflicts with an EM boundary
   config. Its dt exists only after the build: check.json dt_estimate / MeshEstimate.dt leave it out; validation logs
   `definition.estimated_time_step` (also read by fluid's validation).
+- Mirror planes: s = +1 on every plane (no odd face: v_t = 0, s_nn = 0 would need samples on the lo face). A 'rigid'
+  face on a model mirror face is the even mirror; bc 'symmetric' is the same slip wall that also makes the face a
+  model mirror plane (`own_mirror_faces` reads the value; `_solver_faces` hands the solver 'rigid', so `_pins` and
+  couplings never see 'symmetric'); `mirror_feature_issues` does not treat it as an EM partner. Renderer parities: v
+  polar staggered, sxy axial_z staggered, normal / hoop stresses, pressure, strains 'scalar' (not 'even', so other
+  physics' parity sectors can combine them). The (r, z) axis unfold is exact: v_r / s_rz are 0 on the axis.
+  elastic_wave_speeds run p_wave_mirror is the only check of bc 'symmetric'.
+
+## pressure_acoustics mirror planes (`symmetry` sound hard, `antisymmetry` sound soft)
+- `_create` passes `mirror_faces(spec, name)` to `set_mirror_faces` before the features apply. The solver drops object
+  entities lying on a plane from boundaries and surface monitors (a cut object's window-edge outline is inside the
+  unfolded object: `TriangleMesh` edge tags count window-boundary edges as outline; line entities on a plane too, so a
+  sheet source there is not modelled) and `_mirror_factors` makes surface results those of the unfolded surface: x 2
+  measure per reached plane, x (1 + s) on the p integrand (riding on the loads and the p_b quadrature rows,
+  `integrand_factors`); entities on the plane count once. Point sources are not rescaled (the parity-sector
+  convention: a source plus its images). Probe and surface results carry sector_rule 'linear'. Only check of
+  `_mirror_factors`: pressure_acoustics_duct_mirror.
 
 ## Couplings (types in coupling/definitions_acoustics.py / definitions_piezo.py, transforms in couplings.py)
 - Cadence: acoustics_em_acousto_optic inherits the FDFD's every k (after_source_step False), so it transfers on ticks

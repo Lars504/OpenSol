@@ -9,6 +9,7 @@ from ...core.backend import to_host
 from ...core.constants import DTYPE
 from ...fem.diffusion import ring_dof_locations
 from ...fem.dofs import lagrange_dofs
+from ...fem.mesher import MERGE_TOLERANCE
 from ...fem.renderer import FEMFieldRenderer
 from ...fem.sampling import evaluate
 from ...solvers.host_direct import factor_label
@@ -152,6 +153,17 @@ class FEMDriftDiffusionPhysics(DriftDiffusionPhysics):
         self.n_solves += 1
         self._dirty = False
         self._solve_seconds += time.perf_counter() - start
+
+    def _touched_faces(self, member) -> set:
+        """Mirror faces whose window line holds a `member` node (bool per site; MERGE_TOLERANCE x the longest window
+        side)."""
+        mesh = self.domain.mesh
+        x0, y0, x1, y1 = mesh.window
+        tolerance = MERGE_TOLERANCE * max(x1 - x0, y1 - y0)
+        points = mesh.points[self.system.nodes[np.asarray(member, dtype=bool)]]
+        lines = {'x_lo': (0, x0), 'x_hi': (0, x1), 'y_lo': (1, y0), 'y_hi': (1, y1)}
+        return {face for face in self.mirror_faces
+                if bool((np.abs(points[:, lines[face][0]] - lines[face][1]) <= tolerance).any())}
 
     def _device_window_mask(self, mask, label='mask'):
         """bool per-element mask on the run backend; ValueError for another shape."""

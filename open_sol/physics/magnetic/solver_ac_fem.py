@@ -31,7 +31,8 @@ NODAL_FIELDS = ('A_re', 'A_im', 'A_abs', 'B_x_re', 'B_x_im', 'B_y_re', 'B_y_im',
 @dataclass(frozen=True, eq=False)
 class FEMACCoilRegion:
     """Runtime object of an AC coil on triangles: host bool window elements, 'stranded' / 'solid', drive, complex value
-    (current [A]; voltage V/m planar, V axisymmetric), turns, fill factor and cross-section area (r-z area) [m^2]."""
+    (current [A]; voltage V/m planar, V axisymmetric), turns, fill factor, cross-section area (r-z area) [m^2] and
+    mirror_factor (2 per model mirror plane it reaches: its image joins it, stranded in series, solid in parallel)."""
     name: str
     elements: np.ndarray
     conductor: str
@@ -40,6 +41,7 @@ class FEMACCoilRegion:
     turns: int
     fill_factor: float
     area: float
+    mirror_factor: float = 1.0
 
 
 @dataclass(frozen=True, eq=False)
@@ -190,11 +192,11 @@ class MagneticACFEMPhysics(TriangleMagneticBase):
         return 2.0 * math.pi if self._axisymmetric else 1.0
 
     def scalars(self) -> dict:
-        """energy [J/m, J], eddy_loss / magnetic_loss [W/m, W] (time averages), per coil COIL_RESULT_KEYS; {} before a
-        solve."""
+        """energy [J/m, J], eddy_loss / magnetic_loss [W/m, W] (time averages) of the window times
+        window_mirror_factor (its images on the model mirror planes), per coil COIL_RESULT_KEYS; {} before a solve."""
         if self._n_harmonic_solves == 0:
             return {}
-        ring = self._ring()
+        ring = self._ring() * self.window_mirror_factor
         values = {'energy': 0.25 * ring * self._power.real, 'eddy_loss': ring * self._eddy_power,
                   'magnetic_loss': 0.5 * self.omega * ring * self._power.imag}
         for coil in self.coils:
@@ -249,7 +251,8 @@ class MagneticACFEMPhysics(TriangleMagneticBase):
         area = float(self._area[elements].sum())
         if not area > 0.0:
             raise ValueError(f"coil '{name}' selects no window element")
-        coil = FEMACCoilRegion(name, elements, conductor, drive, value, int(turns), float(fill_factor), area)
+        coil = FEMACCoilRegion(name, elements, conductor, drive, value, int(turns), float(fill_factor), area,
+                               self._coil_mirror_factor(name, self._coil_touched_faces(elements), conductor == 'solid'))
         if conductor == 'stranded':
             density = coil.turns * value / area
             self.fields.J_applied_re += self.xp.asarray(np.where(elements, density.real, 0.0), dtype=DTYPE)
@@ -262,7 +265,7 @@ class MagneticACFEMPhysics(TriangleMagneticBase):
     def coil_results(self, coil: FEMACCoilRegion) -> dict:
         """Complex current and loop voltage (stranded: R_dc I + j omega flux linkage; solid: the circuit unknown and
         I = v G - j omega g . a), Z = V / I -> resistance, inductance, power; planar per unit length, axisymmetric
-        whole rings (as MagneticACPhysics.coil_results)."""
+        whole rings; a coil reaching mirror planes is the unfolded one (as MagneticACPhysics.coil_results)."""
         if self._n_harmonic_solves == 0:
             raise RuntimeError(f"{self._label()}: coil '{coil.name}' needs a solve first")
         host = self._host
@@ -274,14 +277,15 @@ class MagneticACFEMPhysics(TriangleMagneticBase):
             sigma = host.sigma[elements]
             path = ring * self._measure[elements]   # x-y area, or 2 pi r over the r-z area
             resistance_dc = stranded_resistance(coil.turns, coil.fill_factor, coil.area, path, sigma)
-            voltage = resistance_dc * current + 1j * self.omega * linkage
+            voltage = coil.mirror_factor * (resistance_dc * current + 1j * self.omega * linkage)
         else:
             row = next(conductor for conductor in host.conductors if conductor.name == coil.name)
             drive_value = self._conductor_drives[coil.name]
-            current = complex(drive_value * row.conductance
-                              - 1j * self.omega * (host.conductor_loads[coil.name] @ self._potential))
+            loads = host.conductor_loads[coil.name] @ self._potential
+            current = coil.mirror_factor * complex(drive_value * row.conductance - 1j * self.omega * loads)
             voltage = ring * drive_value
-        return coil_result_values(current, voltage, self.omega, coil.conductor, coil.drive)
+        return {**coil_result_values(current, voltage, self.omega, coil.conductor, coil.drive),
+                'mirror_factor': coil.mirror_factor}
 
     def field_energy(self) -> float:
         """Time-averaged magnetic energy (1/4) Re int B* . nu B dV [J/m planar, J axisymmetric]."""

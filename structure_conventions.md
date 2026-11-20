@@ -132,12 +132,13 @@ first bring the background physics (those without the study's hook) to a station
   dx_min on graded grids. `boundary_config=None` pads `npml` (15) on every side.
 - `npml_sides` is padding, not only PML: an EM mirror face (symmetric / antisymmetric) pads one ghost cell
   (`BoundaryConfig.ghost_faces`), so the mirror plane is the window edge for every physics of the model; code sizing
-  CPML layers reads the bc type, not the count. Model mirror planes also come from features (membrane / heat
-  symmetry, `core.mirror.MIRROR_FEATURES`): code listing them calls `mirror_faces(spec[, physics])`, never reads bc
-  settings; displays unfold over `unfold_faces(spec, physics)`. Results count the unfolded structure: a new signed
-  renderer field declares `FieldInfo.parity`, a new total over a selection / line uses `touch_factor`, a new far-field
-  result keeps its complex amplitude, a new result kind that parity sectors combine gets its
-  `combine_sector_result` rule (core sub file "Mirror planes").
+  CPML layers reads the bc type, not the count. Model mirror planes also come from features (the `symmetry` feature
+  of every non-EM type, membrane / pressure_acoustics also `antisymmetry`: `core.mirror.MIRROR_FEATURES`; validated
+  through `definition_helpers.mirror_feature_issues`): code listing them calls `mirror_faces(spec[, physics])`, never
+  reads bc settings or feature types; displays unfold over `unfold_faces(spec, physics)`. Results count the unfolded
+  structure: a new signed renderer field declares `FieldInfo.parity`, a new total over a selection / line uses
+  `touch_factor`, a new far-field result keeps its complex amplitude, a new result kind that parity sectors combine
+  gets its `combine_sector_result` rule (core sub file "Mirror planes").
 - `geometry.resolve_geometry` returns more names than `spec.geometry`: array copies ('<array>[i,j]',
   `geometry.is_array_copy`) are resolved shapes of their own, so meshers and outlines see every copy; code listing
   objects from the resolved dict skips them (model sub file "Arrays").

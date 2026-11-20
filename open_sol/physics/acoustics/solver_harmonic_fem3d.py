@@ -77,6 +77,9 @@ class PressureAcousticsFEMPhysics3D(AcousticHarmonicBase):
     def _entity_pairs(self, entities) -> np.ndarray:
         return self.mesh.face_elements[np.asarray(entities, dtype=np.int64)]
 
+    def _entity_corners(self, entities) -> np.ndarray:
+        return self.mesh.points[self.mesh.faces[np.asarray(entities, dtype=np.int64)]]
+
     def _n_entities(self) -> int:
         return self.mesh.n_faces
 

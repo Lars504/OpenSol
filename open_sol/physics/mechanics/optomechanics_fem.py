@@ -33,7 +33,8 @@ resonance against axisymmetric triangle or tetrahedra solids (host numpy)."""
 # averaged for a 3D solid. An axisymmetric solid of azimuthal order m >= 1 (cos(m phi) amplitudes U_r, U_z, U_phi)
 # couples through the ring mean of cos(m phi) over RING_POINTS angles (round-off for 0 < m < RING_POINTS), its
 # photoelastic part is 0 likewise. Rows: Q scaled to |Q| = 1 at the peak dof (or the solid dof nearest the reference
-# point, triangles only), m_eff = Q^T M Q (whole rings / the 3D body: kg, no length, mirror factor 1), complex (damped)
+# point, triangles only), m_eff = Q^T M Q (whole rings / the 3D body: kg, no length; x the coupling's mirror_factor, 2
+# per model mirror plane: the unfolded body of a symmetry face on a pec / pmc z wall), complex (damped)
 # modes rotated to a real peak and taken real.
 import math
 from dataclasses import dataclass
@@ -535,8 +536,10 @@ def _real_mode(displacement, components) -> np.ndarray:
     return np.asarray(mode, dtype=np.float64)
 
 
-def _coupling_row(number, resonance, overlap, sampler, mass, components, reference, moving_boundary, photoelastic):
-    """OPTOMECHANICS_TABLE_COLUMNS row of one mechanical mode (module header; dn_eff_dx and brillouin_gain NaN)."""
+def _coupling_row(number, resonance, overlap, sampler, mass, components, reference, moving_boundary, photoelastic,
+                  mirror_factor=1.0):
+    """OPTOMECHANICS_TABLE_COLUMNS row of one mechanical mode (module header; dn_eff_dx and brillouin_gain NaN); m_eff
+    x mirror_factor (the unfolded body; g_om is a ratio of the drawn-part integrals, unchanged)."""
     mode = _real_mode(resonance.displacement, components)
     norms = np.sqrt(np.sum(mode ** 2, axis=1))
     scale = float(np.max(norms)) if reference is None else float(norms[reference])
@@ -546,7 +549,7 @@ def _coupling_row(number, resonance, overlap, sampler, mass, components, referen
     moving = overlap.moving_boundary(sampler.normal_displacements(scaled)) if moving_boundary else 0.0j
     photo = sampler.photoelastic(scaled, overlap) if photoelastic else 0.0j
     flat = scaled.reshape(-1)
-    effective_mass = float(np.real(flat @ (mass @ flat)))
+    effective_mass = float(mirror_factor) * float(np.real(flat @ (mass @ flat)))
     omega_mechanical = float(complex(resonance.omega).real)
     zero_point = math.sqrt(HBAR / (2.0 * effective_mass * omega_mechanical))
     rate_moving, rate_photo = overlap.rate(moving), overlap.rate(photo)
@@ -572,7 +575,7 @@ def axisymmetric_coupling_table(coupling, optical, solid, data) -> dict:
     overlap = samples.overlap
     reference = None if coupling.reference_point is None else sampler.nearest_dof(coupling.reference_point)
     rows = [_coupling_row(number, resonance, overlap, sampler, data['mass'], int(data['components']), reference,
-                          coupling.moving_boundary, coupling.photoelastic)
+                          coupling.moving_boundary, coupling.photoelastic, coupling.mirror_factor)
             for number, resonance in enumerate(solid.eigen_solve.resonances, start=1)]
     prescribed = coupling.prescribed_normal_displacement
     prescribed_rate = None
@@ -583,7 +586,8 @@ def axisymmetric_coupling_table(coupling, optical, solid, data) -> dict:
             'rows': rows, 'optical_physics': coupling.optical_physics, 'optical_mode': coupling.optical_mode,
             'optical_frequency': overlap.omega / _TWO_PI, 'optical_wavelength': samples.wavelength,
             'optical_azimuthal_order': samples.azimuthal_order, 'optical_q_factor': samples.q_factor,
-            'n_eff': None, 'n_group': None, 'length': None, 'mirror_factor': 1.0, 'scattering': 'forward',
+            'n_eff': None, 'n_group': None, 'length': None, 'mirror_factor': coupling.mirror_factor,
+            'scattering': 'forward',
             'axial_wavenumber': None, 'normalisation': 'max' if reference is None else 'point',
             'reference_node': reference, 'solid_mesh': kind,
             'mechanical_azimuthal_order': int(data.get('azimuthal_order') or 0),

@@ -21,6 +21,8 @@ RICKER_FREQUENCY = 1e6                # Hz; the Ricker wavelet peaks (value 1) a
 # elastic_wave_speeds: a traction sheet at SHEET_X launches plane P (normal traction) or S (tangential) waves; probes
 # at NEAR_X / FAR_X (cell centres) give the speed from the cross-correlation delay and the amplitude T / (2 rho c).
 # Run p_wave_y repeats the P wave along a y strip of an orthotropic crystal (c22 != c11: pins c22, d/dy, y-CPML).
+# Run p_wave_mirror repeats p_wave with bc_y_lo / bc_y_hi 'symmetric' instead of periodic: the strip is the unfolded
+# plane between two mirror planes (slip walls), where the plane P wave (vy = 0, sxy = 0) is the same exactly.
 SOLID = {'rho': 2200.0, 'sound_speed': 5960.0, 'shear_speed': 3760.0}   # silica-like
 ORTHOTROPIC = {'rho': 2200.0, 'c11': 78.15e9, 'c12': 16e9, 'c22': 46.9e9, 'c66': 31.1e9}   # c22 / rho = 4617^2
 SPEED_CELL = 1e-4                     # m: ~37 cells per S wavelength at the Ricker peak (positions stay on whole cells)
@@ -31,7 +33,8 @@ FAR_X = 40e-3 + 0.5 * SPEED_CELL
 SHEET_TRACTION = 1e6                  # Pa
 # s per run: the pulse (+-1.5 us around its peak) has passed FAR_X (peaks 9.0 / 10.5 / 12.0 us); the cut tail holds
 # only CPML echoes
-SPEED_DURATIONS = {'p_wave': 12.5e-6, 'p_wave_y': 13e-6, 's_wave': 14e-6}
+SPEED_DURATIONS = {'p_wave': 12.5e-6, 'p_wave_y': 13e-6, 's_wave': 14e-6, 'p_wave_mirror': 12.5e-6}
+MIRROR_STRIP_SETTINGS = {'bc_y_lo': 'symmetric', 'bc_y_hi': 'symmetric'}   # run p_wave_mirror
 SPEED_TOLERANCE = 1e-2
 
 # acoustic_normal_reflection: plane pressure pulse in fluid 1 hits fluid 2 at INTERFACE_X at normal incidence.
@@ -183,11 +186,13 @@ def _ricker_sheet(direction, traction=SHEET_TRACTION):
 # ---- specs ----
 def _wave_speed_runs():
     """'p_wave': normal traction, probes record vx; 's_wave': tangential traction, probes record vy (x strips of
-    SOLID); 'p_wave_y': normal traction on a y strip of ORTHOTROPIC, probes record vy."""
+    SOLID); 'p_wave_y': normal traction on a y strip of ORTHOTROPIC, probes record vy; 'p_wave_mirror': p_wave between
+    symmetric y faces."""
     runs = {}
     for run, material, axis, direction, component in (('p_wave', SOLID, 'x', 'x', 'vx'),
                                                       ('s_wave', SOLID, 'x', 'y', 'vy'),
-                                                      ('p_wave_y', ORTHOTROPIC, 'y', 'y', 'vy')):
+                                                      ('p_wave_y', ORTHOTROPIC, 'y', 'y', 'vy'),
+                                                      ('p_wave_mirror', SOLID, 'x', 'x', 'vx')):
         runs[run] = _strip_spec(
             f'Plane {run[0].upper()} wave along {axis} in an elastic solid', SPEED_CELL, SPEED_LENGTH,
             [MaterialSpec('solid', properties=dict(material), selection=['all'])],
@@ -197,13 +202,15 @@ def _wave_speed_runs():
              FeatureSpec('near', 'field_probe', ['near_point'], {'component': component}),
              FeatureSpec('far', 'field_probe', ['far_point'], {'component': component})],
             SPEED_DURATIONS[run], axis)
+    runs['p_wave_mirror'].physics[0].settings.update(MIRROR_STRIP_SETTINGS)
     return runs
 
 
 def _expected_wave_speeds():
     """{run: (rho, exact speed)} of the elastic_wave_speeds runs."""
     return {'p_wave': (SOLID['rho'], SOLID['sound_speed']), 's_wave': (SOLID['rho'], SOLID['shear_speed']),
-            'p_wave_y': (ORTHOTROPIC['rho'], math.sqrt(ORTHOTROPIC['c22'] / ORTHOTROPIC['rho']))}
+            'p_wave_y': (ORTHOTROPIC['rho'], math.sqrt(ORTHOTROPIC['c22'] / ORTHOTROPIC['rho'])),
+            'p_wave_mirror': (SOLID['rho'], SOLID['sound_speed'])}
 
 
 def _reflection_runs():
@@ -779,11 +786,14 @@ ELASTIC_CASES = (
                      'p_wave rotated (a strip along y, periodic x faces, absorbing y faces, normal traction on a '
                      f"horizontal sheet at y = {SHEET_X * 1e3:g} mm, probes record vy) in an orthotropic crystal (rho "
                      f"{ORTHOTROPIC['rho']:g}, c11 {ORTHOTROPIC['c11']:g}, c12 {ORTHOTROPIC['c12']:g}, c22 "
-                     f"{ORTHOTROPIC['c22']:g}, c66 {ORTHOTROPIC['c66']:g} Pa). Exact: the waves travel at sqrt(c11 / "
+                     f"{ORTHOTROPIC['c22']:g}, c66 {ORTHOTROPIC['c66']:g} Pa); run p_wave_mirror repeats p_wave "
+                     "with bc_y_lo / bc_y_hi 'symmetric' (the strip between two model mirror planes: the slip walls "
+                     'keep the plane P wave exactly). Exact: the waves travel at sqrt(c11 / '
                      'rho), sqrt(c66 / rho) and sqrt(c22 / rho) with peak velocity T / (2 rho c) (the sheet sends half '
                      'the traction each way). Measured: the speed from the cross-correlation delay between the probes '
                      f'at {NEAR_X * 1e3:g} and {FAR_X * 1e3:g} mm along the strip, and the near peak velocity, each run '
-                     'ending once its pulse has passed the far probe. error = the largest of the six relative errors; '
+                     'ending once its pulse has passed the far probe. error = the largest of the eight relative '
+                     'errors; '
                      'numerical dispersion at >= 15 cells per S wavelength (up to 2.5x the Ricker peak) stays below '
                      f'~5e-3 (O((k dx)^2); 1.3e-3 at half the cell size); tolerance {SPEED_TOLERANCE:g}. Pins c11, c22 '
                      '(a swapped c11 / c22 is 29 % off), c66, the d/dx and d/dy stencils, the x and y CPML ends, the '

@@ -47,7 +47,14 @@ cells, anchors) and the damped iteration are in the core sub file, FEM assembly 
   resistances (a conductance hook or a 1 / r WindowMetric in core.fv_diffusion), mirrored in ac_operator and
   face_drive_terms, plus graded-r self-test variants.
 - Mirror planes: the face's own sign (`core.mirror.FACE_FEATURE_SIGNS`: symmetry A even, insulation A odd; A / J
-  polar_z, B / H axial); magnetic faces never make a mirror plane themselves.
+  polar_z, B / H axial). `symmetry` IS a model mirror plane (`MIRROR_FEATURES`, all three types; 3D -1),
+  magnetic_insulation never is; the type has no Neumann face that is not a mirror, so a face next to ideal iron and
+  both y faces of a 1D slice double the totals too (x 4 in the 1D self-tests / examples, `selftests._Y_MIRROR_FACTOR`).
+  Every solver is a `mirror_totals.MirrorTotals`: `_create` calls `set_mirror_faces` before any feature applies (it
+  raises once a coil exists, and on the axisymmetric x_lo / x_hi); energy and losses x `window_mirror_factor`, a coil
+  reaching a plane gets `mirror_factor` at add_coil (stranded in series, solid in parallel; a solid conductor on an
+  odd plane raises). A new total of these solvers multiplies by the same factors. Validation:
+  `definition_magnetostatics.mirror_plane_issues` (also 3D); parity sectors refuse (one sign only).
 - RerunSolver (sweep reuse_build): MagneticPhysics follows current_source densities (`add_source` of the difference)
   and coil currents (`set_coil_current`; the live current is `_coil_currents`, CoilRegion.current stays the build
   value); magnetic_fields_ac follows `frequency` (`set_frequency`), not its coil values. The triangle and 3D
@@ -96,7 +103,7 @@ cells, anchors) and the damped iteration are in the core sub file, FEM assembly 
   nvmath-python, else host SuperLU. Constraints by `add_fixed_dofs` handles re-set per full assembly: no release
   ordering (unlike the tensor anchor).
 - Coil results carry 'energy' (also tensor): the identity self-test reads it there, since field derived values raise
-  on tetrahedra. Not done: mirror-plane unfolding, nodal B display, Lorentz force.
+  on tetrahedra. Not done: a tetrahedra mirror-plane self-test, nodal B display, Lorentz force.
 - cuDSS (unmeasured): saturation refactors per iteration (15-50), so plan reuse (`CudssFactorization.refactorize`) is
   the win; cudss_mixed and the mixed host back ends are risky at mu contrasts 1e3-1e5 (measure single_residual on an
   iron-core model first).
@@ -114,7 +121,9 @@ cells, anchors) and the damped iteration are in the core sub file, FEM assembly 
   `tangent[free][:, free]` keep explicit zeros); plan reuse (`previous=`, keyed on the constraint revision) pays above
   ~2e5 dofs and in sweeps (Amdahl: host law / assembly / line search cap the gain at ~2x). Double only: cond ~ mu_r
   h^-2 is past float32 at mu contrasts 1e3-1e5.
-- Open: mirror-plane unfolding (unchecked), a same-mesh Lorentz-force self-test, an axisymmetric remanence self-test
+- The Session refuses max / min over mirror images on triangles: triangle self-tests read scalars with operation
+  'expression' (`selftests._scalar_value`) and fields 'at' points.
+- Open: a same-mesh Lorentz-force self-test, an axisymmetric remanence self-test
   (A_phi of an axial magnet shell has a 1 / r part, not in P2: needs a convergence tolerance), held regions in any
   triangle self-test.
 

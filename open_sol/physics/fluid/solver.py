@@ -41,6 +41,7 @@ _MAX_STEP_GRAPHS = 16        # graph keys kept (5 sizes per argument set; stale 
 _AXIS_FACES = {'x': ('x_lo', 'x_hi'), 'y': ('y_lo', 'y_hi')}
 _SHOWN_FIELDS = ('u_x', 'u_y', 'u_abs', 'pressure', 'body_force_x', 'body_force_y')   # FluidFields2D the renderer reads
 _INWARD_NORMAL = {'x_lo': (1.0, 0.0), 'x_hi': (-1.0, 0.0), 'y_lo': (0.0, 1.0), 'y_hi': (0.0, -1.0)}
+_FACE_ENDS = {'x_lo': ('y_lo', 'y_hi'), 'x_hi': ('y_lo', 'y_hi'), 'y_lo': ('x_lo', 'x_hi'), 'y_hi': ('x_lo', 'x_hi')}
 
 
 def steady_march_steps(window_shape, shear_free_counts, periodic_axes, relaxation_time, viscosity_ratio, max_steps):
@@ -345,12 +346,14 @@ class FluidPhysics(PhysicsSolver):
         self._set_face(face, FaceCondition(FACE_WALL, self._face_profile(face, tangential_velocity)))
 
     def set_slip(self, face: str) -> None:
-        """Free-slip (symmetry) face: specular reflection, no normal flow, no shear."""
+        """Free-slip (symmetry) face: specular reflection, no normal flow, no shear: the exact even mirror of the
+        lattice across the face (the slip_wall and symmetry features)."""
         self._set_face(face, FaceCondition(FACE_SLIP))
 
     def set_velocity_inlet(self, face: str, normal_velocity, profile: str = 'uniform') -> None:
         """Prescribed inward normal velocity [m/s] (scalar or full-grid array); 'parabolic' multiplies it by the
-        discrete Poiseuille shape (mean 1) across each run of fluid cells along the face."""
+        discrete Poiseuille shape (mean 1) across each run of fluid cells along the face (a run ending on a slip face:
+        the shape of the run unfolded across it, see _parabolic_shape)."""
         if profile not in ('uniform', 'parabolic'):
             raise ValueError(f"profile must be 'uniform' or 'parabolic', got {profile!r}")
         self._set_face(face, FaceCondition(FACE_VELOCITY, self._face_profile(face, normal_velocity),
@@ -650,7 +653,9 @@ class FluidPhysics(PhysicsSolver):
                 values[1, :length] = profile * tangential_y * velocity_scale
             elif condition.kind == FACE_VELOCITY:
                 if condition.parabolic:
-                    profile = profile * _parabolic_shape(self._edge_density[face] > 0.0)
+                    ends = _FACE_ENDS[face]   # a run ending on a slip face continues as its mirror image
+                    profile = profile * _parabolic_shape(self._edge_density[face] > 0.0,
+                                                         *(self.faces[end].kind == FACE_SLIP for end in ends))
                 normal_x, normal_y = _INWARD_NORMAL[face]
                 values[0, :length] = profile * normal_x * velocity_scale
                 values[1, :length] = profile * normal_y * velocity_scale
@@ -929,9 +934,11 @@ class FluidPhysics(PhysicsSolver):
         return gradient
 
 
-def _parabolic_shape(fluid_row):
+def _parabolic_shape(fluid_row, mirror_lo=False, mirror_hi=False):
     """Discrete Poiseuille shape s (n - s) per run of fluid cells (s = cell centre from the run's wall), each run
-    normalised to mean 1; 0 on solid cells (numpy float64)."""
+    normalised to mean 1; 0 on solid cells (numpy float64). A run reaching the row's lo / hi end with mirror_lo /
+    mirror_hi (a slip face there: symmetry or free slip) takes the shape of the run unfolded across that end (the
+    half parabola, zero shear at the face; uniform between two such ends)."""
     shape = np.zeros(fluid_row.size)
     start = None
     for index in range(fluid_row.size + 1):
@@ -940,8 +947,16 @@ def _parabolic_shape(fluid_row):
             start = index
         elif not inside and start is not None:
             count = index - start
-            centres = np.arange(count) + 0.5
-            run = centres * (count - centres)
+            lo_mirror = mirror_lo and start == 0
+            hi_mirror = mirror_hi and index == fluid_row.size
+            if lo_mirror and hi_mirror:
+                run = np.ones(count)
+            else:
+                centres = np.arange(count) + 0.5
+                if lo_mirror:   # the wall at the hi end of the run: centres from it, unfolded width 2 n
+                    centres = centres[::-1]
+                width = 2 * count if lo_mirror or hi_mirror else count
+                run = centres * (width - centres)
             shape[start:index] = run / run.mean()
             start = None
     return shape

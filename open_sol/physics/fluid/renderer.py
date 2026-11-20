@@ -5,8 +5,9 @@ from ...core.renderer import FieldInfo, PhysicsRenderer
 
 class FluidRenderer(PhysicsRenderer):
     """Window-shaped float32 fields of a FluidPhysics: velocity (u = flow velocity here, displacement in solid_mechanics)
-    and its magnitude, pressure, vorticity, coupled body forces, viscosity; parities of the even (slip-wall) mirror of a
-    model's EM mirror faces (core.mirror)."""
+    and its magnitude, pressure, vorticity, coupled body forces, viscosity; parities of the even (free-slip) mirror on
+    every model mirror plane (core.mirror: the flow's own symmetry faces and the other physics' planes, sign +1 for
+    laminar_flow): velocity / force polar, pressure even, vorticity axial_z (odd on x and y planes)."""
 
     name = 'fluid'
     field_infos = {

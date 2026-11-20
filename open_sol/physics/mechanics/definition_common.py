@@ -1,12 +1,14 @@
 """Model-layer pieces shared by the solid_mechanics (2D) and solid_mechanics_3d definitions: the build's linear
 solver, the material vocabulary (one Param object per name), support helpers, the CPU material / state / modal-study /
-prestress checks, the study a solid takes (StudySpec.solved_physics) and the resonance_table / frequency_probe /
-thermoelastic_damping features."""
+prestress checks, the study a solid takes (StudySpec.solved_physics), the symmetry (mirror plane) rules and the
+resonance_table / frequency_probe / thermoelastic_damping features."""
 from dataclasses import replace
 
 from ...core.memory_estimate import MemoryEstimate, host_real_lu_bytes
-from ...model.definition_helpers import (conducting_fraction, eigen_search, evaluates_to, material_follows_state,
-                                         optional_material_param, reports_model_checks)
+from ...core.mirror import mirror_faces
+from ...model.definition_helpers import (conducting_fraction, eigen_search, enabled_feature_entities, evaluates_to,
+                                         material_follows_state, mirror_feature_issues, optional_material_param,
+                                         reports_model_checks)
 from ...model.expressions import ExpressionError, evaluate_scalar
 from ...model.geometry import expand_entities
 from ...model.schema import (EIGENFREQUENCY_STUDY, FREE_MESH_KINDS, FREQUENCY_RESPONSE_STUDY, OPTOMECHANICS_STUDY,
@@ -20,7 +22,12 @@ from .modal import DAMPED_TABLE_COLUMNS, MODAL_TABLE_COLUMNS, ModalTable, modal_
 from .tangent_update import SLOW_RESIDUAL_RATIO, TANGENT_UPDATES
 
 LOCKING_POISSON_RATIO = 0.45   # bilinear / trilinear elements grow too stiff (volumetric locking) above about this
-SUPPORT_FEATURES = frozenset({'fixed', 'roller', 'displacement', 'fixed_domain', 'prescribed_displacement_domain'})
+# core.mirror.MIRROR_FEATURES of both solid types: a Roller (the even mirror of the displacement) whose outer faces are
+# model mirror planes (unfolded fields, integrals x 2, max / min over the images); a support like the Roller
+SYMMETRY_FEATURE = 'symmetry'
+ROLLER_FEATURES = ('roller', SYMMETRY_FEATURE)   # hold the normal displacement of their outer faces (the Roller apply)
+SUPPORT_FEATURES = frozenset({'fixed', 'roller', SYMMETRY_FEATURE, 'displacement', 'fixed_domain',
+                              'prescribed_displacement_domain'})
 LOAD_FEATURES = frozenset({'boundary_load', 'body_force', 'temperature_change'})
 BACKGROUND_STUDY = STATIONARY_STUDY       # the background study of the modal / response studies
 PRESTRESS_STUDIES = (EIGENFREQUENCY_STUDY, FREQUENCY_RESPONSE_STUDY, OPTOMECHANICS_STUDY)   # read stress_stiffening
@@ -456,6 +463,111 @@ def support_holders(vctx, physics_spec, held_components):
             for key in held_components(vctx, feature):
                 holders.setdefault(key, []).append(feature.name)
     return holders
+
+
+_SHEAR_PRESTRESS_NAMES = ('initial_stress_xy', 'initial_stress_xz', 'initial_stress_yz')
+SYMMETRY_HELP = (   # the part of the symmetry help both solid types share (after their own first sentences)
+    'Fields unfold across the plane as the even mirror of the displacement (the normal displacement and the shear '
+    'components with one index along the normal flip, everything else keeps: Unfold mirror planes, '
+    'Results.field(unfold=True)); field derived integrals reaching the plane count twice (the unfolded structure), '
+    'max / min include the image, a mean is unchanged. It counts as a support for the rigid-body checks (it holds the '
+    'normal direction). Every load, material, initial stress and coupled field of the drawn part has its mirror image '
+    'in the unfolded model, so they need nothing on the plane. Results the solid reports itself are those of the '
+    'drawn part: support reaction tables (this one: the normal force the mirrored part exerts across the plane on '
+    'the drawn one; another support meeting the plane: the unfolded structure carries twice its components along '
+    'the plane, its component normal to the plane cancels){own_results}; ratios (eigenfrequencies, thermoelastic Q) '
+    'are those of the unfolded structure. Errors: another face feature of this solid on the same face, piezoelectric '
+    'on, a material whose stiffness tensor changes sign under the reflection (its image would be another crystal cut, '
+    'e.g. a monoclinic c16), a uniform shear initial stress with an index along the normal, an elastic PML on a face '
+    'meeting the plane (its absorbing layer crosses the plane, where the hold covers the window face only), a '
+    'periodic face, a polar domain, another physics with mirror bc settings (EM) that does not set the face '
+    'symmetric / antisymmetric, parity_sectors (the solid has no odd mirror feature){own_errors}. Warning: a uniform '
+    'body force normal to the plane (its image points the other way).')
+
+
+def symmetry_issues(vctx, physics_spec, feature_spec, settings_params, faces_all, tensor_names) -> list:
+    """Rules of the symmetry feature both solid types share: definition_helpers.mirror_feature_issues (Cartesian
+    domain, not the axisymmetric axis, EM partners mirror the face), errors for piezoelectric on (the potential's
+    mirror parity depends on the crystal: not modelled), per selected material whose stiffness entries (tensor_names)
+    change sign under the reflection of a selected face (crystal_tensors.mirror_violation) or whose uniform shear
+    initial stress has an index along its normal, and a warning per uniform body force normal to a selected face."""
+    from ...materials.crystal_tensors import mirror_violation   # lazy: physics -> materials stays out of import time
+    path = feature_path(physics_spec, feature_spec)
+    issues = list(mirror_feature_issues(vctx, physics_spec, feature_spec, settings_params))
+    settings = vctx.values(settings_params, physics_spec.settings) or {}
+    if settings.get('piezoelectric'):
+        issues.append(Issue('error', path, 'a symmetry face is not available with piezoelectric on (the mirror parity '
+                                           'of the potential and the charges on the plane depend on the crystal and '
+                                           'the electrodes): model the full structure, or turn piezoelectric off'))
+    axes = sorted({face[0] for face in outer_faces(vctx, feature_spec, faces_all)})
+    if not axes:
+        return issues
+    parameters = vctx.parameters
+    for material, properties in merged_materials(vctx):
+        if properties is None or not material.selection:   # a failed merge is reported at the material
+            continue
+        values = {name: plain_value(properties.get(name), parameters) for name in tensor_names}
+        for axis in axes:
+            relative, entry = mirror_violation(values, 'xyz'.index(axis))
+            if entry:
+                issues.append(Issue('error', path, f"material '{material.name}' is not symmetric under {axis} -> "
+                                                   f'-{axis} ({entry} changes sign, {relative:.3g} of its largest '
+                                                   'stiffness entry): the unfolded model would hold its mirror image '
+                                                   '(another crystal cut) beyond the plane; model the full width or '
+                                                   'use a Roller (a support, no mirror plane)'))
+            for name in _SHEAR_PRESTRESS_NAMES:
+                value = plain_value(properties.get(name), parameters)
+                if axis in name[-2:] and value is not None and value != 0.0:
+                    issues.append(Issue('error', path, f"material '{material.name}' sets a uniform {name} = "
+                                                       f'{value:.4g} Pa, which flips sign under {axis} -> -{axis}: '
+                                                       'the unfolded model would carry opposite shear prestresses '
+                                                       'on both sides of the plane; model the full width'))
+    body_force = vctx.registry.physics_type(physics_spec.type).feature_type('body_force')
+    for feature in physics_spec.features:
+        if not (feature.enabled and feature.type == 'body_force'):
+            continue
+        values = vctx.values(body_force.params, feature.params) or {}
+        for axis in axes:
+            value = values.get(f'f_{axis}')
+            if isinstance(value, (int, float)) and value != 0.0:
+                issues.append(Issue('warning', path, f"body force '{feature.name}' has a uniform f_{axis} = "
+                                                     f'{value:.4g} N/m^3 normal to the symmetry plane: its mirror '
+                                                     'image points the other way, so the unfolded model is pushed '
+                                                     'apart (or together) symmetrically; for a force acting across '
+                                                     'the plane (e.g. gravity) model the full width'))
+    return issues
+
+
+def model_mirror_issues(vctx, physics_spec, path, faces_all, axis_held=False) -> list:
+    """Warning per model mirror plane (core.mirror.mirror_faces: an EM mirror face, another physics' symmetry face) on
+    one of faces_all that no Roller, Symmetry or Fixed of the solid holds (axis_held: x_lo of geometry axisymmetric,
+    held by the axis rule): the solid fields unfold there as the even mirror the face does not solve."""
+    planes = [face for face in mirror_faces(vctx.spec) if face in faces_all]
+    if not planes:
+        return []
+    held = {'x_lo'} if axis_held else set()
+    for _, entities in enabled_feature_entities(vctx, physics_spec, (*ROLLER_FEATURES, 'fixed')):
+        held.update(entity for entity in entities if entity in faces_all)
+    return [Issue('warning', path, f"{face} is a mirror plane of the model (an EM mirror face or another physics' "
+                                   f"symmetry face), where the fields of '{physics_spec.name}' unfold as the even "
+                                   'mirror (normal displacement 0), but no Roller, Symmetry or Fixed of it holds that '
+                                   'face: solid cells reaching it unfold as if cut along the plane; add a symmetry '
+                                   f'feature on {face}')
+            for face in planes if face not in held]
+
+
+def pml_crossing_issues(path, faces, pml_faces) -> list:
+    """Error per symmetry face (faces) that an elastic PML on a face of another axis meets: its ring / shell crosses
+    the plane, where the hold covers the window face only, so the absorber is no mirror image there."""
+    issues = []
+    for face in faces:
+        crossing = [pml for pml in pml_faces if pml[0] != face[0]]
+        if crossing:
+            issues.append(Issue('error', path, f"the elastic PML on {', '.join(crossing)} crosses the symmetry plane "
+                                               f'{face} (its absorbing layer continues beyond the window face, which '
+                                               'is all the symmetry feature holds): model the full width across '
+                                               f'{face}, or use a Roller there (a support, no mirror plane)'))
+    return issues
 
 
 def free_body_allowed(study_type, settings_values) -> bool:

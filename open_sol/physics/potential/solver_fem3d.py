@@ -1,14 +1,17 @@
 """Electric currents / electrostatics on a tetrahedron mesh (the 3D analogue of solver_fem.py):
 FEMPotentialPhysics3D, P1 / P2 Lagrange V on the window elements (fem.diffusion3d), diagonal sigma_dc / eps_dc tensors;
 the PotentialPhysics field names, slot, held regions and scalar outputs where they apply (no electrolytes, driven
-terminals, Stern layers or mirror planes). State arrays are per element (D12: V at the centroid, E / J / D element
-means, q_joule the element dissipation density); the renderer samples V at points (fem.renderer3d)."""
+terminals or Stern layers; held totals of the unfolded structure under mirror planes). State arrays are per element
+(D12: V at the centroid, E / J / D element means, q_joule the element dissipation density); the renderer samples V at
+points (fem.renderer3d)."""
 from dataclasses import dataclass
+
+import numpy as np
 
 from ...core.fv_diffusion import BCSide
 from ...fem.diffusion import element_means
 from ...fem.diffusion3d import FEMDiffusionPhysicsBase3D, coefficient_tensor_3d
-from ...fem.mesh3d import sliver_warnings
+from ...fem.mesh3d import PLANE_TOLERANCE, sliver_warnings
 from ...fem.renderer3d import LagrangeSampleRenderer
 from .electrolyte import ION_CONCENTRATION_FIELDS
 from .renderer import THREE_D_FIELD_INFOS
@@ -39,6 +42,7 @@ class FEMPotentialPhysics3D(FEMPotentialMixin, FEMDiffusionPhysicsBase3D):
     per change of operator or sources; held fluxes from the reactions of the un-eliminated system."""
 
     _axes = 'xyz'
+    _plane_tolerance = PLANE_TOLERANCE   # fem.mesh3d: nodes this close (x the longest side) to a window plane lie on it
 
     def __init__(self, domain, kind: str = 'currents', order: int = 2, linear_solver=None):
         self._init_potential(kind)
@@ -105,8 +109,18 @@ class FEMPotentialPhysics3D(FEMPotentialMixin, FEMDiffusionPhysicsBase3D):
     def held_flux(self, region: FEMHeldRegion3D) -> float:
         """Flux [A | C] leaving the held faces / interface faces / elements of `region` into the domain (> 0 out): outer
         faces still holding its voltage (their Dirichlet reaction), plus the reactions of its interface and element
-        dofs."""
-        return self._held_reaction(region)
+        dofs; x mirror_factor(region) (its images under the model's mirror planes)."""
+        return self._held_reaction(region) * self.mirror_factor(region)
+
+    def _held_points(self, region: FEMHeldRegion3D):
+        """(n, 3) node coordinates of the held interface faces and elements of `region` (mirror_factor)."""
+        mesh = self.domain.mesh
+        nodes = []
+        if region.surfaces is not None:
+            nodes.append(mesh.faces[region.surfaces].ravel())
+        if region.elements is not None:
+            nodes.append(mesh.tets[region.elements].ravel())
+        return mesh.points[np.concatenate(nodes)] if nodes else np.zeros((0, 3))
 
     def _held_dofs(self, region) -> list:
         full = self.system.full

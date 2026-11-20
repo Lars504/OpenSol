@@ -1,7 +1,8 @@
 """Self-tests of pressure_acoustics (frequency domain) and its 'rigid_disk_scattering' template: plane waves in a duct on
 triangles and tetrahedra (impedance, PML, sound-soft and vibrating ends) against the closed forms, the scattered-field
 background in an empty axisymmetric domain and its total-field twin against 2 p0 cos(k z), and the thin rigid disk
-<Delta p> / p0 -> (8 / 3 pi) k a. CPU backend, each case repeated on the gpu (variant 'gpu': back_end auto = cuDSS
+<Delta p> / p0 -> (8 / 3 pi) k a, and the duct as a half model on a symmetry / antisymmetry face (unfolded surface
+totals). CPU backend, each case repeated on the gpu (variant 'gpu': back_end auto = cuDSS
 mixed, B1c); tolerances are first estimates (not yet run). pressure_acoustics_host_direct: the PML duct on the MUMPS /
 PARDISO back ends against SuperLU (skipped without python-mumps / pydiso)."""
 import math
@@ -274,6 +275,106 @@ _EMPTY_DESCRIPTION = (
     'tolerance 1 (first estimates, not yet run).')
 
 
+# ---- 3b. mirror faces: the duct as a half model (triangles) ----
+# Half the duct width, H = W / 2, with the mirror face y_hi (the duct centre line), probes at y = W / 4. symmetry: the
+# impedance run of the duct (p0 exp(-j k x), even about the centre). antisymmetry: the first odd transverse mode p0
+# cos(pi y / W) held on x_lo, sound soft x_hi, at a frequency above its cut-off c / (2 W) = 3430 Hz: p = p0 cos(pi y /
+# W) sin(k_x (L - x)) / sin(k_x L), k_x = sqrt(k^2 - (pi / W)^2) (66.64 1/m at 5 kHz, k_x L = 13.33, sin = 0.69). Both
+# runs carry surface_pressure 'inlet' on x_lo, which reaches the plane at its corner, so its results are those of the
+# unfolded inlet (width W): area = weight_integral = W in both; symmetry p_mean = p0, p_weighted = p0 W (p held there,
+# exact to round-off); antisymmetry p_mean = p_weighted = 0 (p0 cos(pi y / W) integrates to 0 over the full width; the
+# half model alone would give area W / 2 and p_mean 2 p0 / pi).
+_MIRROR_HALF_WIDTH = 0.5 * _DUCT_WIDTH
+_MIRROR_SYMMETRY_ELEMENT = 0.0125    # m (the duct field is 1D: two element rows across)
+_MIRROR_ODD_FREQUENCY = 5000.0       # Hz: lambda 0.0686 m
+_MIRROR_ODD_LENGTH = 0.2             # m
+_MIRROR_ODD_ELEMENT = 0.0025         # m: k h 0.23, 10 elements across the half width
+_MIRROR_ODD_PROBE_X = tuple(0.02 * index for index in range(1, 10))   # m
+_MIRROR_RUNS = ('symmetry', 'antisymmetry')
+_MIRROR_FIELD_TOLERANCE = 1e-3       # relative to the peak of the closed form at the probes
+_MIRROR_TOTAL_TOLERANCE = 1e-9       # inlet area / means / integrals (exact up to round-off)
+
+
+def _mirror_odd_wavenumber():
+    """k_x of the first odd transverse duct mode at _MIRROR_ODD_FREQUENCY."""
+    return math.sqrt(_wavenumber(_MIRROR_ODD_FREQUENCY) ** 2 - (math.pi / _DUCT_WIDTH) ** 2)
+
+
+def _mirror_spec(run):
+    """The half-width duct with the mirror feature `run` on y_hi (block comment above)."""
+    odd = run == 'antisymmetry'
+    probe_x = _MIRROR_ODD_PROBE_X if odd else _DUCT_PROBE_X
+    geometry, features = _probes([(x, 0.5 * _MIRROR_HALF_WIDTH) for x in probe_x])
+    pressure = f'{_DUCT_PRESSURE!r} * cos(pi * y / {_DUCT_WIDTH!r})' if odd else _DUCT_PRESSURE
+    features += [FeatureSpec('drive', 'prescribed_pressure', ['x_lo'], {'pressure': pressure}),
+                 FeatureSpec('end', 'sound_soft' if odd else 'impedance', ['x_hi']),
+                 FeatureSpec('mirror', run, ['y_hi']),
+                 FeatureSpec('inlet', 'surface_pressure', ['x_lo'])]
+    length = _MIRROR_ODD_LENGTH if odd else _DUCT_LENGTH
+    mesh = MeshSpec(name='fluid', kind='triangles', mode='uniform',
+                    dx=_MIRROR_ODD_ELEMENT if odd else _MIRROR_SYMMETRY_ELEMENT)
+    return _model(f'Self-test: half-width duct on a {run} face (pressure_acoustics)',
+                  DomainSpec(size_x=length, size_y=_MIRROR_HALF_WIDTH), geometry, features, mesh,
+                  {'discretization': 'quadratic'},
+                  {'frequencies': [_MIRROR_ODD_FREQUENCY if odd else _DUCT_FREQUENCY]})
+
+
+def _mirror_specs():
+    return {run: _mirror_spec(run) for run in _MIRROR_RUNS}
+
+
+def _mirror_expected(run, positions):
+    """Closed-form total p at the probes (y = W / 4) of a mirror run."""
+    positions = np.asarray(positions, dtype=np.float64)
+    if run == 'symmetry':
+        return _duct_expected('impedance', positions)
+    k_x = _mirror_odd_wavenumber()
+    return (_DUCT_PRESSURE * math.cos(0.25 * math.pi) * np.sin(k_x * (_MIRROR_ODD_LENGTH - positions))
+            / math.sin(k_x * _MIRROR_ODD_LENGTH))
+
+
+def _check_mirror(results_by_name):
+    errors, tolerances, details = {}, {}, {}
+    scale = _DUCT_PRESSURE * _DUCT_WIDTH   # p0 x the unfolded inlet width [Pa m]
+    for run, results in results_by_name.items():
+        positions = np.array(_MIRROR_ODD_PROBE_X if run == 'antisymmetry' else _DUCT_PROBE_X)
+        measured = _probe_values(results, len(positions))
+        expected = _mirror_expected(run, positions)
+        errors[f'{run} field'] = float(np.max(np.abs(measured - expected)) / np.max(np.abs(expected)))
+        tolerances[f'{run} field'] = _MIRROR_FIELD_TOLERANCE
+        inlet = results.result(PHYSICS, 'inlet')
+        series = inlet['series']
+        mean = complex(series['p_mean_re'][0], series['p_mean_im'][0])
+        weighted = complex(series['p_weighted_re'][0], series['p_weighted_im'][0])
+        expected_mean = _DUCT_PRESSURE if run == 'symmetry' else 0.0
+        items = {'inlet area': abs(float(inlet['area']) - _DUCT_WIDTH) / _DUCT_WIDTH,
+                 'inlet weight_integral': abs(float(inlet['weight_integral']) - _DUCT_WIDTH) / _DUCT_WIDTH,
+                 'inlet p_mean': abs(mean - expected_mean) / _DUCT_PRESSURE,
+                 'inlet p_weighted': abs(weighted - expected_mean * _DUCT_WIDTH) / scale}
+        for item, error in items.items():
+            errors[f'{run} {item}'] = float(error)
+            tolerances[f'{run} {item}'] = _MIRROR_TOTAL_TOLERANCE
+        details[run] = {'measured_abs': np.abs(measured).tolist(), 'expected_abs': np.abs(expected).tolist(),
+                        'inlet': {'area': float(inlet['area']), 'p_mean': [mean.real, mean.imag],
+                                  'p_weighted': [weighted.real, weighted.imag]}}
+    return _graded(errors, tolerances, details)
+
+
+_MIRROR_DESCRIPTION = (
+    f'The plane-wave duct of pressure_acoustics_duct as a half model: width {_MIRROR_HALF_WIDTH:g} m (half of '
+    f'{_DUCT_WIDTH:g}) with the mirror feature on y_hi (the centre line), probes at y = '
+    f'{0.5 * _MIRROR_HALF_WIDTH:g} m, P2 triangles. symmetry: the impedance run (p0 {_DUCT_PRESSURE:g} Pa held on '
+    f'x_lo, x_hi impedance rho c, {_DUCT_FREQUENCY:g} Hz, {_MIRROR_SYMMETRY_ELEMENT:g} m elements): p0 exp(-j k x). '
+    'antisymmetry: the odd transverse mode p0 cos(pi y / W) held on x_lo, sound soft x_hi at x = '
+    f'{_MIRROR_ODD_LENGTH:g} m, {_MIRROR_ODD_FREQUENCY:g} Hz (above its cut-off c / 2 W), {_MIRROR_ODD_ELEMENT:g} m '
+    'elements: p0 cos(pi y / W) sin(k_x (L - x)) / sin(k_x L), k_x = sqrt(k^2 - (pi / W)^2). Probes within '
+    f'{_MIRROR_FIELD_TOLERANCE:g} of the peak. surface_pressure on x_lo (reaching the plane at its corner) reports the '
+    'unfolded inlet: area = weight_integral = W, p_mean = p0 and p_weighted = p0 W (symmetry), p_mean = p_weighted = '
+    f'0 (antisymmetry: p cancels with its image), each within {_MIRROR_TOTAL_TOLERANCE:g} (exact; the half model alone '
+    'gives area W / 2). measured = error = the worst item in tolerance units, tolerance 1 (first estimates, not yet '
+    'run).')
+
+
 # ---- 4. thin rigid disk in a plane wave (axisymmetric) ----
 # Disk r < a, thickness t << a at mid-height, a plane wave p0 exp(-j k z) travelling -z, PMLs on x_hi, y_lo, y_hi
 # (free space, no floor). Low ka: the incompressible near field of a broadside disk, Delta p(r) = (4 / pi) j k p0
@@ -395,6 +496,10 @@ HARMONIC_SELFTEST_CASES = (
         name='pressure_acoustics_background_empty',
         label='Pressure acoustics: background standing wave in an empty axisymmetric domain',
         description=_EMPTY_DESCRIPTION, specs=_empty_specs, check=_check_empty, variants=_GPU_VARIANTS),
+    SelfTestCase(
+        name='pressure_acoustics_duct_mirror',
+        label='Pressure acoustics: half-width duct on a symmetry and an antisymmetry face',
+        description=_MIRROR_DESCRIPTION, specs=_mirror_specs, check=_check_mirror, variants=_GPU_VARIANTS),
     SelfTestCase(
         name='pressure_acoustics_rigid_disk',
         label='Pressure acoustics: pressure difference across a thin rigid disk in a plane wave',
