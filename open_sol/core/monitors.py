@@ -1,10 +1,18 @@
 """FieldProbe: time trace of one field component at one grid cell, buffered on the field's backend, its probe_result
 dict, and the step-graph sample tables (ProbeRows; FieldProbeRows: every FieldProbe of an engine in one launch)."""
+import weakref
+
 import numpy as np
 
 from .backend import array_module_of, cp, to_host
 from .half_storage import HALF_CONVERSIONS
 from .kernels import REAL_C_TYPES, real_raw_twin
+
+PROBE_INITIAL_ROWS = 1024   # first capacity of a ProbeRows table / FieldProbe buffer (rows); doubled when full
+# a ProbeRows table parks its device rows on the host at a study chunk boundary once it holds this many (chunks of
+# ~0.1 s wall time: the device part stays below ~2 x this while a chunk runs fewer ticks)
+PROBE_PARK_ROWS = 4096
+_PARKING_TABLES = weakref.WeakSet()   # the live device ProbeRows tables (park_probe_rows)
 
 # trace[slot] = field[field_offset] (element offset from the field view's first element, any strides): one launch
 # per record instead of a 0-d view plus a cupy setitem (2D FDTD cavity: ~11 -> ~5 us of host time per sample)
@@ -42,26 +50,43 @@ def _device_cell_offset(field, cell, dtypes=REAL_C_TYPES):
 class ProbeRows:
     """Host side of a (rows, columns) float32 sample table on xp that one fixed-argument launch per step fills: the
     kernel writes the row of a device counter and advances it, so the launch can sit in a step graph; n_rows mirrors
-    the counter, with host times and steps per row (stamp); the table doubles when full. Subclasses build the launch."""
+    the rows recorded so far, with host times and steps per row (stamp); the device table doubles when full. On the gpu
+    the recorded rows move to a host table at study chunk boundaries (park, via park_probe_rows): the device counter
+    rewinds to 0 and the same device table (same pointer: graphs stay valid) takes the next rows, so the device part
+    stays ~PROBE_PARK_ROWS rows whatever the run length. Subclasses build the launch."""
 
     def __init__(self, xp):
         self._xp = xp
         self.n_columns = 0
-        self._samples = None                              # float32 (capacity, columns) on xp
-        self._times = np.empty(1024, dtype=np.float64)    # host time per row
-        self._steps = np.empty(1024, dtype=np.float64)    # host step length per row (stamp)
-        self.n_rows = 0
-        self._row_counter = xp.zeros(1, dtype=np.int32)   # next row on xp (advanced by the kernel)
+        self._samples = None                              # float32 (device capacity, columns) on xp
+        self._times = np.empty(PROBE_INITIAL_ROWS, dtype=np.float64)   # host time per row
+        self._steps = np.empty(PROBE_INITIAL_ROWS, dtype=np.float64)   # host step length per row (stamp)
+        self.n_rows = 0                                   # rows recorded (parked + on the device)
+        self._parked = None                               # host float32 (capacity, columns) of the parked rows
+        self._parked_rows = 0                             # rows [0, _parked_rows) are on the host, the rest on xp
+        self._row_counter = xp.zeros(1, dtype=np.int32)   # next device row on xp (advanced by the kernel)
         self._n_columns_i32 = np.int32(0)
         self._launch = None   # persistent (kernel, grid, block, args) of the next record; None = rebuild
+        if xp is not np:
+            _PARKING_TABLES.add(self)
+
+    @property
+    def device_rows(self) -> int:
+        """Rows held in the device table (recorded since the last park)."""
+        return self.n_rows - self._parked_rows
 
     def _add_column(self) -> int:
         """Index of a new column (zero before n_rows: its probe starts at the next row); the launch is rebuilt."""
         column = self.n_columns
-        grown = self._xp.zeros((self._times.size, column + 1), dtype=np.float32)
+        capacity = self._times.size if self._samples is None else self._samples.shape[0]
+        grown = self._xp.zeros((capacity, column + 1), dtype=np.float32)
         if self._samples is not None:
             grown[:, :column] = self._samples
         self._samples = grown
+        if self._parked is not None:
+            parked = np.zeros((self._parked.shape[0], column + 1), dtype=np.float32)
+            parked[:, :column] = self._parked
+            self._parked = parked
         self.n_columns = column + 1
         self._n_columns_i32 = np.int32(self.n_columns)
         self._launch = None
@@ -70,11 +95,13 @@ class ProbeRows:
     def next_launch(self, *build_args, rows=1):
         """Persistent (kernel, grid, block, args) filling the next row, room for `rows` more rows made first (a
         multi-step block launches it once per step), None without columns; a new tuple after a column is added or the
-        table grows (graph keys follow its id). The caller launches it after the step, then stamps each row."""
+        device table grows (graph keys follow its id). The caller launches it after the step, then stamps each row."""
         if not self.n_columns:
             return None
         while self.n_rows + rows > self._times.size:
-            self._grow()
+            self._grow_times()
+        while self.device_rows + rows > self._samples.shape[0]:
+            self._grow_samples()
         if self._launch is None:
             self._launch = self._build_launch(*build_args)
         return self._launch
@@ -91,21 +118,49 @@ class ProbeRows:
         self._steps[row] = step
         self.n_rows = row + 1
 
-    def _grow(self) -> None:
-        capacity = 2 * self._times.size
-        samples = self._xp.empty((capacity, self.n_columns), dtype=np.float32)
-        samples[:self.n_rows] = self._samples[:self.n_rows]
+    def _grow_samples(self) -> None:
+        """Double the device table (its rows since the last park copied; the launch is rebuilt)."""
+        samples = self._xp.empty((2 * self._samples.shape[0], self.n_columns), dtype=np.float32)
+        samples[:self.device_rows] = self._samples[:self.device_rows]
         self._samples = samples
         self._launch = None
+
+    def _grow_times(self) -> None:
+        capacity = 2 * self._times.size
         for name in ('_times', '_steps'):
             grown = np.empty(capacity, dtype=np.float64)
             grown[:self.n_rows] = getattr(self, name)[:self.n_rows]
             setattr(self, name, grown)
 
+    def park(self, min_rows=0, numpy_tables=False) -> None:
+        """Move the device rows to the host table (one transfer, a host sync: study chunk boundaries only, never
+        between a record and its stamp) and rewind the device counter, when at least min_rows (>= 1) are on the
+        device; nothing without columns, nor on the cpu (numpy xp) unless numpy_tables (the bookkeeping self-test
+        core.selftests_monitors; engines never park numpy tables)."""
+        rows = self.device_rows
+        if (self._xp is np and not numpy_tables) or self._samples is None or rows < max(int(min_rows), 1):
+            return
+        values = to_host(self._samples[:rows])   # (rows, columns), C-contiguous: one transfer
+        needed = self._parked_rows + rows
+        if self._parked is None or self._parked.shape[0] < needed:
+            capacity = max(needed, 2 * (0 if self._parked is None else self._parked.shape[0]), PROBE_INITIAL_ROWS)
+            parked = np.zeros((capacity, self.n_columns), dtype=np.float32)
+            if self._parked is not None:
+                parked[:self._parked_rows] = self._parked[:self._parked_rows]
+            self._parked = parked
+        self._parked[self._parked_rows:needed] = values
+        self._parked_rows = needed
+        self._row_counter.fill(0)   # in place: graphs hold its pointer
+
     def column_values(self, column, start) -> np.ndarray:
-        """Host float32 copy of one column's rows [start, n_rows) (one host transfer)."""
-        rows = slice(start, self.n_rows)
-        return np.array(to_host(self._xp.ascontiguousarray(self._samples[rows, column])), dtype=np.float32)
+        """Host float32 copy of one column's rows [start, n_rows) (parked rows from the host table, the rest in one
+        host transfer)."""
+        parked = self._parked_rows
+        device = slice(max(start - parked, 0), self.device_rows)
+        values = np.array(to_host(self._xp.ascontiguousarray(self._samples[device, column])), dtype=np.float32)
+        if start >= parked:
+            return values
+        return np.concatenate((self._parked[start:parked, column], values))
 
 
 # Every FieldProbe of a FieldProbeRows in one launch per step: samples[row, k] = LOAD_REAL(field_k[offset_k]) (fields =
@@ -204,7 +259,7 @@ class FieldProbe:
         self.field_component = field_component
         # Growable sample buffers: values on the field's device (no per-step device->host sync), times on the host.
         self._buf = None
-        self._times = np.empty(1024, dtype=np.float64)
+        self._times = np.empty(PROBE_INITIAL_ROWS, dtype=np.float64)
         self._n = 0
         self.value_scale = 1.0   # physical value per stored unit (em3d half_storage fields), applied in get_data
         self._rows = None        # FieldProbeRows that samples this probe (column, first row), None = own buffers
@@ -279,6 +334,14 @@ class FieldProbe:
         if self.value_scale != 1.0:
             values = (values * self.value_scale).astype(np.float32)
         return self._times[:self._n].copy(), values
+
+
+def park_probe_rows(min_rows=PROBE_PARK_ROWS) -> None:
+    """Park the device rows of every live gpu ProbeRows table holding at least min_rows (ProbeRows.park): called by the
+    study's time loops right after their per-chunk host sync, never inside a step loop. Tables of idle sessions (open
+    api Results) park too, which changes nothing they return."""
+    for table in tuple(_PARKING_TABLES):
+        table.park(min_rows)
 
 
 def probe_result(probe, unit: str = '') -> dict:

@@ -14,6 +14,7 @@ from ..core.constants import C0
 from ..core.damped_iteration import AndersonHistory
 from ..core.kernels import axis_first_reduce
 from ..core.mirror import mirror_faces, parity_tag, sector_specs
+from ..core.monitors import park_probe_rows
 from ..core.renderer import primary_field_info
 from ..core.time_estimate import format_seconds, merge_time_checks, time_check, time_check_warnings
 from ..core.wavelengths import resolved_wavelengths, wavelength_label
@@ -949,6 +950,7 @@ def _run_time_dependent(session, values, emit, control, service):
             chunk_start = time.perf_counter()
             ticks_done = runner.advance(chunk_ticks, min(t_final, next_output))
             device.synchronize()
+            park_probe_rows()   # after the chunk's sync: long traces wait on the host, not on the device
             chunk_ticks = _next_chunk_ticks(chunk_ticks, ticks_done, time.perf_counter() - chunk_start)
             time.sleep(0)   # hand the GIL to the GUI thread (any positive sleep lasts >= ~1.4 ms on Windows)
             progress_emit(_time_progress(runner, t_start, t_final, tick_start, wall_start, message=stepping_text))
@@ -1476,6 +1478,7 @@ def _run_harmonic_pulse(session, pulsed, wavelengths, values, live, emit, contro
                 runner.t, runner.tick = t + dt, tick + 1
             # one host sync per chunk: the energy reduction
             energy = sum(float(accumulator.field_energy(solvers[name])) for name, accumulator in accumulators.items())
+            park_probe_rows()   # after that sync: long traces wait on the host
             if not math.isfinite(energy):
                 raise RuntimeError(f'harmonic FDTD pulse: the field energy became non-finite at t = {runner.t:.4g} s '
                                    '(unstable time step or material data)')
