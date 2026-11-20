@@ -19,6 +19,9 @@ omega t - j beta z), lossy Im n_eff < 0. Host numpy (scipy inside functions)."""
 # runs ARPACK on loose solves (eigenfrequency.MIXED_EIGS_REFINEMENTS float64 steps, ARPACK
 # to MIXED_ARPACK_TOLERANCE) and then replaces beta^2 by the float64 Rayleigh quotient sigma - x^T (A + sigma B) x /
 # x^T B x of each vector: stationary for a complex symmetric pencil (left = right eigenvector), error ~ (vector error)^2.
+# On a cuDSS factor the device Krylov-Schur then keeps a complex64 basis (eigs single_basis: Ritz vectors ~1e-7 off, below
+# the 1e-6 ARPACK tolerance, the Rayleigh quotient squares both) and the device B is its strict lower triangle +
+# diagonal (complex symmetric by construction, probed by solvers.device_matrices; float64 without PML ring and loss).
 # Walls: pec / antisymmetric faces, the outer side of a PML ring (pec, the industry-standard default exterior) and the
 # closure of PEC elements: tangential E_t and E_z fixed 0; pmc / symmetric faces natural; mirror planes = the window
 # edge. Periodic faces need a periodic mesh (not built): refused.
@@ -560,9 +563,12 @@ def solve_fem_modes(layout, materials, omega, n_modes, n_eff_guess=None, start_v
     else:
         def apply(vector):
             return factorization.solve_host(problem.b_free @ vector, refinement_steps=steps)
-    theta, vectors, applications, converged = eigen_solver.eigs(   # cuDSS / a gpu runtime: device Krylov-Schur
+    # cuDSS / a gpu runtime: device Krylov-Schur, polished: a complex64 basis (module header; eigs_device refuses it
+    # below SINGLE_BASIS_MIN_TOLERANCE, MIXED_ARPACK_TOLERANCE sits on that bound); B complex symmetric: lower triangle
+    theta, vectors, applications, converged = eigen_solver.eigs(
         apply, n_unknowns, n_wanted, initial, tolerance_floor=MIXED_ARPACK_TOLERANCE if polish else 0.0,
-        device_matvec=device_factor_matvec(factorization, problem.b_free, refinement_steps=steps))
+        device_matvec=device_factor_matvec(factorization, problem.b_free, symmetric=True, refinement_steps=steps),
+        single_basis=polish)
     if not converged:
         warnings.append(f'ARPACK converged {np.size(theta)} of {n_wanted} eigenvalues near n_eff = {problem.guess:.6g}; '
                         f'modes may be missing (set the effective index guess near the wanted mode)')
@@ -570,7 +576,7 @@ def solve_fem_modes(layout, materials, omega, n_modes, n_eff_guess=None, start_v
     theta = np.asarray(theta, dtype=np.complex128)
     usable = np.isfinite(theta) & (np.abs(theta) > _THETA_FLOOR * float(np.max(np.abs(theta), initial=0.0)))
     beta_squared = problem.shift - 1.0 / theta[usable]
-    vectors = np.asarray(vectors)[:, usable]
+    vectors = np.asarray(vectors, dtype=np.complex128)[:, usable]   # complex64 Ritz vectors of a single basis: once
     rayleigh_change = None
     if polish:
         beta_squared, rayleigh_change = _rayleigh_beta_squared(problem, vectors, beta_squared)

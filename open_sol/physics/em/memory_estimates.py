@@ -120,15 +120,20 @@ def _bor_factor_entries(nr, nz, coupled) -> int:
             + element_dissection_pairs(np.vstack((a_r[:, :2], a_z[:, :2])), points))
 
 
-def _arnoldi_item(host_items, transient_items, unknowns, basis, context, device_matvec, real=False):
+def _arnoldi_item(host_items, transient_items, unknowns, basis, context, device_matvec, real=False,
+                  single_basis=False):
     """Append an eigs caller's Arnoldi basis: a device EIGEN_PHASE item where the gpu backend runs the device
-    Krylov-Schur (arpack_shift_invert.arnoldi_basis_bytes; device_matvec: a cuDSS factor), else a host item (real: the
-    float64 basis of real ARPACK)."""
+    Krylov-Schur (arpack_shift_invert.arnoldi_basis_bytes; device_matvec: a cuDSS factor; single_basis: complex64 rows,
+    eigs(single_basis=True), the 2 work vectors stay complex128), else a host item (real: the float64 basis of real
+    ARPACK)."""
     on_device, basis_bytes = arnoldi_basis_bytes(unknowns, basis, solver_backend(context.spec),
                                                  device_matvec=device_matvec, real=real)
     if on_device:
-        transient_items.append((EIGEN_PHASE, f'device Krylov-Schur basis ({basis + 1} complex128 rows + 2 work '
-                                             'vectors)', basis_bytes))
+        row_type = 'complex64' if single_basis else 'complex128'
+        if single_basis:   # arnoldi_basis_bytes counts complex128 rows
+            basis_bytes -= (int(basis) + 1) * (COMPLEX128_BYTES - COMPLEX64_BYTES) * int(unknowns)
+        transient_items.append((EIGEN_PHASE, f'device Krylov-Schur basis ({basis + 1} {row_type} rows + 2 complex128 '
+                                             'work vectors)', basis_bytes))
     else:
         host_items.append((f'Arnoldi basis ({basis} {"float64" if real else "complex128"} vectors)', basis_bytes))
 
@@ -650,10 +655,18 @@ def modes_memory_estimate(settings_values, mesh, context):
     _arnoldi_item(host_items, transient_items, unknowns, arnoldi_vectors, context, on_device, real=real)
     if on_device:   # cross_section_modes.solve_prepared_modes: an own LU per solve (no plan reuse), dropped after it
         mixed = eigen_mixed(factorization, unknowns)
-        transient_items.append((EIGEN_PHASE, 'cuDSS operator copy and solve vectors',
-                                cudss_own_factor_bytes(unknowns, 9 * unknowns, mixed, symmetric=False)))
+        # E1: a real operator factors in float64 (copies and factor at 8 B per value); its solves of the complex Krylov
+        # vectors run as two real solves (complex128 vectors either way). B = diag(eps^-1) is a device vector of
+        # device_factor_matvec (float64 when real)
+        value_bytes = FLOAT64_BYTES if real else COMPLEX128_BYTES
+        value_type = 'float64' if real else 'complex128'
+        transient_items += [
+            (EIGEN_PHASE, f'cuDSS operator copy ({value_type}), rhs buffer, row scale and solve vectors',
+             cudss_kept_bytes(unknowns, 9 * unknowns, mixed, symmetric=False, value_bytes=value_bytes)
+             + solve_peak_bytes(unknowns, COMPLEX128_BYTES, mixed)),
+            (EIGEN_PHASE, f'device mass diagonal B ({value_type} vector)', value_bytes * unknowns)]
         external_items, external_extra = cudss_factor_items('the shifted mode operator', unknowns, 9 * unknowns,
-                                                            mixed=mixed, general=True)
+                                                            mixed=mixed, general=True, value_bytes=value_bytes)
     if line_block:   # ModePhysics line-block batches
         from .cross_section_modes import line_block_bytes
         from .fdfd_line_block import MAX_BATCH_WAVELENGTHS
@@ -681,6 +694,7 @@ def modes_memory_estimate(settings_values, mesh, context):
 def _modes_fem_memory_estimate(settings_values, mesh, context):
     """em_modes on a triangles mesh (solvers/modes_fem, fem_modes): 2 float32 per-element state fields; host SuperLU
     (or a per-solve cuDSS LDL^T: external), blocks, Arnoldi basis, sample bases, mode candidates, display fields."""
+    from ...solvers.device_matrices import device_matrix_bytes
     from .fem_modes import (DISCRETIZATION_ORDERS, FEM_ENTRIES_PER_ROW, SAMPLE_POINTS, cudss_operator_bytes,
                             estimated_unknowns, fem_lu_bytes, operator_bytes, sample_basis_bytes)
     order = DISCRETIZATION_ORDERS[settings_values.get('discretization', 'quadratic')]
@@ -698,9 +712,16 @@ def _modes_fem_memory_estimate(settings_values, mesh, context):
         factorization, 'SuperLU L + U factors (FEM fill, heuristic)', fem_lu_bytes(unknowns), unknowns,
         FEM_ENTRIES_PER_ROW[order] * unknowns, symmetric=True, eigen=True)
     mixed = eigen_mixed(factorization, unknowns)
-    # fem_modes.solve_fem_modes: an own LDL^T per solve (no plan reuse), dropped after it
+    # fem_modes.solve_fem_modes: an own LDL^T per solve (no plan reuse), dropped after it, and device_factor_matvec's B
+    # (complex symmetric: strict lower triangle + diagonal; real without PML ring and loss: float64; the pencil's pattern
+    # an upper figure of B's)
+    real_mass = real_cross_section_operator(settings_values, context)
     transient_items = ([(EIGEN_PHASE, 'cuDSS operator copies and solve vectors',
-                         cudss_operator_bytes(unknowns, order, mixed))] if on_device else [])
+                         cudss_operator_bytes(unknowns, order, mixed)),
+                        (EIGEN_PHASE, f'device mass B ({"float64" if real_mass else "complex128"} lower triangle + '
+                                      'diagonal)',
+                         device_matrix_bytes(unknowns, FEM_ENTRIES_PER_ROW[order] * unknowns, symmetric=True,
+                                             real=real_mass))] if on_device else [])
     external_items, external_extra = (cudss_factor_items('the shifted mode operator', unknowns,
                                                          FEM_ENTRIES_PER_ROW[order] * unknowns, mixed=mixed)
                                       if on_device else ([], 0))
@@ -710,7 +731,12 @@ def _modes_fem_memory_estimate(settings_values, mesh, context):
         (f'mode candidates ({n_eigen})', n_eigen * mode_bytes),
         ('nodal display fields (10 x float64)',
          10 * FLOAT64_BYTES * (int(mesh.n_nodes) + (int(mesh.n_edges) if order == 2 else 0)))]
-    _arnoldi_item(host_items, transient_items, unknowns, arnoldi_vectors, context, on_device)
+    # a polished mixed LDL^T (cudss_mixed, mumps_mixed / pardiso_mixed: from MIXED_EIGEN_MIN_UNKNOWNS on, below it
+    # they factor in double) keeps a complex64 device basis (fem_modes: eigs single_basis)
+    polished = int(unknowns) >= MIXED_EIGEN_MIN_UNKNOWNS and (
+        factorization == 'cudss_mixed' or (factorization in HOST_DIRECT_FACTORIZATIONS
+                                           and host_direct_precision(factorization) == 'mixed'))
+    _arnoldi_item(host_items, transient_items, unknowns, arnoldi_vectors, context, on_device, single_basis=polished)
     return MemoryEstimate.from_items((('mode state fields (2 x float32 per element)', 2 * FLOAT32_BYTES * n_elements),),
                                      host_items=host_items, transient_items=transient_items,
                                      external_items=external_items, external_extra=external_extra)
