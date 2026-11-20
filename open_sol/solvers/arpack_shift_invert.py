@@ -8,6 +8,7 @@ from typing import NamedTuple
 import numpy as np
 
 from .cudss_factor import CUDSS_REFUSALS, CudssAccuracyError, canonical_csr, csr_rows
+from .device_matrices import device_matrix
 from .host_direct import (HOST_DIRECT_FACTORIZATIONS, HOST_DIRECT_MIXED_BACK_ENDS, double_of,
                           host_direct_factorization, is_host_direct_factor, quiet_openblas)
 from .sparse_direct import LOWER_STORED_FRACTION, SparseDirectSolver, SuperLUOrdering, factorize_host
@@ -392,26 +393,31 @@ def device_arnoldi_fits(n_unknowns, basis_size, host_matvec=False) -> bool:
     return not host_matvec or float(n_unknowns) * rows >= HOST_MATVEC_DEVICE_MIN_ENTRIES
 
 
-def arnoldi_basis_bytes(n_unknowns, basis_size, backend, device_matvec=False, real=False):
+def arnoldi_basis_bytes(n_unknowns, basis_size, backend, device_matvec=False, real=False, single_basis=False):
     """(on_device, bytes) of an eigs caller's Arnoldi basis (memory estimators): the device Krylov-Schur's (basis + 1)
     complex128 rows + its product and packed-read vectors on the gpu backend when device_arnoldi_fits (device_matvec: a
-    cuDSS solve), else ARPACK's host basis (real: float64, eigs(real=True))."""
+    cuDSS solve; single_basis: complex64 rows and vectors + the complex128 operand the matvec gets), else ARPACK's host
+    basis (real: float64, eigs(real=True))."""
     on_device = backend == 'gpu' and device_arnoldi_fits(n_unknowns, basis_size, host_matvec=not device_matvec)
     rows = int(basis_size) + (3 if on_device else 0)
+    if on_device and single_basis:
+        return on_device, (8 * rows + 16) * int(n_unknowns)
     return on_device, rows * (8 if real and not on_device else 16) * int(n_unknowns)
 
 
-def device_factor_matvec(factorization, mass, **solve_options):
-    """cupy matvec x -> factorization.solve(B x, **solve_options) of a cuDSS factor (B host scipy, uploaded as complex128
-    on first use) for eigs(device_matvec=), None for any other factor (SuperLU, line-block: host solves only)."""
+def device_factor_matvec(factorization, mass, symmetric=False, **solve_options):
+    """cupy matvec x -> factorization.solve(B x, **solve_options) of a cuDSS factor for eigs(device_matvec=), None for
+    any other factor (SuperLU, line-block: host solves only). B (host scipy sparse, or a 1D diagonal) goes to the device
+    on first use as device_matrices.device_matrix: real values float64 (a complex B with zero imaginary parts too), a
+    diagonal B as its vector, symmetric (B^T = B, probed: ValueError) as its strict lower triangle + diagonal; memory:
+    device_matrix_bytes."""
     if getattr(factorization, 'back_end', None) != 'cudss':
         return None
     device_mass = []
 
     def apply(vector):
         if not device_mass:
-            import cupyx.scipy.sparse
-            device_mass.append(cupyx.scipy.sparse.csr_matrix(mass.tocsr().astype(np.complex128)))
+            device_mass.append(device_matrix(mass, symmetric=symmetric))
         return factorization.solve(device_mass[0] @ vector, **solve_options)
     return apply
 
@@ -774,21 +780,24 @@ class ArpackShiftInvertSolver:
         return eigenvalues, vectors, applications, converged, factor
 
     def eigs(self, matvec, n_unknowns, n_wanted, start_vector=None, tolerance_floor=0.0, max_restarts=MAX_RESTARTS,
-             default_basis=0, device_matvec=None, real=False):
+             default_basis=0, device_matvec=None, real=False, single_basis=False):
         """(theta, host vectors, operator applications, converged) of the n_wanted largest-|theta| eigenpairs of the
         linear map `matvec` (numpy complex128, n_unknowns), tolerance = max(node, tolerance_floor), at most max_restarts
         restarts, basis = the node's subspace_size, else default_basis, else scipy's; without convergence the converged
         part. The device Krylov-Schur (eigs_device) instead of host ARPACK when device_arnoldi_fits: on device_matvec
         (cupy -> cupy, e.g. device_factor_matvec), else on a device_arnoldi runtime around matvec. real (E1): a real map
         (matvec real -> real, start_vector real): host ARPACK runs the real dnaupd (one real solve per application
-        instead of two); the Krylov-Schur paths stay complex (matvec then gets complex vectors)."""
+        instead of two); the Krylov-Schur paths stay complex (matvec then gets complex vectors). single_basis: the
+        device Krylov-Schur keeps a complex64 basis (eigs_device; host ARPACK ignores it), refused (ValueError) on every
+        path when the tolerance is below SINGLE_BASIS_MIN_TOLERANCE."""
+        _check_single_basis(single_basis, max(self.tolerance, float(tolerance_floor)))
         basis_size = arnoldi_basis_size(n_wanted, n_unknowns, self.subspace_size, default_basis)
         if ((device_matvec is not None or self.device_arnoldi)
                 and device_arnoldi_fits(n_unknowns, basis_size, host_matvec=device_matvec is None)):
             theta, vectors, applications, converged, _ = self.eigs_device(
                 matvec if device_matvec is None else device_matvec, n_unknowns, n_wanted, start_vector,
                 tolerance_floor=tolerance_floor, max_restarts=max_restarts, default_basis=default_basis,
-                matvec_on_host=device_matvec is None)
+                matvec_on_host=device_matvec is None, single_basis=single_basis)
             return theta, vectors, applications, converged
         return self._host_eigs(matvec, n_unknowns, n_wanted, start_vector, tolerance_floor, max_restarts,
                                default_basis, real=real)
@@ -837,9 +846,10 @@ class ArpackShiftInvertSolver:
         the state of an earlier call on the same matvec (a widening: its Krylov decomposition kept, expanded to the
         larger basis, in place when its storage holds it; a state whose basis the caller moved to the host (numpy
         rows) is uploaded into the new storage); reserve_basis: allocate rows for a later basis that large; single_basis:
-        a complex64 basis (tolerance >= SINGLE_BASIS_MIN_TOLERANCE, else ValueError). Too small for a device basis
-        (device_arnoldi_fits without the host rule): host eigs, state None."""
+        a complex64 basis (tolerance >= SINGLE_BASIS_MIN_TOLERANCE, else ValueError, also on the host fallback, which
+        ignores it). Too small for a device basis (device_arnoldi_fits without the host rule): host eigs, state None."""
         import cupy as cp
+        _check_single_basis(single_basis, max(self.tolerance, float(tolerance_floor)))
         basis_size = arnoldi_basis_size(n_wanted, n_unknowns, self.subspace_size, default_basis)
         if not device_arnoldi_fits(n_unknowns, basis_size):
             host_matvec = matvec if matvec_on_host else (lambda vector: cp.asnumpy(matvec(cp.asarray(vector))))
@@ -849,9 +859,6 @@ class ArpackShiftInvertSolver:
         self.last_arnoldi = 'device Krylov-Schur'
         start = time.perf_counter()
         tolerance = max(self.tolerance, float(tolerance_floor)) or float(np.finfo(np.float64).eps)
-        if single_basis and tolerance < SINGLE_BASIS_MIN_TOLERANCE:
-            raise ValueError(f'eigs_device: a complex64 basis needs a tolerance >= {SINGLE_BASIS_MIN_TOLERANCE:g}, got '
-                             f'{tolerance:g}')
         search = _KrylovSchur(matvec, int(n_unknowns), int(n_wanted), basis_size, tolerance, start_vector, resume,
                               matvec_on_host=matvec_on_host,
                               capacity=min(int(reserve_basis), int(n_unknowns) // DEVICE_ARNOLDI_MIN_RATIO - 1),
@@ -971,6 +978,14 @@ _UNIT_ROW_KERNELS = {}     # basis dtype -> ElementwiseKernel
 # ~3e-8 off already, float64 Rayleigh quotients afterwards). Half the basis bytes: ~0.6 GiB of the widened pass on the
 # 690k-unknown nanobeam eighth model (byte count)
 SINGLE_BASIS_MIN_TOLERANCE = 1e-6
+
+
+def _check_single_basis(single_basis, tolerance) -> None:
+    """ValueError for a complex64 basis (single_basis) at a tolerance below SINGLE_BASIS_MIN_TOLERANCE (0 = machine
+    precision counts as below)."""
+    if single_basis and not float(tolerance) >= SINGLE_BASIS_MIN_TOLERANCE:
+        raise ValueError(f'a complex64 Krylov basis (single_basis) needs a tolerance >= {SINGLE_BASIS_MIN_TOLERANCE:g}, '
+                         f'got {float(tolerance):g} (0 = machine precision)')
 
 
 def _unit_row_kernel(dtype=np.complex128):
