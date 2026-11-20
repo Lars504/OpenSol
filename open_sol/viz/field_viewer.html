@@ -188,6 +188,13 @@ body.present .app { padding: 10px; gap: 10px; }
           <option value="auto">Auto</option><option value="1">Every line</option><option value="2">Every 2nd</option>
           <option value="3">Every 3rd</option><option value="4">Every 4th</option><option value="5">Every 5th</option>
           <option value="10">Every 10th</option></select>
+        <label for="fs_contour_color">Colour</label>
+        <select id="fs_contour_color" title="One colour for every contour line and its label; Auto: black over a colour map whose middle is light, else white">
+          <option value="auto">Auto</option><option value="black">Black</option><option value="white">White</option>
+          <option value="custom">Custom</option></select>
+        <input type="color" id="fs_contour_custom" title="A colour of your own for the contour lines and labels">
+        <label for="fs_contour_width">Width (px)</label>
+        <input type="number" id="fs_contour_width" class="wide" min="0.5" max="8" step="0.1" title="Width of the contour lines, 0.5 - 8 px (the labelled ones 1.7 x as wide; applied as typed)">
         <label for="fs_contour_labels">Labels</label>
         <select id="fs_contour_labels" class="wide" title="The value written into a gap of each labelled contour line, upright, spaced along it (none while the field animates)">
           <option value="on">On</option><option value="off">Off</option></select>
@@ -403,12 +410,14 @@ function cmapStoreKey() { return DIVERGING ? 'cmap_signed' : SCALAR_KIND === 'ot
 const LENGTH_SCALE = DATA.length_scale || 1;   // m per length unit of the page
 const FIGURE_STYLE = { font_size: 11, title_size: 26, title: 'top_left', colorbar: 'bottom_right', colorbar_length: null,
   horizontal_axis: 'bottom', vertical_axis: 'left', scale_bar: 'on', scale_bar_color: 'auto', legend_color: 'auto',
-  background: 'theme', export_scale: 1, contour_labels: 'on', contour_label_every: 'auto' };
+  background: 'theme', export_scale: 1, contour_labels: 'on', contour_label_every: 'auto', contour_color: 'auto',
+  contour_width: 1.6 };
 // the rules come from Python (viz.field_viewer FIGURE_CHOICES / _RANGES / _LIMITS / _LENGTHS), the defaults are the page's
 const FIGURE_CHOICES = DATA.figure_rules.choices;
 const FIGURE_RANGES = DATA.figure_rules.ranges;
 const FIGURE_LENGTHS = DATA.figure_rules.lengths;   // positive lengths (m)
 const FIGURE_VALUES = DATA.figure_rules.values;     // positive values in the field unit (contour_step)
+const FIGURE_COLORS = DATA.figure_rules.colors;     // { key: words }: one of the words or '#rrggbb' (contour_color)
 const LIMIT_KEYS = DATA.figure_rules.limits.flatMap((name) => [name + '_min', name + '_max']);
 const FILE_KEYS = [...LIMIT_KEYS, ...FIGURE_LENGTHS, ...FIGURE_VALUES];   // values of this model: remembered per file, not for every page
 function fieldUnitKey(k) { return k.startsWith('color') || FIGURE_VALUES.includes(k); }   // kept only for the same quantity
@@ -416,6 +425,7 @@ const FIGURE_DEFAULTS = Object.assign({}, FIGURE_STYLE, Object.fromEntries(FILE_
 const LIMITS_STORE = 'limits:' + location.pathname;
 const QUANTITY_KEY = Q.label + '|' + (Q.unit || '');
 function validSetting(k, v) {
+  if (k in FIGURE_COLORS) return FIGURE_COLORS[k].includes(v) || (typeof v === 'string' && /^#[0-9a-f]{6}$/.test(v));
   if (k in FIGURE_CHOICES) return FIGURE_CHOICES[k].includes(v);
   if (v === null) return FIGURE_DEFAULTS[k] === null;
   if (typeof v !== 'number' || !isFinite(v)) return false;
@@ -720,7 +730,7 @@ precision highp int;
 in float vT; in float vOk; in vec3 vViewPos; in vec3 vPlace; in float vVal;
 uniform vec3 uStops[9]; uniform int uLine; uniform vec4 uLineColor; uniform float uShade;
 uniform vec3 uClipLo; uniform vec3 uClipHi;
-uniform int uContour; uniform float uC0; uniform float uCStep; uniform float uCMajor; uniform float uCWidth;
+uniform int uContour; uniform float uC0; uniform float uCStep; uniform float uCMajor; uniform float uCWidth; uniform vec3 uCInk;
 uniform int uLabCount; uniform vec4 uLab[48]; uniform float uLabHalfH;   // contour label gaps: centre px, direction x half width
 out vec4 outColor;
 vec3 cmap(float t) {
@@ -734,7 +744,7 @@ void main() {
   if (uLine == 1) { outColor = uLineColor; return; }
   vec3 base = cmap(vT);
   if (uContour == 1) {
-    // isolines at uC0 + k uCStep (every uCMajor-th one bolder, as the colour bar ticks), anti-aliased over the
+    // isolines at uC0 + k uCStep (every uCMajor-th one bolder and labelled), anti-aliased over the
     // screen-space change of k; none where the field is flat (a level the whole region sits on) or where the levels
     // crowd closer than ~2 px (a moire otherwise)
     float k = (vVal - uC0) / uCStep, w = fwidth(k);
@@ -750,9 +760,7 @@ void main() {
       bool major = abs(mod(floor(k + 0.5), uCMajor)) < 0.5;
       float hw = (major ? 0.85 : 0.5) * uCWidth;
       float a = (1.0 - smoothstep(hw - 0.5, hw + 0.5, d)) * (1.0 - smoothstep(0.25, 0.5, w)) * (major ? 0.9 : 0.6);
-      float lum = dot(base, vec3(0.2126, 0.7152, 0.0722));
-      vec3 ink = lum > 0.42 ? base * 0.28 : mix(base, vec3(1.0), 0.75);   // darker over light colours, lighter over dark
-      base = mix(base, ink, a);
+      base = mix(base, uCInk, a);       // one colour for every line (contourRgb), the ordinary ones fainter
     }
   }
   vec3 col = base;
@@ -792,7 +800,7 @@ function setupGL() {
   if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
   for (const name of ['uView', 'uProj', 'uCenter', 'uLo', 'uHi', 'uLog', 'uSigned', 'uStretch',
                       'uStops', 'uLine', 'uLineColor', 'uShade', 'uMirA', 'uMirB', 'uValSign', 'uPhase',
-                      'uClipLo', 'uClipHi', 'uMixA', 'uMixB', 'uContour', 'uC0', 'uCStep', 'uCMajor', 'uCWidth',
+                      'uClipLo', 'uClipHi', 'uMixA', 'uMixB', 'uContour', 'uC0', 'uCStep', 'uCMajor', 'uCWidth', 'uCInk',
                       'uLabCount', 'uLab', 'uLabHalfH', 'uDispDir', 'uDispW', 'uAmp'])
     uni[name] = gl.getUniformLocation(prog, name);
   const aPos = gl.getAttribLocation(prog, 'aPos'), aVal = gl.getAttribLocation(prog, 'aVal');
@@ -2876,6 +2884,9 @@ function syncSettings() {
     + (limited ? ' (limits are set)' : '');
   $('range').disabled = fig.color_max !== null || (DIVERGING && fig.color_min !== null);   // the limit it scales is given
   syncScalars();                               // the Contours density gives way to a contour step
+  // the contour colour: a word in its select, a colour of its own as 'Custom' with the picker showing it
+  $('fs_contour_color').value = FIGURE_COLORS.contour_color.includes(fig.contour_color) ? fig.contour_color : 'custom';
+  $('fs_contour_custom').value = '#' + contourRgb().map((v) => Math.round(255 * v).toString(16).padStart(2, '0')).join('');
   $('hint').style.display = fig.colorbar === 'bottom_left' || fig.colorbar === 'bottom' ? 'none' : '';
 }
 function applySettings(boundsChanged) {
@@ -2891,7 +2902,8 @@ for (const k of SETTING_KEYS) {
     // typing: a ranged number (font sizes, bar length) is applied while typed, once it is a valid value; the limits
     // wait for Enter / leaving the field (half-typed numbers would crop and refit the view)
     let value;
-    if (el.tagName === 'SELECT') value = FIGURE_CHOICES[k].includes(el.value) ? el.value : +el.value;   // 'auto' or 4
+    if (k in FIGURE_COLORS) value = el.value === 'custom' ? $('fs_contour_custom').value.toLowerCase() : el.value;
+    else if (el.tagName === 'SELECT') value = FIGURE_CHOICES[k].includes(el.value) ? el.value : +el.value;   // 'auto' or 4
     else if (el.value.trim() === '') value = null;
     else value = Number((+el.value / shownPer(k)).toPrecision(7));
     if (value === null && FIGURE_DEFAULTS[k] !== null) { if (!typing) syncSettings(); return; }   // a size cannot be empty: as before
@@ -2907,6 +2919,8 @@ for (const k of SETTING_KEYS) {
 }
 $('fs_colorhead').textContent = 'Colour limits' + (Q.unit ? ' (' + Q.unit + ')' : '');
 $('fs_contourhead').textContent = 'Contour lines' + (Q.unit ? ' (' + Q.unit + ')' : '');
+$('fs_contour_custom').addEventListener('input', () => {   // picking a colour makes it the custom one
+  $('fs_contour_color').value = 'custom'; $('fs_contour_color').dispatchEvent(new Event('change')); });
 $('fs_axishead').textContent = 'Axis limits (' + lengthUnit + ')';
 $('fs_scalehead').textContent = 'Scale bar (' + lengthUnit + ')';
 // what needs one plane seen face-on (axis label sides, the scale bar) is offered for planar views only; the material
@@ -3744,7 +3758,7 @@ function setContourUniforms(lo, hi, logScale, view, proj) {
   gl.uniform1i(uni.uLabCount, contourLabels.length);
   if (!C) return;
   gl.uniform1f(uni.uC0, C.c0); gl.uniform1f(uni.uCStep, C.step); gl.uniform1f(uni.uCMajor, C.major);
-  gl.uniform1f(uni.uCWidth, 1.6 * pixelRatio);
+  gl.uniform1f(uni.uCWidth, fig.contour_width * pixelRatio); gl.uniform3fv(uni.uCInk, contourRgb());
   if (!contourLabels.length) return;
   const boxes = new Float32Array(4 * CONTOUR_LABEL_MAX), H = canvas.height;
   contourLabels.forEach((B, k) => boxes.set([B.x, H - B.y, B.ux * B.hw, -B.uy * B.hw], 4 * k));   // GL px: y up
@@ -3758,7 +3772,7 @@ function setContourUniforms(lo, hi, logScale, view, proj) {
 // image, deformed shape), spaced CONTOUR_LABEL_SPACING font sizes apart, staggered per level, only on straight enough
 // stretches inside the canvas and the axis limits and clear of each other (at most CONTOUR_LABEL_MAX, the shader's
 // box array). The field shader leaves the contour lines out inside each label's box (uLab) and the overlay writes
-// the value there, upright, in the line's own ink. None while the field animates (playback, a turning phasor, the
+// the value there, upright, in the lines' colour. None while the field animates (playback, a turning phasor, the
 // deform animation): they would lag the moving lines.
 const CONTOUR_LABEL_MAX = 48, CONTOUR_LABEL_SPACING = 26;
 function contourLabelsAnimating() { return (state.playing && NF > 1) || (PHASOR && wave.playing) || (!!MOTION && motion.animate); }
@@ -3846,14 +3860,14 @@ function contourLabelText(v, logScale, scale) {
   const x = Number((v / scale.factor).toPrecision(6));
   return (x === 0 ? '0' : String(x)) + (scale.unit ? ' ' + scale.unit : '');
 }
-function contourInk(t) {
-  // the colour of a contour line over the colour map at t (as the field shader: darker over light colours, lighter
-  // over dark ones), CSS
-  const stops = CMAPS[state.cmap].map(hexRgb), x = Math.min(Math.max(t, 0), 1) * 8, i = Math.min(Math.floor(x), 7), f = x - i;
-  const base = [0, 1, 2].map((c) => stops[i][c] + (stops[i + 1][c] - stops[i][c]) * f);
-  const lum = 0.2126 * base[0] + 0.7152 * base[1] + 0.0722 * base[2];
-  const ink = base.map((v) => lum > 0.42 ? v * 0.28 : v + (1 - v) * 0.75);
-  return 'rgb(' + ink.map((v) => Math.round(255 * v)).join(',') + ')';
+function contourRgb() {
+  // the colour of every contour line and label (Plot settings contour_color): a word, '#rrggbb', or 'auto' (black over
+  // a colour map whose middle is light, else white: one colour that reads over most of the map)
+  const v = fig.contour_color;
+  if (v.startsWith('#')) return hexRgb(v);
+  const [r, g, b] = hexRgb(CMAPS[state.cmap][4]);
+  const dark = v === 'black' || (v === 'auto' && 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.5);
+  return dark ? [0.06, 0.07, 0.09] : [1, 1, 1];
 }
 function placeContourLabels(C, lo, hi, logScale, view, proj) {
   contourLabels = [];
@@ -3864,6 +3878,7 @@ function placeContourLabels(C, lo, hi, logScale, view, proj) {
   const px = pixelRatio, F = Math.round(0.95 * fig.font_size * px), W = canvas.width, H = canvas.height;
   const font = F + 'px ' + themeColors.font, spacing = CONTOUR_LABEL_SPACING * F, hh = 0.62 * F, margin = 0.5 * F;
   const scale = barScale(lo, hi, Q.unit), f = stretch(), widths = new Map();
+  const ink = 'rgb(' + contourRgb().map((v) => Math.round(255 * v)).join(',') + ')';
   actx.font = font;
   // clip = P V (q - centre) stretch, as the vertex shader
   const M = new Float64Array(16);
@@ -3920,7 +3935,7 @@ function placeContourLabels(C, lo, hi, logScale, view, proj) {
             if (!ok) { s += 0.35 * hw; continue; }
             let ux = dx / chord, uy = dy / chord;
             if (ux < 0) { ux = -ux; uy = -uy; }   // upright text
-            contourLabels.push({ x: Pm[0], y: Pm[1], ux, uy, hw, hh, level, text, font, ink: contourInk((level - a) / (b - a)) });
+            contourLabels.push({ x: Pm[0], y: Pm[1], ux, uy, hw, hh, level, text, font, ink });
             s += spacing;
           }
         };

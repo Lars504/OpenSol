@@ -10,7 +10,7 @@ from ..core.constants import FACE_LABELS
 from ..core.renderer import primary_field_info
 from ..materials import REGISTRY as MATERIAL_LIBRARY
 from ..materials.crystal_tensors import CRYSTALS
-from ..viz.field_viewer import FIGURE_CHOICES, FIGURE_RANGES
+from ..viz.field_viewer import FIGURE_CHOICES, FIGURE_COLORS, FIGURE_RANGES
 from .expressions import (BUILTIN_CONSTANTS, CONSTANT_DESCRIPTIONS, COORDINATE_NAMES, FUNCTION_ARITY,
                           FUNCTION_DESCRIPTIONS, MAX_EXPRESSION_LENGTH, RESERVED_NAMES)
 from .analytic import (CURVE_FUNCTION_DESCRIPTIONS, CURVE_RESULT_KINDS, DERIVED_RESULT_KINDS, FIT_QUANTITIES,
@@ -753,7 +753,8 @@ _MATERIAL_NOTES = (
 )
 def _figure_choices(key) -> str:
     """The choices of a field-viewer Plot setting as help text ('a' | 'b')."""
-    return ' | '.join(repr(choice) for choice in FIGURE_CHOICES[key])
+    return ' | '.join(repr(choice) for choice in (FIGURE_CHOICES[key] if key in FIGURE_CHOICES
+                                                  else (*FIGURE_COLORS[key], '#rrggbb')))
 
 
 def _figure_range(key) -> str:
@@ -1342,7 +1343,10 @@ _RESULTS_NOTES = (
         f"{_figure_choices('contour_label_every')} (contour lines per labelled, bolder one, as every 4th for 100 m "
         "labels on 25 m lines; 'auto': the labelled interval nearest the colour bar's tick step), contour_labels "
         f"{_figure_choices('contour_labels')} (default 'on': the value written into a gap of the labelled lines, "
-        f"upright and spaced along them; none while the field animates), materials {{material name: {{'color': "
+        f"upright and spaced along them; none while the field animates), contour_color "
+        f"{_figure_choices('contour_color')} (one colour for every contour line and label; 'auto': black over a colour map whose middle is "
+        f"light, else white), contour_width (CSS px, {_figure_range('contour_width')}, default 1.6: the ordinary "
+        f"lines; labelled ones 1.7 x as wide), materials {{material name: {{'color': "
         "'#rrggbb', 'alpha': 0 .. 1}} (each key optional; colour of its outlines, edges, see-through surfaces and "
         'legend swatch; alpha the opacity of its surfaces (Glass faces, 3D bodies of revolution; default see-through), 1 draws '
         'them solid, 0 hides the material; '

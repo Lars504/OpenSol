@@ -36,7 +36,8 @@ plot, imports of `viz.common` / `DARK_CMAPS`, canvas cell edges) live in the gui
   (`CMAPS` / `CMAP_CHOICES`), recording (`// ---------- video` block) and `.empty[hidden]` CSS: change both (the head
   comment of each page says so).
 - Plot settings (field_viewer only): the page takes the keys and checks from `DATA.figure_rules` (`FIGURE_CHOICES` /
-  `_RANGES` / `_LIMITS` / `_LENGTHS` / `_VALUES` of field_viewer.py; `_VALUES` and colour limits are in the field unit
+  `_RANGES` / `_LIMITS` / `_LENGTHS` / `_VALUES` / `_COLORS` of field_viewer.py; `_COLORS` keys take a word or '#rrggbb'
+  (a select with 'Custom' beside a colour picker); `_VALUES` and colour limits are in the field unit
   and remembered per file only for the same quantity, `fieldUnitKey`; a numeric choice ('auto' | 4) is read back from
   its select by `FIGURE_CHOICES`); a new setting also needs its default in the page's
   `FIGURE_STYLE`, an `fs_<key>` panel input and a line in describe's export_html entry (choices and ranges there are
@@ -50,7 +51,8 @@ plot, imports of `viz.common` / `DARK_CMAPS`, canvas cell edges) live in the gui
 - Contours: the labelled lines are the bold (major) ones of `contourLevels`; their labels are traced on the CPU
   (`contourLines`, cached on the shown values) and placed per draw (`placeContourLabels`, before the field pass and
   after `setMotionUniforms`, so they follow the deformed shape); the field shader cuts each label's box out of the
-  lines (`uLab[CONTOUR_LABEL_MAX]`: the GLSL array size must match) and `drawContourLabels` writes the text. A new
+  lines (`uLab[CONTOUR_LABEL_MAX]`: the GLSL array size must match) and `drawContourLabels` writes the text. Lines and
+  labels share one colour, `contourRgb` (Plot settings contour_color), never a per-pixel contrast ink. A new
   way of changing the shown values (mix, scale) also enters `shownLayerValues` and the cache key, or the labels sit
   off their lines; anything animating them belongs in `contourLabelsAnimating`.
 - Per-sample arrays of a `ViewerLayer` follow every layer rebuild (the class docstring lists them): a new one joins all.
