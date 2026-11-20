@@ -99,6 +99,9 @@ header p { margin: 2px 0 0; color: var(--ink-3); font-size: 13px; }
 .settings input[type="number"], .settings select { width: 100%; min-width: 0; font: inherit; font-size: 12px;
   color: var(--ink); background: var(--panel-2); border: 1px solid var(--rule); border-radius: 6px; padding: 3px 6px; }
 .settings input:disabled { opacity: 0.45; }
+.settings input[type="color"] { width: 100%; min-width: 0; height: 24px; padding: 1px 2px; background: var(--panel-2);
+                                border: 1px solid var(--rule); border-radius: 6px; cursor: pointer; }
+.settings .rows label.mat { overflow: hidden; text-overflow: ellipsis; max-width: 110px; }
 .settings input.bad { border-color: #e5484d; }
 .settings textarea { grid-column: 1 / 4; width: 100%; height: 52px; resize: vertical; color: var(--ink-2);
                      font: 11px ui-monospace, "Cascadia Mono", Consolas, monospace; background: var(--panel-2);
@@ -202,6 +205,7 @@ body.present .app { padding: 10px; gap: 10px; }
         <label for="fs_legend_color" id="fs_legendlabel">Text colour</label>
         <select id="fs_legend_color" class="wide" title="Colour of the material names (the legend can be dragged over the field)">
           <option value="auto">As the texts</option><option value="white">White</option><option value="black">Black</option></select>
+        <h2 id="fs_materialhead" title="Colour and opacity of each material: its outlines (Objects colour Material), edges, see-through surfaces (Glass, Revolve) and legend swatch. Opacity: of the see-through surfaces, empty = automatic, 0 hides the material">Materials: colour, opacity</h2>
         <h2>Export</h2>
         <label for="fs_background">Background</label>
         <select id="fs_background" class="wide" title="Background of the view and of the saved picture">
@@ -1314,17 +1318,19 @@ function drawMaterials(c) {
   // the material colours of the drawn objects; home: below the heading / colour bar of the top right corner
   MOVABLE.legend.box = null;
   if (!materialsShown) return;
+  const shown = GEOM.materials.filter((m) => !materialHidden(m.index));
+  if (!shown.length) return;
   const px = pixelRatio, pad = PAD * px, B = barMetrics(), F = B.F, gap = 0.6 * F, headH = headingHeight(), row = 1.45 * F;
   c.font = F + 'px ' + themeColors.font; c.textAlign = 'right'; c.textBaseline = 'middle';
-  const width = 1.5 * F + Math.max(...GEOM.materials.map((m) => c.measureText(m.name).width));
-  const height = row * GEOM.materials.length - (row - 0.9 * F);
+  const width = 1.5 * F + Math.max(...shown.map((m) => c.measureText(m.name).width));
+  const height = row * shown.length - (row - 0.9 * F);
   const homeLeft = canvas.width - pad - (fig.colorbar === 'right' ? B.width + gap : 0) - width;
   const homeTop = Math.max(40 * px, pad + (fig.title === 'top_right' ? headH + gap : 0) + (fig.colorbar === 'top_right' ? B.height + gap : 0));
   const [left, top] = placePart(MOVABLE.legend, homeLeft, homeTop, width, height);
   const ink = overlayColor(fig.legend_color, themeColors.axisText);
   let y = top;
-  for (const m of GEOM.materials) {
-    c.fillStyle = m.color; c.fillRect(left + width - 0.9 * F, y, 0.9 * F, 0.9 * F);
+  for (const m of shown) {
+    c.fillStyle = materialCss(m.index); c.fillRect(left + width - 0.9 * F, y, 0.9 * F, 0.9 * F);
     c.fillStyle = ink; c.fillText(m.name, left + width - 1.5 * F, y + 0.45 * F);
     y += row;
   }
@@ -1391,8 +1397,38 @@ const GEOM_MODES = !(GEOM_LINES.length || GEOM_FACES.length) ? [] : [
   ...(GEOM_FACES.length ? [['glass', 'Glass']] : []), ['off', 'Off']];
 state.geom = !GEOM_MODES.length ? 'off' : (!PLANAR && HAS_EDGES ? 'edges' : 'outline');
 state.geomColor = ['auto', 'white', 'black', 'material'].includes(store('geom_color')) ? store('geom_color') : 'auto';
-const MAT_RGB = new Map((GEOM ? GEOM.materials : []).map((m) => [m.index, hexRgb(m.color)]));
-function materialRgb(m) { return MAT_RGB.get(m) || hexRgb(GEOM.no_material_color); }
+// per-material colour and opacity (Plot settings 'Materials' rows; Python: figure setting 'materials', checked by
+// viz.field_viewer.figure_settings): matStyle { name: { color: '#rrggbb', alpha: 0 .. 1 } }, a missing key =
+// automatic (the page's colour; each use's own opacity). Start: this browser's memory for this file, then
+// DATA.figure.materials. color: outlines (Objects colour Material), edges, see-through surfaces, legend swatch; alpha:
+// the opacity of the material's see-through surfaces (Glass, Revolve bodies), 0 hides the material everywhere
+// (outlines, edges, rings, legend). matVersion counts changes (the outline decal's cache key)
+const MATERIALS_STORE = 'materials:' + location.pathname;
+const MATERIAL_BY_INDEX = new Map((GEOM ? GEOM.materials : []).map((m) => [m.index, m]));
+function checkedMaterialStyle(raw) {
+  // the entries of raw naming a material of this page with a valid colour / opacity (others dropped)
+  const out = {}, names = new Set((GEOM ? GEOM.materials : []).map((m) => m.name));
+  for (const [name, entry] of Object.entries(raw && typeof raw === 'object' ? raw : {})) {
+    if (!names.has(name) || !entry || typeof entry !== 'object') continue;
+    const style = {};
+    if (typeof entry.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(entry.color)) style.color = entry.color.toLowerCase();
+    if (typeof entry.alpha === 'number' && entry.alpha >= 0 && entry.alpha <= 1) style.alpha = entry.alpha;
+    if (Object.keys(style).length) out[name] = style;
+  }
+  return out;
+}
+const MATERIALS_WRITTEN = checkedMaterialStyle((DATA.figure || {}).materials);   // the page's own (Reset)
+let matStyle = Object.assign(checkedMaterialStyle(storedJson(MATERIALS_STORE)), MATERIALS_WRITTEN);
+let matVersion = 0;
+function saveMaterials() { store(MATERIALS_STORE, JSON.stringify(matStyle)); matVersion++; }
+function materialStyle(m) { const M = MATERIAL_BY_INDEX.get(m); return (M && matStyle[M.name]) || {}; }
+function materialCss(m) {
+  const M = MATERIAL_BY_INDEX.get(m);
+  return materialStyle(m).color || (M ? M.color : GEOM.no_material_color);
+}
+function materialRgb(m) { return hexRgb(materialCss(m)); }
+function materialAlpha(m, auto) { const a = materialStyle(m).alpha; return a === undefined ? auto : a; }
+function materialHidden(m) { return materialStyle(m).alpha === 0; }
 function contrastRgba() {
   // dark lines over a map whose middle colour is light (diverging maps), else light lines
   const [r, g, b] = hexRgb(CMAPS[state.cmap][4]);
@@ -1400,7 +1436,7 @@ function contrastRgba() {
   return dark ? [0.06, 0.07, 0.09, 0.9] : [1, 1, 1, 0.92];
 }
 function lineRgba(G) {
-  if (G.kind === 'edge') return [...materialRgb(G.material), 0.85];
+  if (G.kind === 'edge') return [...materialRgb(G.material), 0.85];   // (hidden materials are skipped by the callers)
   if (G.kind === 'outline' && state.geomColor === 'material') return [...materialRgb(G.material), 1];
   return contrastRgba();
 }
@@ -1510,7 +1546,8 @@ function drawGeometry(view, proj) {
     for (const I of images()) {
       setImage(glassUni, I);
       for (const G of GEOM_FACES) {
-        gl.uniform4fv(glassUni.uColor, [...materialRgb(G.material), 0.16]);
+        if (materialHidden(G.material)) continue;
+        gl.uniform4fv(glassUni.uColor, [...materialRgb(G.material), materialAlpha(G.material, 0.16)]);
         gl.bindVertexArray(G.vao); gl.drawArrays(gl.TRIANGLES, 0, G.count);
       }
     }
@@ -1527,6 +1564,7 @@ function drawGeometry(view, proj) {
     setImage(lineUni, I);
     for (const G of GEOM_LINES) {
       if (G.kind === 'outline' && (!LAYERS[G.layer].visible || selfImage(LAYERS[G.layer], I))) continue;
+      if (materialHidden(G.material)) continue;   // opacity 0 in the Materials settings
       if (G.kind !== 'outline' && state.geom === 'outline' && !is2d) continue;   // 3D edges and points: Edges / Glass
       if (decalActive && decalKind(G)) continue;   // on a raised map they are drawn into the map (outlineDecal)
       // material-coloured outlines lie inside their own object (two objects meeting on a line: both colours show,
@@ -1777,10 +1815,10 @@ function drawRevolution(view, proj) {
   if (!revGL) return;
   const R = revGL, f = stretch(), fade = revolveFade, glass = revGlass;
   const shown = images().filter((I) => I.a[PLANE_AXES[0]] > 0);   // the axis image is part of every whole revolution
-  const bodies = R.bodies.filter((B) => B.material === undefined || state.geom !== 'off');
+  const bodies = R.bodies.filter((B) => B.material === undefined || (state.geom !== 'off' && !materialHidden(B.material)));
   const domainRgb = themeColors.dark ? [0.72, 0.82, 1.0] : [0.3, 0.42, 0.62];
   const rgbOf = (B) => B.material === undefined ? domainRgb : materialRgb(B.material);
-  const alphaOf = (B) => fade * (B.material === undefined ? 0.03 + 0.2 * glass : 0.05 + 0.28 * glass);
+  const alphaOf = (B) => fade * (B.material === undefined ? 0.03 + 0.2 * glass : materialAlpha(B.material, 0.05 + 0.28 * glass));
   gl.enable(gl.DEPTH_TEST); gl.depthMask(false);
   gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
   const glassPass = (pass) => {
@@ -2783,7 +2821,11 @@ function updateReadout() {
 // ---------- Plot settings panel: every key of fig has the input 'fs_<key>' ----------
 const SETTING_KEYS = Object.keys(FIGURE_DEFAULTS);
 function shownPer(k) { return /^[xyz]_/.test(k) || FIGURE_LENGTHS.includes(k) ? 1 / LENGTH_SCALE : 1; }   // panel value per stored value (lengths: m -> length units)
-function changedSettings() { return Object.fromEntries(SETTING_KEYS.filter((k) => fig[k] !== FIGURE_DEFAULTS[k]).map((k) => [k, fig[k]])); }
+function changedSettings() {
+  const out = Object.fromEntries(SETTING_KEYS.filter((k) => fig[k] !== FIGURE_DEFAULTS[k]).map((k) => [k, fig[k]]));
+  if (Object.keys(matStyle).length) out.materials = matStyle;   // the Materials rows (figure setting 'materials')
+  return out;
+}
 function syncSettings() {
   for (const k of SETTING_KEYS) {
     const el = $('fs_' + k);
@@ -2846,10 +2888,47 @@ $('fs_scalehead').textContent = 'Scale bar (' + lengthUnit + ')';
 for (const id of ['fs_sidelabel', 'fs_horizontal_axis', 'fs_vertical_axis', 'fs_scalehead', 'fs_scalelabel', 'fs_scale_bar',
                   'fs_scale_bar_length', 'fs_scalecolorlabel', 'fs_scale_bar_color']) $(id).style.display = PLANAR ? '' : 'none';
 for (const id of ['fs_legendhead', 'fs_legendlabel', 'fs_legend_color']) $(id).style.display = DATA.geometry ? '' : 'none';
+// Materials rows: per material of the page a name, a colour picker and an opacity (0 .. 1, empty = automatic),
+// built after the heading; they edit matStyle (geometry block) and the settings text shows it
+const MATERIAL_ROWS = (GEOM ? GEOM.materials : []).map((m) => {
+  const label = document.createElement('label'), color = document.createElement('input'), alpha = document.createElement('input');
+  label.textContent = m.name; label.className = 'mat'; label.title = m.name;
+  color.type = 'color'; color.id = 'fs_material_color_' + m.index; label.htmlFor = color.id;
+  color.title = 'Colour of ' + m.name + ': outlines (Objects colour Material), edges, see-through surfaces, legend';
+  alpha.type = 'number'; alpha.min = '0'; alpha.max = '1'; alpha.step = '0.05'; alpha.placeholder = 'auto';
+  alpha.title = 'Opacity of the see-through surfaces of ' + m.name + ' (Glass, Revolve), 0 - 1; 0 hides the material; '
+    + 'empty: automatic (applied as typed)';
+  const restyle = (key, value) => {
+    const style = Object.assign({}, matStyle[m.name]);
+    if (value === null) delete style[key]; else style[key] = value;
+    if (Object.keys(style).length) matStyle[m.name] = style; else delete matStyle[m.name];
+    saveMaterials(); syncGeometry(); syncSettings();
+  };
+  color.addEventListener('input', () => restyle('color', color.value.toLowerCase()));
+  alpha.addEventListener('input', () => {
+    const text = alpha.value.trim(), v = +text;
+    if (text === '') { alpha.classList.remove('bad'); restyle('alpha', null); return; }
+    if (!(v >= 0 && v <= 1)) { alpha.classList.add('bad'); return; }
+    alpha.classList.remove('bad'); restyle('alpha', v);
+  });
+  return { m, label, color, alpha };
+});
+{ let after = $('fs_materialhead');
+  for (const R of MATERIAL_ROWS) for (const el of [R.label, R.color, R.alpha]) { after.insertAdjacentElement('afterend', el); after = el; } }
+$('fs_materialhead').style.display = MATERIAL_ROWS.length ? '' : 'none';
+function syncMaterialRows() {
+  for (const R of MATERIAL_ROWS) {
+    const style = matStyle[R.m.name] || {};
+    R.color.value = materialCss(R.m.index);
+    R.alpha.value = style.alpha === undefined ? '' : String(style.alpha); R.alpha.classList.remove('bad');
+  }
+}
+syncMaterialRows();
 $('settingsbtn').onclick = () => { $('settings').hidden = !$('settings').hidden; syncControls(); };
 $('settingsclose').onclick = () => { $('settings').hidden = true; syncControls(); };
 $('fs_reset').onclick = () => {
-  Object.assign(fig, FIGURE_DEFAULTS, DATA.figure || {});
+  Object.assign(fig, FIGURE_DEFAULTS, Object.fromEntries(Object.entries(DATA.figure || {}).filter(([k]) => k in FIGURE_DEFAULTS)));
+  matStyle = JSON.parse(JSON.stringify(MATERIALS_WRITTEN)); saveMaterials(); syncMaterialRows();
   state.axes = !scaleBarOffered();
   Object.values(MOVABLE).forEach(homePart);   // the dragged colour bar, material legend and scale bar too
   setPlotScale(1);                             // and the plot size of the corner grip
@@ -3798,7 +3877,7 @@ function prepareDecal() {
   decalActive = false;
   if (decalFailed) return;
   if (!PLANAR || !(state.relief > 0) || !geometryGL || state.geom === 'off') return;
-  const lines = GEOM_LINES.filter((G) => decalKind(G) && (G.kind !== 'outline' || LAYERS[G.layer].visible));
+  const lines = GEOM_LINES.filter((G) => decalKind(G) && (G.kind !== 'outline' || LAYERS[G.layer].visible) && !materialHidden(G.material));
   if (!lines.length) return;
   const [iu, iv] = PLANE_AXES, f = stretch();
   const su = (hmax[iu] - hmin[iu]) * f[iu], sv = (hmax[iv] - hmin[iv]) * f[iv];
@@ -3806,7 +3885,7 @@ function prepareDecal() {
   const side = Math.min(4096, gl.getParameter(gl.MAX_TEXTURE_SIZE));
   const w = su >= sv ? side : Math.max(64, Math.round(side * su / sv)), h = su >= sv ? Math.max(64, Math.round(side * sv / su)) : side;
   const screen = Math.max(canvas.width, canvas.height);
-  const key = [state.geom, state.geomColor, state.cmap, state.stretch, w, h, Math.round(screen / 64),
+  const key = [state.geom, state.geomColor, state.cmap, state.stretch, w, h, Math.round(screen / 64), matVersion,
                LAYERS.map((L) => L.visible ? 1 : 0).join('')].join('|');
   if (!decal || decal.key !== key) renderDecal(lines, w, h, su, sv, side / (0.7 * screen), key);
   decalActive = true;

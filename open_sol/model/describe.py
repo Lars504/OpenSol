@@ -1336,7 +1336,10 @@ _RESULTS_NOTES = (
         'true-length bar on a face-on map in place of the axes), scale_bar_length (m, > 0; default a round length '
         f"near a fifth of the view), scale_bar_color {_figure_choices('scale_bar_color')}, legend_color "
         f"{_figure_choices('legend_color')}, background {_figure_choices('background')}, export_scale "
-        f"{_figure_choices('export_scale')} (PNG pixels per screen pixel).",
+        f"{_figure_choices('export_scale')} (PNG pixels per screen pixel), materials {{material name: {{'color': "
+        "'#rrggbb', 'alpha': 0 .. 1}} (each key optional; colour of its outlines, edges, see-through surfaces and "
+        'legend swatch; alpha the opacity of its see-through surfaces (Glass, Revolve), 0 hides the material; '
+        'ValueError for a name not drawn on the page).',
         'Stored states (live, closed and loaded alike): snapshots() -> [(time, label, [physics.component keys])] '
         '(frequency_domain: one per wavelength, field() holds only the last); snapshot_field(index, name, '
         'physics=None, plane=None) -> FieldData of one snapshot, float32 on the native window cells (x_centers / '

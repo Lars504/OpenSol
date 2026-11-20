@@ -38,7 +38,10 @@ plot, imports of `viz.common` / `DARK_CMAPS`, canvas cell edges) live in the gui
 - Plot settings (field_viewer only): the page takes the keys and checks from `DATA.figure_rules` (`FIGURE_CHOICES` /
   `_RANGES` / `_LIMITS` / `_LENGTHS` of field_viewer.py); a new setting also needs its default in the page's
   `FIGURE_STYLE`, an `fs_<key>` panel input and a line in describe's export_html entry (choices and ranges there are
-  read from `FIGURE_*`; defaults are prose).
+  read from `FIGURE_*`; defaults are prose). `FIGURE_MATERIALS` ({name: {color, alpha}}) is the exception: no
+  `FIGURE_STYLE` entry or fs_<key> input; the page keeps it in `matStyle` (geometry block: per-file memory, Materials
+  rows built in the Plot settings block, `changedSettings` adds it) and every material colour / opacity is read through
+  `materialRgb` / `materialCss` / `materialAlpha` / `materialHidden`, never `GEOM.materials[i].color` directly.
 - Per-sample arrays of a `ViewerLayer` follow every layer rebuild (the class docstring lists them): a new one joins all.
 - One page shows one animation clock per thing: api drops the phasor partner when the deformed shape oscillates
   (`ViewerMotion.oscillate`) or a volume is attached, `viewer_data` refuses a phasor page with volumes, and the page's

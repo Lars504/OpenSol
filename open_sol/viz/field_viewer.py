@@ -20,6 +20,7 @@ the caller passes that ViewerMirror).
 
 import json
 import math
+import re
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -80,6 +81,8 @@ FIGURE_RANGES = {'font_size': (6.0, 40.0), 'title_size': (8.0, 72.0),           
                  'colorbar_length': (0.1, 1.0)}                                  # fraction of the view side
 FIGURE_LIMITS = ('color', 'x', 'y', 'z')   # <name>_min / <name>_max: colour limits (field unit), axis limits (m)
 FIGURE_LENGTHS = ('scale_bar_length',)     # positive lengths (m)
+FIGURE_MATERIALS = 'materials'             # {material name: {'color': '#rrggbb', 'alpha': 0 .. 1}} (each key optional)
+_HEX_COLOR = re.compile(r'#[0-9a-fA-F]{6}')
 MOTION_COMPONENTS = ('u', 'v', 'n')        # displacement along a layer's first / second axis and along its normal
 
 
@@ -1095,17 +1098,24 @@ def _volume_bytes(values, offset, scale, masked):
 
 
 def figure_settings(figure) -> dict:
-    """The checked Plot settings {key: value} of a page (FIGURE_CHOICES / _RANGES / _LIMITS / _LENGTHS keys; None
-    values = automatic, dropped); ValueError for an unknown key, a value outside its choices / range or min >= max."""
+    """The checked Plot settings {key: value} of a page (FIGURE_CHOICES / _RANGES / _LIMITS / _LENGTHS keys and
+    FIGURE_MATERIALS; None values = automatic, dropped); ValueError for an unknown key, a value outside its choices /
+    range or min >= max, a material entry other than {'color': '#rrggbb', 'alpha': 0 .. 1} (viewer_data checks the
+    names against the page's materials)."""
     figure = dict(figure or {})
     limit_keys = tuple(f'{name}_{end}' for name in FIGURE_LIMITS for end in ('min', 'max'))
-    known = (*FIGURE_CHOICES, *FIGURE_RANGES, *limit_keys, *FIGURE_LENGTHS)
+    known = (*FIGURE_CHOICES, *FIGURE_RANGES, *limit_keys, *FIGURE_LENGTHS, FIGURE_MATERIALS)
     unknown = sorted(set(figure) - set(known))
     if unknown:
         raise ValueError(f"unknown figure setting(s) {', '.join(map(repr, unknown))}; known: {', '.join(known)}")
     checked = {}
     for key, value in figure.items():
         if value is None:
+            continue
+        if key == FIGURE_MATERIALS:
+            materials = _material_settings(value)
+            if materials:
+                checked[key] = materials
             continue
         if key in FIGURE_CHOICES:
             if isinstance(value, bool) or value not in FIGURE_CHOICES[key]:
@@ -1127,6 +1137,38 @@ def figure_settings(figure) -> dict:
         low, high = checked.get(f'{name}_min'), checked.get(f'{name}_max')
         if low is not None and high is not None and not low < high:
             raise ValueError(f'figure settings {name}_min = {low:g} is not below {name}_max = {high:g}')
+    return checked
+
+
+def _material_settings(value) -> dict:
+    """Checked FIGURE_MATERIALS {name: {'color': '#rrggbb', 'alpha': float}} (None entries and values dropped)."""
+    if not isinstance(value, dict):
+        raise ValueError(f"figure setting {FIGURE_MATERIALS} must be {{material name: {{'color': '#rrggbb', "
+                         f"'alpha': 0 .. 1}}}}, got {type(value).__name__}")
+    checked = {}
+    for name, entry in value.items():
+        if entry is None:
+            continue
+        if not isinstance(name, str) or not isinstance(entry, dict):
+            raise ValueError(f"figure setting {FIGURE_MATERIALS}[{name!r}] must be a dict {{'color': '#rrggbb', "
+                             "'alpha': 0 .. 1}")
+        unknown = sorted(set(entry) - {'color', 'alpha'})
+        if unknown:
+            raise ValueError(f"figure setting {FIGURE_MATERIALS}[{name!r}]: unknown key(s) {unknown}; known: "
+                             "'color', 'alpha'")
+        style = {}
+        if entry.get('color') is not None:
+            if not isinstance(entry['color'], str) or not _HEX_COLOR.fullmatch(entry['color']):
+                raise ValueError(f"figure setting {FIGURE_MATERIALS}[{name!r}] color {entry['color']!r} is not "
+                                 "'#rrggbb'")
+            style['color'] = entry['color'].lower()
+        if entry.get('alpha') is not None:
+            alpha = entry['alpha']
+            if isinstance(alpha, bool) or not isinstance(alpha, (int, float)) or not 0.0 <= float(alpha) <= 1.0:
+                raise ValueError(f"figure setting {FIGURE_MATERIALS}[{name!r}] alpha {alpha!r} is not in [0, 1]")
+            style['alpha'] = float(alpha)
+        if style:
+            checked[name] = style
     return checked
 
 
@@ -1173,6 +1215,14 @@ def viewer_data(frames, quantity, title='', subtitle='', frame_kind='labelled', 
     if revolution is not None and frames[0].volume is not None:
         raise ValueError('a revolution turns a 2D map: a page with a volume has none')
     revolution_entry = _revolution_data(revolution, first, mirrors, scale)
+    geometry_entry = None if geometry is None else _geometry_data(geometry, first, scale)
+    styled = set(figure.get(FIGURE_MATERIALS, {}))
+    if styled:
+        shown = {entry['name'] for entry in (geometry_entry or {}).get('materials', [])}
+        missing = sorted(styled - shown)
+        if missing:
+            raise ValueError(f"figure setting {FIGURE_MATERIALS} names {missing}, not drawn on this page"
+                             + (f" (its materials: {sorted(shown)})" if shown else ' (no model objects: geometry off)'))
     phasor = _phasor_frames(frames, quantity, frame_kind)
     lattices, volume_entry = [None] * len(frames), None
     if frames[0].volume is not None:
@@ -1241,7 +1291,7 @@ def viewer_data(frames, quantity, title='', subtitle='', frame_kind='labelled', 
         'frames': packed, 'frame_kind': frame_kind if len(packed) > 1 else 'single',
         'range': [low, high],
         'view': None if view is None else [float(view[0]), float(view[1])],
-        'geometry': None if geometry is None else _geometry_data(geometry, first, scale),
+        'geometry': geometry_entry,
         'mirrors': _mirror_data(mirrors, scale),
         'flow': flow_page,
         'phasor': phasor,
