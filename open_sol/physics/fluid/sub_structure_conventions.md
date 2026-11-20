@@ -17,9 +17,11 @@ and docstrings; settings: their help texts.
 - Symmetry feature = the slip face (kind 'slip' in `_FACE_FEATURE_KINDS`) as a model mirror plane; slip is the exact
   even mirror of the lattice (halfway bounce-back where the mirrored upstream cell is solid). Corner diagonals beside a
   slip face take the other face's rule (two slip faces: the double mirror), so a face-rule change touches the corner
-  rule. A parabolic inlet run ending on a slip face takes the half parabola of its image (`_parabolic_shape`). Not
-  mirror-exact (small): a pressure face's TRT shear term in the cell next to the plane (`face_velocity_gradient` knows
-  no face kinds), Bouzidi links of a solid touching the plane, a wall moving normal to the plane. Validation: another
+  rule. A parabolic inlet run ending on a slip face takes the half parabola of its image (`_parabolic_shape`). The
+  pressure faces' TRT shear term reads neighbours beyond a slip face as their mirror image (`neighbour_velocity`, all
+  three twins): its one-sided fallback at the plane biased the whole face column ~0.14 / N (u_max of the half
+  poiseuille_channel_pressure 7e-3 at 20 cells). Not mirror-exact: Bouzidi links of a solid touching the plane, a wall
+  moving normal to the plane. Validation: another
   face feature or a periodic pair on the plane errors, another physics' plane where the flow face is not slip warns,
   a body force along a plane normal warns (its image is the opposite force). Session integrals of u normal to a plane
   are odd: their unfolded value is 0, not the doubled half. Covered by examples/fluid/poiseuille_channel_pressure.
