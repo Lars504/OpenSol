@@ -466,7 +466,10 @@ type's vocabulary and refusals are in its help texts and validation.
   working. n_group: `fem_group_indices` (Hellmann-Feynman, no tracking) here, the tracked `mode_group_indices` on Yee.
 - The pencil is complex symmetric (unconjugated tests, diagonal stretch), as are fem_conical's and fem_bor's:
   conjugated tests or full anisotropic tensors with a non-diagonal stretch lose the LDL^T and the _mixed polish.
-  cuDSS in 2D buys device memory / host relief at the largest P2 meshes, not flops.
+  cuDSS in 2D buys device memory / host relief at the largest P2 meshes, not flops. The device B is stored as its
+  lower triangle (`device_factor_matvec(symmetric=True)`: an unsymmetric B raises) and a polished solve keeps a
+  complex64 Krylov basis (`eigs(single_basis=polish)`): either change of the pencil or the polish rule changes
+  `memory_estimates._modes_fem_memory_estimate` too.
 - The size and time figures (`estimated_unknowns`, FEM_LU_FILL_FACTOR, FEM_MODE_ASSEMBLY_*) are uncalibrated; the
   triangle em_fdfd_bor / em_fdfd_conical estimates reuse them.
 - bend_radius on triangles (refused) would need nu_t / nu_zz from the mu tensors, s continued into an x PML ring and
