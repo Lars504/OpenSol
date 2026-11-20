@@ -211,7 +211,7 @@ def launch(nx: int, ny: int):
 # the Yee update (cb carries the semi-implicit sigma_e factor, so conduction and a pole on one cell stay consistent).
 # Velocity form like Lorentz (DrudePole.ade_coefficients): J += damping J + drive E with damping = c1 - 1, since a
 # float32 c1 ~ 1 keeps gamma dt only to ~6e-8 absolute (weakly damped metals at fine dt). Every 2D / 3D Drude kernel
-# (H_z faces, em3d drude_j_weighted) uses it.
+# (H_z faces, em3d pole_drive_3d) uses it.
 # Accurate to O((omega dt)^2); its 0D amplification determinant c1 <= 1 is necessary, not sufficient (trace 2 -
 # (wp dt)^2 / eps_inf): the alternating (z = -1) mode needs eps_inf mu_r >= (C0 dt)^2 (1/dx^2 + 1/dy^2) + mu_r (wp
 # dt)^2 / 4 per cell, for any gamma and sigma_e (EMPhysics._check_courant_stability). (A J update from the predictor E^{n+1} corrected with dt /

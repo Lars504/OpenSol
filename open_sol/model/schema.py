@@ -294,6 +294,10 @@ class PhysicsType:
     # context = meshing.MemoryContext: spec, physics_spec, parameters, registry, material_regions); the solver's own
     # arrays, not the MaterialGrid arrays of material_schema (meshing.estimate_memory counts those once)
     memory_estimate: Callable | None = None
+    # parked_material_arrays(spec, registry, physics_spec, parameters) -> MaterialGrid array names the solver parks on
+    # the host after its finalize (MaterialGrid.park; CPU, never raises for model errors): meshing books them neither
+    # as kept device arrays nor as host, the type's memory_estimate does (its build peak, a host item); None = none
+    parked_material_arrays: Callable | None = None
     # time_estimate(settings_values, mesh_estimate, context) -> core.time_estimate.TimeEstimate (CPU, unpriced; context
     # = model.time_estimate.TimeContext): the work per step / solve / wavelength as ops and solver roles' work, never
     # seconds; None = 'not estimated'

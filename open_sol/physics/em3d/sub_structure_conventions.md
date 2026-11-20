@@ -22,9 +22,19 @@ contracts"). em_fdtd_3d (B2) and the eigensolver em_fdfd_3d (tensor Yee and tetr
   `axis_permittivity`). The uint16 index (`material_index3d` header: re-quantisation of > 65534 values, error in
   `engine.quantisation_errors`, ~10 full-grid passes per continuous array per material change) is rebuilt only at
   finalize and after a material change (dirty flag in `step`).
+- Parked material arrays (model path, gpu): when nothing rewrites them during the run (`definition.
+  _parked_material_arrays`: no coupling into the physics, every em material property constant or x / y / z of the
+  parameters, no other physics on the mesh registering the name) the first index build parks them on the host
+  (`MaterialGrid.park`) and only then allocates the fields (`Fields3D(allocate=False)`): the build peak never holds
+  both (~12-24 B per cell less). Readers take `MaterialGrid.device_array(name, index)` (renderer eps_r window,
+  harmonic energy window, state()['eps_r']), mode ports upload their layer plane, a rebuild reads parked arrays
+  chunk by chunk (`engine3d._UploadedChunks`: material_index3d reads inputs only as `array[chunk]`, keep it so).
+  A new reader of a MaterialGrid array of this engine goes through those, or the rule must exclude its case;
+  `PhysicsType.parked_material_arrays` makes meshing leave the arrays to this type's estimate.
 - E coefficients are computed per step in the kernels (PEC = the last id, eps -1; subpixel faces via
-  `_face_args`): a new consumer (TFSF, mode source, pole cb, dipole weight) calls `face_coefficients` /
-  `engine.face_cb_into` (host: `kernels3d.pec_face_values`), never stores per-cell arrays or its own face mean. An
+  `_face_args`): a new consumer (TFSF, mode source, dipole weight; the pole corrections in their kernel) calls
+  `face_coefficients` / `engine.face_cb_into` (host: `kernels3d.pec_face_values`), never stores per-cell arrays or its
+  own face mean. An
   H-side consumer reads table_mu and table_sigma_m alike (`edge_coefficients`).
 - Bloch k != 0: only monitors read the imaginary set (j ph F_im, `em.monitors._field_sets`); probes, renderer,
   state() and couplings read the real set; q_accum and the TFSF plane wave raise; mode ports solve the Bloch mode of
@@ -37,7 +47,16 @@ contracts"). em_fdtd_3d (B2) and the eigensolver em_fdfd_3d (tensor Yee and tetr
   (`core.mirror.plane_wave_mirror_issue`). Half vs full runs agree to float32 round-off only: compare mid-pulse
   snapshots, not fields after the pulse left (`selftests_mirror3d`).
 - Poles: the region box rule of `_pole_region` (one cell lo-side, a periodic axis from cell 0 spans the axis) is
-  shared by `deposit_pole_work` and `definition._pole_box_cells` (the estimate): change them together. Losses: sigma_m loss is not counted.
+  shared by `deposit_pole_work` and `definition._pole_box_cells` (the estimate): change them together. A box stores
+  only the pole states (+ face work while accumulating) and a uint8 membership box one row longer per axis: the
+  face weights (`kernels3d.pole_face_weights`) and cb are computed in `pole_drive_3d` / `pole_correct_3d` (one launch
+  per pole and field set; checked against the stored path by em3d_pole_kernels, the only Lorentz case).
+- Losses: q_accum and the last window live on the loss box `engine.q_box` (ohmic box union pole windows, grown never
+  shrunk by `_fit_q_box`, which every rebuild, enable and add_pole call); the last window is a host (pinned) copy
+  filled asynchronously per window reset, read only through `host_last_q_accum` (the event wait), as the 2D engines.
+  Readers go through `q_selection` / `q_grid` (full-grid copies: state()['q_accum'], take_absorbed_power), never
+  index q_accum by grid slices; a new writer stays inside q_box. sigma_m loss is not
+  counted.
 - Backends (core sub file "Kernel twins"): every array from `engine.xp`; numba twins only for update_h / update_e /
   ohmic_loss (CPU case em3d_kernels_numba). The numpy twins cache coefficients by input identity
   (`kernels3d._host_cached`): a new writer of material_id / tables / face_id must also replace the tables, as
@@ -54,7 +73,9 @@ contracts"). em_fdtd_3d (B2) and the eigensolver em_fdfd_3d (tensor Yee and tetr
 
 ## Subpixel smoothing (subpixel_smoothing3d, geometry in model/subpixel_geometry)
 - Refreshed by every `rebuild_materials` from the current tables; E consumers take it through `_face_args` (Engine
-  bullet on E coefficients); mode ports through `mode_ports3d._smoothing_deltas`. Not smoothed: TFSF background, the
+  bullet on E coefficients); mode ports through `mode_ports3d._smoothing_deltas`. Only the uint16 face index stays on
+  the device: the geometry is a host copy (`SubpixelSmoothing3D.geometry`, numpy) uploaded one face kind per refresh
+  (estimate: `model.subpixel_geometry._memory_estimate_3d`). Not smoothed: TFSF background, the
   stability check, sigma_e / mu / pole membership. Self-test: em3d part of `subpixel_smoothing_cpu_gpu`.
 
 ## Conformal PEC (conformal_pec3d, kernels3d conformal_h_3d)

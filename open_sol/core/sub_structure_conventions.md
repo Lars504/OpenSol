@@ -40,6 +40,10 @@ coordinate rules stay in the root file.
   heuristics uncalibrated: refit from summary.json host_direct_lu_entries / host_direct_peak_bytes); a cuDSS 'linear'
   back end is the caller's `fem.diffusion.cudss_diffusion_estimate(input_copy=False)` (core may not import
   solvers.cudss_factor).
+- `MaterialGrid.park(names)` (em3d sub file "Parked material arrays"): parked arrays are host numpy; `assign` /
+  `assign_window` write them there and `device_array(name, index)` uploads (a view when not parked). Code reading a
+  MaterialGrid array as a device array (`getattr(materials, name)` into a kernel or xp expression) breaks on a parked
+  one: a parking solver's rule excludes the meshes where such readers run.
 - `release_all`'s full `gc.collect` walks every tracked object (~25 ms): a sweep (`study._run_sweep`) freezes the gc
   after its first value (`freeze_collect_baseline` / `thaw_collect_baseline`), never undoing a freeze of its caller
   (selftest_cache freezes for the whole selftest).
@@ -57,7 +61,8 @@ A new accepted sync joins this list.
   grid-row transfer per FDFD port mode re-solve (per reassembly) and per FDTD mode-port recalibration after the first
   step (material drift check, re-solve above `mode_ports._RESOLVE_DRIFT`); the E_z ohmic-box refresh per
   `materials_changed` of sigma_e; the 2D FDTD coefficient layout checks (sigma_e == 0 at the first E rebuild after a
-  sigma_e change, mu_r / sigma_m uniform per H rebuild, none once per cell).
+  sigma_e change, mu_r / sigma_m uniform per H rebuild, none once per cell); em_fdtd_3d: the chunk uploads of parked
+  material arrays per index rebuild, one face kind's geometry upload per subpixel refresh.
 - laminar_flow: the velocity check once per lattice check interval (>= 100 steps).
 - Probe tables: `monitors.park_probe_rows` right after the time loops' per-chunk sync (study `_run_time_dependent`,
   `_run_harmonic_pulse`), one transfer per table holding >= PROBE_PARK_ROWS rows; a HarmonicProbeRecord's stacked
