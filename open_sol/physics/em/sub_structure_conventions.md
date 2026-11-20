@@ -274,7 +274,9 @@ type's vocabulary and refusals are in its help texts and validation.
   (read as lines, cells or whole on the host only): device code takes its xp from `weight_hi_*_faces`, never from
   them, and a new device consumer of them uploads what it reads. The KeptYeeOperators entry maps and the Helmholtz
   plan's terms wait in pinned host memory between assemblies (`operators._ParkedInt32`, one upload per `at` /
-  `operator` call); an array read only per assembly joins that park, never the run-resident set. Kept complex128 on
+  `operator` call); an array read only per assembly joins that park, never the run-resident set. An ez system's
+  `ops` (and the `_yee_ops` cache) have dx_e / dy_e None: only its assembly reads them (a reassembly at that omega
+  gathers them again); a new ez reader of the e differences builds them itself. Kept complex128 on
   purpose: the face weights, `solution` and the face fields (the discrete Poynting balance and the TFSF leak are
   checked to 1e-9 / 1e-12, and a 32-bit copy of what the operator was assembled from breaks both). Estimators:
   `memory_estimates.FDFD_HOST_SYSTEM_ARRAYS`, `_FDFD_PLAN_TERM_BYTES`, `_YEE_ENTRY_MAP_BYTES`; the time recipe's

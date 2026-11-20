@@ -538,8 +538,13 @@ def fdfd_memory_estimate(polarization):
         # the device HarmonicSystem: run items, or ASSEMBLY_PHASE items where the eigen search parks it; the plan's
         # terms and the Yee entry maps wait on the host between assemblies on the gpu (operators._ParkedInt32)
         parked_bytes = (_FDFD_PLAN_TERM_BYTES + _YEE_ENTRY_MAP_BYTES) * n_cells
-        system_items = [('Yee operators (4 sparse complex128)',
-                         4 * (2 * COMPLEX128_CSR_ENTRY_BYTES + sparse_row) * n_cells),
+        # ez keeps the h differences only (fdfd_2d._assemble: dx_e / dy_e values live in the assembly, their kept
+        # kron indices stay); hz all four (face-current rhs, adjoint, eps_xy couplings)
+        e_value_bytes = 2 * 2 * COMPLEX128_BYTES   # dx_e, dy_e: 2 entries per row
+        assembly_only = e_value_bytes if polarization == 'ez' else 0
+        yee_label = '2 sparse complex128 + the e index arrays' if polarization == 'ez' else '4 sparse complex128'
+        system_items = [(f'Yee operators ({yee_label})',
+                         (4 * (2 * COMPLEX128_CSR_ENTRY_BYTES + sparse_row) - assembly_only) * n_cells),
                         ('kept Helmholtz pattern (int32; polar grids have none)', _FDFD_PLAN_PATTERN_BYTES * n_cells),
                         ('Helmholtz operator (sparse complex128)',
                          (5 * COMPLEX128_CSR_ENTRY_BYTES + sparse_row) * n_cells),
@@ -548,7 +553,7 @@ def fdfd_memory_estimate(polarization):
         if not gpu:
             system_items.append(('kept Helmholtz term plan and Yee kron entry maps (int32)', parked_bytes))
         # _assemble: the old system is dropped first; a single solve assembles before its solution and factor exist
-        assembly_bytes = _FDFD_ASSEMBLY_BYTES['gpu' if gpu else 'cpu'] * n_cells
+        assembly_bytes = (_FDFD_ASSEMBLY_BYTES['gpu' if gpu else 'cpu'] + assembly_only) * n_cells
         single_solve = not later_factorisations(context)
         later_bytes = solution_bytes   # run items made after a single solve's assembly
         transient_items = []

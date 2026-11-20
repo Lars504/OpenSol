@@ -4,6 +4,7 @@ loss protocol."""
 import cmath
 import math
 import time
+from dataclasses import replace
 
 import numpy as np
 from ....core.backend import check_backend_array, host_copy, to_host, write_host_into
@@ -953,7 +954,8 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
         bc = self.boundary_config
         periodic_x, periodic_y = bool(bc.periodic_x), bool(bc.periodic_y)
         cell_dx, cell_dy = grid_cell_widths(domain.grid)
-        if self._yee_ops is None or self._yee_ops[0] != omega:
+        # an ez system keeps no e differences (below): a reassembly at its omega gathers them again
+        if self._yee_ops is None or self._yee_ops[0] != omega or self._yee_ops[1].dx_e is None:
             self._yee_ops = None   # free the previous omega's operators first
             polar = self.metric is not None   # polar: PML cells graded on the outermost r width (no mesh_config)
             if polar:
@@ -987,6 +989,10 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
             operator = self._helmholtz(ops, weight_hi_x_faces, weight_hi_y_faces, cell_term)
             del cell_term
             operator = self._pin_outer_cells(operator, pec_cells)
+            # ez reads dx_e / dy_e only in this assembly (face curls, sources and the adjoint take dx_h / dy_h): the
+            # system and the omega cache drop their values (2 x 32 B per cell; None fails loudly in a new reader)
+            ops = replace(ops, dx_e=None, dy_e=None)
+            self._yee_ops = (omega, ops)
             return HarmonicSystem(
                 polarization='ez', omega=omega, ops=ops, operator=operator, weight_hi_x_faces=weight_hi_x_faces,
                 weight_hi_y_faces=weight_hi_y_faces, cell_eps=cell_eps, cell_eps_xx=None, cell_eps_yy=None,
