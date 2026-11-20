@@ -22,6 +22,19 @@ solver_harmonic_fem.py header and the fem sub file "Complex scalar harmonic syst
   `_update_time_step` (build time), `materials_changed` only upgrades (no sync). A new reader of va / c22 checks the
   layout (`va_x is None`, `c22 is c11`; the coefficients kernel writes neither then), and a new cached launch holding
   c22 is dropped with `_launch_cache` / `_pulse_tables` when the layout changes. The rigid keep mask is bool.
+- Parked material arrays (model path, gpu: `definition._parked_material_arrays` under the shared rule, core sub file
+  `MaterialGrid.park`): the ten coefficient inputs, gruneisen unless a heat_pulse_source reads it every step, the
+  photoelastic / piezo arrays unless a coupling reads the physics; never c16 / c26 (monoclinic stress kernel). The
+  first `_update_time_step` (in create) parks them right after its device coefficient build, before its temporaries,
+  and the fields are allocated only after it, so the build peak never holds parked arrays, fields and step
+  temporaries together. Every later rebuild (finalize, add_rigid, a new runner dt, materials_changed) runs the numpy
+  twin on host copies and writes the device coefficients in place (`_rebuild_on_host`: host seconds on large grids,
+  so never per step); `_choose_storage` reads host copies, `_update_time_step` uploads rho. A device reader of a parked
+  array raises through `require_device_materials` (heating slot, heat pulse, piezo slots / bound charge, acousto-optic
+  transforms): a new reader of an acoustics MaterialGrid array calls it (or reads `device_array`) and the rule keeps
+  the array for its case. The estimate books the parked arrays (host items, build peak before the fields: meshing
+  leaves them out). Parked coefficients are the numpy twin's (the cpu backend's), so elastic_waves_cpu_gpu also grades
+  the parked gpu path against the unparked cpu one.
 - Adjoint pairs (energy conservation; their checks fail otherwise): the monoclinic corner / cell means
   (elastic_monoclinic_plane_waves Q = inf), the axisymmetric velocity / stress updates (ring-volume energy), the piezo
   stress / bound charge (coupling/selftests_piezo piezo_stiffened_bar_resonance Q = inf).
