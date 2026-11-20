@@ -121,8 +121,9 @@ class _FDTDRendererBase(_EMRendererBase):
         engine = self.em.engine
         if engine.q_accum_time > 0.0:
             energy_density, window_seconds = engine.q_accum, float(engine.q_accum_time)
-        elif engine.last_q_accum is not None:
-            energy_density, window_seconds = engine.last_q_accum, float(engine.last_q_accum_time)
+        elif engine.last_q_accum is not None:   # parked on the host (fdtd_2d_base.reset_q_accum): upload the window
+            energy_density = self.domain.xp.asarray(engine.host_last_q_accum()[window])
+            window, window_seconds = (slice(None), slice(None)), float(engine.last_q_accum_time)
         else:   # q_accum may be None until accumulation is enabled
             return self.domain.xp.zeros(_window_shape(window), dtype=DTYPE)
         return energy_density[window] * DTYPE(1.0 / window_seconds)

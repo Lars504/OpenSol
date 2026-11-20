@@ -482,10 +482,12 @@ def fdtd_memory_estimate(polarization):
                           + _cpml_psi_bytes(mesh, settings_values, real_bytes) + imaginary_pole_bytes))
         trace_items, run_items, host_items = _point_trace_items(context, mesh)
         transient_items = []
-        if q_accum:   # fdtd_2d_base: reset_q_accum keeps last_q_accum (lazy); take_absorbed_power returns a new array
-            run_items.append(('last absorption window (last_q_accum, float32)', FLOAT32_BYTES * n_cells))
-            transient_items.append(('absorbed power transfer', 'mean power density of one transfer (float32)',
-                                    FLOAT32_BYTES * n_cells))
+        if q_accum:   # fdtd_2d_base: reset_q_accum parks last_q_accum on the host (pinned on the gpu, lazy);
+            # take_absorbed_power returns a new array (+ the uploaded last window at the end-of-run merge)
+            host_items = list(host_items) + [('last absorption window (last_q_accum, float32, pinned)',
+                                              FLOAT32_BYTES * n_cells)]
+            transient_items.append(('absorbed power transfer', 'mean power density of one transfer and the merged '
+                                    'last window (2 x float32)', 2 * FLOAT32_BYTES * n_cells))
         n_wavelengths = _harmonic_wavelength_count(context)
         if n_wavelengths:   # harmonic_fdtd.HarmonicAccumulator (attach_harmonic in the study): a window DFTMonitor
             n_spectra = _DFT_SPECTRA[polarization]

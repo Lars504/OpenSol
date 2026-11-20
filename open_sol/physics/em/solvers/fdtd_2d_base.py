@@ -1,5 +1,6 @@
 """_YeeEngine2DBase: shared part of the 2D FDTD Yee engines (curl spacings, field sets, solver contract, J.E window)
 plus PEC-mask and dispersive-region helpers."""
+import ctypes
 import math
 import warnings
 
@@ -246,9 +247,13 @@ class _YeeEngine2DBase(PhysicsSolver):
         self._enable_q_accum = False
         self.q_accum = None
         self.q_accum_time = 0.0
-        # Last completed accumulation window, saved by reset_q_accum (buffer allocated at the first non-empty reset).
+        # Last completed accumulation window, saved by reset_q_accum (buffer allocated at the first non-empty reset): a
+        # HOST float32 array on both backends (read only by the renderer, the end-of-run merge and snapshots). gpu: a
+        # pinned buffer filled by an async device-to-host copy on the current stream (no host sync; the zero fill of
+        # q_accum after it waits on the stream); readers go through host_last_q_accum (waits on _last_q_accum_event).
         self.last_q_accum = None
         self.last_q_accum_time = 0.0
+        self._last_q_accum_event = None
 
         # C5 Kerr / TPA / free-carrier media (fdtd_nonlinear.NonlinearMedia), created by the first add_nonlinear, and
         # four-level gain regions (fdtd_gain.GainRegion, add_gain); the subclass supplies _nonlinear_components (its E
@@ -490,24 +495,50 @@ class _YeeEngine2DBase(PhysicsSolver):
         return
 
     def reset_q_accum(self) -> None:
-        """Start a new accumulation window; a non-empty one is kept as last_q_accum / last_q_accum_time."""
+        """Start a new accumulation window; a non-empty one is parked on the host as last_q_accum / last_q_accum_time
+        (gpu: async copy into the pinned buffer, no host sync)."""
         if self.q_accum_time > 0.0:
-            if self.last_q_accum is None:
-                self.last_q_accum = self.xp.empty_like(self.q_accum)
-            self.xp.copyto(self.last_q_accum, self.q_accum)
+            buffer = self._last_q_accum_buffer()   # copies into it queue on one stream: no wait for the last one
+            if self.xp is np:
+                np.copyto(buffer, self.q_accum)
+            else:
+                stream = self.xp.cuda.get_current_stream()
+                self.q_accum.data.copy_to_host_async(ctypes.c_void_p(buffer.ctypes.data), self.q_accum.nbytes, stream)
+                self._last_q_accum_event = stream.record()
             self.last_q_accum_time = self.q_accum_time
         if self.q_accum is not None:
             self.q_accum.fill(DTYPE(0.0))
         self.q_accum_time = 0.0
 
+    def _last_q_accum_buffer(self, wait=False):
+        """The host last_q_accum buffer (allocated at the first call: pinned on the gpu), after its pending copy when
+        wait (a later async copy into it does not wait: only host reads and writes do)."""
+        if self.last_q_accum is None:
+            shape, dtype = (self.nx, self.ny), np.dtype(DTYPE)
+            if self.xp is np:
+                self.last_q_accum = np.empty(shape, dtype=dtype)
+            else:
+                memory = self.xp.cuda.alloc_pinned_memory(self.nx * self.ny * dtype.itemsize)
+                self.last_q_accum = np.frombuffer(memory, dtype=dtype, count=self.nx * self.ny).reshape(shape)
+        elif wait and self._last_q_accum_event is not None:
+            self._last_q_accum_event.synchronize()
+            self._last_q_accum_event = None
+        return self.last_q_accum
+
+    def host_last_q_accum(self):
+        """The last completed window's energy density [J/m^3] as a host float32 array (None before the first one),
+        after its device-to-host copy finished (one event wait on the gpu)."""
+        return None if self.last_q_accum is None else self._last_q_accum_buffer(wait=True)
+
     def take_absorbed_power(self, merge_previous: bool = False):
         """Mean absorbed power density [W/m^3] since the last call (new array), then a window reset; None for an empty
-        window or before accumulation was enabled. merge_previous (end-of-run flush) first folds in the last window."""
+        window or before accumulation was enabled. merge_previous (end-of-run flush) first folds in the last window
+        (one upload of the host copy)."""
         window = float(self.q_accum_time)
         if self.q_accum is None or window <= 0.0:
             return None
         if merge_previous and self.last_q_accum is not None:
-            self.q_accum += self.last_q_accum
+            self.q_accum += self.xp.asarray(self.host_last_q_accum())
             window += float(self.last_q_accum_time)
             self.q_accum_time = window
         power_density = self.q_accum * DTYPE(1.0 / window)
@@ -524,7 +555,8 @@ class _YeeEngine2DBase(PhysicsSolver):
         state['time'] = float(self.time)
         state['q_accum'] = None if self.q_accum is None else host_copy(self.q_accum)
         state['q_accum_time'] = float(self.q_accum_time)
-        state['last_q_accum'] = None if self.last_q_accum is None else host_copy(self.last_q_accum)
+        last = self.host_last_q_accum()
+        state['last_q_accum'] = None if last is None else last.copy()
         state['last_q_accum_time'] = float(self.last_q_accum_time)
         state['media'] = [host_copy(values) for values in self._rendered_media_arrays()]
         return state
@@ -542,11 +574,10 @@ class _YeeEngine2DBase(PhysicsSolver):
         self.q_accum_time = state['q_accum_time']
         last = state['last_q_accum']
         if last is None:
+            self.host_last_q_accum()   # no copy in flight into a buffer that is dropped
             self.last_q_accum = None
         else:
-            if self.last_q_accum is None:
-                self.last_q_accum = self.xp.empty(last.shape, dtype=last.dtype)
-            write_host_into(self.last_q_accum, last)
+            write_host_into(self._last_q_accum_buffer(wait=True), last)
         self.last_q_accum_time = state['last_q_accum_time']
         media = self._rendered_media_arrays()
         if len(media) != len(state['media']):
