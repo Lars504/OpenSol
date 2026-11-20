@@ -15,8 +15,10 @@ type's vocabulary and refusals are in its help texts and validation.
   last; 'ez' vocabulary without eps_zz): multipole terms on the radial line, section "Spherical multipoles".
 - Gyration (`schema.GYRATION_PROPERTY_NAMES`): a type reads a component only by declaring its material Param;
   validation refuses a non-zero one in a model holding an EM type that does not (`definition_common._material_issues`).
-- Root rule "allocate where needed": poles comply in E_z, H_z and FDFD (masks cropped to their box); not yet: H_z
-  `eps_x` / `eps_y`, per-cell `da` / `db`, TFSF outline masks, FDFD CSR matrices.
+- Root rule "allocate where needed": poles comply in E_z, H_z and FDFD (masks cropped to their box), FDTD PEC keeps
+  (bool on the PEC box), H_z `eps_x` / `eps_y` (only for a nonlinear medium), da / db / ca (one value while uniform);
+  not yet: ez `jz_total` (full grid: a state() key), hz pole power totals (full grid while accumulating), TFSF outline
+  masks, FDFD CSR matrices.
 
 ## Imports (inside physics/em; the cross-package rules are in the root file)
 - `physics/em/__init__` imports solvers.fdfd_2d / modes_2d last (they import most siblings; `solvers/__init__` leaves
@@ -48,16 +50,31 @@ type's vocabulary and refusals are in its help texts and validation.
   BoundaryManager / CPMLSided / TFSF with `dtype=`; every field-side array (coefficients, spacings, CPML, pole buffers,
   jz_total, TFSF aux) is in the fields' dtype and kernel scalars are numpy scalars of it (`engine._real(...)`,
   `_dt_real`, `_inv_dt_real`), never DTYPE(...). float32 also under double: MaterialGrid arrays, coupling slots,
-  q_accum, PEC keep masks, source profiles / calibrations, FieldProbe traces, box DFT spectra (complex64; line spectra
-  complex128), subpixel coefficients (scattered into float64 ca / cb), the Courant check; renderers return float32,
-  state() float64. Selftest em_fdtd_double_cavity_phase (heavy).
+  q_accum, source profiles / calibrations, FieldProbe traces, box DFT spectra (complex64; line spectra complex128),
+  subpixel coefficients (scattered into float64 ca / cb), the Courant check; PEC keeps are bool; renderers return
+  float32, state() float64. Selftest em_fdtd_double_cavity_phase (heavy). The double stepper keeps float64 cb / da /
+  db although its materials are float32 (a float32 cb would only perturb eps by its own float32 rounding): not changed
+  because every cb reader (CPML, poles, ports, calibrations, subpixel) would need a mixed-type argument.
+- Coefficient storage (`fdtd_2d_base` class docstring): da / db are one value while mu_r and sigma_m are uniform, ca
+  (hz ca_x / ca_y) the value 1 while sigma_e is 0 everywhere, else per cell for good (no switching back). The checks
+  run at each H rebuild / after each sigma_e change (`materials_changed` calls `_sigma_e_written` BEFORE the E rebuild,
+  finalize too): a sigma_e write without materials_changed leaves ca = 1 (the ohmic box is stale the same way).
+  `engine.da / db / ca / ca_x / ca_y` are full-grid READ views (a zero-stride broadcast when uniform): ufuncs,
+  ElementwiseKernels and numpy read them; a RawKernel takes the storage tuple (`_h_coefficients`, `_ca_coefficients`)
+  and its int flag; never write or `ravel()` a view (a cupy ravel of a broadcast copies: writes are lost; subpixel
+  scatters cb alone while `uniform_ca`). A reader that keeps a view across steps reads it again per use (mode-port line
+  corrections): the view is replaced when the layout turns per cell. cb / cb_x / cb_y are per cell and never
+  reallocated (pole, media and port box views). Selftest em_operators_consistency part F: both layouts bit for bit.
 - Yee edge: on a non-periodic axis the last face row is never updated and cell 0 reads its missing lo face as 0, so
   the grid edge is PMC (ez) / PEC (hz) half a cell beyond the outermost centres (only cpml sides see it).
 - Times: a source injects at the centre time of the update it follows (E: t+dt/2; H: t), never the new field time
   (dt/2 late makes DFT / S(omega) lead the FDFD phasor by e^{+j omega dt/2}); when monitors run, H-type fields are dt/2
   behind E (`monitors.py` re-times them). Step order: each engine's `advance` docstring.
-- PEC: ca = cb = 0 is folded in at the end of every E-coefficient rebuild (`_fold_pec_keep`: a new coefficient path
-  ends with it); the per-step keep re-zeroes only `_pec_box` after injection and wall re-pin.
+- PEC: cb = 0 (and a per-cell ca = 0) is folded in at the end of every E-coefficient rebuild (`_fold_pec_keep`: a new
+  coefficient path ends with it); the per-step keep re-zeroes only `_pec_box` after injection and wall re-pin. With the
+  uniform ca = 1 a PEC cell keeps its previous E (0): a new writer of PEC-cell E between the E step and the keep must
+  stay before the keep. Keeps are bool arrays on `_pec_box`; `_apply_pec_keep(keep, box, arrays)` applies them to
+  arrays on another box (poles), never a full-grid keep.
 - Conformal PEC (solver_defaults.conformal_boundaries; method: `conformal_pec.py` header): `pec_cells` stays the
   staircase mask (ports, poles, calibrations, FDFD read it); the engine gets the conformal data once in `finalize`.
   The stability floors bite at courant 0.99 (disk-cavity errors ~ 1 / R), courant_factor 0.7 relaxes them (selftest
@@ -69,8 +86,8 @@ type's vocabulary and refusals are in its help texts and validation.
 - FDTD step graphs (gpu; capture rules: root file; what each graph holds: `fdtd_2d_base` header, fused rows:
   `boundaries`): fields, psi, ca / cb / da / db, the 1D spacings, the conformal arrays and the H_z pole face totals are
   rewritten in place only, never reassigned (graphs and the H_z pole face views hold them); a new replaceable input of
-  a block joins its key (a new `set_conformal_*` tuple changes the H key; poles are only appended, their counts are in
-  the E key). Poles join the E graph unless loss accumulation, a gain / nonlinear medium or the eager row copies
+  a block joins its key (a new `set_conformal_*` tuple changes the H key, the coefficient storage tuples' ids are in
+  the H / E keys; poles are only appended, their counts are in the E key). Poles join the E graph unless loss accumulation, a gain / nonlinear medium or the eager row copies
   (`fused_walls` False: < 3 cells along a pinned axis) sit between them. A change of what is captured updates
   `definition_fdtd.fdtd_time_step_estimate` (gpu: 1 + n_sets launches, no probe launches).
 - FDTD probes (gpu): FieldProbes are recorded at the end of the real set's E graph (`core.monitors.FieldProbeRows`) and
@@ -92,7 +109,8 @@ type's vocabulary and refusals are in its help texts and validation.
   runtime slot rewrites are unchecked.
 - J.E accounting runs only while `engine.enable_q_accum` (the model enables it for track_absorption or any reference:
   `definition_common._q_accum_referenced`); `absorbed_power` = the current window, else `last_q_accum`, else zeros;
-  without em_heat_joule the window is the whole run.
+  without em_heat_joule the window is the whole run. `last_q_accum` is a HOST array (gpu: pinned, filled by an async
+  copy at each `reset_q_accum`, no sync): read it only through `host_last_q_accum()` (waits for the copy).
 - Poles (em3d too): the velocity-form ADE, the cb factor of the E correction and the two time-centred loss halves are
   derived in the `fdtd_ez_2d_kernels` / `fdtd_hz_2d_kernels` comments; a new pole path follows them (never J from the
   predictor E^{n+1}, never a1 P^n + a2 P^{n-1} in float32).
@@ -543,7 +561,10 @@ type's vocabulary and refusals are in its help texts and validation.
   rules of body_of_revolution, changes both types (selftests em_fdtd_bor_*, example analytic_bor_transverse_dipole_m1).
 - r_hi CPML kappa enters the assembly widths, shared by every stepper of an order sum: flux / source helpers see
   rho = r inside the window only.
-- Its kernels are `core.kernels` twins named 'em.bor_fdtd_*' (defined in fdtd_bor with their numpy twins).
+- Its kernels are `core.kernels` twins named 'em.bor_fdtd_*' (defined in fdtd_bor with their numpy twins). Device
+  point indices are int32 (`_device_index`, refused at >= 2^31 stacked entries); the z CPML psi / a / b / driver rows
+  exist on the stretched rows only (`_BatchSide`); field_energy weights are float32 over their maximum (raw values
+  sit near the float32 underflow), summed in float64.
 - A new per-step term goes into `_LockstepBatch` (flat index = member position x layout size + own index), never into
   a per-member loop; host coefficient changes reach the device through `upload` / `injections_changed`.
 - Physics, monitors, BORHarmonic and the renderer use only the engine interface of the `BOROrderSum` docstring

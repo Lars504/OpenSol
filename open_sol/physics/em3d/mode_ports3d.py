@@ -161,7 +161,8 @@ def port_materials(physics, normal_axis, layer, omega):
 
     def layer_values(table, grid_array):
         """Host float64 table values of the layer (MaterialGrid array values on the PEC cells)."""
-        return to_host(xp.where(pec_cells, _plane(grid_array, normal_axis, layer), table[ids])).astype(np.float64)
+        plane = xp.asarray(_plane(grid_array, normal_axis, layer))   # parked (host) arrays: the plane moves
+        return to_host(xp.where(pec_cells, plane, table[ids])).astype(np.float64)
 
     loss = layer_values(engine.table_sigma, materials.sigma_e) / (omega * EPS0)
     tables = (engine.table_eps_x, engine.table_eps_y, engine.table_eps_z)

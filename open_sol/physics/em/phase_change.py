@@ -119,7 +119,6 @@ class PhaseChangeMedium:
         self.mask = mask[box].copy()
         xp = self.xp = array_module_of(mask)   # the run backend of the solver's mask
         self.n_cells = int(xp.count_nonzero(self.mask))   # build-time host sync
-        self._mean_weight = self.mask.astype(xp.float64) / self.n_cells
         self.kinetics = kinetics
         self.optics = optics
         self.theta = xp.full(self.mask.shape, kinetics.theta_of(float(initial_crystallinity)), dtype=xp.float64)
@@ -156,7 +155,8 @@ class PhaseChangeMedium:
         index = len(self._times)
         if index == self._means.size:
             self._means = xp.concatenate((self._means, xp.zeros_like(self._means)))
-        self._means[index] = (self.crystallinity * self._mean_weight).sum()
+        # masked float32 values (exact: x * 1 or x * 0) summed in float64; no kept float64 weight array on the box
+        self._means[index] = (self.crystallinity * self.mask).sum(dtype=xp.float64) / self.n_cells
         self._times.append(self.time)
 
     def paint_crystallinity(self, target):

@@ -429,6 +429,27 @@ def _pole_regions(context):
             if region.n_drude or region.n_lorentz]
 
 
+# features that rewrite sigma_e at run time (the FDTD engines then keep a per-cell ca)
+_SIGMA_E_FEATURES = frozenset({'phase_change_medium'})
+
+
+def fdtd_coefficient_arrays(polarization, context, nonlinear=False) -> int:
+    """Full-grid coefficient arrays of the 2D FDTD engines (fdtd_2d_base "Coefficient storage"): cb (hz cb_x, cb_y)
+    always; ca (hz ca_x, ca_y) per cell when a material sets sigma_e (an expression counts) or a feature rewrites it,
+    else the uniform 1; da / db per cell when a material sets mu_r != 1 or sigma_m, else one value; hz eps_x / eps_y
+    only with a nonlinear medium."""
+    faces = 1 if polarization == 'ez' else 2
+    count = faces
+    if context.material_sets('sigma_e') or any(feature.enabled and feature.type in _SIGMA_E_FEATURES
+                                                for feature in context.physics_spec.features):
+        count += faces
+    if context.material_sets('mu_r', default=1) or context.material_sets('sigma_m'):
+        count += 2
+    if nonlinear and polarization == 'hz':
+        count += 2
+    return count
+
+
 def fdtd_memory_estimate(polarization):
     """PhysicsType.memory_estimate of em_fdtd_<polarization> (fdtd_ez_2d / fdtd_hz_2d, fdtd_2d_base, boundaries): the
     field-side arrays (fields, coefficients, CPML psi, pole buffers, jz_total, hz pole power totals) in the resolved
@@ -441,15 +462,15 @@ def fdtd_memory_estimate(polarization):
         any_drude = any(n_drude for _, n_drude, _ in regions)
         q_accum = bool(settings_values.get('track_absorption')) or _q_accum_referenced(
             context.spec, context.physics_spec.name, context.registry)
-        n_coefficients = 4 if polarization == 'ez' else 8   # da, db + ca, cb (ez) / ca, cb, eps per face set (hz)
+        # C5 nonlinear_medium (its own arrays: the feature estimator): hz adds its cells to the pole cell mask, its
+        # power to the pole power totals and needs the face eps
+        nonlinear = any(feature.enabled and feature.type == 'nonlinear_medium'
+                        for feature in context.physics_spec.features)
+        n_coefficients = fdtd_coefficient_arrays(polarization, context, nonlinear)
         items = [(f'{FDTD_FIELDS_ITEM} (3 x {real_name})', 3 * real_bytes * n_cells),
                  (f'{FDTD_COEFFICIENTS_ITEM} ({n_coefficients} x {real_name})',
                   n_coefficients * real_bytes * n_cells),
                  ('CPML psi slabs', _cpml_psi_bytes(mesh, settings_values, real_bytes))]
-        # C5 nonlinear_medium (its own arrays: the feature estimator): hz adds its cells to the pole cell mask and its
-        # power to the pole power totals
-        nonlinear = any(feature.enabled and feature.type == 'nonlinear_medium'
-                        for feature in context.physics_spec.features)
         if q_accum:   # float32 q_accum (+ hz pole power totals while a pole or nonlinear medium exists)
             pole_totals = 2 if polarization == 'hz' and (regions or nonlinear) else 0
             items.append((f'absorption accumulator (float32 + {pole_totals} x {real_name})',
@@ -475,17 +496,19 @@ def fdtd_memory_estimate(polarization):
                           + _cpml_psi_bytes(mesh, settings_values, real_bytes) + imaginary_pole_bytes))
         trace_items, run_items, host_items = _point_trace_items(context, mesh)
         transient_items = []
-        if q_accum:   # fdtd_2d_base: reset_q_accum keeps last_q_accum (lazy); take_absorbed_power returns a new array
-            run_items.append(('last absorption window (last_q_accum, float32)', FLOAT32_BYTES * n_cells))
-            transient_items.append(('absorbed power transfer', 'mean power density of one transfer (float32)',
-                                    FLOAT32_BYTES * n_cells))
+        if q_accum:   # fdtd_2d_base: reset_q_accum parks last_q_accum on the host (pinned on the gpu, lazy);
+            # take_absorbed_power returns a new array (+ the uploaded last window at the end-of-run merge)
+            host_items = list(host_items) + [('last absorption window (last_q_accum, float32, pinned)',
+                                              FLOAT32_BYTES * n_cells)]
+            transient_items.append(('absorbed power transfer', 'mean power density of one transfer and the merged '
+                                    'last window (2 x float32)', 2 * FLOAT32_BYTES * n_cells))
         n_wavelengths = _harmonic_wavelength_count(context)
         if n_wavelengths:   # harmonic_fdtd.HarmonicAccumulator (attach_harmonic in the study): a window DFTMonitor
             n_spectra = _DFT_SPECTRA[polarization]
             run_items.append((f'harmonic accumulators ({n_spectra} x {n_wavelengths} wavelengths x complex64)',
                               n_spectra * n_wavelengths * COMPLEX64_BYTES * window_cell_count(mesh)))
         # finalize's float32 Courant check (requirement, ratio; hz min(eps)) and two pole weight temporaries (field
-        # dtype: the cell weight and its face average)
+        # dtype: the cell weight and its face average); the coefficient layout checks reduce without temporaries
         return MemoryEstimate.from_items(items + trace_items,
                                          build_extra=(3 * FLOAT32_BYTES + 2 * real_bytes) * n_cells,
                                          host_items=host_items, run_items=run_items, transient_items=transient_items)
@@ -889,12 +912,14 @@ def design_region_memory_estimate(values, n_selected_cells, mesh):
 
 
 def pec_memory_estimate(keep_arrays):
-    """FeatureType.memory_estimate of a pec_domain: `keep_arrays` float32 full-grid keep masks of the engine (FDTD ez
-    1, hz 2, FDFD / em_modes 0) plus the bool union PEC mask; counted per feature, allocated by the first only."""
+    """FeatureType.memory_estimate of a pec_domain: `keep_arrays` bool keep masks of the engine on the PEC box (FDTD ez
+    1, hz 2, FDFD / em_modes 0; taken as the selected cells, the box holds at least those) plus the bool full-grid
+    union PEC mask; counted per feature, allocated by the first only."""
     def estimate(values, n_selected_cells, mesh):
+        n_cells = int(mesh.n_cells)
         return MemoryEstimate.from_items(
-            (('PEC masks', (keep_arrays * FLOAT32_BYTES + BOOL_BYTES) * int(mesh.n_cells)),),
-            build_extra=BOOL_BYTES * int(mesh.n_cells))   # the fresh domain_mask
+            (('PEC masks', BOOL_BYTES * (keep_arrays * int(n_selected_cells) + n_cells)),),
+            build_extra=(1 + keep_arrays) * BOOL_BYTES * n_cells)   # the fresh domain_mask (+ hz face_pec masks)
     return estimate
 
 
@@ -1128,9 +1153,10 @@ def fdtd_bor_memory_estimate(settings_values, mesh, context):
     radial_rows = 6 * npml * (shape[1] + 1) if settings_values.get('bc_x_hi') == 'cpml' else 0   # ~6 per layer cell
     device, host = stepper_bytes(shape, order, z_pml_rows, radial_rows)
     items = [(f'stepper fields, coefficients, CPML psi and curl products ({n_members} stepper(s))', n_members * device)]
-    pole_bytes = mask_bytes = 0   # per pole ~3 E points per box cell: J (+ dP), drive, correction float32, int64 index
+    pole_bytes = mask_bytes = 0   # per pole ~3 E points per box cell: J (+ dP), drive, correction float32, int32 index
     for box_cells, n_drude, n_lorentz in _pole_regions(context):
-        pole_bytes += 3 * box_cells * (n_drude * (3 * FLOAT32_BYTES + 8) + n_lorentz * (4 * FLOAT32_BYTES + 8))
+        pole_bytes += 3 * box_cells * (n_drude * (3 * FLOAT32_BYTES + INT32_BYTES)
+                                       + n_lorentz * (4 * FLOAT32_BYTES + INT32_BYTES))
         mask_bytes += (n_drude + n_lorentz) * BOOL_BYTES * box_cells   # dispersive_regions cropped masks
     if pole_bytes:
         items.append((f'dispersive poles ({n_members} stepper(s), E points of their cells; region masks)',

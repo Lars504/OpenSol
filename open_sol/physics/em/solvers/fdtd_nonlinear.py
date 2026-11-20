@@ -250,7 +250,7 @@ class NonlinearMedia:
         self.has_carriers = any(coefficients['carriers'] for _, _, coefficients, _ in self._regions)
         names = _BASE_COEFFICIENTS + (_CARRIER_COEFFICIENTS if self.has_carriers else ())
         self.components = []
-        for spec in engine._nonlinear_components():
+        for spec in engine._nonlinear_components(with_eps=True):   # hz: allocates the face eps
             axis = spec['axis']
             for cluster in _region_clusters([region[0] for region in self._regions], shape, axis, spec['periodic']):
                 union = xp.zeros(shape, dtype=DTYPE)

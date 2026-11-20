@@ -55,9 +55,13 @@ class EM3DSlots:
             valid = [slot for slot, array in PERMITTIVITY_SLOTS.items() if array in self.permittivity_arrays]
             raise ValueError(f"{self.type_label} accepts the source slots of its allocated permittivity arrays "
                              f"({', '.join(valid)}), got {name!r}")
-        target = getattr(self.domain.materials, array_name)
-        xp = self.domain.xp
-        xp.copyto(target, xp.asarray(array, dtype=target.dtype))
+        materials = self.domain.materials
+        target = getattr(materials, array_name)
+        if array_name in materials.parked:   # host array (MaterialGrid.park): one transfer
+            np.copyto(target, np.asarray(to_host(array), dtype=target.dtype))
+        else:
+            xp = self.domain.xp
+            xp.copyto(target, xp.asarray(array, dtype=target.dtype))
         self.materials_changed((array_name,))
 
 
@@ -110,8 +114,10 @@ def check_pole(pole):
         raise TypeError(f'add_dispersive needs a DrudePole or LorentzPole, got {type(pole).__name__}')
 
 
-class _PhysicalFieldState(Mapping):
-    """state() of a half_storage engine: the six components as float32 copies in V/m / A/m, made on access only."""
+class _EngineState(Mapping):
+    """state() of EMPhysics3D, values made on access only: 'q_accum' a full-grid float32 copy of the engine's loss-box
+    accumulator (0 outside it; None before accumulation), 'eps_r' the device array (a device copy when parked), under
+    half_storage the six components float32 copies in V/m / A/m; the rest as stored."""
 
     def __init__(self, state, engine):
         self._state = state
@@ -119,9 +125,16 @@ class _PhysicalFieldState(Mapping):
 
     def __getitem__(self, name):
         value = self._state[name]
-        if name not in COMPONENT_AXES:
+        if name == 'q_accum':
+            return self._engine.q_grid(self._engine.q_accum)
+        if name == 'eps_r':   # a device copy when parked (MaterialGrid.device_array)
+            return self._engine.domain.materials.device_array('eps_r')
+        if name not in COMPONENT_AXES or self._engine.precision == 'single':
             return value
         return value.astype(DTYPE) * DTYPE(self._engine.field_scale(name))
+
+    def __contains__(self, name):
+        return name in self._state
 
     def __iter__(self):
         return iter(self._state)
@@ -141,12 +154,14 @@ class EMPhysics3D(EM3DSlots, PhysicsSolver):
     # items whose placement or weights read Cartesian widths refuse a sector (_require_cartesian)
     coordinate_grids = ('cartesian', 'polar')
 
-    def __init__(self, domain, precision='single'):
+    def __init__(self, domain, precision='single', park_arrays=()):
         if getattr(domain, 'dimensions', 2) != 3:
             raise ValueError('EMPhysics3D needs a Domain3D (a model with domain size_z)')
         self.domain = domain
         self.boundary_config = solver_boundary_config_3d(domain)
-        self.engine = FDTDEngine3D(domain, self.boundary_config, precision)
+        # park_arrays: MaterialGrid arrays parked on the host at finalize (FDTDEngine3D; readers here take them through
+        # device_array or the engine tables)
+        self.engine = FDTDEngine3D(domain, self.boundary_config, precision, park_arrays=park_arrays)
         self.fields = self.engine.fields
         self.sources = []
         self.monitors = []
@@ -181,8 +196,8 @@ class EMPhysics3D(EM3DSlots, PhysicsSolver):
         fields = self.fields
         self.engine.deposit_pole_work()
         state = {'ex': fields.ex, 'ey': fields.ey, 'ez': fields.ez, 'hx': fields.hx, 'hy': fields.hy, 'hz': fields.hz,
-                 'eps_r': self.domain.materials.eps_r, 'q_accum': self.engine.q_accum}
-        return state if self.engine.precision == 'single' else _PhysicalFieldState(state, self.engine)
+                 'eps_r': None, 'q_accum': None}   # eps_r, q_accum: made on access (_EngineState)
+        return _EngineState(state, self.engine)
 
     def take_absorbed_power(self, merge_previous: bool = False):
         """EM loss protocol: mean absorbed power density [W/m^3] since the last call (None for an empty window);
@@ -294,15 +309,17 @@ class EMPhysics3D(EM3DSlots, PhysicsSolver):
     # ---- snapshot solutions (solver_hooks.SolutionStateSolver) ----
     def solution_state(self, materials=False):
         """Host copies of what the renderer reads outside the harmonic phasors: the six Yee components as stored (fp16
-        stored units under half_storage, full grid: centring reads the lo rows), the absorbed-power windows (pole
-        work deposited first) and the engine time; materials: eps_r too."""
+        stored units under half_storage, full grid: centring reads the lo rows), the absorbed-power windows on their
+        loss box (pole work deposited first) and the engine time; materials: eps_r too."""
         engine = self.engine
         engine.deposit_pole_work()
         state = {name: host_copy(getattr(self.fields, name)) for name in _YEE_COMPONENTS}
         state['time'] = float(engine.time)
+        state['q_box'] = engine.q_box
         state['q_accum'] = None if engine.q_accum is None else host_copy(engine.q_accum)
         state['q_accum_time'] = float(engine.q_accum_time)
-        state['last_q_accum'] = None if engine.last_q_accum is None else host_copy(engine.last_q_accum)
+        last = engine.host_last_q_accum()
+        state['last_q_accum'] = None if last is None else last.copy()
         state['last_q_accum_time'] = float(engine.last_q_accum_time)
         if materials:
             state['eps_r'] = host_copy(self.domain.materials.eps_r)
@@ -318,16 +335,20 @@ class EMPhysics3D(EM3DSlots, PhysicsSolver):
         if (state['q_accum'] is None) != (engine.q_accum is None):
             raise RuntimeError('em_fdtd_3d restore_solution: absorbed-power accumulation was switched on or off '
                                'since this state was taken')
-        if engine.q_accum is not None:
-            write_host_into(engine.q_accum, state['q_accum'])
-        engine.q_accum_time = state['q_accum_time']
         last = state['last_q_accum']
+        engine.host_last_q_accum()   # no copy in flight into the buffer written or dropped here
         if last is None:
             engine.last_q_accum = None
-        else:
-            if engine.last_q_accum is None:
-                engine.last_q_accum = self.domain.xp.empty(last.shape, dtype=last.dtype)
-            write_host_into(engine.last_q_accum, last)
+        elif engine.last_q_accum is None or engine.last_q_accum.shape != last.shape:   # host (engine3d reset_q_accum)
+            engine.last_q_accum = engine._host_buffer(last.shape)
+
+        def fill():
+            write_host_into(engine.q_accum, state['q_accum'])
+            if last is not None:
+                write_host_into(engine.host_last_q_accum(), last)
+        if engine.q_accum is not None:   # on the stored loss box, then grown to the current loss cells
+            engine.set_q_box(state['q_box'], fill)
+        engine.q_accum_time = state['q_accum_time']
         engine.last_q_accum_time = state['last_q_accum_time']
         if 'eps_r' in state:
             write_host_into(self.domain.materials.eps_r, state['eps_r'])

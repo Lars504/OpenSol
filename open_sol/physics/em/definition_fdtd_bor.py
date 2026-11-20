@@ -375,12 +375,13 @@ BOR_TIME_STEP_RATIO_GUESS = math.sqrt(2.0)
 
 def _time_estimate(settings_values, mesh, context):
     """Leap-frog steps of every order-sum stepper in lockstep (one fdtd_bor._LockstepBatch): per step the arrays of the
-    memory estimate (fields, coefficients, CPML psi, curl CSR products, poles, spectra) streamed once in 2 x (2 + 3
-    r_hi layer) launches for all steppers together, 2 for the |m| = 1 axis slaving and ~3 per enabled feature (a DFT
-    group, a source, a probe); the time step of the largest order is a guess, so are the steps."""
+    memory estimate (fields, coefficients, CPML psi, curl CSR products, poles, spectra) streamed once in 2 x (2 + 1 z
+    CPML psi + 3 r_hi layer) launches for all steppers together, 2 for the |m| = 1 axis slaving and ~3 per enabled
+    feature (a DFT group, a source, a probe); the time step of the largest order is a guess, so are the steps."""
     orders, _ = _fdtd_bor_members(settings_values, context.physics_spec)
     dt = mesh.dt * min(1.0, BOR_TIME_STEP_RATIO_GUESS / (max(orders) + 1)) if mesh.dt else None
-    side_launches = 2 + 3 * int(settings_values['bc_x_hi'] == 'cpml')
+    z_cpml = any(settings_values.get(f'bc_{face}') == 'cpml' for face in ('y_lo', 'y_hi'))
+    side_launches = 2 + int(z_cpml) + 3 * int(settings_values['bc_x_hi'] == 'cpml')
     axis_launches = 2 * int(any(abs(int(order)) == 1 for order in orders))
     features = sum(1 for feature in context.physics_spec.features if feature.enabled)
     estimate = explicit_step_estimate(context, 'BOR leap-frog', dt,

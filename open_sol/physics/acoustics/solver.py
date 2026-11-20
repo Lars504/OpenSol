@@ -71,6 +71,8 @@ _PIEZO_ROWS = {'electric_field_x': ('piezo_e11', 'piezo_e12', 'piezo_e16'),
 ACOUSTIC_PROPERTY_ARRAYS = {name: (name,) for name in (*ACOUSTIC_SCHEMA, *MONOCLINIC_ARRAYS, *PIEZO_ARRAYS,
                                                         *PHOTOELASTIC_TENSOR_ARRAYS)}
 _COEFFICIENT_MATERIALS = frozenset(ACOUSTIC_SCHEMA) - {'gruneisen', 'photoelastic_p11', 'photoelastic_p12'}
+_DAMPING = 'acoustic_damping'                     # its presence keeps the va arrays (AcousticPhysics._set_storage)
+_NORMAL_STIFFNESS = frozenset({'c11', 'c22'})     # set in a cell: c22 is its own array, else the c11 one
 
 
 @dataclass(frozen=True, eq=False)
@@ -235,12 +237,17 @@ class AcousticPhysics(PhysicsSolver):
         field_dtype = FIELD_DTYPES[precision]
         self.fields = AcousticFields(*(xp.zeros(shape, dtype=field_dtype) for _ in range(5)),
                                      stt=xp.zeros(shape, dtype=field_dtype) if self.axisymmetric else None)
-        # effective stiffness [Pa] (cells; c66c at corners) and velocity coefficients (faces), rewritten in place
-        self.c11, self.c12, self.c22, self.c66c = (xp.empty(shape, dtype=DTYPE) for _ in range(4))
-        self.va_x, self.vb_x, self.va_y, self.vb_y = (xp.empty(shape, dtype=DTYPE) for _ in range(4))
-        self._rigid_keep = None                      # float32 (nx, ny), 0 in rigid cells; allocated by add_rigid
-        self._no_keep = xp.ones(1, dtype=DTYPE)
-        self._no_thermal = (self._no_keep, self._no_keep, DTYPE(0.0))   # stress kernel tail without a heating slot
+        # effective stiffness [Pa] (cells; c66c at corners) and velocity coefficients (faces), rewritten in place;
+        # _set_storage: c22 is the c11 array while no cell sets c11 / c22 (equal then), va_x / va_y exist only while a
+        # cell has acoustic_damping (None: lossless, the LOSSLESS velocity kernels imply va = 1 where vb != 0)
+        self.c11, self.c12, self.c66c = (xp.empty(shape, dtype=DTYPE) for _ in range(3))
+        self.c22 = self.c11
+        self.vb_x, self.vb_y = (xp.empty(shape, dtype=DTYPE) for _ in range(2))
+        self.va_x = self.va_y = None
+        self._rigid_keep = None                      # bool (nx, ny), False in rigid cells; allocated by add_rigid
+        self._unit = xp.ones(1, dtype=DTYPE)         # float32 dummy of unread array arguments
+        self._no_rigid = xp.ones(1, dtype=xp.bool_)  # keep dummy without rigid cells
+        self._no_thermal = (self._unit, self._unit, DTYPE(0.0))   # stress kernel tail without a heating slot
         self._launch_cache = None                    # (dt, _StepLaunches) of the per-step launches
         # (ids of a run of fixed launches) -> [CUDA graph or None after its eager run, the launches] (_run_fixed; gpu)
         self.use_step_graphs = STEP_GRAPHS and xp is not np
@@ -309,7 +316,7 @@ class AcousticPhysics(PhysicsSolver):
         self.largest_stiffness = None                # [Pa] max(c11, c22) over the cells (half_storage scale estimate)
         self.largest_impedance = None                # [Pa s/m] max sqrt(max(c11, c22) rho) over the cells
         try:
-            self._update_time_step()
+            self._update_time_step()   # its first step chooses the coefficient storage (_choose_storage)
         except ValueError:   # stiffness may still come from state-dependent materials: finalize decides
             self.stable_dt = None
 
@@ -331,8 +338,13 @@ class AcousticPhysics(PhysicsSolver):
             self._set_storage_scales()
 
     def materials_changed(self, names) -> None:
-        """Rebuild the coefficients in place (dt stays: faster runtime materials are not stability-checked)."""
+        """Rebuild the coefficients in place (dt stays: faster runtime materials are not stability-checked). A change of
+        acoustic_damping / c11 / c22 keeps the va arrays / a separate c22 from then on (no host sync to test the
+        values: the next _update_time_step decides again from them)."""
         self._launch_cache = None   # the monoclinic launch holds c16 / c26 arrays
+        names = frozenset(names)
+        self._set_storage(lossy=self.va_x is not None or _DAMPING in names,
+                          separate_c22=self.c22 is not self.c11 or not _NORMAL_STIFFNESS.isdisjoint(names))
         if not _COEFFICIENT_MATERIALS.isdisjoint(names):
             self._rebuild_coefficients()
 
@@ -486,8 +498,9 @@ class AcousticPhysics(PhysicsSolver):
                             if getattr(fields, name) is not None},
                  'strain': None if self._strain is None else tuple(host_copy(array) for array in self._strain),
                  'time': float(self.time), 'scales': (self.stress_scale, self.velocity_scale)}
-        if materials:
-            state['stiffness'] = {name: host_copy(getattr(self, name)) for name in ('c11', 'c12', 'c22')}
+        if materials:   # c22 only when it is its own array (else it is c11)
+            names = ('c11', 'c12') + (('c22',) if self.c22 is not self.c11 else ())
+            state['stiffness'] = {name: host_copy(getattr(self, name)) for name in names}
         return state
 
     def restore_solution(self, state) -> None:
@@ -505,8 +518,16 @@ class AcousticPhysics(PhysicsSolver):
             for target, values in zip(self._strain, state['strain']):
                 write_host_into(target, values)
         self.time = state['time']
-        for name, values in state.get('stiffness', {}).items():
+        stiffness = state.get('stiffness', {})
+        for name, values in stiffness.items():
+            if name == 'c22' and self.c22 is self.c11:   # taken with a separate c22: only an equal one fits the alias
+                if not np.array_equal(values, stiffness['c11']):
+                    raise RuntimeError('elastic_waves restore_solution: the state holds a c22 unlike c11, but c22 is '
+                                       'the c11 array since (no cell sets c11 / c22 any more)')
+                continue
             write_host_into(getattr(self, name), values)
+        if stiffness and 'c22' not in stiffness and self.c22 is not self.c11:   # taken while c22 was c11
+            write_host_into(self.c22, stiffness['c11'])
 
     # --- time stepping --------------------------------------------------------------------------------------------
 
@@ -632,17 +653,20 @@ class AcousticPhysics(PhysicsSolver):
         flags = (self._nx_i32, self._ny_i32, self._n_slab_y_i32, self._periodic_x_i32, self._periodic_y_i32)
         stresses = (fields.sxx, fields.syy, fields.sxy)
         kernels = self.kernels
+        lossless = self.va_x is None   # LOSSLESS velocity kernels: va unread (dummies)
+        va_x, va_y = (self._unit, self._unit) if lossless else (self.va_x, self.va_y)
         if self.axisymmetric:   # hoop stress after the stresses, radius rows after the CPML profiles
             hoop, radial = (fields.stt,), (self._radial,)
-            velocity_kernel, stress_kernel = kernels['velocity_axisymmetric'], kernels['stress_axisymmetric']
+            velocity_kernel = kernels['velocity_axisymmetric' + ('_lossless' if lossless else '')]
+            stress_kernel = kernels['stress_axisymmetric']
         else:
             hoop = radial = ()
-            velocity_kernel = kernels['velocity']
+            velocity_kernel = kernels['velocity' + ('_lossless' if lossless else '')]
             stress_kernel = kernels[('stress' if self._strain is None else 'stress_strain')
                                     + ('_monoclinic' if self.monoclinic else '')]
         strain = () if self._strain is None else self._strain
         rates = () if self._strain_rates is None else self._strain_rates
-        velocity_args = (fields.vx, fields.vy, *stresses, *hoop, self.va_x, self.vb_x, self.va_y, self.vb_y, *common,
+        velocity_args = (fields.vx, fields.vy, *stresses, *hoop, va_x, self.vb_x, va_y, self.vb_y, *common,
                          *radial, psi_x[0], psi_x[1], psi_y[0], psi_y[1], self._stress_to_velocity, *flags)
         stress_head = (*stresses, *hoop, fields.vx, fields.vy, self.c11, self.c12, self.c22, self.c66c, *strain, *rates,
                        *common, *radial, psi_x[2], psi_x[3], psi_y[2], psi_y[3], DTYPE(dt), self._velocity_to_stress)
@@ -772,15 +796,46 @@ class AcousticPhysics(PhysicsSolver):
 
     def _rebuild_coefficients(self):
         materials = self.materials
-        keep = self._no_keep if self._rigid_keep is None else self._rigid_keep
+        keep = self._no_rigid if self._rigid_keep is None else self._rigid_keep
+        lossy = self.va_x is not None
+        va_x, va_y = (self.va_x, self.va_y) if lossy else (self._unit, self._unit)   # unwritten dummies when lossless
         _kernels.coefficients_kernel(
             self._k_grid, self._k_block,
             (materials.rho, materials.sound_speed, materials.shear_speed, materials.youngs_modulus,
              materials.poisson_ratio, materials.c11, materials.c12,
              materials.c22, materials.c66, materials.acoustic_damping, keep, np.int32(self._rigid_keep is not None),
-             *self._shares, self.c11, self.c12, self.c22, self.c66c, self.va_x, self.vb_x, self.va_y, self.vb_y,
+             *self._shares, self.c11, self.c12, self.c22, self.c66c, va_x, self.vb_x, va_y, self.vb_y,
+             np.int32(self.c22 is not self.c11), np.int32(lossy),
              DTYPE(self.dt if self.dt is not None else 1.0), self._nx_i32, self._ny_i32,
              self._periodic_x_i32, self._periodic_y_i32, *self._pins))
+
+    def _choose_storage(self):
+        """_set_storage from the material values (one host sync: build time): va arrays when a cell has
+        acoustic_damping != 0, a separate c22 when a cell sets c11 or c22 (not NaN)."""
+        materials, xp = self.materials, self.xp
+        lossy, separate_c22 = (bool(value) for value in to_host(xp.stack((
+            xp.any(materials.acoustic_damping != 0),
+            xp.any(~xp.isnan(materials.c11)) | xp.any(~xp.isnan(materials.c22))))))
+        self._set_storage(lossy, separate_c22)
+
+    def _set_storage(self, lossy, separate_c22) -> bool:
+        """Allocate / free the va arrays (lossy) and give c22 its own array or alias it to c11 (separate_c22); a change
+        drops the cached launches and the pulse tables (they hold c22). True when something changed: the caller
+        rebuilds the coefficients (new arrays hold nothing yet)."""
+        changed = False
+        xp, shape = self.xp, (self.nx, self.ny)
+        if lossy != (self.va_x is not None):
+            self.va_x = self.va_y = None   # freed before a reallocation
+            if lossy:
+                self.va_x, self.va_y = (xp.empty(shape, dtype=DTYPE) for _ in range(2))
+            changed = True
+        if separate_c22 != (self.c22 is not self.c11):
+            self.c22 = xp.empty(shape, dtype=DTYPE) if separate_c22 else self.c11
+            self._pulse_tables = None   # volume source tables hold c22
+            changed = True
+        if changed:
+            self._launch_cache = None
+        return changed
 
     def _configure(self, dt, coefficients_current=False):
         """Coefficients and CPML recursions for time step dt [s] (coefficients_current: the velocity coefficients were
@@ -797,8 +852,9 @@ class AcousticPhysics(PhysicsSolver):
         stiffness (`kernels.stability_stiffness`, anisotropic von Neumann bound, c16 / c26 included) times the largest
         buoyancy 1 / rho_face of its four faces (a solid-vacuum face has rho / 2; axisymmetric: 1 / dx_min^2 times
         `radial_stability_factor`; two-way piezo: the stiffened c^D); the CPML damping uses the largest sqrt(max(c11,
-        c22) / rho). One host sync (build time)."""
+        c22) / rho). Two host syncs (build time): the storage choice (_choose_storage), the bounds."""
         built_dt = self.dt
+        self._choose_storage()
         self._rebuild_coefficients()   # effective c11 / c12 / c22 / c66c (dt-independent part; va / vb at self.dt)
         xp = self.xp
         rho = self.materials.rho
@@ -952,10 +1008,11 @@ class AcousticPhysics(PhysicsSolver):
         return source
 
     def add_rigid(self, mask):
-        """Rigid (immovable) cells: the velocities on every face of a masked cell stay 0."""
+        """Rigid (immovable) cells: the velocities on every face of a masked cell (full-grid bool) stay 0."""
+        xp = self.xp
         if self._rigid_keep is None:
-            self._rigid_keep = self.xp.ones((self.nx, self.ny), dtype=DTYPE)
-        self._rigid_keep *= (~mask).astype(DTYPE)
+            self._rigid_keep = xp.ones((self.nx, self.ny), dtype=xp.bool_)
+        self._rigid_keep &= ~xp.asarray(mask, dtype=xp.bool_)
         self._rebuild_coefficients()
 
     def set_initial_velocity(self, mask, v_x=0.0, v_y=0.0):

@@ -123,7 +123,7 @@ class SolidMechanics3DPhysics(SolidMechanicsBase):
         densities = []
         for component, value in enumerate((f_x, f_y, f_z)):
             if isinstance(value, BoxValues):   # added on its box only
-                value.add_masked_to(system.applied_body_force[component], mask_window, system.window)
+                value.add_masked_to(system.body_force_target()[component], mask_window, system.window)
                 densities.append(0.0)
             else:
                 densities.append(self._window_values(value, 'body force density'))

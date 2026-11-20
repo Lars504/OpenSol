@@ -1209,8 +1209,11 @@ def _memory_estimate(settings_values, mesh, context):
     operators = value_bytes * entries + held_dofs * (_STENCIL_ENTRIES_PER_DOF * (FLOAT64_BYTES + INT32_BYTES)
                                                      + INT32_BYTES + _INT64_BYTES)
     # fixed values, free, fixed coupling, kept load, 3 inverse-block entries per node; element area, applied body force
-    # (2), the ten kept stiffness coefficients (stiffness.ElementStiffness); solid mask and its rigid-check copy
-    assembly = int(5.5 * value_bytes * dofs) + (13 * value_bytes + 2 * BOOL_BYTES) * elements
+    # (2, with a body_force feature: solver._applied_body_force), the ten kept stiffness coefficients
+    # (stiffness.ElementStiffness); solid mask and its rigid-check copy
+    body_force = any(feature.enabled and feature.type == 'body_force' for feature in context.physics_spec.features)
+    assembly = (int(5.5 * value_bytes * dofs)
+                + ((11 + 2 * int(body_force)) * value_bytes + 2 * BOOL_BYTES) * elements)
     # + the element_stiffness / plane-stress condensation temporaries (E, nu, Lame pair, 6 condensed coefficients)
     build_extra = (BOOL_BYTES + 2 * _INT64_BYTES + value_bytes) * entries + 40 * dofs + 10 * value_bytes * elements
     # load copy, SpMV and output temporaries of one static solve

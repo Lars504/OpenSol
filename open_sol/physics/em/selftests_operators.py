@@ -31,6 +31,9 @@ _FACE_SHAPE = (5, 4)
 # (E) fused H_z face coefficients
 _FACE_SIGMA_MAX = 3e5                 # S/m; k = sigma dt / (2 eps) <~ 0.4 at eps 1, so ca stays well away from 0
 _FACE_COEFFICIENT_RTOL = 1e-6         # float32; the rebuild should match bit for bit
+# (F) uniform vs per-cell coefficient storage: full steps from random fields, a PEC block (cells [6, 9) x [4, 7))
+_STORAGE_STEPS = 3                    # eager, captured and replayed step graphs
+_STORAGE_PEC = (slice(6, 9), slice(4, 7))
 # em_drude_courant_bound: free-electron aluminium (Ordal) filling an all-PEC box
 _ALUMINIUM_DRUDE = (2.24e16, 1.22e14, 1.0)   # omega_p [rad/s], gamma [1/s], eps_inf
 _BOUND_CELL = 10e-9                          # m; largest stable courant_factor 0.967 there
@@ -320,18 +323,56 @@ def _hz_face_coefficient_violations(engine, yee_grid, config, cell_widths, rng):
     for name, low, high in (('eps_xx', 1.0, 12.0), ('eps_yy', 1.0, 12.0), ('sigma_e', 0.0, _FACE_SIGMA_MAX)):
         getattr(materials, name)[...] = cp.asarray(rng.uniform(low, high, shape).astype(np.float32))
     engine.materials_changed({'eps_xx', 'eps_yy', 'sigma_e'})
+    eps_x, eps_y = engine.face_permittivities()   # allocated on demand (the nonlinear medium's read)
     eps0 = DTYPE(EPS0)
     dx_cells, dy_cells = cell_widths
     violations = 0
     for axis, periodic, widths, cell_eps, face_arrays in (
-            (1, config.periodic_y, dy_cells, materials.eps_xx, (engine.eps_x, engine.ca_x, engine.cb_x)),
-            (0, config.periodic_x, dx_cells, materials.eps_yy, (engine.eps_y, engine.ca_y, engine.cb_y))):
+            (1, config.periodic_y, dy_cells, materials.eps_xx, (eps_x, engine.ca_x, engine.cb_x)),
+            (0, config.periodic_x, dx_cells, materials.eps_yy, (eps_y, engine.ca_y, engine.cb_y))):
         face_eps = yee_grid.face_average(cell_eps, axis, periodic, widths, xp=cp)
         face_sigma = yee_grid.face_average(materials.sigma_e, axis, periodic, widths, xp=cp)
         expected_ca, expected_cb = cp.empty_like(face_eps), cp.empty_like(face_eps)
         e_coefficients(face_sigma, face_eps, DTYPE(engine.dt), eps0, expected_ca, expected_cb)
         for measured, expected in zip(face_arrays, (face_eps * eps0, expected_ca, expected_cb)):
             violations += int(not bool(cp.allclose(measured, expected, rtol=_FACE_COEFFICIENT_RTOL, atol=0.0)))
+    return violations + int(engine.uniform_ca)   # sigma_e > 0: per-face ca
+
+
+def _storage_parity_violations(polarization, grid, rng):
+    """(F) Number of failed checks of the coefficient storage (fdtd_2d_base "Coefficient storage"): two engines of
+    `polarization` (vacuum mu_r / sigma_m / sigma_e, random eps 1-12, x-periodic + CPML with its sigma, a PEC block),
+    the first on the uniform da / db / ca, the second after use_cell_coefficients(), stepped _STORAGE_STEPS times from
+    the same random fields, must agree bit for bit in every field component (layout flags checked too)."""
+    import cupy as cp
+    from . import boundaries
+    shape = (grid.nx, grid.ny)
+    eps_names = ('eps_r',) if polarization == 'ez' else ('eps_xx', 'eps_yy')
+    eps_values = {name: rng.uniform(1.0, 12.0, shape).astype(np.float32) for name in eps_names}
+    pec = np.zeros(shape, dtype=bool)
+    pec[_STORAGE_PEC] = True
+    engines = []
+    for cells in (False, True):
+        engine = _vacuum_engine(polarization, boundaries.BoundaryConfig.with_periodic_x(_GRADED_NPML), grid)
+        for name, values in eps_values.items():
+            getattr(engine.materials, name)[...] = cp.asarray(values)
+        engine.materials_changed(set(eps_names))
+        if cells:
+            engine.use_cell_coefficients()
+        engines.append(engine)
+    components = engines[0].fields.components
+    initial = {name: rng.standard_normal(shape).astype(np.float32) for name in components}
+    for engine in engines:
+        for name, values in initial.items():
+            getattr(engine.fields, name)[...] = cp.asarray(values)
+        engine.add_pec_mask(cp.asarray(pec))
+        for _ in range(_STORAGE_STEPS):
+            engine.advance()
+    uniform, cells = engines
+    violations = (int(not uniform.uniform_ca) + int(not uniform._h_coefficients[2])
+                  + int(cells.uniform_ca) + int(bool(cells._h_coefficients[2])))
+    for name in components:
+        violations += int(not bool(cp.array_equal(getattr(uniform.fields, name), getattr(cells.fields, name))))
     return violations
 
 
@@ -363,17 +404,19 @@ def _check_operators(results_by_name):
                 face_coefficient_violations += _hz_face_coefficient_violations(
                     engine, yee_grid, config, kernel_cell_widths, rng)
 
+    storage_violations = sum(_storage_parity_violations(polarization, grid, rng) for polarization in ('ez', 'hz'))
     sign_violations = _sign_violations(operators, boundaries, dispersion, materials, cell_widths)
     face_violations = _face_helper_violations(yee_grid, rng)
 
     measured = max(residual_laplacian, residual_bloch, residual_engine_steps * _ENGINE_STEP_SCALE)
-    error = measured + sign_violations + face_violations + face_coefficient_violations
+    error = measured + sign_violations + face_violations + face_coefficient_violations + storage_violations
     return {'measured': measured, 'expected': 0.0, 'error': error, 'tolerance': _TOLERANCE,
             'details': {'residual_laplacian': residual_laplacian, 'residual_bloch': residual_bloch,
                         'residual_engine_half_steps': residual_engine_steps,
                         'sign_violations': sign_violations,
                         'face_helper_violations': face_violations,
-                        'hz_face_coefficient_violations': face_coefficient_violations}}
+                        'hz_face_coefficient_violations': face_coefficient_violations,
+                        'coefficient_storage_violations': storage_violations}}
 
 
 def _check_cpml_complex_symmetry(results_by_name):
@@ -555,7 +598,11 @@ OPERATOR_SELFTEST_CASES = (
                     'plan parked in pinned host memory between calls. (D) face_average (width-weighted on graded widths, the plain '
                     'mean bit for bit on uniform ones) / face_pec against explicit loops. (E) On the H_z engines of '
                     'B with random eps_xx / eps_yy (1-12) and sigma_e (0-3e5 S/m): the fused face eps / ca / cb '
-                    'rebuild must equal face_average followed by the E_z cell-coefficient kernel (relative 1e-6). '
+                    'rebuild must equal face_average followed by the E_z cell-coefficient kernel (relative 1e-6). (F) '
+                    'Both engines on the B grid x-periodic with CPML (default sigma), random eps 1-12 and a PEC '
+                    'block: the uniform da / db / ca storage (one value each in vacuum mu_r / sigma_m / sigma_e) '
+                    'and the per-cell storage (use_cell_coefficients) give equal fields bit for bit after 3 steps '
+                    '(eager, captured, replayed). '
                     'error = '
                     "max(residual A, residual A', residual B x 1e-5) + the number of failed checks. Tolerance 1e-10: "
                     "A and A' compare float64 arithmetic (~1e-15); B compares float32 engine fields whose own "

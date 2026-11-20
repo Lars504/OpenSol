@@ -71,6 +71,8 @@ SOLID_3D_TYPE_NAME = 'solid_mechanics_3d'               # = selftests_3d.SOLID_3
 THERMAL_STRAIN_COUPLING = 'heat_solid_thermal_strain'   # = selftests_3d.THERMAL_STRAIN_COUPLING
 _AXES = ('x', 'y', 'z')
 _DISPLACEMENTS = ('u_x', 'u_y', 'u_z')   # load / held value names (follow_load / follow_held_values)
+# features whose held values may be non-zero (a tensor ElasticSystem3D keeps held_values only for those: _zero_hold)
+_PRESCRIBING_FEATURES = ('displacement', 'prescribed_displacement_domain')
 _TRACTIONS = ('t_x', 't_y', 't_z')
 _BODY_FORCES = ('f_x', 'f_y', 'f_z')
 _TETRAHEDRA = 'tetrahedra'
@@ -1187,7 +1189,9 @@ def _time_estimate(settings_values, mesh, context):
     gathered nodal vectors) and the 3 x 3 node-block preconditioner; stationary: the static solves (coupled: per step
     of a time_dependent study); eigenfrequency: one PCG solve per Lanczos application of the 'eigen' role (its own
     timer then holds the solves, so its items join the rest of the study). A tetrahedron mesh: _tetrahedra_time_estimate.
-    A background solid of StudySpec.solved_physics is priced as in a stationary study."""
+    A background solid of StudySpec.solved_physics is priced as in a stationary study. Not booked: the K u_fix brick
+    product per right-hand side of a prescribed displacement other than 0 (system3d.build_rhs; one product beside the
+    solve's hundreds)."""
     context = background_context(context, context.physics_spec)
     if mesh.kind == _TETRAHEDRA:
         return _tetrahedra_time_estimate(settings_values, mesh, context)
@@ -1202,9 +1206,14 @@ def _time_estimate(settings_values, mesh, context):
                               flops=_BRICK_ELEMENT_FLOPS * level_elements + _BRICK_NODE_FLOPS * level_nodes,
                               flop_bytes=item_bytes)
 
+    def block_jacobi(item_bytes):   # z = B^-1 r: float32 blocks (kernels3d.PRECONDITIONER_DTYPE), r / z in item_bytes
+        return te.Elementwise(nodes * (6 * FLOAT32_BYTES + 3 * item_bytes), 3 * nodes * item_bytes,
+                              flop_bytes=item_bytes)
+
     def fused_iteration(item_bytes):   # FusedBrickIteration.step: two launches (the cpu numba twins: four passes)
         product = brick_product(item_bytes)
-        update = te.Elementwise(6 * dofs * item_bytes, 3 * dofs * item_bytes, numba=True,
+        # direction, product, solution, residual (dof vectors) and the float32 node blocks (6 per node = 2 per dof)
+        update = te.Elementwise(dofs * (4 * item_bytes + 2 * FLOAT32_BYTES), 3 * dofs * item_bytes, numba=True,
                                 flops=_FUSED_UPDATE_FLOPS_PER_DOF * dofs, flop_bytes=item_bytes)
         direction = replace(product, bytes_read=product.bytes_read + (dofs * item_bytes + BOOL_BYTES * dofs),
                             bytes_written=2 * dofs * item_bytes, launches=1,
@@ -1214,14 +1223,16 @@ def _time_estimate(settings_values, mesh, context):
     inner_bytes = FLOAT32_BYTES if linear_solver_mixed(context) else value_bytes
     common = dict(unknowns=float(dofs), value_bytes=value_bytes, dimensions=3, longest_axis=context.longest_axis(),
                   product_ops=(brick_product(inner_bytes),),
-                  preconditioner_ops=(te.elementwise(nodes, 9, 3, inner_bytes),),
+                  preconditioner_ops=(block_jacobi(inner_bytes),),
                   refinement_ops=(brick_product(value_bytes),), iteration_ops=fused_iteration(inner_bytes))
     if linear_solver_multigrid(context):   # multigrid3d V-cycle (float32 at every precision), no fused iteration
         cycle, setup = _multigrid_ops(_window_shape(mesh), FLOAT32_BYTES, brick_product)
         if inner_bytes != FLOAT32_BYTES:   # double CG: residual cast in, correction cast back per cycle
             cycle += (te.Elementwise(dofs * (inner_bytes + FLOAT32_BYTES), dofs * (inner_bytes + FLOAT32_BYTES),
                                      launches=2),)
-            setup += (te.elementwise(elements, 2, 2, FLOAT32_BYTES), te.elementwise(nodes, 6, 6, FLOAT32_BYTES))
+            # float32 lambda / mu copies; the float64 inverted blocks into their float32 array
+            setup += (te.elementwise(elements, 2, 2, FLOAT32_BYTES),
+                      te.Elementwise(6 * nodes * inner_bytes, 6 * nodes * FLOAT32_BYTES))
         common.update(preconditioner_ops=cycle, iteration_ops=(), setup_ops=setup,   # built in assemble, timed there
                       setup_counters=('multigrid_builds', 'multigrid_build_seconds'))
     block = _block_eigen_values(context) if context.study.type == EIGENFREQUENCY_STUDY else None
@@ -1235,7 +1246,7 @@ def _time_estimate(settings_values, mesh, context):
             cycle, setup = _multigrid_ops(_window_shape(mesh), FLOAT32_BYTES, brick_product)
             preconditioner = dict(preconditioner_ops=cycle, setup_ops=setup)
         else:
-            preconditioner = dict(preconditioner_ops=(te.elementwise(nodes, 9, 3, item_bytes),))
+            preconditioner = dict(preconditioner_ops=(block_jacobi(item_bytes),))
         return context.solver_work('eigen', unknowns=float(dofs), dimensions=3, solves=1.0, factorizations=0.0,
                                    eigenpairs=eigenpairs, longest_axis=context.longest_axis(),
                                    product_ops=(brick_product(item_bytes), mass), **preconditioner)
@@ -1639,6 +1650,11 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
                                      transient_items=transient_items, **cudss_external(factors))
 
 
+def _zero_hold(value) -> bool:
+    """True for a held component the tensor system needs no held_values for: empty (free) or a literal 0."""
+    return value is None or value == '' or (isinstance(value, (int, float)) and value == 0)
+
+
 def _memory_estimate(settings_values, mesh, context):
     """MechanicsFields3D plus the window ElasticSystem3D counted from its allocations (a tetrahedron mesh:
     _tetrahedra_memory_estimate; a background solid of StudySpec.solved_physics: as stationary)."""
@@ -1653,20 +1669,28 @@ def _memory_estimate(settings_values, mesh, context):
     n_fields = len(OUTPUT_ARRAYS_3D) + len(INPUT_ARRAYS_3D)
     fields = MemoryEstimate.from_items(((f'fields ({n_fields} x float32)',
                                          n_fields * FLOAT32_BYTES * int(mesh.n_cells)),))
-    # unknown, held values, applied load, load, rhs, fixed values, fixed coupling, CG unknown; the matrix-free
-    # PCGSolver workspace (residual, two directions of the fused iteration, product, preconditioned; mixed: float32 +
-    # the float64 outer vectors; the fused iteration's block partial sums are negligible)
+    # unknown, load, rhs, CG unknown (+ applied load with a boundary_load, + held values with a prescribed displacement
+    # other than 0: no u_fix or K u_fix vectors, system3d builds K u_fix per rhs on the CG unknown); the matrix-free
+    # PCGSolver workspace
+    # (residual, two directions of the fused iteration, product, preconditioned; mixed: float32 + the float64 outer
+    # vectors; the fused iteration's block partial sums are negligible)
     multigrid = linear_solver_multigrid(context)   # multigrid3d: no fused iteration (one direction vector)
-    vectors = (8 * value_bytes * dofs
+    features = [feature for feature in context.physics_spec.features if feature.enabled]
+    prescribed = any(feature.type in _PRESCRIBING_FEATURES and any(
+        not _zero_hold(feature.params.get(name)) for name in _DISPLACEMENTS) for feature in features)
+    traction = any(feature.type == 'boundary_load' for feature in features)
+    vectors = ((4 + int(prescribed) + int(traction)) * value_bytes * dofs
                + workspace_bytes(dofs, 'mixed' if mixed else SOLVER_PRECISIONS[precision], jacobi=False,
                                  fused=not multigrid))
-    masks = 3 * BOOL_BYTES * dofs + BOOL_BYTES * elements   # held, free, rigid-check held copy; rigid-check solid copy
-    blocks = 6 * value_bytes * nodes                         # reduced inverse 3 x 3 blocks
-    # lambda, mu, applied body force (3); the physics' solid mask
-    element_arrays = 5 * value_bytes * elements + BOOL_BYTES * elements
+    masks = 2 * BOOL_BYTES * dofs   # held, free (the rigid-check key is bit-packed on the host)
+    blocks = 6 * FLOAT32_BYTES * nodes   # reduced inverse 3 x 3 blocks (kernels3d.PRECONDITIONER_DTYPE)
+    # lambda, mu, applied body force (3, with a body_force feature); the physics' solid mask
+    body_force = any(feature.type == 'body_force' for feature in features)
+    element_arrays = (2 + 3 * int(body_force)) * value_bytes * elements + BOOL_BYTES * elements
     # Lame temporaries (E, nu, products) + solid / range masks; int32 labels, padded copy, node labels; dof masks
+    # (+ a float64 solve: the node blocks formed / inverted in float64 before their float32 copy)
     build_extra = ((6 * value_bytes + 2 * BOOL_BYTES + 2 * INT32_BYTES) * elements + INT32_BYTES * nodes
-                   + 2 * BOOL_BYTES * dofs)
+                   + 2 * BOOL_BYTES * dofs + (6 * value_bytes * nodes if value_bytes != FLOAT32_BYTES else 0))
     if context.spec.solver_defaults.backend == 'cpu':
         # numpy kernels3d twins of the assembly's product: 3 differences, 3 gathered sums, the result (node-sized x 3
         # components) and ~30 per-Gauss-point element temporaries (x 3 components for the stacked stresses)
@@ -1674,9 +1698,8 @@ def _memory_estimate(settings_values, mesh, context):
     items = [('node vectors', vectors), ('dof masks', masks), ('inverse node blocks', blocks),
              ('element arrays', element_arrays)]
     double_cycle = multigrid and not mixed and value_bytes != FLOAT32_BYTES   # float32 V-cycle of a double CG
-    if mixed or double_cycle:   # float32 lambda, mu and reduced inverse blocks of the inner CG / cycle (widths small)
-        items.append(('float32 operator copy (mixed / multigrid)',
-                      2 * FLOAT32_BYTES * elements + 6 * FLOAT32_BYTES * nodes))
+    if mixed or double_cycle:   # float32 lambda, mu of the inner CG / cycle (the blocks are float32 already)
+        items.append(('float32 operator copy (mixed / multigrid)', 2 * FLOAT32_BYTES * elements))
     if double_cycle:
         items.append(('float32 cycle output (double multigrid)', FLOAT32_BYTES * dofs))
     transient_items = []   # freed when their re-assembly / eigen solve ends
@@ -1701,7 +1724,7 @@ def _memory_estimate(settings_values, mesh, context):
         eigen_bytes = ((2 * FLOAT64_BYTES + BOOL_BYTES + FLOAT32_BYTES) * elements
                        + block_bytes(dofs, n_wanted, block['guard_vectors'], block['precision']))
         if mixed_block and not (mixed or double_cycle):
-            eigen_bytes += 2 * FLOAT32_BYTES * elements + 6 * FLOAT32_BYTES * nodes
+            eigen_bytes += 2 * FLOAT32_BYTES * elements   # float32 lambda, mu (the blocks are float32 already)
         if block['preconditioner'] == 'multigrid':
             eigen_bytes += block_cycle_bytes(_window_shape(mesh), block_size(n_wanted, block['guard_vectors']),
                                              FLOAT32_BYTES)
