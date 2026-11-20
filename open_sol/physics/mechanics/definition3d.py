@@ -15,7 +15,7 @@ from ...core.memory_estimate import (BOOL_BYTES, COMPLEX128_CSR_ENTRY_BYTES, FLO
                                      host_counted_lu_bytes, host_real_lu_bytes)
 from ...fem.diffusion import lagrange_entries_per_dof
 from ...core.kernels import numba_available
-from ...fem.elasticity3d import (TANGENT_DEVICE_GRADIENT_CACHE_BYTES, TANGENT_GRADIENT_CACHE_BYTES,
+from ...fem.elasticity3d import (TANGENT_DEVICE_GEOMETRY_VALUES, TANGENT_GRADIENT_CACHE_BYTES,
                                  device_tangent_chunk_elements, tangent_chunk_element_bytes)
 from ...fem.tangent_kernel3d import element_flops
 from ...fem.fixed_pattern import EXPAND_ENTRIES
@@ -1418,7 +1418,10 @@ def _newton_time(settings_values, mesh, context, unknowns, scales, solves, kind,
         # device TangentAssembler3D on the element kernel: per chunk (sized by the chunk byte cap) one CUDA
         # block per element, the block scatter_add, the displacement up and the force down
         chunks = -(-int(mesh.n_elements) // device_tangent_chunk_elements(local, points, element_kernel=True))
-        ops = (te.DenseFlops(kernel_flops),
+        # + the per-chunk expansion of the kept J^-1 / |det J| into the rule gradients and weights (two launches)
+        expansion = te.Elementwise(FLOAT64_BYTES * TANGENT_DEVICE_GEOMETRY_VALUES * elements,
+                                   FLOAT64_BYTES * points * (3 * local + 1) * elements, launches=2 * chunks)
+        ops = (te.DenseFlops(kernel_flops), expansion,
                te.Elementwise(scatter_bytes, FLOAT64_BYTES * coo_entries, launches=_ELEMENT_KERNEL_LAUNCHES * chunks),
                te.Transfer(2.0 * FLOAT64_BYTES * 3 * unknowns), te.PythonCalls(_ELEMENT_KERNEL_LAUNCHES * chunks))
         label = 'tangent and internal force assembly on the GPU'
@@ -1441,10 +1444,11 @@ def _device_tangent_items(order, elements, scalar_dofs, entries, reduced_entries
     local = 10 if order == 2 else 4
     points = _TANGENT_RULE_POINTS[order]
     columns = 3 * local
-    gradient_bytes = FLOAT64_BYTES * elements * points * (columns + 1)
-    caches = ((gradient_bytes if gradient_bytes <= TANGENT_DEVICE_GRADIENT_CACHE_BYTES else 0)
+    # kept per element: J^-1 and |det J| (TANGENT_DEVICE_GEOMETRY_VALUES; the rule gradients / weights are expanded
+    # per chunk, inside tangent_chunk_element_bytes), int32 scatter slots and dofs, C (36) and the S0 element rows (6)
+    caches = (FLOAT64_BYTES * elements * TANGENT_DEVICE_GEOMETRY_VALUES
               + INT32_BYTES * elements * (columns ** 2 + 4 * local)
-              + FLOAT64_BYTES * elements * (36 + 6 * points)
+              + FLOAT64_BYTES * elements * (36 + 6)
               + INT32_BYTES * (entries + 3 * scalar_dofs) + 2 * INT32_BYTES * reduced_entries + INT32_BYTES * factored)
     values = FLOAT64_BYTES * (entries + 3 * reduced_entries) + 4 * FLOAT64_BYTES * 3 * scalar_dofs
     # one chunk of TangentAssembler3D's device size (the byte cap; a tighter pool gives smaller chunks) on the element

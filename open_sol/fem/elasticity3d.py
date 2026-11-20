@@ -40,9 +40,11 @@ POINT_CHUNK_ELEMENTS = 2 ** 15
 # host bytes up to which TangentAssembler3D keeps the rule gradients and weights (P2: ~6.7 kB per element); above it
 # they are recomputed per call (the scatter map is always kept)
 TANGENT_GRADIENT_CACHE_BYTES = 2 * 2 ** 30
-# pool bytes up to which a device TangentAssembler3D keeps them on the GPU (above: host gradients uploaded per chunk
-# and call); its other device caches (scatter slots, dofs, C, S0, pattern) are always kept
-TANGENT_DEVICE_GRADIENT_CACHE_BYTES = 2 ** 30
+# a device TangentAssembler3D keeps only J^-1 (9) and |det J| (1) float64 per element on the GPU (affine elements: the
+# rule gradients J^-T grad_ref and weights |det J| w_q are reproducible from them) and expands them per chunk and call
+# into a chunk temporary (one elementwise pass, ~2 % of the element kernel's flops); the P2 14-point cache it replaces
+# was q (3 n + 1) = 434 float64 per element (3.5 kB), the largest kept array beside the int32 scatter slots
+TANGENT_DEVICE_GEOMETRY_VALUES = 10
 # a device TangentAssembler3D sizes its chunks so one chunk's temporaries (tangent_chunk_element_bytes per element)
 # stay within these pool bytes and within this share of the pool budget left at its construction
 TANGENT_DEVICE_CHUNK_BYTES = 2 ** 30
@@ -55,13 +57,16 @@ ELEMENT_KERNEL_COLD_ELEMENTS = 50_000
 
 
 def tangent_chunk_element_bytes(n_local, points, element_kernel=False) -> int:
-    """Device bytes per element of one tangent chunk's temporaries. element_kernel (tangent_kernel3d): force, blocks and
-    gathered displacements; else B, B_NL and their sum, C (B + B_NL), the weighted transposed copy and the
-    column-group copies (q x 6 x 3 n each), strain / stress rows, blocks and lower products."""
-    if element_kernel:
-        return element_bytes(n_local)
+    """Device bytes per element of one tangent chunk's temporaries: the rule gradients and weights expanded from the
+    kept J^-1 / |det J| (q (3 n + 1)) and S0 expanded from its element rows (q x 6, counted also without one), then
+    element_kernel (tangent_kernel3d): force, blocks and gathered displacements; else B, B_NL and their sum,
+    C (B + B_NL), the weighted transposed copy and the column-group copies (q x 6 x 3 n each), strain / stress rows,
+    blocks and lower products."""
     columns = COMPONENTS * int(n_local)
-    return 8 * (int(points) * (5 * STRAIN_ROWS * columns + 21) + 2 * columns ** 2)
+    expanded = 8 * int(points) * (columns + 1 + STRAIN_ROWS)
+    if element_kernel:
+        return element_bytes(n_local) + expanded
+    return 8 * (int(points) * (5 * STRAIN_ROWS * columns + 21) + 2 * columns ** 2) + expanded
 
 
 def device_tangent_chunk_elements(n_local, points, available=None, element_kernel=False) -> int:
@@ -71,6 +76,23 @@ def device_tangent_chunk_elements(n_local, points, available=None, element_kerne
     if available is not None:
         limit = min(limit, int(TANGENT_DEVICE_CHUNK_SHARE * max(int(available), 0)))
     return max(1, limit // tangent_chunk_element_bytes(n_local, points, element_kernel))
+
+
+_EXPAND_GRADIENTS = []   # the device gradient expansion kernel, compiled on first use (GPU only)
+
+
+def _expand_gradients_kernel():
+    """cupy kernel (reference (q n, 3), J^-1 (m, 3, 3), int32 q n -> gradients (m, q n, 3)): gradient[e, r, c] =
+    sum_k reference[r, k] J^-1[e, k, c], piola_vectors_3d on the device in one pass."""
+    if not _EXPAND_GRADIENTS:
+        from ..core.backend import cp
+        _EXPAND_GRADIENTS.append(cp.ElementwiseKernel(
+            'raw float64 reference, raw float64 inverse, int32 rows', 'float64 gradient',
+            'const long long e = i / (3LL * rows); const long long r = (i / 3) % rows; const int c = (int)(i % 3);'
+            ' gradient = reference[3 * r] * inverse[9 * e + c] + reference[3 * r + 1] * inverse[9 * e + 3 + c]'
+            ' + reference[3 * r + 2] * inverse[9 * e + 6 + c];',
+            'fem_tangent_gradients_3d'))
+    return _EXPAND_GRADIENTS[0]
 
 
 def _available_pool_bytes():
@@ -701,13 +723,15 @@ def internal_force_and_tangent_3d(dofs, displacement, material, elements=None, d
 
 class TangentAssembler3D:
     """Total-Lagrangian internal force and tangent of one solid assembly on a fixed CSR pattern
-    (fixed_pattern.kept_pattern: per mesh, element set, chunks and free mask): rule gradients / weights cached per chunk
-    (while within cache_bytes), per call only values; the full and free-free reduced CSRs share the cached index arrays
-    (pattern constant by construction). device=True: the same formulas on cupy (gradients, weights, C, dofs
-    and S0 on the GPU, blocks summed by fixed_pattern.DevicePatternCsr) in chunks sized from the pool budget
-    (device_tangent_chunk_elements), the force returned on the host, tangent data kept on the device. element_kernel
-    (default): per-element force / tangent by fem.tangent_kernel3d (CUDA block per element, numba / numpy twins);
-    False, or a device rule too large for the kernel: the batched formulas."""
+    (fixed_pattern.kept_pattern: per mesh, element set, chunks and free mask): host rule gradients / weights cached per
+    chunk (while within cache_bytes), per call only values; the full and free-free reduced CSRs share the cached index
+    arrays (pattern constant by construction). device=True: the same formulas on cupy (J^-1 and |det J| per element,
+    C, dofs and S0 element rows kept on the GPU, the rule gradients / weights / per-point S0 expanded per chunk and
+    call, blocks summed by fixed_pattern.DevicePatternCsr) in chunks sized from the pool budget
+    (device_tangent_chunk_elements), the force returned on the host, tangent data kept on the device; cache_bytes is a
+    host setting (ValueError with device). element_kernel (default): per-element force / tangent by
+    fem.tangent_kernel3d (CUDA block per element, numba / numpy twins); False, or a device rule too large for the
+    kernel: the batched formulas."""
 
     def __init__(self, dofs, material, elements=None, free=None, degree=None, cache_bytes=None, device=False,
                  element_kernel=True):
@@ -715,8 +739,11 @@ class TangentAssembler3D:
         mesh = dofs.mesh
         self.dofs = dofs
         self.device = bool(device)
+        if self.device and cache_bytes is not None:
+            raise ValueError('TangentAssembler3D: cache_bytes is the host rule-gradient cache; a device assembler keeps '
+                             'J^-1 and |det J| per element and expands the gradients per chunk')
         if cache_bytes is None:
-            cache_bytes = TANGENT_DEVICE_GRADIENT_CACHE_BYTES if self.device else TANGENT_GRADIENT_CACHE_BYTES
+            cache_bytes = TANGENT_GRADIENT_CACHE_BYTES
         self.material = _material_3d(material, mesh.n_elements)
         elements = _element_list(mesh, elements)
         self.rule = tetrahedron_rule(_rule_degree(4 * (dofs.order - 1), degree))
@@ -725,12 +752,14 @@ class TangentAssembler3D:
         points = len(self.rule.weights)
         self.element_kernel = bool(element_kernel) and (not self.device or kernel_fits(dofs.n_local, points))
         gradient_bytes = 8 * len(elements) * points * (3 * dofs.n_local + 1)
-        self.gradients_cached = gradient_bytes <= cache_bytes
+        # host: the expanded rule gradients and weights while within cache_bytes; device: never (the kept J^-1 / |det J|
+        # are expanded per chunk, _device_geometry)
+        self.gradients_cached = not self.device and gradient_bytes <= cache_bytes
         self.chunk_elements = CHUNK_ELEMENTS   # host; device: from the pool budget (T3 a)
         if self.device:
             available = _available_pool_bytes()
-            if available is not None:   # less the kept gradients and int32 scatter slots allocated below
-                available -= ((gradient_bytes if self.gradients_cached else 0)
+            if available is not None:   # less the kept J^-1 / |det J| and int32 scatter slots allocated below
+                available -= (8 * TANGENT_DEVICE_GEOMETRY_VALUES * len(elements)
                               + 4 * len(elements) * (COMPONENTS * dofs.n_local) ** 2)
             self.chunk_elements = device_tangent_chunk_elements(dofs.n_local, points, available, self.element_kernel)
         step = self.chunk_elements
@@ -751,35 +780,59 @@ class TangentAssembler3D:
                                   for chunk in self.chunks]
             self._scatter_dofs = [cp.asarray(local.astype(index_dtype).ravel()) for local in self._vector_dofs]
             self._materials = [cp.asarray(self.material[chunk]) for chunk in self.chunks]
+            # float64 J^-1 (m, 3, 3) and |det J| (m,) per chunk: the gradients' and weights' only kept device form. Not
+            # float32: the internal force (the Newton residual) is computed from these gradients, and float32 J^-1 would
+            # move the discrete geometry by ~6e-8, so the converged state would leave the float64 host / linear K path
+            self._geometry = [self._device_geometry_rows(chunk) for chunk in self.chunks]
+            self._device_reference = cp.asarray(np.ascontiguousarray(self._reference_gradients, dtype=np.float64))
+            self._device_rule_weights = cp.asarray(np.asarray(self.rule.weights, dtype=np.float64))
             self.device_bytes = (self.device_pattern.device_bytes
                                  + sum(int(array.nbytes) for array in self._element_dofs + self._scatter_dofs
                                        + self._materials)
-                                 + (gradient_bytes if self.gradients_cached else 0))
+                                 + sum(int(inverse.nbytes) + int(determinant.nbytes)
+                                       for inverse, determinant in self._geometry))
         else:
             self.xp = np
-        self._geometry = [self._chunk_geometry(chunk) for chunk in self.chunks] if self.gradients_cached else None
+            self._geometry = ([self._chunk_geometry(chunk) for chunk in self.chunks] if self.gradients_cached
+                              else None)
         self.cached_bytes = (self.pattern.index_bytes + sum(local.nbytes for local in self._vector_dofs)
-                             + (gradient_bytes if self.gradients_cached and not self.device else 0))
+                             + (gradient_bytes if self.gradients_cached else 0))
 
     def _chunk_geometry(self, chunk):
-        """(physical gradients (m, q, n, 3), weights (m, q)) of mesh elements chunk on the rule (device: uploaded)."""
+        """Host (physical gradients (m, q, n, 3), weights (m, q)) of mesh elements chunk on the rule."""
         geometry = tetrahedron_geometry(self.dofs.mesh, chunk)
-        gradients, weights = piola_vectors_3d(self._reference_gradients, geometry), _volume_weights(geometry, self.rule)
-        if self.device:
-            return self.xp.asarray(gradients), self.xp.asarray(weights)
-        return gradients, weights
+        return piola_vectors_3d(self._reference_gradients, geometry), _volume_weights(geometry, self.rule)
 
-    def _host_fixed_stress(self, chunk, fixed):
-        """Host S0 (m, q, 6) of mesh elements chunk at the rule points."""
+    def _device_geometry_rows(self, chunk):
+        """Device (J^-1 (m, 3, 3), |det J| (m,)) float64 of mesh elements chunk (the kept device geometry)."""
+        geometry = tetrahedron_geometry(self.dofs.mesh, chunk)
+        return (self.xp.asarray(np.ascontiguousarray(geometry.inverse, dtype=np.float64)),
+                self.xp.asarray(np.abs(geometry.determinant)))
+
+    def _device_geometry(self, index):
+        """Device (gradients (m, q, n, 3), weights (m, q)) of chunk index expanded from its kept J^-1 / |det J|: the
+        host _chunk_geometry formulas (piola_vectors_3d, _volume_weights), a chunk temporary."""
+        inverse, determinant = self._geometry[index]
+        points, n_local = self._device_reference.shape[:2]
+        gradients = self.xp.empty((int(inverse.shape[0]), points, n_local, COMPONENTS))
+        _expand_gradients_kernel()(self._device_reference, inverse, np.int32(points * n_local), gradients)
+        return gradients, determinant[:, None] * self._device_rule_weights[None, :]
+
+    def _host_fixed_stress(self, chunk, fixed, element_rows=False):
+        """Host S0 (m, q, 6) of mesh elements chunk at the rule points; element_rows (only for an S0 that is no
+        callable): (m, 1, 6), its value per element."""
         mesh = self.dofs.mesh
-        shape = (len(chunk), len(self.rule.weights), 3)   # points are read only by a callable S0
+        if element_rows and callable(fixed.prescribed):
+            raise ValueError('TangentAssembler3D: a callable prescribed S0 varies over the rule points: no element rows')
+        shape = (len(chunk), 1 if element_rows else len(self.rule.weights), 3)   # read only by a callable S0
         points = (tetrahedron_geometry(mesh, chunk).points(self.rule.points) if callable(fixed.prescribed)
                   else np.broadcast_to(0.0, shape))
         return fixed_stress_at(fixed, points, chunk, mesh.n_elements, STRAIN_ROWS)
 
     def _chunk_fixed_stress(self, index, fixed, initial_stress):
         """S0 of chunk index on the assembler's module; the device keeps it per initial_stress object (a Newton solve
-        passes one object: a new S0 value needs a new object)."""
+        passes one object: a new S0 value needs a new object): its element rows (m, 1, 6) unless the prescribed part
+        is a callable of the points (then (m, q, 6)), broadcast over the rule points by the caller."""
         chunk = self.chunks[index]
         if not self.device:
             return self._host_fixed_stress(chunk, fixed)
@@ -787,18 +840,21 @@ class TangentAssembler3D:
             self._fixed_cache = (initial_stress, {})
         stored = self._fixed_cache[1]
         if index not in stored:
-            stored[index] = self.xp.asarray(np.ascontiguousarray(self._host_fixed_stress(chunk, fixed),
-                                                                 dtype=np.float64))
+            rows = self._host_fixed_stress(chunk, fixed, element_rows=not callable(fixed.prescribed))
+            stored[index] = self.xp.asarray(np.ascontiguousarray(rows, dtype=np.float64))
         return stored[index]
 
     def _chunk_inputs(self, index, displacement, fixed, initial_stress):
         """(gradients, weights, element displacements (m, n, 3), C, S0 or None) of chunk index (assembler's module)."""
         chunk = self.chunks[index]
-        gradients, weights = self._geometry[index] if self.gradients_cached else self._chunk_geometry(chunk)
         fixed_stress = None if fixed is None else self._chunk_fixed_stress(index, fixed, initial_stress)
         if self.device:
+            gradients, weights = self._device_geometry(index)
+            if fixed_stress is not None and fixed_stress.shape[1] != weights.shape[1]:   # element rows -> rule points
+                fixed_stress = self.xp.broadcast_to(fixed_stress, weights.shape + (STRAIN_ROWS,))
             material_chunk, local = self._materials[index], displacement[self._element_dofs[index]]
         else:
+            gradients, weights = self._geometry[index] if self.gradients_cached else self._chunk_geometry(chunk)
             material_chunk, local = self.material[chunk], displacement[self.dofs.element_dofs[chunk]]
         return gradients, weights, local, material_chunk, fixed_stress
 
