@@ -37,6 +37,9 @@ MODE_POLARIZATION = 'modes'   # EM_MATERIAL_SCHEMAS key; no in-plane polarisatio
 MODE_PERMITTIVITY_ARRAYS = ('eps_r', 'eps_xx', 'eps_yy')   # eps_r holds eps_zz (as for the E_z types)
 MODE_PERMITTIVITY_SLOTS = {f'{array}_update': array for array in MODE_PERMITTIVITY_ARRAYS}
 MODE_FIELD_NAMES = ('ex', 'ey', 'ez', 'hx', 'hy', 'hz', 'e_intensity', 'h_abs', 'sz')   # ModeRenderer's mode fields
+# the mode fields state() serves (couplings, material expressions read them): on the run backend; the other seven are
+# only rendered and stay host numpy (the renderer uploads its read window)
+DEVICE_MODE_FIELDS = frozenset({'e_intensity', 'sz'})
 MODE_TABLE_COLUMNS = ('mode_number', 'n_eff', 'n_eff_imag', 'loss_db_per_cm', 'n_group', 'te_fraction',
                       'effective_area', 'pml_fraction', 'delta_beta', 'selected')
 MODE_TABLE_UNITS = ('1', '1', '1', 'dB/cm', '1', '1', 'm^2', '1', '1/m', '')
@@ -252,9 +255,10 @@ class ModePhysics(_ModeStudyMixin, PhysicsSolver):
         self._pec_cuts = None
 
         shape = (domain.grid.nx, domain.grid.ny)
-        # float32 full-grid fields (run backend: domain.xp) of the selected mode at the cell centres, rewritten in
-        # place (zeros before a solve)
-        self.mode_fields = {name: domain.xp.zeros(shape, dtype=DTYPE) for name in MODE_FIELD_NAMES}
+        # float32 full-grid fields of the selected mode at the cell centres, rewritten in place (zeros before a
+        # solve): DEVICE_MODE_FIELDS on the run backend (domain.xp), the rest host numpy
+        self.mode_fields = {name: (domain.xp if name in DEVICE_MODE_FIELDS else np).zeros(shape, dtype=DTYPE)
+                            for name in MODE_FIELD_NAMES}
 
     @property
     def permittivity_arrays(self) -> tuple:

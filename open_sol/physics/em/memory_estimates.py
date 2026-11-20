@@ -799,8 +799,9 @@ def _eigen_items(context, n_cells, sparse_row, superlu=True, ldlt=True, polished
 
 
 def modes_memory_estimate(settings_values, mesh, context):
-    """PhysicsType.memory_estimate of em_modes (solvers/modes_2d, cross_section_modes): 9 float32 mode fields; host
-    SuperLU, operators, Arnoldi basis, modes; a line_block batch or a per-solve cuDSS LU (external) instead of SuperLU."""
+    """PhysicsType.memory_estimate of em_modes (solvers/modes_2d, cross_section_modes): 9 float32 mode fields (the
+    two of state() on the device, the rendered seven host); host SuperLU, operators, Arnoldi basis, modes; a line_block
+    batch or a per-solve cuDSS LU (external) instead of SuperLU."""
     if getattr(mesh, 'kind', 'tensor') == 'triangles':
         return _modes_fem_memory_estimate(settings_values, mesh, context)
     n_cells = int(mesh.n_cells)
@@ -814,7 +815,8 @@ def modes_memory_estimate(settings_values, mesh, context):
     on_device = factorization in CUDSS_FACTORIZATIONS
     operator_bytes = 2 * 9 * COMPLEX128_CSR_ENTRY_BYTES * unknowns
     host_items = [('operators A, B (sparse complex128)', operator_bytes),
-                  (f'mode fields ({n_modes} modes x 6 components)', 6 * n_modes * COMPLEX128_BYTES * n_cells)]
+                  (f'mode fields ({n_modes} modes x 6 components)', 6 * n_modes * COMPLEX128_BYTES * n_cells),
+                  ('rendered fields of the selected mode (7 x float32: E, H, h_abs)', 7 * FLOAT32_BYTES * n_cells)]
     run_items, external_items, external_extra = [], [], 0
     # ModePhysics._cross_section_materials: device eps / mu cells per solve before to_host (BOR books the same); the
     # mode solve after them (Krylov basis, an own cuDSS factor) never overlaps
@@ -859,7 +861,8 @@ def modes_memory_estimate(settings_values, mesh, context):
                                            else 'SuperLU L + U factors (heuristic)',
                                            host_real_lu_bytes(unknowns) if real_superlu else host_lu_bytes(unknowns),
                                            unknowns, 9 * unknowns, symmetric=False, eigen=True)
-    return MemoryEstimate.from_items((('mode fields (9 x float32)', 9 * FLOAT32_BYTES * n_cells),),
+    return MemoryEstimate.from_items((('state fields of the selected mode (e_intensity, sz: 2 x float32)',
+                                       2 * FLOAT32_BYTES * n_cells),),
                                      host_items=host_items, run_items=run_items, transient_items=transient_items,
                                      external_items=external_items, external_extra=external_extra)
 

@@ -505,7 +505,10 @@ type's vocabulary and refusals are in its help texts and validation.
 - ModePhysics has the FDFDPhysics attribute set (class comment; polarization 'modes', no sources). Every solve re-reads
   the MaterialGrid; `_material_serial` only stales a kept line-block batch, so a new way to change the solved system
   bumps it (`__init__` comment). `select_mode` writes `mode_fields` in place: ModeRenderer and `state()` hold those
-  arrays. Line-block 'shifted' batches and the detached solves (shg_overlap, bend_overlap): the class comment.
+  arrays; only `DEVICE_MODE_FIELDS` (the state() keys e_intensity, sz) are run-backend arrays, the seven rendered-only
+  ones are host numpy (`CentreFieldRenderer` uploads the read window): a new device reader of them takes
+  `xp.asarray(window)`, a new state() key joins DEVICE_MODE_FIELDS (and the estimate's device item). Line-block
+  'shifted' batches and the detached solves (shg_overlap, bend_overlap): the class comment.
 - A cudss eigen node skips the host SuperLU size rule in `_solve_at` / `solve_detached` (check_size), `finalize` and
   `_solver_issues`: change them together. Not done: a symmetric Yee form (the mixed [E_t; E_z] pencil), which would
   allow LDL^T and the _mixed factorizations on tensor meshes (`_solver_issues` says why they are refused).
