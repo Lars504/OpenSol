@@ -500,20 +500,27 @@ def anchor_link_graph(coefficients, fixed, held, face_terms, wrap=False):
     return link_image, conducting, anchors, wrap_links
 
 
+def axis_face_flow_3d(unknown, conductance, face_terms, axis):
+    """face_flows_3d of one axis without a phi wrap (conductance: that axis' interior conductances): the face flows
+    [c u] toward +axis, n + 1 along it; a caller post-processing axis by axis holds one face array at a time."""
+    xp = array_module_of(unknown)
+    face_shape = list(unknown.shape)
+    face_shape[axis] += 1
+    face_flow = xp.zeros(face_shape, dtype=unknown.dtype)
+    face_flow[_cut(axis, slice(1, -1))] = conductance * (unknown[_cut(axis, _LOWER)] - unknown[_cut(axis, _UPPER)])
+    for side, edge, sign in (('lo', 0, 1.0), ('hi', -1, -1.0)):
+        cells, boundary_conductance, rhs = face_terms[f'{_AXIS_NAMES[axis]}_{side}']
+        face_flow[_cut(axis, edge)] = sign * (rhs - boundary_conductance * unknown[cells])   # inward -> +axis
+    return face_flow
+
+
 def face_flows_3d(unknown, interior_conductances, face_terms, wrap_conductance=None, wrap_sign=0):
     """Per axis the face flows [c u] toward +x / +y (/ +z) (n + 1 along that axis; 2D or 3D windows) of the last
     assembly's operator: interior conductance * (u_lower - u_upper), outer faces from their face terms (a phi wrap:
     out of the last angle cells, into the first as its sign image)."""
-    xp = array_module_of(unknown)
     flows = []
     for axis, conductance in enumerate(interior_conductances):
-        face_shape = list(unknown.shape)
-        face_shape[axis] += 1
-        face_flow = xp.zeros(face_shape, dtype=unknown.dtype)
-        face_flow[_cut(axis, slice(1, -1))] = conductance * (unknown[_cut(axis, _LOWER)] - unknown[_cut(axis, _UPPER)])
-        for side, edge, sign in (('lo', 0, 1.0), ('hi', -1, -1.0)):
-            cells, boundary_conductance, rhs = face_terms[f'{_AXIS_NAMES[axis]}_{side}']
-            face_flow[_cut(axis, edge)] = sign * (rhs - boundary_conductance * unknown[cells])   # inward -> +axis
+        face_flow = axis_face_flow_3d(unknown, conductance, face_terms, axis)
         if axis == 1 and wrap_conductance is not None:
             wrap_flow = wrap_conductance * (unknown[:, -1] - wrap_sign * unknown[:, 0])
             face_flow[:, -1] = wrap_flow
@@ -526,35 +533,42 @@ def flux_at_centres(unknown, interior_conductances, face_terms, geometry, free, 
     """Per axis the flux [c u / m^2] (2D planar: [c u / m]) toward +x / +y (/ +z) (polar: +r / +phi) at the cell
     centres: face_flows_3d of the last assembly over the face areas (geometry without apertures), averaged; 0 where
     free is False (held cells)."""
-    xp = array_module_of(unknown)
-    fluxes = []
     flows = face_flows_3d(unknown, interior_conductances, face_terms, wrap_conductance, wrap_sign)
-    for axis, face_flow in enumerate(flows):
-        for factor in geometry.area_factors[axis]:   # zero-area faces (the r = 0 axis) carry no flow
-            face_flow /= xp.where(factor > 0, factor, 1.0)
-        fluxes.append(xp.where(free, 0.5 * (face_flow[_cut(axis, _LOWER)] + face_flow[_cut(axis, _UPPER)]), 0.0))
-    return tuple(fluxes)
+    return tuple(axis_centre_flux_3d(face_flow, axis, geometry, free) for axis, face_flow in enumerate(flows))
+
+
+def axis_centre_flux_3d(face_flow, axis, geometry, free):
+    """flux_at_centres of one axis from its face flows [c u] (n + 1 along axis; divided by the face areas IN PLACE):
+    the centre average [c u / m^2], 0 where free is False."""
+    xp = array_module_of(face_flow)
+    for factor in geometry.area_factors[axis]:   # zero-area faces (the r = 0 axis) carry no flow
+        face_flow /= xp.where(factor > 0, factor, 1.0)
+    return xp.where(free, 0.5 * (face_flow[_cut(axis, _LOWER)] + face_flow[_cut(axis, _UPPER)]), 0.0)
 
 
 def face_flow_energy_3d(flows, interior_conductances, face_terms, free):
     """Sum of flow^2 / conductance [c u^2] over the faces touching a free cell with conductance > 0 (flows as
     face_flows_3d, a drive's terms included): twice the discrete energy of those flows. Float64 host scalar."""
+    return sum(axis_face_flow_energy_3d(flow, axis, interior_conductances[axis], face_terms, free)
+               for axis, flow in enumerate(flows))
+
+
+def axis_face_flow_energy_3d(flow, axis, conductance, face_terms, free):
+    """face_flow_energy_3d of one axis' face flows (conductance: that axis' interior conductances). Float64 host
+    scalar."""
     xp = array_module_of(free)
-    total = 0.0
-    for axis, flow in enumerate(flows):
-        conductance = xp.zeros(flow.shape, dtype=interior_conductances[axis].dtype)
-        touches_free = xp.zeros(flow.shape, dtype=bool)
-        interior = _cut(axis, slice(1, -1))
-        conductance[interior] = interior_conductances[axis]
-        touches_free[interior] = free[_cut(axis, _LOWER)] | free[_cut(axis, _UPPER)]
-        for side, edge in (('lo', 0), ('hi', -1)):
-            cells, boundary_conductance, _ = face_terms[f'{_AXIS_NAMES[axis]}_{side}']
-            conductance[_cut(axis, edge)] = boundary_conductance
-            touches_free[_cut(axis, edge)] = free[cells]
-        counted = touches_free & (conductance > 0)
-        total += float(xp.sum(xp.where(counted, flow * flow / xp.where(counted, conductance, 1.0), 0.0),
-                              dtype=xp.float64))
-    return total
+    face_conductance = xp.zeros(flow.shape, dtype=conductance.dtype)
+    touches_free = xp.zeros(flow.shape, dtype=bool)
+    interior = _cut(axis, slice(1, -1))
+    face_conductance[interior] = conductance
+    touches_free[interior] = free[_cut(axis, _LOWER)] | free[_cut(axis, _UPPER)]
+    for side, edge in (('lo', 0), ('hi', -1)):
+        cells, boundary_conductance, _ = face_terms[f'{_AXIS_NAMES[axis]}_{side}']
+        face_conductance[_cut(axis, edge)] = boundary_conductance
+        touches_free[_cut(axis, edge)] = free[cells]
+    counted = touches_free & (face_conductance > 0)
+    return float(xp.sum(xp.where(counted, flow * flow / xp.where(counted, face_conductance, 1.0), 0.0),
+                        dtype=xp.float64))
 
 
 def face_drive_integrals_3d(drive, axis, geometry, free):
