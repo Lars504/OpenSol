@@ -369,9 +369,10 @@ class DriftDiffusionPhysics(PhysicsSolver):
         materials = self.domain.materials
         host_materials = {name: to_host(getattr(materials, name)[window]).astype(np.float64).ravel()
                           for name in self.material_schema}
-        generation = (self.fields['generation'][window].astype(np.float64)
-                      + self.fields['generation_ext'][window].astype(np.float64))
-        self.system.set_inputs(host_materials, to_host(generation).ravel(), self.thermal_voltage)
+        # float32 window copies to the host, summed there in float64 (no device float64 temporaries beside a kept factor)
+        generation = (to_host(self.fields['generation'][window]).astype(np.float64)
+                      + to_host(self.fields['generation_ext'][window]).astype(np.float64))
+        self.system.set_inputs(host_materials, generation.ravel(), self.thermal_voltage)
         self.system.solve()
         for name, values in self.system.outputs().items():
             self.fields[name][window] = self.xp.asarray(values, dtype=DTYPE)
