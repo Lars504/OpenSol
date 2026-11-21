@@ -502,6 +502,9 @@ class HarmonicSystemBase:
         solution = np.zeros(pencil.shape[0], dtype=np.complex128)
         solution[pencil.fixed] = fixed_value
         free_device = None
+        # the previous solve's device values go before this factorisation (read only by the publish of that solve):
+        # never kept through the factor's peak
+        self._device_values = None
         if pencil.free.size:
             rhs = load[pencil.free]
             free_rows = extra = None

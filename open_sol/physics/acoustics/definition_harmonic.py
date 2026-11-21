@@ -11,7 +11,7 @@ from ...core.backend import to_host
 from ...core.constants import FACE_LABELS, FACES, FACES_3D
 from ...core.harmonic_probe import harmonic_probe_result
 from ...core.memory_estimate import (COMPLEX128_BYTES, COMPLEX128_CSR_ENTRY_BYTES, FLOAT32_BYTES, FLOAT64_BYTES,
-                                     MemoryEstimate, host_lu_bytes)
+                                     INT32_BYTES, MemoryEstimate, host_lu_bytes, host_real_lu_bytes)
 from ...core.mirror import feature_mirror_faces, mirror_faces
 from ...fem.diffusion import FEM_FILL_FACTOR, lagrange_entries_per_dof
 from ...fem.diffusion3d import FEM_FILL_FACTOR_3D
@@ -59,8 +59,8 @@ _MOTION_POWERS = {'acceleration': 0, 'velocity': 1, 'displacement': 2}   # (j om
 # 'linear' role: sparse_direct, the cuDSS back ends (gpu backend: fem.harmonic keeps the reduced K, C, M on the device
 # and refactorises the LDL^T per frequency on one plan, factorize_pencil); back_end 'auto' = cudss_mixed on the gpu
 # backend with nvmath-python (basiri2019 E2, 76,740 unknowns: 15 ms per frequency vs 3.2 s SuperLU), else host
-# SuperLU; the opt-in MUMPS / PARDISO back ends of DIFFUSION_DIRECT_BACK_ENDS factorise the host A(omega) by
-# factorize_host (LDL^T, analysis reused per frequency through previous=); cusolver_qr refused (factorize_host would
+# SuperLU; the opt-in MUMPS / PARDISO back ends of DIFFUSION_DIRECT_BACK_ENDS factorise the host terms of a HostPencil
+# (LDL^T, analysis reused per frequency through previous=, factorize_pencil); cusolver_qr refused (factorize_host would
 # silently run SuperLU)
 PRESSURE_LINEAR_ROLE = SolverRole('general', 'sparse_direct', precisions=('double',),
                                   setting_choices={'back_end': DIFFUSION_DIRECT_BACK_ENDS},
@@ -73,7 +73,6 @@ _MATERIAL_PROPERTIES = (_ELASTIC_PROPERTIES['rho'], _ELASTIC_PROPERTIES['sound_s
 _HOST_CSR_COPIES = 5
 _HOST_VECTORS_PER_DOF = 10
 _LOCAL_DOFS = {(2, 1): 3, (2, 2): 6, (3, 1): 4, (3, 2): 10}
-_INT64_BYTES = 8
 
 # ---- settings ----
 _GEOMETRY_PARAM = geometry_param(
@@ -751,9 +750,31 @@ def _counts(settings_values, mesh) -> tuple:
     return order, three_d, dofs, entries
 
 
+def _pencil_terms(settings_values, context, three_d) -> tuple:
+    """(value bytes of fem.harmonic's stored pencil terms, complex pencil): each term keeps its own dtype, K and M
+    complex only with a PML stretch (a PML is never lossless), the real damping term C (Robin 1 / Z edges) only with an
+    impedance boundary; a real pencil (neither) combines real values every frequency, so its cuDSS / MUMPS / PARDISO
+    factor is real and solves the complex rhs as two real ones (host SuperLU factors HarmonicPencil.reduced: always
+    complex)."""
+    physics_spec = getattr(context, 'physics_spec', None)
+    impedance = physics_spec is not None and any(feature.enabled and feature.type == 'impedance'
+                                                 for feature in physics_spec.features)
+    stretched = bool(_pml_faces(settings_values, three_d))
+    term_bytes = COMPLEX128_BYTES if stretched else FLOAT64_BYTES
+    return (term_bytes, term_bytes) + ((FLOAT64_BYTES,) if impedance else ()), stretched or impedance
+
+
+def _recipe_terms(settings_values, context, three_d, cudss) -> tuple:
+    """harmonic_frequency_items' term_value_bytes: the DevicePencil's stored terms on cuDSS (_pencil_terms), K and M
+    on the host route (its constant counts the damping gather)."""
+    terms = _pencil_terms(settings_values, context, three_d)[0]
+    return terms if cudss else terms[:2]
+
+
 def _memory_estimate(settings_values, mesh, context):
     """Per-element state; host SuperLU factor (none on cuDSS), pencil copies, vectors and assembly COO (uncalibrated);
-    on cuDSS the kept DevicePencil, solution, publish maps and p_b (run items) and the factor outside the pool."""
+    on cuDSS the kept DevicePencil, solution and publish maps (run items), p_b of a publish (transient) and the factor
+    outside the pool; pencil terms and cuDSS / MUMPS / PARDISO factors real without PML and impedance (_pencil_terms)."""
     if getattr(mesh, 'kind', 'tensor') not in _GRIDS:   # refused by validation
         return MemoryEstimate()
     order, three_d, dofs, entries = _counts(settings_values, mesh)
@@ -761,39 +782,37 @@ def _memory_estimate(settings_values, mesh, context):
     fill = FEM_FILL_FACTOR_3D[order] if three_d else FEM_FILL_FACTOR
     back_end = resolved_back_end(context.solvers)
     cudss = back_end in CUDSS_BACK_ENDS
-    # fem.harmonic keeps each pencil term in its own dtype: K and M complex only with a PML stretch, a damping term C
-    # (real: Robin 1 / Z edges) only with an impedance boundary; a real pencil (no PML, no impedance) combines real
-    # values every frequency, so its factor is real
-    physics_spec = getattr(context, 'physics_spec', None)
-    impedance = physics_spec is not None and any(feature.enabled and feature.type == 'impedance'
-                                                 for feature in physics_spec.features)
-    stretched = bool(_pml_faces(settings_values, three_d))
-    term_bytes = COMPLEX128_BYTES if stretched else FLOAT64_BYTES
-    term_value_bytes = (term_bytes, term_bytes) + ((FLOAT64_BYTES,) if impedance else ())
-    factor_value_bytes = COMPLEX128_BYTES if stretched or impedance else FLOAT64_BYTES
+    dimensions = 3 if three_d else 2
+    term_value_bytes, complex_pencil = _pencil_terms(settings_values, context, three_d)
     # the HarmonicSystem's factor, refreshed per frequency on one plan and kept for the session (no CSR copies in the
     # pool beside the DevicePencil: pressure_acoustics_rigid_disk measured within 4 %)
-    factors = ((('cuDSS factor of K + j omega C - omega^2 M', dofs, entries, factor_value_bytes, 3 if three_d else 2,
-                 back_end == 'cudss_mixed'),) if cudss else ())
-    local = _LOCAL_DOFS[(3 if three_d else 2, order)]
-    factor = 0 if cudss else int(fill * host_lu_bytes(dofs, dimensions=3 if three_d else 2))
-    # a MUMPS / PARDISO back end: the complex symmetric LDL^T at the SuperLU heuristic x superlu_bytes_scale + its own
-    # copies (uncalibrated; refactorised per frequency on its analysis, fem.harmonic previous=)
+    factors = ((('cuDSS factor of K + j omega C - omega^2 M', dofs, entries,
+                 COMPLEX128_BYTES if complex_pencil else FLOAT64_BYTES, dimensions, back_end == 'cudss_mixed'),)
+               if cudss else ())
+    local = _LOCAL_DOFS[(dimensions, order)]
+    factor = 0 if cudss else int(fill * host_lu_bytes(dofs, dimensions=dimensions))
+    # a MUMPS / PARDISO back end: the symmetric LDL^T of the HostPencil values (real without PML / impedance) at the
+    # SuperLU heuristic x superlu_bytes_scale + its own copies (uncalibrated; refactorised per frequency on its
+    # analysis, factorize_pencil previous=)
     host_direct = host_direct_back_end(context.solvers)
     factor_items = [('complex SuperLU factor (FEM heuristic, uncalibrated)', factor)]
     if host_direct is not None:
-        label = factor_label(host_direct)
-        factor_items = [(f'complex {label} LDL^T factor (SuperLU FEM heuristic scaled, uncalibrated)',
-                         int(factor * superlu_bytes_scale(host_direct, symmetric=True, complex_values=True))),
+        label, kind = factor_label(host_direct), 'complex' if complex_pencil else 'real'
+        superlu = factor if complex_pencil else int(fill * host_real_lu_bytes(dofs, dimensions=dimensions))
+        factor_items = [(f'{kind} {label} LDL^T factor (SuperLU FEM heuristic scaled, uncalibrated)',
+                         int(superlu * superlu_bytes_scale(host_direct, symmetric=True,
+                                                           complex_values=complex_pencil))),
                         (f'{label} solver copies (equilibrated operator, row scale; mixed: GMRES vectors)',
-                         solver_host_bytes(dofs, entries, complex_values=True, symmetric=True,
+                         solver_host_bytes(dofs, entries, complex_values=complex_pencil, symmetric=True,
                                            mixed=host_direct_precision(host_direct) == 'mixed')),
-                        # fem.harmonic's sparse_direct.HostPencil: the reduced K, C, M values (as the device item)
-                        (f'{label} host pencil terms (K, C, M values on the free pattern)',
-                         3 * COMPLEX128_BYTES * entries)]
-    # fem.harmonic on a cuDSS back end keeps the reduced K, C, M values on the device (sparse_direct.DevicePencil)
-    # and keeps a direct solve's solution there (R6): complex128 full-numbering values, int64 free / fixed / system ids
-    run_items = []
+                        # fem.harmonic's sparse_direct.HostPencil: the reduced term values in their own dtype, full
+                        # pattern (the zero damping term is not kept)
+                        (f'{label} host pencil terms (K, M (+ C) values on the free pattern)',
+                         sum(term_value_bytes) * entries)]
+    # fem.harmonic on a cuDSS back end keeps the reduced K, M (+ C) values on the device (sparse_direct.DevicePencil)
+    # and keeps a direct solve's solution there (R6, dropped before the next factorisation): complex128 full-numbering
+    # values, int32 free / fixed ids
+    run_items, transient_items = [], []
     if cudss:
         physics_spec = getattr(context, 'physics_spec', None)
         background = physics_spec is not None and any(
@@ -804,8 +823,9 @@ def _memory_estimate(settings_values, mesh, context):
                      # the device publish (R6): int32 element dofs, active dof / element masks, the centroid basis
                      ('device publish maps (element dofs, active masks, centroid basis)',
                       INT32_BYTES * local * elements + dofs + elements + FLOAT64_BYTES * local)]
-        if background:   # p_b at the dof points, uploaded per shown frequency
-            run_items.append(('device background nodal values (complex128)', COMPLEX128_BYTES * dofs))
+        if background:   # p_b at the dof points, uploaded per publish and freed after it (the fused kernel: no other)
+            transient_items.append(('shown fields', 'device background nodal values (complex128)',
+                                    COMPLEX128_BYTES * dofs))
     return MemoryEstimate.from_items(
         ((f'element state ({len(STATE_NAMES)} x float32)', len(STATE_NAMES) * FLOAT32_BYTES * elements),),
         host_items=(*factor_items,
@@ -813,7 +833,7 @@ def _memory_estimate(settings_values, mesh, context):
                     ('full-numbering complex vectors', _HOST_VECTORS_PER_DOF * COMPLEX128_BYTES * dofs),
                     ('assembly COO (transient, complex128)', 3 * COMPLEX128_BYTES * local * local * elements),
                     *reduced_sweep_memory_items(context, dofs, entries)), run_items=run_items,
-        **cudss_external(factors))
+        transient_items=transient_items, **cudss_external(factors))
 
 
 # run-time recipe of the triangle host work beside definition_helpers' shared harmonic counts, counted from
@@ -859,7 +879,7 @@ def _triangle_host_items(settings_values, mesh, context, order, dofs, entries, s
              *element_term_ops(degree=max(2 * order - 2 + axis, 2), kind='stiffness', **term),
              *element_term_ops(degree=2 * order + axis, kind='mass', **term)), seconds_counter=seconds))
     items += harmonic_frequency_items(dofs, entries, sweep, device_pencil=cudss,
-                                      term_value_bytes=(16, 16) if pml else (8, 8))
+                                      term_value_bytes=_recipe_terms(settings_values, context, False, cudss))
     if sweep['method'] != 'direct':
         return tuple(items)
     loads = enabled('point_source', 'vibrating_boundary')
@@ -899,13 +919,14 @@ def _tetrahedron_host_items(settings_values, mesh, context, order, dofs, entries
         counter=('solvers', context.name, 'counters', 'assemblies'),
         seconds_counter=('solvers', context.name, 'counters', 'assembly_seconds')))
     items += harmonic_frequency_items(dofs, entries, sweep, device_pencil=cudss,
-                                      term_value_bytes=(16, 16) if faces else (8, 8))
+                                      term_value_bytes=_recipe_terms(settings_values, context, True, cudss))
     return tuple(items)
 
 
 def _time_estimate(settings_values, mesh, context):
-    """The study's harmonic_factorizations (one per frequency_response frequency, or a reduced sweep's) of the complex
-    'linear' role (host factorize_host; cuDSS: run backend, device refactorisations; factor / solve scale the FEM fill
+    """The study's harmonic_factorizations (one per frequency_response frequency, or a reduced sweep's) of the
+    'linear' role (complex; real on a pencil route without PML / impedance, two real rhs per solve; host SuperLU
+    factorize_host; cuDSS: run backend, device refactorisations; factor / solve scale the FEM fill
     FEM_FILL_FACTOR(_3D), as the memory estimate) at the full-map dofs, a reduced
     sweep's back substitutions and basis items; the host work on triangles (_triangle_host_items: build, DevicePencil,
     per-frequency loads, fields, records) and tetrahedra (_tetrahedron_host_items: build, DevicePencil; background
@@ -916,8 +937,14 @@ def _time_estimate(settings_values, mesh, context):
     sweep = frequency_sweep_counts(context)
     cudss = resolved_back_end(context.solvers) in CUDSS_BACK_ENDS
     fill = FEM_FILL_FACTOR_3D[order] if three_d else FEM_FILL_FACTOR   # the FEM operator over the 5- / 7-point curves
-    linear = context.solver_work('linear', unknowns=float(dofs), nnz=float(entries), value_bytes=COMPLEX128_BYTES,
-                                 dimensions=3 if three_d else 2, solves=sweep['solves'],
+    # a pencil route (cuDSS, MUMPS / PARDISO) factors a real pencil real: the complex rhs as two real solves; host
+    # SuperLU factors the complex HarmonicPencil.reduced
+    pencil_route = cudss or host_direct_back_end(context.solvers) is not None
+    complex_factor = _pencil_terms(settings_values, context, three_d)[1] or not pencil_route
+    linear = context.solver_work('linear', unknowns=float(dofs), nnz=float(entries),
+                                 value_bytes=COMPLEX128_BYTES if complex_factor else FLOAT64_BYTES,
+                                 rhs=1.0 if complex_factor else 2.0, dimensions=3 if three_d else 2,
+                                 solves=sweep['solves'],
                                  solves_kind=sweep['solves_kind'], factorizations=sweep['factorizations'],
                                  factorizations_kind=sweep['factorizations_kind'], factor_scale=fill, solve_scale=fill,
                                  **({'device_values': True} if cudss else {'backend': 'cpu'}))
