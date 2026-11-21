@@ -28,6 +28,12 @@ electrolytes, snapshots and sweep reuse: the docstrings of `solver.py`, `solver_
   has no apply (the unset face is already the insulated even mirror); a voltage / current_density / surface_charge on
   the type's own symmetry face errors (`own_mirror_face_conflicts`), `mirror_face_issues` warns only on other
   physics' planes.
+- Tensor meshes hand `DiffusionSystem.assemble` float32 coefficients (`PotentialPhysics._coefficients`: MaterialGrid
+  views, eps0-scaled float32 temporaries for electrostatics), never solve-dtype copies: assemble makes its own, and
+  the caller's references live through the factorisation / multigrid setup (the estimate books the scaled windows).
+- Driven terminals keep one (5, window) float32 basis per waveform + DC and superpose them in place into the fields'
+  window views (`_superpose`: no work buffer); held charges superpose the host float64 basis fluxes, never the
+  float32 fields.
 - Help texts are shared by both kinds and formatted per kind (`_KIND_NAMES`, `_COMMON_DESCRIPTION`, `_XY_HELP_TEXTS`,
   ...): an edit must read right for both (electrostatics has no q_joule and every cell conducts).
 

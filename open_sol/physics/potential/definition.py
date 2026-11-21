@@ -881,7 +881,8 @@ def _make_create(kind):
 def _make_memory_estimate(kind):
     """memory_estimate: PotentialFields2D (float32 full grid; + q_joule with currents, + rho_ion with electrostatics)
     plus the window DiffusionSystem (a set xy coefficient: 9-point pattern; electrostatics: + the three eps0-scaled
-    float32 coefficient windows PotentialPhysics._coefficients holds through each assembly, on the build peak) and a
+    float32 coefficient windows PotentialPhysics._coefficients holds through each assembly, on the build peak and, when
+    the run re-assembles (_operator_changes: refactorizes), its re-assembly / re-setup phases) and a
     cuDSS 'linear' factor (fem.diffusion.cudss_diffusion_estimate); element meshes: on the active elements; driven
     terminals: the basis solutions (DC + one per waveform; superposed in place into the fields: run items, first
     step); tetrahedra: the 3D fields (+ E_z and the z flux) per element + the FEM 3D system; a 3D tensor mesh (refused
@@ -920,11 +921,18 @@ def _make_memory_estimate(kind):
                                            wrap=mesh.domain_map is not None and mesh.domain_map.angle_wrap != 'none',
                                            flux=True, dissipation=spec.with_joule,   # _update_derived_fields per solve
                                            backend=solver_backend(context.spec),
-                                           conformal=bool(context.spec.solver_defaults.conformal_boundaries))
+                                           conformal=bool(context.spec.solver_defaults.conformal_boundaries),
+                                           refactorizes=refactorizes)   # Newton / eps(T), sigma(T): run re-setups
+        scaled = []
         if spec.coefficient_scale != 1.0:   # eps0 eps_dc: scaled float32 windows alive through assemble (currents: views)
-            system = replace(system, gpu_build_peak=system.gpu_build_peak
-                             + len(spec.coefficient_arrays) * FLOAT32_BYTES * window_cells)
-        parts = [fields, system]
+            scaled_bytes = len(spec.coefficient_arrays) * FLOAT32_BYTES * window_cells
+            system = replace(system, gpu_build_peak=system.gpu_build_peak + scaled_bytes)
+            if refactorizes:   # also beside a run re-assembly and its multigrid re-setup (the phases of `system`)
+                label = 'eps0-scaled coefficient windows (3 x float32)'
+                phases = ('re-assembly', 'refactorisation') if linear_solver_multigrid(context) else ('re-assembly',)
+                scaled.append(MemoryEstimate.from_items(
+                    transient_items=tuple((phase, label, scaled_bytes) for phase in phases)))
+        parts = [fields, system, *scaled]
         if cudss:   # DiffusionDirectSolver factorises the kept A_solve
             parts.append(cudss_diffusion_estimate(window_cells, (9 if cross_term else 5) * window_cells, 2, cudss,
                                                   input_copy=False, refactorizes=refactorizes, symmetric_known=True))
