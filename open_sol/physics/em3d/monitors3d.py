@@ -1,17 +1,135 @@
 """Monitors of em_fdtd_3d: point probe, spectral Poynting flux through a cell-edge plane or a closed box, and a DFT
-field map on a z layer; their result dicts (flux_spectrum / dft_fields / timeseries kinds of the 2D monitors)."""
+field map on a z layer; their result dicts (flux_spectrum / dft_fields / timeseries kinds of the 2D monitors). The
+flux-plane spectra (flux planes and boxes, far fields, mode monitors) live in a SpectrumStore of the stepper's
+spectrum_precision."""
+import ctypes
+import math
+
 import numpy as np
 from ...core.backend import array_module_or_default, to_host
 
 from ...core.constants import C0
 from ...core.mirror import touch_factor
 from ...core.monitors import FieldProbe
-from ..em.monitors import (_IMAG_KERNELS, _IMAG_LINE_KERNELS, _REAL_KERNELS, _REAL_LINE_KERNELS,
-                           _centre_pairs, _check_frequencies, _dft_phase, _field_sets)
+from ...solvers.explicit_kernels import SPECTRUM_PRECISIONS
+from ..em.monitors import (_IMAG_BLOCK_KERNELS, _IMAG_KERNELS, _IMAG_LINE_KERNELS, _REAL_BLOCK_KERNELS, _REAL_KERNELS,
+                           _REAL_LINE_KERNELS, _centre_pairs, _check_frequencies, _dft_phase, _field_sets)
 from ..em.results import _per_cw, _shared_waveform_spectrum
 from .boundaries3d import AXES
 
 DFT_PLANE_QUANTITY = 'abs(E_x)^2 + abs(E_y)^2 + abs(E_z)^2'
+
+# Block length of 'mixed2' spectra (SpectrumStore). A block sums N samples x_i = ph_i f_i in complex64 (the product
+# rounded, then N - 1 rounded adds), then joins a complex128 total and restarts from zero. Recursive float32
+# summation errs by at most gamma_N sum |x_i|, gamma_N = N u / (1 - N u), u = 2^-24 (Higham, Accuracy and Stability of
+# Numerical Algorithms, 2nd ed., eq. 4.4, per real component; Minkowski's inequality carries it to the complex
+# modulus). Rounding errors that behave as independent and uniform in [-u, u] relative (std u / sqrt 3; Higham &
+# Mary 2019, probabilistic error analysis) with partial sums |S_k| <= k max|x| give an rms error of u sqrt(N) / 3 x
+# sum |x_i| (worst for in-phase terms, i.e. a resonant frequency). The blocks are added in float64, so the errors of
+# the blocks add up to at most the same fractions of the run's gross sum |x_i| (rms: less, they are independent): the
+# floor does not grow with the run length, unlike one float32 running sum over all M samples (gamma_M, ~M u). N = the
+# largest power of two whose SPECTRUM_BLOCK_SIGMAS rms errors stay below SPECTRUM_BLOCK_ERROR of the block's gross
+# sum: 64 (rms 1.6e-7, worst case gamma_64 = 3.8e-6). For comparison: 'double' sums lose ~1e-16 per sample, and both
+# carry the complex64 rounding of the DFT phase (u |x_i| per sample, ~u sqrt(sum |x_i|^2) in all).
+SPECTRUM_BLOCK_ERROR = 1e-6
+SPECTRUM_BLOCK_SIGMAS = 6.0
+_FLOAT32_ROUNDOFF = 2.0 ** -24
+
+
+def spectrum_block_samples(relative_error=SPECTRUM_BLOCK_ERROR, sigmas=SPECTRUM_BLOCK_SIGMAS) -> int:
+    """Largest power of two N with sigmas x the rms complex64 block error u sqrt(N) / 3 <= relative_error (of the
+    block's gross sum |x_i|; derivation at SPECTRUM_BLOCK_ERROR); ValueError when not even N = 1 meets it."""
+    limit = (3.0 * float(relative_error) / (float(sigmas) * _FLOAT32_ROUNDOFF)) ** 2
+    if not limit >= 1.0:
+        raise ValueError(f'a complex64 spectrum block cannot reach a relative error of {relative_error:g} at '
+                         f'{sigmas:g} sigma (float32 unit round-off {_FLOAT32_ROUNDOFF:.3g})')
+    return 1 << int(math.floor(math.log2(limit)))
+
+
+SPECTRUM_BLOCK_SAMPLES = spectrum_block_samples()   # 64
+# worst-case relative error of one block (gamma_N of SPECTRUM_BLOCK_SAMPLES), ~3.8e-6: the self-tests' bound
+SPECTRUM_BLOCK_WORST_ERROR = (SPECTRUM_BLOCK_SAMPLES * _FLOAT32_ROUNDOFF
+                              / (1.0 - SPECTRUM_BLOCK_SAMPLES * _FLOAT32_ROUNDOFF))
+
+
+class SpectrumStore:
+    """Running-DFT spectra of one monitor (`shapes`, complex) by the stepper's spectrum_precision. 'double': one
+    complex128 array per spectrum on xp, the line kernels add every sample into it. 'mixed2': one contiguous complex64
+    block on xp (`arrays` are views of it, so the launch views stay valid), the block kernels (em.monitors
+    _REAL_BLOCK_KERNELS / _IMAG_BLOCK_KERNELS: complex64 product and sum) add SPECTRUM_BLOCK_SAMPLES samples, then
+    sampled() folds the block into a complex128 host total and zeroes it in place: gpu an asynchronous copy into a
+    pinned staging buffer on the current stream with the zero fill queued behind it (no host sync in the step loop,
+    never inside a step graph: monitors update eagerly), the host adds the staging at the next fold or read after one
+    event wait on that copy (issued a block of samples earlier: done unless the host ran that far ahead). Readers take
+    host() (complex128 totals, the current partial block folded in)."""
+
+    def __init__(self, shapes, precision, xp):
+        if precision not in SPECTRUM_PRECISIONS:
+            raise ValueError(f"spectrum_precision must be one of {', '.join(SPECTRUM_PRECISIONS)}, got {precision!r}")
+        self.precision = precision
+        self.shapes = tuple(tuple(int(count) for count in shape) for shape in shapes)
+        self._xp = xp
+        self.folds = 0          # blocks folded into the host total (work counter)
+        self._samples = 0       # samples in the device block since its last fold
+        if precision == 'double':
+            self.arrays = tuple(xp.zeros(shape, dtype=np.complex128) for shape in self.shapes)
+            self.kernels = (_REAL_LINE_KERNELS, _IMAG_LINE_KERNELS)
+            return
+        self.kernels = (_REAL_BLOCK_KERNELS, _IMAG_BLOCK_KERNELS)
+        offsets = np.cumsum([0] + [math.prod(shape) for shape in self.shapes]).tolist()
+        self._offsets = offsets
+        self._block = xp.zeros(offsets[-1], dtype=np.complex64)
+        self.arrays = tuple(self._block[start:stop].reshape(shape)
+                            for start, stop, shape in zip(offsets[:-1], offsets[1:], self.shapes))
+        self._total = np.zeros(offsets[-1], dtype=np.complex128)   # host
+        self._staging = None    # gpu: pinned complex64 copy of the last folded block
+        self._copied = None     # gpu: event of the copy in flight into _staging (None: nothing pending)
+        if xp is not np and offsets[-1]:
+            memory = xp.cuda.alloc_pinned_memory(offsets[-1] * np.dtype(np.complex64).itemsize)
+            self._staging = np.frombuffer(memory, dtype=np.complex64, count=offsets[-1])
+
+    def sampled(self) -> None:
+        """Count one sample (after its kernels were queued); a full 'mixed2' block folds (no host sync)."""
+        if self.precision == 'double':
+            return
+        self._samples += 1
+        if self._samples >= SPECTRUM_BLOCK_SAMPLES:
+            self._fold()
+
+    def _fold(self) -> None:
+        """The device block into the host total, then zeroed in place (gpu: async copy + zero fill, collected at the
+        next fold or read)."""
+        self._collect()
+        block = self._block
+        if self._xp is np:
+            np.add(self._total, block, out=self._total)
+            block.fill(0)
+        elif block.size:
+            stream = self._xp.cuda.get_current_stream()
+            block.data.copy_to_host_async(ctypes.c_void_p(self._staging.ctypes.data), block.nbytes, stream)
+            self._copied = stream.record()
+            block.fill(0)   # queued behind the copy on the same stream
+        self._samples = 0
+        self.folds += 1
+
+    def _collect(self) -> None:
+        """Add the staging of the copy in flight (if any) into the host total after its event (gpu)."""
+        if self._copied is None:
+            return
+        self._copied.synchronize()
+        self._copied = None
+        np.add(self._total, self._staging, out=self._total)
+
+    def host(self) -> tuple:
+        """Per spectrum the host complex128 total ('double': one transfer each, as the arrays are; 'mixed2': the host
+        total plus the current device block, one transfer, the block left as it is). Arrays the caller must not
+        write."""
+        if self.precision == 'double':
+            return tuple(to_host(array) for array in self.arrays)
+        self._collect()
+        total = self._total + to_host(self._block)
+        return tuple(total[start:stop].reshape(shape)
+                     for start, stop, shape in zip(self._offsets[:-1], self._offsets[1:], self.shapes))
 
 
 def point_probe(cell, field_component):
@@ -40,12 +158,13 @@ def _cell_samples(widths, first_edge, last_edge):
 
 
 class PlaneFlux3D:
-    """Running DFT (complex128) of the tangential E / H on a plane at cell edge `edge` along `normal_axis` (0 / 1 / 2)
+    """Running DFT (complex128 totals) of the tangential E / H on a plane at cell edge `edge` along `normal_axis` (0 / 1 / 2)
     over the edge ranges bounds[t] = (first, last) of the two tangential axes; flux() > 0 toward +normal. A periodic
-    tangential axis (periodic[t]) spanning its whole grid wraps its face weights; spectra on array module xp."""
+    tangential axis (periodic[t]) spanning its whole grid wraps its face weights; spectra on array module xp in a
+    SpectrumStore of spectrum_precision ('double': complex128, 'mixed2': complex64 blocks + host totals)."""
 
     def __init__(self, normal_axis, edge, bounds, frequencies, dt, widths, shape, periodic=(False, False, False),
-                 xp=None):
+                 xp=None, spectrum_precision='double'):
         xp = array_module_or_default(xp)
         n_normal = shape[normal_axis]
         if not 1 <= edge <= n_normal - 1:
@@ -60,6 +179,7 @@ class PlaneFlux3D:
         first_axis, second_axis = (normal_axis + 1) % 3, (normal_axis + 2) % 3
         # pair 0: (E_first, H_second) on (first: faces, second: cells); pair 1: (E_second, H_first) on (cells, faces)
         self._pairs = []
+        spectrum_shapes = []
         for e_axis, h_axis, face_axis, cell_axis, sign in ((first_axis, second_axis, first_axis, second_axis, 1.0),
                                                            (second_axis, first_axis, second_axis, first_axis, -1.0)):
             wrap = bool(periodic[face_axis]) and tuple(bounds[face_axis]) == (0, shape[face_axis])
@@ -72,13 +192,15 @@ class PlaneFlux3D:
             by_axis = {face_axis: face_weights, cell_axis: cell_weights}
             low_axis, high_axis = sorted((face_axis, cell_axis))   # view dims follow the grid axis order
             area = np.outer(by_axis[low_axis], by_axis[high_axis])
-            spectrum_shape = (self.frequencies.size,) + area.shape
+            spectrum_shapes += [(self.frequencies.size,) + area.shape] * 2   # E, H
             self._pairs.append({'e': 'e' + 'xyz'[e_axis], 'h': 'h' + 'xyz'[h_axis], 'sign': sign, 'area': area,
                                 'e_axis': e_axis, 'h_axis': h_axis, 'face_axis': face_axis, 'cell_axis': cell_axis,
                                 'face_slice': face_slice, 'cell_slice': cell_slice,
-                                'lower': tuple(lower_index), 'upper': tuple(upper_index), 'h_index': tuple(h_index),
-                                'e_dft': xp.zeros(spectrum_shape, dtype=np.complex128),
-                                'h_dft': xp.zeros(spectrum_shape, dtype=np.complex128)})
+                                'lower': tuple(lower_index), 'upper': tuple(upper_index), 'h_index': tuple(h_index)})
+        # spectra 2 p = E, 2 p + 1 = H of pair p (the kernels add into store.arrays)
+        self.store = SpectrumStore(spectrum_shapes, spectrum_precision, xp)
+        for index, pair in enumerate(self._pairs):
+            pair['e_dft'], pair['h_dft'] = self.store.arrays[2 * index], self.store.arrays[2 * index + 1]
         self._omega_dev = xp.asarray(2.0 * np.pi * self.frequencies)
         self._phases = xp.empty(self.frequencies.size, dtype=np.complex64)
         self.field_scales = (1.0, 1.0)   # (E, H) per stored unit (engine3d field_scale; half_storage != 1)
@@ -95,10 +217,15 @@ class PlaneFlux3D:
             _dft_phase(self._omega_dev, t, self.dt * self.sample_interval, self._phases)
             phases = self._phases
         phases = phases[:, None, None]
-        for field_set, (accumulate, accumulate_pair) in _field_sets(fields, _REAL_LINE_KERNELS, _IMAG_LINE_KERNELS):
+        for field_set, (accumulate, accumulate_pair) in _field_sets(fields, *self.store.kernels):
             for lower, upper, h_view, pair in self._views(field_set):
                 accumulate_pair(lower, upper, phases, pair['e_dft'])
                 accumulate(h_view, phases, pair['h_dft'])
+        self.store.sampled()
+
+    @property
+    def spectrum_stores(self) -> tuple:
+        return (self.store,)
 
     def _views(self, field_set):
         """[(E lower, E upper, H) plane views with a leading frequency axis, pair)] of a field set, cached by identity."""
@@ -114,11 +241,12 @@ class PlaneFlux3D:
 
     def host_pairs(self):
         """Per pair (pair dict, host E spectrum, host H spectrum re-timed to the E time), complex128 (n_f, ...) in grid
-        axis order of the two tangential axes (one transfer each)."""
+        axis order of the two tangential axes (SpectrumStore.host: one transfer each, mixed2 one for the block)."""
         e_scale, h_scale = self.field_scales
         retime = h_scale * np.exp(1j * np.pi * self.frequencies * self.dt)[:, None, None]
-        return [(pair, to_host(pair['e_dft']) * e_scale, to_host(pair['h_dft']) * retime)
-                for pair in self._pairs]
+        spectra = self.store.host()
+        return [(pair, spectra[2 * index] * e_scale, spectra[2 * index + 1] * retime)
+                for index, pair in enumerate(self._pairs)]
 
     def flux(self):
         """Spectral power (n_f,) float64 a.u.: cos(omega dt/2) Re(E H*) over the plane, H re-timed to the E time."""
@@ -131,12 +259,17 @@ class PlaneFlux3D:
 class FluxBox3D:
     """Net outward flux through the six cell-edge faces of a box (edge ranges per axis, inclusive)."""
 
-    def __init__(self, edge_bounds, frequencies, dt, widths, shape, periodic=(False, False, False), xp=None):
+    def __init__(self, edge_bounds, frequencies, dt, widths, shape, periodic=(False, False, False), xp=None,
+                 spectrum_precision='double'):
         self.frequencies = _check_frequencies(frequencies)
         self.edge_bounds = tuple(tuple(int(edge) for edge in bounds) for bounds in edge_bounds)
         self.faces = [(sign, PlaneFlux3D(axis, self.edge_bounds[axis][side], self.edge_bounds, self.frequencies, dt,
-                                         widths, shape, periodic, xp=xp))
+                                         widths, shape, periodic, xp=xp, spectrum_precision=spectrum_precision))
                       for axis in range(3) for side, sign in ((0, -1.0), (1, 1.0))]
+
+    @property
+    def spectrum_stores(self) -> tuple:
+        return tuple(plane.store for _, plane in self.faces)
 
     @property
     def sample_interval(self):
