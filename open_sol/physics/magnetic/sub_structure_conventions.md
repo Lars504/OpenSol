@@ -73,7 +73,8 @@ cells, anchors) and the damped iteration are in the core sub file, FEM assembly 
   errors of percents (bh example: H_cores 8 % off at K = 100), so no stop floor can be met (a rounding floor of the
   tolerance did nothing): `Float32StallWatch` ends the loop. Validation warns on 'single' with a mu_dc contrast >= 100
   (`single_precision_contrast_issues`, 2D and 3D); the role keeps 'single' (dropping it would clash with
-  solver_defaults.precision).
+  solver_defaults.precision). pcg 'mixed2' stores float32 face reluctances without that bias (exact row sums: core sub
+  file "DiffusionSystem"); its high-contrast cases are the magnet_permeable_slab / magnet3d_layered_slab variants.
 - Why no tensor Newton: the exact Jacobian of the centre-|B| secant has a 13-point stencil and the 9-point c_xy
   approximation is not positive definite under strong saturation. Undamped Picard diverges where the current drives H
   past the knee; Anderson converges (`examples/magnetic/bh_curve_table_core.json`).
