@@ -531,8 +531,10 @@ type's vocabulary and refusals are in its help texts and validation.
   bumps it (`__init__` comment). `select_mode` writes `mode_fields` in place: ModeRenderer and `state()` hold those
   arrays; only `DEVICE_MODE_FIELDS` (the state() keys e_intensity, sz) are run-backend arrays, the seven rendered-only
   ones are host numpy (`CentreFieldRenderer` uploads the read window): a new device reader of them takes
-  `xp.asarray(window)`, a new state() key joins DEVICE_MODE_FIELDS (and the estimate's device item). Line-block
-  'shifted' batches and the detached solves (shg_overlap, bend_overlap): the class comment.
+  `xp.asarray(window)`, a new state() key joins DEVICE_MODE_FIELDS (and the estimate's device item).
+  `_cross_section_materials` builds eps / mu on the host from float32 copies of `MODE_SYSTEM_MATERIALS` (a new material
+  array of the operator joins it): no device temporaries beside a kept line-block batch, which is sized to the free
+  memory. Line-block 'shifted' batches and the detached solves (shg_overlap, bend_overlap): the class comment.
 - A cudss eigen node skips the host SuperLU size rule in `_solve_at` / `solve_detached` (check_size), `finalize` and
   `_solver_issues`: change them together. Not done: a symmetric Yee form (the mixed [E_t; E_z] pencil), which would
   allow LDL^T and the _mixed factorizations on tensor meshes (`_solver_issues` says why they are refused).
@@ -552,7 +554,7 @@ type's vocabulary and refusals are in its help texts and validation.
   cuDSS in 2D buys device memory / host relief at the largest P2 meshes, not flops. The device B is stored as its
   lower triangle (`device_factor_matvec(symmetric=True)`: an unsymmetric B raises) and a polished solve keeps a
   complex64 Krylov basis (`eigs(single_basis=polish)`): either change of the pencil or the polish rule changes
-  `memory_estimates._modes_fem_memory_estimate` too.
+  `memory_estimates.fem_modes_polished` (memory items and the triangle time recipe) too.
 - The size and time figures (`estimated_unknowns`, FEM_LU_FILL_FACTOR, FEM_MODE_ASSEMBLY_*) are uncalibrated; the
   triangle em_fdfd_bor / em_fdfd_conical estimates reuse them.
 - bend_radius on triangles (refused) would need nu_t / nu_zz from the mu tensors, s continued into an x PML ring and
