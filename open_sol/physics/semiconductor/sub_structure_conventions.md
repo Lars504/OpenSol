@@ -23,6 +23,13 @@ docstrings; back ends, fallbacks and estimates: `_linear_solve` / `_factor_solve
   outer face is already insulating, the exact even mirror of the FV cells and of the box method. Covered by
   examples/semiconductor/analytic_photoconductor_gain.
 
+## Memory and precision
+- The Newton state, Jacobian and SG / Bernoulli terms stay float64 on the host (carriers span ~1e-150 to 1e26 scaled,
+  contact currents are differences of SG terms); the device holds only the float32 output fields (read by couplings
+  and state-dependent materials) and a cuDSS factor. The kept coupled factor lives across solves (plan reuse); a cold
+  start frees it before the equilibrium Poisson LU, so the estimate's Poisson phase before the coupled one holds.
+  Parking the output fields would save ~70 B per full-grid cell beside a factor of a few kB per window cell: kept.
+
 ## Self-tests
 - Tensor-mesh physics is checked by the examples (examples/semiconductor, examples/multiphysics); cases cover only what
   no example does. Self-tests needing SuperLU pin a scipy_splu node (Automatic is cuDSS on the gpu). Solve cost grows

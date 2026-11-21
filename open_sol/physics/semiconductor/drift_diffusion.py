@@ -163,6 +163,10 @@ class DriftDiffusionCore:
             except ContinuationFailed:
                 pass   # restart from equilibrium below
         self.cold_starts += 1
+        # a coupled factor kept by an earlier solve (a failed continuation, a doping change) goes first: the Poisson LU
+        # never sits beside it (the estimates book it as a phase before the coupled one; the coupled re-plan takes the
+        # kept cuDSS ordering)
+        self.release_kept_factors()
         start_voltages = np.zeros_like(end_voltages)
         try:
             state = self._equilibrium_state()
