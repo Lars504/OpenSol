@@ -16,9 +16,13 @@ and docstrings; settings: their help texts.
 - Device lattice (gpu): per-cell relaxation rates exist only for several fluid viscosities, per-cell lattice forces
   only while a force is present and not (steady) uniform on the fluid (stride 0 reads the 1-element arrays), the saved
   velocity only in a steady march (the transient health check passes the macros as saved), and the float64 kinematic
-  viscosity is rebuilt from the materials at each use: ~32 of ~150 bytes per window cell fewer in a plain transient
-  run. Code that frees one of these goes through `_drop_cell_arrays` (step graphs hold their pointers); the cpu keeps
-  them all (host twins: one numba signature). `definition._memory_estimate` books the same conditions.
+  viscosity is rebuilt in place from the materials at a refresh / a new dt with several viscosities (one viscosity: a
+  host double, `_uniform_viscosity`, so a varying transient runner step costs no window work or sync). Code that frees
+  one of these goes through `_drop_cell_arrays` (step graphs hold their pointers); the cpu keeps them all (host twins:
+  one numba signature). Equilibrium populations (dt rescale, initial flow) are stored one direction at a time
+  (`_store_equilibrium`), never as a (9, window) stack: a run-time dt change sits on the full lattice.
+  `definition._memory_estimate` books the same conditions (gpu rates / forces as run items: allocated by the first
+  step; `_REFRESH_TEMPORARY_FLOATS` in the build and as a run phase).
 - Transient: the published velocity lags the probe time by ~half a lattice step (`selftests_time.py` tolerances).
 - Symmetry feature = the slip face (kind 'slip' in `_FACE_FEATURE_KINDS`) as a model mirror plane; slip is the exact
   even mirror of the lattice (halfway bounce-back where the mirrored upstream cell is solid). Corner diagonals beside a
