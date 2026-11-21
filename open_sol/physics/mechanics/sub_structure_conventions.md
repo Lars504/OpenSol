@@ -188,7 +188,8 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   (`_ShownSolution`: the live unknown, the assembly's lambda / mu, and once a temperature input was written its free
   thermal strains alpha_i dT, so later in-place changes of dT / alphas never reach the shown outputs). Code that
   changes the unknown without a new show calls `_freeze_unknown()` first (assembly, warm start) or `_drop_shown()`
-  (a solve, a selected mode); a new temperature input writer sets `_thermal_inputs`. One computed output is kept (the
+  (a solve, a selected mode, `step` before a re-assembly its solve follows: no unknown copy beside the assembly
+  transients, which the estimate does not book); a new temperature input writer sets `_thermal_inputs`. One computed output is kept (the
   latest); a reader of several keeps its own references. The elastic_output kernel and its numpy twin change together.
 - pcg preconditioner 'multigrid' (opt-in): design and known weakness in the `multigrid3d.py` header, the fallback guard
   in `_guarded_solve`. Self-tests `solid_3d_multigrid` and `solid_3d_multigrid_void` fail on a fallback, so the guard

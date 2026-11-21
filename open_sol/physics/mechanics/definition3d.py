@@ -1780,9 +1780,9 @@ def _memory_estimate(settings_values, mesh, context):
             (f'eigenvectors ({n_wanted} x float64)', n_wanted * FLOAT64_BYTES * dofs),
             (f'mode shapes ({modal_kept_count(context)} x float64)', modal_kept_count(context) * FLOAT64_BYTES * dofs))
     elif context.spec.study.type == EIGENFREQUENCY_STUDY:
-        # density copy + masked copy, massless mask; free-dof index (int64), Lanczos vector, per-step gathers
+        # density copy + masked copy, massless mask; free-dof index (int32), Lanczos vector, per-step upload and gather
         transient_items.append(('eigen solve', 'eigen solve vectors', (2 * FLOAT64_BYTES + BOOL_BYTES) * elements
-                                + 4 * FLOAT64_BYTES * dofs))
+                                + (INT32_BYTES + 3 * FLOAT64_BYTES) * dofs))
         host_items = _eigen_host_items(context, dofs)
     if multigrid:
         host_items = tuple(host_items) + (('multigrid coarsest build (float64, transient)',

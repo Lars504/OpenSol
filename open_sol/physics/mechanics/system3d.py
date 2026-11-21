@@ -513,7 +513,9 @@ class ElasticSystem3D(ElasticSystemBase):
             return self._lowest_modes_block(density, n_resonances, eigen_solver)
         xp = self.xp
         density = xp.ascontiguousarray(density, dtype=self.dtype)
-        free_index = xp.flatnonzero(self.free)
+        # int32 free-dof index (n_dofs < 2^31, __init__), read by the two gathers of every Lanczos step: 4 B / dof
+        # less over the eigen solve than flatnonzero's int64 (dropped before the Lanczos vector is allocated)
+        free_index = xp.flatnonzero(self.free).astype(np.int32)
         lanczos_vector = xp.zeros(self.n_dofs, dtype=self.dtype)   # 0 on fixed dofs throughout
         rhs, solution = self.rhs, self._solution
         kernels, widths, solver = self.kernels, self.widths_device, self.linear_solver
