@@ -1096,8 +1096,11 @@ def _fem_memory_estimate(settings_values, mesh, context):
         _, n_basis = eigen_basis_counts(context, vector_dofs, rigid_motions, pml)
         # solve_eigenfrequencies releases the ModalPencil (DevicePencil, factor) after each solve; a complex pencil
         # runs eigs_shifted (the device Krylov-Schur on a DevicePencil), a real one eigsh_shifted
+        complex_bloch = complex_bloch_pencil_2d(settings_values)
         eigen_transient, eigen_host_items, eigen_factors, eigen_phases, basis_on_device = eigen_device_items(
             context, vector_dofs, entries, 16 if complex_pencil else FLOAT64_BYTES, dimensions=fill,
+            # a Bloch phase: Hermitian or general (P^H A P of a complex symmetric A), not vouched: full, checked terms
+            symmetric=not complex_bloch, checked=complex_bloch,
             complex_eigs=complex_pencil, n_basis=n_basis, mass_entries=entries // components,
             # a loss factor leaves M real (float64 in the complex pencil); a PML stretch or a Bloch reduction does not
             mass_bytes=16 if pml or complex_bloch_pencil_2d(settings_values) else FLOAT64_BYTES)
@@ -1270,9 +1273,10 @@ def _memory_estimate(settings_values, mesh, context):
             host_items += frequency_response_host_items(PIEZO_COMPONENTS * (dofs // 2), complex_factor=bool(
                 context.material_sets(LOSS_ARRAYS[0]) or context.material_sets(LOSS_ARRAYS[1])))
     elif study in MODAL_STUDIES:
-        # mass stencil, its gathered data and CSR copy, density temporaries: freed once M is on the host
-        transient_items.append(('eigen assembly', 'eigen mass assembly',
-                                3 * value_bytes * entries + 4 * value_bytes * elements))
+        # K and M are host float64 stencils (_build_harmonic_operators, xp=np): on the device only the density
+        # temporaries and the (plane-stress condensed) coefficients before their host copies
+        transient_items.append(('eigen assembly', 'eigen density / coefficient temporaries of the host copies',
+                                8 * value_bytes * elements))
         eigen_transient, eigen_host_items, factors, factor_phases, _ = eigen_device_items(
             context, dofs, entries, FLOAT64_BYTES, mass_entries=entries // 2)   # Q1 mass: one component per row
         transient_items += eigen_transient
