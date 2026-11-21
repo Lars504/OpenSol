@@ -893,7 +893,11 @@ def _steps_in_time(settings_values):
 
 
 def _operator_follows_state(context, transient) -> bool:
-    """Whether the run re-assembles and refactorises the heat operator: k (transient: rho, cp) follows a state or t."""
+    """Whether the run re-assembles or refactorises the heat operator: k (transient: rho, cp) follows a state or t, or a
+    radiation feature re-linearises its loss (transient: per step; steady: per re-linearisation), which refreshes the
+    diagonal and sets the linear solver up again (multigrid re-setup / direct refactorisation) inside the run."""
+    if any(feature.enabled and feature.type == 'radiation' for feature in context.physics_spec.features):
+        return True
     return material_follows_state(context, ('k', 'k_xx', 'k_yy', 'k_zz', 'k_xy') + (('rho', 'cp') if transient else ()))
 
 
@@ -938,7 +942,8 @@ def _memory_estimate(settings_values, mesh, context):
     solver_options = dict(mixed=linear_solver_mixed(context), multigrid=linear_solver_multigrid(context),
                           direct=linear_solver_direct(context), pcg=pcg_linear_solver(context.solvers), flux=True,
                           backend=solver_backend(context.spec),
-                          conformal=bool(context.spec.solver_defaults.conformal_boundaries))
+                          conformal=bool(context.spec.solver_defaults.conformal_boundaries),
+                          refactorizes=refactorizes)
     wrap = mesh.domain_map is not None and mesh.domain_map.angle_wrap != 'none'   # phi wrap: 2 more build slots
     cross_term = not context.spec.is_3d and context.material_sets('k_xy')
     if context.spec.is_3d:

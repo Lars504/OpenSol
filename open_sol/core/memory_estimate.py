@@ -299,7 +299,7 @@ def diffusion_full_operator_bytes(window_cells, entries_per_row, n_slots, value_
 def diffusion_system_estimate(window_cells, precision, cross_term=False, transient=False,
                               dimensions=2, mixed=False, multigrid=False, direct=False,
                               azimuthal=False, wrap=False, flux=False, dissipation=False,
-                              backend=None, conformal=False, pcg=True) -> MemoryEstimate:
+                              backend=None, conformal=False, pcg=True, refactorizes=False) -> MemoryEstimate:
     """DiffusionSystem (core.fv_diffusion) on window_cells (3D: all window voxels, dimensions=3): prepare buffers, CSR
     pattern, the one kept operator (A_solve: no A_eff CSR is kept) and assembly vectors (steady; azimuthal: the kept
     azimuthal diagonal of an (r, z) order m != 0; ONE assembly: a re-assembly drops its predecessor first,
@@ -316,7 +316,9 @@ def diffusion_system_estimate(window_cells, precision, cross_term=False, transie
     (solver_host_bytes) instead (a cuDSS one: the caller adds fem.diffusion.cudss_diffusion_estimate). wrap (phi wrap
     of a polar window or a cylindrical sector, symmetry 2.21): 2 more slots in the dense build array; its CSR entries stay within
     the 5 / 7 per row. flux (a caller computing flux_at_centres after its solves): its temporaries, transient phase
-    'flux post-processing'; dissipation (2D dissipation_density): the share arrays it keeps (run items)."""
+    'flux post-processing'; dissipation (2D dissipation_density): the share arrays it keeps (run items); refactorizes
+    (the run re-assembles: k / C/dt follow a state or t): a re-assembly's temporaries (phase 're-assembly') and
+    (multigrid) the solver re-setup (phase 'refactorisation') beside the run items."""
     value_bytes = FLOAT64_BYTES if precision == 'float64' else FLOAT32_BYTES
     entries_per_row = 9 if cross_term else 5
     cells = int(window_cells)
@@ -358,6 +360,15 @@ def diffusion_system_estimate(window_cells, precision, cross_term=False, transie
         pattern += assembly_maps
     else:
         build_extra += assembly_maps
+    reassembly = 0
+    if refactorizes:   # a run re-assembly (the pattern kept): the new coefficient copies beside the old ones until the
+        # anchor check (DiffusionSystem._release_compared_terms); fused kernels: + A_eff values and the Jacobi output;
+        # build_laplacian (c_xy, wrap, cut cells): its build temporaries (an upper bound: no pattern build). The anchor
+        # check's labelling runs only when a c > 0 pattern moved (not booked on the fused path)
+        ndim = 3 if dimensions == 3 else 2
+        fused = not (cross_term or wrap or (conformal and dimensions != 3))
+        reassembly = ((entries_per_row + ndim + 1) * value_bytes * cells if fused
+                      else build_extra + ndim * value_bytes * cells)
     items = [('solver buffers', buffers), ('sparse pattern (int32)', pattern),
              ('assembled operator (A_solve)', operators), ('assembly vectors', assembly)]
     if mixed:
@@ -370,7 +381,8 @@ def diffusion_system_estimate(window_cells, precision, cross_term=False, transie
         items.append(('multigrid hierarchy (operators, prolongations, vectors)',
                       amg.hierarchy_bytes(cells, value_bytes, entries_per_row)))
         alive = (_FACTORIZE_ALIVE_VALUE_ARRAYS * value_bytes + _FACTORIZE_ALIVE_MASKS * BOOL_BYTES) * cells
-        build_extra = max(build_extra, alive + amg.setup_extra_bytes(cells, value_bytes, entries_per_row))
+        setup = alive + amg.setup_extra_bytes(cells, value_bytes, entries_per_row)
+        build_extra = max(build_extra, setup)
         if not (backend == 'gpu' and amg.DEVICE_AGGREGATION):   # the device twin holds no host copy of the CSR
             host_items.append(('multigrid aggregation (transient)', amg.aggregation_host_bytes(cells, entries_per_row)))
         # aggregates and tentative prolongators between setups: numpy arrays (on the cpu backend beside its hierarchy)
@@ -393,6 +405,10 @@ def diffusion_system_estimate(window_cells, precision, cross_term=False, transie
             host_items.append(('host CSC copy of the operator (float64)',
                                FLOAT64_CSR_ENTRY_BYTES * entries_per_row * cells + INT32_BYTES * cells))
     run_items, transient_items = [], []
+    if reassembly:
+        transient_items.append(('re-assembly', 'DiffusionSystem re-assembly temporaries (run)', reassembly))
+        if multigrid:   # every re-assembly's factorize (fresh or lagged setup): the build's setup peak, in the run
+            transient_items.append(('refactorisation', 'multigrid re-setup (run)', setup))
     if flux:   # freed when the caller's post-processing returns
         n_flux = _FLUX_ARRAYS[3 if dimensions == 3 else 2] + (_CROSS_FLUX_ARRAYS if cross_term else 0)
         transient_items.append(('flux post-processing', f'flux post-processing temporaries ({n_flux} window arrays)',
