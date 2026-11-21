@@ -972,10 +972,10 @@ def adjoint_objective_memory_estimate(polarization):
 
     def estimate(values, n_selected_cells, mesh):
         n_cells = int(mesh.n_cells)
-        # the float32 EpsSensitivity (gradients + densities) stays cached until the next solve starts (fdfd_2d._solve
-        # drops it before the factorisation); small beside the temporaries
-        items = [(ADJOINT_PHASE, f'adjoint sensitivity cache ({n_gradients + n_densities} x float32)',
-                  (n_gradients + n_densities) * FLOAT32_BYTES * n_cells),
+        # the EpsSensitivity (float64 gradients, float32 densities) stays cached until the next solve starts
+        # (fdfd_2d._solve drops it before the factorisation); small beside the temporaries
+        items = [(ADJOINT_PHASE, f'adjoint sensitivity cache ({n_gradients} x float64 + {n_densities} x float32)',
+                  (n_gradients * FLOAT64_BYTES + n_densities * FLOAT32_BYTES) * n_cells),
                  (ADJOINT_PHASE, f'adjoint solve temporaries ({n_temporaries} x complex128)',
                   n_temporaries * COMPLEX128_BYTES * n_cells)]
         if n_mean_maps:

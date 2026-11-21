@@ -429,8 +429,9 @@ type's vocabulary and refusals are in its help texts and validation.
   em_resonance_region_fraction, em_fdfd_resonance_region, em_eigen_sparse_mass, em_resonance_filter_device_storage (gpu); template disk_resonator_eigenmodes.
 - Adjoint (C7, `adjoint.py`, derivation in its header): objectives subclass the flux / mode monitors; J = sum weight
   * value (flux unfolded by `mirror_factor`, mode power raw). `eps_sensitivity()` is lazy, cached per (n_solves,
-  objectives) until the next `_solve` starts (dropped before its factorisation), float32 gradients (argument at
-  `EpsSensitivity`; `permittivity_gradients`, which nlfd chains, stays float64), zeros while a resonance is shown;
+  objectives) until the next `_solve` starts (dropped before its factorisation), its cell gradients float64 (they
+  feed L-BFGS-B's gradient differences; off the device peak anyway: argument at `EpsSensitivity`; only the rendered
+  densities are float32), zeros while a resonance is shown;
   `solve_adjoint` refuses a system reassembled since the last driven
   solve or a shown resonance. The adjoint source is folded through the transpose of the wall fill; hz differentiates V
   incl. the `pin_image_cells` fold, plus (as nlfd) the objectives' face fields (`face_cotangents` = the objective face
