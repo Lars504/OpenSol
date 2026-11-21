@@ -317,11 +317,15 @@ A new accepted sync joins this list.
   on the kept plain pattern through `fv_diffusion_fused` (selftest diffusion_fused_reassembly). A new operator term
   goes into both paths or makes `_fused_pattern` refuse it; `_keep_assembly` stores what both keep.
 - One assembly at a time: every full assembly starts with `_release_assembly` (operators, assembly vectors, the
-  PCGSolver binding), keeping only what the anchor shortcut compares (assembled c, C/dt, anchor code). A new kept
-  assembly array joins both `_release_assembly` and `_keep_assembly`; nothing may read the previous assembly inside
-  assemble except those. The `LaplacianPattern` assembly maps (slot_positions, entry_rows) are released after the
-  first elimination where `_fused_pattern` holds and rebuilt transiently on access (full_operator); systems
-  re-assembling through build_laplacian keep them (no rebuild sync per step; estimate: `conformal=`, cross_term, wrap).
+  binding of any linear solver with `release_operator`: duck-typed, so a wrapper unbinds its own), keeping only what
+  the anchor shortcut compares (assembled c, C/dt: dropped right after the anchor check, `_release_compared_terms`,
+  so the solver setup never holds two coefficient sets) and the anchor code. A new kept assembly array joins both
+  `_release_assembly` and `_keep_assembly`; nothing may read the previous assembly inside assemble except those. The
+  `LaplacianPattern` assembly maps (slot_positions, entry_rows) are released after the first elimination where
+  `_fused_pattern` holds and rebuilt transiently on access (full_operator); systems re-assembling through
+  build_laplacian keep them (kept again, `keep_assembly_maps`, once a fused pattern stops being one: no rebuild sync
+  per step; estimate: `conformal=`, cross_term, wrap). A run that re-assembles or refreshes (k(T), radiation) books
+  its re-assembly temporaries and multigrid re-setup as run phases (`diffusion_system_estimate(refactorizes=)`).
 - One device CSR per assembly (A_solve): A_eff is never kept (`assembled` marks a kept assembly). Its readers take the
   kept face terms: `_off_diagonal_product` (A_eff u_fix on free rows: refresh_diagonal / refresh_held_values),
   `fv_diffusion_3d.crossing_outflow` (fixed_region_outflow) and the transient `full_operator()` (thermal noise,

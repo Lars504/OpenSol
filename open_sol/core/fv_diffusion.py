@@ -863,6 +863,8 @@ class DiffusionSystem:
                     held_wall=self.held_wall, apertures=self.apertures, kxy_active=self._kxy_active, cross=cross,
                     geometry=self._geometry))
         pattern = self.pattern
+        if not self._fused_pattern():   # a pattern released while fused, now re-assembled here (cut cells, held edges
+            pattern.keep_assembly_maps()   # set later): kept again, no rebuild per assembly (no-op while kept)
         diagonal_positions = pattern.diagonal_positions
         window_shape = self.window_shape
         n_window = self.n_window
@@ -886,6 +888,7 @@ class DiffusionSystem:
                                 xp.where(unconnected, self.unknown2d, 0.0)).astype(dtype, copy=False)
         loss_anchor_cells = self.extra_diag > 0
         self._run_anchor_check(check_anchors, c_xx, c_yy, fixed, capacity_over_dt, face_terms, c_zz, loss_anchor_cells)
+        self._release_compared_terms()
 
         # CG unknown w = u - u_fix (0 on fixed cells): A_solve = D_free A_eff D_free + D_fixed, rhs_offset = D_free (rhs
         # - A_eff u_fix). Keeping u_fix [u] out of b keeps every entry of b in [c u], so the tolerance relative to ||b||
@@ -919,10 +922,11 @@ class DiffusionSystem:
 
     def _release_assembly(self) -> None:
         """Drop the previous assembly before a full one builds its successor (both paths reproduce every array), so a
-        re-assembly never holds two operators, two sets of assembly vectors or (a PCGSolver: release_operator) the
-        solver's binding beside the new ones while the solver sets up (a multigrid setup is the peak; the estimate books
-        one assembly). Kept: what the anchor shortcut compares (assembled coefficients, C/dt, anchor code) and the
-        solution. A failed assembly leaves operator_dirty set, so every reader raises until the next one."""
+        re-assembly never holds two operators, two sets of assembly vectors or (any solver with release_operator: a
+        PCGSolver, a wrapper such as magnetic's KeptPreconditionerSolver) the solver's binding beside the new ones while
+        the solver sets up (a multigrid setup is the peak; the estimate books one assembly). Kept until the anchor check
+        (_release_compared_terms): what its shortcut compares (assembled coefficients, C/dt); kept: the anchor code and
+        the solution. A failed assembly leaves operator_dirty set, so every reader raises until the next one."""
         self._operator_dirty = True   # not the setter: the change marks steer this assembly's anchor shortcut
         self.assembled = False
         self.A_solve = None
@@ -930,8 +934,16 @@ class DiffusionSystem:
         self.fixed_values = self.free = self.rhs_offset = self.rhs_drive = self.inverse_diagonal = None
         self.face_terms = self.face_conductances = self.wrap_conductance = self.cross = None
         self._lower_cell_shares = None
-        if isinstance(self.linear_solver, PCGSolver):
-            self.linear_solver.release_operator()
+        release = getattr(self.linear_solver, 'release_operator', None)   # duck-typed: wrappers unbind theirs too
+        if release is not None:
+            release()
+
+    def _release_compared_terms(self) -> None:
+        """Drop the previous assembly's coefficients and C/dt once this assembly's anchor check has compared them (a
+        deferred gpu check holds only the new ones), so the solver setup that follows never holds two coefficient sets
+        (ndim window arrays of the solve dtype); _keep_assembly stores the new ones after it."""
+        self.assembled_c_xx = self.assembled_c_yy = self.assembled_c_zz = None
+        self.capacity_over_dt = None
 
     def _keep_assembly(self, conduction_diagonal, azimuthal_diagonal, fixed_values, free, capacity_over_dt,
                        loss_anchor_cells, rhs_drive, face_terms, face_conductances, wrap_conductance, coefficients,
@@ -1040,6 +1052,7 @@ class DiffusionSystem:
             start += size
         loss_anchor_cells = self.extra_diag > 0
         self._run_anchor_check(check_anchors, c_xx, c_yy, fixed, capacity_over_dt, face_terms, c_zz, loss_anchor_cells)
+        self._release_compared_terms()
 
         solve_data = xp.empty_like(data)
         inverse_diagonal = xp.empty(n_window, dtype=dtype)   # the kernel's output (dropped: _keeps_inverse_diagonal)
