@@ -540,7 +540,8 @@ def _parked_fdtd_items(polarization, parked, context, mesh, build_extra, field_b
     (fdtd_2d_base readers): the Courant check's device copies of a varying parked eps_r (ez, any eps counts: poles
     write their background) / mu_r on top of its temporaries, the painted arrays before the fields exist, the hz E
     rebuild's whole-array uploads (the subpixel gathers upload one array at a time after it), the x-row block uploads
-    (ez E, both H); kept: ez's sigma_e copy on the conducting cells' box while accumulating (the ohmic loss)."""
+    (ez E, both H); kept while accumulating: ez's sigma_e copy on the conducting cells' box (the ohmic loss), hz's on
+    the loss box (the conducting and dispersive cells' box: q_accum_hz)."""
     n_cells = int(mesh.n_cells)
     copies = int(polarization == 'ez' and 'eps_r' in parked)
     copies += int('mu_r' in parked and context.material_sets('mu_r', default=1))
@@ -551,18 +552,29 @@ def _parked_fdtd_items(polarization, parked, context, mesh, build_extra, field_b
                       FLOAT32_BYTES * max(rebuild_uploads, 1) * n_cells,
                       FLOAT32_BYTES * len(parked) * min(n_cells, PARKED_BLOCK_CELLS))
     items = []
-    if polarization == 'ez' and q_accum and 'sigma_e' in parked and context.material_sets('sigma_e'):
-        items.append(('sigma_e copy on the box of the conducting cells (float32, ohmic loss)',
-                      FLOAT32_BYTES * _property_box_cells(context, 'sigma_e', n_cells)))
+    if q_accum and 'sigma_e' in parked:
+        if polarization == 'ez' and context.material_sets('sigma_e'):
+            items.append(('sigma_e copy on the box of the conducting cells (float32, ohmic loss)',
+                          FLOAT32_BYTES * _property_box_cells(context, 'sigma_e', n_cells)))
+        elif polarization == 'hz':   # the poles' faces grow the box by a cell: not booked
+            items.append(('sigma_e copy on the loss box (float32, q_accum_hz)',
+                          FLOAT32_BYTES * _property_box_cells(context, 'sigma_e', n_cells, with_poles=True)))
     return build_extra, items
 
 
-def _property_box_cells(context, property_name, n_cells):
+def _property_box_cells(context, property_name, n_cells, with_poles=False):
     """Full-grid cells of the union bounding box of the material regions setting property_name to a non-zero value
-    (n_cells when a region's box does not resolve; 0 without such a region)."""
+    (with_poles: and of those with a dispersion pole; n_cells when a region's box does not resolve; 0 without such a
+    region)."""
     from ...materials import effective_material_data   # lazy: materials imports physics.em
     bounds = None
     regions = {region.name: region for region in context.material_regions}
+    if with_poles:
+        for region in context.material_regions:
+            if region.n_drude or region.n_lorentz:
+                if not region.box_bounds:
+                    return n_cells
+                bounds = _union_bounds(bounds, region.box_bounds)
     for material in context.spec.materials:
         try:
             properties, _ = effective_material_data(material.library, material.properties, material.dispersion)

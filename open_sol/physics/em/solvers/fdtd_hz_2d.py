@@ -87,11 +87,11 @@ class FDTDEngine2D_Hz(_YeeEngine2DBase):
         # 1-element stand-ins for the pole power totals / pole mask when q_accum_hz runs without poles.
         self._no_pole_power = None
         self._no_pole_cell = None
-        # (grid, block, box ints) of q_accum_hz on the cells that can receive loss, (None,) for none; None = stale
-        # (refreshed at the next accumulation after finalize, a sigma_e change or a new pole / nonlinear region)
+        # (grid, block, box ints, loss-box sigma_e copy or None) of q_accum_hz on the cells that can receive loss, grid
+        # None for none; None = stale (refreshed at the next accumulation after finalize, a sigma_e change or a new pole
+        # / nonlinear region). The copy (C-contiguous float32 on the loss box) exists only for a parked sigma_e
+        # (MaterialGrid.park); else the kernel reads the full-grid MaterialGrid array.
         self._loss_box_args = None
-        # full-grid device copy of a parked sigma_e read by q_accum_hz while accumulating (_refresh_loss_sigma_e)
-        self._loss_sigma_e = None
 
     # --- PhysicsSolver contract -----------------------------------------------
 
@@ -120,20 +120,11 @@ class FDTDEngine2D_Hz(_YeeEngine2DBase):
     # --- loss accounting ------------------------------------------------------
 
     def _q_accum_enabled(self) -> None:
-        """1-element no-pole stand-ins for q_accum_hz, then the pole power totals when a pole exists and the device
-        copy of a parked sigma_e."""
+        """1-element no-pole stand-ins for q_accum_hz, then the pole power totals when a pole exists."""
         if self._no_pole_power is None:
             self._no_pole_power = self.xp.zeros(1, dtype=self.dtype)
             self._no_pole_cell = self.xp.zeros(1, dtype=np.bool_)
         self._ensure_pole_power_totals()
-        self._refresh_loss_sigma_e()
-
-    def _refresh_loss_sigma_e(self) -> None:
-        """Full-grid device copy of a parked sigma_e (MaterialGrid.park) while accumulating: q_accum_hz reads every
-        cell of its loss box each step (the model path never parks sigma_e with accumulation on), else None."""
-        self._loss_sigma_e = None
-        if self._enable_q_accum and 'sigma_e' in self.materials.parked:
-            self._loss_sigma_e = self.materials.device_array('sigma_e')
 
     def _ensure_pole_power_totals(self) -> None:
         """Allocate the full-grid face pole power totals (field dtype) once accumulation is on and a pole exists."""
@@ -392,28 +383,30 @@ class FDTDEngine2D_Hz(_YeeEngine2DBase):
 
         if self._loss_box_args is None:
             self._loss_box_args = self._loss_box_launch()
-        grid, block, box_ints = self._loss_box_args
+        grid, block, box_ints, box_sigma_e = self._loss_box_args
         if grid is not None:
-            self._launch_q_accum_hz(grid, block, box_ints, ex, ey, with_pole_power)
+            self._launch_q_accum_hz(grid, block, box_ints, box_sigma_e, ex, ey, with_pole_power)
         self.q_accum_time += float(self.dt)
 
-    def _launch_q_accum_hz(self, grid, block, box_ints, ex, ey, with_pole_power):
-        """q_accum_hz (ohmic + pole power per cell) on the loss box."""
+    def _launch_q_accum_hz(self, grid, block, box_ints, box_sigma_e, ex, ey, with_pole_power):
+        """q_accum_hz (ohmic + pole power per cell) on the loss box (sigma_e: the loss-box copy of a parked one, else
+        the full-grid MaterialGrid array)."""
         _kernels.q_accum_hz(
             grid, block,
             (self.q_accum, ex, ey,
              self._pole_power_x if with_pole_power else self._no_pole_power,
              self._pole_power_y if with_pole_power else self._no_pole_power,
-             self.materials.sigma_e if self._loss_sigma_e is None else self._loss_sigma_e,
+             self.materials.sigma_e if box_sigma_e is None else box_sigma_e,
              self._pole_cell if with_pole_power else self._no_pole_cell,
              self._cell_dx_real, self._cell_dy_real,
              self._nx_i32, self._ny_i32, self._periodic_x_i32, self._periodic_y_i32,
-             np.int32(with_pole_power), self._dt_real, *box_ints))
+             np.int32(with_pole_power), self._dt_real, *box_ints, np.int32(box_sigma_e is not None)))
 
     def _loss_box_launch(self):
-        """(grid, block, int32 (i0, j0, box_nx, box_ny)) of the cells q_accum_hz can give loss: the sigma_e > 0 cells
-        and the pole power face boxes grown one cell along the face normal (the cell past a face takes a share; a
-        periodic last face wraps: the whole axis); (None, None, None) when there are none. One host sync."""
+        """(grid, block, int32 (i0, j0, box_nx, box_ny), sigma_e box copy) of the cells q_accum_hz can give loss: the
+        sigma_e > 0 cells and the pole power face boxes grown one cell along the face normal (the cell past a face takes
+        a share; a periodic last face wraps: the whole axis); the copy (one upload of the box) only for a parked
+        sigma_e, else None; (None, None, None, None) when there are no such cells. One host sync."""
         box = _bounding_box(self.materials.sigma_e)
         for component, face_box in self._pole_power_boxes.items():
             axis = 1 if component == 'ex' else 0
@@ -425,14 +418,16 @@ class FDTDEngine2D_Hz(_YeeEngine2DBase):
                            else slice(cells.start, min(cells.stop + 1, n_cells)))
             box = _union_box(box, tuple(grown))
         if box is None:
-            return None, None, None
+            return None, None, None, None
         box_nx, box_ny = box[0].stop - box[0].start, box[1].stop - box[1].start
         grid, block = _kernels.launch(box_nx, box_ny)
-        return grid, block, tuple(np.int32(value) for value in (box[0].start, box[1].start, box_nx, box_ny))
+        box_sigma_e = (self.xp.ascontiguousarray(self.materials.device_array('sigma_e', box))
+                       if 'sigma_e' in self.materials.parked else None)
+        return (grid, block, tuple(np.int32(value) for value in (box[0].start, box[1].start, box_nx, box_ny)),
+                box_sigma_e)
 
     def _sigma_e_changed(self) -> None:
-        self._loss_box_args = None   # refreshed at the next accumulation
-        self._refresh_loss_sigma_e()
+        self._loss_box_args = None   # refreshed (with a parked sigma_e's box copy) at the next accumulation
 
     def _component_arrays(self, component):
         """(E field, face cb, face pole power total or None, keep mask or None) of 'ex' / 'ey'."""

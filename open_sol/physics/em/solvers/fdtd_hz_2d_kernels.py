@@ -382,6 +382,8 @@ lorentz_p_update_power = twin('em2d.hz_lorentz_p_update_power', cp.ElementwiseKe
 # no poles (pole_power_x / pole_power_y / pole_cell are dummies and never read). cell_dx / cell_dy = cell widths [m].
 # q float32 (q_accum); fields, pole power totals, widths and dt real_t (dtype from ex: argument 1). Runs on the cell
 # box (i0, j0, box_nx, box_ny) that can receive loss (FDTDEngine2D_Hz._loss_box_launch); the twin adds on it alone.
+# sigma_e (float32, read at the cell itself only): the full grid, or with sigma_on_box = 1 a C-contiguous
+# (box_nx, box_ny) copy of the loss box (a parked MaterialGrid sigma_e).
 _Q_ACCUM_HZ_SOURCE = r"""
 __device__ __forceinline__ real_t pole_share(
     const bool* pole_cell, int self_idx, int partner_idx, real_t w_self, real_t w_partner)
@@ -419,7 +421,7 @@ void q_accum_hz(
     const real_t* __restrict__ cell_dx,
     const real_t* __restrict__ cell_dy,
     int nx, int ny, int periodic_x, int periodic_y, int has_pole_power, real_t dt,
-    int i0, int j0, int box_nx, int box_ny)
+    int i0, int j0, int box_nx, int box_ny, int sigma_on_box)
 {
     int box_j = blockIdx.x * blockDim.x + threadIdx.x;
     int box_i = blockIdx.y * blockDim.y + threadIdx.y;
@@ -427,7 +429,7 @@ void q_accum_hz(
     int i = i0 + box_i;
     int j = j0 + box_j;
     int idx = i * ny + j;
-    real_t half_sigma = (real_t)0.5 * sigma_e[idx];
+    real_t half_sigma = (real_t)0.5 * sigma_e[sigma_on_box ? box_i * box_ny + box_j : idx];
     real_t power = 0;
 
     // X_hi: ex[i, j], partner (i, j+1); the last column wraps to (i, 0) or is the cell's own face.
@@ -471,8 +473,13 @@ def _pole_share_host(self_member, partner_member, self_width, partner_width):
 
 
 def _q_accum_hz_host(q, ex, ey, pole_power_x, pole_power_y, sigma_e, pole_cell, cell_dx, cell_dy, nx, ny,
-                     periodic_x, periodic_y, has_pole_power, dt, i0, j0, box_nx, box_ny):
+                     periodic_x, periodic_y, has_pole_power, dt, i0, j0, box_nx, box_ny, sigma_on_box):
     nx, ny = int(nx), int(ny)
+    box = (slice(int(i0), int(i0) + int(box_nx)), slice(int(j0), int(j0) + int(box_ny)))
+    if sigma_on_box:   # the loss-box copy: 0 off the box, whose cells are never added below
+        full = np.zeros(ex.shape, dtype=sigma_e.dtype)
+        full[box] = sigma_e
+        sigma_e = full
     half_sigma = 0.5 * sigma_e.astype(ex.dtype, copy=False)
     dx_rows, dy_columns = cell_dx[:, None], cell_dy[None, :]
     # hi faces: partner j + 1 / i + 1; the non-periodic last face is the cell's own (factor 2, share 1)
@@ -509,7 +516,6 @@ def _q_accum_hz_host(q, ex, ey, pole_power_x, pole_power_y, sigma_e, pole_cell, 
         power += np.where(lo_x_valid, lo_share * np.roll(pole_power_x, 1, axis=1), np.float32(0.0))
         lo_share = _pole_share_host(pole_cell, lo_cell_y, dx_rows, np.roll(cell_dx, 1)[:, None])
         power += np.where(lo_y_valid, lo_share * np.roll(pole_power_y, 1, axis=0), np.float32(0.0))
-    box = (slice(int(i0), int(i0) + int(box_nx)), slice(int(j0), int(j0) + int(box_ny)))
     q[box] += (power * dt)[box]
 
 
