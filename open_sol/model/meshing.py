@@ -2440,6 +2440,7 @@ def _mesh_memory(spec, parameters, registry, shapes, mesh, mesh_name, on_mesh, s
         if physics_type is None or mesh.kind not in physics_type.grids:
             continue
         first_part = len(parts)
+        context = None   # the physics' MemoryContext, also for FeatureType.memory_estimate_context
         if physics_type.memory_estimate is not None:
             settings = physics_settings(physics_type, physics_spec, parameters)
             solvers = resolved_solvers(spec, registry, physics_spec, spec.study.type, parameters, plain_roles)
@@ -2457,8 +2458,14 @@ def _mesh_memory(spec, parameters, registry, shapes, mesh, mesh_name, on_mesh, s
             values = resolve_values(feature_type.params, feature_spec.params, parameters)
             n_cells = (_selection_cells(spec, feature_spec.selection, shapes, mesh)
                        if feature_type.selection_kind is not None else 0)
-            parts.append(feature_type.memory_estimate(values, n_cells, mesh).labelled(
-                f"feature '{physics_spec.name}.{feature_spec.name}'"))
+            if feature_type.memory_estimate_context:
+                if context is None:
+                    raise ValueError(f"feature type '{feature_type.name}' estimates memory with its physics' "
+                                     f"MemoryContext, but physics type '{physics_type.name}' has no memory_estimate")
+                estimate = feature_type.memory_estimate(values, n_cells, mesh, context)
+            else:
+                estimate = feature_type.memory_estimate(values, n_cells, mesh)
+            parts.append(estimate.labelled(f"feature '{physics_spec.name}.{feature_spec.name}'"))
         if by_physics is not None:
             by_physics[physics_spec.name] = combine(parts[first_part:])
     return combine(parts), _build_cache_bytes(mesh, regions)

@@ -199,7 +199,10 @@ templates, describe. Current state, no changelog.
   and `host_memory.available_bytes()`; GUI = the worker's last MemoryStatus; CLI check / show = host RAM; api.check
   only its arguments.
 - Memory estimate parts: `core.memory_estimate.MemoryEstimate` (its docstring and `device_peak` / `external_peak`);
-  estimator rules: root "Physics definitions" ("Estimates mirror the solver"). Session reads cache no pixel-sized
+  estimator rules: root "Physics definitions" ("Estimates mirror the solver"). A feature whose arrays depend on a
+  solver setting (em_fdtd_3d spectra on the stepper's spectrum_precision) sets `FeatureType.memory_estimate_context`
+  and reads the physics' MemoryContext (`context.solvers`), never a raw node setting; its physics type needs a
+  memory_estimate (`_mesh_memory` builds the context there and raises otherwise). Session reads cache no pixel-sized
   device arrays (a polar display image is gathered on the host), so they book nothing; post-solve field updates do
   (DiffusionSystem flux: `diffusion_system_estimate(flux=, dissipation=)`).
 - Build: every step runs under `builder._issue_at(path)`, so an exception becomes ModelError with one Issue at that

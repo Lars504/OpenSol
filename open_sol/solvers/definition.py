@@ -546,17 +546,39 @@ EXPLICIT_KERNELS_PARAMS = (
               'models.\n'
               '- Half-precision storage: fits about twice the cells in the same graphics memory and runs faster, '
               'with about three correct digits; for large 3D light, elastic wave or transient flow models.'),
+    Param('spectrum_precision', 'choice', 'double', label='Spectrum precision',
+          choices=explicit_kernels.SPECTRUM_PRECISIONS,
+          choice_labels=(('double', 'Double precision'), ('mixed2', 'Mixed precision, half the graphics memory')),
+          help='How the running spectra (DFTs) of the em_fdtd_3d flux planes, flux boxes, far fields and mode '
+               'monitors accumulate (other engines: double only; independent of precision). double: complex128 on '
+               'the device, 64 B per plane cell and wavelength, summed every sample. mixed2: each spectrum sums 64 '
+               'samples in complex64 on the device, then that block is added into a complex128 total on the host and '
+               'restarts from zero (gpu: an asynchronous copy into pinned memory, no host sync in the step loop): 32 '
+               'B per plane cell and wavelength on the device, plus 64 B (totals) and 32 B (pinned copy) in host RAM. '
+               'Its round-off is at most ~4e-6 (typically ~2e-7) of the sum of |sample| per spectrum, independent of '
+               'the run length, vs ~1e-16 per sample for double: fluxes and mode powers agree with double to ~1e-5 '
+               'of the gross power through the surface, also for near-cancelling net fluxes (a lossless box); a '
+               'deep spectral null below ~1e-5 of the gross is not resolved. Extra cost: one block copy and host '
+               'add per 64 samples (~5-25 % run time when the monitors are large against the grid). The DFT field '
+               'layers (dft_plane) and harmonic FDTD stay complex64.',
+          tip='How precisely the spectra of flux planes, flux boxes, far-field boxes and mode monitors are summed '
+              '(3D light simulations only).\n\n'
+              '- Double precision: suits every model.\n'
+              '- Mixed precision, half the graphics memory: for monitors too large for the graphics card; about five '
+              'correct digits of the power through the surface, at a small extra run time.'),
 )
 
 
 def _create_explicit_kernels(ctx, request):
-    return explicit_kernels.StepperConfig(precision=request.values['precision'])
+    return explicit_kernels.StepperConfig(precision=request.values['precision'],
+                                          spectrum_precision=request.values['spectrum_precision'])
 
 
 EXPLICIT_KERNELS = SolverType(
     'explicit_kernels', 'Explicit time stepping', roles=('stepper',), params=EXPLICIT_KERNELS_PARAMS,
     description='The fused GPU kernels of an explicit time-stepping engine (em_fdtd_ez / em_fdtd_hz / em_fdtd_3d, '
-                'elastic_waves, laminar_flow); precision: see the setting. On the CPU backend the same steps run as '
+                'elastic_waves, laminar_flow); precision and spectrum_precision (em_fdtd_3d monitor spectra): see the '
+                'settings. On the CPU backend the same steps run as '
                 'numpy twins of the kernels, numba-compiled when numba is installed (OPEN_SOL_CPU_KERNELS=numpy keeps '
                 'numpy); single or double there, several times slower than a GPU: small 2D models and tests.',
     summary='Time stepping on the graphics card (or the processor for small 2D light models), in single or double '
@@ -564,7 +586,9 @@ EXPLICIT_KERNELS = SolverType(
     operators=('spd', 'complex_symmetric', 'general'), backends=('gpu', 'cpu'),
     precisions=explicit_kernels.PRECISIONS, grids=('tensor',), create=_create_explicit_kernels,
     memory_estimate=_empty_memory_estimate, backend_misfit=explicit_kernels.backend_misfit,
-    time_estimate=explicit_kernels.time_estimate)
+    time_estimate=explicit_kernels.time_estimate,
+    # mixed2 spectra: offered only by the stepper roles listing spectrum_precision in setting_choices (em_fdtd_3d)
+    opt_in_settings={'spectrum_precision': explicit_kernels.SPECTRUM_PRECISIONS[1:]})
 
 SOLVER_TYPES = (PCG, LINE_BLOCK, SPARSE_DIRECT, BANDED, ARPACK_SHIFT_INVERT, BLOCK_EIGEN, EXPLICIT_KERNELS)
 

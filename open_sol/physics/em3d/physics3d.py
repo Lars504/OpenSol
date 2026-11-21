@@ -11,6 +11,7 @@ from ...core.constants import DTYPE, EPS0, MU0
 from ...core.cut_cells import union_test
 from ...core.mirror import MIRROR_SIGNS, plane_wave_mirror_issue
 from ...core.solver_base import PhysicsSolver
+from ...solvers.explicit_kernels import SPECTRUM_PRECISIONS
 from ..em import _make_temporal, _pole_label, _pole_step_term, _resolve_frequencies, _resolve_frequency
 from ..em.materials import DrudePole, LorentzPole, material_state
 from ..em.monitors import dft_sample_interval
@@ -155,10 +156,16 @@ class EMPhysics3D(EM3DSlots, PhysicsSolver):
     # items whose placement or weights read Cartesian widths refuse a sector (_require_cartesian)
     coordinate_grids = ('cartesian', 'polar')
 
-    def __init__(self, domain, precision='single', park_arrays=()):
+    def __init__(self, domain, precision='single', park_arrays=(), spectrum_precision='double'):
         if getattr(domain, 'dimensions', 2) != 3:
             raise ValueError('EMPhysics3D needs a Domain3D (a model with domain size_z)')
+        if spectrum_precision not in SPECTRUM_PRECISIONS:
+            raise ValueError(f"spectrum_precision must be one of {', '.join(SPECTRUM_PRECISIONS)}, got "
+                             f'{spectrum_precision!r}')
         self.domain = domain
+        # flux plane / box, far-field and mode-monitor spectra (monitors3d.SpectrumStore): the stepper's
+        # spectrum_precision
+        self.spectrum_precision = spectrum_precision
         self.boundary_config = solver_boundary_config_3d(domain)
         # park_arrays: MaterialGrid arrays parked on the host at finalize (FDTDEngine3D; readers here take them through
         # device_array or the engine tables)
@@ -199,6 +206,14 @@ class EMPhysics3D(EM3DSlots, PhysicsSolver):
         state = {'ex': fields.ex, 'ey': fields.ey, 'ez': fields.ez, 'hx': fields.hx, 'hy': fields.hy, 'hz': fields.hz,
                  'eps_r': None, 'q_accum': None}   # eps_r, q_accum: made on access (_EngineState)
         return _EngineState(state, self.engine)
+
+    def work_counters(self) -> dict:
+        """{'spectrum_folds': complex64 blocks folded into the host totals by every monitor SpectrumStore} with
+        spectrum_precision 'mixed2' (summary.json solvers counters); {} with 'double'."""
+        if self.spectrum_precision == 'double':
+            return {}
+        return {'spectrum_folds': sum(store.folds for monitor in self.monitors
+                                      for store in getattr(monitor, 'spectrum_stores', ()))}
 
     def take_absorbed_power(self, merge_previous: bool = False):
         """EM loss protocol: mean absorbed power density [W/m^3] since the last call (None for an empty window);
@@ -462,7 +477,7 @@ class EMPhysics3D(EM3DSlots, PhysicsSolver):
         bounds[axis] = (self._nearest_edge(axis, position),) * 2
         monitor = PlaneFlux3D(axis, bounds[axis][0], bounds, _resolve_frequencies(wavelengths, frequencies),
                               self.engine.dt, self.engine.widths, self.engine.shape, self.engine.periodic,
-                              xp=self.engine.xp)
+                              xp=self.engine.xp, spectrum_precision=self.spectrum_precision)
         self.monitors.append(monitor)
         return monitor
 
@@ -480,7 +495,7 @@ class EMPhysics3D(EM3DSlots, PhysicsSolver):
         box = self._flux_boxes.get(key)
         if box is None:
             box = FluxBox3D(edge_bounds, frequencies, self.engine.dt, self.engine.widths, self.engine.shape,
-                            self.engine.periodic, xp=self.engine.xp)
+                            self.engine.periodic, xp=self.engine.xp, spectrum_precision=self.spectrum_precision)
             self._flux_boxes[key] = box
             self.monitors.append(box)
         return box

@@ -221,6 +221,10 @@ class FeatureType:
     # n_selected_cells = full-grid cells of the selection's bounding box, 3D boxes in 3D: meshing._selection_cells);
     # set on features that allocate per-region or per-frequency arrays (meshing.estimate_memory)
     memory_estimate: Callable | None = None
+    # True: memory_estimate(values, n_selected_cells, mesh_estimate, context) also gets the physics' MemoryContext
+    # (its resolved solvers: em_fdtd_3d monitor spectra by the stepper's spectrum_precision); the physics type then
+    # needs a memory_estimate of its own (meshing builds the context there)
+    memory_estimate_context: bool = False
     # stepper precisions the feature works at (validate checks the resolved 'stepper' solver)
     precisions: tuple = tuple(PRECISIONS)
     # MESH_KINDS of the meshes the feature works on (validate refuses an enabled one on another kind)

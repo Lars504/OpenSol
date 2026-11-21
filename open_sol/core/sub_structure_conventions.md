@@ -67,6 +67,10 @@ A new accepted sync joins this list.
   upload per subpixel refresh; elastic_waves with parked materials: the host coefficient rebuild (downloads, uploads)
   per rebuild (build, a new runner dt).
 - laminar_flow: the velocity check once per lattice check interval (>= 100 steps).
+- em_fdtd_3d spectrum_precision mixed2 (`em3d.monitors3d.SpectrumStore`): per fold (every SPECTRUM_BLOCK_SAMPLES
+  samples of a store) one event wait on the async block copy queued a fold earlier (complete unless the host ran a
+  whole block of samples ahead: it throttles the host, the device keeps its queue); per result read one event wait
+  and one block transfer.
 - Probe tables: `monitors.park_probe_rows` right after the time loops' per-chunk sync (study `_run_time_dependent`,
   `_run_harmonic_pulse`; `Simulation.run` per chunk), one transfer per table holding >= PROBE_PARK_ROWS rows; a HarmonicProbeRecord's stacked
   transfer every HARMONIC_PARK_VALUES device values (between frequency solves).
