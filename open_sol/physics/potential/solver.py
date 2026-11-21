@@ -86,15 +86,36 @@ RENDERERS = {'currents': CurrentsRenderer, 'electrostatics': ElectrostaticsRende
 TERMINAL_WAVEFORMS = ('none', 'ricker', 'gaussian', 'cw')   # 'none' = held at the voltage (the DC part)
 _DRIVEN_QUANTITIES = 5   # V, E_x, E_y, flux_x, flux_y per basis solution
 
-# V, E, D = basis_dc + sum_w s_w(t) basis_w (elementwise, all quantities stacked): work += value * basis
-def _add_scaled_host(basis, value, work):
-    """numpy twin of _add_scaled."""
-    work += value * basis
+# V, E, D = basis_dc + sum_w s_w(t) basis_w, written straight into the five window views of the fields (no
+# superposition buffer), one launch per waveform: the first non-zero one also copies the DC planes, the others add.
+_PLANES = range(_DRIVEN_QUANTITIES)
 
 
-_add_scaled = twin('potential.add_scaled_basis', cp.ElementwiseKernel(
-    'float32 basis, float32 value', 'float32 work', 'work += value * basis', 'potential_add_scaled_basis'),
-    _add_scaled_host)
+def _superpose_basis_host(*arguments):
+    """numpy twin of _superpose_basis (5 DC planes, 5 basis planes, value; outputs the 5 field views)."""
+    dc, basis, value, fields = arguments[:5], arguments[5:10], arguments[10], arguments[11:]
+    for dc_plane, basis_plane, field in zip(dc, basis, fields):
+        field[...] = dc_plane + value * basis_plane
+
+
+def _add_basis_host(*arguments):
+    """numpy twin of _add_basis (5 basis planes, value; outputs the 5 field views)."""
+    basis, value, fields = arguments[:5], arguments[5], arguments[6:]
+    for basis_plane, field in zip(basis, fields):
+        field += value * basis_plane
+
+
+_superpose_basis = twin('potential.superpose_basis', cp.ElementwiseKernel(
+    ', '.join([*(f'float32 dc{k}' for k in _PLANES), *(f'float32 basis{k}' for k in _PLANES), 'float32 value']),
+    ', '.join(f'float32 field{k}' for k in _PLANES),
+    ' '.join(f'field{k} = dc{k} + value * basis{k};' for k in _PLANES),
+    'potential_superpose_basis'), _superpose_basis_host)
+
+_add_basis = twin('potential.add_basis', cp.ElementwiseKernel(
+    ', '.join([*(f'float32 basis{k}' for k in _PLANES), 'float32 value']),
+    ', '.join(f'float32 field{k}' for k in _PLANES),
+    ' '.join(f'field{k} += value * basis{k};' for k in _PLANES),
+    'potential_add_basis'), _add_basis_host)
 
 
 @dataclass(frozen=True)
@@ -259,7 +280,6 @@ class PotentialPhysics(DiffusionPhysicsBase):
         self._driven_faces = {}
         self._bases = None
         self._basis_fluxes = None
-        self._superposition = None
         self._zero_sources = None
         self._drive_time = 0.0
         self._n_superpositions = 0
@@ -616,18 +636,16 @@ class PotentialPhysics(DiffusionPhysicsBase):
     # --- internals ------------------------------------------------------------
 
     def _coefficients(self):
-        """(c_xx, c_yy, c_xy) window copies in the solve dtype, scaled by the kind's coefficient scale."""
+        """(c_xx, c_yy, c_xy) float32 window coefficients scaled by the kind's coefficient scale, for
+        DiffusionSystem.assemble, which makes its own solve-dtype copies: the MaterialGrid window views at scale 1
+        (sigma_dc), else float32 scaled temporaries (eps0 eps_dc: one more float32 rounding of the float32 material
+        values, ~6e-8 relative). Never solve-dtype copies: the caller's references live through the whole assemble,
+        so float64 ones would sit beside assemble's own through the factorisation / multigrid setup (the build peak)."""
         materials = self.domain.materials
         window = self.system.window
-        dtype = self.system.dtype
+        views = tuple(getattr(materials, array_name)[window] for array_name in self.spec.coefficient_arrays)
         scale = self.spec.coefficient_scale
-        coefficients = []
-        for array_name in self.spec.coefficient_arrays:
-            values = getattr(materials, array_name)[window].astype(dtype)
-            if scale != 1.0:
-                values *= scale
-            coefficients.append(values)
-        return tuple(coefficients)
+        return views if scale == 1.0 else tuple(values * DTYPE(scale) for values in views)
 
     def _assemble(self, potential=None, diagonal_only=False):
         """Assemble with the ionic diagonal linearised at `potential` (float64 window; None = the current V; exact for
@@ -721,10 +739,9 @@ class PotentialPhysics(DiffusionPhysicsBase):
         waveforms = self.waveforms
         saved_bcs = {face: getattr(self.bcs, face) for face in system.faces}
         xp = self.xp
-        if self._superposition is None:
-            shape = (_DRIVEN_QUANTITIES, *system.window_shape)
-            self._superposition = xp.empty(shape, dtype=DTYPE)
+        if self._zero_sources is None:
             self._zero_sources = xp.zeros((), dtype=DTYPE)   # 0-d: the source kernels broadcast it
+        # the stale bases go before the new ones are solved (one set alive; the DC-only re-solve reuses its buffer)
         self._bases, self._basis_fluxes = {}, {}
         try:
             for waveform in (*waveforms, None):
@@ -759,7 +776,8 @@ class PotentialPhysics(DiffusionPhysicsBase):
         return BCSide('neumann')
 
     def _solve_basis(self, waveform, saved_bcs):
-        """Solve the assembled basis (sources only in the DC one), keep V, E, D and the held-region fluxes."""
+        """Solve the assembled basis (sources only in the DC one), keep V, E, D (into its kept buffer when it has one:
+        the DC-only re-solve after a source change) and the held-region fluxes."""
         system = self.system
         if waveform is None:
             system.build_rhs(self._source_window, self._applied_source_window)
@@ -770,26 +788,34 @@ class PotentialPhysics(DiffusionPhysicsBase):
         xp.copyto(self._V_window, system.unknown2d)
         self._update_derived_fields()
         fields, window = self.fields, system.window
-        basis = xp.empty((_DRIVEN_QUANTITIES, *system.window_shape), dtype=DTYPE)
+        basis = self._bases.get(waveform)
+        if basis is None:
+            basis = self._bases[waveform] = xp.empty((_DRIVEN_QUANTITIES, *system.window_shape), dtype=DTYPE)
         for plane, array in zip(basis, (fields.V, fields.E_x, fields.E_y, fields.flux_x, fields.flux_y)):
             xp.copyto(plane, array[window])
-        self._bases[waveform] = basis
         self._basis_fluxes[waveform] = [self._region_flux(region, {face: saved_bcs[face] for face in region.faces})
                                         for region in self.held_regions]
 
     def _superpose(self, time):
-        """V, E, D of the window = DC + sum_w s_w(time) basis_w, edge-extended into the PML ring."""
+        """V, E, D of the window = DC + sum_w s_w(time) basis_w (float32, in place on the fields' window views),
+        edge-extended into the PML ring."""
         xp = self.xp
-        work = self._superposition
-        xp.copyto(work, self._bases[None])
+        fields, window = self.fields, self.system.window
+        views = tuple(array[window] for array in (fields.V, fields.E_x, fields.E_y, fields.flux_x, fields.flux_y))
+        dc = self._bases[None]
+        written = False
         for waveform, basis in self._bases.items():
             if waveform is not None:
                 value = waveform(time)
                 if value != 0.0:
-                    _add_scaled(basis, DTYPE(value), work)
-        fields, window = self.fields, self.system.window
-        for plane, array in zip(work, (fields.V, fields.E_x, fields.E_y, fields.flux_x, fields.flux_y)):
-            xp.copyto(array[window], plane)
+                    if written:
+                        _add_basis(*basis, DTYPE(value), *views)
+                    else:
+                        _superpose_basis(*dc, *basis, DTYPE(value), *views)
+                        written = True
+        if not written:   # every waveform at 0 (e.g. t = 0): the DC basis alone
+            for plane, view in zip(dc, views):
+                xp.copyto(view, plane)
         self._extend_into_pml()
         for destination, source in self._derived_pml_copies:
             xp.copyto(destination, source)
@@ -803,15 +829,18 @@ class PotentialPhysics(DiffusionPhysicsBase):
         window = system.window
         fields = self.fields
         c_xx, c_yy = system.assembled_c_xx, system.assembled_c_yy
-        flux_x, flux_y = system.axis_flux_at_centres()
+        flux_x, flux_y = system.axis_flux_at_centres()   # fresh solve-dtype arrays: updated in place below
         xp = self.xp
         fields.E_x[window] = xp.where(c_xx > 0, flux_x / xp.where(c_xx > 0, c_xx, 1.0), 0.0)
         fields.E_y[window] = xp.where(c_yy > 0, flux_y / xp.where(c_yy > 0, c_yy, 1.0), 0.0)
         cross_flux = system.cross_flux_at_centres()
         if cross_flux is not None:   # sigma_dc_xy / eps_dc_xy: -c_xy (dV/dy, dV/dx)
-            flux_x, flux_y = flux_x + cross_flux[0], flux_y + cross_flux[1]
+            flux_x += cross_flux[0]
+            flux_y += cross_flux[1]
+            del cross_flux
         fields.flux_x[window] = flux_x
         fields.flux_y[window] = flux_y
+        del flux_x, flux_y   # gone before the dissipation / ionic temporaries (the flux post-processing phase peak)
         if fields.q_joule is not None:
             fields.q_joule[window] = system.dissipation_density()
         if self.ionic_media:   # exact at the solved V (the solve used the tangent at the previous Newton iterate)
