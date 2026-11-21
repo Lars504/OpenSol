@@ -4,7 +4,7 @@ import numpy as np
 
 from ....core.constants import EPS0
 from . import fdtd_ez_2d_kernels as _kernels
-from ..materials import material_state
+from ..materials import LazyState, material_state
 from .fdtd_2d_base import _YeeEngine2DBase, _box_overlap, _bounding_box, _union_box, material_row_blocks
 from .fdtd_conformal_kernels import conformal_h_ez, sparse_launch
 
@@ -50,8 +50,9 @@ class FDTDEngine2D_Ez(_YeeEngine2DBase):
         self._out_of_plane_source = None
 
         # Per field set (index 0 real, 1 imaginary under Bloch k != 0): the sum of every Drude pole's J^{n+1/2}
-        # [A/m^2] (full grid, allocated with the first Drude pole), rebuilt each step on _drude_box, the union of the
-        # Drude boxes (the E correction, the J.E loss and state()['jz_total'] (real set) read it). Pole auxiliary arrays
+        # [A/m^2] ON _drude_box, the union of the Drude boxes (allocated with the first Drude pole, reallocated when a
+        # pole grows the box; each pole adds into its 'total' slices of it), rebuilt each step (the E correction and the
+        # J.E loss read it; state()['jz_total'] (real set) expands it to the full grid per read). Pole auxiliary arrays
         # ('j', 'p', 'dp') are lists indexed by the field set too.
         self._jz_totals = [None] * len(self._field_sets)
         self._drude_box = None
@@ -60,9 +61,10 @@ class FDTDEngine2D_Ez(_YeeEngine2DBase):
     # --- PhysicsSolver contract -----------------------------------------------
 
     def state(self):
-        """Public fields; jz_total is None without a Drude pole, q_accum None before accumulation is enabled; parked
-        eps_r / sigma_e read as device copies (materials.material_state)."""
-        return material_state({
+        """Public fields; jz_total is None without a Drude pole, else a new full-grid copy per read (it is stepped on
+        the Drude union box only); q_accum None before accumulation is enabled; parked eps_r / sigma_e read as device
+        copies (materials.material_state)."""
+        state = material_state({
             'ez': self.fields.ez,
             'hx': self.fields.hx,
             'hy': self.fields.hy,
@@ -72,6 +74,16 @@ class FDTDEngine2D_Ez(_YeeEngine2DBase):
             'q_accum': self.q_accum,
             'q_accum_time': self.q_accum_time,
         }, self.materials)
+        if self._drude_box is None:
+            return state
+        return LazyState(state, {'jz_total': self._full_grid_jz_total})
+
+    def _full_grid_jz_total(self):
+        """state()['jz_total']: the real set's Drude current total as a new (nx, ny) array in the field dtype (0 off
+        the Drude union box)."""
+        total = self.xp.zeros((self.nx, self.ny), dtype=self.dtype)
+        total[self._drude_box] = self._jz_totals[0]
+        return total
 
     # --- time stepping ------------------------------------------------------------
 
@@ -142,9 +154,7 @@ class FDTDEngine2D_Ez(_YeeEngine2DBase):
             self.drude_poles.append({'pole': drude_pole, 'box': box, 'damping': real(damping),
                                      'drive': weight * real(drive),
                                      'j': self._set_buffers(weight.shape)})
-            if self._jz_totals[0] is None:
-                self._jz_totals = [self.xp.zeros((self.nx, self.ny), dtype=self.dtype) for _ in self._field_sets]
-            self._drude_box = _union_box(self._drude_box, box)
+            self._grow_drude_box(box)
 
         if set_background:
             self.materials.assign('eps_r', mask, drude_pole.eps_inf)
@@ -168,6 +178,22 @@ class FDTDEngine2D_Ez(_YeeEngine2DBase):
             'damping': real(damping), 'restoring': real(restoring), 'drive': weight * real(drive),
             'p': self._set_buffers(weight.shape), 'dp': self._set_buffers(weight.shape),
         })
+
+    def _grow_drude_box(self, box) -> None:
+        """_drude_box grown by a new Drude pole's box: the jz totals reallocated on the union (previous totals copied
+        in; a new key of the pole step graph: the pole count changed with it) and every pole's 'total' slices (its box
+        relative to the union) refreshed."""
+        union = _union_box(self._drude_box, box)
+        if union != self._drude_box:
+            shape = tuple(axis.stop - axis.start for axis in union)
+            totals = self._set_buffers(shape)
+            if self._drude_box is not None:
+                inside = _box_overlap(self._drude_box, union)[1]   # the old box relative to the union
+                for total, previous in zip(totals, self._jz_totals):
+                    total[inside] = previous
+            self._jz_totals, self._drude_box = totals, union
+        for drude in self.drude_poles:
+            drude['total'] = _box_overlap(drude['box'], union)[1]
 
     def _pole_weight_box(self, mask, cell_weight=None):
         """(bounding box of `mask` (or of the host cell_weight > 0), its values on it in the field dtype times the PEC
@@ -346,7 +372,7 @@ class FDTDEngine2D_Ez(_YeeEngine2DBase):
     def _pole_updates(self, k, ez, jz_total, accumulate):
         """Drude J / Lorentz P of field set k from the pre-update E^n on their boxes (+ the E^n loss halves)."""
         # Kernel notes in fdtd_ez_2d_kernels: Drude leap-frog J^{n+1/2} = J^{n-1/2} + damping J^{n-1/2} + drive E^n
-        # summed into jz_total on _drude_box (mask and PEC keep folded into drive, so cells outside the metal keep J =
+        # summed into jz_total (on _drude_box; mask and PEC keep folded into drive, so cells outside the metal keep J =
         # 0); Lorentz in velocity form, dp = P^{n+1} - P^n from (dp, p, E^n), then p = P^{n+1}. While accumulating, the
         # E^n half of each time-centred pole work is added here (the E^{n+1} half at the end of advance, after every
         # correction, injection and wall re-pin).
@@ -356,15 +382,14 @@ class FDTDEngine2D_Ez(_YeeEngine2DBase):
                 # One pole: its box is drude_box, so jz_total = J needs no zero fill.
                 drude = self.drude_poles[0]
                 _kernels.drude_j_update_store(drude['damping'], drude['drive'], ez[drude_box], drude['j'][k],
-                                              jz_total[drude_box])
+                                              jz_total)
             else:
-                jz_total[drude_box].fill(0)
+                jz_total.fill(0)
                 for drude in self.drude_poles:
-                    box = drude['box']
-                    _kernels.drude_j_update_total(drude['damping'], drude['drive'], ez[box], drude['j'][k],
-                                                  jz_total[box])
+                    _kernels.drude_j_update_total(drude['damping'], drude['drive'], ez[drude['box']], drude['j'][k],
+                                                  jz_total[drude['total']])
             if accumulate:
-                _kernels.q_accum_je_half(jz_total[drude_box], ez[drude_box], self._dt_real, self.q_accum[drude_box])
+                _kernels.q_accum_je_half(jz_total, ez[drude_box], self._dt_real, self.q_accum[drude_box])
         for lorentz in self.lorentz_poles:
             box = lorentz['box']
             _kernels.lorentz_p_update(lorentz['damping'], lorentz['restoring'], lorentz['drive'], ez[box],
@@ -378,7 +403,7 @@ class FDTDEngine2D_Ez(_YeeEngine2DBase):
         # conduction and a pole on one cell stay consistent).
         drude_box = self._drude_box
         if drude_box is not None:
-            _kernels.drude_e_correction(jz_total[drude_box], self.cb[drude_box], ez[drude_box])
+            _kernels.drude_e_correction(jz_total, self.cb[drude_box], ez[drude_box])
         # Lorentz (cb / dt) (P^{n+1} - P^n) (D = eps0 eps_inf E + P bookkeeping; cb carries the sigma_e factor as for
         # Drude); P^{n+1} - P^n is the dp buffer.
         for lorentz in self.lorentz_poles:
@@ -405,8 +430,7 @@ class FDTDEngine2D_Ez(_YeeEngine2DBase):
         ez = self.fields.ez
         drude_box = self._drude_box
         if drude_box is not None:
-            _kernels.q_accum_je_half(self._jz_totals[0][drude_box], ez[drude_box], self._dt_real,
-                                     self.q_accum[drude_box])
+            _kernels.q_accum_je_half(self._jz_totals[0], ez[drude_box], self._dt_real, self.q_accum[drude_box])
         ohmic_box = self._ohmic_box
         if ohmic_box is not None:
             sigma_e = self.materials.sigma_e[ohmic_box] if self._ohmic_sigma_e is None else self._ohmic_sigma_e

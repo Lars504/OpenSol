@@ -933,20 +933,15 @@ def fdtd_parked_material_arrays(polarization, spec, registry, physics_spec, para
     """PhysicsType.parked_material_arrays of em_fdtd_<polarization>: the EMPhysics PARKABLE_ARRAYS under the shared
     rule (definition_helpers.parkable_material_arrays over the type's material properties), moved to the host at
     create, before the engine allocates (physics/em sub file "Parked material arrays"); the permittivity arrays and
-    sigma_e stay on the device with a nonlinear / gain / phase-change medium, hz sigma_e also while it accumulates
-    absorption (q_accum_hz reads it every step); so does an array whose state field a material expression reads (a
-    dynamic update would upload it per step) or a field_transfer takes."""
+    sigma_e stay on the device with a nonlinear / gain / phase-change medium (while accumulating, the per-step loss
+    reads a device copy of a parked sigma_e on its loss box); so does an array whose state field a material expression
+    reads (a dynamic update would upload it per step) or a field_transfer takes."""
     try:
         physics_type = registry.physics_type(physics_spec.type)
         own_properties = {param.name for param in physics_type.material_properties}
         arrays = set(PARKABLE_ARRAYS[polarization])
         if any(feature.enabled and feature.type in _DEVICE_PERMITTIVITY_FEATURES for feature in physics_spec.features):
             arrays -= {*PERMITTIVITY_ARRAYS[polarization], 'sigma_e'}
-        if polarization == 'hz' and 'sigma_e' in arrays:
-            settings = physics_spec.settings if isinstance(physics_spec.settings, dict) else {}
-            values = resolve_values(physics_type.settings, settings, parameters)
-            if values.get('track_absorption') or _q_accum_referenced(spec, physics_spec.name, registry):
-                arrays.discard('sigma_e')
         arrays -= state_arrays_read(spec, registry, physics_spec.name, arrays)
     except (KeyError, ValueError, TypeError, ExpressionError):   # reported by validate
         return ()

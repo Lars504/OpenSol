@@ -16,8 +16,9 @@ type's vocabulary and refusals are in its help texts and validation.
 - Gyration (`schema.GYRATION_PROPERTY_NAMES`): a type reads a component only by declaring its material Param;
   validation refuses a non-zero one in a model holding an EM type that does not (`definition_common._material_issues`).
 - Root rule "allocate where needed": poles comply in E_z, H_z and FDFD (masks cropped to their box), FDTD PEC keeps
-  (bool on the PEC box), H_z `eps_x` / `eps_y` (only for a nonlinear medium), da / db / ca (one value while uniform);
-  not yet: ez `jz_total` (full grid: a state() key), hz pole power totals (full grid while accumulating), TFSF outline
+  (bool on the PEC box), H_z `eps_x` / `eps_y` (only for a nonlinear medium), da / db / ca (one value while uniform),
+  ez `jz_total` (on the Drude union box; state() expands a full-grid copy per read, so a reader never keeps it live);
+  not yet: 2D q_accum (full grid, unlike em3d), hz pole power totals (full grid while accumulating), TFSF outline
   masks, FDFD CSR matrices.
 
 ## Imports (inside physics/em; the cross-package rules are in the root file)
@@ -67,15 +68,16 @@ type's vocabulary and refusals are in its help texts and validation.
   reallocated (pole, media and port box views). Selftest em_operators_consistency part F: both layouts bit for bit.
 - Parked material arrays (model path, gpu; core sub file "GPU memory"): `definition_common.
   fdtd_parked_material_arrays` (the shared `parkable_material_arrays` rule over `EMPhysics.PARKABLE_ARRAYS`: every
-  material array; the permittivity arrays and sigma_e stay with a nonlinear / gain / phase-change medium, hz sigma_e
-  while accumulating, an array whose state field a material expression or field_transfer reads: `state_arrays_read`)
+  material array; the permittivity arrays and sigma_e stay with a nonlinear / gain / phase-change medium, an
+  array whose state field a material expression or field_transfer reads: `state_arrays_read`)
   lists what `EMPhysics(park_arrays=)` moves to the host at create, before the engine allocates (the build peak never
   holds both). Readers of such an array go through `MaterialGrid.device_array(name, index)` (renderer windows, mode
   port rows, TFSF outline region, harmonic energy window, subpixel gathers: whole array), `materials.material_state`
   (state(): a device copy per read), `xp.asarray` of a line (sheet calibrations), a host reduction (`_single_value`,
   `_all_zero`, `_bounding_box`, `material_values`: the Courant check) or uploaded x-row blocks
   (`material_row_blocks`: H and ez E rebuilds; the hz E rebuild reads neighbours: whole uploads); per-step readers
-  keep their own device copy (ez sigma_e on the ohmic box, hz sigma_e for q_accum_hz). A new reader of a PARKABLE
+  keep their own device copy (ez sigma_e on the ohmic box, hz sigma_e on the q_accum_hz loss box, which the kernel then
+  indexes by box: its sigma_on_box flag). A new reader of a PARKABLE
   array does the same, else it breaks on the gpu model path only (the cpu backend never parks). Estimate:
   `_parked_fdtd_items`; the `em_fdtd_cpu_gpu*` parity cases compare parked (gpu) with unparked (cpu) runs.
 - Yee edge: on a non-periodic axis the last face row is never updated and cell 0 reads its missing lo face as 0, so

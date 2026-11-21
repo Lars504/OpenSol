@@ -490,16 +490,16 @@ def fdtd_memory_estimate(polarization):
                 pole_bytes += masks + (2 * n_drude + 3 * n_lorentz) * real_bytes * box_cells
             else:   # two face sets: shared weights, j per Drude, p + dp per Lorentz
                 pole_bytes += masks + 2 * (1 + n_drude + 2 * n_lorentz) * real_bytes * box_cells
-        if regions:
-            pole_bytes += (real_bytes if polarization == 'ez' and any_drude else 0) * n_cells   # jz_total
+        # ez jz_total: on the union bounding box of the Drude regions (fdtd_ez_2d _drude_box)
+        jz_total_cells = _drude_box_cells(context, n_cells) if polarization == 'ez' and any_drude else 0
+        pole_bytes += real_bytes * jz_total_cells
         if regions or nonlinear:
             pole_bytes += (BOOL_BYTES if polarization == 'hz' else 0) * n_cells                 # pole cell mask
         items.append(('dispersive poles', pole_bytes))
         if bloch_active_axes(settings_values):   # Bloch k != 0: imaginary fields, CPML psi and pole buffers
             imaginary_pole_bytes = sum((1 if polarization == 'ez' else 2) * (n_drude + 2 * n_lorentz) * real_bytes
                                        * box_cells for box_cells, n_drude, n_lorentz in regions)
-            if polarization == 'ez' and any_drude:
-                imaginary_pole_bytes += real_bytes * n_cells   # imaginary jz_total
+            imaginary_pole_bytes += real_bytes * jz_total_cells   # imaginary jz_total
             items.append((FDTD_BLOCH_ITEM, 3 * real_bytes * n_cells
                           + _cpml_psi_bytes(mesh, settings_values, real_bytes) + imaginary_pole_bytes))
         trace_items, run_items, host_items = _point_trace_items(context, mesh)
@@ -540,7 +540,8 @@ def _parked_fdtd_items(polarization, parked, context, mesh, build_extra, field_b
     (fdtd_2d_base readers): the Courant check's device copies of a varying parked eps_r (ez, any eps counts: poles
     write their background) / mu_r on top of its temporaries, the painted arrays before the fields exist, the hz E
     rebuild's whole-array uploads (the subpixel gathers upload one array at a time after it), the x-row block uploads
-    (ez E, both H); kept: ez's sigma_e copy on the conducting cells' box while accumulating (the ohmic loss)."""
+    (ez E, both H); kept while accumulating: ez's sigma_e copy on the conducting cells' box (the ohmic loss), hz's on
+    the loss box (the conducting and dispersive cells' box: q_accum_hz)."""
     n_cells = int(mesh.n_cells)
     copies = int(polarization == 'ez' and 'eps_r' in parked)
     copies += int('mu_r' in parked and context.material_sets('mu_r', default=1))
@@ -551,18 +552,29 @@ def _parked_fdtd_items(polarization, parked, context, mesh, build_extra, field_b
                       FLOAT32_BYTES * max(rebuild_uploads, 1) * n_cells,
                       FLOAT32_BYTES * len(parked) * min(n_cells, PARKED_BLOCK_CELLS))
     items = []
-    if polarization == 'ez' and q_accum and 'sigma_e' in parked and context.material_sets('sigma_e'):
-        items.append(('sigma_e copy on the box of the conducting cells (float32, ohmic loss)',
-                      FLOAT32_BYTES * _property_box_cells(context, 'sigma_e', n_cells)))
+    if q_accum and 'sigma_e' in parked:
+        if polarization == 'ez' and context.material_sets('sigma_e'):
+            items.append(('sigma_e copy on the box of the conducting cells (float32, ohmic loss)',
+                          FLOAT32_BYTES * _property_box_cells(context, 'sigma_e', n_cells)))
+        elif polarization == 'hz':   # the poles' faces grow the box by a cell: not booked
+            items.append(('sigma_e copy on the loss box (float32, q_accum_hz)',
+                          FLOAT32_BYTES * _property_box_cells(context, 'sigma_e', n_cells, with_poles=True)))
     return build_extra, items
 
 
-def _property_box_cells(context, property_name, n_cells):
+def _property_box_cells(context, property_name, n_cells, with_poles=False):
     """Full-grid cells of the union bounding box of the material regions setting property_name to a non-zero value
-    (n_cells when a region's box does not resolve; 0 without such a region)."""
+    (with_poles: and of those with a dispersion pole; n_cells when a region's box does not resolve; 0 without such a
+    region)."""
     from ...materials import effective_material_data   # lazy: materials imports physics.em
     bounds = None
     regions = {region.name: region for region in context.material_regions}
+    if with_poles:
+        for region in context.material_regions:
+            if region.n_drude or region.n_lorentz:
+                if not region.box_bounds:
+                    return n_cells
+                bounds = _union_bounds(bounds, region.box_bounds)
     for material in context.spec.materials:
         try:
             properties, _ = effective_material_data(material.library, material.properties, material.dispersion)
@@ -574,8 +586,29 @@ def _property_box_cells(context, property_name, n_cells):
         region = regions.get(material.name)
         if region is None or not region.box_bounds:
             return n_cells
-        bounds = (region.box_bounds if bounds is None else
-                  tuple((min(a[0], b[0]), max(a[1], b[1])) for a, b in zip(bounds, region.box_bounds)))
+        bounds = _union_bounds(bounds, region.box_bounds)
+    return _bounds_cells(bounds, n_cells)
+
+
+def _drude_box_cells(context, n_cells):
+    """Full-grid cells of the union bounding box of the material regions with a Drude pole (n_cells when a region's
+    box does not resolve; 0 without such a region)."""
+    bounds = None
+    for region in context.material_regions:
+        if region.n_drude:
+            if not region.box_bounds:
+                return n_cells
+            bounds = _union_bounds(bounds, region.box_bounds)
+    return _bounds_cells(bounds, n_cells)
+
+
+def _union_bounds(bounds, other):
+    """Per-axis (first, last) union of two MaterialRegionInfo.box_bounds (bounds None: other)."""
+    return other if bounds is None else tuple((min(a[0], b[0]), max(a[1], b[1])) for a, b in zip(bounds, other))
+
+
+def _bounds_cells(bounds, n_cells):
+    """Cells of per-axis (first, last) bounds, at most n_cells; 0 for None."""
     if bounds is None:
         return 0
     return min(n_cells, math.prod(last - first + 1 for first, last in bounds))
