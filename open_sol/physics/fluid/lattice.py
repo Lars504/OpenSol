@@ -3,7 +3,7 @@ equilibrium, Guo forcing, shifted populations g = f - w, pull streaming with the
 core.kernels twin (numpy twin of the same call on the cpu backend; numba twin of the 'single' step)."""
 import numpy as np
 
-from ...core.backend import array_module_of, cp
+from ...core.backend import cp
 from ...core.half_storage import STORED_ACCESS, storage_preamble
 from ...core.kernels import raw_twin, twin
 
@@ -963,12 +963,11 @@ store_populations = twin('fluid.store_populations', cp.ElementwiseKernel(
     preamble=STORED_ACCESS), _store_populations_host)
 
 
-def equilibrium_populations(deviation, lattice_x, lattice_y):
-    """Shifted He-Luo equilibrium g_q = w_q (rho - 1 + 3 c.u + 4.5 (c.u)^2 - 1.5 u^2), shape (9, *field shape), on the
-    inputs' array module."""
-    populations = []
+def equilibrium_directions(deviation, lattice_x, lattice_y):
+    """Shifted He-Luo equilibrium g_q = w_q (rho - 1 + 3 c.u + 4.5 (c.u)^2 - 1.5 u^2) one direction at a time: yields
+    (q, g_q) of the field shape on the inputs' array module (~5 float32 field temporaries beside the caller's previous
+    g_q, never the (9, *field shape) stack; the caller stores each g_q before the next)."""
     u_squared = lattice_x * lattice_x + lattice_y * lattice_y
     for q in range(N_DIRECTIONS):
         cu = float(DIRECTION_X[q]) * lattice_x + float(DIRECTION_Y[q]) * lattice_y
-        populations.append(float(WEIGHTS[q]) * (deviation + 3.0 * cu + 4.5 * cu * cu - 1.5 * u_squared))
-    return array_module_of(deviation).stack(populations)
+        yield q, float(WEIGHTS[q]) * (deviation + 3.0 * cu + 4.5 * cu * cu - 1.5 * u_squared)

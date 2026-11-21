@@ -15,7 +15,7 @@ from ...core.monitors import FieldProbe
 from ...core.solver_base import PhysicsSolver
 from .lattice import (BLOCK_SIZE, FACE_KIND_NAMES, FACE_PERIODIC, FACE_PRESSURE, FACE_SLIP, FACE_VELOCITY, FACE_WALL,
                       MAGIC_LAMBDA, N_DIRECTIONS, POPULATION_DTYPES, POPULATION_SCALE, STORE_BOUNDARY, STORE_LATTICE,
-                      STORE_PUBLISHED, VELOCITY_CHECK_BLOCKS, equilibrium_populations, force_to_lattice, step_kernel,
+                      STORE_PUBLISHED, VELOCITY_CHECK_BLOCKS, equilibrium_directions, force_to_lattice, step_kernel,
                       store_populations, to_physical, velocity_check)
 from .bouzidi import wall_link_fractions
 from .renderer import FluidRenderer
@@ -157,6 +157,7 @@ class FluidPhysics(PhysicsSolver):
         self._mach_warned = False
         self._vorticity = None
         self._relaxation_dt = None     # dt the relaxation rates were built for
+        self._uniform_viscosity = None   # kinematic viscosity [m^2/s] of every fluid cell when one (_refresh_lattice)
         self._check_interval = 100     # first / transient lattice steps between host checks (set by _refresh_lattice)
         self._largest_check_interval = 100   # a steady march doubles its interval up to this
         self._max_steps = 0
@@ -518,8 +519,12 @@ class FluidPhysics(PhysicsSolver):
         offsets = np.cumsum([0] + [density_rows[face].size for face in FACES])
         self._edge_density = {face: edge_rows[offsets[index]:offsets[index + 1]] for index, face in enumerate(FACES)}
         kinematic = self._kinematic_viscosity()
-        nu_max, nu_min = (float(value) for value in to_host(xp.stack([
-            kinematic.max(), xp.where(fluid, kinematic, np.inf).min()])))
+        nu_max = kinematic.max()   # before the solids turn inf for the minimum (in place: one float64 window)
+        xp.copyto(kinematic, np.inf, where=~fluid)
+        nu_max, nu_min = (float(value) for value in to_host(xp.stack([nu_max, kinematic.min()])))
+        del kinematic
+        # one fluid viscosity: _update_relaxation takes tau from this double (no window rebuild or sync per new dt)
+        self._uniform_viscosity = nu_max if nu_max == nu_min else None
         self.dt_lbm = (self.relaxation_time - 0.5) * self.dx ** 2 / (3.0 * nu_max)
         # check interval and auto step limit from the slowest diffusive decay (lowest lattice viscosity)
         periodic_axes = tuple(self.faces[lo].kind == FACE_PERIODIC for lo, _ in _AXIS_FACES.values())
@@ -533,13 +538,15 @@ class FluidPhysics(PhysicsSolver):
 
     def _kinematic_viscosity(self):
         """float64 window kinematic viscosity viscosity / rho [m^2/s] of the materials, 0 off the fluid mask: rebuilt at
-        each use (lattice refresh, relaxation rates of a new dt), never kept (8 bytes per cell)."""
+        each use (lattice refresh; relaxation rates of a new dt unless one fluid viscosity: _uniform_viscosity), never
+        kept (8 bytes per cell); built in place (~20 bytes per cell of temporaries at most)."""
         xp = self.xp
         materials = self.domain.materials
         fluid = self._fluid
-        viscosity = materials.viscosity[self.window].astype(np.float64)
-        density = materials.rho[self.window].astype(np.float64)
-        return xp.where(fluid, viscosity / xp.where(fluid, density, 1.0), 0.0)
+        kinematic = materials.viscosity[self.window].astype(np.float64)
+        kinematic /= xp.where(fluid, materials.rho[self.window], DTYPE(1.0)).astype(np.float64)
+        xp.copyto(kinematic, 0.0, where=~fluid)
+        return kinematic
 
     def _drop_cell_arrays(self, *names):
         """Free per-cell gpu arrays (rates, lattice forces) a stride 0 no longer reads: step graphs that keep one are
@@ -650,11 +657,21 @@ class FluidPhysics(PhysicsSolver):
 
     def _update_relaxation(self, dt):
         """TRT rates per cell: tau+ = 1/2 + 3 nu dt / dx^2, (tau+ - 1/2)(tau- - 1/2) = 3/16; one fluid viscosity on the
-        gpu: the 1-element rates too (relaxation_stride 0, 8 bytes per cell and step fewer)."""
+        gpu: the 1-element rates only (relaxation_stride 0, 8 bytes per cell and step fewer), from the host double of
+        _uniform_viscosity (no window work, no host sync per new dt: a transient run with varying runner steps)."""
         xp = self.xp
-        tau_offset = 3.0 * self._kinematic_viscosity() * dt / self.dx ** 2
-        smallest, largest = (float(value) for value in to_host(xp.stack([
-            xp.where(self._fluid, tau_offset, np.inf).min(), xp.where(self._fluid, tau_offset, -np.inf).max()])))
+        gpu = xp is not np   # host twins keep the per-cell arrays (one numba signature)
+        if gpu and self._uniform_viscosity is not None:
+            # the per-cell float64 expression below on that one double: the same tau, so the same float32 rates
+            smallest = largest = 3.0 * self._uniform_viscosity * dt / self.dx ** 2
+            tau_offset = None
+        else:
+            tau_offset = self._kinematic_viscosity()   # in place: ((3 nu) dt) / dx^2 as the scalar expression above
+            tau_offset *= 3.0
+            tau_offset *= dt
+            tau_offset /= self.dx ** 2
+            smallest, largest = (float(value) for value in to_host(xp.stack([
+                xp.where(self._fluid, tau_offset, np.inf).min(), xp.where(self._fluid, tau_offset, -np.inf).max()])))
         if smallest < MIN_TAU_OFFSET:
             raise ValueError(f"laminar flow '{self.name}': time step {dt:.4g} s gives a lattice relaxation time "
                              f'tau = 0.5 + {smallest:.3g} in the least viscous fluid (needs > 0.5 + {MIN_TAU_OFFSET:g}); '
@@ -663,7 +680,7 @@ class FluidPhysics(PhysicsSolver):
         if smallest < TAU_OFFSET_WARNING:
             self.runtime_warnings.append(f'lattice relaxation time 0.5 + {smallest:.3g} in the least viscous fluid: '
                                          'close to the stability limit (raise relaxation_time)')
-        uniform = smallest == largest and xp is not np   # host twins keep the per-cell arrays (one numba signature)
+        uniform = smallest == largest and gpu
         if uniform:   # the per-cell float64 expressions on the same double: the same float32 rates
             self._uniform_omega_plus.fill(DTYPE(1.0 / (0.5 + smallest)))
             self._uniform_omega_minus.fill(DTYPE(1.0 / (0.5 + MAGIC_LAMBDA / smallest)))
@@ -672,9 +689,15 @@ class FluidPhysics(PhysicsSolver):
             if self._omega_plus is None:
                 self._omega_plus = xp.empty(self.window_shape, dtype=DTYPE)
                 self._omega_minus = xp.empty(self.window_shape, dtype=DTYPE)
-            tau_offset = xp.where(self._fluid, tau_offset, 0.5)
-            xp.copyto(self._omega_plus, (1.0 / (0.5 + tau_offset)).astype(DTYPE))
-            xp.copyto(self._omega_minus, (1.0 / (0.5 + MAGIC_LAMBDA / tau_offset)).astype(DTYPE))
+            # in place, one float64 work window: 1 / (1/2 + tau), 1 / (1/2 + Lambda / tau) with tau = 1/2 off the fluid
+            xp.copyto(tau_offset, 0.5, where=~self._fluid)
+            rate = tau_offset + 0.5
+            xp.divide(1.0, rate, out=rate)
+            xp.copyto(self._omega_plus, rate)   # float64 -> float32 rounding as astype
+            xp.divide(MAGIC_LAMBDA, tau_offset, out=rate)
+            rate += 0.5
+            xp.divide(1.0, rate, out=rate)
+            xp.copyto(self._omega_minus, rate)
         self._relaxation_stride = np.int32(0 if uniform else 1)
         self._relaxation_dt = dt
 
@@ -724,46 +747,45 @@ class FluidPhysics(PhysicsSolver):
             self._uploaded_face_kinds = tuple(kinds)
 
     def _rescale_populations(self, old_dt, new_dt):
-        """Re-equilibrate the populations at the same SI velocity and pressure for a new lattice time step."""
+        """Re-equilibrate the populations at the same SI velocity and pressure for a new lattice time step (macros
+        scaled in place, then _store_equilibrium: a run-time dt change on the full lattice, so no (9, window) copy)."""
         ratio = new_dt / old_dt
-        deviation = self._deviation * DTYPE(ratio * ratio)
-        lattice_x, lattice_y = self._lattice_x * DTYPE(ratio), self._lattice_y * DTYPE(ratio)
-        populations = equilibrium_populations(deviation, lattice_x, lattice_y)
-        populations *= self._fluid[None, :, :]
-        self._store_populations(populations)
-        xp = self.xp
-        xp.copyto(self._lattice_x, lattice_x)
-        xp.copyto(self._lattice_y, lattice_y)
-        xp.copyto(self._deviation, deviation)
+        self._deviation *= DTYPE(ratio * ratio)
+        self._lattice_x *= DTYPE(ratio)
+        self._lattice_y *= DTYPE(ratio)
+        self._store_equilibrium()
         self._force_dirty = self._faces_dirty = True
 
-    def _store_populations(self, populations):
-        """Float32 populations g into the current buffer (half_storage: stored = g x POPULATION_SCALE as fp16 bits)."""
-        scale = POPULATION_SCALE if self.precision == 'half_storage' else 1.0   # lattice.step_kernel's unit
-        store_populations(populations, DTYPE(scale), half_bits(self._populations[0]))
+    def _store_equilibrium(self):
+        """Shifted equilibrium populations of the lattice macros (_deviation, _lattice_x, _lattice_y), 0 off the fluid
+        mask, into the current buffer (half_storage: stored = g x POPULATION_SCALE as fp16 bits), one direction at a
+        time: ~5 float32 window temporaries beside the lattice (definition._memory_estimate's refresh temporaries)."""
+        scale = DTYPE(POPULATION_SCALE if self.precision == 'half_storage' else 1.0)   # lattice.step_kernel's unit
+        stored = half_bits(self._populations[0])
+        fluid = self._fluid
+        for q, populations in equilibrium_directions(self._deviation, self._lattice_x, self._lattice_y):
+            populations *= fluid
+            store_populations(populations, scale, stored[q])
 
     def _start_from_initial_flow(self):
         """Equilibrium populations of the set_initial_flow velocity / pressure on the fluid cells, scaled for dt_lbm
-        (a later step length rescales them like any dt change); publishes the t = 0 fields and frees the inputs."""
+        (a later step length rescales them like any dt change); publishes the t = 0 fields and frees the inputs (before
+        the equilibrium temporaries)."""
         xp = self.xp
         dt = self.dt_lbm
         velocity_scale = DTYPE(dt / self.dx)   # lattice velocity per m/s
         velocity_x, velocity_y, pressure = self._initial_flow
+        self._initial_flow = None
         fluid = self._fluid
         density = self._mass_density
-        lattice_x = xp.where(fluid, velocity_x * velocity_scale, DTYPE(0.0)).astype(DTYPE)
-        lattice_y = xp.where(fluid, velocity_y * velocity_scale, DTYPE(0.0)).astype(DTYPE)
+        xp.copyto(self._lattice_x, xp.where(fluid, velocity_x * velocity_scale, DTYPE(0.0)))
+        xp.copyto(self._lattice_y, xp.where(fluid, velocity_y * velocity_scale, DTYPE(0.0)))
         # p = (rho_lat - 1) / 3 rho U^2 with U = dx / dt
-        deviation = xp.where(fluid, DTYPE(3.0) * pressure * velocity_scale * velocity_scale
-                             / xp.where(fluid, density, DTYPE(1.0)), DTYPE(0.0)).astype(DTYPE)
-        populations = equilibrium_populations(deviation, lattice_x, lattice_y)
-        populations *= fluid[None, :, :]
-        self._store_populations(populations)
-        xp.copyto(self._lattice_x, lattice_x)
-        xp.copyto(self._lattice_y, lattice_y)
-        xp.copyto(self._deviation, deviation)
+        xp.copyto(self._deviation, xp.where(fluid, DTYPE(3.0) * pressure * velocity_scale * velocity_scale
+                                            / xp.where(fluid, density, DTYPE(1.0)), DTYPE(0.0)))
+        del velocity_x, velocity_y, pressure
+        self._store_equilibrium()
         self._lattice_dt = dt
-        self._initial_flow = None
         self._publish()
 
     def _step_arguments(self, source, target, store_mode):
