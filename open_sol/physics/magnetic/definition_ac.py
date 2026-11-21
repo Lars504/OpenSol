@@ -317,9 +317,10 @@ def _triangle_memory_estimate(settings_values, mesh, context):
 
 
 def _memory_estimate(settings_values, mesh, context):
-    """Device: the float32 phasor fields + the real window DiffusionSystem (anchor check, held cells) + its nu_xx /
-    nu_yy (+ a cuDSS factor: _cudss_estimate); host: SuperLU factor, operator / eliminated / bordered matrices and
-    window arrays; run: one window float32 transfer buffer. Triangles: _triangle_memory_estimate."""
+    """Device: the float32 phasor fields + the real window DiffusionSystem (anchor check, held cells:
+    _assembly_only_system_estimate) (+ a cuDSS factor: _cudss_estimate); host: SuperLU factor, operator / eliminated /
+    bordered matrices and window arrays; run: one window float32 transfer buffer. Triangles:
+    _triangle_memory_estimate."""
     if mesh.kind == 'triangles':
         return _triangle_memory_estimate(settings_values, mesh, context)
     window_cells = window_cell_count(mesh)
@@ -327,15 +328,32 @@ def _memory_estimate(settings_values, mesh, context):
     factor_items = _host_factor_items(context, 'SuperLU L + U factors (heuristic)',
                                       host_lu_bytes(window_cells + n_rows), window_cells + n_rows, 5 * window_cells)
     own = MemoryEstimate.from_items(
-        ((f'fields ({_N_FIELDS} x float32)', _N_FIELDS * FLOAT32_BYTES * int(mesh.n_cells)),
-         ('reluctivities nu_xx / nu_yy (window)', 2 * FLOAT64_BYTES * window_cells)),
+        ((f'fields ({_N_FIELDS} x float32)', _N_FIELDS * FLOAT32_BYTES * int(mesh.n_cells)),),
         host_items=factor_items + (
-                    ('host matrices (kept stencil, operator, eliminated, bordered; complex128)',
-                     4 * 5 * COMPLEX128_CSR_ENTRY_BYTES * window_cells),
+                    ('host matrices (kept stencil and eliminated; operator and rows while building, bordered per '
+                     'solve; complex128)', 4 * 5 * COMPLEX128_CSR_ENTRY_BYTES * window_cells),
                     ('host window arrays (complex128)', _HOST_WINDOW_ARRAYS * COMPLEX128_BYTES * window_cells)),
         run_items=(('field transfer buffer (window float32)', FLOAT32_BYTES * window_cells),))
-    return combine((own, diffusion_system_estimate(window_cells, 'float64'),
+    return combine((own, _assembly_only_system_estimate(window_cells),
                     _cudss_estimate(context, window_cells + n_rows, 5 * window_cells)))
+
+
+_A_SOLVE_ITEM = 'assembled operator (A_solve)'   # the item label of core.memory_estimate.diffusion_system_estimate
+
+
+def _assembly_only_system_estimate(window_cells) -> MemoryEstimate:
+    """The real float64 window DiffusionSystem of MagneticACPhysics (mu_dc / anchor check, held cells): no CG workspace
+    or Jacobi diagonal (pcg=False: _AssemblyOnlySolver ignores the preconditioner), and its A_solve values a build
+    transient (dropped after the checks: MagneticACPhysics._assemble). The linear-model nu / mu_dc window values are
+    temporaries of the assembly (MagneticPhysics keeps them only while saturating, which this type never does)."""
+    system = diffusion_system_estimate(window_cells, 'float64', pcg=False)
+    operator = [size for label, size in system.items if label == _A_SOLVE_ITEM]
+    if len(operator) != 1:
+        raise RuntimeError(f"magnetic_fields_ac estimate: diffusion_system_estimate has no single '{_A_SOLVE_ITEM}' "
+                           'item (renamed?): the dropped A_solve cannot be moved to the build transient')
+    return MemoryEstimate.from_items(
+        tuple(item for item in system.items if item[0] != _A_SOLVE_ITEM), build_extra=system.build_extra + operator[0],
+        host_items=system.host_items, run_items=system.run_items, transient_items=system.transient_items)
 
 
 # run-time estimate guess: GMRES iterations of one recycled-factor solve after an operator change (sigma_dc / mu_dc

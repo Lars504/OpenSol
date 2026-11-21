@@ -3,7 +3,7 @@ anchor check, solved on the host as one complex SuperLU system K(nu) + j omega s
 exp(+j omega t) phasors, peak amplitudes. Planar A_z or axisymmetric psi = r A_phi on the planar operator. Fields on
 the Domain's xp (gpu or cpu backend)."""
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 
@@ -45,9 +45,11 @@ class ACCoilRegion:
 
 class _AssemblyOnlySolver:
     """Linear solver stand-in of the real DiffusionSystem assembly (anchor check, held cells): float64, never solves,
-    so no PCG workspace or device CSR product is built for the host complex solve."""
+    so no PCG workspace, device CSR product or (ignores_preconditioner) Jacobi inverse diagonal is kept for the host
+    complex solve."""
 
     precision = 'double'
+    ignores_preconditioner = True   # DiffusionSystem._keeps_inverse_diagonal: no float64 window diagonal kept for it
     tolerance, max_iterations = 1e-8, 1
     n_solves, last_iters, last_converged, last_residual, last_warning, n_unconverged = 0, 0, True, 0.0, None, 0
 
@@ -65,9 +67,9 @@ class _AssemblyOnlySolver:
 
 @dataclass(frozen=True, eq=False)
 class _HostSystem:
-    """Host arrays of one assembly: operator, held mask / values, free / held flat indices, eliminated matrix and its
-    held + boundary drive, conductor rows, reluctivities, conductivities (raw and eddy: 0 in held and stranded cells),
-    r_c column (1 planar) and cell areas dx dy."""
+    """Host arrays of one assembly: operator (face conductances and terms; matrix None), held mask / values, free /
+    held flat indices, eliminated matrix and its held + boundary drive, conductor rows, reluctivities, conductivities
+    (raw and eddy: 0 in held and stranded cells), r_c column (1 planar) and cell areas dx dy."""
     operator: object
     held: np.ndarray
     held_index: np.ndarray
@@ -310,7 +312,12 @@ class MagneticACPhysics(MagneticPhysics):
     # --- internals ------------------------------------------------------------
 
     def _assemble(self):
+        """Real window assembly for its checks (mu_dc, held cells, anchors), then its float64 A_solve values dropped:
+        nothing solves the real system (build_rhs / solve raise 'assemble before ...'), so they would only sit beside
+        the complex factor (cuDSS: on the device at the run's peak). The face conductances and assembled c it keeps
+        are error_indicator's (flux_jump_indicator); the next assembly rebuilds A_solve on the kept pattern."""
         super()._assemble()   # real operator: mu_dc check, held cells, anchor check
+        self.system.A_solve = None
         self._host_dirty = True
 
     def _cell_volume(self):
@@ -388,8 +395,10 @@ class MagneticACPhysics(MagneticPhysics):
             value = coil.value if coil.drive == 'current' or not self._axisymmetric else coil.value / (2.0 * math.pi)
             conductors.append(ConductorRow(coil.name, positions[cells], weights, coil.drive, value,
                                            float(np.sum(weights))))
+        # the kept operator drops its full complex CSR: only its face conductances / terms are read after this (fields,
+        # power, indicator); the eliminated matrix_free is the one kept beside the factor
         self._host = _HostSystem(
-            operator, held, held_index, held_values, free_index, rows[:, free_index].tocsr(),
+            replace(operator, matrix=None), held, held_index, held_values, free_index, rows[:, free_index].tocsr(),
             operator.boundary_rhs.ravel()[free_index] - rows[:, held_index] @ held_values, tuple(conductors),
             nu_xx, nu_yy, sigma, sigma_eddy, radius, cell_area)
         self._operator_revision += 1
