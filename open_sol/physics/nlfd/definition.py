@@ -1396,6 +1396,10 @@ def _time_estimate(settings_values, mesh, context):
     krylov = (te.elementwise(store, 2 * GMRES_RESTART + 3, 2, COMPLEX64_BYTES, launches=6),
               te.elementwise(store, 5, 3, COMPLEX128_BYTES, launches=6), te.Sync(2),
               te.PythonCalls(30 + 4 * n_channels))
+    # the pump-depleted adjoint's real_gmres keeps the complex128 basis (adjoint.depleted_cotangents): CGS2 over half
+    # of it on average, w subtracted in place
+    krylov_double = (te.elementwise(store, 2 * GMRES_RESTART, 2, COMPLEX128_BYTES, launches=8), te.Sync(2),
+                     te.PythonCalls(30 + 4 * n_channels))
     if newton:
         count, limit = _over(outer, passes, passes_limit)
         tangents = tuple(_term_ops(term, n_cells, slots=term.order) for term in applied)
@@ -1439,7 +1443,7 @@ def _time_estimate(settings_values, mesh, context):
         adjoint_solves = outer[0] * n_channels * sweeps_per_gradient
         if pump_depleted:
             items.append(te.TimeItem('pump-depleted adjoint sweeps', 'sweep', outer[0] * sweeps_per_gradient, 'guess',
-                                     tuple(density) + krylov, limit=outer[0] * (ADJOINT_MAX_PRODUCTS + 2.0),
+                                     tuple(density) + krylov_double, limit=outer[0] * (ADJOINT_MAX_PRODUCTS + 2.0),
                                      counter=physics_counter + ('adjoint_sweeps',)))
     elif _enabled_features(physics_spec, 'adjoint_objective'):
         not_estimated = ('adjoint sensitivity (computed when eps_sensitivity is read)',)
