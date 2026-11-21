@@ -172,6 +172,7 @@ class MagneticPhysics(MirrorTotals, DiffusionPhysicsBase):
         self._remanence_stale = True
         self._log_reluctivity_state = None
         self._nonlinear_cells = None
+        self._permeability = self._assembled_reluctivity = None   # views / values of the previous domain's window
         self._saturation_stale = True
 
     def _bind_geometry(self):
@@ -424,14 +425,7 @@ class MagneticPhysics(MirrorTotals, DiffusionPhysicsBase):
         linear model keeps neither. No window copy is kept: nu is rebuilt per assembly / field update (_reluctivities),
         the kept compact nu is exactly what the operator holds."""
         if read_permeability:
-            materials = self.domain.materials
-            window = self.system.window
-            mu_xx, mu_yy = materials.mu_dc_xx[window], materials.mu_dc_yy[window]
-            xp = self.xp
-            if bool(xp.any(~(mu_xx > 0) | ~(mu_yy > 0) | ~xp.isfinite(mu_xx) | ~xp.isfinite(mu_yy))):
-                raise ValueError(f"magnetostatics '{self.name}': mu_dc_xx / mu_dc_yy must be finite and > 0 in every "
-                                 'window cell')
-            self._permeability = (mu_xx, mu_yy)
+            self._read_permeability()
         elif self._permeability is None:
             raise RuntimeError(f"magnetostatics '{self.name}': no kept mu_dc views (a full assembly reads them)")
         self._assembled_reluctivity = (None if self._log_reluctivity_state is None else   # the compact loop state
@@ -440,6 +434,18 @@ class MagneticPhysics(MirrorTotals, DiffusionPhysicsBase):
         if not self._nonlinear:   # linear: nothing kept between assemblies
             self._permeability = self._assembled_reluctivity = None
         return nu_yy / self._radius_window, nu_xx / self._radius_window
+
+    def _read_permeability(self):
+        """Keep the mu_dc_xx / _yy window views (float32 material arrays, no copy) after checking them finite and > 0
+        (one sync)."""
+        materials = self.domain.materials
+        window = self.system.window
+        mu_xx, mu_yy = materials.mu_dc_xx[window], materials.mu_dc_yy[window]
+        xp = self.xp
+        if bool(xp.any(~(mu_xx > 0) | ~(mu_yy > 0) | ~xp.isfinite(mu_xx) | ~xp.isfinite(mu_yy))):
+            raise ValueError(f"magnetostatics '{self.name}': mu_dc_xx / mu_dc_yy must be finite and > 0 in every "
+                             'window cell')
+        self._permeability = (mu_xx, mu_yy)
 
     def _reluctivities(self):
         """(nu_xx, nu_yy) solve-dtype window arrays of the assembled operator: 1 / (mu0 mu_dc) of the loop's kept views
@@ -531,7 +537,7 @@ class MagneticPhysics(MirrorTotals, DiffusionPhysicsBase):
         of nu (scale 1). The first state is every curve's B = 0 limit (the linear 1 / (mu0 mu_dc) for J_s curves)."""
         first = [True]   # the first proposal of each loop assembles fully
         if self._log_reluctivity_state is None:
-            self._coefficients()   # reads and checks mu_dc
+            self._read_permeability()   # the B = 0 proposal reads mu_dc (no coefficient windows built here)
             zeros = self.xp.zeros(self._nonlinear_flat.size, dtype=np.float64)
             self._log_reluctivity_state = self._saturated_log_reluctivity(zeros, zeros)
         state = self._log_reluctivity_state
@@ -685,24 +691,36 @@ class MagneticPhysics(MirrorTotals, DiffusionPhysicsBase):
         fields = self.fields
         self._write_potential_field()
 
+        # in place on the two fresh flux arrays (the out-of-place expressions' values up to the rounding of B^2): H, then
+        # B, then the energy density terms, beside the two nu windows (~5 solve-dtype windows at once instead of ~11)
         flux_x, flux_y = self._physical_flux_at_centres()
-        free = ~system.fixed_user
-        materials = self.domain.materials
-        names = materials.property_names()
-        remanence_x = xp.where(free, materials.remanence_x[window], 0.0) if 'remanence_x' in names else 0.0
-        remanence_y = xp.where(free, materials.remanence_y[window], 0.0) if 'remanence_y' in names else 0.0
-        sign = -1.0 if self._axisymmetric else 1.0   # flux = (H_y, -H_x) planar, (-H_z, H_r) axisymmetric
-        H_x = -sign * flux_y
-        H_y = sign * flux_x
-        nu_xx, nu_yy = self._reluctivities()
-        B_x = H_x / nu_xx + remanence_x
-        B_y = H_y / nu_yy + remanence_y
+        H_x, H_y = flux_y, flux_x   # flux = (H_y, -H_x) planar, (-H_z, H_r) axisymmetric
+        if self._axisymmetric:
+            H_y *= -1.0
+        else:
+            H_x *= -1.0
         fields.H_x[window] = H_x
         fields.H_y[window] = H_y
+        nu_xx, nu_yy = self._reluctivities()
+        B_x, B_y = H_x, H_y
+        B_x /= nu_xx
+        B_y /= nu_yy
+        materials = self.domain.materials
+        remanent = [(name, flux_density) for name, flux_density in (('remanence_x', B_x), ('remanence_y', B_y))
+                    if name in materials.property_names()]
+        free = ~system.fixed_user if remanent else None
+        for name, flux_density in remanent:   # B = H / nu + B_r (free cells)
+            flux_density += xp.where(free, getattr(materials, name)[window], 0.0)
         fields.B_x[window] = B_x
         fields.B_y[window] = B_y
         fields.B_abs[window] = xp.hypot(B_x, B_y)
-        fields.w_mag[window] = 0.5 * (nu_xx * B_x ** 2 + nu_yy * B_y ** 2)
+        B_x *= B_x   # w_mag = (nu_xx B_x^2 + nu_yy B_y^2) / 2
+        B_x *= nu_xx
+        B_y *= B_y
+        B_y *= nu_yy
+        B_x += B_y
+        B_x *= 0.5
+        fields.w_mag[window] = B_x
         for destination, source in self._derived_pml_copies:
             xp.copyto(destination, source)
 

@@ -29,7 +29,8 @@ cells, anchors) and the damped iteration are in the core sub file, FEM assembly 
   `_anisotropic_saturation`: a new mesh-kind rule goes into both.
 - Memory: magnetostatics / magnetostatics_3d add a cuDSS 'linear' factor through
   `fem.diffusion.cudss_diffusion_estimate` (refactorises when a material saturates); a saturating tensor model adds
-  `kept_preconditioner_bytes`. The time recipe still prices one setup / factorisation per saturation iteration (an over-estimate since the kept preconditioner).
+  `kept_preconditioner_bytes` and (multigrid, 2D) the loop's fresh setups as a transient phase beside the loop state
+  (run items), which the build peak does not see. The time recipe still prices one setup / factorisation per saturation iteration (an over-estimate since the kept preconditioner).
   MagneticPhysics keeps no window nu / mu copy: while its saturation loop runs only the mu_dc window views (float32
   material arrays) and the compact assembled nu of the saturating cells (`_assembled_reluctivity`, exactly what the
   operator holds: the loop state moves on after the last solve, so B / |B| never read exp(state)); every reader of
@@ -68,7 +69,9 @@ cells, anchors) and the damped iteration are in the core sub file, FEM assembly 
   wrapper owns the hierarchy), and the wrapper is no PCGSolver, so the system's anchor check is not deferred to the
   CG's first sync. A new `_assemble` caller inside a loop must `offer_state` first, else nothing is kept. Keeping the
   hierarchy across a reused sweep's loops saved 1 of 9 setups and cost 20 % more CG iterations (bh example), so each
-  loop's first assembly builds fresh.
+  loop's first assembly builds fresh. The system's `_release_assembly` unbinds only a PCGSolver, so the wrapper drops
+  its own and its PCG's binding of the previous operator itself (`release_operator`, from offer_state and factorize):
+  never keep a reference to the previous operator across `_build` (the setup is the peak).
 - Single precision: the float32 CG stalls near a 1e-6 relative residual and iron cells (c 1 / mu_r of air's) keep |B|
   errors of percents (bh example: H_cores 8 % off at K = 100), so no stop floor can be met (a rounding floor of the
   tolerance did nothing): `Float32StallWatch` ends the loop. Validation warns on 'single' with a mu_dc contrast >= 100

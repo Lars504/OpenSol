@@ -646,12 +646,13 @@ def _bh_curve_material_count(spec):
 
 
 def _memory_estimate(settings_values, mesh, context):
-    """MagneticFields2D (float32 full grid) + the window DiffusionSystem + |B| (solve dtype window; the assembled nu of
-    the saturating cells kept only while saturating, mu_dc as views: MagneticPhysics._coefficients) + one bool window
+    """MagneticFields2D (float32 full grid) + the window DiffusionSystem (its flux post-processing phase: the field
+    update and the loop's |B| read flux_at_centres; the in-place field update stays within it) + the assembled nu of
+    the saturating cells (kept only while saturating, mu_dc as views: MagneticPhysics._coefficients) + one bool window
     mask per bh_curve material; run items: the remanence face terms and rhs when a material sets remanence, the
     saturation loop state, J_s, proposal temporaries and the Anderson history when one sets saturation_polarization or
-    a bh_curve; a cuDSS 'linear' factor (fem.diffusion.cudss_diffusion_estimate). Triangles:
-    _triangle_memory_estimate."""
+    a bh_curve; transient: a multigrid setup inside the saturation loop (beside those run items); a cuDSS 'linear'
+    factor (fem.diffusion.cudss_diffusion_estimate). Triangles: _triangle_memory_estimate."""
     if mesh.kind == 'triangles':
         return _triangle_memory_estimate(settings_values, mesh, context)
     window_cells = window_cell_count(mesh)
@@ -663,19 +664,26 @@ def _memory_estimate(settings_values, mesh, context):
     saturation_arrays = _SATURATION_WINDOW_ARRAYS + (
         2 * _ANDERSON_STATE_ARRAYS if settings_values.get('nonlinear_method') in ('auto', 'anderson') else 0) + (
         _CURVE_PROPOSAL_ARRAYS if n_curves else 0)
+    kept_bytes = kept_preconditioner_bytes(window_cells, 5, value_bytes, context, saturation)
+    loop_setup = 0
+    if saturation and linear_solver_multigrid(context):
+        # each loop's first assembly (and a spread past KEPT_SPREAD_LIMIT) sets up afresh beside the loop state, the
+        # kept hierarchy and the previous operator already dropped (KeptPreconditionerSolver.release_operator)
+        from ...solvers.multigrid import setup_extra_bytes
+        loop_setup = max(setup_extra_bytes(window_cells, value_bytes, 5) - kept_bytes, 0)
     own = MemoryEstimate.from_items(
         ((f'fields ({_N_FIELDS} x float32)', _N_FIELDS * FLOAT32_BYTES * int(mesh.n_cells)),
-         ('|B| (window)', value_bytes * window_cells),
          ('assembled reluctivities of the saturating cells (2 x solve dtype, compact: window bound)',
           2 * value_bytes * window_cells * int(saturation)),
          ('B-H curve masks (bool window)', BOOL_BYTES * window_cells * n_curves)),
         run_items=(('remanence face terms and rhs (window)', 3 * value_bytes * window_cells * int(remanence)),
                    ('saturation state, J_s, proposal and Anderson history (float64 window)',
                     saturation_arrays * FLOAT64_BYTES * window_cells * int(saturation)),
-                   ('kept preconditioner of the saturation loop',
-                    kept_preconditioner_bytes(window_cells, 5, value_bytes, context, saturation))))
+                   ('kept preconditioner of the saturation loop', kept_bytes)),
+        transient_items=(('saturation loop setup', 'multigrid setup of a saturation-loop assembly (beside the loop '
+                          'state)', loop_setup),))
     from ...model.schema import solver_backend   # where a multigrid setup aggregates
-    parts = [own, diffusion_system_estimate(window_cells, precision, mixed=linear_solver_mixed(context),
+    parts = [own, diffusion_system_estimate(window_cells, precision, flux=True, mixed=linear_solver_mixed(context),
                                             multigrid=linear_solver_multigrid(context),
                                             direct=linear_solver_direct(context),
                                             pcg=pcg_linear_solver(context.solvers),
