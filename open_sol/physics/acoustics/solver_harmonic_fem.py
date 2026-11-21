@@ -95,6 +95,40 @@ def _host(array) -> np.ndarray:
     return np.asarray(to_host(array), dtype=np.float64)
 
 
+_CENTROID_STATE_KERNEL = []   # the cupy ElementwiseKernel of _centroid_state_kernel (built on first use)
+
+
+def _centroid_state_kernel():
+    """cupy ElementwiseKernel of the device publish (gpu only: device values exist only after a cuDSS solve; the host
+    route is _centroid_values): per element (active: bool per element) the complex128 sum of basis[k] x (p_s + p_b)
+    over its int32 row-major element dofs (dofs off the fluid count 0; has_background 0: p_b not read), written as
+    float32 |p|, Re p, Im p."""
+    if not _CENTROID_STATE_KERNEL:
+        import cupy as cp
+        _CENTROID_STATE_KERNEL.append(cp.ElementwiseKernel(
+            'raw complex128 scattered, raw complex128 background, int32 has_background, raw bool active_dofs, '
+            'raw int32 element_dofs, raw float64 basis, int32 local, bool active',
+            'float32 p_abs, float32 p_re, float32 p_im',
+            '''
+            complex<double> total = 0.0;
+            if (active) {
+                const ptrdiff_t first = (ptrdiff_t)i * local;
+                for (int k = 0; k < local; ++k) {
+                    const int dof = element_dofs[first + k];
+                    if (active_dofs[dof]) {
+                        complex<double> value = scattered[dof];
+                        if (has_background) value += background[dof];
+                        total += basis[k] * value;
+                    }
+                }
+            }
+            p_abs = (float)abs(total);
+            p_re = (float)total.real();
+            p_im = (float)total.imag();
+            ''', 'open_sol_acoustic_centroid_state'))
+    return _CENTROID_STATE_KERNEL[0]
+
+
 def _entity_values(values, entities):
     """A number, or a per-mesh-entity array taken at `entities` as (k, 1) (edge / face coefficient forms)."""
     return values if np.ndim(values) == 0 else np.asarray(values)[entities][:, None]
@@ -291,6 +325,7 @@ class AcousticHarmonicBase(PhysicsSolver):
         if getattr(domain, 'grid_kind', 'tensor') != self.grid_kind:
             raise ValueError(f'{self._label()}: {type(self).__name__} needs a {self.grid_kind} mesh, got '
                              f"{getattr(domain, 'grid_kind', 'tensor')}")
+        self._release_system()
         self.domain = domain
         self.xp = domain.xp
         self.mesh = domain.mesh
@@ -324,8 +359,22 @@ class AcousticHarmonicBase(PhysicsSolver):
         self._unpublished_omega = None   # [rad/s] solved without showing its fields (field policy)
         self._background_cache = None    # (omega, background load) of the last _background_at
         self._background_nodal_cache = None   # (omega, p_b nodal) of the last _background_nodal_at
-        self._background_device = None   # (omega, cupy p_b nodal) of the last device publish
-        self._device_centroid_maps = None   # (system, cupy active dofs, element dofs, centroid basis, active elements)
+        self._device_centroid_maps = None   # (system, cupy active dofs, int32 element dofs, basis, active, local)
+
+    def _release_system(self) -> None:
+        """Free what the system being replaced (a rebuild, prepare) holds on the device before the next one assembles
+        and factorises: its factor (a cuDSS factor lives outside the cupy pool: release(), never left to the gc), its
+        reduced model (a reference cycle through the model's factorize closure would keep the DevicePencil terms until
+        a gc) and the publish maps keyed to it (they kept the whole old system alive until the next publish)."""
+        system = getattr(self, 'system', None)
+        self._device_centroid_maps = None
+        if system is None:
+            return
+        self.system = None
+        system.clear_reduced()
+        release = getattr(system.factor, 'release', None)
+        if release is not None:
+            release()
 
     def finalize(self) -> None:
         """Build and assemble the system: a fluid element without rho / sound_speed or a PML without a reference
@@ -700,6 +749,7 @@ class AcousticHarmonicBase(PhysicsSolver):
         terms (module header); timed into assembly_seconds (the time recipe's seconds counter: callers add no timed
         group of their own around it)."""
         started = time.perf_counter()
+        self._release_system()   # the replaced system's factor and device terms go before this one assembles
         mesh = self.mesh
         materials = self.domain.materials
         rho, speed = _host(materials.rho), _host(materials.sound_speed)
@@ -740,7 +790,7 @@ class AcousticHarmonicBase(PhysicsSolver):
         self._active_dofs = np.zeros(self.full.n_dofs, dtype=bool)
         self._active_dofs[system.global_ids] = True
         self._background_terms = self._background_preparation() if self.background is not None else None
-        self._background_cache = self._background_nodal_cache = self._background_device = None
+        self._background_cache = self._background_nodal_cache = None
         self._system_dirty = False
         self.assembly_seconds += time.perf_counter() - started
 
@@ -834,17 +884,17 @@ class AcousticHarmonicBase(PhysicsSolver):
     # --- outputs ---------------------------------------------------------------
     def _publish(self) -> None:
         """Per-element centroid state of the total field (p_s + p_b on the fluid dofs): on the device from the system's
-        device_values after a direct cuDSS solve on a cupy domain (R6), else on the host; the host total and the
-        velocities are formed on read (_host_total, _element_velocity)."""
+        device_values after a direct cuDSS solve on a cupy domain (R6, _device_publish), else on the host; the host
+        total and the velocities are formed on read (_host_total, _element_velocity)."""
         self._total = None
         self._velocity = None
         xp = self.xp
         device = self.system.device_values() if xp is not np else None
         if device is not None:
-            centroid, module = self._device_centroids(device), xp
-        else:
-            centroid, module = np.where(self._active, self._centroid_values(self._host_total()), 0.0), np
-        for name, values in (('p_abs', module.abs(centroid)), ('p_re', centroid.real), ('p_im', centroid.imag)):
+            self._device_publish(device)
+            return
+        centroid = np.where(self._active, self._centroid_values(self._host_total()), 0.0)
+        for name, values in (('p_abs', np.abs(centroid)), ('p_re', centroid.real), ('p_im', centroid.imag)):
             xp.copyto(self.fields[name], xp.asarray(values, dtype=DTYPE))
 
     def _host_total(self):
@@ -854,9 +904,11 @@ class AcousticHarmonicBase(PhysicsSolver):
             self._total = np.where(self._active_dofs, self._scattered + self._background_nodal, 0.0)
         return self._total
 
-    def _device_centroids(self, scattered):
-        """cupy complex centroid values of p_s (cupy full values) + p_b, 0 off the fluid: element maps uploaded once
-        per system, p_b nodal once per frequency."""
+    def _device_publish(self, scattered) -> None:
+        """The state fields of p_s (cupy full values) + p_b, 0 off the fluid, written in place by one fused kernel
+        (_centroid_state_kernel: no (elements, local) complex gather, total or mask temporaries beside the kept
+        solution; complex128 sums, float32 outputs as the host route): element maps uploaded once per system, p_b nodal
+        per publish (freed after it, not kept through the next frequency's factorisation)."""
         xp = self.xp
         maps = self._device_centroid_maps
         if maps is None or maps[0] is not self.system:
@@ -864,19 +916,16 @@ class AcousticHarmonicBase(PhysicsSolver):
             if self.full.n_dofs >= 2 ** 31:
                 raise ValueError(f'pressure acoustics: {self.full.n_dofs} dofs exceed the int32 device element dofs '
                                  '(< 2^31)')
-            maps = self._device_centroid_maps = (self.system, xp.asarray(self._active_dofs),
-                                                 xp.asarray(self.full.element_dofs.astype(np.int32)),
+            element_dofs = np.ascontiguousarray(self.full.element_dofs, dtype=np.int32)   # row-major: e * local + k
+            maps = self._device_centroid_maps = (self.system, xp.asarray(self._active_dofs), xp.asarray(element_dofs),
                                                  xp.asarray(self._centroid_basis(), dtype=np.float64),
-                                                 xp.asarray(self._active))
-        _, active_dofs, element_dofs, basis, active = maps
-        total = scattered
-        if self._background_terms is not None:
-            cached = self._background_device
-            if cached is None or cached[0] != self._omega:
-                cached = self._background_device = (self._omega, xp.asarray(self._background_nodal))
-            total = scattered + cached[1]
-        total = xp.where(active_dofs, total, 0.0)
-        return xp.where(active, total[element_dofs] @ basis, 0.0)
+                                                 xp.asarray(self._active), np.int32(element_dofs.shape[1]))
+        _, active_dofs, element_dofs, basis, active, local = maps
+        background = (None if self._background_terms is None
+                      else xp.asarray(self._background_nodal, dtype=np.complex128))
+        _centroid_state_kernel()(scattered, scattered if background is None else background,
+                                 np.int32(background is not None), active_dofs, element_dofs, basis, local, active,
+                                 self.fields['p_abs'], self.fields['p_re'], self.fields['p_im'])
 
     def _record(self, frequency, omega) -> None:
         """Probe (exact p_b at the point) and surface records of the last solve (linear outputs of the system values:

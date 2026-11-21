@@ -25,7 +25,7 @@ PARTS = STUDY_PARTS + SOLVER_ROLE_PARTS + (
     'prepare', 'finalize', '_build_system', '_apply_boundaries', '_impedance_damping', '_background_preparation',
     '_background_at', '_background_nodal_at', '_background_load', 'plan_frequency_response',
     'solve_frequency_response', 'publish_frequency_response', '_show_solution', '_record', '_publish', '_host_total',
-    '_surface_background', 'surface_result', '_component_field', '_element_velocity', '_device_centroids',
+    '_surface_background', 'surface_result', '_component_field', '_element_velocity', '_device_publish',
     '_point_value',
 )) + tuple((f'{TRIANGLES}.{method}', f'triangles: {method}') for method in (
     '_entity_load', '_source_operators', '_point_weights', '_centroid_values', '_locate', 'fem_field',
