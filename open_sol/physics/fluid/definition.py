@@ -4,8 +4,7 @@ plus the template and selftests (fluid_heat_convection: coupling/definitions_flu
 import math
 
 from ...core.constants import FACES
-from ...core.memory_estimate import (BOOL_BYTES, FLOAT32_BYTES, FLOAT64_BYTES, MemoryEstimate, combine,
-                                     window_cell_count)
+from ...core.memory_estimate import BOOL_BYTES, FLOAT32_BYTES, MemoryEstimate, combine, window_cell_count
 from ...core.mirror import feature_mirror_faces, mirror_faces
 from ...core.monitors import probe_result
 from ...core.time_estimate import TimeEstimate, explicit_step_estimate
@@ -24,6 +23,10 @@ from .solver import (FLUID_PROPERTY_ARRAYS, FLUID_SCHEMA, MACH_WARNING, MIN_TAU_
                      TAU_OFFSET_WARNING, FluidPhysics, march_steps_estimate, steady_march_steps)
 
 FLUID_TYPE_NAME = 'laminar_flow'   # = selftests.FLUID_TYPE_NAME (selftests never import the definition)
+# window float32 temporaries beside the lattice of one refresh / dt change, counted from the code (the largest of):
+# solver._kinematic_viscosity (float64 window in place + float32 / float64 density: 5), _update_relaxation's per-cell
+# rates (two float64 windows: 4) and _store_equilibrium (u^2, c.u, the previous direction, 3 expression temporaries: 6)
+_REFRESH_TEMPORARY_FLOATS = 6
 _BOUNDARY_FEATURES = frozenset({'wall', 'slip_wall', 'inlet_velocity', 'pressure', 'periodic'})
 # core.mirror.MIRROR_FEATURES['laminar_flow']: the slip face kind (the exact even mirror of the lattice) whose outer
 # faces are model mirror planes; another face feature on them is an error (own_mirror_face_conflicts), not the
@@ -193,8 +196,10 @@ def _apply_initial_velocity(ctx, solver, feature_spec, values, selection):
 
 
 def _initial_velocity_memory(values, n_selected_cells, mesh):
-    """Build peak: the three window input arrays and the equilibrium temporaries of the start (9 + 3 x float32)."""
-    return MemoryEstimate.from_items((), build_extra=15 * FLOAT32_BYTES * window_cell_count(mesh))
+    """Build peak: the three window input arrays (kept until finalize starts the flow, freed before its equilibrium)
+    over the lattice refresh temporaries of finalize beside them (3 + _REFRESH_TEMPORARY_FLOATS x float32)."""
+    return MemoryEstimate.from_items(
+        (), build_extra=(3 + _REFRESH_TEMPORARY_FLOATS) * FLOAT32_BYTES * window_cell_count(mesh))
 
 
 def _apply_flow_probe(ctx, solver, feature_spec, values, selection):
@@ -536,9 +541,12 @@ def _memory_estimate(settings_values, mesh, context):
     (4 x float32), fluid mask, as FluidPhysics.prepare keeps them: the saved velocity of the steady march (stationary
     only), per-cell relaxation rates (cpu, or fluids of several / unknown kinematic viscosities: the gpu reads 1-element
     rates of one) and lattice forces (cpu, or a body_force feature / a coupling into the flow; a steady force uniform on
-    the fluid frees them after its refresh); refresh temporaries (the float64 kinematic viscosity is rebuilt, never
-    kept); the Bouzidi wall-row table (conformal boundaries; its (rows, 8) fractions, wall cells only, not counted)
-    and the vorticity buffer of the first request (run)."""
+    the fluid frees them after its refresh): kept on the cpu (prepare), run items on the gpu (the first step's
+    _prepare_lattice allocates them); the Bouzidi wall-row table (conformal boundaries; its (rows, 8) fractions, wall
+    cells only, not counted); refresh temporaries (_REFRESH_TEMPORARY_FLOATS window float32: the float64 kinematic
+    viscosity rebuilt in place, never kept, or the per-direction equilibrium of a dt change) in the build (finalize's
+    refresh) and in the run (a materials change, a new lattice dt: the dt rescale); the vorticity buffer of the first
+    request (run)."""
     window_cells = window_cell_count(mesh)
     half = resolved_stepper_precision(context.solvers) == 'half_storage'
     population_bytes = 2 if half else FLOAT32_BYTES
@@ -553,16 +561,21 @@ def _memory_estimate(settings_values, mesh, context):
         coupling.enabled and coupling.target == physics_spec.name for coupling in context.spec.couplings)
     fields = MemoryEstimate.from_items((('fields u, u_abs, pressure, body forces (8 x float32)',
                                          8 * FLOAT32_BYTES * int(mesh.n_cells)),))
+    pair_bytes = 2 * FLOAT32_BYTES * window_cells
+    cell_arrays = (('per-cell relaxation rates (2 x float32)', pair_bytes if per_cell_rates else 0),
+                   ('per-cell lattice forces (2 x float32)', pair_bytes if forced else 0))
+    refresh_bytes = _REFRESH_TEMPORARY_FLOATS * FLOAT32_BYTES * window_cells
     lattice = MemoryEstimate.from_items(
         ((f"populations (2 x {N_DIRECTIONS} x {'float16' if half else 'float32'})",
           2 * N_DIRECTIONS * population_bytes * window_cells),
          ('lattice macros, mass density (4 x float32 + bool)', (4 * FLOAT32_BYTES + BOOL_BYTES) * window_cells),
          ('saved velocity of the steady march (2 x float32)', 2 * FLOAT32_BYTES * window_cells if stationary else 0),
-         ('per-cell relaxation rates (2 x float32)', 2 * FLOAT32_BYTES * window_cells if per_cell_rates else 0),
-         ('per-cell lattice forces (2 x float32)', 2 * FLOAT32_BYTES * window_cells if forced else 0),
+         *(cell_arrays if host else ()),
          ('Bouzidi wall rows (int32)', 4 * window_cells if conformal else 0)),
-        build_extra=6 * FLOAT64_BYTES * window_cells,
-        run_items=(('vorticity (float32)', FLOAT32_BYTES * window_cells),))
+        build_extra=refresh_bytes,
+        run_items=(('vorticity (float32)', FLOAT32_BYTES * window_cells), *(() if host else cell_arrays)),
+        transient_items=(('fluid lattice refresh',
+                          f'lattice refresh temporaries ({_REFRESH_TEMPORARY_FLOATS} x float32)', refresh_bytes),))
     return combine((fields, lattice))
 
 
