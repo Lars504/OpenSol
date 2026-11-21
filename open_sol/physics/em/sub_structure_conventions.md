@@ -471,7 +471,8 @@ type's vocabulary and refusals are in its help texts and validation.
 - The four triangle EM physics (FEMFDFDPhysics, FEMModePhysics, FEMBORPhysics, FEMConicalPhysics) subclass
   `solvers/fem_em_base.TriangleEMPhysics` (contract in its class comment); FDFDPhysics and FEMFDFDPhysics share
   `solvers/harmonic_shell.HarmonicEMShell`. A new triangle EM physics, or a member both 2D FDFD physics need, goes
-  there, never into a copy.
+  there, never into a copy. `_element_materials` builds eps / mu on the host from float32 host copies of the arrays
+  and pole masks (only host assemblies read them): no device complex128 per element beside a kept factor.
 - One type, two solvers: create builds FEMFDFDPhysics on a 'triangles' mesh (walls from
   `fdfd_domain_requirements(settings)`: a TriangleDomain carries no BoundaryConfig). A feature running there lists
   'triangles' in its `grids` and validates per mesh kind (`definition_fdfd._per_mesh_kind`); what triangles refuse is

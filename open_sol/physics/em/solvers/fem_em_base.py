@@ -2,6 +2,7 @@
 on a 'triangles' mesh): TriangleEMPhysics holds the per-element state, slots, host materials, the PEC-keyed layout,
 poles / PEC masks and the shared triangle renderer; subclasses add the solve and display hooks."""
 import math
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -268,11 +269,16 @@ class TriangleEMPhysics(PhysicsSolver):
 
     def _element_materials(self, omega):
         """({permittivity array: host complex128 eps per element (sigma_e, poles)}, host complex128 mu (sigma_m), host
-        bool PEC elements) at omega."""
-        materials, xp = self.domain.materials, self.xp
-        eps = {name: np.asarray(to_host(cell_permittivity(materials, name, self.dispersive_regions, omega, xp=xp)),
-                                dtype=np.complex128) for name in self.permittivity_arrays}
-        mu = np.asarray(to_host(cell_permeability(materials, omega, xp=xp)), dtype=np.complex128)
+        bool PEC elements) at omega; computed on the host from float32 host copies of the arrays it reads and of the
+        pole masks (only the host assembly reads the result: no complex128 device temporaries beside a kept cuDSS
+        factor, 4 instead of 16 B per element and array transferred)."""
+        materials = self.domain.materials
+        elements = SimpleNamespace(**{name: to_host(getattr(materials, name))
+                                      for name in (*self.permittivity_arrays, 'sigma_e', 'mu_r', 'sigma_m')})
+        regions = [(pole, box, None if mask is None else to_host(mask)) for pole, box, mask in self.dispersive_regions]
+        eps = {name: np.asarray(cell_permittivity(elements, name, regions, omega, xp=np), dtype=np.complex128)
+               for name in self.permittivity_arrays}
+        mu = np.asarray(cell_permeability(elements, omega, xp=np), dtype=np.complex128)
         return eps, mu, self._host_pec()
 
     def _write_element_fields(self, host_values: dict):
