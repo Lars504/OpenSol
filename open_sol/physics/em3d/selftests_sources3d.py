@@ -85,13 +85,14 @@ _HALF_STORAGE_NODE = f'{_HALF_STORAGE_VARIANT}_{_PHYSICS_NAME}_stepper'   # node
 
 # ---- stepper spectrum_precision mixed2 against double (monitors3d.SpectrumStore) ----
 # Bound of a mixed2 spectrum: gamma_N x the gross sum |sample| (monitors3d SPECTRUM_BLOCK_WORST_ERROR, 3.8e-6 for full
-# 64-sample blocks, 1.7e-6 for one partial block of ~28 samples); a flux Re(E H*) errs by at most 2 gamma r of its
+# 64-sample blocks, 2.0e-6 for one partial block of ~33 samples); a flux Re(E H*) errs by at most 2 gamma r of its
 # value, r = gross / |spectrum| per cell. The fields of a double and a mixed2 run are identical (same kernels and DFT
 # phases), so their difference is the accumulation alone.
 _MIXED2_NODE = 'mixed2_spectra'       # stepper node of the mixed2 runs (the double runs keep the Automatic stepper)
-# dipole (em3d_far_field_dipole model, ~28 samples: no fold, the read path folds the partial block): the box faces sit
-# in the reactive near field (r up to ~10 at the face corners) -> flux 2 x 1.7e-6 x 10 = 3.4e-5, below 1e-4; the far
-# field sums the face currents with phases that cancel to ~1/10 of their gross at cos^2 >= 0.25 -> 1e-3
+# dipole (em3d_far_field_dipole model, ~33 samples: 367 steps, a sample every 11; no fold, the read path folds the
+# partial block): the box faces sit in the reactive near field (r up to ~10 at the face corners) -> flux 2 x 2.0e-6 x
+# 10 = 4e-5, below 1e-4; the far field sums the face currents with phases that cancel to ~1/10 of their gross at
+# cos^2 >= 0.25 -> 1e-3
 _M2_FLUX_TOLERANCE = 1e-4
 _M2_FAR_FIELD_TOLERANCE = 1e-3
 # near-cancelling column: the plane-wave column in vacuum (x / y periodic, one-sided TFSF plane, CPML along z), a
@@ -634,9 +635,9 @@ SOURCE_CASES = (
                      f'field, tolerance {DIPOLE_TOLERANCE:g}), then mixed2 vs double: flux box power_per_cw at 0.9-1.1 '
                      f'um, relative, tolerance {_M2_FLUX_TOLERANCE:g}, and far-field power_per_cw where cos^2 >= '
                      f'{_FF_MIN_PATTERN:g}, tolerance {_M2_FAR_FIELD_TOLERANCE:g}. The fields of both runs are '
-                     'identical, so the difference is the accumulation alone: ~28 DFT samples stay in one partial block (no fold; '
-                     'the result read adds it to the host total), whose worst-case error gamma_28 = 1.7e-6 of the '
-                     'gross sum |sample| becomes <= 3.4e-5 of the flux with the near-field gross ~10x the spectra at '
+                     'identical, so the difference is the accumulation alone: ~33 DFT samples stay in one partial '
+                     'block (no fold; the result read adds it to the host total), whose worst-case error gamma_33 = 2.0e-6 of the '
+                     'gross sum |sample| becomes <= 4e-5 of the flux with the near-field gross ~10x the spectra at '
                      'the face corners, and ~10x that in the far field, whose radiation integrals cancel the face '
                      'currents; a wrong view, kernel (H re-timing, pair mean) or a dropped block shows at >= 1e-2. '
                      "Each error over its tolerance (case tolerance 1); raises unless summary 'solvers' records the "
