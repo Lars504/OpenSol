@@ -138,10 +138,10 @@ class EpsSensitivity:
     """Adjoint gradient of J = sum weight * value over the objectives at one solve (zeros without one)."""
     objective: float         # J [W/m]
     omega: float | None      # rad/s of the solve; None = no objective or no solve
-    # ez eps_r / hz eps_xx, eps_yy -> float32 (nx, ny) dJ/d eps per cell [W/m] (run backend). float32 storage: each
-    # value is computed in complex128 and only rounded at the end (6e-8 relative, no later cancellation: the study
-    # gathers it into float64 per design cell), far below the adjoint's own error (source / port / objective lines held
-    # fixed; em_fdfd_adjoint_gradient: 2e-3 against central differences) and what L-BFGS-B needs
+    # ez eps_r / hz eps_xx, eps_yy -> float64 (nx, ny) dJ/d eps per cell [W/m] (run backend). Kept float64 on purpose:
+    # L-BFGS-B builds its curvature pairs from differences of successive gradients (nearly equal late in a run), where
+    # float32 rounding is noise rather than the adjoint's smooth model error; and the cache is not at the device peak
+    # (alive in the adjoint phase beside its complex128 temporaries, dropped before the next factorisation)
     cell_gradients: dict
     density: object          # float32 (nx, ny) dJ/d eps_r per cell area [W/m^3] (hz: eps_xx + eps_yy terms)
     off_diagonal_density: object = None   # hz: float32 (nx, ny) dJ/d eps_xy per cell area [W/m^3]; else None
@@ -397,7 +397,7 @@ def eps_sensitivity(physics, wall_rows) -> EpsSensitivity:
         return EpsSensitivity(0.0, None, {}, xp.zeros(shape, dtype=DTYPE))
     total, cell_part, face_parts, weighted = objective_cotangents(physics)
     if not weighted:
-        return EpsSensitivity(total, float(system.omega), {name: xp.zeros(shape, dtype=DTYPE)
+        return EpsSensitivity(total, float(system.omega), {name: xp.zeros(shape, dtype=xp.float64)
                                                            for name in physics.permittivity_arrays},
                               xp.zeros(shape, dtype=DTYPE), xp.zeros(shape, dtype=DTYPE) if hz else None)
     source = adjoint_source(physics, cell_part, face_parts, wall_rows)
@@ -414,6 +414,5 @@ def eps_sensitivity(physics, wall_rows) -> EpsSensitivity:
     off_diagonal_density = (None if off_diagonal_gradient is None
                             else sensitivity_density(physics.domain, {'eps_xy': off_diagonal_gradient}))
     del off_diagonal_gradient
-    density = sensitivity_density(physics.domain, gradients)   # from the float64 gradients
-    gradients = {name: values.astype(DTYPE) for name, values in gradients.items()}   # EpsSensitivity comment
-    return EpsSensitivity(total, float(system.omega), gradients, density, off_diagonal_density)
+    return EpsSensitivity(total, float(system.omega), gradients, sensitivity_density(physics.domain, gradients),
+                          off_diagonal_density)

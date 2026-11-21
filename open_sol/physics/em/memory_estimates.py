@@ -645,7 +645,7 @@ def fdfd_memory_estimate(polarization):
             bloch = bool(bloch_active_axes(settings_values))
             host_items, eigen_transient, external_items, external_extra = _eigen_items(   # fdfd_2d._symmetrizer: D A
                 context, n_cells, sparse_row, superlu=not line_block_items,              # unless Bloch / gyration_z
-                ldlt=not bloch and not context.material_sets(GYRATION_Z),
+                ldlt=not fdfd_general_lu(settings_values, context, polarization),
                 # E2 (_adjoint_symmetrizer: no Bloch phase, eps_xy or gyration_z) polishes a complex A on any factor:
                 # an open model (a lossy closed one is booked unpolished)
                 polished_double=not bloch and not off_diagonal_run and cpml_cross_section(settings_values))
@@ -653,16 +653,18 @@ def fdfd_memory_estimate(polarization):
             transient_items += eigen_transient
             run_items += line_block_items
         elif back_end in HOST_FACTOR_BACK_ENDS:
-            # MUMPS / PARDISO: the LDL^T of D A (an LU with a Bloch phase), recyclable like SuperLU (one kept factor)
+            # MUMPS / PARDISO: the LDL^T of D A (an LU with a Bloch phase or gyration_z), recyclable like SuperLU (one
+            # kept factor)
             host_items = [*host_factor_items(back_end, 'SuperLU L + U factors (heuristic)', host_lu_bytes(n_cells),
-                                             n_cells, entries, symmetric=not bloch_active_axes(settings_values)),
+                                             n_cells, entries,
+                                             symmetric=not fdfd_general_lu(settings_values, context, polarization)),
                           ('host operator copy', operator_copy)]
             superlu_host = True
         elif back_end in CUDSS_BACK_ENDS:   # kept between solves (_factorization, _cudss_previous)
             mixed = back_end == 'cudss_mixed'
-            # no symmetrizer with a Bloch phase: an LU, and an adjoint solve its transpose's LU; with eps_xy D A passes
-            # the asymmetry check (an LDL^T, one plan: em_fdfd_adjoint_cpu_gpu xy runs, 2026-11)
-            general = bool(bloch_active_axes(settings_values))
+            # no symmetrizer with a Bloch phase or gyration_z: an LU, and an adjoint solve its transpose's LU; with
+            # eps_xy alone D A passes the asymmetry check (an LDL^T, one plan: em_fdfd_adjoint_cpu_gpu xy runs, 2026-11)
+            general = fdfd_general_lu(settings_values, context, polarization)
             kept = cudss_kept_bytes(n_cells, entries, mixed, symmetric=not general)
             run_items.append(('cuDSS operator copies, rhs buffer and row scale', kept))
             later_bytes += kept
@@ -670,7 +672,7 @@ def fdfd_memory_estimate(polarization):
                                     solve_peak_bytes(n_cells, COMPLEX128_BYTES, mixed)))
             external_items, external_extra = cudss_factor_items('the Helmholtz operator', n_cells, entries,
                                                                 mixed=mixed, general=general)
-            adjoint_lu = general and _has_adjoint_objective(context)
+            adjoint_lu = general and has_adjoint_objective(context)
             if adjoint_lu and off_diagonal_run:   # _transposed_solve: the eps_xy pattern may differ from its transpose:
                 transposed_kept = cudss_kept_bytes(n_cells, entries, mixed, symmetric=False)   # a second LU (upper
                 run_items.append(('cuDSS operator copies of the transposed (adjoint) LU', transposed_kept))   # figure)
@@ -714,7 +716,14 @@ def fdfd_memory_estimate(polarization):
     return estimate
 
 
-def _has_adjoint_objective(context) -> bool:
+def fdfd_general_lu(settings_values, context, polarization) -> bool:
+    """Whether a tensor-mesh em_fdfd_<polarization> operator has no symmetrizer (fdfd_2d._symmetrizer None: a Bloch
+    phase, or an hz gyration_z), so its cuDSS / MUMPS / PARDISO factor is a general LU (an eigen one too) and an
+    adjoint solve on cuDSS factorises the transpose (memory items here; definition_fdfd's time recipe)."""
+    return bool(bloch_active_axes(settings_values)) or (polarization == 'hz' and context.material_sets(GYRATION_Z))
+
+
+def has_adjoint_objective(context) -> bool:
     """Whether the physics has an enabled adjoint_objective feature (an eps_sensitivity solve follows the driven one)."""
     return any(feature.enabled and feature.type == 'adjoint_objective' for feature in context.physics_spec.features)
 
@@ -972,10 +981,10 @@ def adjoint_objective_memory_estimate(polarization):
 
     def estimate(values, n_selected_cells, mesh):
         n_cells = int(mesh.n_cells)
-        # the float32 EpsSensitivity (gradients + densities) stays cached until the next solve starts (fdfd_2d._solve
-        # drops it before the factorisation); small beside the temporaries
-        items = [(ADJOINT_PHASE, f'adjoint sensitivity cache ({n_gradients + n_densities} x float32)',
-                  (n_gradients + n_densities) * FLOAT32_BYTES * n_cells),
+        # the EpsSensitivity (float64 gradients, float32 densities) stays cached until the next solve starts
+        # (fdfd_2d._solve drops it before the factorisation); small beside the temporaries
+        items = [(ADJOINT_PHASE, f'adjoint sensitivity cache ({n_gradients} x float64 + {n_densities} x float32)',
+                  (n_gradients * FLOAT64_BYTES + n_densities * FLOAT32_BYTES) * n_cells),
                  (ADJOINT_PHASE, f'adjoint solve temporaries ({n_temporaries} x complex128)',
                   n_temporaries * COMPLEX128_BYTES * n_cells)]
         if n_mean_maps:
