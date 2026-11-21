@@ -1233,7 +1233,9 @@ def fdtd_bor_memory_estimate(settings_values, mesh, context):
         if settings_values.get(f'bc_{face}') == 'cpml':
             z_pml_rows += 4 * npml * (shape[0] + 1)
     radial_rows = 6 * npml * (shape[1] + 1) if settings_values.get('bc_x_hi') == 'cpml' else 0   # ~6 per layer cell
-    device, host = stepper_bytes(shape, order, z_pml_rows, radial_rows)
+    # a side's decay vector exists only with sigma_e (E) / sigma_m (H) somewhere
+    device, host = stepper_bytes(shape, order, z_pml_rows, radial_rows, lossy_e=context.material_sets('sigma_e'),
+                                 lossy_h=context.material_sets('sigma_m'))
     items = [(f'stepper fields, coefficients, CPML psi and curl products ({n_members} stepper(s))', n_members * device)]
     pole_bytes = mask_bytes = 0   # per pole ~3 E points per box cell: J (+ dP), drive, correction float32, int32 index
     for box_cells, n_drude, n_lorentz in _pole_regions(context):
@@ -1257,12 +1259,14 @@ def fdtd_bor_memory_estimate(settings_values, mesh, context):
     dt = mesh.dt * min(1.0, math.sqrt(2.0) / (order + 1)) if mesh.dt else None
     trace_items, run_items, host_items = point_trace_items(context, mesh, _POINT_TRACE_FEATURES, dt=dt)
     n_wavelengths = _harmonic_wavelength_count(context)
-    if n_wavelengths:   # solvers/fdtd_bor.BORHarmonic
+    if n_wavelengths:   # solvers/fdtd_bor.BORHarmonic; its pulse's field_energy uploads the energy weights
         n_points = sum(sum(sizes) for sizes in layout_sizes(shape))
         run_items.append((f'harmonic accumulator ({n_wavelengths} wavelengths x complex64, every E and H point, '
                           f'{n_members} stepper(s))', n_members * n_wavelengths * COMPLEX64_BYTES * n_points))
-    return MemoryEstimate.from_items(items + trace_items, host_items=[('kept real-metric assembly (rough)', host)]
-                                     + host_items, run_items=run_items)
+        run_items.append((f'field energy weights (float32, every E and H point, {n_members} stepper(s))',
+                          n_members * FLOAT32_BYTES * n_points))
+    host_items = [('kept real-metric assembly (rough)', host)] + list(host_items)
+    return MemoryEstimate.from_items(items + trace_items, host_items=host_items, run_items=run_items)
 
 
 def fdtd_bor_flux_memory_estimate(values, n_selected_cells, mesh):

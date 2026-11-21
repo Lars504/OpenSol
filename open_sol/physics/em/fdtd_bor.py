@@ -273,6 +273,10 @@ def _update_host(decay, gain, curl, field):
     field += gain * curl
 
 
+def _update_lossless_host(gain, curl, field):
+    field += gain * curl
+
+
 def _pml_psi_host(rows, a, b, drive, psi, curl):
     psi *= b
     psi += a * drive
@@ -325,6 +329,10 @@ def _accumulate_host(phase, points, offsets, values, total):
 _UPDATE = twin('em.bor_fdtd_update', cp.ElementwiseKernel(
     'float32 decay, float32 gain, float32 curl', 'float32 field', 'field = decay * field + gain * curl',
     'bor_fdtd_update'), _update_host)
+# decay 1 at every point of the side (no sigma_e / sigma_m): no stored decay vector (_BatchSide.decay None)
+_UPDATE_LOSSLESS = twin('em.bor_fdtd_update_lossless', cp.ElementwiseKernel(
+    'float32 gain, float32 curl', 'float32 field', 'field += gain * curl', 'bor_fdtd_update_lossless'),
+    _update_lossless_host)
 # z CPML psi on its stretched rows only (a != 0; elsewhere psi would stay 0): curl[row] += psi before _UPDATE, the
 # former fused decay field + gain (curl + psi) in two launches
 _PML_PSI = twin('em.bor_fdtd_pml_psi', cp.ElementwiseKernel(
@@ -535,10 +543,11 @@ class _BatchRadial:
 class _BatchSide:
     """One half step (E or H) of every batch member (module header 'Lockstep batch'): one CSR product of the stacked
     block-diagonal main, z CPML driver, r_hi d_r and m / r rows into one buffer (curl, psi drive, layer values), the
-    r_hi layer (_BatchRadial), decay / gain per member row and the fused update."""
+    r_hi layer (_BatchRadial), gain (and decay unless 1 everywhere) per member row and the fused update."""
 
     def __init__(self, plans, xp, dt):
         import scipy.sparse
+        self.xp = xp
         size, source_size = plans[0].size, plans[0].source_size
         if any((plan.size, plan.source_size) != (size, source_size) for plan in plans):
             raise ValueError('BOR FDTD lockstep batch members need one grid')
@@ -565,7 +574,7 @@ class _BatchSide:
         n_main = len(plans) * size
         self._out = xp.zeros(n_main + n_pml + 2 * n_layer, dtype=DTYPE)
         self.curl = self._out[:n_main]
-        self.decay = xp.ones(n_main, dtype=DTYPE)
+        self.decay = None   # float32 per member row, None while it is 1 everywhere (set_decay)
         self.gain = xp.zeros(n_main, dtype=DTYPE)
         offset = n_main
         self.pml = None
@@ -580,6 +589,19 @@ class _BatchSide:
             self.radial = _BatchRadial(radial_plans, size, source_size, self._out[offset:offset + n_layer],
                                        self._out[offset + n_layer:], xp, dt)
 
+    def set_decay(self, decay):
+        """Host decay of every member row (float64): stored float32, or dropped (None) when its float32 values are all
+        1 (lossless side: _UPDATE_LOSSLESS, 4 B less per point)."""
+        values = np.asarray(decay, dtype=DTYPE)
+        if values.shape != self.gain.shape:
+            raise ValueError(f'BOR FDTD decay of shape {values.shape} differs from the side rows {self.gain.shape}')
+        if bool(np.all(values == 1.0)):
+            self.decay = None
+            return
+        if self.decay is None:
+            self.decay = self.xp.empty(values.size, dtype=DTYPE)
+        self.decay[...] = self.xp.asarray(values)
+
     def advance(self, source, field):
         """field = decay field + gain (main source + r_hi layer terms + psi) on the flat stacked vectors."""
         self._product.apply(source, self._out)
@@ -587,7 +609,10 @@ class _BatchSide:
             self.radial.add(source, self.curl)
         if self.pml is not None:
             _PML_PSI(*self.pml, self.curl)
-        _UPDATE(self.decay, self.gain, self.curl, field)
+        if self.decay is None:
+            _UPDATE_LOSSLESS(self.gain, self.curl, field)
+        else:
+            _UPDATE(self.decay, self.gain, self.curl, field)
 
 
 class _PolePoints:
@@ -818,8 +843,7 @@ class _LockstepBatch:
         """Copy the members' host coefficients (decay / gain, pole corrections, injection / field-injection weights)."""
         xp = self.xp
         for side, name in ((self._h_side, 'h'), (self._e_side, 'e')):
-            side.decay[...] = xp.asarray(np.concatenate([stepper._decay[name] for stepper in self.members]),
-                                         dtype=DTYPE)
+            side.set_decay(np.concatenate([stepper._decay[name] for stepper in self.members]))
             side.gain[...] = xp.asarray(np.concatenate([stepper._gain_h if name == 'h' else stepper._gain_e
                                                         for stepper in self.members]), dtype=DTYPE)
         for pole in self._poles:
@@ -999,7 +1023,8 @@ class BORTimeStepper:
         self._gain_h = None    # host float64 H gain -dt / (mu0 mu (1 + loss)) (field injection weights)
         self._decay = None     # {'e' | 'h': host float64 decay (1 - loss) / (1 + loss)}
         self.port_operators = (h_parts[0].tocsr(), e_parts[0].tocsr())   # host d_z parts S C_z, V^-1 C_z^T S V_a
-        self._energy_e = self._energy_a = None
+        self._energy_e = self._energy_a = None   # device float32 energy weights over their scales (field_energy)
+        self._energy_host = None                  # their host float32 values (refresh_coefficients)
         self._pole_slots = [self._pole_points(pole, share) for pole, share in poles]   # None: no point of this order
         self._poles = [points for points in self._pole_slots if points is not None]
         self.refresh_coefficients(materials, sigma_e, sigma_m)
@@ -1092,8 +1117,10 @@ class BORTimeStepper:
         energies = (0.5 * EPS0 * eps * self.e_volumes * self.e_active, 0.5 * MU0 * mu * self.a_volumes * self.a_active)
         self._energy_scales = tuple(float(np.max(values)) if values.size and np.max(values) > 0.0 else 1.0
                                     for values in energies)
-        self._energy_e, self._energy_a = (xp.asarray(values / scale, dtype=DTYPE)
-                                          for values, scale in zip(energies, self._energy_scales))
+        self._energy_host = tuple((values / scale).astype(DTYPE)
+                                  for values, scale in zip(energies, self._energy_scales))
+        if self._energy_e is not None:   # field_energy uploaded them: keep the device copies current
+            self._energy_e, self._energy_a = (xp.asarray(values) for values in self._energy_host)
         for injection in self._injections:
             self._set_weights(injection)
         for injection in self._field_injections:
@@ -1181,7 +1208,11 @@ class BORTimeStepper:
         return phasor_yee(spectra.e_spectra[index], spectra.a_spectra[index], self.shape)
 
     def field_energy(self) -> float:
-        """0.5 sum (eps0 eps V x^2 + mu0 mu V_a h^2) [J per radian] over every point (a decay measure; h lags dt / 2)."""
+        """0.5 sum (eps0 eps V x^2 + mu0 mu V_a h^2) [J per radian] over every point (a decay measure; h lags dt / 2).
+        The float32 weights reach the device at the first call (a frequency_domain pulse, per chunk), not at the build:
+        a time_dependent run never holds them."""
+        if self._energy_e is None:
+            self._energy_e, self._energy_a = (self.xp.asarray(values) for values in self._energy_host)
         scale_e, scale_a = self._energy_scales
         return (scale_e * float(_WEIGHTED_SQUARE_SUM(self._energy_e, self.x))
                 + scale_a * float(_WEIGHTED_SQUARE_SUM(self._energy_a, self.h)))
@@ -1407,13 +1438,16 @@ class BOROrderSum:
         return float(sum(member.stepper.field_energy() for member in self.members))
 
 
-def stepper_bytes(shape, order, z_pml_rows, radial_rows):
-    """(device bytes, host bytes) estimate of a BORTimeStepper of an (nr, nz) grid at `order`: float32 vectors, CSR
-    products (main curls; z psi drivers on z_pml_rows = E + a rows of the z CPML layers, 0 without), the r_hi layer
-    rows (radial_rows = E + a rows, 0 without), host assembly."""
+def stepper_bytes(shape, order, z_pml_rows, radial_rows, lossy_e=True, lossy_h=True):
+    """(device bytes, host bytes) estimate of a BORTimeStepper of an (nr, nz) grid at `order`: float32 vectors (the
+    decay of a side only when lossy_e / lossy_h: sigma_e / sigma_m somewhere), CSR products (main curls; z psi drivers
+    on z_pml_rows = E + a rows of the z CPML layers, 0 without), the r_hi layer rows (radial_rows = E + a rows, 0
+    without), host assembly and energy weights. The device energy weights (field_energy, first call) are not in it:
+    the caller books 4 (n_e + n_a) where a study reads them."""
     e_sizes, a_sizes = layout_sizes(shape)
     n_e, n_a = sum(e_sizes), sum(a_sizes)
-    vectors = 4 * (n_e + n_a) + 4 * z_pml_rows   # field, decay, gain, curl (+ z CPML rows: drive, a, b, psi)
+    # field, gain, curl (+ decay of a lossy side; + z CPML rows: drive, a, b, psi)
+    vectors = 3 * (n_e + n_a) + n_e * bool(lossy_e) + n_a * bool(lossy_h) + 4 * z_pml_rows
     curl_nnz = 2 * a_sizes[0] + 2 * a_sizes[1] + 4 * a_sizes[2] + (a_sizes[0] + a_sizes[1]) * (order != 0)
     csr_entry, index = 8, 4   # float32 data + int32 column; int32 row pointer
     products = 2 * curl_nnz * csr_entry + (n_e + n_a + 2) * index
@@ -1421,6 +1455,7 @@ def stepper_bytes(shape, order, z_pml_rows, radial_rows):
         products += (2 * z_pml_rows + 4) * index + 2 * z_pml_rows * csr_entry
     # r_hi layer: 9 float32 + int32 row per row, ~4 CSR entries + 3 row pointers (derivative, integral, order products)
     radial = radial_rows * (9 * 4 + 4 + 4 * csr_entry + 3 * index + 2 * 4)   # + the integral and its column (~1 / 3)
-    device = 4 * vectors + products + radial + 4 * (n_e + n_a)   # + float32 energy weights
-    host = 40 * 24 * n_e + 16 * (n_e + n_a)   # kept assembly (complex128 curl split, class operators; rough)
+    device = 4 * vectors + products + radial
+    # kept assembly (complex128 curl split, class operators; rough) + the float32 energy weights
+    host = 40 * 24 * n_e + 16 * (n_e + n_a) + 4 * (n_e + n_a)
     return device, host
