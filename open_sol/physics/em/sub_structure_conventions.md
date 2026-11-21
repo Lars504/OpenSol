@@ -561,6 +561,11 @@ type's vocabulary and refusals are in its help texts and validation.
   both (example analytic_bor_transverse_dipole_m1 pins the axis rule).
 - `_material_serial` keys the line-block wavelength batch: every `_mark_assembly_dirty` but `omega_only` bumps it, so a
   change of the assembled system goes through it.
+- Device memory: BORPhysics owns only the `BOR_DEVICE_FIELDS` (state() / loss-protocol keys e_intensity, q_abs) on the
+  run backend; the 13 rendered-only fields are host numpy (`HostFDFDBase.device_field_names`; a new device reader takes
+  `xp.asarray(window)`, a new state() key joins BOR_DEVICE_FIELDS and the estimate's device item), and `_bor_materials`
+  reads float32 host copies of the material arrays and pole masks (nothing but the host assembly reads the result).
+  Everything else on the device is a solver's (cuDSS / line-block factors, the resonance search).
 - The host SuperLU size rule binds only an own SuperLU / MUMPS / PARDISO factor: a cuDSS factor or a line_block node
   skips it in `_solve`, `HostFDFDBase.finalize`, `_solver_issues` and `solve_bor_resonances` (passed factor); a rejected
   line-block solve checks it in `_factorize_host` before the SuperLU fallback. Change them together.
