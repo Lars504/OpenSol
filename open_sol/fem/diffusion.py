@@ -1046,8 +1046,8 @@ def cudss_diffusion_estimate(n_unknowns, entries, dimensions, back_end='cudss', 
     """DiffusionDirectSolver on cuDSS (real Cholesky of a device CSR, factorize_device_csr): pool copies, index maps and
     vectors (kept), the plan's peak (build extra; input_copy: the device CSR is a caller temporary), solve /
     refactorisation peaks (transient), the factor outside the pool (dimensions 2 / 3). symmetric_known: the owner
-    vouches for symmetry (DiffusionDirectSolver.symmetric_known: a DiffusionSystem, FEMDiffusionSystem[3D]), so no
-    transpose map is kept and no int64 key peak taken; False (the 2D ElasticSystem, MagneticFEMSystem): checked."""
+    vouches for symmetry (DiffusionDirectSolver.symmetric_known: a DiffusionSystem, FEMDiffusionSystem[3D], the 2D
+    ElasticSystem), so no transpose map is kept and no int64 key peak taken; False (MagneticFEMSystem): checked."""
     from ..solvers.cudss_factor import (factor_device_bytes, index_map_bytes, operator_copy_bytes, refresh_peak_bytes,
                                         solve_peak_bytes)
     n_unknowns, entries = int(n_unknowns), int(entries)

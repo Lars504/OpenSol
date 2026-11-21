@@ -356,9 +356,9 @@ class ElasticSystem(ElasticSystemBase):
         self.free = None
         self.fixed_values = None    # prescribed values on held / pinned dofs, 0 on free ones (flat)
         self.fixed_coupling = None  # K . fixed_values
-        self.inverse_blocks = None  # (inverse_xx, inverse_xy, inverse_yy) per node
+        self.inverse_blocks = None  # pcg (not mixed): (inverse_xx, inverse_xy, inverse_yy) per node, made by the bind
         self._single_products = None   # pcg 'mixed': (float64 apply, float32 apply, float32 inverse blocks)
-        self._factor_stale = False     # sparse_direct: A_solve changed since its factor (the next solve factorises)
+        self._binding_stale = False    # A_solve changed since the linear solver's binding (the next solve binds)
         self._rigid_signature = None
         self.operator_dirty = True
 
@@ -459,10 +459,11 @@ class ElasticSystem(ElasticSystemBase):
     def assemble(self, c11, c12, c22, c66, solid_elements, hoop=None, c16=None, c26=None) -> None:
         """Assemble the stiffness from element coefficients [Pa] (window-shaped, solve dtype; axisymmetric: hoop = (c_rt,
         c_zt, c_tt) too; planar: the monoclinic c16 / c26, None = 0), eliminate held and unconnected dofs, check
-        rigid-body modes per solid region, rebuild the block-Jacobi preconditioner."""
+        rigid-body modes per solid region; the linear solver binds A_solve at the next solve (_bind_if_stale)."""
         xp, sparse = self.xp, self.sparse
         dtype = self.dtype
         nx_nodes, ny_nodes = self.node_shape
+        self._release_binding()   # the old operator never lives beside the new one's assembly temporaries
         if self.pattern is None or not self.pattern.matches(nx_nodes, ny_nodes):
             self.pattern = ElasticPattern(nx_nodes, ny_nodes, xp=xp)
         pattern = self.pattern
@@ -498,20 +499,10 @@ class ElasticSystem(ElasticSystemBase):
         self._held_rows = self._held_row_block(data, held)
         del operator, data
 
-        block_xx = solve_data[pattern.block_positions[:, 0, 0]]
-        block_xy = solve_data[pattern.block_positions[:, 0, 1]]
-        block_yy = solve_data[pattern.block_positions[:, 1, 1]]
-        determinant = block_xx * block_yy - block_xy * block_xy
-        invertible = determinant > 0
-        safe_determinant = xp.where(invertible, determinant, 1.0)
-        self.inverse_blocks = (xp.where(invertible, block_yy / safe_determinant, 1.0 / block_xx),
-                               xp.where(invertible, -block_xy / safe_determinant, 0.0),
-                               xp.where(invertible, block_xx / safe_determinant, 1.0 / block_yy))
-
         xp.copyto(self.unknown, fixed_values, where=fixed)
         self.fixed_values = fixed_values
         self.free = free
-        self._bind_linear_solver()
+        self._binding_stale = True
         self.operator_dirty = False
 
     def _held_row_block(self, data, held) -> tuple:
@@ -529,27 +520,60 @@ class ElasticSystem(ElasticSystemBase):
                                        shape=(int(rows.size), self.n_dofs))
         return rows, block
 
-    def _bind_linear_solver(self) -> None:
-        """Factorize the PCGSolver on the new A_solve with gpu check blocks captured as CUDA graphs (a factorize starts
-        new graphs); 'mixed': float32 copies of A_solve and the inverse blocks run the inner CG, the float64 A_solve
-        refreshes the outer residual. sparse_direct: the factor waits for the next solve (piezoelectric and modal
-        solves never ask), which refreshes the kept one on its plan."""
+    def _release_binding(self) -> None:
+        """Drop the last assembly's A_solve and its pcg binding (inverse blocks, mixed float32 copies, the PCGSolver's
+        references and block graphs) before a re-assembly; a sparse_direct factor stays (its own copies: the next solve
+        refreshes it on its plan)."""
+        self._single_products = None
+        self.inverse_blocks = None
+        self.A_solve = None
+        self._binding_stale = False
+        if not self.direct:
+            self.linear_solver.release_operator()
+
+    def _bind_if_stale(self) -> None:
+        """Bind the linear solver to the A_solve of the last assembly at its first solve, so modal, frequency-response
+        and piezoelectric runs (which never solve here) hold no binding: sparse_direct factorises it (a kept cuDSS
+        factor refreshed on its plan; A_solve vouched symmetric); pcg gets the block-Jacobi inverse node blocks, its
+        workspace and gpu check blocks captured as CUDA graphs (a factorize starts new graphs); 'mixed': float32 copies
+        of A_solve and of the inverse blocks run the inner CG (no float64 blocks: the outer residual refresh is a
+        product only), the float64 A_solve refreshes the outer residual."""
+        if not self._binding_stale:
+            return
         solver = self.linear_solver
-        self._single_products = None   # free the previous float32 copies first
         if self.direct:
-            self._factor_stale = True
-            return
-        if solver.precision != 'mixed':
+            # D_free K D_free + D_fixed of the S^T C S stencil (C symmetric) is symmetric by construction (the 2 x 2
+            # Gauss stencil to rounding): no device symmetry check and no transpose map kept beside the cuDSS factor
+            solver.symmetric_known = True
+            solver.factorize(self.A_solve)
+        elif solver.precision != 'mixed':
+            self.inverse_blocks = self._inverse_node_blocks(self.dtype)
             solver.factorize(self.A_solve, self._precondition, capture_blocks=True)
-            return
-        matrix = self.A_solve
-        single = self.sparse.csr_matrix((matrix.data.astype(np.float32), matrix.indices, matrix.indptr),
-                                        shape=matrix.shape)
-        double_product, single_product = _CsrApply(matrix, self.backend), _CsrApply(single, self.backend)
-        single_blocks = tuple(block.astype(np.float32) for block in self.inverse_blocks)
-        self._single_products = (double_product, single_product, single_blocks)
-        solver.factorize(double_product, n_unknowns=self.n_dofs, single_operator=single_product,
-                         single_preconditioner=self._precondition_single, capture_blocks=True)
+        else:
+            matrix = self.A_solve
+            single = self.sparse.csr_matrix((matrix.data.astype(np.float32), matrix.indices, matrix.indptr),
+                                            shape=matrix.shape)
+            double_product, single_product = _CsrApply(matrix, self.backend), _CsrApply(single, self.backend)
+            self._single_products = (double_product, single_product, self._inverse_node_blocks(np.float32))
+            solver.factorize(double_product, n_unknowns=self.n_dofs, single_operator=single_product,
+                             single_preconditioner=self._precondition_single, capture_blocks=True)
+        self._binding_stale = False
+
+    def _inverse_node_blocks(self, dtype) -> tuple:
+        """(inverse_xx, inverse_xy, inverse_yy) per node of the diagonal 2 x 2 blocks of A_solve, formed in the solve
+        dtype and returned in dtype (1 / the diagonal where a block is not positive definite)."""
+        xp, positions = self.xp, self.pattern.block_positions
+        values = self.A_solve.data
+        block_xx = values[positions[:, 0, 0]]
+        block_xy = values[positions[:, 0, 1]]
+        block_yy = values[positions[:, 1, 1]]
+        determinant = block_xx * block_yy - block_xy * block_xy
+        invertible = determinant > 0
+        safe_determinant = xp.where(invertible, determinant, 1.0)
+        return tuple(block.astype(dtype, copy=False) for block in (
+            xp.where(invertible, block_yy / safe_determinant, 1.0 / block_xx),
+            xp.where(invertible, -block_xy / safe_determinant, 0.0),
+            xp.where(invertible, block_xx / safe_determinant, 1.0 / block_yy)))
 
     def _check_rigid_modes(self, solid_elements):
         """Raise ValueError when a solid region (elements with stiffness, joined through shared corners) admits a
@@ -652,16 +676,10 @@ class ElasticSystem(ElasticSystemBase):
     def _precondition_single(self, residual, preconditioned):
         _apply_inverse_blocks(self._single_products[2], residual, preconditioned)
 
-    def _factorize_if_stale(self) -> None:
-        """sparse_direct: factorise A_solve of the last assembly (a kept cuDSS factor is refreshed on its plan)."""
-        if self._factor_stale:
-            self.linear_solver.factorize(self.A_solve)
-            self._factor_stale = False
-
     def solve(self) -> None:
-        """The base solve (PCG, or the direct factor made first when stale)."""
+        """The base solve (PCG or the direct factor, bound first when stale)."""
         if self._solvable():
-            self._factorize_if_stale()
+            self._bind_if_stale()
         super().solve()
 
     def solve_homogeneous(self, load_nodes, solution) -> None:
@@ -669,7 +687,7 @@ class ElasticSystem(ElasticSystemBase):
         in, w out); the generalized plane-strain unit axial-strain solve."""
         if self.A_solve is None:
             raise RuntimeError('assemble before solve_homogeneous')
-        self._factorize_if_stale()
+        self._bind_if_stale()
         self.xp.multiply(solution, self.free, out=solution)
         self.linear_solver.solve(self.free * load_nodes.reshape(-1), solution)
 

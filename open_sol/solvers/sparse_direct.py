@@ -1424,7 +1424,7 @@ class DiffusionDirectSolver(ExactSolveRecord):
         # True: the owner vouches that every operator handed to factorize is symmetric (a DiffusionSystem's A_solve, an
         # FEM diffusion operator: shared face / element terms), so a cuDSS factor skips the device symmetry check and
         # its transpose map (factorize_device_csr symmetric_known: 4 B per stored entry kept, the plan's int64 keys);
-        # False (default, e.g. the 2D ElasticSystem): checked
+        # False (default, e.g. MagneticFEMSystem): checked; the 2D ElasticSystem vouches before each factorize
         self.symmetric_known = False
 
     def _refuse_cusolver_qr(self, back_end) -> None:

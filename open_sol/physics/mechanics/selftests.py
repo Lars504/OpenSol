@@ -305,7 +305,7 @@ _BILAYER_TEXT = (
     f'- nu + nu^2), pull reaction F = sum of sigma_xx h = {_bilayer_closed_forms()[3]:.6g} N/m and the left roller -F. '
     'error = max(max |u_x - eps_xx x| / d, max |u_y - u_y,exact| / max |u_y|, max strain errors / eps_xx, max stress '
     'and von Mises errors / max sigma_xx, |F_pull - F| / F, |F_left + F| / F, |F_bottom,y| / F)')
-# pcg 'mixed' (system.ElasticSystem._bind_linear_solver) on both backends: the gpu runs its CSR RawKernel products in
+# pcg 'mixed' (system.ElasticSystem._bind_if_stale) on both backends: the gpu runs its CSR RawKernel products in
 # captured CG blocks, the cpu scipy's in-place kernel
 _MIXED_VARIANTS = (SelfTestVariant('mixed', tolerance=_TOLERANCE, precision='mixed', roles=('linear',)),
                    SelfTestVariant('mixed_cpu', tolerance=_TOLERANCE, backend='cpu', precision='mixed',

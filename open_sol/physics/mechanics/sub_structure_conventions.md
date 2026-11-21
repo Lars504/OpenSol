@@ -50,9 +50,11 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   through a corner contact shows as an unconverged CG, not as a refusal; validation only checks that both directions
   are held somewhere.
 - Linear solver: `definition.SOLID_LINEAR_ROLE` (its comment holds the choices and their measurements: block-Jacobi
-  pcg, 'mixed' on the gpu, sparse_direct as the stationary / time_dependent default); the 2D binding (CUDA-graph check
-  blocks, float32 copies of 'mixed', the factor deferred to the next `solve` so modal and piezo solves never factorise
-  it): `ElasticSystem._bind_linear_solver`.
+  pcg, 'mixed' on the gpu, sparse_direct as the stationary / time_dependent default); the 2D binding (inverse node
+  blocks, workspace, CUDA-graph check blocks, float32 copies of 'mixed', or the vouched-symmetric direct factor) is made
+  by the first `solve` / `solve_homogeneous` after an assembly (`ElasticSystem._bind_if_stale`), so modal,
+  frequency-response and piezo runs hold none of it (the estimate's `pcg_bound`), and a re-assembly releases the old
+  A_solve and binding first (`_release_binding`): a new reader of the binding goes through `_bind_if_stale`.
 - Reactions are K u - f of the last solve (`load_full` of the last `_build_rhs`): every load change sets
   `_loads_dirty` (it also drops the frequency response's kept `_harmonic_drive`), so loads never change between a solve
   and a read. n_solves doubles as the couplings' revision counter.
@@ -100,14 +102,16 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
 - Unknowns, signs, electrodes, the column map G and its scaling: `piezo.py` header; every G^T X G goes through
   `fem.assembly.congruence`.
 - The 2D static solve (`_solve_system`) is a private host SuperLU of G^T A G (counted as piezo_*, outside any role):
-  the 'linear' pcg is still assembled, unused. The harmonic system is kept while mass and loss are the same objects
-  (`PiezoSystem.harmonic_system`): callers cache them, a new object is a new reduction.
+  A_solve is still assembled, the 'linear' solver never bound. The harmonic system is kept while mass and loss are the
+  same objects (`PiezoSystem.harmonic_system`): callers cache them, a new object is a new reduction.
 
 ## Frequency response (`frequency_response.py`, `bvd.py`; study frequency_response, model/study_frequency_response.py)
 - In Hz (the EM frequency_domain study stays wavelength-based); convention, losses and the factor routes:
   `frequency_response.py` header and `HarmonicSystem`. 2D tensor solids use a private SuperLU outside the roles
-  (counters harmonic_* / piezo_harmonic_*; the 'linear' pcg assembled, unused); triangles and tetrahedra their
-  'linear' sparse_direct runtime (3D operator class 'spd' is nominal there).
+  (counters harmonic_* / piezo_harmonic_*; A_solve assembled, the 'linear' solver never bound) of one HarmonicSystem
+  kept per operators (`_direct_harmonic`, cleared wherever `_harmonic_operators` is; its factor dropped after each
+  frequency); triangles and tetrahedra their 'linear' sparse_direct runtime (3D operator class 'spd' is nominal
+  there).
 - Real stays real: HarmonicSystem keeps K real without a loss term, so a lossless pencil without a resistive load
   factors real (half the factor, the complex rhs split by solve_host / solve): a new per-frequency term adds out of
   place (never `+=` a complex term into the real values), and the estimators book complex terms / factor only with

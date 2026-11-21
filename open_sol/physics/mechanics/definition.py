@@ -98,7 +98,7 @@ _FEM_STUDIES = (STATIONARY_STUDY, TIME_DEPENDENT_STUDY, EIGENFREQUENCY_STUDY,   
 
 # The 'linear' SolverRole of solid_mechanics (local: no other type uses it): tensor
 # mesh = block-Jacobi CSR pcg (no scalar multigrid: it does not fit the vector problem), 'mixed' = float32 inner CG on
-# float32 copies of the CSR and the 2 x 2 inverse blocks (system.ElasticSystem._bind_linear_solver); Automatic on the
+# float32 copies of the CSR and the 2 x 2 inverse blocks (system.ElasticSystem._bind_if_stale); Automatic on the
 # gpu backend = pcg mixed (float64 is slow on consumer GPUs; the CSR product is bound by bytes, so
 # ~1.5x here, not 3D's 17x; a pcg node setting no precision takes it too); triangle mesh = sparse_direct
 # on both backends (back_end 'auto' = cudss on the gpu backend with nvmath, B1a: double, thin-film K is badly
@@ -1096,8 +1096,11 @@ def _fem_memory_estimate(settings_values, mesh, context):
         _, n_basis = eigen_basis_counts(context, vector_dofs, rigid_motions, pml)
         # solve_eigenfrequencies releases the ModalPencil (DevicePencil, factor) after each solve; a complex pencil
         # runs eigs_shifted (the device Krylov-Schur on a DevicePencil), a real one eigsh_shifted
+        complex_bloch = complex_bloch_pencil_2d(settings_values)
         eigen_transient, eigen_host_items, eigen_factors, eigen_phases, basis_on_device = eigen_device_items(
             context, vector_dofs, entries, 16 if complex_pencil else FLOAT64_BYTES, dimensions=fill,
+            # a Bloch phase: Hermitian or general (P^H A P of a complex symmetric A), not vouched: full, checked terms
+            symmetric=not complex_bloch, checked=complex_bloch,
             complex_eigs=complex_pencil, n_basis=n_basis, mass_entries=entries // components,
             # a loss factor leaves M real (float64 in the complex pencil); a PML stretch or a Bloch reduction does not
             mass_bytes=16 if pml or complex_bloch_pencil_2d(settings_values) else FLOAT64_BYTES)
@@ -1183,7 +1186,7 @@ def _memory_estimate(settings_values, mesh, context):
     if getattr(mesh, 'kind', 'tensor') == _TRIANGLES:
         return _fem_memory_estimate(settings_values, mesh, context)
     precision = linear_solver_precision(context)
-    mixed = linear_solver_mixed(context)   # float64 system, float32 inner CG (system.ElasticSystem._bind_linear_solver)
+    mixed = linear_solver_mixed(context)   # float64 system, float32 inner CG (system.ElasticSystem._bind_if_stale)
     value_bytes = FLOAT64_BYTES if precision == 'float64' else FLOAT32_BYTES
     n_x, n_y = _window_elements(mesh)
     elements = n_x * n_y
@@ -1194,15 +1197,23 @@ def _memory_estimate(settings_values, mesh, context):
                                          n_fields * FLOAT32_BYTES * int(mesh.n_cells)),))
     cudss = cudss_back_end(context.solvers)   # sparse_direct: a factor of A_solve per assembly, no PCG workspace
     host_back_end = linear_solver_direct(context)   # host SuperLU / MUMPS / PARDISO of A_solve ('' otherwise)
-    # unknown, held values, applied load, rhs, CG unknown; held mask and its rigid-check copy; PCGSolver workspace
-    # (residual, direction, CSR product, preconditioned; mixed: float32 + the float64 outer vectors and the float32 CSR
-    # values); held-u_z node mask
+    study = context.spec.study.type
+    # the pcg binding waits for the first static solve (ElasticSystem._bind_if_stale): modal and frequency-response
+    # runs never solve the static system, piezoelectric ones (plane strain only) solve it by host SuperLU
+    generalized = (settings_values.get('out_of_plane') == GENERALIZED_PLANE_STRAIN
+                   and not is_axisymmetric(settings_values))
+    pcg_bound = not (cudss or host_back_end or study in MODAL_STUDIES or study == FREQUENCY_RESPONSE_STUDY
+                     or settings_values.get('piezoelectric'))
+    # unknown, held values, applied load, rhs, CG unknown; held mask and its rigid-check copy; held-u_z node mask; a
+    # bound pcg: its workspace (residual, direction, CSR product, preconditioned; mixed: float32 + the float64 outer
+    # vectors and the float32 CSR values) and inverse node blocks (3 per node; mixed: float32 only, + the two CSR
+    # product outputs float64 + float32)
     vectors = (5 * value_bytes + 2 * BOOL_BYTES) * dofs + BOOL_BYTES * (dofs // 2)
-    if not (cudss or host_back_end):
+    if pcg_bound:
         vectors += workspace_bytes(dofs, 'mixed' if mixed else SOLVER_PRECISIONS[precision], jacobi=False,
                                    csr_entries=entries if mixed else 0)
-    if mixed:   # float32 inverse blocks (3 per node), the two CSR product outputs (float64 + float32)
-        vectors += 3 * FLOAT32_BYTES * (dofs // 2) + (FLOAT64_BYTES + FLOAT32_BYTES) * dofs
+        vectors += (3 * FLOAT32_BYTES * (dofs // 2) + (FLOAT64_BYTES + FLOAT32_BYTES) * dofs if mixed
+                    else 3 * value_bytes * (dofs // 2))
     # stencil positions (int32 below 2^31 stencil slots, else int64), indices / entry rows (int32) per entry; indptr per
     # dof, diagonal-block positions
     pattern = ((INT32_BYTES if entries < 2 ** 31 else _INT64_BYTES) + 2 * INT32_BYTES) * entries + (
@@ -1213,30 +1224,29 @@ def _memory_estimate(settings_values, mesh, context):
     held_dofs = 4 * (n_x_nodes + n_y_nodes)
     operators = value_bytes * entries + held_dofs * (_STENCIL_ENTRIES_PER_DOF * (FLOAT64_BYTES + INT32_BYTES)
                                                      + INT32_BYTES + _INT64_BYTES)
-    # fixed values, free, fixed coupling, kept load, 3 inverse-block entries per node; element area, applied body force
-    # (2, with a body_force feature: solver._applied_body_force), the ten kept stiffness coefficients
-    # (stiffness.ElementStiffness); solid mask and its rigid-check copy
+    # fixed values, free, fixed coupling, kept load; element area, applied body force (2, with a body_force feature:
+    # solver._applied_body_force), the ten kept stiffness coefficients (stiffness.ElementStiffness); solid mask and its
+    # rigid-check copy
     body_force = any(feature.enabled and feature.type == 'body_force' for feature in context.physics_spec.features)
-    assembly = (int(5.5 * value_bytes * dofs)
+    assembly = (4 * value_bytes * dofs
                 + ((11 + 2 * int(body_force)) * value_bytes + 2 * BOOL_BYTES) * elements)
     # + the element_stiffness / plane-stress condensation temporaries (E, nu, Lame pair, 6 condensed coefficients)
     build_extra = (BOOL_BYTES + 2 * _INT64_BYTES + value_bytes) * entries + 40 * dofs + 10 * value_bytes * elements
     # load copy, SpMV and output temporaries of one static solve
     transient_items = [('static solve', 'solve temporaries', (2 * dofs + 20 * elements) * value_bytes)]
     run_items, factors, factor_phases = [], (), {}
-    if (settings_values.get('out_of_plane') == GENERALIZED_PLANE_STRAIN
-            and not is_axisymmetric(settings_values)):
+    if generalized:
         # kept load and solution per free eps_zz term (_unit_axial_solve until the next _assemble), the summed load
         # copy, the eps_zz centre field
         n_terms = len(BENDING_TERMS[settings_values.get('bending', 'xy')])
         run_items.append(('generalized plane strain unit solves',
                           (2 * n_terms + 1) * value_bytes * dofs + value_bytes * elements))
     if stiffness_follows_state(context):
-        # stencil, gathered data, product temporary and the new A_solve while the old one is alive
+        # stencil, gathered data, product temporary and the new A_solve; the old A_solve and its pcg binding are
+        # released first (ElasticSystem._release_binding), so the kept A_solve item covers one of the four
         transient_items.append(('stiffness re-assembly', 'stiffness re-assembly (state-dependent stiffness)',
-                                4 * value_bytes * entries))
+                                3 * value_bytes * entries))
     host_items = ()
-    study = context.spec.study.type
     guided = ((study == EIGENFREQUENCY_STUDY and settings_values.get('axial_wavenumber') is not None)
               or (study == OPTOMECHANICS_STUDY and backward_scattering(context.physics_spec)))
     if guided:
@@ -1263,9 +1273,10 @@ def _memory_estimate(settings_values, mesh, context):
             host_items += frequency_response_host_items(PIEZO_COMPONENTS * (dofs // 2), complex_factor=bool(
                 context.material_sets(LOSS_ARRAYS[0]) or context.material_sets(LOSS_ARRAYS[1])))
     elif study in MODAL_STUDIES:
-        # mass stencil, its gathered data and CSR copy, density temporaries: freed once M is on the host
-        transient_items.append(('eigen assembly', 'eigen mass assembly',
-                                3 * value_bytes * entries + 4 * value_bytes * elements))
+        # K and M are host float64 stencils (_build_harmonic_operators, xp=np): on the device only the density
+        # temporaries and the (plane-stress condensed) coefficients before their host copies
+        transient_items.append(('eigen assembly', 'eigen density / coefficient temporaries of the host copies',
+                                8 * value_bytes * elements))
         eigen_transient, eigen_host_items, factors, factor_phases, _ = eigen_device_items(
             context, dofs, entries, FLOAT64_BYTES, mass_entries=entries // 2)   # Q1 mass: one component per row
         transient_items += eigen_transient
@@ -1298,9 +1309,10 @@ def _memory_estimate(settings_values, mesh, context):
     parts = [fields, system]
     if (cudss and study not in MODAL_STUDIES and study != FREQUENCY_RESPONSE_STUDY
             and not settings_values.get('piezoelectric')):   # piezoelectric solves are host SuperLU (piezo.py)
-        # ElasticSystem's DiffusionDirectSolver: A_solve (kept) factorised from the device CSR, refreshed on its plan
+        # ElasticSystem's DiffusionDirectSolver: A_solve (kept) factorised from the device CSR, refreshed on its plan,
+        # vouched symmetric (ElasticSystem._bind_if_stale: no transpose map, no int64 key peak)
         parts.append(cudss_diffusion_estimate(dofs, entries, 2, cudss, input_copy=False,
-                                              refactorizes=stiffness_follows_state(context)))
+                                              refactorizes=stiffness_follows_state(context), symmetric_known=True))
     return combine(parts)
 
 
