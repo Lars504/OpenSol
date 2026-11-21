@@ -1133,9 +1133,11 @@ def _fem_resonance_memory_estimate(settings_values, mesh, context, n_resonances,
         (f'resonance vectors ({vectors_label} x complex128)', n_vectors * COMPLEX128_BYTES * unknowns),
         *([('quadrature-point bases', sample_basis_bytes(n_elements, order))] if sample_bases else []),
         ('nodal display fields (6 complex128 + 16 float64)',
-         28 * FLOAT64_BYTES * (int(mesh.n_nodes) + (int(mesh.n_edges) if order == 2 else 0)))]
-    transient_items = [(SOLVE_PHASE, 'material temporaries per solve (one eps component at a time, mu: 3 x '
-                                     'complex128 per element)', 3 * COMPLEX128_BYTES * n_elements), *search_transient]
+         28 * FLOAT64_BYTES * (int(mesh.n_nodes) + (int(mesh.n_edges) if order == 2 else 0))),
+        # fem_em_base._element_materials: built on the host from float32 copies (no device temporaries)
+        ('element materials per solve (float32 copies; eps components, mu: 3 x complex128 per element)',
+         (6 * FLOAT32_BYTES + 3 * COMPLEX128_BYTES) * n_elements)]
+    transient_items = list(search_transient)
     external_items, external_extra = [], 0
     if on_device:
         mixed = eigen_mixed(factorization, unknowns)
