@@ -14,9 +14,9 @@ from ...core.constants import DTYPE, FACES_3D, MU0
 from ...core.damped_iteration import DampedIteration, DampingSettings
 from ...core.fv_diffusion import (DiffusionPhysicsBase, DiffusionSystem, ScalarBoundaryConfig, host_copies,
                                   write_host_copies)
-from ...core.fv_diffusion_3d import (centre_gradient_3d, edge_extension_views_3d, face_drive_divergence_3d,
-                                     face_drive_integrals_3d, face_drive_terms_3d, face_flow_energy_3d, face_flows_3d,
-                                     face_terms_at_centres_3d)
+from ...core.fv_diffusion_3d import (axis_centre_flux_3d, axis_face_flow_3d, axis_face_flow_energy_3d,
+                                     centre_gradient_3d, edge_extension_views_3d, face_drive_divergence_3d,
+                                     face_drive_integrals_3d, face_drive_terms_3d)
 from ...core.monitors import FieldProbe
 from .coils3d import coil_drive_per_ampere
 from .kept_preconditioner import KeptPreconditionerSolver, kept_preconditioner_solver
@@ -37,8 +37,9 @@ _AXES = 'xyz'
 @dataclass(frozen=True, eq=False)
 class CoilRegion3D:
     """Runtime object of a stranded coil: axis index (0, 1, 2), turns, current [A] (> 0 counter-clockwise seen from
-    +axis), axial length h [m], T per ampere [1/m] (float64 window array of the run backend, along the axis) and
-    mirror_factor (2 per model mirror plane its winding reaches: its image joins it in series)."""
+    +axis), axial length h [m], T per ampere [1/m] (HOST float64 window array along the axis: read once per assembly
+    and per scalars read, so it stays off the device peak; its readers upload it) and mirror_factor (2 per model
+    mirror plane its winding reaches: its image joins it in series)."""
     name: str
     axis_index: int
     turns: int
@@ -78,6 +79,7 @@ class MagneticPhysics3D(MirrorTotals, DiffusionPhysicsBase):
         self._drive_stale = True
         self._face_drives = None   # face_drive_terms_3d of w = mu0 T + B_r / mu_dc (None: no coil, no remanence)
         self._drive_rhs = None
+        self._assembled_unsolved = False   # an assembly since the last solve: face flow / B reads raise
         self._corner_anchored = False   # window cell (0, 0, 0) held at u = 0 by the type (all-Neumann models)
         # saturation: fixed point on ln of the isotropic secant mu_r of the saturating cells (float64 window, 0
         # elsewhere), Anderson-mixed or damped Picard, as the 2D tensor loop
@@ -129,6 +131,7 @@ class MagneticPhysics3D(MirrorTotals, DiffusionPhysicsBase):
         self._centres = tuple(0.5 * (faces[:-1] + faces[1:]) for faces in self._faces)
         self._source_dirty = True
         self._drive_stale = True
+        self._assembled_unsolved = False
         self._corner_anchored = False
         self._log_permeability_state = None
         self._saturation_stale = True
@@ -216,10 +219,10 @@ class MagneticPhysics3D(MirrorTotals, DiffusionPhysicsBase):
         """energy [J], per coil <name>_flux_linkage [Wb] / <name>_inductance [H]; {} before a solve."""
         if self.system.n_solves == 0:
             return {}
-        flows = self._total_face_flows()
-        values = {'energy': self.field_energy(flows)}
+        totals = self._flow_totals()
+        values = {'energy': self.field_energy(totals)}
         for coil in self.coils:
-            result = self.coil_results(coil, flows)
+            result = self.coil_results(coil, totals)
             values[f'{coil.name}_flux_linkage'] = result['flux_linkage']
             values[f'{coil.name}_inductance'] = result['inductance']
         return values
@@ -270,7 +273,7 @@ class MagneticPhysics3D(MirrorTotals, DiffusionPhysicsBase):
         per_ampere, axial_length = coil_drive_per_ampere(
             mask_host, axis, (system.dx_window, system.dy_window, system.dz_window), int(turns), f"coil '{name}'")
         coil = CoilRegion3D(name, _AXES.index(axis), int(turns), float(current), axial_length,
-                            self.xp.asarray(per_ampere, dtype=np.float64),
+                            np.asarray(per_ampere, dtype=np.float64),
                             self._coil_mirror_factor(name, tensor_touched_faces(mask_host)))
         self.coils.append(coil)
         self._write_current_density()
@@ -292,32 +295,27 @@ class MagneticPhysics3D(MirrorTotals, DiffusionPhysicsBase):
         self.system.operator_dirty = True
         return True
 
-    def coil_results(self, coil: CoilRegion3D, flows=None) -> dict:
+    def coil_results(self, coil: CoilRegion3D, totals=None) -> dict:
         """current, turns (the drawn winding's), flux_linkage [Wb] = mirror_factor x the sum over the faces normal to
         the coil axis of B_n A times the integral of T / I across the face (with a ring or held cells, up to their
         boundary term: decision 5; its images on the mirror planes it reaches join it in series), inductance =
-        flux_linkage / current [H] (nan at zero current), energy [J] (field_energy), mirror_factor; flows:
-        _total_face_flows() when already computed."""
-        system = self.system
-        if system.n_solves == 0:
+        flux_linkage / current [H] (nan at zero current), energy [J] (field_energy), mirror_factor; totals:
+        _flow_totals() when already computed."""
+        if self.system.n_solves == 0:
             raise RuntimeError(f"{self.type_label} '{self.name}': coil '{coil.name}' needs a solve first")
-        flows = self._total_face_flows() if flows is None else flows
-        integral = face_drive_integrals_3d(coil.per_ampere, coil.axis_index, system.geometry_3d, ~system.fixed_user)
-        linkage = coil.mirror_factor * float(self.xp.sum(flows[coil.axis_index] * integral, dtype=self.xp.float64))
+        totals = self._flow_totals() if totals is None else totals
+        linkage = coil.mirror_factor * totals[1][coil]
         inductance = linkage / coil.current if coil.current != 0.0 else float('nan')
         return {'current': coil.current, 'turns': coil.turns, 'flux_linkage': linkage, 'inductance': inductance,
-                'energy': self.field_energy(flows), 'mirror_factor': coil.mirror_factor}
+                'energy': self.field_energy(totals), 'mirror_factor': coil.mirror_factor}
 
-    def field_energy(self, flows=None) -> float:
+    def field_energy(self, totals=None) -> float:
         """Energy [J] = sum over the faces touching a free cell of (B_n A)^2 / (2 mu0 conductance), i.e. of B_n^2 / (2 mu0
         mu_face) times the face volume A d (held-free faces: the free half cell; held cells and the ring excluded; with
         remanence the energy of B alone, not the magnet's co-energy), times window_mirror_factor (the images on the
-        model mirror planes)."""
-        system = self.system
-        flows = self._total_face_flows() if flows is None else flows
-        return (self.window_mirror_factor
-                * face_flow_energy_3d(flows, system.face_conductances, system.face_terms, ~system.fixed_user)
-                / (2.0 * MU0))
+        model mirror planes); totals: _flow_totals() when already computed."""
+        totals = self._flow_totals() if totals is None else totals
+        return self.window_mirror_factor * totals[0] / (2.0 * MU0)
 
     def add_probe(self, ix: int, iy: int, iz: int, component: str = 'B_abs') -> FieldProbe:
         """Record field `component` (B_abs [T] or phi_m [A]) at full-grid cell (ix, iy, iz) whenever step records."""
@@ -349,7 +347,14 @@ class MagneticPhysics3D(MirrorTotals, DiffusionPhysicsBase):
     def _assemble(self, full=True):
         """Assembly with c = mu_dc per axis, exp of the saturation state in the saturating cells (the system keeps
         solve-dtype copies: H and the remanence drive read them); full=False (later saturation iterations: only those
-        c > 0 changed) skips the corner anchor, the mu_dc read / check and the anchor check."""
+        c > 0 changed) skips the corner anchor, the mu_dc read / check and the anchor check. The stale drive terms and
+        the kept wrapper's binding of the previous operator go first: they would sit beside the new assembly and its
+        multigrid setup / factorisation (the peak)."""
+        self._face_drives = self._drive_rhs = None   # depend on the assembled c: rebuilt by the next solve
+        self._drive_stale = True
+        self._assembled_unsolved = True
+        if isinstance(self.system.linear_solver, KeptPreconditionerSolver):   # no PCGSolver: the system skips it
+            self.system.linear_solver.release_operator()
         if full:
             self._update_corner_anchor()
             self._read_permeability()
@@ -364,7 +369,6 @@ class MagneticPhysics3D(MirrorTotals, DiffusionPhysicsBase):
             coefficients = tuple(updated)
         self.system.assemble(coefficients[0], coefficients[1], None, self.bcs, 0.0, c_zz=coefficients[2],
                              check_anchors=full)
-        self._drive_stale = True
 
     def _read_permeability(self):
         """Keep the window views of mu_dc_xx / _yy / _zz, checked finite and > 0."""
@@ -467,23 +471,19 @@ class MagneticPhysics3D(MirrorTotals, DiffusionPhysicsBase):
 
     def _saturating_flux_magnitude(self):
         """float64 centre |B| (k,) of the saturating cells from the latest solve: operator flux plus the drive face
-        terms, as _update_fields computes B there."""
+        terms, as _update_fields computes B there (one window component at a time, compacted at once)."""
         flat = self._nonlinear_flat
+        free = ~self.system.fixed_user
         magnitude_squared = 0.0
-        for flux_density in self._flux_density_at_centres(~self.system.fixed_user):
-            component = flux_density.ravel()[flat].astype(np.float64)
+        for axis in range(3):
+            component = self._flux_density_component(axis, free).ravel()[flat].astype(np.float64)
             magnitude_squared = magnitude_squared + component * component
         return self.xp.sqrt(magnitude_squared)
 
-    def _flux_density_at_centres(self, free):
-        """Window (B_x, B_y, B_z) = operator face flux + drive face terms averaged to the centres (held cells 0): the
-        one B of _update_fields and _saturating_flux_magnitude (never T - grad u)."""
-        system = self.system
-        flux = system.flux_at_centres()   # -c grad u per axis [T]
-        if self._face_drives is not None:
-            drive = face_terms_at_centres_3d(self._face_drives, system.geometry_3d, free)
-            flux = tuple(operator_part + drive_part for operator_part, drive_part in zip(flux, drive))
-        return flux
+    def _flux_density_component(self, axis, free):
+        """Window B along axis [T] = (operator face flow + drive face term) over the face areas, averaged to the
+        centres (held cells 0): the one B of _update_fields and _saturating_flux_magnitude (never T - grad u)."""
+        return axis_centre_flux_3d(self._total_face_flow(axis), axis, self.system.geometry_3d, free)
 
     def _saturated_log_permeability(self, field_magnitude):
         """ln of the secant mu_r (float64 (k,)) of the curves on the saturating cells at their float64 centre |H| =
@@ -549,6 +549,7 @@ class MagneticPhysics3D(MirrorTotals, DiffusionPhysicsBase):
         system.build_rhs(self._zero_source, self._zero_source)
         self._add_drive_rhs()
         system.solve()
+        self._assembled_unsolved = False
         if fields:
             self._update_fields()
 
@@ -577,20 +578,44 @@ class MagneticPhysics3D(MirrorTotals, DiffusionPhysicsBase):
         drives = [getattr(materials, name)[system.window] / coefficient if name in names else None
                   for name, coefficient in zip(REMANENCE_3D_ARRAYS, coefficients)]
         for coil in self.coils:
-            coil_drive = (MU0 * coil.current) * coil.per_ampere
+            coil_drive = self.xp.asarray(coil.per_ampere) * (MU0 * coil.current)   # the host T, uploaded
             axis = coil.axis_index
             drives[axis] = coil_drive if drives[axis] is None else drives[axis] + coil_drive
         zero = self.xp.zeros((), dtype=system.dtype)
         return face_drive_terms_3d(tuple(zero if drive is None else drive for drive in drives),
                                    system.face_conductances, system.face_terms, system.geometry_3d, ~system.fixed_user)
 
-    def _total_face_flows(self):
-        """Face flows [T m^2] = B_n A toward +x / +y / +z of the last solve: operator flows plus the drive terms."""
+    def _total_face_flow(self, axis):
+        """Face flows [T m^2] = B_n A toward +axis of the last solve (one face array): operator flows plus the drive
+        terms; raises after an assembly without its solve (the flows would mix the new operator with the old u)."""
+        if self._assembled_unsolved:
+            raise RuntimeError(f"{self.type_label} '{self.name}': the operator was re-assembled since the last solve "
+                               '(step first)')
         system = self.system
-        flows = face_flows_3d(system.unknown2d, system.face_conductances, system.face_terms)
-        if self._face_drives is None:
-            return flows
-        return tuple(flow + drive for flow, drive in zip(flows, self._face_drives))
+        flow = axis_face_flow_3d(system.unknown2d, system.face_conductances[axis], system.face_terms, axis)
+        if self._face_drives is not None:
+            flow += self._face_drives[axis]
+        return flow
+
+    def _flow_totals(self):
+        """(sum of flow^2 / conductance over the faces touching a free cell, {coil: sum over the faces normal to its axis
+        of B_n A times the integral of T / I across the face}) of the last solve, axis by axis (one axis' flows and one
+        uploaded T at a time): field_energy and coil_results read the same face flows."""
+        system = self.system
+        xp = self.xp
+        free = ~system.fixed_user
+        energy = 0.0
+        linkages = {}
+        for axis in range(3):
+            flow = self._total_face_flow(axis)
+            energy += axis_face_flow_energy_3d(flow, axis, system.face_conductances[axis], system.face_terms, free)
+            for coil in self.coils:
+                if coil.axis_index == axis:
+                    integral = face_drive_integrals_3d(xp.asarray(coil.per_ampere), axis, system.geometry_3d, free)
+                    linkages[coil] = float(xp.sum(flow * integral, dtype=xp.float64))
+                    del integral
+            del flow
+        return energy, linkages
 
     def _write_current_density(self):
         """J = curl T [A/m^2] of every coil (T along axis a: J_i = eps_ija dT/dx_j, the transverse centre gradients),
@@ -604,7 +629,7 @@ class MagneticPhysics3D(MirrorTotals, DiffusionPhysicsBase):
                                         for pair in edge_extension_views_3d(getattr(fields, field_name), window)]
         density = [0.0, 0.0, 0.0]
         for coil in self.coils:
-            potential = coil.current * coil.per_ampere   # T [A/m]
+            potential = self.xp.asarray(coil.per_ampere) * coil.current   # T [A/m] (the host T, uploaded)
             axis = coil.axis_index
             for gradient_axis in range(3):
                 if gradient_axis == axis:
@@ -625,30 +650,44 @@ class MagneticPhysics3D(MirrorTotals, DiffusionPhysicsBase):
 
     def _update_fields(self):
         """phi_m; B = operator face flux + drive face terms averaged to the centres (0 in held cells), H = (B - B_r) /
-        (mu0 c) with the assembled c (secant mu in saturating cells), B_abs, w_mag = sum B_c^2 / (2 mu0 mu_c) (the energy scalar's density, as 2D), mu_eff = the mean of the
-        three c when allocated; edge-extended."""
+        (mu0 c) with the assembled c (secant mu in saturating cells), B_abs, w_mag = sum B_c^2 / (2 mu0 mu_c) (the
+        energy scalar's density, as 2D), mu_eff = the mean of the three c when allocated; edge-extended. Axis by axis:
+        one component's face flows and centre values at a time beside the two accumulators (|B|^2, energy)."""
         system = self.system
         xp = self.xp
         window = system.window
         fields = self.fields
         self._write_potential_field()
         free = ~system.fixed_user
-        flux = self._flux_density_at_centres(free)
         names = self.domain.materials.property_names()
         coefficients = (system.assembled_c_xx, system.assembled_c_yy, system.assembled_c_zz)
-        magnitude_squared = 0.0
-        energy = 0.0
-        for axis, flux_density, coefficient, remanence_name in zip(_AXES, flux, coefficients, REMANENCE_3D_ARRAYS):
-            remanence = (xp.where(free, getattr(self.domain.materials, remanence_name)[window], 0.0)
-                         if remanence_name in names else 0.0)
-            field_strength = (flux_density - remanence) / (MU0 * coefficient)
-            getattr(fields, f'B_{axis}')[window] = flux_density
-            getattr(fields, f'H_{axis}')[window] = field_strength
-            magnitude_squared = magnitude_squared + flux_density * flux_density
-            energy = energy + flux_density * flux_density / (MU0 * coefficient)   # B^2 / (mu0 mu): as 2D and the energy
-        magnitude = xp.sqrt(magnitude_squared)
-        fields.B_abs[window] = magnitude
-        fields.w_mag[window] = 0.5 * energy
+        magnitude_squared = energy = None
+        for axis, coefficient, remanence_name in zip(range(3), coefficients, REMANENCE_3D_ARRAYS):
+            flux_density = self._flux_density_component(axis, free)
+            scale = MU0 * coefficient
+            if remanence_name in names:
+                field_strength = flux_density - xp.where(free, getattr(self.domain.materials, remanence_name)[window],
+                                                         0.0)
+                field_strength /= scale
+            else:
+                field_strength = flux_density / scale
+            getattr(fields, f'B_{_AXES[axis]}')[window] = flux_density
+            getattr(fields, f'H_{_AXES[axis]}')[window] = field_strength
+            del field_strength
+            square = flux_density * flux_density
+            del flux_density
+            if magnitude_squared is None:
+                magnitude_squared, energy = square, square / scale
+            else:
+                magnitude_squared += square
+                square /= scale
+                energy += square   # B^2 / (mu0 mu): as 2D and the energy
+            del square, scale
+        fields.B_abs[window] = xp.sqrt(magnitude_squared)
+        del magnitude_squared
+        energy *= 0.5
+        fields.w_mag[window] = energy
+        del energy
         for destination, source in self._derived_pml_copies:
             xp.copyto(destination, source)
         if fields.has_effective_permeability:

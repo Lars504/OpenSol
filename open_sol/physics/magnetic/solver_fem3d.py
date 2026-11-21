@@ -257,11 +257,11 @@ class MagneticFEMPhysics3D(MirrorTotals, FEMDiffusionPhysicsBase3D):
         self.system.operator_dirty = True
         return True
 
-    def coil_results(self, coil: CoilRegionFEM3D, flows=None) -> dict:
+    def coil_results(self, coil: CoilRegionFEM3D, totals=None) -> dict:
         """current, turns (the drawn winding's), flux_linkage [Wb] = mirror_factor x int T / I . B dV over the free
         elements (with an external field, ideal iron at a potential or a symmetry face up to their boundary term; its
         images on the mirror planes it reaches join it in series), inductance = flux_linkage / current [H] (nan at
-        zero current), energy [J] (field_energy), mirror_factor; flows: unused (the tensor signature)."""
+        zero current), energy [J] (field_energy), mirror_factor; totals: unused (the tensor signature)."""
         if self.system.n_solves == 0:
             raise RuntimeError(f"{self.type_label} '{self.name}': coil '{coil.name}' needs a solve first")
         linkage = coil.mirror_factor * self._linkages[coil.name]
@@ -269,7 +269,7 @@ class MagneticFEMPhysics3D(MirrorTotals, FEMDiffusionPhysicsBase3D):
         return {'current': coil.current, 'turns': coil.turns, 'flux_linkage': linkage, 'inductance': inductance,
                 'energy': self.field_energy(), 'mirror_factor': coil.mirror_factor}
 
-    def field_energy(self, flows=None) -> float:
+    def field_energy(self, totals=None) -> float:
         """Energy [J] = int sum_c B_c^2 / (2 mu0 mu_c) dV over the free elements (held excluded; with remanence the
         energy of B alone; saturating: the secant value), times window_mirror_factor (the images on the model mirror
         planes)."""

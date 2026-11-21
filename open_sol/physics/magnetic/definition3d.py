@@ -182,8 +182,10 @@ _LOCATE_POINT_BYTES = 400   # PointLocator3D candidates and distances per locate
 
 
 def _coil_memory(values, n_selected_cells, mesh):
-    """The coil's float64 window T per ampere (device); build extra: the host winding mask, ramp and T copies.
-    Tetrahedra: the host float64 edge dofs of T per ampere; build extra the winding lattice at its cap."""
+    """The coil's float64 window T per ampere, kept on the HOST (solver3d.CoilRegion3D: uploaded per assembly and
+    scalars read, inside the drive and scalar transients), with the winding mask and ramp of add_coil; build extra:
+    the device window mask. Tetrahedra: the host float64 edge dofs of T per ampere; build extra the winding lattice at
+    its cap."""
     if mesh.kind == 'tetrahedra':
         from .coils3d import LATTICE_MAX_POINTS, LOCATE_CHUNK   # lazy: coils3d imports scipy
         return MemoryEstimate.from_items(
@@ -191,9 +193,9 @@ def _coil_memory(values, n_selected_cells, mesh):
             host_items=(('coil T per ampere (float64 edge integrals, host)', FLOAT64_BYTES * int(mesh.n_edges)),))
     window_cells = _window_cells_3d(mesh)
     return MemoryEstimate.from_items(
-        (('coil T per ampere (float64 window)', FLOAT64_BYTES * window_cells),),
         build_extra=BOOL_BYTES * window_cells,
-        host_items=(('coil winding mask, ramp and T (host)', (BOOL_BYTES + 2 * FLOAT64_BYTES) * window_cells),))
+        host_items=(('coil T per ampere (float64 window, host)', FLOAT64_BYTES * window_cells),
+                    ('coil winding mask and ramp (host, add_coil)', (BOOL_BYTES + FLOAT64_BYTES) * window_cells)))
 
 
 def _apply_probe(ctx, solver, feature_spec, values, selection):
@@ -329,9 +331,14 @@ def _create(ctx, physics_spec, values):
     return solver
 
 
-_POST_PROCESSING_ARRAYS = 12   # solve-dtype window temporaries of one field update (fluxes, drive means, B, H, sums)
+# solve-dtype window temporaries of one field update, axis by axis (solver3d._update_fields): the |B|^2 and energy
+# accumulators beside one component's face flows and its centre means / B / mu0 c / H / square
+_POST_PROCESSING_ARRAYS = 6
 _COIL_UPDATE_ARRAYS = 5   # float64 window temporaries of the J update (T, its gradient, the face gradient, 2 sums)
-_SCALAR_ARRAYS = 5        # window temporaries of the energy / linkage (face flows (3), conductance, mask), float64 bound
+# window temporaries of the energy / linkage, axis by axis (solver3d._flow_totals): one axis' face flows, the face
+# conductance and the flow^2 / conductance products, or the uploaded coil T, its half-cell integrals and the product
+# (float64 bound)
+_SCALAR_ARRAYS = 5
 _SATURATION_ARRAYS = 7    # float64 window: loop state, J_s, proposal, update, |B| and mu_r of one proposal, mu_dc copy
 _SATURATION_VALUE_ARRAYS = 5   # solve-dtype window: exp(state), the three assembled-c inputs, the kept |B|
 _SATURATION_MASKS = 3     # bool window: the saturating cells, the J_s > 0 cells, the table cells
@@ -390,10 +397,13 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
 
 
 def _memory_estimate(settings_values, mesh, context):
-    """MagneticFields3D (float32 full grid; J with a coil, mu_eff when saturating) + the 3D window DiffusionSystem + one bool window mask per bh_curve material; build extra: the external ring values / mask,
-    the mu_dc check masks and the J update; run items: the face drives and rhs (coils or remanence), the saturation
-    loop (state, proposal, Anderson history; one state component); transient: the field-update and scalar temporaries;
-    a cuDSS 'linear' factor (fem.diffusion.cudss_diffusion_estimate). Tetrahedra: _tetrahedra_memory_estimate."""
+    """MagneticFields3D (float32 full grid; J with a coil, mu_eff when saturating) + the 3D window DiffusionSystem +
+    one bool window mask per bh_curve material; build extra: the external ring values / mask, the mu_dc check masks
+    and the J update; run items: the face drives and rhs (coils or remanence; dropped before each assembly, booked
+    through the run), the saturation loop (state, proposal, Anderson history; one state component); transient: the
+    field-update and scalar temporaries (axis by axis), a multigrid setup inside the saturation loop (beside the run
+    items); a cuDSS 'linear' factor (fem.diffusion.cudss_diffusion_estimate). Tetrahedra:
+    _tetrahedra_memory_estimate."""
     if mesh.kind == 'tetrahedra':
         return _tetrahedra_memory_estimate(settings_values, mesh, context)
     window_cells = _window_cells_3d(mesh)
@@ -411,6 +421,13 @@ def _memory_estimate(settings_values, mesh, context):
                             else 0))
         + value_bytes * _SATURATION_VALUE_ARRAYS + BOOL_BYTES * _SATURATION_MASKS)
     n_fields = len(MAGNETIC_3D_FIELD_NAMES) + len(MAGNETIC_3D_CURRENT_NAMES) * int(coils) + int(saturation)
+    kept_bytes = kept_preconditioner_bytes(window_cells, 7, value_bytes, context, saturation)
+    loop_setup = 0
+    if saturation and linear_solver_multigrid(context):
+        # each loop's first assembly (and a spread past KEPT_SPREAD_LIMIT) sets up afresh beside the loop state, the
+        # kept hierarchy and the previous operator already dropped (KeptPreconditionerSolver.release_operator)
+        from ...solvers.multigrid import setup_extra_bytes
+        loop_setup = max(setup_extra_bytes(window_cells, value_bytes, 7) - kept_bytes, 0)
     own = MemoryEstimate.from_items(
         ((f'fields ({n_fields} x float32)', n_fields * FLOAT32_BYTES * int(mesh.n_cells)),
          ('B-H curve masks (bool window)', BOOL_BYTES * window_cells * n_curves)),
@@ -419,12 +436,13 @@ def _memory_estimate(settings_values, mesh, context):
                      + BOOL_BYTES * int(mesh.n_cells) * int(n_curves > 0)),
         run_items=(('coil and remanence face drives and rhs (window)', 4 * value_bytes * window_cells * int(driven)),
                    ('saturation state, J_s, proposal and Anderson history (window)', saturation_bytes),
-                   ('kept preconditioner of the saturation loop',
-                    kept_preconditioner_bytes(window_cells, 7, value_bytes, context, saturation))),
-        transient_items=(('field update', 'field update temporaries (window)',
+                   ('kept preconditioner of the saturation loop', kept_bytes)),
+        transient_items=(('field update', 'field update temporaries (window, axis by axis)',
                           _POST_PROCESSING_ARRAYS * value_bytes * window_cells),
-                         ('energy and flux linkage', 'energy and flux linkage temporaries (window)',
-                          _SCALAR_ARRAYS * FLOAT64_BYTES * window_cells)))
+                         ('energy and flux linkage', 'energy and flux linkage temporaries (window, axis by axis)',
+                          _SCALAR_ARRAYS * FLOAT64_BYTES * window_cells),
+                         ('saturation loop setup', 'multigrid setup of a saturation-loop assembly (beside the loop '
+                          'state)', loop_setup)))
     from ...model.schema import solver_backend   # where a multigrid setup aggregates
     parts = [own, diffusion_system_estimate(window_cells, precision, dimensions=3, mixed=linear_solver_mixed(context),
                                             multigrid=linear_solver_multigrid(context),
