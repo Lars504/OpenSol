@@ -281,9 +281,8 @@ def _create(ctx, physics_spec, settings_values):
 
 
 def _memory_estimate(settings_values, mesh, context):
-    """float32 q_abs on the device (the 3 complex64 E fields are host), the adjoint cache (run item), per-mode-solve and
-    q_abs block transients, one cuDSS factor at a time outside the pool (cudss eigen node); host items mostly
-    (comments)."""
+    """float32 q_abs on the device (the 3 complex64 E fields and the adjoint cache are host), per-mode-solve and q_abs
+    block transients, one cuDSS factor at a time outside the pool (cudss eigen node); host items mostly (comments)."""
     nx, ny = int(mesh.nx), int(mesh.ny)
     slices = _window_slices(mesh)
     points = nx * ny
@@ -344,17 +343,18 @@ def _memory_estimate(settings_values, mesh, context):
     transient_items = [('section mode solve', label, size) for label, size in mode_solve] + [
         ('field reconstruction', 'absorbed power block upload (float32)',
          FLOAT32_BYTES * max(min(FIELD_BLOCK_SLICES // 3, slices), 1) * points)]
-    run_items, features = [], [feature for feature in context.physics_spec.features if feature.enabled]
+    features = [feature for feature in context.physics_spec.features if feature.enabled]
     if any(feature.type == 'adjoint_objective' for feature in features):   # one EpsSensitivity per physics
-        # solver3d._cascade_sensitivity: the float64 cell gradients stay host, the float32 density is on the device
-        run_items.append(('adjoint sensitivity density (float32)', FLOAT32_BYTES * n_cells))
-        host_items += (('host adjoint gradients (kept) and density (4 x float64)', 4 * FLOAT64_BYTES * n_cells),
+        # solver3d._cascade_sensitivity: host on either backend (the renderer uploads the density per read): the
+        # float64 cell gradients and float32 density kept, the float64 density while it is summed
+        host_items += (('host adjoint gradients (3 x float64), density (float64 sum, float32 kept)',
+                        (4 * FLOAT64_BYTES + FLOAT32_BYTES) * n_cells),
                        ('adjoint slice products block (complex128)',
                         3 * COMPLEX128_BYTES * FIELD_BLOCK_SLICES * points))
     host_items += length_sweep_host_items(features, n_modes)
     return MemoryEstimate.from_items(
         (('EME absorbed power q_abs (float32)', FLOAT32_BYTES * n_cells),),
-        host_items=host_items, run_items=run_items, transient_items=transient_items, external_items=external_items,
+        host_items=host_items, transient_items=transient_items, external_items=external_items,
         external_extra=external_extra)
 
 
@@ -420,7 +420,8 @@ _DESCRIPTION = (
     'eps) times the 3-point Gauss z mean of |E|^2, on lossy sections) and the permittivity arrays, shown as cut '
     'planes (an x or y cut shows the propagation). em_heat_joule reads absorbed_power; heat_em_thermo_optic writes '
     'eps_r, eps_xx, eps_yy. Memory: host dominates (one cross-section factorisation at a time, cached mode sets, '
-    "partial cascades); GPU 28 B per cell of fields and q_abs plus the material arrays. Eigen factorization 'cudss' "
+    'partial cascades, the E fields at 24 B per cell); GPU 4 B per cell of q_abs plus the material arrays. Eigen '
+    "factorization 'cudss' "
     'factorises each cross-section on the GPU (general LU: the operator is not complex symmetric), '
     f"{' or '.join(repr(name) for name in HOST_DIRECT_DOUBLE_BACK_ENDS)} a MUMPS / PARDISO host LU under the SuperLU "
     "size limit. Studies: stationary and frequency_domain (each wavelength starts every section's shift-invert from "
@@ -455,5 +456,5 @@ EM_EME_3D = PhysicsType(
     scalar_outputs_help=SCALAR_OUTPUTS_HELP,
     dimensions=(3,),
     solver_roles={'eigen': eigen_role()},
-    backends=('gpu', 'cpu'),   # host cross-section solves / cascade, fields on the Domain's xp
+    backends=('gpu', 'cpu'),   # host cross-section solves / cascade / E fields, q_abs on the Domain's xp
 )
