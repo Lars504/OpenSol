@@ -25,7 +25,8 @@ from .definition_common import (BOTH_GRIDS, CPML_BC_HELP, DEFAULT_WAVELENGTH, EI
 from .definition_feature_validation import _line_cells, _selected_shapes, validate_line_feature
 from .eigenfrequency import resonance_filter_time_item, resonance_table_result
 from .materials import EM_MATERIAL_SCHEMAS
-from .memory_estimates import conical_memory_estimate, host_factorization, pec_memory_estimate, search_single_basis
+from .memory_estimates import (conical_memory_estimate, conical_search_flags, host_factorization, pec_memory_estimate,
+                               search_single_basis)
 from .renderer_conical import ConicalRenderer
 from .solvers.fdfd_conical import (CONICAL_MATERIAL_SCHEMA_KEY, CONICAL_PERMITTIVITY_ARRAYS,
                                    CONICAL_PERMITTIVITY_SLOTS, ConicalPhysics, conical_flux_result,
@@ -383,15 +384,12 @@ def _time_estimate(settings_values, mesh, context):
     nnz = _CONICAL_ENTRIES_PER_ROW * unknowns
     assembly_ops = (te.HostStream(CONICAL_ASSEMBLY_BYTES_PER_ENTRY * nnz), te.PythonCalls(200))
     if context.study.type == EIGENFREQUENCY_STUDY:
-        from ...solvers.arpack_shift_invert import LDLT_FACTORIZATIONS
-        from .cross_section_modes import cpml_cross_section
         host = eigen_backend_kwargs(context)
         eigenpairs = resonance_eigenpairs(context, optical=False)
         factorization = eigen_factorization(context.solvers)
-        ldlt = not bloch_active_axes(settings_values)   # memory_estimates.conical_memory_estimate's basis rule
+        ldlt, polished, _ = conical_search_flags(settings_values, context, factorization, unknowns)   # the memory rule
         single_basis = search_single_basis(factorization, unknowns, factorization in CUDSS_FACTORIZATIONS, ldlt,
-                                           ldlt and factorization in LDLT_FACTORIZATIONS
-                                           and cpml_cross_section(settings_values))
+                                           polished)
         return te.combine((te.TimeEstimate((te.TimeItem('conical assembly', 'assembly', 1.0, 'exact', assembly_ops),
                                             resonance_filter_time_item(context.backend, unknowns, nnz, eigenpairs))),
                            context.solver_work('eigen', unknowns=unknowns, nnz=nnz, value_bytes=16, solves=1.0,

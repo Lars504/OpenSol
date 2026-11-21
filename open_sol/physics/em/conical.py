@@ -22,6 +22,12 @@ em_fdfd_conical (solvers/fdfd_conical)."""
 # that makes the curls real). PML, loss, complex k_z, mirrors / walls, PEC and subpixel eps keep it; a Bloch phase breaks
 # it (phased wrap entries: LU, no polish). With D a cudss / mumps / pardiso eigen node factors an LDL^T and a mixed one
 # (cudss_mixed, mumps_mixed, pardiso_mixed) adds the float64 Rayleigh polish (solve_resonances(symmetrizer=D)).
+# The eigen search runs in that real gauge (real_gauge_operator: G^-1 A G, G = diag(1, 1, j), unknowns (E_x, E_y, w =
+# -j E_z) as fem_conical, symmetrizer D G^2 = (A_x, A_y, +A_z)): A itself has imaginary j k_z entries at any k_z != 0,
+# so solve_resonances took a lossless closed guide for a complex (open / lossy) operator and polished a double LDL^T
+# (ARPACK to 1e-6, complex64 basis), whose quotients keep ~(1e-6)^2 x gap-ratio imaginary round-off, at or above the
+# lossless Q = inf threshold (eigenfrequency._LOSSLESS_RELATIVE_IMAG 1e-12): a finite Q of a lossless mode. In the
+# gauge only PML, loss and Bloch phases make it complex (the device resonance filter then stores a lossless A float64).
 # Flux through the hi face of a line of cells: 1/2 Re of E of the line cells x conj(H) on that face (the boundary term
 # of the discrete Poynting theorem for the cells below / left of it); in lossless source-free cells a line across a whole
 # period (or wall to wall) carries the same power whichever side's E is paired, so two such lines enclose exactly the
@@ -326,6 +332,20 @@ def conical_row_scale(system):
     return 1.0 / np.sqrt(np.where(scale > 0.0, scale, 1.0))
 
 
+def real_gauge_operator(system):
+    """(operator, ez_rows) of the eigen search: G^-1 A G (scipy CSR copy) with G = diag(1, 1, j) on the active
+    (E_x, E_y, E_z), i.e. unknowns (E_x, E_y, w = -j E_z) as fem_conical; ez_rows = bool (n_unknowns,) E_z rows. Real
+    without loss, PML or Bloch phase at any k_z (module header); its symmetrizer is D G^2 = (A_x, A_y, +A_z)."""
+    n_grid = system.shape[0] * system.shape[1]
+    ez_rows = system.active_index >= 2 * n_grid
+    operator = system.matrix.copy()
+    row_ez = np.repeat(ez_rows, np.diff(operator.indptr))
+    column_ez = ez_rows[operator.indices]
+    operator.data[column_ez & ~row_ez] *= 1j    # A_tz G_z: the j k_z (E_x, E_y) <- E_z couplings made real
+    operator.data[row_ez & ~column_ez] *= -1j   # G_z^-1 A_zt: the E_z <- (E_x, E_y) ones
+    return operator, ez_rows
+
+
 def solve_conical_resonances(cell_widths, boundary_config, pml_dx, materials, k_z, n_wanted, omega_guess,
                              eigen_solver=None):
     """ConicalEigenSolve of up to n_wanted resonances C_H mu^-1 C_E E = k0^2 eps E at k_z [rad/m] nearest omega_guess
@@ -352,10 +372,15 @@ def solve_conical_resonances(cell_widths, boundary_config, pml_dx, materials, k_
                                      layout.centre_area.ravel()))[system.active_index]
     in_window = ~np.concatenate((layout.stretched_hy.ravel(), layout.stretched_hx.ravel(),
                                  stretched_z.ravel()))[system.active_index]
-    solve = solve_resonances(system.matrix, system.eps_active, system.omega, energy_weights, in_window, int(n_wanted),
-                             spectral_map='squared_cayley', warnings=warnings, eigen_solver=eigen_solver,
-                             tolerance_floor=_ARPACK_TOLERANCE_FLOOR, symmetrizer=system.symmetrizer,
-                             equilibration=conical_row_scale(system))
+    # the search runs in the real gauge (module header): unknowns (E_x, E_y, w = -j E_z), field E_z = j w
+    operator, ez_rows = real_gauge_operator(system)
+    gauge = np.where(ez_rows, 1j, 1.0)
+    symmetrizer = None if system.symmetrizer is None else np.where(ez_rows, -system.symmetrizer, system.symmetrizer)
+    solve = solve_resonances(operator, system.eps_active, system.omega, energy_weights, in_window, int(n_wanted),
+                             field_of=lambda vector: gauge * vector, spectral_map='squared_cayley', warnings=warnings,
+                             eigen_solver=eigen_solver, tolerance_floor=_ARPACK_TOLERANCE_FLOOR,
+                             symmetrizer=symmetrizer, equilibration=conical_row_scale(system))
+    del operator
     resonances = [ConicalResonance(omega=resonance.omega, wavelength=resonance.wavelength,
                                    q_factor=resonance.q_factor, pml_fraction=resonance.pml_fraction,
                                    fields=conical_fields(system, resonance.field, resonance.omega))
