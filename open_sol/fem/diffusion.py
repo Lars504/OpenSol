@@ -161,10 +161,11 @@ class FEMDiffusionSystemCommon:
         self._solution = None
         if not self._free.size:
             return
-        from ..solvers.pcg import PCGSolver
         dtype = self._solve_dtype()
-        if isinstance(self.linear_solver, PCGSolver):   # the previous run-backend operator goes before the new copy
-            self.linear_solver.release_operator()
+        # the previous run-backend operator goes before the new copy (duck-typed: a PCGSolver or a wrapper of one)
+        release = getattr(self.linear_solver, 'release_operator', None)
+        if release is not None:
+            release()
         # gpu: one device copy (no host cast copy of a float64 operator first); cpu: an owned copy for the solver
         operator = sparse_module(self.backend).csr_matrix(self._reduced.astype(dtype, copy=self.backend != 'gpu'))
         self.linear_solver.factorize(operator)

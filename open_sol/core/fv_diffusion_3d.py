@@ -201,6 +201,14 @@ class LaplacianPattern:
         """Drop the kept slot_positions / entry_rows (8 bytes per stored entry); later accesses rebuild them."""
         self._slot_positions = self._entry_rows = None
 
+    def keep_assembly_maps(self) -> None:
+        """Rebuild and keep released assembly maps (a pattern whose re-assemblies now run build_laplacian: no transient
+        rebuild per assembly); a no-op while they are kept."""
+        if self._slot_positions is None:
+            self._slot_positions = self.slot_positions
+        if self._entry_rows is None:
+            self._entry_rows = self.entry_rows
+
     def matches(self, shape, wrap=False, cross=False):
         return (self.shape == tuple(int(count) for count in shape) and self.wrap == bool(wrap)
                 and self.cross == bool(cross))
