@@ -163,17 +163,17 @@ class EMEPhysics3D(EMEBase):
 
     def _layer_rows(self, layer):
         """Host float64 (n_rows, nx ny) material rows of z layer `layer`: the read arrays, one row per pole and PEC box
-        (one device-to-host transfer), then one bend label row per bend."""
+        (one float32 device-to-host transfer, widened on the host: exact), then one bend label row per bend."""
         materials = self.domain.materials
         xp = self.domain.xp
-        rows = [getattr(materials, name)[:, :, layer].astype(np.float64) for name in self._read_arrays]
+        rows = [getattr(materials, name)[:, :, layer] for name in self._read_arrays]
         for window, mask in self._boxes():
-            region = xp.zeros(rows[0].shape, dtype=np.float64)
+            region = xp.zeros(rows[0].shape, dtype=DTYPE)   # 0 / 1: exact in float32
             cut = self._box_layer(window, mask, layer)
             if cut is not None:
                 region[cut[0]] = cut[1]
             rows.append(region)
-        host = to_host(xp.stack(rows)).reshape(len(rows), -1)
+        host = to_host(xp.stack(rows)).astype(np.float64).reshape(len(rows), -1)
         labels = self._bend_labels(self._positions[layer:layer + 1])
         return np.vstack([host] + [np.full((1, host.shape[1]), value) for value in labels[:, 0]])
 
