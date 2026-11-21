@@ -58,6 +58,12 @@ _START_VECTOR_SEED = 6          # deterministic ARPACK start vector (no symmetry
 # arpack_shift_invert.SINGLE_BASIS_MIN_TOLERANCE (the fp32 Arnoldi relation holds to ~1e-7 |H|; eigs_device refuses a
 # lower one loudly), the fp32 rows perturb the Ritz vectors by ~1e-7 against their 1e-6 residual, and the float64
 # Rayleigh quotients square either into the eigenvalue (~1e-12)
+# Real spectra: a polished search reads Q from the quotients' Im, but the unconjugated quotient of a complex Ritz vector
+# of a REAL pencil keeps an imaginary leftover ~(1e-6)^2 x a gap ratio, at or above _LOSSLESS_RELATIVE_IMAG: a lossless
+# closed model on a mixed factor got a finite Q. Polished pencils are symmetric, so a real (D A, D B) with D B definite
+# has a real spectrum: _real_definite_pencil then keeps the real parts (definite_mass: the caller's word for a sparse B;
+# a diagonal B is tested). Lossiness is read from the values, never the dtype; a caller whose A is complex only by a
+# gauge (j k_z, j m) must solve in a real gauge (conical: G^-1 A G) or its lossless modes keep the leftover
 MIXED_EIGS_REFINEMENTS = 1
 MIXED_ARPACK_TOLERANCE = 1e-6
 # Tried and removed (2026-11): eigs on unrefined complex64 solves (half the solves: Mie eigs 7.0 -> 4.8 s), accepted
@@ -316,7 +322,7 @@ class _PencilMass:
 def solve_resonances(host_operator, mass, omega_target, energy_weights, in_window, n_resonances, field_of=None,
                      spectral_map='shift_invert', warnings=(), eigen_solver=None, factorization=None, ordering=None,
                      tolerance_floor=0.0, basis_per_wanted=0, symmetrizer=None, symmetric=False, equilibration=None,
-                     in_region=None, min_region_fraction=0.0, rayleigh_symmetrizer=None):
+                     in_region=None, min_region_fraction=0.0, rayleigh_symmetrizer=None, definite_mass=None):
     """EigenSolve of up to n_resonances resonances nearest omega_target [rad/s] of the host operator A assembled there
     (module header) on flat unknowns: mass = complex M diagonal (0 = pinned row) or scipy sparse M (FEM; a pinned row
     is all zero), energy_weights = (n,) |u|^2 weights or a sparse real energy matrix W (per-row share Re(conj(u) W u))
@@ -332,7 +338,9 @@ def solve_resonances(host_operator, mass, omega_target, energy_weights, in_windo
     sparse B and a sparse W are stored as lower triangles, their symmetry probed: ValueError if not); equilibration (n,)
     > 0: the row scale of such a factor (None = its |diag|^-1/2); in_region (n,) bool rows of a region (None: none)
     and min_region_fraction in [0, 1] (module header); rayleigh_symmetrizer (n,) D with D A complex symmetric, checked
-    by the caller: a complex A is polished (module header) on any factor, SuperLU and a given one too. An own factor
+    by the caller: a complex A is polished (module header) on any factor, SuperLU and a given one too; definite_mass
+    (module header "Real spectra"): True = the caller vouches a real sparse M definite (FEM masses of positive real
+    eps), None = only a diagonal M of one sign on the free rows counts, False = never. An own factor
     (factorization None) is released on return and on an exception (root "GPU memory and session lifetime": cuDSS /
     MUMPS / PARDISO memory is invisible to the pools, and a traceback would keep it alive)."""
     owned = []   # the own factor, once made
@@ -342,7 +350,8 @@ def solve_resonances(host_operator, mass, omega_target, energy_weights, in_windo
             spectral_map=spectral_map, warnings=warnings, eigen_solver=eigen_solver, factorization=factorization,
             ordering=ordering, tolerance_floor=tolerance_floor, basis_per_wanted=basis_per_wanted,
             symmetrizer=symmetrizer, symmetric=symmetric, equilibration=equilibration, in_region=in_region,
-            min_region_fraction=min_region_fraction, rayleigh_symmetrizer=rayleigh_symmetrizer)
+            min_region_fraction=min_region_fraction, rayleigh_symmetrizer=rayleigh_symmetrizer,
+            definite_mass=definite_mass)
     finally:
         for factor in owned:
             release = getattr(factor, 'release', None)   # a host SuperLU Factorization has none (numpy memory)
@@ -352,7 +361,8 @@ def solve_resonances(host_operator, mass, omega_target, energy_weights, in_windo
 
 def _solve_resonances(owned, host_operator, mass, omega_target, energy_weights, in_window, n_resonances, field_of,
                       spectral_map, warnings, eigen_solver, factorization, ordering, tolerance_floor, basis_per_wanted,
-                      symmetrizer, symmetric, equilibration, in_region, min_region_fraction, rayleigh_symmetrizer):
+                      symmetrizer, symmetric, equilibration, in_region, min_region_fraction, rayleigh_symmetrizer,
+                      definite_mass):
     """solve_resonances; its own factor is appended to `owned` as soon as it exists (the caller releases it)."""
     started = time.perf_counter()
     eigen_solver = ArpackShiftInvertSolver() if eigen_solver is None else eigen_solver
@@ -415,6 +425,8 @@ def _solve_resonances(owned, host_operator, mass, omega_target, energy_weights, 
         polish = True
         row_scale = np.asarray(rayleigh_symmetrizer, dtype=np.complex128).ravel()
         tolerance_floor = max(float(tolerance_floor), MIXED_ARPACK_TOLERANCE)
+    # a polished real symmetric-definite pencil: its quotients' imaginary parts are round-off (module header)
+    real_spectrum = polish and _real_definite_pencil(host_operator, b_mass, row_scale, free, definite_mass)
     factorized = time.perf_counter()
     n_wanted = min(2 * n_resonances + 10, n_free - 2)
     random = np.random.default_rng(_START_VECTOR_SEED)
@@ -486,7 +498,8 @@ def _solve_resonances(owned, host_operator, mass, omega_target, energy_weights, 
             applications += pass_applications
             theta = np.asarray(theta, dtype=np.complex128)
             candidates, dropped, rayleigh_change = _filtered_candidates(
-                theta, vectors, spectral_map, shift, resonance_filter, omega_target, polish, min_region_fraction)
+                theta, vectors, spectral_map, shift, resonance_filter, omega_target, polish, min_region_fraction,
+                real_spectrum=real_spectrum)
             # stop when enough, at the limit, or when the last doubling found no new resonance (only PML modes near)
             if (len(candidates) >= n_resonances or len(candidates) == previous_count or widenings == MAX_WIDENINGS
                     or n_wanted >= n_free - 2):
@@ -557,6 +570,24 @@ def _solve_resonances(owned, host_operator, mass, omega_target, energy_weights, 
 def _is_complex(host_operator) -> bool:
     """Whether a scipy sparse operator has a non-zero imaginary entry (PML, loss)."""
     return bool(np.any(host_operator.data.imag)) if np.iscomplexobj(host_operator.data) else False
+
+
+def _real_definite_pencil(host_operator, b_mass, row_scale, free, definite_mass) -> bool:
+    """Whether a polished search's pencil (D A, D B) is real symmetric with D B definite, so every eigenvalue is real
+    (module header "Real spectra"): A, B and D without imaginary part, and D B of one sign on the free rows for a
+    diagonal B, definite_mass True (the caller's word) for a sparse one; definite_mass False: never. Only the values
+    decide: a gauge-complex A (j k_z, j m entries) or a complex Bloch phase reads as complex (no change)."""
+    if definite_mass is False or _is_complex(host_operator):
+        return False
+    if row_scale is not None and np.any(np.asarray(row_scale).imag):
+        return False
+    if b_mass.matrix is not None:
+        return bool(definite_mass) and not _is_complex(b_mass.matrix)
+    diagonal = b_mass.diagonal if row_scale is None else np.asarray(row_scale) * b_mass.diagonal
+    if np.any(diagonal.imag):
+        return False
+    values = diagonal.real[free]
+    return bool(values.size) and bool(np.all(values > 0.0) or np.all(values < 0.0))
 
 
 @dataclass(frozen=True, eq=False)
@@ -770,10 +801,11 @@ def resonance_filter_time_item(backend, unknowns, filter_entries, eigenpairs, sy
 
 
 def _filtered_candidates(theta, vectors, spectral_map, shift, resonance_filter, omega_target, polish,
-                         min_region_fraction=0.0):
+                         min_region_fraction=0.0, real_spectrum=False):
     """(candidates (|omega - omega_t|, omega, pml_fraction, region_fraction, vector) nearest first, dropped counts
     {'pml', 'region'}, largest relative k^2 move of the polish or None) of one ARPACK pass, measures from
-    resonance_filter (a _ResonanceFilter); polish: float64 Rayleigh quotients of D A, D B; min_region_fraction: region."""
+    resonance_filter (a _ResonanceFilter); polish: float64 Rayleigh quotients of D A, D B; min_region_fraction: region;
+    real_spectrum (_real_definite_pencil): the polished k^2 keep their real parts (module header "Real spectra")."""
     usable = np.isfinite(theta) & (np.abs(theta) > _THETA_FLOOR * float(np.max(np.abs(theta), initial=0.0)))
     vectors = np.asarray(vectors)[:, usable]
     measures = resonance_filter.measures(vectors)
@@ -786,6 +818,8 @@ def _filtered_candidates(theta, vectors, spectral_map, shift, resonance_filter, 
         numerators = measures['scaled_operator']
         denominators = -measures['scaled_mass']   # D M = -D B
         polished = shift - numerators / denominators   # A u = (k_t^2 - k^2) M u
+        if real_spectrum:   # the ~(1e-6)^2 x gap-ratio imaginary leftover of a complex Ritz vector is no loss
+            polished = polished.real.astype(np.complex128)
         rayleigh_change = float(np.max(np.abs(polished - k_squared) / np.abs(k_squared), initial=0.0))
         k_squared = polished
     static = (np.zeros(k_squared.shape, dtype=bool) if spectral_map == 'shift_invert'

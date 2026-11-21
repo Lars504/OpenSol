@@ -175,6 +175,7 @@ class FEMSystem3D:
     equilibration: np.ndarray
     prolongation: object = None
     symmetric: bool = True
+    definite_mass: bool = False   # M of positive real eps on every non-PEC element (definite when real)
 
 
 class FEMPhysics3D:
@@ -304,7 +305,8 @@ class FEMPhysics3D:
         self._counters['assembly_seconds'] += time.perf_counter() - started
         return FEMSystem3D(omega=omega, free=free, operator=operator, curl=curl, mass=mass, energy=energy,
                            in_window=in_window, equilibration=equilibration, prolongation=prolongation,
-                           symmetric=self.bloch is None or not self.bloch.complex_phase)
+                           symmetric=self.bloch is None or not self.bloch.complex_phase,
+                           definite_mass=bool(np.all(eps[~pec].real > 0.0)))   # eigenfrequency "Real spectra"
 
     # ---- eigenfrequency study ----
     def solve_eigenfrequencies(self, n_resonances):
@@ -330,6 +332,7 @@ class FEMPhysics3D:
             spectral_map='squared_cayley', warnings=() if issue is None else (issue[1],), eigen_solver=self.eigen_solver,
             tolerance_floor=ARPACK_TOLERANCE_FLOOR if self.pml.active else 0.0,
             basis_per_wanted=ARNOLDI_BASIS_PER_WANTED, symmetric=system.symmetric, equilibration=system.equilibration,
+            definite_mass=system.definite_mass,
             **region_options)
         return self.eigen_solve
 
