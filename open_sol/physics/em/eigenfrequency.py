@@ -742,21 +742,23 @@ def element_region_rows(dofs, free, element_mask) -> np.ndarray:
     return rows[np.asarray(free)]
 
 
-def resonance_filter_time_item(backend, unknowns, filter_entries, eigenpairs, symmetric=False):
+def resonance_filter_time_item(backend, unknowns, filter_entries, eigenpairs, symmetric=False, single_basis=False):
     """Run-time TimeItem of the resonance filter per eigenpair of a pass (_ResonanceFilter; filter_entries = stored
     entries of A and a sparse B / W): on the gpu the column uploaded once per operator (3), the pass's operator uploads
     shared by its eigenpairs, the sparse products and ~14 vector passes; on the cpu the batched host product (matrix
     read once per FILTER_BLOCK_COLUMNS). symmetric (solve_resonances(symmetric=True)): device lower triangles, half the
-    upload bytes, the quotient measures read them twice (bilinear). Count: the first pass, a guess up to the
-    widenings."""
+    upload bytes, the quotient measures read them twice (bilinear); single_basis: the parked basis rows are complex64.
+    Count: the first pass, a guess up to the widenings."""
     from ...core import time_estimate as te
     from ...core.memory_estimate import COMPLEX128_BYTES, COMPLEX128_CSR_ENTRY_BYTES
     vector_bytes = COMPLEX128_BYTES * float(unknowns)
     if backend == 'gpu':
         storage = 0.5 if symmetric else 1.0   # lower triangle + diagonal (real values: 12 of 20 B, not counted)
         uploads = storage * COMPLEX128_CSR_ENTRY_BYTES * float(filter_entries) / max(float(eigenpairs), 1.0)
-        # + the Krylov basis parked on the host (_parked_decomposition): ~5 rows per eigenpair (basis 5 x wanted)
-        ops = (te.Transfer(3.0 * vector_bytes + uploads + 5.0 * vector_bytes),
+        # + the Krylov basis parked on the host (_parked_decomposition): ~5 rows per eigenpair (basis 5 x wanted),
+        # complex64 rows on a polished search (eigs_device single_basis)
+        parked_rows = 5.0 * vector_bytes * (0.5 if single_basis else 1.0)
+        ops = (te.Transfer(3.0 * vector_bytes + uploads + parked_rows),
                te.Spmv(float(unknowns), (2.0 if symmetric else 1.0) * float(filter_entries), COMPLEX128_BYTES),
                te.Elementwise(12.0 * vector_bytes, 2.0 * vector_bytes, launches=2), te.PythonCalls(2))
     else:
