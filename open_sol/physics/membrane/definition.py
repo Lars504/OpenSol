@@ -32,6 +32,7 @@ from ...model.schema import (EIGENFREQUENCY_STUDY, FREQUENCY_RESPONSE_STUDY, Dom
 from ...solvers.arpack_shift_invert import (CUDSS_FACTORIZATIONS, DEVICE_PENCIL_MIN_ENTRIES, MIXED_EIGEN_MIN_UNKNOWNS,
                                             arnoldi_basis_bytes, arnoldi_basis_size)
 from ...solvers.cudss_factor import operator_copy_bytes, solve_buffer_bytes, solve_peak_bytes
+from ...solvers.device_matrices import device_matrix_bytes, device_product_bytes
 from ...solvers.host_direct import (double_of, factor_label, host_direct_precision, solver_host_bytes,
                                     superlu_bytes_scale)
 from ...solvers.sparse_direct import (CUDSS_BACK_ENDS, SPLU_LIMIT_UNKNOWNS, SPLU_WARN_UNKNOWNS, device_pencil_bytes,
@@ -1131,6 +1132,20 @@ def _complex_pencil(settings_values, context) -> bool:
     return bool(_pml_faces(settings_values)) or bloch or context.material_sets('loss_factor')
 
 
+def _response_term_bytes(settings_values, context) -> tuple:
+    """Value bytes of fem.harmonic's frequency_response pencil terms (K, M) in their own dtype: K complex with a loss
+    factor or a PML stretch, M only with a PML (no damping term: membrane conditions are Dirichlet / Neumann)."""
+    pml = bool(_pml_faces(settings_values))
+    return (COMPLEX128_BYTES if pml or context.material_sets(LOSS_ARRAY) else 8, COMPLEX128_BYTES if pml else 8)
+
+
+def _complex_response(settings_values, context) -> bool:
+    """frequency_response: the factor of a DevicePencil / HostPencil (cuDSS, MUMPS, PARDISO) is complex only with a
+    complex term (_response_term_bytes) or a port (complex DtN values added per frequency); else real, the complex rhs
+    solved as its two real parts (host SuperLU always factors the complex copy pencil.reduced(omega))."""
+    return max(_response_term_bytes(settings_values, context)) > 8 or bool(_feature_count(context, 'port'))
+
+
 def _eigen_tolerance(context) -> float:
     """tolerance of the resolved 'eigen' solver (0 = machine precision; also without one)."""
     resolved = (context.solvers or {}).get('eigen')
@@ -1143,7 +1158,9 @@ def _cudss_factor(settings_values, context):
     study = context.spec.study.type
     if study == FREQUENCY_RESPONSE_STUDY:
         back_end = resolved_back_end(context.solvers)
-        return (back_end, COMPLEX128_BYTES) if back_end in CUDSS_BACK_ENDS else None
+        if back_end not in CUDSS_BACK_ENDS:
+            return None
+        return back_end, COMPLEX128_BYTES if _complex_response(settings_values, context) else 8
     if study == EIGENFREQUENCY_STUDY:
         factorization = eigen_factorization(context.solvers)
         if factorization not in CUDSS_FACTORIZATIONS:
@@ -1180,7 +1197,8 @@ def _memory_estimate(settings_values, mesh, context):
     host_direct = _host_direct_factor(context) if triangles and cudss is None else None
     if host_direct is not None:   # MUMPS / PARDISO LDL^T: the SuperLU heuristic x superlu_bytes_scale (uncalibrated)
         label = factor_label(host_direct)
-        complex_values = study == FREQUENCY_RESPONSE_STUDY or complex_pencil
+        complex_values = (_complex_response(settings_values, context) if study == FREQUENCY_RESPONSE_STUDY
+                          else complex_pencil)
         # S5c mirror (factorization_for): a small *_mixed eigen pencil factors in double
         mixed = host_direct_precision(host_direct) == 'mixed' and not (
             study == EIGENFREQUENCY_STUDY and dofs < MIXED_EIGEN_MIN_UNKNOWNS)
@@ -1189,9 +1207,9 @@ def _memory_estimate(settings_values, mesh, context):
                        int(factor_bytes * superlu_bytes_scale(scaled, symmetric=True, complex_values=complex_values))),
                       (f'{label} solver copies (equilibrated operator, row scale; mixed: GMRES vectors)',
                        solver_host_bytes(dofs, entries, complex_values=complex_values, mixed=mixed, symmetric=True))]
-        if study == FREQUENCY_RESPONSE_STUDY:   # fem.harmonic's sparse_direct.HostPencil: K complex, C / M real
-            host_items.append((f'{label} host pencil terms (K, C, M values on the free pattern)',
-                               (COMPLEX128_BYTES + 8 + 8) * entries))
+        if study == FREQUENCY_RESPONSE_STUDY:   # fem.harmonic's sparse_direct.HostPencil: K, M in their own dtype
+            host_items.append((f'{label} host pencil terms (K, M values on the free pattern)',
+                               sum(_response_term_bytes(settings_values, context)) * entries))
     elif cudss is None:
         host_items = [('complex factor L + U (heuristic, uncalibrated)', factor_bytes)]
     else:   # cudss_factor.CudssFactorization (LDL^T): rhs / equilibration / solution vectors
@@ -1199,15 +1217,19 @@ def _memory_estimate(settings_values, mesh, context):
         # S5c (ArpackShiftInvertSolver.factorization_for): a small cudss_mixed pencil factors in double, host route
         switched = study == EIGENFREQUENCY_STUDY and name == 'cudss_mixed' and dofs < MIXED_EIGEN_MIN_UNKNOWNS
         mixed = name == 'cudss_mixed' and not switched
+        # a real frequency_response factor solves the complex rhs as its two real parts: complex-sized vectors
+        solve_bytes = COMPLEX128_BYTES if study == FREQUENCY_RESPONSE_STUDY else value_bytes
         solve_vectors = ('cuDSS rhs buffer, row scale and one solve\'s vectors (mixed: the GMRES basis)',
-                         solve_buffer_bytes(dofs, value_bytes, mixed) + solve_peak_bytes(dofs, value_bytes, mixed))
+                         solve_buffer_bytes(dofs, solve_bytes, mixed) + solve_peak_bytes(dofs, solve_bytes, mixed))
         factors = (('cuDSS factor', dofs, entries, value_bytes, 2, mixed),)
         if study == FREQUENCY_RESPONSE_STUDY:
-            # fem.harmonic keeps K (complex), C, M (real) as a DevicePencil whose maps / transients hold the factor's
-            # planned values (no CSR copies on top: membrane_guide_pml measured) and a direct solve's solution (R6)
+            # fem.harmonic keeps K, M in their own dtype (_response_term_bytes) as a DevicePencil whose maps /
+            # transients hold the factor's planned values (no CSR copies on top: membrane_guide_pml measured) and a
+            # direct solve's solution (R6)
             run_items = [solve_vectors,
                          ('device pencil terms, index maps and per-frequency transients',
-                          device_pencil_bytes(entries, (COMPLEX128_BYTES, 8, 8), symmetric=True)),
+                          device_pencil_bytes(entries, _response_term_bytes(settings_values, context),
+                                              symmetric=True)),
                          ('kept device solution (complex128 + int32 ids per full dof)',
                           KEPT_SOLUTION_BYTES_PER_DOF * dofs)]
         elif not complex_pencil and not switched and entries >= DEVICE_PENCIL_MIN_ENTRIES:
@@ -1215,8 +1237,12 @@ def _memory_estimate(settings_values, mesh, context):
             eigen_items = [solve_vectors,
                            ('eigen DevicePencil terms, index maps and refresh transients',
                             device_pencil_bytes(entries, (value_bytes, value_bytes), symmetric=True)),
-                           ('eigen device mass product (int32 indices, vectors)',
-                            4 * (entries + dofs + 1) + 3 * value_bytes * dofs)]
+                           # ShiftPencil.device_mass (device_matrix: float64 lower triangle + diagonal; the pencil's
+                           # entries, an upper bound of M's), its product vectors and the solve input
+                           ('eigen device mass product (device_matrix, vectors)',
+                            device_matrix_bytes(dofs, entries, symmetric=True, real=True)
+                            + device_product_bytes(dofs, symmetric=True, real=True, complex_operand=False)
+                            + value_bytes * dofs)]
         else:   # a factor of the host K - sigma M (eigen_solver.factorize_host): its CSR copies in the pool
             eigen_items = [solve_vectors,
                            ('cuDSS lower-triangle CSR copies', operator_copy_bytes(dofs, entries, value_bytes,
@@ -1233,10 +1259,12 @@ def _memory_estimate(settings_values, mesh, context):
     if study == EIGENFREQUENCY_STUDY:
         wanted = 2 * _requested_resonances(context) + 4
         basis = arnoldi_basis_size(wanted, dofs)
+        bloch = any(_bloch_wavenumber(settings_values, axis) != 0.0 for axis in _periodic_axes(settings_values))
         # a complex pencil runs eigs: on the gpu its device Krylov-Schur basis (freed with the solve); a real one eigsh
-        # fem.harmonic_resonances on a cuDSS factor: complex64 rows at an eigen tolerance >= SINGLE_BASIS_MIN_TOLERANCE
+        # fem.harmonic_resonances on a cuDSS complex symmetric LDL^T: complex64 rows at an eigen tolerance >=
+        # SINGLE_BASIS_MIN_TOLERANCE (Rayleigh-polished); a Bloch phase (the general pencil) keeps complex128
         from ...solvers.arpack_shift_invert import SINGLE_BASIS_MIN_TOLERANCE
-        single = cudss is not None and _eigen_tolerance(context) >= SINGLE_BASIS_MIN_TOLERANCE
+        single = cudss is not None and not bloch and _eigen_tolerance(context) >= SINGLE_BASIS_MIN_TOLERANCE
         on_device, basis_bytes = ((False, basis * COMPLEX128_BYTES * dofs) if not complex_pencil
                                   else arnoldi_basis_bytes(dofs, basis, solver_backend(context.spec),
                                                            device_matvec=cudss is not None, single_basis=single))
@@ -1246,9 +1274,6 @@ def _memory_estimate(settings_values, mesh, context):
             row_type = 'complex64' if single else 'complex128'
             eigen_items.append((f'device Krylov-Schur basis ({basis + 1} {row_type} rows + work vectors)', basis_bytes))
             if cudss is not None:
-                from ...solvers.device_matrices import device_matrix_bytes, device_product_bytes
-                bloch = any(_bloch_wavenumber(settings_values, axis) != 0.0
-                            for axis in _periodic_axes(settings_values))
                 real_mass = not (bloch or _pml_faces(settings_values))
                 eigen_items.append(('eigen device mass of the Krylov-Schur matvec and its product vectors',
                                     device_matrix_bytes(dofs, entries, symmetric=not bloch, real=real_mass)
@@ -1256,6 +1281,12 @@ def _memory_estimate(settings_values, mesh, context):
         else:
             host_items.append(('ARPACK basis (complex128)', basis_bytes))
     host_items.extend(reduced_sweep_memory_items(context, dofs, entries))
+    if triangles and solver_backend(context.spec) == 'gpu':
+        # MembraneFEMPhysics._publish, kept from the first publish: int32 element dofs of the full Lagrange map (P2
+        # with a plate), the solved-element mask, the float64 centroid basis (its per-publish gather is not at the peak)
+        nodes = 6 if plate or element_order(settings_values) == 2 else 3
+        run_items.append(('device publish maps (int32 element dofs, solved mask, centroid basis)',
+                          (4 * nodes + 1) * elements + 8 * nodes))
     # fem.harmonic_resonances releases the shift factor after each solve (a search: its inertia factor too)
     return MemoryEstimate.from_items(
         ((f'element state and coupled slots ({_N_DEVICE_FIELDS} x float32)', _N_DEVICE_FIELDS * FLOAT32_BYTES
@@ -1350,9 +1381,14 @@ def _time_estimate(settings_values, mesh, context):
                                       ports * sweep['factorizations'], sweep['factorizations_kind'],
                                       (te.DenseFlops((PLATE_STRIP_EIG_FLOPS + PLATE_STRIP_DTN_FLOPS) * strip ** 3,
                                                      host=True), te.PythonCalls(60))),)
+        # a DevicePencil / HostPencil of real terms without ports factors real, the complex rhs as two real solves
+        # (_complex_response); host SuperLU factors the complex copy
+        real_factor = ((cudss or _host_direct_factor(context) is not None)
+                       and not _complex_response(settings_values, context))
         parts = [build, te.TimeEstimate((*frequency_items, *port_items, *reduced_sweep_time_items(sweep, unknowns))),
                  context.solver_work(
-            'linear', unknowns=unknowns, nnz=nnz, value_bytes=16, dimensions=2, solves=sweep['solves'],
+            'linear', unknowns=unknowns, nnz=nnz, value_bytes=8 if real_factor else 16, dimensions=2,
+            solves=sweep['solves'], rhs=2.0 if real_factor else 1.0,
             solves_kind=sweep['solves_kind'], factorizations=sweep['factorizations'],
             factorizations_kind=sweep['factorizations_kind'], device_values=cudss, **scales(cudss))]
         if sweep['eigenpairs']:   # modal basis: one shift-invert of the 'eigen' role at the band centre
