@@ -1,7 +1,7 @@
 """Model-layer definitions of the potential physics types 'electric_currents' and 'electrostatics' (one factory:
 settings, features, material vocabulary, validation) plus their template and selftests. Loaded lazily by the
 registry (physics/potential/__init__.py must not import it)."""
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from ...core.mirror import feature_mirror_faces, mirror_faces
 from ...core.memory_estimate import (BOOL_BYTES, FLOAT32_BYTES, FLOAT64_BYTES, MemoryEstimate, combine,
@@ -880,10 +880,12 @@ def _make_create(kind):
 
 def _make_memory_estimate(kind):
     """memory_estimate: PotentialFields2D (float32 full grid; + q_joule with currents, + rho_ion with electrostatics)
-    plus the window DiffusionSystem (a set xy coefficient: 9-point pattern) and a cuDSS 'linear' factor
-    (fem.diffusion.cudss_diffusion_estimate); element meshes: on the active elements; driven terminals: the basis solutions
-    (DC + one per waveform) and the superposition buffer (run items, first step); tetrahedra: the
-    3D fields (+ E_z and the z flux) per element + the FEM 3D system; a 3D tensor mesh (refused by validate) nothing."""
+    plus the window DiffusionSystem (a set xy coefficient: 9-point pattern; electrostatics: + the three eps0-scaled
+    float32 coefficient windows PotentialPhysics._coefficients holds through each assembly, on the build peak) and a
+    cuDSS 'linear' factor (fem.diffusion.cudss_diffusion_estimate); element meshes: on the active elements; driven
+    terminals: the basis solutions (DC + one per waveform; superposed in place into the fields: run items, first
+    step); tetrahedra: the 3D fields (+ E_z and the z flux) per element + the FEM 3D system; a 3D tensor mesh (refused
+    by validate) nothing."""
     spec = KINDS[kind]
     n_fields = 7 + int(spec.with_joule) + int(spec.with_ions)
 
@@ -902,10 +904,11 @@ def _make_memory_estimate(kind):
             return MemoryEstimate()
         n_waveforms = _driven_waveform_count(context.physics_spec) if spec.with_ions else 0
         window_cells = window_cell_count(mesh)
-        driven_bytes = (n_waveforms + 2) * 5 * FLOAT32_BYTES * window_cells if n_waveforms else 0
+        driven_bytes = (n_waveforms + 1) * 5 * FLOAT32_BYTES * window_cells if n_waveforms else 0
         fields = MemoryEstimate.from_items(
             ((f'fields ({n_fields} x float32)', n_fields * FLOAT32_BYTES * int(mesh.n_cells)),),
-            run_items=((f'driven terminal bases ({n_waveforms} waveforms + DC, superposition)', driven_bytes),))
+            run_items=((f'driven terminal bases ({n_waveforms} waveforms + DC, 5 x float32 window each)',
+                        driven_bytes),))
         cross_term = context.material_sets(spec.coefficient_arrays[2])
         from ...model.schema import solver_backend   # where a multigrid setup aggregates
         system = diffusion_system_estimate(window_cells, linear_solver_precision(context), cross_term=cross_term,
@@ -918,6 +921,9 @@ def _make_memory_estimate(kind):
                                            flux=True, dissipation=spec.with_joule,   # _update_derived_fields per solve
                                            backend=solver_backend(context.spec),
                                            conformal=bool(context.spec.solver_defaults.conformal_boundaries))
+        if spec.coefficient_scale != 1.0:   # eps0 eps_dc: scaled float32 windows alive through assemble (currents: views)
+            system = replace(system, gpu_build_peak=system.gpu_build_peak
+                             + len(spec.coefficient_arrays) * FLOAT32_BYTES * window_cells)
         parts = [fields, system]
         if cudss:   # DiffusionDirectSolver factorises the kept A_solve
             parts.append(cudss_diffusion_estimate(window_cells, (9 if cross_term else 5) * window_cells, 2, cudss,
