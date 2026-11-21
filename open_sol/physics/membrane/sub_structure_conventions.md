@@ -13,6 +13,10 @@ coupling/definitions_membrane.py (solid_membrane_tension -> the coupled_tension_
 - Plate switch = PRESENCE of the bending_stiffness array (any material sets it, 0 included), tested in three places
   that must agree: the solver (`MembraneBase.prepare`), validation (`_materials_setting`) and the estimates (`_plate`,
   where a literal 0 counts as unset).
+- Real stays real by dtype, never by a flag: lossless coefficients are float64 (`MembraneCoefficients.lossy`: any loss
+  != 0), so fem.harmonic factors a real pencil and harmonic_resonances runs eigsh. The estimates mirror it from the
+  settings (`_complex_pencil` eigen, `_response_term_bytes` / `_complex_response` frequency_response: loss, PML, ports;
+  an expression loss counts as complex: an overestimate only); a new complex term updates both.
 - System lifetime: a new solver method adding a condition / load / port (as clamp_face, add_pressure) calls
   `_discard_system` (the next solve rebuilds through `_ready_system`); a coefficient change (materials_changed,
   inject_source, restore_solution) only sets `_coefficients_dirty`, so the next solve re-applies the coefficients on
