@@ -332,7 +332,28 @@ def solve_resonances(host_operator, mass, omega_target, energy_weights, in_windo
     sparse B and a sparse W are stored as lower triangles, their symmetry probed: ValueError if not); equilibration (n,)
     > 0: the row scale of such a factor (None = its |diag|^-1/2); in_region (n,) bool rows of a region (None: none)
     and min_region_fraction in [0, 1] (module header); rayleigh_symmetrizer (n,) D with D A complex symmetric, checked
-    by the caller: a complex A is polished (module header) on any factor, SuperLU and a given one too."""
+    by the caller: a complex A is polished (module header) on any factor, SuperLU and a given one too. An own factor
+    (factorization None) is released on return and on an exception (root "GPU memory and session lifetime": cuDSS /
+    MUMPS / PARDISO memory is invisible to the pools, and a traceback would keep it alive)."""
+    owned = []   # the own factor, once made
+    try:
+        return _solve_resonances(
+            owned, host_operator, mass, omega_target, energy_weights, in_window, n_resonances, field_of=field_of,
+            spectral_map=spectral_map, warnings=warnings, eigen_solver=eigen_solver, factorization=factorization,
+            ordering=ordering, tolerance_floor=tolerance_floor, basis_per_wanted=basis_per_wanted,
+            symmetrizer=symmetrizer, symmetric=symmetric, equilibration=equilibration, in_region=in_region,
+            min_region_fraction=min_region_fraction, rayleigh_symmetrizer=rayleigh_symmetrizer)
+    finally:
+        for factor in owned:
+            release = getattr(factor, 'release', None)   # a host SuperLU Factorization has none (numpy memory)
+            if release is not None:
+                release()
+
+
+def _solve_resonances(owned, host_operator, mass, omega_target, energy_weights, in_window, n_resonances, field_of,
+                      spectral_map, warnings, eigen_solver, factorization, ordering, tolerance_floor, basis_per_wanted,
+                      symmetrizer, symmetric, equilibration, in_region, min_region_fraction, rayleigh_symmetrizer):
+    """solve_resonances; its own factor is appended to `owned` as soon as it exists (the caller releases it)."""
     started = time.perf_counter()
     eigen_solver = ArpackShiftInvertSolver() if eigen_solver is None else eigen_solver
     omega_target = float(omega_target)
@@ -378,6 +399,7 @@ def solve_resonances(host_operator, mass, omega_target, energy_weights, in_windo
             factor_operator = (scipy.sparse.diags(symmetrizer) @ host_operator).tocsr()
         factorization = eigen_solver.factorize_host(factor_operator, ordering=ordering,
                                                     symmetric=symmetrized or bool(symmetric), row_scale=equilibration)
+        owned.append(factorization)
         on_device = factorization.back_end == 'cudss'
         # a mixed LDL^T: cuDSS on the device, MUMPS / PARDISO on the host (factor_precision 'double' after a fallback);
         # a double one of a complex A whose caller floored ARPACK (module constants)
