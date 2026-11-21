@@ -49,8 +49,12 @@ carriers read a phasor's `bulk_terms` only; absorption and the adjoint read the 
   GMRES_SINGLE_MIN_TOLERANCE); the pump-depleted adjoint keeps complex128 (it solves to the iteration tolerance). A new
   real_gmres caller below that floor passes single_basis=False (ValueError otherwise). Float32 rows meet only float32
   operands (a float64 operand makes matmul copy the basis to float64); the estimator (`definition._memory_estimate`
-  Newton items, the adjoint's excess over them) and the time recipe (`krylov`) count the complex64 rows. Checked by
+  Newton items, the adjoint's excess over them) and the time recipe (`krylov`) count the complex64 rows; the adjoint
+  sweeps are priced by `krylov_double` (complex128 rows): a basis dtype change moves the matching recipe. Checked by
   (d) of nlfd_newton_tangent and the newton model cases.
+- Why no refusal on the nonlinear tolerance: the float64 F decides convergence and the fp32 basis bounds only the
+  per-step contraction (~max(GMRES_SINGLE_MIN_TOLERANCE, 1e-7 cond J)), not ||F|| itself; a Jacobian with cond J
+  >~ 1e6 (at a fold) shows as backtracks and converged False (warning), not as a quiet wrong root.
 - Picard's Anderson history (dX, dF) is complex64 (`iteration.ANDERSON_HISTORY_DTYPE`, error argument there); x, f,
   the store and the residual stay complex128, so no tolerance floor follows. The history meets only float32 operands
   (gamma cast first) and its Gram is summed in float64 from chunk copies (`ANDERSON_GRAM_CHUNK`, own rcond): a change
