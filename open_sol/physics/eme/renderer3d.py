@@ -75,7 +75,12 @@ class EMERenderer3D(PhysicsRenderer):
         if component == 'absorbed_power':
             return self.eme.q_abs[window]
         if component == _SENSITIVITY_FIELD:   # cascade adjoint of the objective features (adjoint.py)
-            return self.eme.eps_sensitivity().density[window]
+            # a live solve's density is host float32 (solver3d), uploaded per read; the zeros and a restored snapshot's
+            # kept density (EMEBase) are already on the run backend
+            density = self.eme.eps_sensitivity().density[window]
+            if isinstance(density, np.ndarray):
+                return self.domain.xp.asarray(np.ascontiguousarray(density, dtype=DTYPE))
+            return density
         # the E phasors are host complex64 (solver3d): the window / plane is computed on the host, the float32 result
         # uploaded once (the run backend's array, as every renderer returns)
         fields = self.eme.field_arrays

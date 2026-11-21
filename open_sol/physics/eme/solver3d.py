@@ -320,8 +320,8 @@ class EMEPhysics3D(EMEBase):
 
     def _cascade_sensitivity(self, objectives):
         """EpsSensitivity (host float64 dJ/d eps_xx, eps_yy, eps_r per cell; density = their sum per cell volume
-        [1/m^3], run backend float32) of the last solve by the cascade adjoint on every window z layer (a periodic
-        cell sums its periods)."""
+        [1/m^3], host float32) of the last solve by the cascade adjoint on every window z layer (a periodic cell sums
+        its periods)."""
         omega = self.solved_omega
         face, number, _ = self.excitation
         _, unit_power = self.input_amplitude()
@@ -338,10 +338,11 @@ class EMEPhysics3D(EMEBase):
             shape = [1, 1, 1]
             shape[axis] = -1
             density /= widths.reshape(shape)
-        # the float64 cell gradients stay host numpy on either backend (no device reader in 3D: no design regions or
-        # optimization study; scripts read them on the host): 24 B per cell off the device; the rendered float32
-        # density goes to the run backend
-        return EpsSensitivity(total, float(omega), host, self.domain.xp.asarray(density, dtype=DTYPE))
+        # host numpy on either backend, the float64 cell gradients and the float32 density (no device reader in 3D: no
+        # design regions or optimization study; scripts read the gradients on the host, the renderer uploads the read
+        # window / plane of the density): 28 B per cell off the device, which the eps_sensitivity cache would else
+        # hold through the next solve's cross-section peak (a frequency_domain sweep storing eps_sensitivity)
+        return EpsSensitivity(total, float(omega), host, density.astype(DTYPE))
 
     def _add_section_gradients(self, host, omega, face, number, cotangents):
         """Add dJ/d eps of every section's z layers into the host (nx, ny, nz) arrays (FIELD_BLOCK_SLICES layers per
