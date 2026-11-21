@@ -59,6 +59,17 @@ solver_harmonic_fem.py header and the fem sub file "Complex scalar harmonic syst
   convention: a source plus its images). Probe and surface results carry sector_rule 'linear'. Only check of
   `_mirror_factors`: pressure_acoustics_duct_mirror.
 
+## pressure_acoustics device memory (cuDSS, gpu)
+- A rebuild (`_build_system`: materials_changed, a new feature after a solve) or a prepare goes through
+  `_release_system` first: the old factor released (outside the pool), its reduced model cleared, the publish maps
+  dropped. A new cache keyed to the system is dropped there too, never left to the gc.
+- Device publish: one fused kernel (`_centroid_state_kernel`, gpu only: device values exist only after a cuDSS solve;
+  the host route `_centroid_values` must give the same state) writes the float32 fields; p_b is uploaded per publish,
+  not kept. Between frequencies the pool holds only the DevicePencil terms, the int32 ids / publish maps and the
+  element state (fem.harmonic drops the kept device values before each factorisation).
+- Estimates by term dtype (`definition_harmonic._pencil_terms`): K, M complex only with a PML, C only with an
+  impedance; a cuDSS / MUMPS / PARDISO factor of neither is real (two real rhs per solve), host SuperLU always complex.
+
 ## Couplings (types in coupling/definitions_acoustics.py / definitions_piezo.py, transforms in couplings.py)
 - Cadence: acoustics_em_acousto_optic inherits the FDFD's every k (after_source_step False), so it transfers on ticks
   k-1, 2k-1, ... and the FDFD re-solves on the strain of its own tick (stroboscopic). em_acoustics_photoacoustic
