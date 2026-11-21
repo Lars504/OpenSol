@@ -350,13 +350,16 @@ class ModalPencil:
                                               pencil=self._pencil())
             else:
                 coefficients = None if self.kind == 'damped' else (1.0, 1j / omega_target)
-                # complex64 Krylov basis only on a node tolerance >= SINGLE_BASIS_MIN_TOLERANCE (1e-6): the Ritz
-                # residuals are then asked no tighter than the fp32 Arnoldi relation holds (~1e-7 |H|; the factor
-                # solves, M products and H stay float64; loaded modes get the float64 Newton polish on top). The
-                # default tolerance 0 (machine precision) keeps the complex128 basis
-                single_basis = solver.tolerance >= SINGLE_BASIS_MIN_TOLERANCE
+                # complex64 Krylov basis only on a node tolerance >= SINGLE_BASIS_MIN_TOLERANCE (1e-6) and a symmetric
+                # pencil: the factor solves, M products and H stay float64, eigs_shifted re-evaluates the far pairs by
+                # the float64 B-form Rayleigh quotient (arpack_shift_invert.polished_theta; stationary only on a
+                # symmetric pencil, so a complex Bloch reduction keeps complex128); loaded modes get the float64
+                # Newton polish on top. The default tolerance 0 (machine precision) keeps the complex128 basis
+                pencil = self._pencil()
+                single_basis = (solver.tolerance >= SINGLE_BASIS_MIN_TOLERANCE and pencil.symmetric
+                                and (pencil.device is None or pencil.device.symmetric))
                 result = solver.eigs_shifted(None, self.mass, omega_target ** 2, n_wanted, start_vector=start_vector,
-                                             previous=self.factor, pencil=self._pencil(),
+                                             previous=self.factor, pencil=pencil,
                                              stiffness_coefficients=coefficients, single_basis=single_basis)
         except RuntimeError as exc:
             self.factor = None

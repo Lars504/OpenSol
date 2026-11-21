@@ -238,10 +238,15 @@ internals: cudss_factor.py header; MUMPS / PARDISO: section "host_direct"; nvmat
   machine precision, Rayleigh-polished solves. Everything else passes 0 (machine precision).
 - `eigs_device(single_basis=True)` / `eigs(single_basis=True)` (complex64 basis on the device Krylov-Schur; host
   ARPACK ignores it) only on a tolerance >= SINGLE_BASIS_MIN_TOLERANCE (ValueError below, on every path, so a misuse
-  fails at any size): its Arnoldi relation holds to fp32. Callers: solve_resonances' polished mixed search
-  (`refine`; estimators book it through `memory_estimates.polished_mixed_search`), `eigs_shifted(single_basis=)`
-  from mechanics `ModalPencil._shift_solve` (damped / loaded pencils, only on a node tolerance >= 1e-6; its estimator
-  `eigen_device_items` reads the same rule), other eigs callers through `arnoldi_basis_bytes(single_basis=True)`. One search keeps one basis dtype (a resume checks it).
+  fails at any size): its Arnoldi relation holds to fp32 x |theta_max| (SINGLE_BASIS_RELATION), while the Ritz test
+  asks tolerance x |theta_i|, so the wanted pairs far from the shift are not certified by it. Every caller therefore
+  has a float64 polish on a symmetric pencil: solve_resonances / fem_modes their own Rayleigh quotients (`refine`;
+  estimators book it through `memory_estimates.polished_mixed_search`); `eigs_shifted(single_basis=)` (mechanics
+  `ModalPencil._shift_solve`, node tolerance >= 1e-6; ValueError on a general pencil) through `polished_theta` (one
+  float64 solve per far pair, counters eigen_single_basis_polished / _unpolished); fem.harmonic_resonances (complex
+  symmetric LDL^T only) its own v^T K v / v^T M v. A new caller without such a polish keeps complex128 (em
+  cross_section_modes says why); estimators read the same rule (`eigen_device_items`, the membrane estimate) through
+  `arnoldi_basis_bytes(single_basis=True)`. One search keeps one basis dtype (a resume checks it).
 - Device B of the shift-invert maps: `device_factor_matvec(factorization, B, symmetric=)` and
   `ShiftPencil.device_mass` store B through `device_matrix` (float64 when real, also a complex-typed B with zero
   imaginary parts; a diagonal B as its vector; symmetric: lower triangle + diagonal, probed). Estimators book
