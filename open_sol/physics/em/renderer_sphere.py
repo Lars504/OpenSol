@@ -10,7 +10,8 @@ _RMS = 'rms over the sphere'
 
 
 class SphereRenderer(CentreFieldRenderer):
-    """Window-shaped (nx, 1) float32 cell-centre fields of a SpherePhysics (SpherePhysics.fields) and its materials."""
+    """Window-shaped float32 cell-centre fields of a SpherePhysics (SpherePhysics.fields: run-backend or host numpy) and
+    its materials."""
 
     material_names = ('eps_r', 'sigma_e')
     field_infos = {

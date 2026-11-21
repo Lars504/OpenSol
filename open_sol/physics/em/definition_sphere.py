@@ -8,8 +8,8 @@ from dataclasses import replace
 import numpy as np
 
 from ...core import time_estimate as te
-from ...core.memory_estimate import (COMPLEX128_BYTES, COMPLEX128_CSR_ENTRY_BYTES, FLOAT32_BYTES, MemoryEstimate,
-                                     host_counted_lu_bytes)
+from ...core.memory_estimate import (COMPLEX128_BYTES, COMPLEX128_CSR_ENTRY_BYTES, FLOAT32_BYTES, FLOAT64_BYTES,
+                                     MemoryEstimate, host_counted_lu_bytes)
 from ...model.definition_helpers import (AXISYMMETRIC, AXISYMMETRIC_SPACE_SETTINGS, DIRECT_LINEAR_ROLE,
                                          GEOMETRY_SETTING, eigen_role)
 from ...model.schema import STATIONARY_STUDY, FeatureType, Issue, Param, PhysicsType, resolve_values
@@ -461,15 +461,21 @@ def _study_count(context, name, default):
 
 
 def _memory_estimate(settings_values, mesh, context):
-    """Display fields on the run backend (7 float32 radial profiles); host: one term's materials, tridiagonal
-    operators and SuperLU factor, vectors and centre fields; eigenfrequency: the Arnoldi basis of one term's search and
-    the kept resonance node vectors (every term)."""
+    """Run backend: the two state() display fields (e_intensity, q_abs: float32 radial profiles per window cell);
+    host: the five rendered-only display fields, the materials read (SpherePhysics.host_materials: float32 window
+    copies, complex128 eps / mu and the theta check, all on the host), one term's tridiagonal operators and SuperLU
+    factor, vectors and centre fields; eigenfrequency: the Arnoldi basis of one term's search and the kept resonance
+    node vectors (every term)."""
     window_cells = int(mesh.n_cells)
     n_cells = int(mesh.nx)    # radial cells (the theta cells only carry the display copies)
     nodes = n_cells + 1
     n_terms = len(_orders(settings_values)) * len(_families(settings_values))
     host_items = [
-        ('materials and one term assembly (eps, mu complex128; tridiagonal K, M, A CSR)',
+        ('rendered-only display fields (er, et, hr, ht, h_abs: 5 x float32 per window cell)',
+         5 * FLOAT32_BYTES * window_cells),
+        ('materials read (4 float32 window copies; eps or mu complex128 per window cell and its theta check)',
+         (4 * FLOAT32_BYTES + 2 * COMPLEX128_BYTES + FLOAT64_BYTES) * window_cells),
+        ('radial eps, mu (complex128) and one term assembly (tridiagonal K, M, A CSR)',
          2 * COMPLEX128_BYTES * n_cells + 9 * COMPLEX128_CSR_ENTRY_BYTES * nodes),
         ('host SuperLU factor of the tridiagonal operator', host_counted_lu_bytes(2 * nodes, nodes)),
         ('solutions, right-hand sides and centre fields (complex128)', (2 * _SOLVE_CLASSES * nodes + 8 * n_cells)
@@ -482,8 +488,8 @@ def _memory_estimate(settings_values, mesh, context):
                         (basis + wanted) * COMPLEX128_BYTES * nodes),
                        (f'resonance node vectors ({n_terms} terms x {n_resonances})',
                         n_terms * n_resonances * COMPLEX128_BYTES * nodes)]
-    return MemoryEstimate.from_items((('display fields (7 x float32 per window cell)',
-                                       7 * FLOAT32_BYTES * window_cells),),
+    return MemoryEstimate.from_items((('state() display fields (e_intensity, q_abs: 2 x float32 per window cell)',
+                                       2 * FLOAT32_BYTES * window_cells),),
                                      host_items=host_items)
 
 
@@ -545,7 +551,7 @@ EM_FDFD_SPHERE = PhysicsType(
     spaces_2d=(AXISYMMETRIC,),
     space_settings=AXISYMMETRIC_SPACE_SETTINGS,
     coordinate_grids=('cartesian', 'polar'),   # 'cartesian' is required by the schema; validate refuses a slab
-    backends=('gpu', 'cpu'),    # host solves either way; the shown fields live on the run backend
+    backends=('gpu', 'cpu'),    # host solves either way; the state() fields live on the run backend
 )
 
 
