@@ -27,8 +27,9 @@ contracts"). em_fdtd_3d (B2) and the eigensolver em_fdfd_3d (tensor Yee and tetr
   parameters, no other physics on the mesh registering the name) the first index build parks them on the host
   (`MaterialGrid.park`) and only then allocates the fields (`Fields3D(allocate=False)`): the build peak never holds
   both (~12-24 B per cell less). Readers take `MaterialGrid.device_array(name, index)` (renderer eps_r window,
-  harmonic energy window, state()['eps_r']), mode ports upload their layer plane, a rebuild reads parked arrays
-  chunk by chunk (`engine3d._UploadedChunks`: material_index3d reads inputs only as `array[chunk]`, keep it so).
+  harmonic energy per x-slab part (`harmonic3d.ENERGY_CHUNK_CELLS`, it runs at the run peak), state()['eps_r']), mode
+  ports upload their layer plane, a rebuild reads parked arrays chunk by chunk (`engine3d._UploadedChunks`:
+  material_index3d reads inputs only as `array[chunk]`, keep it so; at most two chunks alive, the estimate's term).
   A new reader of a MaterialGrid array of this engine goes through those, or the rule must exclude its case;
   `PhysicsType.parked_material_arrays` makes meshing leave the arrays to this type's estimate.
 - E coefficients are computed per step in the kernels (PEC = the last id, eps -1; subpixel faces via

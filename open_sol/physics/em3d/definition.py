@@ -32,6 +32,7 @@ from .definition_sources3d import (SOURCE_FEATURES, box_corners, box_edge_issues
                                    domain_sizes, face_types, nearest_window_edge, plane_cells, plane_edge_message,
                                    window_axes)
 from .engine3d import _INDEX_CHUNK_CELLS, COMPONENT_AXES, STEP_GRAPHS   # the chunk the estimate books
+from .harmonic3d import ENERGY_CHUNK_CELLS
 from .monitors3d import DFT_PLANE_QUANTITY, dft_plane_result, flux_result
 from .physics3d import EMPhysics3D, MATERIAL_ARRAYS, PERMITTIVITY_SLOTS
 from .renderer3d import EMRenderer3D
@@ -228,8 +229,9 @@ _Q_ACCUM_INFO = FieldInfo('q_accum', 'Absorbed energy density', unit='J/m^3', cm
 _TRACK_ABSORPTION = next(param for param in settings_params(_BC_HELP, 'unused', (
     'Accumulate J.E losses also without an em_heat_joule coupling: output absorbed_power [W/m^3], state q_accum '
     '[J/m^3] (face sigma_e split between the two cells by half-cell conductance, pole work time-centred and split to '
-    'the dispersive cells). Costs a pass over the conducting-cell and pole boxes per step plus 8 B per cell of their '
-    'bounding box (the loss box; outside it the state reads 0), and each transfer to a coupling a full-grid copy.'))
+    'the dispersive cells). Costs a pass over the conducting-cell and pole boxes per step plus 4 B device and 4 B host '
+    'memory per cell of their bounding box (the loss box; outside it the state reads 0), and each transfer to a '
+    'coupling a full-grid copy.'))
                          if param.name == 'track_absorption')
 
 
@@ -749,13 +751,17 @@ def _memory_estimate(settings_values, mesh, context):
     if parked:
         parked_bytes = FLOAT32_BYTES * len(parked) * n_cells
         field_bytes_total = n_sets * 6 * field_bytes * n_cells
-        build_extra = (max(index_build, parked_bytes + index_build - field_bytes_total)
-                       + FLOAT32_BYTES * len(parked) * chunk_cells)
+        # first index build: the arrays still on the device, the fields not yet; a later rebuild (reused sweep build):
+        # fields allocated, the parked arrays uploaded a chunk at a time (at most two chunks alive: material_index3d)
+        build_extra = max(parked_bytes + index_build - field_bytes_total,
+                          index_build + 2 * FLOAT32_BYTES * chunk_cells)
         host_items = tuple(host_items) + ((f"material arrays parked on the host ({', '.join(parked)}, float32)",
                                            parked_bytes),)
-        if n_wavelengths:   # the pulse's energy check uploads the eps_r / mu_r window once per chunk
-            transient_items.append(('harmonic energy check', 'eps_r and mu_r window uploads (float32)',
-                                    2 * FLOAT32_BYTES * window))
+        if n_wavelengths:   # the pulse's energy check uploads eps_r / mu_r per x-slab part (harmonic3d field_energy)
+            plane_x = max(plane_cells(mesh, 0, window=True), 1)
+            part_cells = min(window, max(1, ENERGY_CHUNK_CELLS // plane_x) * plane_x)
+            transient_items.append(('harmonic energy check', 'eps_r and mu_r x-slab uploads (float32)',
+                                    2 * FLOAT32_BYTES * part_cells))
     return MemoryEstimate.from_items(items + trace_items, build_extra=build_extra, host_items=host_items,
                                      run_items=run_items, transient_items=transient_items)
 
@@ -788,8 +794,10 @@ EM_FDTD_3D = PhysicsType(
                  'imaginary field set). Outputs the raw components, e_abs, e_intensity, h_abs (cell centres), eps_r '
                  '(the eps_zz array) and absorbed_power, shown as z cut planes. Couplings: heat_em_thermo_optic (index '
                  'slots of the allocated permittivity arrays), em_heat_joule into 3D heat. Memory ~26 B per cell plus '
-                 '12 B of material arrays (+8 B with eps_xx / eps_yy, +4 B with sigma_m, +8 B per cell of the lossy '
-                 "cells' bounding box tracking absorption). A stepper solver with precision half_storage stores fp16 "
+                 '12 B of material arrays (+8 B with eps_xx / eps_yy, +4 B with sigma_m; in host memory after the '
+                 'index build on a gpu model run whose em materials are constants or x / y / z expressions and that '
+                 "no coupling writes), +4 B per cell of the lossy cells' bounding box tracking absorption (+4 B "
+                 'host). A stepper solver with precision half_storage stores fp16 '
                  'fields (14 B per cell; gpu and '
                  'time_dependent only; no poles, plane wave, mode ports or resonance finder; ~1e-3 relative noise '
                  'floor). One 3D Courant step per runner tick (every must be 1). cpu backend: numpy twins of every '
