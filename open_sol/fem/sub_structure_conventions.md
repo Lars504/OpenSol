@@ -127,7 +127,7 @@ file ("Triangle meshes"). Error indicators: section "Error indicators" (users: g
   unknowns x entries per row), never inflated "equivalent cells" (LU costs grow ~n^1.5 / ~n^2). The cuDSS first plan
   peak was measured at ~39 B per entry (heat_fem_cpu_gpu, before the symmetry vouching: re-measure).
 - `cudss_diffusion_estimate(symmetric_known=)` follows `DiffusionDirectSolver.symmetric_known` of the system it books
-  (True: DiffusionSystem, FEMDiffusionSystemCommon; False, the default: the 2D ElasticSystem, MagneticFEMSystem, so
+  (True: DiffusionSystem, FEMDiffusionSystemCommon, the 2D ElasticSystem; False, the default: MagneticFEMSystem, so
   `fem_diffusion_estimate(symmetric_known=False)` there): a new owner that vouches sets both in the same edit.
 - `_factorize` unbinds a pcg (`release_operator`) before the new run-backend copy, so a re-assembly never holds two
   device operators: the refactorisation transient books no second CSR (multigrid: the setup transients only).

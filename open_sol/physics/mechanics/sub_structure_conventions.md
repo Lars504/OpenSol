@@ -50,9 +50,11 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   through a corner contact shows as an unconverged CG, not as a refusal; validation only checks that both directions
   are held somewhere.
 - Linear solver: `definition.SOLID_LINEAR_ROLE` (its comment holds the choices and their measurements: block-Jacobi
-  pcg, 'mixed' on the gpu, sparse_direct as the stationary / time_dependent default); the 2D binding (CUDA-graph check
-  blocks, float32 copies of 'mixed', the factor deferred to the next `solve` so modal and piezo solves never factorise
-  it): `ElasticSystem._bind_linear_solver`.
+  pcg, 'mixed' on the gpu, sparse_direct as the stationary / time_dependent default); the 2D binding (inverse node
+  blocks, workspace, CUDA-graph check blocks, float32 copies of 'mixed', or the vouched-symmetric direct factor) is made
+  by the first `solve` / `solve_homogeneous` after an assembly (`ElasticSystem._bind_if_stale`), so modal,
+  frequency-response and piezo runs hold none of it (the estimate's `pcg_bound`), and a re-assembly releases the old
+  A_solve and binding first (`_release_binding`): a new reader of the binding goes through `_bind_if_stale`.
 - Reactions are K u - f of the last solve (`load_full` of the last `_build_rhs`): every load change sets
   `_loads_dirty` (it also drops the frequency response's kept `_harmonic_drive`), so loads never change between a solve
   and a read. n_solves doubles as the couplings' revision counter.
