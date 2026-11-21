@@ -620,6 +620,12 @@ type's vocabulary and refusals are in its help texts and validation.
   magnitudes, so no parity and no Re / phase; a probe phase exists only for one term and class (`single_phasors`).
   e_intensity / q_abs are sphere means, so Session integrals over the whole-shell metric volumes are 3D integrals
   (em_heat_joule hands a 1D spherical heat physics the exact angle-averaged power).
+- Device memory: only `DEVICE_SPHERE_FIELDS` (the state() / loss-protocol keys e_intensity, q_abs) are run-backend
+  arrays; the five rendered-only fields are host numpy (`CentreFieldRenderer` uploads the read window), and
+  `host_materials` builds eps / mu on the host from float32 copies (no complex128 device temporaries): a new device
+  reader of a field takes `xp.asarray`, a new state() key joins DEVICE_SPHERE_FIELDS and the estimate's device item.
+  `solution_state` keeps (nx, 1) profiles, which assumes `_show` stays the only writer (theta-uniform fields). The
+  radial solves stay complex128 on the host (resonance refinement to 1e-12, Mie coefficients).
 - Source classes (`_source_classes`): plane wave (m = +-1), radial dipoles (m = 0, er only), tangential dipoles (m =
   +-1) are solved apart on one factor per term; a plane wave beside dipoles is refused (their interference is not
   modelled). A new source class keeps its m set orthogonal to the others or is refused beside them.

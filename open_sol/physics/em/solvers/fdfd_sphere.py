@@ -1,13 +1,14 @@
 """Spherically symmetric FDFD on a spherical Domain (x = r - radius_min; y = theta over the whole 0..pi, one cell
 across on a 1D line): SpherePhysics solves the radial equation of every listed multipole term (spherical_multipoles)
-on the host and keeps float32 sphere-RMS radial profiles (run backend, the same along theta) for the renderer; its
-sources, probes and result functions."""
+on the host and keeps float32 sphere-RMS radial profiles (the same along theta; the state() ones on the run backend,
+the rendered-only ones host numpy) for the renderer; its sources, probes and result functions."""
 import math
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 import numpy as np
 
-from ....core.backend import check_backend_array, host_copy, to_host, write_host_into
+from ....core.backend import check_backend_array, host_copy, to_host
 from ....core.constants import C0, DTYPE
 from ....core.solver_base import PhysicsSolver
 from ....core.wavelengths import wavelength_label
@@ -33,8 +34,11 @@ SPHERE_PERMITTIVITY_SLOTS = {'eps_r_update': 'eps_r'}
 SYSTEM_MATERIALS = frozenset({'eps_r', 'sigma_e', 'mu_r', 'sigma_m'})
 THETA_SPAN_TOLERANCE = 1e-5    # relative: the float32 angle widths of a 0..pi window sum to pi within this
 THETA_UNIFORM_TOLERANCE = 1e-6   # relative spread of a material along theta that still counts as spherically symmetric
-# float32 (nx, 1) run-backend fields SphereRenderer reads
+# float32 window-shaped fields SphereRenderer reads (SpherePhysics.fields); only DEVICE_SPHERE_FIELDS (the state() /
+# loss-protocol keys couplings read) are run-backend arrays, the rendered-only rest host numpy (CentreFieldRenderer
+# uploads the read window)
 SPHERE_STATE_NAMES = SPHERE_FIELD_COMPONENTS + ('e_intensity', 'h_abs', 'q_abs')
+DEVICE_SPHERE_FIELDS = frozenset({'e_intensity', 'q_abs'})
 
 
 class SpherePlaneWave:
@@ -236,7 +240,8 @@ class SpherePhysics(PhysicsSolver):
         self.n_term_solves = 0
         self._solution_dirty = True
         shape = (domain.grid.nx, domain.grid.ny)
-        self.fields = {name: self.xp.zeros(shape, dtype=DTYPE) for name in self.state_names}
+        self.fields = {name: (self.xp if name in DEVICE_SPHERE_FIELDS else np).zeros(shape, dtype=DTYPE)
+                       for name in self.state_names}
 
     # --- settings ---
 
@@ -272,7 +277,7 @@ class SpherePhysics(PhysicsSolver):
         return math.inf
 
     def state(self) -> dict:
-        """Float32 (nx, 1) e_intensity [V^2/m^2] and q_abs [W/m^3] (sphere means) of the shown solution, eps_r,
+        """Float32 run-backend e_intensity [V^2/m^2] and q_abs [W/m^3] (sphere means) of the shown solution, eps_r,
         sigma_e and 'q_accum': None (loss-protocol key)."""
         materials = self.domain.materials
         return {'e_intensity': self.fields['e_intensity'], 'q_abs': self.fields['q_abs'], 'eps_r': materials.eps_r,
@@ -326,12 +331,15 @@ class SpherePhysics(PhysicsSolver):
     def host_materials(self, omega) -> SphereMaterials:
         """SphereMaterials at omega [rad/s]: eps (sigma_e and poles included), mu (sigma_m) per radial cell, PEC; on an
         (r, theta) window the theta mean of each radial row, ValueError when a row varies along theta (the structure
-        must be spherically symmetric: shells drawn as circles about the origin)."""
+        must be spherically symmetric: shells drawn as circles about the origin). Computed on the host from float32
+        copies of the four material arrays and the pole masks (no complex128 device temporaries)."""
         materials = self.domain.materials
-        eps = _radial_profile(to_host(cell_permittivity(materials, 'eps_r', self.dispersive_regions, omega,
-                                                        xp=self.xp)), 'the permittivity (eps_r, sigma_e, poles)')
-        mu = _radial_profile(to_host(cell_permeability(materials, omega, xp=self.xp)),
-                             'the permeability (mu_r, sigma_m)')
+        cells = SimpleNamespace(**{name: to_host(getattr(materials, name)) for name in SYSTEM_MATERIALS})
+        regions = [(pole, box, None if mask is None else to_host(mask))
+                   for pole, box, mask in self.dispersive_regions]
+        eps = _radial_profile(cell_permittivity(cells, 'eps_r', regions, omega, xp=np),
+                              'the permittivity (eps_r, sigma_e, poles)')
+        mu = _radial_profile(cell_permeability(cells, omega, xp=np), 'the permeability (mu_r, sigma_m)')
         if self.pec_cells is None:
             pec = np.zeros(self.grid.n_cells, dtype=bool)
         else:
@@ -534,7 +542,9 @@ class SpherePhysics(PhysicsSolver):
     # --- snapshot solutions (solver_hooks.SolutionStateSolver) ---
 
     def solution_state(self, materials=False):
-        state = {'fields': {name: host_copy(values) for name, values in self.fields.items()},
+        """Host copies of the shown fields as (nx, 1) radial profiles (_show writes them the same along theta), the
+        solved omega and the selected resonance (materials: also the permittivity arrays)."""
+        state = {'fields': {name: host_copy(values[:, :1]) for name, values in self.fields.items()},
                  'solved_omega': self.solved_omega, 'selected_resonance': self.selected_resonance}
         if materials:
             state['materials'] = material_solution_state(self, (*self.permittivity_arrays, 'sigma_e'))
@@ -542,7 +552,7 @@ class SpherePhysics(PhysicsSolver):
 
     def restore_solution(self, state):
         for name, values in self.fields.items():
-            write_host_into(values, state['fields'][name])
+            write_float32(values, np.broadcast_to(state['fields'][name], values.shape))
         self.solved_omega = state['solved_omega']
         self.selected_resonance = state['selected_resonance']
         if 'materials' in state:
