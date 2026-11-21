@@ -577,7 +577,7 @@ SCALAR_OUTPUTS_HELP = (
     'derived value {"name": "T1", "expression": "eme_transmission_1"}.')
 
 
-# device float64 temporaries of adjoint.sensitivity_density (cell areas, the gradient sum, the quotient) alive at once
+# host float64 temporaries of the density in solver._cascade_sensitivity (gradient sum, cell areas, quotient)
 _SENSITIVITY_TEMPORARIES = 3
 
 
@@ -595,8 +595,8 @@ def length_sweep_host_items(features, n_modes):
 
 
 def _memory_estimate(settings_values, mesh, context):
-    """PhysicsType.memory_estimate of em_eme: 6 float32 device grids, the adjoint sensitivity cache (run item) and the
-    upload / sensitivity transients; host items mostly (comments)."""
+    """PhysicsType.memory_estimate of em_eme: 6 (hz 5) float32 device grids and the field upload transient; host items
+    mostly (comments), the adjoint sensitivity cache among them."""
     line_cells, slices = _line_cells(mesh, settings_values)
     n_modes = min(settings_values['n_modes'] or line_cells, line_cells)
     n_cells = int(mesh.n_cells)
@@ -610,28 +610,27 @@ def _memory_estimate(settings_values, mesh, context):
         ('reconstructed field (complex u, in-plane |field|^2)', (COMPLEX128_BYTES + FLOAT64_BYTES) * n_cells),
         ('absorbed power inputs (Gauss mean |E|^2, loss)', 2 * FLOAT64_BYTES * n_cells),
     )
-    run_items = []
     # _reconstruct uploads one float32 full grid at a time (field arrays, q_abs) and frees it after the copy
     transient_items = [('field reconstruction', 'field upload (float32, one array at a time)',
                         FLOAT32_BYTES * n_cells)]
     features = [feature for feature in context.physics_spec.features if feature.enabled]
     adjoint = any(feature.type == 'adjoint_objective' for feature in features)
     if adjoint:   # one EpsSensitivity per physics (EMEBase._sensitivity), however many objectives
+        # solver._cascade_sensitivity: host on either backend (the renderer uploads the density's read window)
         n_gradients = 1 if settings_values['polarization'] == 'ez' else 2   # ez eps_r; hz eps_xx, eps_yy
-        run_items.append((f'adjoint sensitivity cache ({n_gradients} x float64 + float32)',
-                          (n_gradients * FLOAT64_BYTES + FLOAT32_BYTES) * n_cells))
-        transient_items.append(('adjoint sensitivity', f'sensitivity density temporaries '
-                                f'({_SENSITIVITY_TEMPORARIES} x float64)',
-                                _SENSITIVITY_TEMPORARIES * FLOAT64_BYTES * n_cells))
-        host_items += ((f'host adjoint gradients ({n_gradients} x float64)', n_gradients * FLOAT64_BYTES * n_cells),)
+        host_items += ((f'host adjoint sensitivity ({n_gradients} x float64 gradients and float32 density kept, '
+                        f'{_SENSITIVITY_TEMPORARIES} x float64 density temporaries)',
+                        ((n_gradients + _SENSITIVITY_TEMPORARIES) * FLOAT64_BYTES + FLOAT32_BYTES) * n_cells),)
     periods = [feature.params.get('n_periods', _DEFAULT_PERIODS) for feature in features
                if feature.type == 'eme_periodic' and isinstance(feature.params, dict)]
     if adjoint and periods and isinstance(periods[0], int) and periods[0] > 1:
         host_items += (('periodic adjoint: partial cascades between the periods (2 N^2 each)',
                         2 * COMPLEX128_BYTES * n_modes ** 2 * periods[0]),)
     host_items += length_sweep_host_items(features, n_modes)
-    return MemoryEstimate.from_items((('EME fields and q_abs (6 x float32)', 6 * FLOAT32_BYTES * n_cells),),
-                                     host_items=host_items, run_items=run_items, transient_items=transient_items)
+    # re, im, e_intensity, h_abs (ez only: hz reads |hz| from re / im), q_abs, the other polarisation's zeros
+    grids = 6 if settings_values['polarization'] == 'ez' else 5
+    return MemoryEstimate.from_items(((f'EME fields and q_abs ({grids} x float32)', grids * FLOAT32_BYTES * n_cells),),
+                                     host_items=host_items, transient_items=transient_items)
 
 
 # ---- run-time estimate (shared with definition3d) ----
@@ -745,8 +744,10 @@ def adjoint_time_estimate(context, n_modes, n_cells):
     """Optimization: one cascade adjoint gradient per design evaluation (a guess: field products of the design slices);
     elsewhere an enabled adjoint_objective is not estimated (computed only when eps_sensitivity is read)."""
     if context.study.type == OPTIMIZATION_STUDY:
-        ops = (te.DenseFlops(8.0 * 24.0 * n_modes * n_cells, host=True), te.HostStream(6.0 * FLOAT64_BYTES * n_cells),
-               te.Transfer(2.0 * FLOAT64_BYTES * n_cells), te.PythonCalls(100))
+        # host only (2D: the gradients and density never reach the device): the slice products, then the density
+        # (gradient sum, cell areas, quotient, float32 cast: about 6 float64 streams)
+        ops = (te.DenseFlops(8.0 * 24.0 * n_modes * n_cells, host=True), te.HostStream(12.0 * FLOAT64_BYTES * n_cells),
+               te.PythonCalls(100))
         evaluations, kind, limit = optimization_evaluations(context)
         return te.TimeEstimate((te.TimeItem('cascade adjoint gradients', 'gradient', evaluations, kind, ops,
                                             limit=limit),))
@@ -783,13 +784,14 @@ def _time_estimate(settings_values, mesh, context):
     line_axis = 'y' if settings_values['propagation_axis'] == 'x' else 'x'
     faces = (settings_values[f'bc_{line_axis}_lo'], settings_values[f'bc_{line_axis}_hi'])
     complex_line = 'cpml' in faces or lossy_materials(context)
+    uploads = 5.0 if settings_values['polarization'] == 'ez' else 4.0   # field arrays (hz: no h_abs) and q_abs
     # host stack (download on the gpu), slice stack / comparisons / digests; u and the in-plane field at 3 Gauss points
     # of both directions, wall cells / intensities / loss, the field and q_abs uploads
     solve_ops = (te.Transfer(_MATERIAL_ROWS * FLOAT32_BYTES * n_cells),
                  te.HostStream(3.0 * _MATERIAL_ROWS * FLOAT64_BYTES * n_cells),
                  te.DenseFlops(8.0 * 12.0 * n_modes * n_cells, host=True),
                  te.HostStream(12.0 * FLOAT64_BYTES * n_cells),
-                 te.Transfer(5.0 * FLOAT32_BYTES * n_cells), te.PythonCalls(100))
+                 te.Transfer(uploads * FLOAT32_BYTES * n_cells), te.PythonCalls(100))
     mode_set_bytes = COMPLEX128_BYTES * (3 * n_modes * line_cells + line_cells + 2 * n_modes)
     shared, _ = shared_time_estimate(context, slices, n_modes, line_cells, solve_ops,
                                      _line_mode_ops(line_cells, n_modes, complex_line, 'periodic' in faces),

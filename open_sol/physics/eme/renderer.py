@@ -4,6 +4,8 @@ adjoint eps_sensitivity and the design_density."""
 import math
 from dataclasses import replace
 
+import numpy as np
+
 from ...core.constants import C0, DTYPE
 from ...core.renderer import PhysicsRenderer
 from ...core.wavelengths import wavelength_label
@@ -44,13 +46,20 @@ class EMERenderer(PhysicsRenderer):
         if component == 'absorbed_power':
             return self.eme.q_abs[window]
         if component == _SENSITIVITY_FIELD:   # cascade adjoint of the objective features (adjoint.py)
-            return self.eme.eps_sensitivity().density[window]
+            # a live solve's density is host float32 (solver._cascade_sensitivity), uploaded per read; the zeros and a
+            # restored snapshot's kept density (EMEBase) are already on the run backend
+            density = self.eme.eps_sensitivity().density[window]
+            if isinstance(density, np.ndarray):
+                return self.domain.xp.asarray(np.ascontiguousarray(density, dtype=DTYPE))
+            return density
         if component == 'design_density':
             return self.eme.design_density()[window]
         fields = self.eme.field_arrays
         xp = self.domain.xp
         if component == 'e_abs':
             return xp.sqrt(fields['e_intensity'][window])
+        if component == 'h_abs' and component not in fields:   # hz: |hz| (solver: no kept h_abs array)
+            return xp.hypot(fields['re'][window], fields['im'][window])
         if component in ('e_intensity', 'h_abs'):
             return fields[component][window]
         base, part = component.rsplit('_', 1)

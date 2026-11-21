@@ -23,7 +23,7 @@ from ...core.backend import check_backend_array, host_copy, to_host, write_host_
 from ...core.constants import C0, DTYPE, EPS0
 from ...core.solver_base import PhysicsSolver
 from ...core.wavelengths import wavelength_label
-from ..em.adjoint import EpsSensitivity, sensitivity_density
+from ..em.adjoint import EpsSensitivity
 from ..em.boundaries import WALL_SIGNS, BCType, MIRROR_TYPES, solver_boundary_config
 from ..em.design_density import DesignRegion, paint_regions
 from ..em.materials import DrudePole, LorentzPole, register_em_arrays
@@ -649,9 +649,10 @@ class EMEPhysics(EMEBase):
         register_em_arrays(domain.materials, 'modes')
         shape = (domain.grid.nx, domain.grid.ny)
         # float32 full-grid fields and q_abs [W/m^3] (domain.xp) of the last solve, rewritten in place (zeros before
-        # the first)
+        # the first); hz keeps no h_abs: it is |hz|, which the renderer reads from re / im (4 B per cell less)
         xp = domain.xp
-        self.field_arrays = {name: xp.zeros(shape, dtype=DTYPE) for name in ('re', 'im', 'e_intensity', 'h_abs')}
+        names = ('re', 'im', 'e_intensity') + (('h_abs',) if polarization == 'ez' else ())
+        self.field_arrays = {name: xp.zeros(shape, dtype=DTYPE) for name in names}
         self.q_abs = xp.zeros(shape, dtype=DTYPE)
         self._zeros = xp.zeros(shape, dtype=DTYPE)
         self.design_regions = []   # design_density.DesignRegion writing _design_arrays (optimization study)
@@ -725,9 +726,10 @@ class EMEPhysics(EMEBase):
         return paint_regions(self.design_regions, self._zeros.shape, self.domain.xp)
 
     def _cascade_sensitivity(self, objectives):
-        """EpsSensitivity (ez eps_r, hz eps_xx and eps_yy) of the last solve by the cascade adjoint (section_gradient on
-        the slices of the design regions, every window slice without one; the cell of a periodic block sums its
-        periods); NotImplementedError for the discrete variant."""
+        """EpsSensitivity (host float64 dJ/d eps per cell of ez eps_r, hz eps_xx and eps_yy; density = their sum per
+        cell area [1/m^2], host float32) of the last solve by the cascade adjoint (section_gradient on the slices of
+        the design regions, every window slice without one; the cell of a periodic block sums its periods);
+        NotImplementedError for the discrete variant."""
         if self.discrete_spacing is not None:
             raise NotImplementedError('em_eme adjoint sensitivity: not with the discrete propagation variant')
         omega = self.solved_omega
@@ -743,8 +745,12 @@ class EMEPhysics(EMEBase):
         host = {name: np.zeros(self._zeros.shape) for name in (cell_name, face_name) if name is not None}
         if cotangents:
             self._add_section_gradients(host, cell_name, face_name, omega, face, number, cotangents)
-        gradients = {name: self.domain.xp.asarray(values) for name, values in host.items()}
-        return EpsSensitivity(total, float(omega), gradients, sensitivity_density(self.domain, gradients))
+        # host numpy on either backend (as 3D): study_optimization gathers the float64 gradients on the host
+        # (DesignRegion.gather), the renderer uploads the read window of the float32 density. On the device the
+        # eps_sensitivity cache would hold 8 (hz 16) + 4 B per cell through the next solve, and its density
+        # 3 float64 temporaries
+        density = sum(host.values()) / np.outer(*self.domain.cell_widths())
+        return EpsSensitivity(total, float(omega), host, density.astype(DTYPE))
 
     def _add_section_gradients(self, host, cell_name, face_name, omega, face, number, cotangents):
         """Add dJ/d eps of every needed section's slices into the host (nx, ny) arrays host[cell_name] (line cells) and
@@ -900,14 +906,14 @@ class EMEPhysics(EMEBase):
                 array[index_tuple] = value if self.propagation_axis == 'x' else value.T
             solve_range = port.solve_range
         self._fill_wall_cells((out_of_plane,), (in_plane, e_mean), solve_range)
+        values = {'re': out_of_plane.real, 'im': out_of_plane.imag}
         if self.polarization == 'ez':
-            e_intensity, h_abs = np.abs(out_of_plane) ** 2, np.sqrt(in_plane)
-        else:
-            e_intensity, h_abs = in_plane, np.abs(out_of_plane)
+            values.update(e_intensity=np.abs(out_of_plane) ** 2, h_abs=np.sqrt(in_plane))
+        else:   # h_abs = |hz| from re / im (renderer)
+            values['e_intensity'] = in_plane
         xp = self.domain.xp   # one host-to-device copy per array on the gpu
-        for name, values in (('re', out_of_plane.real), ('im', out_of_plane.imag), ('e_intensity', e_intensity),
-                             ('h_abs', h_abs)):
-            self.field_arrays[name][...] = xp.asarray(values, dtype=DTYPE)
+        for name, array in self.field_arrays.items():
+            array[...] = xp.asarray(values[name], dtype=DTYPE)
         loss = self._loss(omega)
         if np.any(loss != 0.0):
             self.q_abs[...] = xp.asarray(0.5 * float(omega) * EPS0 * loss * e_mean, dtype=DTYPE)
