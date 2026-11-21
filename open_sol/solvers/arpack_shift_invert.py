@@ -494,6 +494,8 @@ class ArpackShiftInvertSolver:
         self.mixed_min_unknowns = int(mixed_min_unknowns)   # S5c: cudss_mixed below this factors in double
         self.device_arnoldi = bool(device_arnoldi)
         self.last_arnoldi = ''   # 'ARPACK' ('ARPACK (real)'), 'device Krylov-Schur' or 'host Krylov-Schur' (log texts)
+        self.single_basis_polished = 0     # complex64-basis pairs re-evaluated in float64 (polished_theta)
+        self.single_basis_unpolished = 0   # far complex64-basis pairs whose quotient was refused (Ritz value kept)
 
     def factorization_for(self, n_unknowns) -> str:
         """The factorization used for an operator of n_unknowns: cudss for a cudss_mixed request below
@@ -752,11 +754,16 @@ class ArpackShiftInvertSolver:
         several stiffness terms K = sum a_i K_i, a_i = stiffness_coefficients, and stiffness unused; cuDSS LDL^T with
         row_scale, None = ShiftPencil.row_scale) and Arnoldi (eigs) on (K - sigma M)^-1 M; massless rows give theta = 0
         (lambda infinite: NaN); RuntimeError when that factor is singular. single_basis: eigs(single_basis=True), a
-        complex64 device basis (ValueError, before any factorisation, below SINGLE_BASIS_MIN_TOLERANCE)."""
+        complex64 device basis (ValueError, before any factorisation, below SINGLE_BASIS_MIN_TOLERANCE or on a general
+        pencil), its far pairs re-evaluated in float64 by polished_theta (the B-form Rayleigh quotient needs the
+        symmetric pencil)."""
         _check_single_basis(single_basis, self.tolerance)   # eigs_shifted passes no tolerance floor
         # a caller's pencil may be general (symmetric False: a complex Bloch reduction of a complex symmetric pencil)
         pencil = self._checked_pencil(pencil, (stiffness,), mass, np.complex128,
                                       symmetric=True if pencil is None else pencil.symmetric)
+        if single_basis and not (pencil.device.symmetric if pencil.device is not None else pencil.symmetric):
+            raise ValueError('eigs_shifted: a complex64 Krylov basis (single_basis) needs a symmetric pencil (its far '
+                             'pairs are polished by the B-form Rayleigh quotient, not stationary on a general one)')
         sigma = float(shift) * (1.0 + EIGSH_SHIFT_RELATIVE_OFFSET)
         factor, _ = self._factorize_shift(pencil, pencil.coefficients(stiffness_coefficients, sigma), row_scale,
                                           previous)
@@ -785,6 +792,13 @@ class ArpackShiftInvertSolver:
                                          stiffness_coefficients=stiffness_coefficients, single_basis=single_basis)
             raise _shift_factor_error(exc, sigma) from None
         theta = np.asarray(theta, dtype=np.complex128)
+        if single_basis and self.last_arnoldi == 'device Krylov-Schur':   # the complex64 basis ran: far pairs polished
+            on_device = device_apply is not None
+            theta, polished, kept = polished_theta(theta, vectors, device_apply if on_device else apply,
+                                                   device_mass.__matmul__ if on_device else pencil.mass_product,
+                                                   max(self.tolerance, SINGLE_BASIS_MIN_TOLERANCE), on_device)
+            self.single_basis_polished += polished
+            self.single_basis_unpolished += kept
         nonzero = np.abs(theta) > 0.0
         eigenvalues = np.full(theta.shape, np.nan, dtype=np.complex128)
         eigenvalues[nonzero] = sigma + 1.0 / theta[nonzero]
@@ -954,6 +968,9 @@ class ArpackShiftInvertSolver:
                     'operator_applications': self.operator_applications, 'eigen_unconverged': self.n_unconverged,
                     'eigen_seconds': self.total_eigen_seconds, 'eigen_factor_seconds': self.total_factor_seconds,
                     'eigen_reused_orderings': self.orderings.n_reused}
+        if self.single_basis_polished or self.single_basis_unpolished:
+            counters.update(eigen_single_basis_polished=self.single_basis_polished,
+                            eigen_single_basis_unpolished=self.single_basis_unpolished)
         if self.fallback_factorization is not None or self.n_auto_fallbacks:
             counters['eigen_auto_fallbacks'] = self.n_auto_fallbacks
         if self.factorization in CUDSS_FACTORIZATIONS or self.n_auto_fallbacks:
@@ -997,6 +1014,52 @@ def _check_single_basis(single_basis, tolerance) -> None:
     if single_basis and not float(tolerance) >= SINGLE_BASIS_MIN_TOLERANCE:
         raise ValueError(f'a complex64 Krylov basis (single_basis) needs a tolerance >= {SINGLE_BASIS_MIN_TOLERANCE:g}, '
                          f'got {float(tolerance):g} (0 = machine precision)')
+
+
+# The complex64 relation's error is ~SINGLE_BASIS_RELATION x |theta_max| (fp32 rows, cgemv projections of products as
+# large as |theta_max|), while the Ritz test asks tolerance x |theta_i|: a wanted pair far from the shift (|theta_i| <
+# SINGLE_BASIS_RELATION / tolerance x |theta_max|, 0.1 at tolerance 1e-6) passes the test on H with a theta error the
+# test cannot see (first order: lambda - sigma = 1 / theta, and the Im part of a high-Q mode beside it). Callers without
+# a float64 polish of their own re-evaluate those pairs: eigs_shifted by polished_theta (one float64 application of S
+# each, the B-form Rayleigh quotient: stationary for a symmetric pencil), fem.harmonic_resonances by v^T K v / v^T M v
+SINGLE_BASIS_RELATION = 1e-7
+SINGLE_BASIS_POLISH_MOVE = 1e-3   # a quotient further than this x |theta| from the Ritz value is not that pair's: kept
+_POLISH_DENOMINATOR_FLOOR = 1e-8  # |x^T B x| below this x |x| |B x|: the quotient is ill-defined, the Ritz value kept
+
+
+def polished_theta(theta, vectors, matvec, mass_product, tolerance, on_device) -> tuple:
+    """(theta, pairs polished, at-risk pairs kept unpolished) of a complex64-basis search (eigs single_basis) of S = F^-1 B with F and B (unconjugated)
+    symmetric: the pairs the fp32 relation cannot certify at `tolerance` (SINGLE_BASIS_RELATION comment) take the float64
+    B-form Rayleigh quotient (B x)^T S x / x^T B x of their host vector column (C = B F^-1 B symmetric, so the quotient is
+    stationary: the first-order Ritz value error drops to second order in the vector error). One matvec and one
+    mass_product per polished pair, cupy -> cupy when on_device, else numpy -> numpy (after the search: its basis is
+    freed). A quotient is taken only where x^T B x is not round-off and it moves theta by at most
+    SINGLE_BASIS_POLISH_MOVE |theta| (else the Ritz value stays: counted, the caller reports it)."""
+    theta = np.array(theta, dtype=np.complex128).reshape(-1)
+    finite = np.isfinite(theta) & (np.abs(theta) > 0.0)
+    if not np.any(finite):
+        return theta, 0, 0
+    largest = float(np.max(np.abs(theta[finite])))
+    at_risk = np.flatnonzero(finite & (float(tolerance) * np.abs(theta) < SINGLE_BASIS_RELATION * largest))
+    if on_device:
+        import cupy as xp
+    else:
+        xp = np
+    polished = 0
+    for column in at_risk:
+        vector = xp.asarray(np.ascontiguousarray(vectors[:, column], dtype=np.complex128))
+        weighted = mass_product(vector)
+        denominator = complex(xp.sum(vector * weighted))
+        scale = float(xp.linalg.norm(vector)) * float(xp.linalg.norm(weighted))
+        if not abs(denominator) > _POLISH_DENOMINATOR_FLOOR * scale:
+            continue
+        quotient = complex(xp.sum(weighted * matvec(vector))) / denominator
+        del vector, weighted
+        if (math.isfinite(quotient.real) and math.isfinite(quotient.imag)
+                and abs(quotient - theta[column]) <= SINGLE_BASIS_POLISH_MOVE * abs(theta[column])):
+            theta[column] = quotient
+            polished += 1
+    return theta, polished, int(at_risk.size) - polished
 
 
 def _unit_row_kernel(dtype=np.complex128):
