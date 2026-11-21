@@ -357,6 +357,16 @@ first bring the background physics (those without the study's hook) to a station
   on every product, so real matrices meet complex vectors through `solvers.device_matrices.device_matrix` (float64,
   symmetric ones as lower triangle + diagonal; solvers sub file "Layout and imports"), never a complex upload of a
   real matrix.
+- Device memory follows the peak: arrays the peak does not read (rendered-only fields, materials only the host
+  assembly reads, a solver binding a study never solves with, the previous system or factor) live on the host or are
+  dropped before the peak; a host-only result is computed on the host (`xp=np` on float32 host copies), never built on
+  the device and copied down. A parked or lowered array changes the physics' memory estimate and time recipe in the
+  same commit.
+- Reduced precision only where it is checked: a complex64 Krylov basis (`single_basis`) needs a float64 Rayleigh
+  polish of its Ritz values and refuses tolerances below SINGLE_BASIS_MIN_TOLERANCE (solvers sub file); accumulators,
+  near-cancelling sums and gradients fed to an optimiser stay float64 / complex128. Lossless vs lossy is read from the
+  values, never the dtype: an operator complex only by a gauge (j k_z, j m) or a polished real pencil keeps a spurious
+  Im (finite Q of a lossless mode) unless solved in a real gauge (em sub file, eigenfrequency "Real spectra").
 - A traceback keeps a failed build's frames and locals alive: inside `except` record only text, call
   `release_session` after the block; an exception kept or re-raised later goes through
   `gpu_memory.drop_exception_frames` first.
