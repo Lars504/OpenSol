@@ -3,6 +3,7 @@ full-vector modes on the host (cross_section_modes) and exposes one of them; tab
 solve."""
 import math
 import time
+from types import SimpleNamespace
 
 import numpy as np
 from ....core.backend import check_backend_array, to_host
@@ -35,6 +36,8 @@ from .fdtd_2d_base import add_pec_cells, record_dispersive_region
 
 MODE_POLARIZATION = 'modes'   # EM_MATERIAL_SCHEMAS key; no in-plane polarisation (placement helpers refuse it)
 MODE_PERMITTIVITY_ARRAYS = ('eps_r', 'eps_xx', 'eps_yy')   # eps_r holds eps_zz (as for the E_z types)
+# the MaterialGrid arrays the cross-section operator reads (_cross_section_materials: host float32 copies)
+MODE_SYSTEM_MATERIALS = (*MODE_PERMITTIVITY_ARRAYS, 'sigma_e', 'mu_r', 'sigma_m')
 MODE_PERMITTIVITY_SLOTS = {f'{array}_update': array for array in MODE_PERMITTIVITY_ARRAYS}
 MODE_FIELD_NAMES = ('ex', 'ey', 'ez', 'hx', 'hy', 'hz', 'e_intensity', 'h_abs', 'sz')   # ModeRenderer's mode fields
 # the mode fields state() serves (couplings, material expressions read them): on the run backend; the other seven are
@@ -574,16 +577,18 @@ class ModePhysics(_ModeStudyMixin, PhysicsSolver):
     def _cross_section_materials(self, omega):
         """CrossSectionMaterials at omega: host complex128 eps_xx / eps_yy / eps_zz (sigma_e, poles) and mu (sigma_m)
         of every cell, host bool PEC cells, the subpixel-smoothing deltas of the background eps when enabled, the
-        conformal PEC cuts when any."""
+        conformal PEC cuts when any. Computed on the host from float32 copies of the six material arrays and the pole
+        masks: no complex128 device temporaries (detached solves and point_materials ran them beside a kept line-block
+        batch, which is sized to the free memory) and 24 instead of 64 B per cell moved."""
         materials = self.domain.materials
-        xp = self.domain.xp
-        eps = {name: to_host(cell_permittivity(materials, name, self.dispersive_regions, omega, xp=xp))
-               for name in MODE_PERMITTIVITY_ARRAYS}
+        cells = SimpleNamespace(**{name: to_host(getattr(materials, name)) for name in MODE_SYSTEM_MATERIALS})
+        regions = [(pole, box, None if mask is None else to_host(mask)) for pole, box, mask in self.dispersive_regions]
+        eps = {name: cell_permittivity(cells, name, regions, omega, xp=np) for name in MODE_PERMITTIVITY_ARRAYS}
         pec = (np.zeros((self.domain.grid.nx, self.domain.grid.ny), dtype=bool) if self.pec_cells is None
                else to_host(self.pec_cells).copy())
         deltas = None if self.subpixel_smoothing is None else self.subpixel_smoothing.point_deltas(materials)
         return CrossSectionMaterials(eps_xx=eps['eps_xx'], eps_yy=eps['eps_yy'], eps_zz=eps['eps_r'],
-                                     mu=to_host(cell_permeability(materials, omega, xp=xp)), pec=pec,
+                                     mu=cell_permeability(cells, omega, xp=np), pec=pec,
                                      eps_point_deltas=deltas, pec_cuts=self._dual_cuts())
 
     def solve_detached(self, omega, n_modes, n_eff_guess=None, straight=False):

@@ -829,12 +829,12 @@ def modes_memory_estimate(settings_values, mesh, context):
     operator_bytes = 2 * 9 * COMPLEX128_CSR_ENTRY_BYTES * unknowns
     host_items = [('operators A, B (sparse complex128)', operator_bytes),
                   (f'mode fields ({n_modes} modes x 6 components)', 6 * n_modes * COMPLEX128_BYTES * n_cells),
-                  ('rendered fields of the selected mode (7 x float32: E, H, h_abs)', 7 * FLOAT32_BYTES * n_cells)]
+                  ('rendered fields of the selected mode (7 x float32: E, H, h_abs)', 7 * FLOAT32_BYTES * n_cells),
+                  # ModePhysics._cross_section_materials: built on the host (no device temporaries)
+                  ('cross-section materials per solve (6 x float32 copies; eps_xx, eps_yy, eps_zz, mu complex128)',
+                   (6 * FLOAT32_BYTES + 4 * COMPLEX128_BYTES) * n_cells)]
     run_items, external_items, external_extra = [], [], 0
-    # ModePhysics._cross_section_materials: device eps / mu cells per solve before to_host (BOR books the same); the
-    # mode solve after them (Krylov basis, an own cuDSS factor) never overlaps
-    transient_items = [(SOLVE_PHASE, 'material temporaries per solve (one eps component at a time, mu: 3 x '
-                                     'complex128)', 3 * COMPLEX128_BYTES * n_cells)]
+    transient_items = []
     shifted = (context.solvers or {}).get('shifted')
     line_block = shifted is not None and shifted.solver_type.name == 'line_block'
     # E1: an own factor of a real operator is float64 and host ARPACK runs real (float64 basis)
