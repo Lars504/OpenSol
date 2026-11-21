@@ -54,8 +54,8 @@ from .index_reference import OFF_DIAGONAL_ARRAY, OFF_DIAGONAL_SLOT
 from .definition_effective_index import effective_index_feature
 from .definition_phase_change import phase_change_medium_feature
 from .materials import EM_MATERIAL_SCHEMAS, GYRATION_Z
-from .memory_estimates import (FDFD_ASSEMBLY_UPLOAD_BYTES, FDFD_HOST_SYSTEM_ARRAYS, fdfd_memory_estimate,
-                               pec_memory_estimate, search_single_basis)
+from .memory_estimates import (FDFD_ASSEMBLY_UPLOAD_BYTES, FDFD_HOST_SYSTEM_ARRAYS, fdfd_general_lu,
+                               fdfd_memory_estimate, has_adjoint_objective, pec_memory_estimate, search_single_basis)
 from .placement import PERMITTIVITY_SLOTS
 from .renderer import FDFDRendererEz, FDFDRendererHz
 from .solvers.fdfd_2d import FDFDPhysics
@@ -949,7 +949,8 @@ def fdfd_assembly_ops(n_cells, polarization) -> tuple:
 def _fdfd_time_estimate(settings_values, mesh, context, polarization='ez'):
     """Per solved wavelength the Helmholtz assembly (host scipy; fdfd_assembly_ops) and one factorisation of the
     'linear' role with one solve per enabled source; eigen-solved: one shift-invert of the 'eigen' role (2 n_resonances
-    + 10 eigenpairs); optimization: per iteration (bounded) a forward and an adjoint solve; time_dependent: a re-solve
+    + 10 eigenpairs); optimization: per iteration (bounded) a forward and an adjoint solve (on a general cuDSS LU two
+    factorisations: memory_estimates.fdfd_general_lu); time_dependent: a re-solve
     per step of its stride; triangle meshes: _triangle_time_estimate."""
     if getattr(mesh, 'kind', 'tensor') == 'triangles':
         return _triangle_time_estimate(settings_values, mesh, context)
@@ -962,7 +963,8 @@ def _fdfd_time_estimate(settings_values, mesh, context, polarization='ez'):
         eigenpairs = resonance_eigenpairs(context)
         factorization = eigen_factorization(context.solvers)
         bloch = bool(bloch_active_axes(settings_values))   # memory_estimates.fdfd_memory_estimate's basis rule
-        single_basis = search_single_basis(factorization, unknowns, factorization in CUDSS_FACTORIZATIONS, not bloch,
+        single_basis = search_single_basis(factorization, unknowns, factorization in CUDSS_FACTORIZATIONS,
+                                           not fdfd_general_lu(settings_values, context, polarization),
                                            not bloch and cpml_cross_section(settings_values))
         return te.combine((te.TimeEstimate((te.TimeItem('Helmholtz assembly', 'assembly', 1.0, 'exact', assembly_ops),
                                             resonance_filter_time_item(context.backend, unknowns, nnz, eigenpairs))),
@@ -978,9 +980,15 @@ def _fdfd_time_estimate(settings_values, mesh, context, polarization='ez'):
     # the line_block block holds the runtime's block axis (the periodic one, else the cheaper)
     block_axis = fdfd_block_axis(int(mesh.nx), int(mesh.ny), settings_values['bc_x_lo'] == 'periodic',
                                  settings_values['bc_y_lo'] == 'periodic', refuse=False)
+    factorizations = points
+    if (context.study.type == OPTIMIZATION_STUDY and resolved_back_end(context.solvers) in CUDSS_BACK_ENDS
+            and fdfd_general_lu(settings_values, context, polarization) and has_adjoint_objective(context)):
+        # fdfd_2d._transposed_solve: cuDSS has no LU^T solve, so each evaluation's adjoint refactorises the transpose
+        # (the one LU refactorised in place, or a second LU with eps_xy) beside the forward factorisation
+        factorizations = 2.0 * points
     return te.combine((te.TimeEstimate((assembly,)),
                        context.solver_work('linear', unknowns=unknowns, nnz=nnz, value_bytes=16, solves=points * rhs,
-                                           solves_kind=kind, factorizations=points, factorizations_kind=kind,
+                                           solves_kind=kind, factorizations=factorizations, factorizations_kind=kind,
                                            per_step=per_step, device_values=points > 1.0,   # cuDSS: device refreshes
                                            block_size=int(mesh.nx) if block_axis == 0 else int(mesh.ny))))
 
