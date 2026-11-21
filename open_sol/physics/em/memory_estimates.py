@@ -1222,7 +1222,8 @@ def fdtd_bor_memory_estimate(settings_values, mesh, context):
     """PhysicsType.memory_estimate of em_fdtd_bor (fdtd_bor.BORTimeStepper per order-sum member): float32 fields,
     coefficients, z CPML psi, r_hi layer rows and CSR curl products (fdtd_bor.stepper_bytes), pole buffers on the E
     points of their cells, the other members' monitor spectra, point traces, the harmonic accumulator (run item:
-    complex64 of every E and H point per study wavelength and member); on the host the kept real-metric assembly."""
+    complex64 of every E and H point per study wavelength and member, the energy weights); on the host the kept
+    real-metric assembly and the parked material arrays (definition_fdtd_bor._parked_material_arrays)."""
     from .fdtd_bor import layout_sizes, stepper_bytes
     shape = (int(mesh.nx), int(mesh.ny))
     orders, n_members = _fdtd_bor_members(settings_values, context.physics_spec)
@@ -1266,7 +1267,15 @@ def fdtd_bor_memory_estimate(settings_values, mesh, context):
         run_items.append((f'field energy weights (float32, every E and H point, {n_members} stepper(s))',
                           n_members * FLOAT32_BYTES * n_points))
     host_items = [('kept real-metric assembly (rough)', host)] + list(host_items)
-    return MemoryEstimate.from_items(items + trace_items, host_items=host_items, run_items=run_items)
+    build_extra = 0
+    from .definition_fdtd_bor import _parked_material_arrays   # lazy: definition_fdtd_bor imports this module
+    parked = _parked_material_arrays(context.spec, context.registry, context.physics_spec, context.parameters)
+    if parked:   # on the device through the material painting, on the host from create (before the engine)
+        parked_bytes = FLOAT32_BYTES * len(parked) * int(mesh.n_cells)
+        host_items.append((f"material arrays parked on the host ({', '.join(parked)}, float32)", parked_bytes))
+        build_extra = parked_bytes - sum(size for _, size in items + trace_items)
+    return MemoryEstimate.from_items(items + trace_items, build_extra=build_extra, host_items=host_items,
+                                     run_items=run_items)
 
 
 def fdtd_bor_flux_memory_estimate(values, n_selected_cells, mesh):

@@ -5,7 +5,8 @@ from dataclasses import replace
 
 from ...core.time_estimate import explicit_step_estimate
 from ...model.definition_helpers import (AXISYMMETRIC, AXISYMMETRIC_SPACE_SETTINGS, GEOMETRY_SETTING,
-                                         axisymmetric_issues, validate_points_inside, wavelength_range_issues)
+                                         axisymmetric_issues, parkable_material_arrays, validate_points_inside,
+                                         wavelength_range_issues)
 from ...model.definition_resonance import resonance_monitor_feature as shared_resonance_feature
 from ...model.schema import FeatureType, Issue, Param, PhysicsType, feature_path
 from .body_of_revolution import BOR_FIELD_COMPONENTS, BOR_SOURCE_COMPONENTS
@@ -18,7 +19,7 @@ from .definition_common import (BOX_CELLS, EM_FAMILY, FLUX_PARAMS, FREQUENCY_DOM
                                 apply_pec, domain_requirements, far_field_params, make_far_field_result_callback,
                                 make_source_shortest_wavelength, make_validate_physics, object_result,
                                 other_em_physics_labels, probe_result_callback, source_slot_docs, steps_in_time,
-                                waveform_params, write_dispersive_materials)
+                                state_arrays_read, waveform_params, write_dispersive_materials)
 from .definition_feature_validation import _line_cells, _selected_shapes
 from .definition_harmonic_fdtd import HARMONIC_FDTD_TEXT, make_validate_harmonic_fdtd
 from .definition_resonance import RESONANCE_SUMMARY, em_resonance_probe
@@ -28,8 +29,8 @@ from .memory_estimates import (_fdtd_bor_members, fdtd_bor_far_field_memory_esti
                                fdtd_bor_memory_estimate, fdtd_bor_mode_memory_estimate, pec_memory_estimate)
 from .renderer_fdtd_bor import BORFDTDRenderer
 from .solvers.fdfd_bor import BOR_MATERIAL_SCHEMA_KEY, BOR_PERMITTIVITY_ARRAYS, BOR_PERMITTIVITY_SLOTS
-from .solvers.fdtd_bor import (H_COMPONENTS, BORFDTDPhysics, fdtd_bor_far_field_result, fdtd_bor_flux_result,
-                               fdtd_bor_mode_result)
+from .solvers.fdtd_bor import (H_COMPONENTS, PARKABLE_ARRAYS, BORFDTDPhysics, fdtd_bor_far_field_result,
+                               fdtd_bor_flux_result, fdtd_bor_mode_result)
 
 _TYPE_NAME = 'em_fdtd_bor'
 _FIELDS_NOTE = ('Fields are the real time-domain amplitudes of the standing wave of order m: E_r, E_z, H_phi ~ '
@@ -307,13 +308,27 @@ _DESCRIPTION = (
 def _create(ctx, physics_spec, settings_values):
     """BORFDTDPhysics of the domain's boundary configuration (an azimuthal_orders list: the driven order sum) with its
     dispersive poles and their background permittivity written into the three permittivity arrays; finalize builds
-    the engine."""
+    the engine; the material arrays parked on the host (_parked_material_arrays) leave the device at once."""
     solver = BORFDTDPhysics(ctx.domain, boundary_config=ctx.domain.boundary_config,
                             azimuthal_order=settings_values['azimuthal_order'],
                             courant_factor=settings_values['courant_factor'],
-                            azimuthal_orders=[int(order) for order in settings_values.get('azimuthal_orders') or ()])
+                            azimuthal_orders=[int(order) for order in settings_values.get('azimuthal_orders') or ()],
+                            park_arrays=_parked_material_arrays(ctx.spec, ctx.registry, physics_spec, ctx.parameters))
     write_dispersive_materials(ctx, physics_spec, solver, BOR_PERMITTIVITY_ARRAYS)
     return solver
+
+
+def _parked_material_arrays(spec, registry, physics_spec, parameters) -> tuple:
+    """PhysicsType.parked_material_arrays: the BORFDTDPhysics PARKABLE_ARRAYS (every material array: the engine reads
+    host copies only) under the shared rule (definition_helpers.parkable_material_arrays: gpu, no coupling into it,
+    static materials), minus an array whose state field a material expression or field_transfer reads."""
+    try:
+        physics_type = registry.physics_type(physics_spec.type)
+        own_properties = {param.name for param in physics_type.material_properties}
+        arrays = set(PARKABLE_ARRAYS) - state_arrays_read(spec, registry, physics_spec.name, PARKABLE_ARRAYS)
+    except (KeyError, ValueError, TypeError):   # reported by validate (ExpressionError is a ValueError)
+        return ()
+    return parkable_material_arrays(spec, registry, physics_spec, parameters, own_properties, tuple(sorted(arrays)))
 
 
 def _domain_requirements(settings_values):
@@ -420,6 +435,7 @@ EM_FDTD_BOR = PhysicsType(
     validate=_validate_physics,
     memory_estimate=fdtd_bor_memory_estimate,
     time_estimate=_time_estimate,
+    parked_material_arrays=_parked_material_arrays,
     backends=('gpu', 'cpu'),
 )
 
