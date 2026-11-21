@@ -11,7 +11,7 @@ from ...core.backend import to_host
 from ...core.constants import FACE_LABELS, FACES, FACES_3D
 from ...core.harmonic_probe import harmonic_probe_result
 from ...core.memory_estimate import (COMPLEX128_BYTES, COMPLEX128_CSR_ENTRY_BYTES, FLOAT32_BYTES, FLOAT64_BYTES,
-                                     MemoryEstimate, host_lu_bytes)
+                                     INT32_BYTES, MemoryEstimate, host_lu_bytes)
 from ...core.mirror import feature_mirror_faces, mirror_faces
 from ...fem.diffusion import FEM_FILL_FACTOR, lagrange_entries_per_dof
 from ...fem.diffusion3d import FEM_FILL_FACTOR_3D
@@ -73,7 +73,6 @@ _MATERIAL_PROPERTIES = (_ELASTIC_PROPERTIES['rho'], _ELASTIC_PROPERTIES['sound_s
 _HOST_CSR_COPIES = 5
 _HOST_VECTORS_PER_DOF = 10
 _LOCAL_DOFS = {(2, 1): 3, (2, 2): 6, (3, 1): 4, (3, 2): 10}
-_INT64_BYTES = 8
 
 # ---- settings ----
 _GEOMETRY_PARAM = geometry_param(
