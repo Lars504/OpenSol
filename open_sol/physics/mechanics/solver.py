@@ -17,7 +17,7 @@ from ...fem.reduced_outputs import field_policy, wants_fields
 from ...solvers.arpack_shift_invert import ArpackShiftInvertSolver
 from .fields import ELECTRIC_OUTPUT_ARRAYS, INPUT_ARRAYS, OUTPUT_ARRAYS, SOURCE_SLOTS, MechanicsFields2D
 from .guided_modes import GUIDED_COMPONENTS, check_antiplane_supports, guided_free_dofs, guided_operators
-from .frequency_response import FrequencyPoint, HarmonicSystem, solve_harmonic
+from .frequency_response import FrequencyPoint, HarmonicSystem
 from .materials import (DENSITY_SCHEMA, ELECTROMECHANICAL_ARRAYS, LOSS_ARRAYS, MECHANICAL_SCHEMA, PERMITTIVITY_ARRAYS,
                         PIEZO_ARRAYS, PIEZO_DEFAULTS, PIEZO_OUT_OF_PLANE_ARRAYS, SHEAR_PHOTOELASTIC_SCHEMA,
                         STIFFNESS_TENSOR_ARRAYS)
@@ -145,6 +145,7 @@ class SolidMechanicsPhysics(MultiShiftModes, SolidMechanicsBase):
         self._axial_strain_field = 0.0
         self._unit_axial_solve = None  # generalized_plane_strain.UnitStrainSolves
         self._harmonic_operators = None   # host (K or A, loss, M) of the frequency response; None = stale
+        self._direct_harmonic = None      # frequency_response.HarmonicSystem of the direct sweep on those operators
         if self.piezoelectric:
             domain.materials.add_properties(PIEZO_DEFAULTS)   # no-op for the arrays a material allocated
         if self._axisymmetric:   # the axis rule: u_r = 0 on the x_lo nodes (r = 0)
@@ -208,7 +209,7 @@ class SolidMechanicsPhysics(MultiShiftModes, SolidMechanicsBase):
             self.system.operator_dirty = True
             self._loads_dirty = True
         if {*LOSS_ARRAYS, *DENSITY_SCHEMA} & set(names):
-            self._harmonic_operators = None
+            self._harmonic_operators = self._direct_harmonic = None
 
     @property
     def guided(self) -> bool:
@@ -587,7 +588,7 @@ class SolidMechanicsPhysics(MultiShiftModes, SolidMechanicsBase):
         self.frequency_points = []
         self._reduced_harmonic, self.reduced_sweep = None, None
         self._field_policy, self._unpublished_frequency, self._unpublished_solution = None, None, None
-        self._harmonic_drive = None
+        self._harmonic_drive = self._direct_harmonic = None
         if self._piezo_system is not None:
             self._piezo_system.clear_harmonic_plan()
 
@@ -616,18 +617,23 @@ class SolidMechanicsPhysics(MultiShiftModes, SolidMechanicsBase):
         return operator, loss, mass, load, held
 
     def _harmonic_solve(self, omega, fields=True):
-        """(x, A x) at omega [rad/s]: a private complex SuperLU (frequency_response.solve_harmonic), the PiezoSystem's
-        HarmonicSystem, or the plan_frequency_response model (fields False: exact only at the electrode rows)."""
+        """(x, A x) at omega [rad/s]: a private host SuperLU of the kept HarmonicSystem (_direct_harmonic), the
+        PiezoSystem's HarmonicSystem, or the plan_frequency_response model (fields False: exact only at the electrode
+        rows)."""
         operator, loss, mass, load, held = self._harmonic_inputs()
         if self.piezoelectric:
             return self._piezo_system.solve_harmonic(omega, mass, loss, load, held, self._piezo_counters, fields=fields)
         if self._reduced_harmonic is not None:
             return self._reduced_harmonic.solve(omega, held, load, fields=fields)
-        solution, product, host_bytes = solve_harmonic(operator, loss, mass, omega, to_host(self.system.free) > 0.5,
-                                                       held, load)
+        harmonic = self._direct_harmonic
+        if harmonic is None:   # the free-dof reduction and the summed pattern once per operators, not per frequency
+            harmonic = self._direct_harmonic = HarmonicSystem(operator, loss, mass, to_host(self.system.free) > 0.5)
+        solution, product = harmonic.solve(omega, held, load)
         counters = self._harmonic_counters
         counters['harmonic_factorizations'] += 1
-        counters['harmonic_factor_host_bytes'] = max(counters['harmonic_factor_host_bytes'], host_bytes)
+        counters['harmonic_factor_host_bytes'] = max(counters['harmonic_factor_host_bytes'],
+                                                     int(harmonic.factor.host_bytes or 0))
+        harmonic.factor = None   # a private SuperLU reuses nothing: no factor kept between frequencies
         return solution, product
 
     def plan_frequency_response(self, frequencies, options):
@@ -665,8 +671,8 @@ class SolidMechanicsPhysics(MultiShiftModes, SolidMechanicsBase):
 
     def solve_frequency_response(self, frequency):
         """frequency_response study hook: the driven harmonic response at frequency [Hz] > 0 of every load, prescribed
-        displacement and electrode (amplitudes at phase 0) with the mechanical / dielectric losses (one complex host
-        SuperLU, frequency_response.solve_harmonic, or the plan_frequency_response model); appends a FrequencyPoint and
+        displacement and electrode (amplitudes at phase 0) with the mechanical / dielectric losses (one host SuperLU of
+        the kept HarmonicSystem, or the plan_frequency_response model); appends a FrequencyPoint and
         shows the response (real parts, u_abs = the amplitude |u|) where the field policy asks."""
         frequency = float(frequency)
         if not (math.isfinite(frequency) and frequency > 0.0):
@@ -794,7 +800,7 @@ class SolidMechanicsPhysics(MultiShiftModes, SolidMechanicsBase):
         self._stiffness = stiffness
         self._solid = stiffness.solid
         self._unit_axial_solve = None
-        self._harmonic_operators = None
+        self._harmonic_operators = self._direct_harmonic = None
         self._harmonic_drive = None   # held / fixed values of the new assembly
         c11, c12, c22, c66, c16, c26 = operator_coefficients(stiffness, self.out_of_plane == PLANE_STRESS)
         if self._axisymmetric:

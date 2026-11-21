@@ -338,14 +338,6 @@ def _real_times(matrix, vector):
     return matrix @ np.ascontiguousarray(vector.real) + 1j * (matrix @ np.ascontiguousarray(vector.imag))
 
 
-def solve_harmonic(operator, loss, mass, omega, free, fixed, load, column_map=None, extra_rhs=()):
-    """(x, A x, factor host bytes) of one frequency by a private HarmonicSystem (one complex host SuperLU; arguments as
-    HarmonicSystem / its solve)."""
-    harmonic = HarmonicSystem(operator, loss, mass, free, column_map)
-    solution, product = harmonic.solve(omega, fixed, load, extra_rhs)
-    return solution, product, int(harmonic.factor.host_bytes or 0)
-
-
 def reaction_table(record, name) -> dict:
     """'table' of a support's complex reaction per solved frequency from its core.harmonic_probe.HarmonicProbeRecord of
     force components (ascending f): columns frequency, <F>_re, <F>_im per component; extras frequency [Hz], components,
