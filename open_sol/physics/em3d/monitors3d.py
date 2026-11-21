@@ -158,10 +158,10 @@ def _cell_samples(widths, first_edge, last_edge):
 
 
 class PlaneFlux3D:
-    """Running DFT (complex128 totals) of the tangential E / H on a plane at cell edge `edge` along `normal_axis` (0 / 1 / 2)
-    over the edge ranges bounds[t] = (first, last) of the two tangential axes; flux() > 0 toward +normal. A periodic
-    tangential axis (periodic[t]) spanning its whole grid wraps its face weights; spectra on array module xp in a
-    SpectrumStore of spectrum_precision ('double': complex128, 'mixed2': complex64 blocks + host totals)."""
+    """Running DFT (complex128 totals) of the tangential E / H on a plane at cell edge `edge` along `normal_axis` (0 /
+    1 / 2) over the edge ranges bounds[t] = (first, last) of the two tangential axes; flux() > 0 toward +normal. A
+    periodic tangential axis (periodic[t]) spanning its whole grid wraps its face weights; spectra on array module xp
+    in a SpectrumStore of spectrum_precision ('double': complex128, 'mixed2': complex64 blocks + host totals)."""
 
     def __init__(self, normal_axis, edge, bounds, frequencies, dt, widths, shape, periodic=(False, False, False),
                  xp=None, spectrum_precision='double'):

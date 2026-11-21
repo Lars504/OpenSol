@@ -1,16 +1,19 @@
 """Self-tests of the em_fdtd_3d plane wave, mode ports and far field: normal-incidence Fresnel on a dielectric
 half-space and on a Drude film (periodic pole faces), mode launch / overlap transmission in a straight 3D waveguide,
-and the Hertzian dipole far-field pattern."""
+and the Hertzian dipole far-field pattern. Also the stepper's spectrum_precision mixed2 against double (dipole flux and
+far field, a near-cancelling flux difference over several folded blocks)."""
 import math
 
 import numpy as np
 
 from ...core.constants import C0, ETA0
 from ...model.schema import SelfTestCase, SelfTestVariant
+from ...model.selftest_helpers import solver_role, tolerance_units_result
 from ...model.spec import (DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec, PhysicsSpec,
-                           RefinementSpec, StudySpec)
+                           RefinementSpec, SolverSpec, StudySpec)
 from .selftests import (DEFAULT_COURANT, DIPOLE_TOLERANCE, SELFTEST_DURATION, cubic_time_step, dipole_flux_errors,
                         dipole_selftest_spec)
+from .selftests import _FLUX_FEATURE as _DIPOLE_FLUX_FEATURE
 
 _PHYSICS_NAME = 'em'
 _PHYSICS_TYPE = 'em_fdtd_3d'          # literal (selftests never import the definition)
@@ -79,6 +82,29 @@ _FF_MIN_PATTERN = 0.25                # compare only where cos^2(angle) >= this 
 _HALF_STORAGE_VARIANT = 'half_storage'
 _HALF_STORAGE_TOLERANCE = 0.06        # the 1-2 % discretisation error plus the fp16 storage noise (~1e-3 per field)
 _HALF_STORAGE_NODE = f'{_HALF_STORAGE_VARIANT}_{_PHYSICS_NAME}_stepper'   # node name of api._variant_spec
+
+# ---- stepper spectrum_precision mixed2 against double (monitors3d.SpectrumStore) ----
+# Bound of a mixed2 spectrum: gamma_N x the gross sum |sample| (monitors3d SPECTRUM_BLOCK_WORST_ERROR, 3.8e-6 for full
+# 64-sample blocks, 1.7e-6 for one partial block of ~28 samples); a flux Re(E H*) errs by at most 2 gamma r of its
+# value, r = gross / |spectrum| per cell. The fields of a double and a mixed2 run are identical (same kernels and DFT
+# phases), so their difference is the accumulation alone.
+_MIXED2_NODE = 'mixed2_spectra'       # stepper node of the mixed2 runs (the double runs keep the Automatic stepper)
+# dipole (em3d_far_field_dipole model, ~28 samples: no fold, the read path folds the partial block): the box faces sit
+# in the reactive near field (r up to ~10 at the face corners) -> flux 2 x 1.7e-6 x 10 = 3.4e-5, below 1e-4; the far
+# field sums the face currents with phases that cancel to ~1/10 of their gross at cos^2 >= 0.25 -> 1e-3
+_M2_FLUX_TOLERANCE = 1e-4
+_M2_FAR_FIELD_TOLERANCE = 1e-3
+# near-cancelling column: the plane-wave column in vacuum (x / y periodic, one-sided TFSF plane, CPML along z), a
+# narrow-band pulse (2 t0 ~190 fs: t0 ~ 1 / bandwidth, 32 fs at 0.3) spanning several blocks; the flux through two
+# total-field planes is equal up to float32 field round-off (lossless discrete propagation, the whole pulse past both
+# planes), so P_lower - P_upper cancels to ~1e-6 of P_lower
+_NC_PLANES = {'lower': 0.8e-6, 'upper': 1.6e-6}   # flux planes z [m] (TFSF plane at _PW_SOURCE_Z, CPML from 2.0 um)
+_NC_BANDWIDTH = 0.05
+_NC_BAND = {'wavelength_start': 0.98e-6, 'wavelength_stop': 1.02e-6, 'n_wavelengths': 3}   # within ~0.6 sigma: r <= 1.5
+_NC_DURATION = 215e-15                # s: 2 t0 + the ~5 fs transit to the upper plane; ~2800 steps, a DFT sample every
+                                      # ~19 steps (dft_sample_interval): ~145 samples, 2 folds per plane
+_NC_PREMISE = 1e-4                    # |P_lower - P_upper| / P_lower of each run (cancellation, hand estimate ~1e-6)
+_NC_TOLERANCE = 4e-5                  # |net mixed2 - net double| / P_lower: 2 planes x 2 gamma_64 (3.8e-6) x r 1.5
 
 
 def _column_spec(title, layer_z, material, courant=DEFAULT_COURANT, direction='+z'):
@@ -397,6 +423,106 @@ def _check_far_field(results_by_name):
                         'broadside_expected': expected[:, 0].tolist()}}
 
 
+def with_mixed2_spectra(spec):
+    """The spec with its em physics' stepper on a solver node of spectrum_precision mixed2 (_MIXED2_NODE)."""
+    spec.solvers.append(SolverSpec(_MIXED2_NODE, 'explicit_kernels', {'spectrum_precision': 'mixed2'}))
+    spec.physics[0].solvers['stepper'] = _MIXED2_NODE
+    return spec
+
+
+def _spectrum_folds(results, expected_precision):
+    """Folded blocks of the run (summary 'solvers' counters spectrum_folds; 0 for double); raises unless the stepper
+    ran `expected_precision`."""
+    stepper = solver_role(results, _PHYSICS_NAME, 'stepper')
+    precision = (stepper.get('settings') or {}).get('spectrum_precision')
+    if precision != expected_precision:
+        raise ValueError(f'expected the stepper to run spectrum_precision {expected_precision!r}, summary '
+                         f"'solvers' records {precision!r} (node {stepper.get('solver')!r})")
+    counters = ((results.summary().get('solvers') or {}).get(_PHYSICS_NAME) or {}).get('counters') or {}
+    return int(counters.get('spectrum_folds', 0))
+
+
+def _relative_difference(values, reference, used=None):
+    """Largest |values / reference - 1| (over `used` entries when given; inf where not finite)."""
+    values, reference = np.asarray(values, dtype=np.float64), np.asarray(reference, dtype=np.float64)
+    differences = np.abs(values / reference - 1.0)
+    differences = np.where(np.isfinite(differences), differences, np.inf)
+    if used is not None:
+        differences = np.where(used, differences, 0.0)
+    return float(np.max(differences))
+
+
+def _check_mixed2_dipole(results_by_name):
+    """Both runs against the analytic dipole (_check_far_field: flux box and far field, DIPOLE_TOLERANCE), then mixed2
+    against double: flux box power_per_cw and far-field power_per_cw (where cos^2 >= _FF_MIN_PATTERN), relative."""
+    double, mixed2 = results_by_name['double'], results_by_name['mixed2']
+    _spectrum_folds(double, 'double')
+    folds = _spectrum_folds(mixed2, 'mixed2')
+    analytic = {run: _check_far_field({'run': results_by_name[run]})['error'] for run in ('double', 'mixed2')}
+    flux = {run: results_by_name[run].result(_PHYSICS_NAME, _DIPOLE_FLUX_FEATURE).get('power_per_cw')
+            for run in ('double', 'mixed2')}
+    far = {run: results_by_name[run].result(_PHYSICS_NAME, 'far_field') for run in ('double', 'mixed2')}
+    angles = np.asarray(far['double']['angles'], dtype=np.float64)
+    used = np.broadcast_to((np.cos(angles) ** 2 >= _FF_MIN_PATTERN)[None, :],
+                           np.shape(far['double'].get('power_per_cw')))
+    errors = {'double_vs_analytic': analytic['double'], 'mixed2_vs_analytic': analytic['mixed2'],
+              'flux_mixed2_vs_double': _relative_difference(flux['mixed2'], flux['double']),
+              'far_field_mixed2_vs_double': _relative_difference(far['mixed2'].get('power_per_cw'),
+                                                                 far['double'].get('power_per_cw'), used)}
+    tolerances = {'double_vs_analytic': DIPOLE_TOLERANCE, 'mixed2_vs_analytic': DIPOLE_TOLERANCE,
+                  'flux_mixed2_vs_double': _M2_FLUX_TOLERANCE, 'far_field_mixed2_vs_double': _M2_FAR_FIELD_TOLERANCE}
+    return tolerance_units_result(errors, tolerances, {
+        'tolerances': tolerances, 'mixed2_folds': folds,
+        'flux_power_per_cw': {run: np.asarray(values, dtype=np.float64).tolist() for run, values in flux.items()}})
+
+
+def mixed2_column_spec(mixed2=False):
+    """The plane-wave column in vacuum: one-sided TFSF plane (+z, E_x, bandwidth _NC_BANDWIDTH) and the flux planes
+    _NC_PLANES in the total field, _NC_DURATION; mixed2: the stepper on spectrum_precision mixed2."""
+    period = _PW_PERIOD
+    bc = {f'bc_{axis}_{side}': 'periodic' for axis in ('x', 'y') for side in ('lo', 'hi')}
+    flux_features = [FeatureSpec(name, 'flux_plane', [], {'normal': 'z', 'position': z, **_NC_BAND})
+                     for name, z in _NC_PLANES.items()]
+    spec = ModelSpec(
+        title='Self-test: 3D plane wave column, near-cancelling flux difference' + (' (mixed2 spectra)' if mixed2
+                                                                                     else ''),
+        domain=DomainSpec(size_x=period, size_y=period, size_z=_PW_LENGTH),
+        geometry=[GeometrySpec('tfsf_region', 'box', {'x0': 0.0, 'y0': 0.0, 'z0': _PW_SOURCE_Z, 'x1': period,
+                                                      'y1': period, 'z1': _PW_LENGTH})],
+        physics=[PhysicsSpec(_PHYSICS_NAME, _PHYSICS_TYPE, settings={'pml_cells': 10, **bc}, features=[
+            FeatureSpec('plane_wave', 'plane_wave_source', ['tfsf_region'], {**_PW_PULSE, 'bandwidth': _NC_BANDWIDTH}),
+            *flux_features])],
+        mesh=MeshSpec(mode='uniform', dx=_PW_CELL),
+        study=StudySpec(type='time_dependent', settings={'duration': _NC_DURATION}))
+    return with_mixed2_spectra(spec) if mixed2 else spec
+
+
+def _check_mixed2_cancelling(results_by_name):
+    """Per run the cancellation |P_lower - P_upper| / P_lower <= _NC_PREMISE (raw a.u. power), then |net mixed2 - net
+    double| / P_lower (double) <= _NC_TOLERANCE per wavelength; raises unless the mixed2 run folded each plane's block
+    at least once (spectrum_folds >= 2: the fold path ran)."""
+    double, mixed2 = results_by_name['double'], results_by_name['mixed2']
+    _spectrum_folds(double, 'double')
+    folds = _spectrum_folds(mixed2, 'mixed2')
+    if folds < len(_NC_PLANES):
+        raise ValueError(f'the mixed2 run folded {folds} spectrum blocks, fewer than one per flux plane: the case no '
+                         f'longer exercises the fold (lengthen _NC_DURATION)')
+    power = {run: {name: np.asarray(results_by_name[run].result(_PHYSICS_NAME, name)['power'], dtype=np.float64)
+                   for name in _NC_PLANES} for run in ('double', 'mixed2')}
+    gross = power['double']['lower']
+    net = {run: values['lower'] - values['upper'] for run, values in power.items()}
+    cancellation = {run: float(np.max(np.abs(net[run]) / gross)) for run in net}
+    difference = np.abs(net['mixed2'] - net['double']) / gross
+    errors = {'cancellation_double': cancellation['double'], 'cancellation_mixed2': cancellation['mixed2'],
+              'net_mixed2_vs_double': float(np.max(np.where(np.isfinite(difference), difference, np.inf)))}
+    tolerances = {'cancellation_double': _NC_PREMISE, 'cancellation_mixed2': _NC_PREMISE,
+                  'net_mixed2_vs_double': _NC_TOLERANCE}
+    return tolerance_units_result(errors, tolerances, {
+        'tolerances': tolerances, 'mixed2_folds': folds, 'gross_power': gross.tolist(),
+        'net_power': {run: values.tolist() for run, values in net.items()},
+        'relative_net_difference': difference.tolist()})
+
+
 SOURCE_CASES = (
     SelfTestCase(
         name='em3d_plane_wave_fresnel',
@@ -499,4 +625,41 @@ SOURCE_CASES = (
         check=_check_far_field,
         variants=(SelfTestVariant(_HALF_STORAGE_VARIANT, tolerance=_HALF_STORAGE_TOLERANCE,
                                   precision='half_storage', roles=('stepper',)),)),
+    SelfTestCase(
+        name='em3d_spectra_mixed2_dipole',
+        label='EM 3D: mixed2 spectra against double (dipole flux box and far field)',
+        description=('The em3d_far_field_dipole model run twice: Automatic stepper (spectrum_precision double, '
+                     'complex128 device spectra) and a stepper node with spectrum_precision mixed2 (complex64 '
+                     'device blocks, complex128 host totals). Both against the analytic dipole (flux box and far '
+                     f'field, tolerance {DIPOLE_TOLERANCE:g}), then mixed2 vs double: flux box power_per_cw at 0.9-1.1 '
+                     f'um, relative, tolerance {_M2_FLUX_TOLERANCE:g}, and far-field power_per_cw where cos^2 >= '
+                     f'{_FF_MIN_PATTERN:g}, tolerance {_M2_FAR_FIELD_TOLERANCE:g}. The fields of both runs are '
+                     'identical, so the difference is the accumulation alone: ~28 DFT samples stay in one partial block (no fold; '
+                     'the result read adds it to the host total), whose worst-case error gamma_28 = 1.7e-6 of the '
+                     'gross sum |sample| becomes <= 3.4e-5 of the flux with the near-field gross ~10x the spectra at '
+                     'the face corners, and ~10x that in the far field, whose radiation integrals cancel the face '
+                     'currents; a wrong view, kernel (H re-timing, pair mean) or a dropped block shows at >= 1e-2. '
+                     "Each error over its tolerance (case tolerance 1); raises unless summary 'solvers' records the "
+                     'expected spectrum_precision per run. Not yet run.'),
+        specs=lambda: {'double': dipole_far_field_spec(), 'mixed2': with_mixed2_spectra(dipole_far_field_spec())},
+        check=_check_mixed2_dipole),
+    SelfTestCase(
+        name='em3d_spectra_mixed2_cancelling',
+        label='EM 3D: mixed2 spectra on a near-cancelling flux difference (folded blocks)',
+        description=('Plane-wave column in vacuum (x / y periodic, 4 x 4 cells of 40 nm, CPML along z): a one-sided '
+                     f'TFSF plane wave (+z, E_x, gaussian 1 um, bandwidth {_NC_BANDWIDTH:g}: the pulse spans several '
+                     f'64-sample blocks) and flux planes at z = {_NC_PLANES["lower"] * 1e6:g} and '
+                     f'{_NC_PLANES["upper"] * 1e6:g} um in the total field, {_NC_DURATION * 1e15:g} fs, run with '
+                     'spectrum_precision double and mixed2. Lossless discrete propagation past both planes makes '
+                     'the net P_lower - P_upper cancel to float32 field round-off: per run |net| / P_lower <= '
+                     f'{_NC_PREMISE:g} at 0.98-1.02 um (the near-cancelling premise), then |net mixed2 - net double| / '
+                     f'P_lower <= {_NC_TOLERANCE:g}: 2 planes x 2 gamma_64 (3.8e-6, the worst case of a full block) x '
+                     'gross / |spectrum| (<= 1.5 inside 0.6 sigma of the pulse spectrum); the blocks add in float64, '
+                     'so the bound does not grow with the run length (one float32 running sum: ~M u for M samples). '
+                     'A fold that drops, double counts or mis-orders a block, or a zero fill racing the copy, is off '
+                     "by >= 1e-2. Raises unless summary 'solvers' records the expected spectrum_precision and the "
+                     'mixed2 run folded at least one block per plane (counter spectrum_folds). Not yet run (sample '
+                     'interval and fold count hand estimates: ~145 samples, 2 folds per plane).'),
+        specs=lambda: {'double': mixed2_column_spec(), 'mixed2': mixed2_column_spec(mixed2=True)},
+        check=_check_mixed2_cancelling),
 )
