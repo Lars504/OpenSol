@@ -16,9 +16,10 @@ type's vocabulary and refusals are in its help texts and validation.
 - Gyration (`schema.GYRATION_PROPERTY_NAMES`): a type reads a component only by declaring its material Param;
   validation refuses a non-zero one in a model holding an EM type that does not (`definition_common._material_issues`).
 - Root rule "allocate where needed": poles comply in E_z, H_z and FDFD (masks cropped to their box), FDTD PEC keeps
-  (bool on the PEC box), H_z `eps_x` / `eps_y` (only for a nonlinear medium), da / db / ca (one value while uniform);
-  not yet: ez `jz_total` (full grid: a state() key), hz pole power totals (full grid while accumulating), TFSF outline
-  masks, FDFD CSR matrices.
+  (bool on the PEC box), H_z `eps_x` / `eps_y` (only for a nonlinear medium), da / db / ca (one value while uniform),
+  ez `jz_total` (on the Drude union box; state() expands a full-grid copy per read, so a reader never keeps it live);
+  not yet: 2D q_accum (full grid, unlike em3d), hz pole power totals and hz sigma_e (full grid on the device while
+  accumulating: q_accum_hz indexes the full grid), TFSF outline masks, FDFD CSR matrices.
 
 ## Imports (inside physics/em; the cross-package rules are in the root file)
 - `physics/em/__init__` imports solvers.fdfd_2d / modes_2d last (they import most siblings; `solvers/__init__` leaves

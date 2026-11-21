@@ -490,16 +490,16 @@ def fdtd_memory_estimate(polarization):
                 pole_bytes += masks + (2 * n_drude + 3 * n_lorentz) * real_bytes * box_cells
             else:   # two face sets: shared weights, j per Drude, p + dp per Lorentz
                 pole_bytes += masks + 2 * (1 + n_drude + 2 * n_lorentz) * real_bytes * box_cells
-        if regions:
-            pole_bytes += (real_bytes if polarization == 'ez' and any_drude else 0) * n_cells   # jz_total
+        # ez jz_total: on the union bounding box of the Drude regions (fdtd_ez_2d _drude_box)
+        jz_total_cells = _drude_box_cells(context, n_cells) if polarization == 'ez' and any_drude else 0
+        pole_bytes += real_bytes * jz_total_cells
         if regions or nonlinear:
             pole_bytes += (BOOL_BYTES if polarization == 'hz' else 0) * n_cells                 # pole cell mask
         items.append(('dispersive poles', pole_bytes))
         if bloch_active_axes(settings_values):   # Bloch k != 0: imaginary fields, CPML psi and pole buffers
             imaginary_pole_bytes = sum((1 if polarization == 'ez' else 2) * (n_drude + 2 * n_lorentz) * real_bytes
                                        * box_cells for box_cells, n_drude, n_lorentz in regions)
-            if polarization == 'ez' and any_drude:
-                imaginary_pole_bytes += real_bytes * n_cells   # imaginary jz_total
+            imaginary_pole_bytes += real_bytes * jz_total_cells   # imaginary jz_total
             items.append((FDTD_BLOCH_ITEM, 3 * real_bytes * n_cells
                           + _cpml_psi_bytes(mesh, settings_values, real_bytes) + imaginary_pole_bytes))
         trace_items, run_items, host_items = _point_trace_items(context, mesh)
@@ -574,8 +574,29 @@ def _property_box_cells(context, property_name, n_cells):
         region = regions.get(material.name)
         if region is None or not region.box_bounds:
             return n_cells
-        bounds = (region.box_bounds if bounds is None else
-                  tuple((min(a[0], b[0]), max(a[1], b[1])) for a, b in zip(bounds, region.box_bounds)))
+        bounds = _union_bounds(bounds, region.box_bounds)
+    return _bounds_cells(bounds, n_cells)
+
+
+def _drude_box_cells(context, n_cells):
+    """Full-grid cells of the union bounding box of the material regions with a Drude pole (n_cells when a region's
+    box does not resolve; 0 without such a region)."""
+    bounds = None
+    for region in context.material_regions:
+        if region.n_drude:
+            if not region.box_bounds:
+                return n_cells
+            bounds = _union_bounds(bounds, region.box_bounds)
+    return _bounds_cells(bounds, n_cells)
+
+
+def _union_bounds(bounds, other):
+    """Per-axis (first, last) union of two MaterialRegionInfo.box_bounds (bounds None: other)."""
+    return other if bounds is None else tuple((min(a[0], b[0]), max(a[1], b[1])) for a, b in zip(bounds, other))
+
+
+def _bounds_cells(bounds, n_cells):
+    """Cells of per-axis (first, last) bounds, at most n_cells; 0 for None."""
     if bounds is None:
         return 0
     return min(n_cells, math.prod(last - first + 1 for first, last in bounds))

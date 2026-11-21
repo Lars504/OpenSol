@@ -65,7 +65,8 @@ _ABSORPTION_SWITCH = ('Switched on automatically when a material expression, der
 _TRACK_ABSORPTION_HELP = {
     'ez': ('Accumulate J.E losses (output absorbed_power in W/m^3, state q_accum in J/m^3) also without '
            'em_heat_joule; ~one extra GPU pass per step over the bounding boxes of the conducting and dispersive '
-           f'cells. q_accum (and jz_total, with a Drude pole) exists only while accumulating. {_ABSORPTION_SWITCH}'),
+           'cells. q_accum exists only while accumulating (jz_total, the Drude current, with any Drude pole). '
+           f'{_ABSORPTION_SWITCH}'),
     'hz': ('Accumulate J.E losses J_x E_x + J_y E_y + sigma_e |E|^2 on the cell faces (output absorbed_power in '
            'W/m^3, state q_accum in J/m^3) also without em_heat_joule; ~one extra full-grid GPU pass per step. A '
            "face's conductivity loss goes to each of its two cells by that cell's sigma_e, a pole current's loss to "
