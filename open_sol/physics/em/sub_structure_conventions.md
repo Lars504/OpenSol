@@ -602,8 +602,13 @@ type's vocabulary and refusals are in its help texts and validation.
   rho = r inside the window only.
 - Its kernels are `core.kernels` twins named 'em.bor_fdtd_*' (defined in fdtd_bor with their numpy twins). Device
   point indices are int32 (`_device_index`, refused at >= 2^31 stacked entries); the z CPML psi / a / b / driver rows
-  exist on the stretched rows only (`_BatchSide`); field_energy weights are float32 over their maximum (raw values
-  sit near the float32 underflow), summed in float64.
+  exist on the stretched rows only (`_BatchSide`); a side's decay vector exists only while some float32 decay != 1
+  (sigma_e / sigma_m: `_BatchSide.set_decay`, else `_UPDATE_LOSSLESS`); field_energy weights are float32 over their
+  maximum (raw values sit near the float32 underflow), summed in float64, uploaded at the first field_energy call.
+- Parked material arrays (model path, gpu): every MaterialGrid array (`solvers/fdtd_bor.PARKABLE_ARRAYS`) under the
+  shared rule (`definition_fdtd_bor._parked_material_arrays`), parked at create: the engine reads host copies only
+  (`_host_materials`). A new reader of them takes `device_array` / `material_state` / `assign`, never
+  `getattr(materials, name)` as a device array (breaks on the gpu model path only).
 - A new per-step term goes into `_LockstepBatch` (flat index = member position x layout size + own index), never into
   a per-member loop; host coefficient changes reach the device through `upload` / `injections_changed`.
 - Physics, monitors, BORHarmonic and the renderer use only the engine interface of the `BOROrderSum` docstring

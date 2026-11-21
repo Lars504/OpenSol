@@ -1238,7 +1238,8 @@ def fdtd_bor_memory_estimate(settings_values, mesh, context):
     """PhysicsType.memory_estimate of em_fdtd_bor (fdtd_bor.BORTimeStepper per order-sum member): float32 fields,
     coefficients, z CPML psi, r_hi layer rows and CSR curl products (fdtd_bor.stepper_bytes), pole buffers on the E
     points of their cells, the other members' monitor spectra, point traces, the harmonic accumulator (run item:
-    complex64 of every E and H point per study wavelength and member); on the host the kept real-metric assembly."""
+    complex64 of every E and H point per study wavelength and member, the energy weights); on the host the kept
+    real-metric assembly and the parked material arrays (definition_fdtd_bor._parked_material_arrays)."""
     from .fdtd_bor import layout_sizes, stepper_bytes
     shape = (int(mesh.nx), int(mesh.ny))
     orders, n_members = _fdtd_bor_members(settings_values, context.physics_spec)
@@ -1249,7 +1250,9 @@ def fdtd_bor_memory_estimate(settings_values, mesh, context):
         if settings_values.get(f'bc_{face}') == 'cpml':
             z_pml_rows += 4 * npml * (shape[0] + 1)
     radial_rows = 6 * npml * (shape[1] + 1) if settings_values.get('bc_x_hi') == 'cpml' else 0   # ~6 per layer cell
-    device, host = stepper_bytes(shape, order, z_pml_rows, radial_rows)
+    # a side's decay vector exists only with sigma_e (E) / sigma_m (H) somewhere
+    device, host = stepper_bytes(shape, order, z_pml_rows, radial_rows, lossy_e=context.material_sets('sigma_e'),
+                                 lossy_h=context.material_sets('sigma_m'))
     items = [(f'stepper fields, coefficients, CPML psi and curl products ({n_members} stepper(s))', n_members * device)]
     pole_bytes = mask_bytes = 0   # per pole ~3 E points per box cell: J (+ dP), drive, correction float32, int32 index
     for box_cells, n_drude, n_lorentz in _pole_regions(context):
@@ -1273,12 +1276,22 @@ def fdtd_bor_memory_estimate(settings_values, mesh, context):
     dt = mesh.dt * min(1.0, math.sqrt(2.0) / (order + 1)) if mesh.dt else None
     trace_items, run_items, host_items = point_trace_items(context, mesh, _POINT_TRACE_FEATURES, dt=dt)
     n_wavelengths = _harmonic_wavelength_count(context)
-    if n_wavelengths:   # solvers/fdtd_bor.BORHarmonic
+    if n_wavelengths:   # solvers/fdtd_bor.BORHarmonic; its pulse's field_energy uploads the energy weights
         n_points = sum(sum(sizes) for sizes in layout_sizes(shape))
         run_items.append((f'harmonic accumulator ({n_wavelengths} wavelengths x complex64, every E and H point, '
                           f'{n_members} stepper(s))', n_members * n_wavelengths * COMPLEX64_BYTES * n_points))
-    return MemoryEstimate.from_items(items + trace_items, host_items=[('kept real-metric assembly (rough)', host)]
-                                     + host_items, run_items=run_items)
+        run_items.append((f'field energy weights (float32, every E and H point, {n_members} stepper(s))',
+                          n_members * FLOAT32_BYTES * n_points))
+    host_items = [('kept real-metric assembly (rough)', host)] + list(host_items)
+    build_extra = 0
+    from .definition_fdtd_bor import _parked_material_arrays   # lazy: definition_fdtd_bor imports this module
+    parked = _parked_material_arrays(context.spec, context.registry, context.physics_spec, context.parameters)
+    if parked:   # on the device through the material painting, on the host from create (before the engine)
+        parked_bytes = FLOAT32_BYTES * len(parked) * int(mesh.n_cells)
+        host_items.append((f"material arrays parked on the host ({', '.join(parked)}, float32)", parked_bytes))
+        build_extra = parked_bytes - sum(size for _, size in items + trace_items)
+    return MemoryEstimate.from_items(items + trace_items, build_extra=build_extra, host_items=host_items,
+                                     run_items=run_items)
 
 
 def fdtd_bor_flux_memory_estimate(values, n_selected_cells, mesh):

@@ -18,7 +18,7 @@ from ..fdtd_bor import BOROrderSum, BORTimeStepper, leapfrog_susceptibility, poi
 from ..fdtd_bor_ports import (BORFDTDModeMonitor, BORFDTDModeSource, fdtd_bor_mode_monitor_result,
                               stepped_frequency)
 from ..harmonic_fdtd import _shared_pulse
-from ..materials import (DrudePole, LorentzPole, material_solution_state, register_em_arrays,
+from ..materials import (DrudePole, LorentzPole, material_solution_state, material_state, register_em_arrays,
                          restore_material_solution)
 from ..placement import port_cells, window_cell
 from ..renderer_fdtd_bor import BORFDTDRenderer
@@ -35,6 +35,10 @@ from .fdtd_2d_base import record_dispersive_region
 PROBE_OFFSETS = {'er': (1, 0), 'ephi': (0, 0), 'ez': (0, 1), 'hr': (0, 1), 'hz': (1, 0), 'hphi': (1, 1)}
 H_COMPONENTS = ('hr', 'hz', 'hphi')   # stepped half a step before the recorded time
 _COEFFICIENT_MATERIALS = frozenset({'eps_r', 'eps_xx', 'eps_yy', 'sigma_e', 'mu_r', 'sigma_m'})
+# MaterialGrid arrays BORFDTDPhysics(park_arrays=) may move to the host (model path: definition_fdtd_bor
+# _parked_material_arrays): the engine reads host copies only (_host_materials at the build and each refresh), the
+# renderer windows through device_array, state() through material_state, inject_source through assign
+PARKABLE_ARRAYS = _COEFFICIENT_MATERIALS
 _VALID_SPECTRUM_FRACTION = 1e-6   # per-cw values are NaN where |S|^2 < this x |S(carrier)|^2 (as the 2D FDTD)
 
 
@@ -52,7 +56,8 @@ class BORFDTDPhysics(PhysicsSolver):
 
     name = 'em'
 
-    def __init__(self, domain, boundary_config=None, azimuthal_order=0, courant_factor=0.99, azimuthal_orders=None):
+    def __init__(self, domain, boundary_config=None, azimuthal_order=0, courant_factor=0.99, azimuthal_orders=None,
+                 park_arrays=()):
         if getattr(domain, 'dimensions', 2) != 2:
             raise ValueError('BORFDTDPhysics needs a 2D domain: the drawing is the (r, z) half plane')
         axis_class(azimuthal_order)   # integer check
@@ -60,6 +65,9 @@ class BORFDTDPhysics(PhysicsSolver):
         if not 0.0 < courant_factor <= 1.0:
             raise ValueError(f'BORFDTDPhysics courant_factor must lie in (0, 1], got {courant_factor!r}')
         orders = distinct_orders(azimuthal_orders, 'BORFDTDPhysics azimuthal_orders', non_negative=True)
+        unknown = set(park_arrays) - PARKABLE_ARRAYS
+        if unknown:
+            raise ValueError(f'BORFDTDPhysics parks only {sorted(PARKABLE_ARRAYS)} on the host, got {sorted(unknown)}')
         self.domain = domain
         self.polarization = BOR_POLARIZATION
         self.boundary_config = bor_boundary_config(domain, boundary_config, 'BORFDTDPhysics')
@@ -69,6 +77,7 @@ class BORFDTDPhysics(PhysicsSolver):
         self.xp = domain.xp
         self.pml_dx = cpml_grading_cell_size(domain)
         register_em_arrays(domain.materials, BOR_MATERIAL_SCHEMA_KEY)
+        domain.materials.park(park_arrays)   # before the engine allocates (no-op on the cpu backend)
         self.sources = []             # BORCurrentSource
         self.monitors = []            # BORFluxSpectrum, BORFarFieldSpectrum
         self.probes = []              # core.monitors.FieldProbe on the engine's Yee views, recorded every step
@@ -132,20 +141,20 @@ class BORFDTDPhysics(PhysicsSolver):
 
     def state(self) -> dict:
         """Float32 full-grid e_intensity [V^2/m^2] of the instantaneous centre fields, eps_r, eps_xx, eps_yy, sigma_e
-        and 'q_accum': None (loss-protocol key, never a field)."""
+        and 'q_accum': None (loss-protocol key, never a field); parked material arrays read as device copies
+        (materials.material_state)."""
         materials = self.domain.materials
         centres = self.centre_samples()
         e_intensity = centres['er'] ** 2 + centres['ephi'] ** 2 + centres['ez'] ** 2
-        return {'e_intensity': e_intensity, 'eps_r': materials.eps_r, 'eps_xx': materials.eps_xx,
-                'eps_yy': materials.eps_yy, 'sigma_e': materials.sigma_e, 'q_accum': None}
+        return material_state({'e_intensity': e_intensity, 'eps_r': materials.eps_r, 'eps_xx': materials.eps_xx,
+                               'eps_yy': materials.eps_yy, 'sigma_e': materials.sigma_e, 'q_accum': None}, materials)
 
     def inject_source(self, name: str, array):
         """Copy a coupling's array into its permittivity array (BOR_PERMITTIVITY_SLOTS); coefficients refresh before
         the next step."""
         if name not in BOR_PERMITTIVITY_SLOTS:
             raise ValueError(f"BORFDTDPhysics accepts sources {', '.join(BOR_PERMITTIVITY_SLOTS)}; got '{name}'")
-        target = getattr(self.domain.materials, BOR_PERMITTIVITY_SLOTS[name])
-        self.xp.copyto(target, self.xp.asarray(array, dtype=DTYPE))
+        self.domain.materials.assign(BOR_PERMITTIVITY_SLOTS[name], None, array)   # a parked array: on the host
         self._coefficients_dirty = True
 
     def materials_changed(self, names) -> None:

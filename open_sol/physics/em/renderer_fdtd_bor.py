@@ -46,7 +46,7 @@ class BORFDTDRenderer(_EMRendererBase):
         if info.requires_study:
             return self._harmonic_field(component)[window]
         if component in _MATERIAL_NAMES:
-            return getattr(self.domain.materials, component)[window]
+            return self.domain.materials.device_array(component, window)   # a parked array: the window moves
         centres = {name: values[window] for name, values in self._centre_samples().items()}
         if component in centres:
             return centres[component]
