@@ -86,12 +86,16 @@ KEPT_PML_CUT_FRACTION = 0.5
 # (mode_group_indices: error x 1 / (2 GROUP_RELATIVE_STEP)), detached, port, EME and CPU solves keep machine precision
 MODE_ARPACK_TOLERANCE_FLOOR = 1e-10
 # The device Krylov-Schur basis of these solves (gpu backend, a cuDSS or host factor) stays complex128, never
-# eigs(single_basis=True): a complex64 basis holds its Arnoldi relation only to ~1e-7 (SINGLE_BASIS_MIN_TOLERANCE 1e-6),
-# above every tolerance used here (this floor, machine precision for group-index / detached / port / EME solves),
-# and unlike fem_modes no float64 polish can recover the lost digits cheaply: the transverse-H pencil is not complex
-# symmetric (B diagonal, A not), so the one-sided Rayleigh quotient is only first-order in the vector error and a
-# two-sided one needs the left eigenvectors (a transposed solve per mode). A complex64 basis needs a symmetric Yee
-# form first (em sub file "em_modes model layer": the mixed [E_t; E_z] pencil).
+# eigs(single_basis=True): a complex64 basis holds its Arnoldi relation only to ~1e-7, and every tolerance used here
+# (this floor, PML_ARPACK_TOLERANCE_FLOOR, machine precision for group-index / detached / port / EME solves) lies below
+# SINGLE_BASIS_MIN_TOLERANCE (1e-6), where eigs refuses it. Loosening them to 1e-6 as fem_modes / solve_resonances do
+# needs a float64 polish of beta^2 second order in the vector error: the transverse-H pencil is not complex symmetric
+# (B diagonal, A not), so the one-sided Rayleigh quotient is first order; a two-sided one needs the left eigenvector
+# (Lorentz reciprocity may give it from the mode's own E_t without a transposed solve on a reciprocal k = 0 section:
+# unverified on the discrete form with walls, conformal cuts and bends). Even then the vectors (fields, the
+# mode_overlap tracking of mode_group_indices, warm starts, EME / port overlaps) would keep the ~1e-7 basis error, which
+# no eigenvalue polish removes. A symmetric Yee form (em sub file "em_modes model layer": the mixed [E_t; E_z] pencil)
+# would give the stationary quotient and the LDL^T.
 LINE_BLOCK_BOTH_PERIODIC_TEXT = ('the line_block shifted solver cannot take two periodic axes (a periodic wrap along the '
                                  'line axis is not block-tridiagonal); use the sparse_direct solver (Automatic)')
 _SIZE_REMEDY = ('coarsen the mesh or shrink the cross-section (a symmetric / antisymmetric mirror face halves it per '
