@@ -102,6 +102,12 @@ cells, anchors) and the damped iteration are in the core sub file, FEM assembly 
 - `selftests_3d.py`: the mu_r 1000 sphere uses first-order Richardson (a staircased high-mu body has excess
   polarizability first order in h: +6 % / +3 % core field at a / 10 / a / 20). The Ampere checks telescope only on
   uniform cells across the winding.
+- Device memory: post-processing runs axis by axis (`_flux_density_component`, `_flow_totals` on the per-axis
+  fv_diffusion_3d helpers): one component's face flows at a time beside the accumulators; a new field or total keeps
+  that (a 3-tuple of window components is the old 12-array field-update peak). Coil T per ampere lives on the HOST
+  (uploaded by the drive build per assembly, the J update and `_flow_totals`). `_assemble` first drops the stale drive
+  terms and calls the kept wrapper's `release_operator` (the system's release skips it, and a non-loop assembly gets
+  no `offer_state`); face flow / B reads between an assembly and its solve raise (`_assembled_unsolved`).
 - Memory: magnet3d_*_sphere coarse (149k cells, pcg multigrid) estimated build peak ~1.5x measured (from
   `solvers.multigrid.setup_extra_bytes`), the fine one (593k) ~10 % low; both predate setup_extra_bytes taking the
   largest setup step: re-measure.
