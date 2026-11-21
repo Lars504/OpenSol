@@ -8,7 +8,7 @@ import warnings
 import numpy as np
 
 from .cudss_factor import csr_rows
-from .pcg import host_csr_matvec
+from .pcg import SplitCsr, host_csr_matvec, host_split_product
 
 # -a_ij >= theta sqrt(a_ii a_jj) is a strong link; weaker ones (across a 3:1 cell, into a 100x poorer conductor) are not
 # coarsened together, so graded / stretched cells and contrasts semi-coarsen along their strong direction
@@ -483,12 +483,16 @@ def device_aggregate_strong_links(indptr, indices, data, n_unknowns):
 
 def _host_dense(operator):
     """float64 dense array of a small backend CSR, densified on the host (its three arrays downloaded, scipy toarray):
-    cupyx toarray always copies, coosorts and runs sparseToDense, and downloads n^2 values; same values."""
+    cupyx toarray always copies, coosorts and runs sparseToDense, and downloads n^2 values; same values (a SplitCsr:
+    its float64 diagonal in place of the rounded one)."""
     from scipy.sparse import csr_matrix
     from ..core.backend import to_host
     host = csr_matrix((to_host(operator.data), to_host(operator.indices), to_host(operator.indptr)),
                       shape=operator.shape)
-    return np.asarray(host.toarray(), dtype=np.float64)
+    dense = np.asarray(host.toarray(), dtype=np.float64)
+    if isinstance(operator, SplitCsr):   # every row stores its diagonal entry: the float64 values replace them
+        np.fill_diagonal(dense, to_host(operator.diagonal_values))
+    return dense
 
 
 def _cholesky_inverse(dense) -> tuple:
@@ -594,6 +598,30 @@ __global__ void mg_correction(int n_rows, const int* indptr, const int* indices,
     if (active && first_lane) correction[row] = weights[row] * (rhs[row] - sum);
 }
 
+// level 0 on a SplitCsr ('mixed2'): mg_presmooth / mg_correction with float32 values, the float64 diagonal in place
+// of the stored one, float64 weights and vectors
+template<int LANES>
+__global__ void mg_presmooth_split(int n_rows, const int* indptr, const int* indices, const float* data,
+                                   const double* diagonal, const double* weights, const double* rhs, double* solution,
+                                   double* residual) {
+    CSR_ROW
+    const double sum = csr_split_row_sum<LANES>(indptr, indices, data, diagonal, rhs, weights, row, active);
+    if (active && first_lane) {
+        solution[row] = weights[row] * rhs[row];
+        residual[row] = rhs[row] - sum;
+    }
+}
+
+template<int LANES>
+__global__ void mg_correction_split(int n_rows, const int* indptr, const int* indices, const float* data,
+                                    const double* diagonal, const double* weights, const double* rhs,
+                                    const double* solution, double* correction) {
+    CSR_ROW
+    const double sum = csr_split_row_sum<LANES>(indptr, indices, data, diagonal, solution, (const double*)0, row,
+                                                active);
+    if (active && first_lane) correction[row] = weights[row] * (rhs[row] - sum);
+}
+
 // y += P e, the product summed in the hierarchy type M
 template<int LANES, typename M, typename Y>
 __global__ void mg_add_product(int n_rows, const int* indptr, const int* indices, const M* data, const M* x, Y* y) {
@@ -669,6 +697,7 @@ def _cycle_functions() -> dict:
         for t in ('float', 'double'):
             names += [f'csr_product<{lanes}, {hierarchy}, {t}, {hierarchy}>', f'mg_presmooth<{lanes}, {t}>',
                       f'mg_correction<{lanes}, {t}>', f'mg_add_product<{lanes}, {hierarchy}, {t}>']
+        names += [f'mg_presmooth_split<{lanes}>', f'mg_correction_split<{lanes}>']
     for t in ('float', 'double'):
         names += [f'mg_{name}<{t}>' for name in ('add', 'scale', 'dense_product', 'abs_max_partials', 'exponent',
                                                  'scale_exponent')]
@@ -769,15 +798,13 @@ class _DeviceCycle:
         from .pcg import type_name
         t = type_name(level.operator.dtype)
         _require_dtypes(level, rhs, solution)
-        launches.append(self._csr(f'mg_presmooth<{{lanes}}, {t}>', level.operator,
-                                  (level.weights, rhs, solution, level.residual)))
+        launches.append(self._smoothing('presmooth', level.operator, (level.weights, rhs, solution, level.residual)))
         launches.append(self._csr(f'csr_product<{{lanes}}, {hierarchy}, {t}, {hierarchy}>', level.restriction,
                                   (level.residual, level.coarse_rhs)))
         self._cycle_launches(depth + 1, level.coarse_rhs, level.coarse_solution, launches)
         launches.append(self._csr(f'mg_add_product<{{lanes}}, {hierarchy}, {t}>', level.prolongation,
                                   (level.coarse_solution, solution)))
-        launches.append(self._csr(f'mg_correction<{{lanes}}, {t}>', level.operator,
-                                  (level.weights, rhs, solution, level.residual)))
+        launches.append(self._smoothing('correction', level.operator, (level.weights, rhs, solution, level.residual)))
         launches.append(self._elementwise('add', solution, (level.residual, solution)))
 
     def _coarsest_launches(self, rhs, solution, launches):
@@ -794,8 +821,16 @@ class _DeviceCycle:
         _, operator, weights, residual = self._coarsest
         launches.append(self._elementwise('scale', solution, (weights, rhs, solution)))
         for _ in range(COARSEST_SMOOTHING_SWEEPS - 1):
-            launches.append(self._csr(f'mg_correction<{{lanes}}, {t}>', operator, (weights, rhs, solution, residual)))
+            launches.append(self._smoothing('correction', operator, (weights, rhs, solution, residual)))
             launches.append(self._elementwise('add', solution, (residual, solution)))
+
+    def _smoothing(self, kind, operator, vectors):
+        """Launch of mg_presmooth / mg_correction (kind) on a level operator: its _split variant on a SplitCsr
+        (float32 values, the float64 diagonal), else the kernel of the operator's dtype."""
+        if isinstance(operator, SplitCsr):
+            return self._csr(f'mg_{kind}_split<{{lanes}}>', operator.matrix, (operator.diagonal_values,) + vectors)
+        from .pcg import type_name
+        return self._csr(f'mg_{kind}<{{lanes}}, {type_name(operator.dtype)}>', operator, vectors)
 
     def _csr(self, name_pattern, matrix, vectors):
         """Launch of a CSR row kernel (name_pattern with '{lanes}') over matrix's rows: (n_rows, indptr, indices,
@@ -878,7 +913,8 @@ class MultigridPreconditioner:
         if not self._levels:
             return False
         fine = self._levels[0].operator
-        if fine.shape != operator.shape or fine.dtype != operator.dtype:
+        if (fine.shape != operator.shape or fine.dtype != operator.dtype
+                or isinstance(fine, SplitCsr) != isinstance(operator, SplitCsr)):
             return False
         xp = self._xp
         return all(kept is current or (kept.shape == current.shape and bool(xp.array_equal(kept, current)))
@@ -897,10 +933,13 @@ class MultigridPreconditioner:
         self.n_rebinds += 1
 
     def setup(self, operator) -> None:
-        """Build the hierarchy of a square backend CSR operator; re-aggregates only when its nonzero pattern changed."""
+        """Build the hierarchy of a square backend CSR operator (or a pcg SplitCsr: aggregation and coarse levels from
+        its float32 CSR, level 0 smoothing on the split operator); re-aggregates only when its nonzero pattern
+        changed."""
         from ..core.backend import synchronize, to_host
         if operator.shape[0] != operator.shape[1]:
             raise ValueError(f'multigrid needs a square operator, got shape {operator.shape}')
+        split = operator if isinstance(operator, SplitCsr) else None
         seconds = {'aggregation': 0.0, 'products': 0.0, 'coarsest': 0.0}
         if self._device_cycle is not None:   # its plans and graphs hold the old hierarchy's vectors
             self.n_cycle_graphs += self._device_cycle.n_graphs
@@ -923,7 +962,8 @@ class MultigridPreconditioner:
         self._levels = []
         self._coarsest = None
         self.no_strong_links = False
-        current, depth = operator, 0
+        # a SplitCsr: everything below level 0 from its float32 CSR (the float32 hierarchy a double operator gets too)
+        current, depth = (operator if split is None else split.matrix), 0
         while True:
             n_unknowns = current.shape[0]
             if reuse:
@@ -945,13 +985,14 @@ class MultigridPreconditioner:
                     break
                 self._aggregates.append((aggregate, n_aggregates))
             started = time.perf_counter()
-            level, current = self._build_level(current, depth)
+            level, current = self._build_level(current, depth, fine=split if depth == 0 else None)
             synchronize(self.backend)      # the products' device time lands here, not in the next aggregation
             seconds['products'] += time.perf_counter() - started
             self._levels.append(level)
             depth += 1
         started = time.perf_counter()
-        self._coarsest = self._coarsest_solver(current)
+        # no coarse level: the fine operator itself (a SplitCsr with its float64 diagonal)
+        self._coarsest = self._coarsest_solver(current if self._levels or split is None else split)
         synchronize(self.backend)
         seconds['coarsest'] = time.perf_counter() - started
         if (self._scaled_residual is None or self._scaled_residual.shape != (operator.shape[0],)
@@ -1023,22 +1064,30 @@ class MultigridPreconditioner:
         return absolute.dot(xp.ones(matrix.shape[1], dtype=dtype))
 
     def _smoother_weights(self, operator):
-        """l1-Jacobi weights SMOOTHER_WEIGHT / sum_j |a_ij|, 1 / |a_ii| on rows without off-diagonals, 0 on empty rows."""
+        """l1-Jacobi weights SMOOTHER_WEIGHT / sum_j |a_ij|, 1 / |a_ii| on rows without off-diagonals, 0 on empty rows
+        (a SplitCsr: those of its float32 CSR, float64 for its float64 level vectors; a smoother parameter, so the
+        rounded diagonal serves)."""
+        if isinstance(operator, SplitCsr):
+            return self._smoother_weights(operator.matrix).astype(np.float64)
         xp = self._xp
         row_l1 = self._row_l1(operator, operator.dtype)
         off_diagonal_l1 = row_l1 - xp.abs(operator.diagonal())
         weights = xp.where(off_diagonal_l1 > 0, SMOOTHER_WEIGHT, 1.0) / xp.where(row_l1 > 0, row_l1, 1.0)
         return xp.where(row_l1 > 0, weights, 0.0).astype(operator.dtype)
 
-    def _build_level(self, operator, depth):
+    def _build_level(self, operator, depth, fine=None):
         """(_Level, coarse operator) of operator with the depth's aggregates: P = (I - W_F A_F) T (A_F: the filtered
         operator, `_filtered_rows`), R = P^T, A_c = R A P (Galerkin with the full A, so SPD) in HIERARCHY_DTYPE, in
         row blocks b (P_b = T_b - W_F,b A_F,b T, A_c = sum_b P_b^T (A_b P)) so no full A T or A P is ever held; on the
-        gpu A_c in column chunks c of P (_column_ranges: rows c of A_c = (sum_b P_b^T (A_b P_c))^T)."""
+        gpu A_c in column chunks c of P (_column_ranges: rows c of A_c = (sum_b P_b^T (A_b P_c))^T). fine: the
+        SplitCsr whose float32 CSR `operator` is (level 0 of a mixed2 operator): the level smooths on it and the strength
+        filter scales by its float64 diagonal (as on a double operator: float32 products of small diagonals
+        underflow)."""
         n_unknowns = operator.shape[0]
         tentative = self._tentative(depth, n_unknowns)
-        weights = self._smoother_weights(operator)   # the cycle's smoother: the full operator
-        diagonal = operator.diagonal()
+        level_operator = operator if fine is None else fine
+        weights = self._smoother_weights(level_operator)   # the cycle's smoother: the full operator
+        diagonal = level_operator.diagonal()
         blocks = []
         for start, stop in self._row_blocks(operator, tentative.indptr):
             filtered, filtered_weights = self._filtered_rows(operator, start, stop, diagonal)
@@ -1084,7 +1133,7 @@ class MultigridPreconditioner:
         del coarse_rows
         if restriction is None:
             restriction = prolongation.T.tocsr()
-        return (_Level(operator, weights, prolongation, restriction, self._xp, host=self.backend == 'cpu'),
+        return (_Level(level_operator, weights, prolongation, restriction, self._xp, host=self.backend == 'cpu'),
                 coarse_operator.tocsr())
 
     def _column_ranges(self, n_columns):
@@ -1262,7 +1311,11 @@ class MultigridPreconditioner:
 
     def _product(self, matrix, vector, out):
         """matrix @ vector of the cpu cycle: written into `out` by scipy's CSR kernel (no allocation; equal dtypes),
-        else the allocating product (the gpu cycle is _DeviceCycle)."""
+        else the allocating product (the gpu cycle is _DeviceCycle); a SplitCsr level by pcg.host_split_product."""
+        if isinstance(matrix, SplitCsr):
+            if out is None:
+                out = np.empty(matrix.shape[0], dtype=np.float64)
+            return host_split_product(matrix, np.ascontiguousarray(vector, dtype=np.float64), out)
         if (self._host_matvec is None or out is None or matrix.format != 'csr'
                 or not matrix.dtype == vector.dtype == out.dtype):
             return matrix.dot(vector)

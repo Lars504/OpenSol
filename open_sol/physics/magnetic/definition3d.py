@@ -14,7 +14,8 @@ from ...fem.diffusion3d import fem_diffusion_estimate_3d
 from ...model.definition_helpers import (CG_DIFFUSION_LINEAR_ROLE, DISCRETIZATION_PARAM, cg_solver_issues,
                                          element_order, evaluates_to, face_conflicts, held_object_conflicts,
                                          linear_solver_direct, linear_solver_mixed, linear_solver_multigrid,
-                                         linear_solver_precision, mirror_feature_issues, point_cells,
+                                         linear_solver_precision, linear_solver_split, mirror_feature_issues,
+                                         point_cells,
                                          reports_model_checks, single_precision_contrast_issues,
                                          validate_points_inside)
 from ...model.schema import FeatureType, Issue, Param, PhysicsType, resolve_values
@@ -427,6 +428,7 @@ def _memory_estimate(settings_values, mesh, context):
                           _SCALAR_ARRAYS * FLOAT64_BYTES * window_cells)))
     from ...model.schema import solver_backend   # where a multigrid setup aggregates
     parts = [own, diffusion_system_estimate(window_cells, precision, dimensions=3, mixed=linear_solver_mixed(context),
+                                            split=linear_solver_split(context),
                                             multigrid=linear_solver_multigrid(context),
                                             direct=linear_solver_direct(context),
                                             pcg=pcg_linear_solver(context.solvers),

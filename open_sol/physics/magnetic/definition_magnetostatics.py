@@ -15,7 +15,8 @@ from ...model.definition_helpers import (AXISYMMETRIC_SPACE_SETTINGS, CG_DIFFUSI
                                          enabled_feature_entities, evaluates_to, face_conflicts, geometry_param,
                                          held_object_conflicts,
                                          is_axisymmetric, linear_solver_direct, linear_solver_mixed,
-                                         linear_solver_multigrid, linear_solver_precision, make_point_probe,
+                                         linear_solver_multigrid, linear_solver_precision, linear_solver_split,
+                                         make_point_probe,
                                          mirror_feature_issues, on_triangles, own_mirror_face_conflicts,
                                          reports_model_checks, selected_material_data,
                                          single_precision_contrast_issues, validate_points_inside)
@@ -676,6 +677,7 @@ def _memory_estimate(settings_values, mesh, context):
                     kept_preconditioner_bytes(window_cells, 5, value_bytes, context, saturation))))
     from ...model.schema import solver_backend   # where a multigrid setup aggregates
     parts = [own, diffusion_system_estimate(window_cells, precision, mixed=linear_solver_mixed(context),
+                                            split=linear_solver_split(context),
                                             multigrid=linear_solver_multigrid(context),
                                             direct=linear_solver_direct(context),
                                             pcg=pcg_linear_solver(context.solvers),

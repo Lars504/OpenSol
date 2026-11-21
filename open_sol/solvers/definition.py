@@ -43,9 +43,9 @@ _HOST_DIRECT_MIXED_TIP = (
     if host_direct.HOST_DIRECT_MIXED_BACK_ENDS else '')
 
 PCG_PARAMS = (
-    Param('precision', 'choice', 'double', label='Solver precision', choices=('double', 'single', 'mixed'),
+    Param('precision', 'choice', 'double', label='Solver precision', choices=('double', 'single', 'mixed', 'mixed2'),
           choice_labels=(('double', 'Double precision'), ('single', 'Single precision'),
-                         ('mixed', 'Mixed precision')),
+                         ('mixed', 'Mixed precision'), ('mixed2', 'Mixed precision, compact operator')),
           help=f'Arithmetic of the CG vectors and operator (the physics stores its fields as float32 either way). '
                f'single saves solver memory but CG stalls near a relative residual of {_TOLERANCE_FLOOR:g}: use '
                f'tolerance >= {_TOLERANCE_FLOOR:g} with it (validation warns). mixed (heat, electric_currents, '
@@ -53,7 +53,19 @@ PCG_PARAMS = (
                f'iteration, +~30 B per cell), the float64 residual replacing its own each time it fell by '
                f'{pcg.MIXED_REPLACEMENT_RATIO:g}, so any tolerance double reaches is reached in about the iterations '
                'of double; solid_mechanics_3d runs a float32 matrix-free product, several times cheaper on GPUs '
-               'with slow float64 arithmetic. Not for 2D solid_mechanics. A node that sets no precision takes '
+               'with slow float64 arithmetic. Not for 2D solid_mechanics. mixed2 (heat, electric_currents, '
+               'electrostatics, magnetostatics(_3d) on tensor meshes only; jacobi or multigrid): CG vectors and '
+               'residual in float64 as double, the operator stored as float32 face conductances (off-diagonals) plus a '
+               'float64 diagonal summed from those same float32 values (capacity, losses and boundary terms added in '
+               'float64), every product summed in float64; 12 B less per cell than double in 2D, 20 B in 3D (mixed '
+               'needs more than double: its float64 operator stays for the residual). Every row sum stays the exact '
+               'float64 sum, so the result is the double-precision solution for conductances perturbed by <= 6e-8 '
+               '(relative, below the float32 rounding of the materials themselves) with no condition-number factor; '
+               'single and mixed round the diagonal apart from its off-diagonals, a spurious sink of ~6e-8 x the '
+               'diagonal per row that the condition number amplifies (float32 CG floor ~1e-6, iron |B| off by '
+               'percents at mu_dc contrasts >= 100). Any tolerance double reaches is reached in about its '
+               'iterations; each costs about a double one (fewer bytes read, float64 arithmetic). Validation refuses '
+               'it on triangle / tetrahedron meshes and outside those types. A node that sets no precision takes '
                "solver_defaults.precision, else the physics' Automatic one (solid_mechanics_3d on the gpu backend "
                'with a tensor mesh: mixed), else double.',
           tip='Number precision of the iterative solver.\n\n'
@@ -61,7 +73,10 @@ PCG_PARAMS = (
               "- Single precision: saves memory, but cannot reach a 'Solver tolerance' below about "
               f'{_TOLERANCE_FLOOR:g}.\n'
               '- Mixed precision: as accurate as double precision but faster on large heat, electric and 3D solid '
-              'mechanics models; uses a little more memory.'),
+              'mechanics models; uses a little more memory.\n'
+              '- Mixed precision, compact operator: as accurate as double precision, also with very different '
+              'materials, and uses a little less memory; heat, electric and magnetic field models on a regular '
+              'grid only. Worth comparing with Mixed precision on large models.'),
     Param('tolerance', 'float', 1e-8, label='Solver tolerance', unit='1', min=0.0, min_exclusive=True,
           help='CG stopping criterion, a relative residual norm: in a steady solve relative to ||b|| (the sources and '
                'boundary drive); in an implicit time step relative to the initial residual of the step (its change '
@@ -90,8 +105,9 @@ PCG_PARAMS = (
           help='CG preconditioner. jacobi: the inverse diagonal (solid_mechanics: its 2x2 / 3x3 block diagonal), '
                'cheap per iteration, but iterations grow with the cells along the longest window axis (~10 per '
                'cell), grading, aspect ratio and coefficient contrast (outer grading, 1e3x conductivity ratios: up '
-               'to ~1e5). multigrid (heat, electric_currents, electrostatics, magnetostatics; precision single or '
-               'double): smoothed-aggregation algebraic multigrid V(1,1) (strength threshold '
+               'to ~1e5). multigrid (heat, electric_currents, electrostatics, magnetostatics; precision single, '
+               'double or mixed2: its finest level smooths on the compact operator): smoothed-aggregation algebraic '
+               'multigrid V(1,1) (strength threshold '
                f'{multigrid.STRENGTH_THRESHOLD:g}, graded cells semi-coarsen), typically 10-40 iterations at any '
                'mesh size, each ~4-6 Jacobi iterations, ~150 B per cell (double) on the device; every assembly '
                'rebuilds the coarse operators. Best for steady solves on large or strongly graded meshes; for '
@@ -104,8 +120,9 @@ PCG_PARAMS = (
           tip='How the iterative solver is accelerated.\n\n'
               '- Jacobi (diagonal): light per step; suits small or uniform meshes and time-stepped heat.\n'
               '- Multigrid: far fewer steps on large or strongly graded meshes and with very different materials; '
-              'heat and electric or magnetic field models (not with mixed precision) and 3D solid mechanics on a '
-              'regular grid. The automatic solver of the field models uses it.'),
+              "heat and electric or magnetic field models (not with 'Mixed precision'; 'Mixed precision, compact "
+              "operator' works) and 3D solid mechanics on a regular grid. The automatic solver of the field models "
+              'uses it.'),
 )
 
 
@@ -144,7 +161,7 @@ PCG = SolverType(
                 'and pcg opt-in (solid_mechanics_3d on tetrahedra: sparse_direct only). To change a setting add a '
                 'pcg node and assign it (physics solvers {"linear": "<node name>"}).',
     summary='Iterative solver for diffusion and elasticity problems: fast and memory-light on large meshes.',
-    operators=('spd',), backends=('gpu', 'cpu'), precisions=('double', 'single', 'mixed'),
+    operators=('spd',), backends=('gpu', 'cpu'), precisions=('double', 'single', 'mixed', 'mixed2'),
     grids=('tensor', 'triangles', 'tetrahedra'),
     create=_create_pcg, validate=_validate_pcg, memory_estimate=_empty_memory_estimate, time_estimate=pcg.time_estimate)
 

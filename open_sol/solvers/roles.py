@@ -12,7 +12,7 @@ OPERATOR_CLASSES = {'spd': 'symmetric positive definite', 'complex_symmetric': '
 BACKENDS = {'gpu': 'GPU', 'cpu': 'CPU'}
 # precision -> GUI text; storage / compute dtypes per role are the runtime's business
 PRECISIONS = {'single': 'single precision', 'double': 'double precision', 'mixed': 'mixed precision',
-              'half_storage': 'half-precision storage'}
+              'mixed2': 'mixed precision with a compact operator', 'half_storage': 'half-precision storage'}
 # a 'line' (1D model, one cell across: symmetry 2.20) and a 'tensor_3d' (a 3D model's
 # tensor mesh: its own kind only so that grid_defaults can differ from 2D) are tensor meshes, so solvers and physics
 # declaring 'tensor' fit them too (solver_misfit); 'triangles' / 'tetrahedra' = a MeshSpec of that kind (FEM)
@@ -60,6 +60,9 @@ class SolverRole:
     study_defaults: dict = field(default_factory=dict)
     # backends study_defaults apply on (() = every backend)
     study_default_backends: tuple = ()
+    # {precision: grid kinds}: a precision of `precisions` the role runs only on those grid kinds (solver_misfit; the
+    # diffusion 'linear' role: pcg 'mixed2' needs the DiffusionSystem's conductance-built operator, tensor meshes only)
+    precision_grids: dict = field(default_factory=dict)
     # unknowns of the role's direct operator per window cell (1: cell-centred diffusion) or, above 1, per mesh node (2D
     # solid Q1: 2); the host direct size rule and the fit guard count with it (definition_helpers.direct_unknowns)
     direct_components: int = 1
@@ -91,6 +94,9 @@ class SolverRole:
         _require_keys(owner, 'study_defaults grid kinds', tuple(grid for _, grid in self.study_defaults), GRID_KINDS,
                       allow_empty=True)
         _require_keys(owner, 'study_default_backends', self.study_default_backends, BACKENDS, allow_empty=True)
+        _require_keys(owner, 'precision_grids keys', tuple(self.precision_grids), self.precisions, allow_empty=True)
+        for precision, grids in self.precision_grids.items():
+            _require_keys(owner, f'precision_grids[{precision!r}]', grids, GRID_KINDS)
         if not isinstance(self.direct_components, int) or self.direct_components < 1:
             raise ValueError(f'{owner}: direct_components must be an int >= 1, got {self.direct_components!r}')
         key ='back_end' if 'back_end' in self.setting_choices else 'factorization'
@@ -218,6 +224,9 @@ def solver_misfit(solver_type, values, physics_type, role, study, backend, grid)
     precision = resolved_precision(solver_type, values)
     if precision not in solver_type.precisions or precision not in solver_role.precisions:
         return f'{physics_label} cannot run its {SOLVER_ROLES[role].lower()} in {PRECISIONS[precision]}'
+    if precision in solver_role.precision_grids and grid not in solver_role.precision_grids[precision]:
+        return (f'{physics_label} cannot run its {SOLVER_ROLES[role].lower()} in {PRECISIONS[precision]} on a '
+                f'{GRID_KINDS[grid]}')
     if (precision == 'mixed' and 'preconditioner' in values
             and values['preconditioner'] not in solver_role.mixed_preconditioners):
         return (f"{physics_label} cannot use {solver_type.label} with preconditioner '{values['preconditioner']}' at "
