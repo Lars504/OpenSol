@@ -63,13 +63,31 @@ def _device_matrix(backend, matrix):
 
 # --- pcg ----------------------------------------------------------------------------------------------------------
 
-def _pcg_run(backend, precision, matrix, rhs, matrix_free):
+def _split_operator(backend, matrix):
+    """pcg SplitCsr of a host float64 CSR whose off-diagonals are float32 numbers: its float32 copy on the backend
+    and the float64 diagonal (what DiffusionSystem hands a 'mixed2' solver)."""
+    from .pcg import SplitCsr
+    return SplitCsr(_device_matrix(backend, matrix.astype(np.float32)), _device(backend, matrix.diagonal()))
+
+
+def _pcg_run(backend, precision, matrix, rhs, matrix_free, preconditioner='jacobi', solves=1):
     """(host solution, iterations, converged) of PCGSolver on the backend: CSR + Jacobi, or matrix-free + callback
-    (mixed: plus the float32 callbacks of the inner CG)."""
+    (mixed: plus the float32 callbacks of the inner CG); mixed2: the SplitCsr of the CSR. solves > 1: that many solves
+    of the same rhs from 0 (a small 'multigrid' operator binds Jacobi first and builds its hierarchy at the second
+    solve), the last one returned with the iterations of all."""
     from ..core.backend import array_module, to_host
-    from .pcg import PCGSolver
+    from .pcg import SPLIT_PRECISION, PCGSolver
     xp = array_module(backend)
-    solver = PCGSolver(precision=precision, tolerance=1e-10, max_iterations=20_000, backend=backend)
+    solver = PCGSolver(precision=precision, tolerance=1e-10, max_iterations=20_000, backend=backend,
+                       preconditioner=preconditioner)
+    if precision == SPLIT_PRECISION:
+        solver.factorize(_split_operator(backend, matrix))
+        converged, iterations = True, 0
+        for _ in range(solves):
+            solution = xp.zeros(matrix.shape[0], dtype=solver.dtype)
+            converged = solver.solve(xp.asarray(rhs, dtype=solver.dtype), solution) and converged
+            iterations += solver.last_iters
+        return to_host(solution), iterations, converged
     operator = _device_matrix(backend, matrix.astype(solver.dtype))
     if matrix_free:
         def callbacks(dtype):
@@ -97,10 +115,11 @@ def _pcg_run(backend, precision, matrix, rhs, matrix_free):
 
 
 def _check_pcg(results_by_name):
-    """pcg double / mixed (CSR + Jacobi) and double / mixed matrix-free (callback preconditioner) on cpu and gpu."""
+    """pcg double / mixed (CSR + Jacobi), double / mixed matrix-free (callback preconditioner) and mixed2 (SplitCsr:
+    Jacobi, and multigrid over two solves) on cpu and gpu; the SplitCsr refusals."""
     import scipy.sparse
     import scipy.sparse.linalg
-    from .pcg import CG_CHECK_INTERVAL, PCGSolver
+    from .pcg import CG_CHECK_INTERVAL, SPLIT_PRECISION, PCGSolver
     rng = np.random.default_rng(_SEED)
     nx, ny = _GRID
     matrix = (_laplacian(nx, ny) + scipy.sparse.diags(rng.uniform(0.01, 1.0, nx * ny))).tocsr()
@@ -108,15 +127,27 @@ def _check_pcg(results_by_name):
     reference = scipy.sparse.linalg.spsolve(matrix.tocsc(), rhs)
     errors, iterations, failed = {}, {}, []
     backends = _backends()
+    runs = (('double', False, 'jacobi', 1), ('mixed', False, 'jacobi', 1), ('double', True, 'jacobi', 1),
+            ('mixed', True, 'jacobi', 1), (SPLIT_PRECISION, False, 'jacobi', 1),
+            (SPLIT_PRECISION, False, 'multigrid', 2))
     for backend in backends:
-        for precision, matrix_free in (('double', False), ('mixed', False), ('double', True), ('mixed', True)):
-            key = f"{backend}_{precision}{'_matrix_free' if matrix_free else ''}"
-            solution, iterations[key], converged = _pcg_run(backend, precision, matrix, rhs, matrix_free)
+        for precision, matrix_free, preconditioner, solves in runs:
+            key = (f"{backend}_{precision}{'_matrix_free' if matrix_free else ''}"
+                   f"{'_multigrid' if preconditioner == 'multigrid' else ''}")
+            solution, iterations[key], converged = _pcg_run(backend, precision, matrix, rhs, matrix_free,
+                                                            preconditioner, solves)
             errors[key] = norm_relative_error(solution, reference)
             if not converged:
                 failed.append(f'{key}_converged')
+        split = _split_operator(backend, matrix)
+        _refused(failed, f'{backend}_double_refuses_split', lambda: PCGSolver(backend=backend).factorize(split),
+                 TypeError)
+        _refused(failed, f'{backend}_mixed2_refuses_csr',
+                 lambda: PCGSolver(SPLIT_PRECISION, backend=backend).factorize(_device_matrix(backend, matrix)),
+                 TypeError)
     if 'gpu' in backends:
-        for key in [name for name in iterations if name.startswith('cpu_double')]:   # mixed: outer passes may differ
+        # mixed: outer passes may differ; mixed2 runs the double CG on the same operator values
+        for key in [name for name in iterations if name.startswith(('cpu_double', f'cpu_{SPLIT_PRECISION}'))]:
             twin = 'gpu_' + key[len('cpu_'):]
             if abs(iterations[key] - iterations[twin]) > CG_CHECK_INTERVAL:   # one residual-check block of rounding
                 failed.append(f'{key}_iterations_match_gpu')
@@ -1237,6 +1268,9 @@ _PRECISION_CASES = (
     ('heat_auto', 'heat', 'linear', 'stationary', 'auto', None, 'gpu', ('pcg', 'double', False)),
     ('heat_single', 'heat', 'linear', 'stationary', 'single', None, 'gpu', ('pcg', 'single', False)),
     ('heat_mixed', 'heat', 'linear', 'stationary', 'mixed', None, 'gpu', ('pcg', 'mixed', False)),
+    ('heat_mixed2', 'heat', 'linear', 'stationary', 'mixed2', None, 'gpu', ('pcg', 'mixed2', False)),
+    ('heat_cpu_mixed2_direct', 'heat', 'linear', 'stationary', 'mixed2', None, 'cpu',
+     ('sparse_direct', 'double', True)),
     ('heat_node_filled', 'heat', 'linear', 'stationary', 'single', ('pcg', {'tolerance': 1e-6}), 'gpu',
      ('pcg', 'single', False)),
     ('heat_node_own_precision', 'heat', 'linear', 'stationary', 'single', ('pcg', {'precision': 'double'}), 'gpu',
@@ -1264,6 +1298,9 @@ _PRECISION_CASES = (
     ('solid_3d_mixed', 'solid_mechanics_3d', 'linear', 'stationary', 'mixed', None, 'gpu', ('pcg', 'mixed', False)),
     ('solid_3d_auto_gpu_mixed', 'solid_mechanics_3d', 'linear', 'stationary', 'auto', None, 'gpu',
      ('pcg', 'mixed', False)),
+    # mixed2 is a diffusion-only precision: the solid keeps its Automatic mixed and lists mixed2 as ignored
+    ('solid_3d_mixed2_ignored', 'solid_mechanics_3d', 'linear', 'stationary', 'mixed2', None, 'gpu',
+     ('pcg', 'mixed', True)),
     ('solid_3d_auto_cpu_double', 'solid_mechanics_3d', 'linear', 'stationary', 'auto', None, 'cpu',
      ('pcg', 'double', False)),
     ('solid_3d_default_double_wins', 'solid_mechanics_3d', 'linear', 'stationary', 'double', None, 'gpu',
@@ -1348,10 +1385,20 @@ def _check_default_precision(results_by_name):
         outcomes[f'with_default_precision_{name}'] = {'got': got, 'expected': expected}
         if got != expected:
             mismatches.append(f'with_default_precision_{name}')
+    # mixed2 only on the tensor meshes the DiffusionSystem assembles (CG_DIFFUSION_LINEAR_ROLE.precision_grids)
+    from .roles import solver_misfit
+    heat_type = registry.physics_type('heat')
+    split_misfits = {'tensor': False, 'tensor_3d': False, 'line': False, 'triangles': True, 'tetrahedra': True}
+    for grid, expected in split_misfits.items():
+        reason = solver_misfit(pcg_type, {'precision': 'mixed2', 'preconditioner': 'jacobi'}, heat_type, 'linear',
+                               'stationary', 'gpu', grid)
+        outcomes[f'mixed2_misfit_{grid}'] = {'got': reason, 'expected_misfit': expected}
+        if bool(reason) != expected:
+            mismatches.append(f'mixed2_misfit_{grid}')
     _multigrid_resolution_checks(registry, mismatches, outcomes)
     _eigen_role_checks(registry, mismatches, outcomes)
-    n_checks = (len(_PRECISION_CASES) + len(direct) + len(_MULTIGRID_CASES) + len(_MULTIGRID_3D_CASES)
-                + len(_EIGEN_ROLE_CASES))
+    n_checks = (len(_PRECISION_CASES) + len(direct) + len(split_misfits) + len(_MULTIGRID_CASES)
+                + len(_MULTIGRID_3D_CASES) + len(_EIGEN_ROLE_CASES))
     return {'measured': len(mismatches), 'expected': 0, 'error': float(len(mismatches)), 'tolerance': 0.0,
             'details': {'n_checks': n_checks, 'mismatches': mismatches, 'outcomes': outcomes}}
 
@@ -1472,6 +1519,10 @@ _MULTIGRID_CASES = (
     ('heat_mixed_automatic', 'heat', 'mixed', None, 'gpu', ('pcg', 'mixed', 'jacobi')),
     ('heat_mixed_node', 'heat', 'auto', ('pcg', {'precision': 'mixed'}), 'gpu', ('pcg', 'mixed', 'jacobi')),
     ('heat_mixed_default_node', 'heat', 'mixed', ('pcg', {'tolerance': 1e-6}), 'gpu', ('pcg', 'mixed', 'jacobi')),
+    # mixed2 keeps the Automatic multigrid (its finest level smooths on the SplitCsr)
+    ('heat_mixed2_automatic', 'heat', 'mixed2', None, 'gpu', ('pcg', 'mixed2', 'multigrid')),
+    ('magnetostatics_mixed2_node', 'magnetostatics', 'auto', ('pcg', {'precision': 'mixed2'}), 'gpu',
+     ('pcg', 'mixed2', 'jacobi')),
     ('heat_node_default_jacobi', 'heat', 'auto', ('pcg', {}), 'gpu', ('pcg', 'double', 'jacobi')),
     ('heat_node_multigrid_single', 'heat', 'auto', ('pcg', {'precision': 'single', 'preconditioner': 'multigrid'}),
      'gpu', ('pcg', 'single', 'multigrid')),
@@ -1483,6 +1534,7 @@ _MULTIGRID_3D_CASES = (
     ('heat_3d_auto', 'heat', 'auto', None, 'gpu', ('pcg', 'double', 'multigrid')),
     ('heat_3d_cpu_auto', 'heat', 'auto', None, 'cpu', ('pcg', 'double', 'multigrid')),
     ('heat_3d_cpu_mixed_automatic', 'heat', 'mixed', None, 'cpu', ('pcg', 'mixed', 'jacobi')),
+    ('heat_3d_cpu_mixed2_automatic', 'heat', 'mixed2', None, 'cpu', ('pcg', 'mixed2', 'multigrid')),
     ('heat_3d_cpu_direct_node', 'heat', 'auto', ('sparse_direct', {}), 'cpu', ('sparse_direct', 'double', None)),
 )
 _MULTIGRID_3D_SIZE_Z = 4e-6
@@ -2234,6 +2286,50 @@ def _check_cudss_equilibrate_numba(_):
     return result
 
 
+_SPLIT_GRID = (200, 200)    # 5-point pattern of solver_split_product_numba (4e4 rows)
+
+
+def _check_split_product_numba(_):
+    """numba vs numpy pcg.host_split_product (the cpu SplitCsr product of 'mixed2') on a 5-point pattern with random
+    float32 off-diagonals and a float64 diagonal, plus the numpy twin against the float64 scipy product of the same
+    values (the twin, not only its parity, is checked)."""
+    import scipy.sparse
+    from ..core.kernels import numba_available
+    from ..model.selftest_helpers import NUMBA_MISSING_DETAILS, numba_twin_result
+    from .pcg import SplitCsr, host_split_product
+    rng = np.random.default_rng(_SEED + 11)
+    pattern = _laplacian(*_SPLIT_GRID)
+    off_diagonal = pattern.copy()
+    off_diagonal.setdiag(0.0)
+    off_diagonal.eliminate_zeros()
+    off_diagonal.data = -rng.uniform(1e-3, 1.0, off_diagonal.nnz).astype(np.float32).astype(np.float64)
+    diagonal = -np.asarray(off_diagonal.sum(axis=1)).ravel() + rng.uniform(0.0, 1e-6, pattern.shape[0])
+    exact = (off_diagonal + scipy.sparse.diags(diagonal)).tocsr()
+    exact.sort_indices()
+    split = SplitCsr(exact.astype(np.float32), diagonal)
+    vector = rng.standard_normal(pattern.shape[0])
+    numpy_product = host_split_product(split, vector, np.empty(vector.size), numba=False)
+    reference = exact.dot(vector)
+    numpy_error = float(np.max(np.abs(numpy_product - reference)) / np.max(np.abs(reference)))
+    if not numba_available():
+        return {'measured': numpy_error, 'expected': 0.0, 'error': numpy_error, 'tolerance': _SCALE_TOLERANCE,
+                'details': dict(NUMBA_MISSING_DETAILS)}
+    import numba
+
+    def twins():   # the product is the compared output
+        def run(numba_flag):
+            def call(out):
+                host_split_product(split, vector, out, numba=numba_flag)
+            return call
+        return run(False), run(True)
+    comparisons = {'split product': (*twins(), (np.zeros(vector.size),))}
+    timings = {'split product': (*twins(), (np.zeros(vector.size),), 10, 30)}
+    result = numba_twin_result(comparisons, timings, _SCALE_TOLERANCE, numba)
+    result['details']['numpy_vs_float64_scipy'] = numpy_error
+    result['measured'] = result['error'] = max(result['error'], numpy_error)
+    return result
+
+
 _MERGE_ROWS = 40_000        # rows of the random base pattern of solver_pattern_merge_numba
 _MERGE_PER_ROW = 60         # base entries per row (strictly increasing columns, gaps of 1 - 3)
 
@@ -2579,9 +2675,13 @@ SOLVER_SELFTEST_CASES = (
                     'backend (cupy) on a 30 x 20 5-point Laplacian + a random diagonal in [0.01, 1] (SPD, condition '
                     '~400), tolerance 1e-10: double and mixed with Jacobi on the CSR, double and mixed matrix-free '
                     'with a callback preconditioner (mixed: float32 apply / precondition callbacks on float32 copies, '
-                    'the path of solid_mechanics_3d). Each solution against scipy spsolve (relative error <= '
-                    f'{_PARITY_TOLERANCE:g}: condition x tolerance); every solve converged, CPU and GPU double '
-                    'iteration counts within one residual-check block, a CPU solver refuses a cupyx operator.',
+                    'the path of solid_mechanics_3d), mixed2 on the SplitCsr of the same operator (its off-diagonals '
+                    'are float32 numbers: float32 values, the float64 diagonal; Jacobi, and multigrid over two solves '
+                    'from zero: the first binds Jacobi below the size threshold, the second builds the hierarchy whose '
+                    'level 0 smooths on the SplitCsr). Each solution against scipy spsolve (relative error <= '
+                    f'{_PARITY_TOLERANCE:g}: condition x tolerance); every solve converged, CPU and GPU double and '
+                    'mixed2 iteration counts within one residual-check block, a CPU solver refuses a cupyx operator, '
+                    'a double solver refuses a SplitCsr and a mixed2 one a plain CSR. mixed2 not yet run.',
         specs=lambda: {}, check=_check_pcg, max_wall_time=120.0, backends=('cpu', 'gpu')),
     SelfTestCase(
         name='solver_sparse_direct_cpu_gpu',
@@ -2767,8 +2867,11 @@ SOLVER_SELFTEST_CASES = (
                     '(solver_defaults.precision mixed listed ignored), a block_eigen node resolves mixed with '
                     'preconditioner multigrid on both backends (double with solver_defaults.precision double, single '
                     'listed ignored, its own double / jacobi kept) and fits the role (solver_misfit); the 2D '
-                    'solid_mechanics eigen role misfits block_eigen (not opted in). error = number of mismatches, '
-                    'tolerance 0.',
+                    'solid_mechanics eigen role misfits block_eigen (not opted in). mixed2: heat Automatic resolves '
+                    'pcg mixed2 and keeps multigrid (2D gpu, 3D cpu), a magnetostatics pcg node mixed2 keeps jacobi, '
+                    'the heat cpu sparse_direct and the solid_mechanics_3d Automatic mixed list it ignored, and '
+                    'solver_misfit refuses a heat pcg mixed2 on triangle / tetrahedron meshes only (rows mixed2_*). '
+                    'error = number of mismatches, tolerance 0.',
         specs=lambda: {}, check=_check_default_precision, max_wall_time=60.0),
     SelfTestCase(
         name='solver_study_default_fit',
@@ -2877,6 +2980,18 @@ SOLVER_SELFTEST_CASES = (
                     f'{_SCALE_TOLERANCE:g}. Details: ms per call of both. Without numba nothing is compared. Not yet '
                     'run.',
         specs=lambda: {}, check=_check_cudss_equilibrate_numba, max_wall_time=120.0, backends=('cpu',)),
+    SelfTestCase(
+        name='solver_split_product_numba',
+        label="Iterative solver 'mixed2' product: numba row loop vs numpy (CPU)",
+        description="pcg.host_split_product (the cpu product of a SplitCsr, pcg precision 'mixed2': float32 "
+                    'off-diagonal values widened, the float64 diagonal in place of the stored float32 one, summed in '
+                    f'float64) with numba=True against numba=False on a {_SPLIT_GRID[0]} x {_SPLIT_GRID[1]} 5-point '
+                    'pattern with random float32 off-diagonals and a float64 diagonal of their row sums plus up to '
+                    '1e-6 (rows nearly summing to 0: a rounded diagonal would show), and the numpy twin against the '
+                    'float64 scipy product of the same values; measured = error = the worst relative difference, '
+                    f'tolerance {_SCALE_TOLERANCE:g} (same products, other association). Details: ms per call of '
+                    'both. Without numba only the numpy twin is checked. Not yet run.',
+        specs=lambda: {}, check=_check_split_product_numba, max_wall_time=120.0, backends=('cpu',)),
     SelfTestCase(
         name='solver_pattern_merge_numba',
         label='Shift pencil pattern merge and mass product: numba row loops vs numpy (CPU)',
