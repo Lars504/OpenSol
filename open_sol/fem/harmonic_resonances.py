@@ -9,10 +9,12 @@ functions."""
 # 'complex_symmetric' (a PML or complex coefficients: an own LDL^T-able factor of K - sigma M, sigma = omega_t^2 (1 +
 # SHIFT_RELATIVE_OFFSET) so a target on a lossless resonance is not singular, and eigs of (K - sigma M)^-1 M),
 # 'general' (likewise without the symmetric factor request); 'auto' = real_symmetric when both are real, else
-# complex_symmetric. Resonances are ranked by |omega - omega_t|. Energy share per row = |u|^2 x energy_weights (default
-# 1; HarmonicEigenPencil.energy_weights: lumped |M|) or Re(conj(u) W u) of a sparse W; pml_fraction = 1 - the in_window
-# share (> pml_fraction_limit: a PML mode, dropped; the complex paths then widen ARPACK on the same factor, at most
-# MAX_WIDENINGS doublings); region_fraction = the in_region share (NaN without a region; below min_region_fraction:
+# complex_symmetric. On a cuDSS complex symmetric LDL^T at an eigen tolerance >= SINGLE_BASIS_MIN_TOLERANCE the
+# Krylov basis is complex64 and every candidate's lambda the float64 Rayleigh quotient v^T K v / v^T M v (a general
+# pencil keeps complex128: no stationary quotient without left vectors). Resonances are ranked by |omega - omega_t|.
+# Energy share per row = |u|^2 x energy_weights (default 1; HarmonicEigenPencil.energy_weights: lumped |M|) or
+# Re(conj(u) W u) of a sparse W; pml_fraction = 1 - the in_window share (> pml_fraction_limit: a PML mode, dropped; the
+# complex paths then widen ARPACK on the same factor, at most MAX_WIDENINGS doublings); region_fraction = the in_region share (NaN without a region; below min_region_fraction:
 # dropped). |lambda| <= STATIC_RELATIVE_EIGENVALUE x sigma (a constant mode of a free edge / Neumann region) and Re omega
 # <= 0 are no resonances.
 import math
@@ -29,6 +31,7 @@ EXTRA_EIGENVALUES = 4                 # eigenvalues asked beyond the wanted reso
 MAX_WIDENINGS = 2                     # doublings of the eigenpairs while the filters leave too few resonances
 _THETA_FLOOR = 1e-12                  # |theta| below this x the largest: massless rows (lambda infinite)
 _LOSSLESS_RELATIVE_IMAG = 1e-12       # |Im omega| below this x Re omega is round-off: Q = inf
+_SELF_ORTHOGONAL_RELATIVE = 1e-8      # |v^T M v| below this x |v^H M v|: no Rayleigh quotient (_rayleigh_polished)
 _START_VECTOR_SEED = 6                # deterministic ARPACK start vector
 RESONANCE_COLUMNS = ('resonance_number', 'frequency', 'frequency_imag', 'q_factor', 'pml_fraction')
 RESONANCE_UNITS = ('1', 'Hz', 'Hz', '1', '1')
@@ -78,6 +81,8 @@ class HarmonicResonanceSolve:
         label = f"{info['label']} " if info.get('label') else ''
         region = (f", {info['region_resonances_dropped']} below the region energy fraction "
                   f"{info.get('min_region_fraction', 0.0):g}" if info.get('region') else '')
+        rayleigh = (f", complex64 basis, Rayleigh quotients moved lambda by up to {info['rayleigh_change']:.2g}"
+                    if 'rayleigh_change' in info else '')
         if info.get('band') is not None:   # fem.resonance_search: several shifts
             low, high = info['band']
             expected = info.get('expected_count')
@@ -94,7 +99,7 @@ class HarmonicResonanceSolve:
                 f"{info['factor']} factorisation {info['factor_seconds']:.3g} s, "
                 f"{info['factor_host_bytes'] / 2 ** 20:.4g} MiB; eigs {info['eigen_seconds']:.3g} s{widened}, "
                 f"{info['operator_applications']} operator applications, {info['eigenvalues_converged']} of "
-                f"{info['eigenvalues_requested']} eigenvalues; dropped: {info['pml_resonances_dropped']} PML"
+                f"{info['eigenvalues_requested']} eigenvalues{rayleigh}; dropped: {info['pml_resonances_dropped']} PML"
                 f"{region})")
 
 
@@ -186,6 +191,7 @@ def solve_harmonic_resonances(stiffness, mass, target_frequency, n_resonances, *
     min_region_fraction = _min_region_fraction(min_region_fraction, in_region)
     omega_target = 2.0 * math.pi * target_frequency
     warnings = []
+    single_basis, rayleigh_change = False, None   # a complex64 Krylov basis and its Rayleigh-quotient move (below)
     applications_before = eigen_solver.operator_applications
     eigen_seconds_before = eigen_solver.total_eigen_seconds   # ARPACK alone (the factor precedes it)
     if pencil == 'real_symmetric':
@@ -223,10 +229,14 @@ def solve_harmonic_resonances(stiffness, mass, target_frequency, n_resonances, *
             if not host_mass:
                 host_mass.append(mass.astype(np.complex128, copy=False))
             return factorization.solve_host(host_mass[0] @ vector)
-        # a loose eigen tolerance: complex64 Krylov basis rows (SINGLE_BASIS_MIN_TOLERANCE: the fp32 Arnoldi relation
-        # holds to ~1e-7 |H|, so the Ritz values of the wanted, largest |theta| keep the asked relative accuracy; H and
-        # the matvec stay complex128), half the basis bytes
-        single_basis = device_apply is not None and eigen_solver.tolerance >= SINGLE_BASIS_MIN_TOLERANCE
+        # a loose eigen tolerance on a complex symmetric LDL^T: complex64 Krylov basis rows (half the basis bytes; H and
+        # the matvec stay complex128), then float64 Rayleigh quotients (_rayleigh_polished): the fp32 Arnoldi relation
+        # holds to ~1e-7 |H| = 1e-7 max |theta|, so a Ritz value with |theta| well below the largest (a resonance far
+        # from the shift beside one on it) misses the asked tolerance; the unconjugated quotient of a complex
+        # symmetric pencil squares the vector's error. A general pencil (Bloch phase) has no such quotient: complex128.
+        single_basis = (device_apply is not None and pencil == 'complex_symmetric'
+                        and bool(getattr(factorization, 'symmetric', False))
+                        and eigen_solver.tolerance >= SINGLE_BASIS_MIN_TOLERANCE)
         while True:
             theta, vectors, _, converged = eigen_solver.eigs(host_apply, n_free, n_wanted, start_vector,
                                                              device_matvec=device_apply, single_basis=single_basis)
@@ -242,6 +252,11 @@ def solve_harmonic_resonances(stiffness, mass, target_frequency, n_resonances, *
             previous_count = len(candidates)
             n_wanted = min(2 * n_wanted, n_free - 2)
             widenings += 1
+        if single_basis:
+            candidates, rayleigh_change, unpolished = _rayleigh_polished(candidates, stiffness, mass, omega_target)
+            if unpolished:
+                warnings.append(f'{unpolished} resonance(s) kept their complex64-basis Ritz value (no usable Rayleigh '
+                                'quotient: v^T M v ~ 0); their frequency / Q may miss the eigen tolerance')
     eigen_seconds = eigen_solver.total_eigen_seconds - eigen_seconds_before
     eigen_done = time.perf_counter()
     if not converged:
@@ -273,7 +288,9 @@ def solve_harmonic_resonances(stiffness, mass, target_frequency, n_resonances, *
             'eigenvalues_requested': n_wanted, 'eigenvalues_converged': int(np.size(eigenvalues)),
             'widenings': widenings, 'pml_resonances_dropped': counts['pml'],
             'region_resonances_dropped': counts['region'], 'region': in_region is not None,
-            'min_region_fraction': min_region_fraction, 'warnings': warnings}
+            'min_region_fraction': min_region_fraction, 'warnings': warnings, 'single_basis': single_basis}
+    if rayleigh_change is not None:
+        info['rayleigh_change'] = rayleigh_change
     # the fields are host copies by now: free a cuDSS shift factor (outside the cupy pool) instead of leaving it to gc
     getattr(factorization, 'release', lambda: None)()
     return HarmonicResonanceSolve(resonances=resonances, info=info)
@@ -321,6 +338,38 @@ def _candidates(eigenvalues, vectors, sigma, omega_target, weights, in_window, i
         candidates.append((abs(omega - omega_target), omega, pml_fraction, region_fraction, vector))
     candidates.sort(key=lambda candidate: candidate[0])
     return candidates, counts
+
+
+def _rayleigh_polished(candidates, stiffness, mass, omega_target) -> tuple:
+    """(candidates re-ranked, largest relative move of lambda, count kept unpolished) with omega from the float64
+    unconjugated Rayleigh quotient lambda = v^T K v / v^T M v of each vector (stationary on a complex symmetric pencil:
+    the error of a complex64-basis Ritz vector enters squared). A self-orthogonal vector (|v^T M v| below
+    _SELF_ORTHOGONAL_RELATIVE |v^H M v|) or a quotient with Re omega <= 0 keeps its Ritz value (counted: the caller
+    warns)."""
+    polished, change, unpolished = [], 0.0, 0
+    for distance, omega, pml_fraction, region_fraction, vector in candidates:
+        mass_vector = _pencil_product(mass, vector)
+        denominator = complex(vector @ mass_vector)
+        value = math.nan
+        if abs(denominator) > _SELF_ORTHOGONAL_RELATIVE * abs(complex(np.vdot(vector, mass_vector))):
+            value = complex(vector @ _pencil_product(stiffness, vector)) / denominator
+        quotient_omega = complex(np.sqrt(value))
+        if not (np.isfinite(value) and quotient_omega.real > 0.0):
+            unpolished += 1
+            polished.append((distance, omega, pml_fraction, region_fraction, vector))
+            continue
+        change = max(change, abs(value - omega * omega) / abs(omega * omega))
+        polished.append((abs(quotient_omega - omega_target), quotient_omega, pml_fraction, region_fraction, vector))
+    polished.sort(key=lambda candidate: candidate[0])
+    return polished, change, unpolished
+
+
+def _pencil_product(matrix, vector):
+    """matrix @ vector of a complex vector, a real matrix applied to its real and imaginary parts (scipy would make a
+    complex copy of the matrix per product)."""
+    if np.iscomplexobj(matrix.data):
+        return matrix @ vector
+    return matrix @ vector.real + 1j * (matrix @ vector.imag)
 
 
 def _resonance(omega, pml_fraction, region_fraction, field) -> HarmonicResonance:

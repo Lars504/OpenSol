@@ -212,10 +212,14 @@ file ("Triangle meshes"). Error indicators: section "Error indicators" (users: g
   complex coefficient or damping term combines real values and factors real on a DevicePencil / HostPencil
   (`pencil.reduced(omega)` / `operator(omega)` are always complex copies, the host SuperLU route factors those: a new
   device or factor path reads the parts). Estimators book complex terms
-  / factor only for what makes them complex (pressure_acoustics: PML; impedance adds the real damping term).
+  / factor only for what makes them complex (pressure_acoustics: PML; impedance adds the real damping term; membrane:
+  loss / PML terms, ports' complex DtN extra).
 - harmonic_resonances' complex / general paths hand M to `device_factor_matvec` as it is (a real M stays float64 on
-  the device, a complex symmetric pencil its lower triangle, probed) and keep a complex64 Krylov basis at an eigen
-  tolerance >= `SINGLE_BASIS_MIN_TOLERANCE`: the membrane estimate mirrors both.
+  the device, a complex symmetric pencil its lower triangle, probed). A complex64 Krylov basis (eigen tolerance >=
+  `SINGLE_BASIS_MIN_TOLERANCE`) only on a complex symmetric cuDSS LDL^T, whose candidates then take the float64
+  unconjugated Rayleigh quotient: the fp32 Arnoldi error is ~1e-7 max |theta|, beyond the tolerance for resonances
+  far from the shift; a general pencil (Bloch) has no stationary quotient and keeps complex128. The membrane estimate
+  mirrors both.
 
 ## Squeeze film (`squeeze_film.py`; runtimes: physics/mechanics/squeeze_film.py tets, physics/membrane/squeeze_film.py)
 - Equation, units, vents and the two routes of w: module header. A shape that is not the film's own full coefficients
