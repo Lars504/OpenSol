@@ -1,9 +1,10 @@
 """Body-of-revolution FDFD on a Domain (x = r from the x_lo window edge = the axis, y = z; fields ~ exp(-j m phi)):
-BORPhysics assembles and solves on the host (body_of_revolution) and keeps float32 centre fields (run backend) for the
-renderer."""
+BORPhysics assembles and solves on the host (body_of_revolution) and keeps float32 centre fields for the renderer (the
+state() ones on the run backend, the rendered-only ones host numpy)."""
 import cmath
 import math
 import time
+from types import SimpleNamespace
 
 import numpy as np
 from ....core.backend import to_host
@@ -28,15 +29,18 @@ from ..materials import register_em_arrays
 from ..placement import box_cells, flux_line_cells, port_cells, window_cell
 from ..renderer_bor import BORRenderer
 from ..yee_grid import cpml_grading_cell_size
-from .host_fdfd import HostFDFDBase, direct_text, is_cudss
+from .host_fdfd import SYSTEM_MATERIALS, HostFDFDBase, direct_text, is_cudss
 
 BOR_POLARIZATION = 'bor'          # no in-plane polarisation (sheet placement helpers refuse it)
 BOR_MATERIAL_SCHEMA_KEY = 'modes'   # EM_MATERIAL_SCHEMAS key: eps_r (E_phi), eps_xx (E_r), eps_yy (E_z), mu_r, sigmas
 BOR_PERMITTIVITY_ARRAYS = ('eps_r', 'eps_xx', 'eps_yy')
 BOR_PERMITTIVITY_SLOTS = {'eps_r_update': 'eps_r', 'eps_xx_update': 'eps_xx', 'eps_yy_update': 'eps_yy'}
-# float32 full-grid fields BORRenderer reads: Re and modulus of the six centre phasors, |E|^2, |H|, q_abs
+# float32 full-grid fields BORRenderer reads: Re and modulus of the six centre phasors, |E|^2, |H|, q_abs; only
+# BOR_DEVICE_FIELDS (the state() / loss-protocol keys couplings read) are run-backend arrays, the 13 rendered-only ones
+# host numpy (CentreFieldRenderer uploads the read window)
 BOR_STATE_NAMES = (BOR_FIELD_COMPONENTS + tuple(f'{name}_abs' for name in BOR_FIELD_COMPONENTS)
                    + ('e_intensity', 'h_abs', 'q_abs'))
+BOR_DEVICE_FIELDS = frozenset({'e_intensity', 'q_abs'})
 COMPONENT_UNITS = {'er': 'V/m', 'ephi': 'V/m', 'ez': 'V/m', 'hr': 'A/m', 'hphi': 'A/m', 'hz': 'A/m'}
 FAR_FIELD_QUANTITY = 'abs(E)^2'
 LINE_BLOCK_TEXT = 'line-block factor (refined against the complex128 operator)'   # solve_summary solver texts
@@ -117,6 +121,7 @@ class BORPhysics(HostFDFDBase, PhysicsSolver):
     permittivity_arrays = BOR_PERMITTIVITY_ARRAYS   # eps_r (E_phi), eps_xx (E_r), eps_yy (E_z)
     permittivity_slots = BOR_PERMITTIVITY_SLOTS
     state_names = BOR_STATE_NAMES
+    device_field_names = BOR_DEVICE_FIELDS
     field_components = BOR_FIELD_COMPONENTS
     component_units = COMPONENT_UNITS
 
@@ -522,7 +527,7 @@ class BORPhysics(HostFDFDBase, PhysicsSolver):
         self.last_solve_seconds = time.perf_counter() - start
 
     def _show(self, system, solution):
-        """Centre phasors of `solution` into centre_phasors and the float32 fields (15 host-to-device copies on gpu)."""
+        """Centre phasors of `solution` into centre_phasors and the float32 fields (2 host-to-device copies on gpu)."""
         phasors, e_squared = centre_fields(system, solution)
         self._show_phasors(system, phasors, e_squared)
 
@@ -535,13 +540,16 @@ class BORPhysics(HostFDFDBase, PhysicsSolver):
 
     def _bor_materials(self, omega):
         """BORMaterials at omega: host complex128 eps of the three components (permittivity array, sigma_e, poles)
-        and mu (sigma_m), host bool PEC cells."""
+        and mu (sigma_m), host bool PEC cells; computed on the host from float32 copies of the six material arrays and
+        the pole masks (only the host reads them: no complex128 device temporaries, 24 instead of 64 B per cell
+        transferred)."""
         materials = self.domain.materials
-        eps = {name: to_host(cell_permittivity(materials, name, self.dispersive_regions, omega, xp=self.xp))
-               for name in BOR_PERMITTIVITY_ARRAYS}
+        cells = SimpleNamespace(**{name: to_host(getattr(materials, name)) for name in SYSTEM_MATERIALS})
+        regions = [(pole, box, None if mask is None else to_host(mask)) for pole, box, mask in self.dispersive_regions]
+        eps = {name: cell_permittivity(cells, name, regions, omega, xp=np) for name in BOR_PERMITTIVITY_ARRAYS}
         pec = (np.zeros((self.domain.grid.nx, self.domain.grid.ny), dtype=bool) if self.pec_cells is None
                else to_host(self.pec_cells))
-        return BORMaterials(eps=eps['eps_r'], mu=to_host(cell_permeability(materials, omega, xp=self.xp)), pec=pec,
+        return BORMaterials(eps=eps['eps_r'], mu=cell_permeability(cells, omega, xp=np), pec=pec,
                             eps_rr=eps['eps_xx'], eps_zz=eps['eps_yy'])
 
     # --- sources and monitors (poles / PEC masks, field probes: HostFDFDBase) ---

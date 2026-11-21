@@ -831,7 +831,7 @@ def modes_memory_estimate(settings_values, mesh, context):
                   (f'mode fields ({n_modes} modes x 6 components)', 6 * n_modes * COMPLEX128_BYTES * n_cells),
                   ('rendered fields of the selected mode (7 x float32: E, H, h_abs)', 7 * FLOAT32_BYTES * n_cells)]
     run_items, external_items, external_extra = [], [], 0
-    # ModePhysics._cross_section_materials: device eps / mu cells per solve before to_host (BOR books the same); the
+    # ModePhysics._cross_section_materials: device eps / mu cells per solve before to_host; the
     # mode solve after them (Krylov basis, an own cuDSS factor) never overlaps
     transient_items = [(SOLVE_PHASE, 'material temporaries per solve (one eps component at a time, mu: 3 x '
                                      'complex128)', 3 * COMPLEX128_BYTES * n_cells)]
@@ -1115,11 +1115,13 @@ def _fem_resonance_memory_estimate(settings_values, mesh, context, n_resonances,
 
 
 def bor_memory_estimate(settings_values, mesh, context):
-    """PhysicsType.memory_estimate of em_fdfd_bor (solvers/fdfd_bor, body_of_revolution): 15 float32 centre fields, a
-    solve's material temporaries; host SuperLU of 3 unknowns per cell (or a cuDSS LDL^T: external, or line_block
-    factors), operators, vectors, eigen Arnoldi work, order-sum terms; a triangles mesh: _bor_fem_memory_estimate."""
+    """PhysicsType.memory_estimate of em_fdfd_bor (solvers/fdfd_bor, body_of_revolution): 2 float32 state fields on the
+    device (the 13 rendered-only ones and a solve's material reads on the host); host SuperLU of 3 unknowns per cell
+    (or a cuDSS LDL^T: external, or line_block factors), operators, vectors, eigen Arnoldi work, order-sum terms; a
+    triangles mesh: _bor_fem_memory_estimate."""
     if getattr(mesh, 'kind', 'tensor') == 'triangles':
         return _bor_fem_memory_estimate(settings_values, mesh, context)
+    from .solvers.fdfd_bor import BOR_DEVICE_FIELDS, BOR_STATE_NAMES
     n_cells = int(mesh.n_cells)
     unknowns = 3 * n_cells
     study_type = context.spec.study.type
@@ -1144,15 +1146,19 @@ def bor_memory_estimate(settings_values, mesh, context):
                     40 * COMPLEX128_CSR_ENTRY_BYTES * unknowns),
                    ('solution, rhs and centre phasors (complex128)', (4 * 3 + 6) * COMPLEX128_BYTES * n_cells),
                    ('kept materials (eps_rr, eps_phiphi, eps_zz, mu complex128, pec) and Yee fields of the driven solve',
-                    (4 + 6) * COMPLEX128_BYTES * n_cells + n_cells)]
+                    (4 + 6) * COMPLEX128_BYTES * n_cells + n_cells),
+                   # fdfd_bor._bor_materials: float32 copies of the six arrays, one component's complex128 temporaries
+                   ('material reads per assembly (6 x float32 copies, complex128 temporaries)',
+                    (6 * FLOAT32_BYTES + 3 * COMPLEX128_BYTES) * n_cells),
+                   (f'rendered centre fields ({len(BOR_STATE_NAMES) - len(BOR_DEVICE_FIELDS)} x float32)',
+                    (len(BOR_STATE_NAMES) - len(BOR_DEVICE_FIELDS)) * FLOAT32_BYTES * n_cells)]
     n_listed = len(settings_values.get('azimuthal_orders') or ())
     order_sum = bool(n_listed) and study_type in ('stationary', FREQUENCY_DOMAIN_STUDY)   # the driven order sum
     n_orders = max(n_listed, 1) if eigen or order_sum else 1
     if order_sum:   # solvers/fdfd_bor._solve_order_sum: one order's factor at a time (the item above)
         host_items.append(('driven order sum: Yee fields of the +m / -m terms and their phi = 0 sum (complex128), '
                            'phi-mean |E|^2 (float64)', 3 * 6 * COMPLEX128_BYTES * n_cells + 3 * 8 * n_cells))
-    transient_items = [(SOLVE_PHASE, 'material temporaries per solve (one eps component at a time, mu: 3 x '
-                                     'complex128)', 3 * COMPLEX128_BYTES * n_cells)]
+    transient_items = []
     if eigen:   # body_of_revolution.solve_bor_resonances, one per order of azimuthal_orders
         n_resonances = int(_study_values(context).get('n_resonances') or 1)
         search_host, search_transient = _resonance_search(   # one order's search at a time (symmetric=True)
@@ -1189,7 +1195,8 @@ def bor_memory_estimate(settings_values, mesh, context):
                  'to the free memory at run time)' if n_operators > 1 else 'line_block bound operator and its factor')
         run_items.append((label, driven_line_block_bytes((int(mesh.nx), int(mesh.ny)), shifted.values['precision'],
                                                          n_operators, entries)))
-    return MemoryEstimate.from_items((('centre fields (15 x float32)', 15 * FLOAT32_BYTES * n_cells),),
+    return MemoryEstimate.from_items(((f'state fields (e_intensity, q_abs: {len(BOR_DEVICE_FIELDS)} x float32)',
+                                       len(BOR_DEVICE_FIELDS) * FLOAT32_BYTES * n_cells),),
                                      host_items=host_items, run_items=run_items, transient_items=transient_items,
                                      external_items=external_items, external_extra=external_extra)
 

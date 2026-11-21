@@ -4,6 +4,8 @@ stationary / frequency_domain hooks, labels, counters, poles / PEC masks and the
 after a material change, cuDSS factors kept for their plan)."""
 import math
 
+import numpy as np
+
 from ....core.backend import check_backend_array, host_copy, write_host_into
 from ....core.constants import C0, DTYPE
 from ....core.gpu_memory import format_bytes
@@ -57,6 +59,9 @@ class HostFDFDBase:
     permittivity_arrays = ('eps_r', 'eps_xx', 'eps_yy')
     permittivity_slots = {}      # source slot -> permittivity array
     state_names = ()             # float32 full-grid display fields (fields)
+    # the display fields kept on the run backend (state() / the loss protocol read them there); the others are only
+    # rendered and stay host numpy (CentreFieldRenderer uploads the read window). None: all of state_names
+    device_field_names = None
     field_components = ()        # centre phasor components of add_field_probe
     component_units = {}         # field component -> unit
     _line_block = None           # a LineBlockSolver 'shifted' role (BORPhysics), else None
@@ -108,8 +113,11 @@ class HostFDFDBase:
         self._system_dirty = True
         self._solution_dirty = True
         shape = (domain.grid.nx, domain.grid.ny)
-        # float32 full-grid run-backend fields, rewritten in place by every solve / selection (zeros before the first)
-        self.fields = {name: self.xp.zeros(shape, dtype=DTYPE) for name in self.state_names}
+        # float32 full-grid fields, rewritten in place by every solve / selection (zeros before the first): on the run
+        # backend, or host numpy when device_field_names leaves them out
+        device = self.device_field_names
+        self.fields = {name: (self.xp if device is None or name in device else np).zeros(shape, dtype=DTYPE)
+                       for name in self.state_names}
 
     @property
     def omega(self) -> float:
