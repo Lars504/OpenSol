@@ -1006,11 +1006,13 @@ def pec_memory_estimate(keep_arrays):
 
 
 def conical_memory_estimate(settings_values, mesh, context):
-    """PhysicsType.memory_estimate of em_fdfd_conical (solvers/fdfd_conical, conical): 16 float32 centre fields, a
-    solve's material temporaries; host SuperLU of 3 unknowns per cell (or a cuDSS LDL^T: external), operators, materials,
-    eigen Arnoldi work; a triangles mesh: _conical_fem_memory_estimate."""
+    """PhysicsType.memory_estimate of em_fdfd_conical (solvers/fdfd_conical, conical): 2 float32 state fields on the
+    device (the 14 rendered-only ones and a solve's material reads on the host); host SuperLU of 3 unknowns per cell (or
+    a cuDSS LDL^T: external), operators, materials, eigen Arnoldi work; a triangles mesh: _conical_fem_memory_estimate."""
     if getattr(mesh, 'kind', 'tensor') == 'triangles':
         return _conical_fem_memory_estimate(settings_values, mesh, context)
+    from .solvers.fdfd_conical import CONICAL_DEVICE_FIELDS, CONICAL_STATE_NAMES
+    n_rendered = len(CONICAL_STATE_NAMES) - len(CONICAL_DEVICE_FIELDS)
     n_cells = int(mesh.n_cells)
     unknowns = 3 * n_cells
     eigen = eigen_solved(context.spec, context.physics_spec.name)
@@ -1029,23 +1031,24 @@ def conical_memory_estimate(settings_values, mesh, context):
                     36 * COMPLEX128_CSR_ENTRY_BYTES * n_cells),
                    ('kept materials (eps_xx, eps_yy, eps_zz, mu complex128, pec), Yee fields and centre phasors',
                     (4 + 6 + 6) * COMPLEX128_BYTES * n_cells + n_cells),
-                   ('solution and rhs (complex128)', 2 * COMPLEX128_BYTES * unknowns)]
-    transient_items = [(SOLVE_PHASE, 'material temporaries per solve (one eps component at a time, mu: 3 x '
-                                     'complex128)', 3 * COMPLEX128_BYTES * n_cells)]
+                   ('solution and rhs (complex128)', 2 * COMPLEX128_BYTES * unknowns),
+                   # fdfd_conical._conical_materials: float32 copies of the six arrays, one component's temporaries
+                   ('material reads per assembly (6 x float32 copies, complex128 temporaries)',
+                    (6 * FLOAT32_BYTES + 3 * COMPLEX128_BYTES) * n_cells),
+                   (f'rendered centre fields ({n_rendered} x float32)', n_rendered * FLOAT32_BYTES * n_cells)]
+    transient_items = []
     if eigen:   # conical.solve_conical_resonances
         n_resonances = int(_study_values(context).get('n_resonances') or 1)
-        from ...solvers.arpack_shift_invert import LDLT_FACTORIZATIONS
-        from .cross_section_modes import cpml_cross_section
-        ldlt = not bloch_active_axes(settings_values)   # an LDL^T of D A unless a Bloch phase makes it an LU
-        search_host, search_transient = _resonance_search(   # an own LDL^T of a complex (open) A: polished (floored)
-            context, n_resonances, unknowns, on_device, 13 * unknowns, ldlt=ldlt,
-            polished_double=ldlt and factorization in LDLT_FACTORIZATIONS and cpml_cross_section(settings_values))
+        ldlt, polished, real_values = conical_search_flags(settings_values, context, factorization, unknowns)
+        search_host, search_transient = _resonance_search(
+            context, n_resonances, unknowns, on_device, 13 * unknowns, ldlt=ldlt, polished_double=polished,
+            real_values=real_values)
         transient_items += search_transient
         host_items += [*search_host,
                        (f'resonance fields ({n_resonances} x 6 components complex128)',
                         6 * n_resonances * COMPLEX128_BYTES * n_cells),
-                       ('shifted / symmetrized operator copies (sparse complex128, rough)',
-                        2 * 13 * COMPLEX128_CSR_ENTRY_BYTES * unknowns)]
+                       ('real-gauge, shifted and symmetrized operator copies (sparse complex128, rough)',
+                        3 * 13 * COMPLEX128_CSR_ENTRY_BYTES * unknowns)]
     run_items, external_items, external_extra = [], [], 0
     if on_device:   # cuDSS LDL^T (~13 entries per row): the lower-triangle CSR copies, vectors
         mixed = eigen_mixed(factorization, unknowns) if eigen else factorization == 'cudss_mixed'
@@ -1057,9 +1060,26 @@ def conical_memory_estimate(settings_values, mesh, context):
             external_items = solver_job_items(EIGEN_ROLE, external_items)
         else:       # host_fdfd keeps the driven factor (_cudss_previous) and refactorises it in place
             kept_cudss_items(run_items, transient_items, unknowns, 13 * unknowns, mixed, later_factorisations(context))
-    return MemoryEstimate.from_items((('centre fields (16 x float32)', 16 * FLOAT32_BYTES * n_cells),),
+    return MemoryEstimate.from_items(((f'state fields (e_intensity, q_abs: {len(CONICAL_DEVICE_FIELDS)} x float32)',
+                                       len(CONICAL_DEVICE_FIELDS) * FLOAT32_BYTES * n_cells),),
                                      host_items=host_items, run_items=run_items, transient_items=transient_items,
                                      external_items=external_items, external_extra=external_extra)
+
+
+def conical_search_flags(settings_values, context, factorization, unknowns) -> tuple:
+    """(ldlt, polished, real_values) of conical.solve_conical_resonances, shared by the memory items and the eigen time
+    recipe: an LDL^T of D A unless a Bloch phase makes it an LU; the real-gauge operator is complex only with a cpml
+    face, sigma_e / sigma_m or poles (real_cross_section_operator; never by k_z), so polished (a complex64 device basis
+    beyond search_single_basis' own mixed cuDSS rule) = an LDL^T node on a complex operator (floored, conical's
+    tolerance floor) or a host mixed LDL^T (mumps_mixed / pardiso_mixed from MIXED_EIGEN_MIN_UNKNOWNS); real_values:
+    the filter stores A as float64."""
+    from ...solvers.arpack_shift_invert import LDLT_FACTORIZATIONS
+    ldlt = not bloch_active_axes(settings_values)
+    real_values = real_cross_section_operator(settings_values, context)
+    host_mixed = (factorization in HOST_DIRECT_FACTORIZATIONS and host_direct_precision(factorization) == 'mixed'
+                  and int(unknowns) >= MIXED_EIGEN_MIN_UNKNOWNS)
+    polished = ldlt and factorization in LDLT_FACTORIZATIONS and (not real_values or host_mixed)
+    return ldlt, bool(polished), bool(real_values)
 
 
 def _conical_fem_memory_estimate(settings_values, mesh, context):

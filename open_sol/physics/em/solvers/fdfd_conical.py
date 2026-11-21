@@ -1,9 +1,10 @@
 """Conical FDFD on a Domain (symmetry 2.9: a z-invariant structure at a fixed out-of-plane wave number k_z, all six
-components): ConicalPhysics assembles and solves on the host (physics/em/conical) and keeps float32 centre fields (run
-backend) for the renderer."""
+components): ConicalPhysics assembles and solves on the host (physics/em/conical) and keeps float32 centre fields for
+the renderer (the state() ones on the run backend, the rendered-only ones host numpy)."""
 import cmath
 import math
 import time
+from types import SimpleNamespace
 
 import numpy as np
 from ....core.backend import to_host
@@ -23,15 +24,18 @@ from ..renderer_conical import ConicalRenderer
 from ..subpixel_smoothing import SubpixelSmoothing
 from ..yee_grid import cpml_grading_cell_size, grid_cell_widths
 from ....solvers.host_direct import is_host_direct_factor
-from .host_fdfd import HostFDFDBase, direct_text
+from .host_fdfd import SYSTEM_MATERIALS, HostFDFDBase, direct_text
 
 CONICAL_POLARIZATION = 'conical'        # no in-plane polarisation (sheet placement helpers refuse it)
 CONICAL_MATERIAL_SCHEMA_KEY = 'modes'   # EM_MATERIAL_SCHEMAS key: eps_r (E_z), eps_xx (E_x), eps_yy (E_y), mu, sigmas
 CONICAL_PERMITTIVITY_ARRAYS = ('eps_r', 'eps_xx', 'eps_yy')   # eps_r holds eps_zz (as em_modes)
 CONICAL_PERMITTIVITY_SLOTS = {f'{array}_update': array for array in CONICAL_PERMITTIVITY_ARRAYS}
-# float32 full-grid fields ConicalRenderer reads: Re and modulus of the six centre phasors, |E|^2, |H|, S_z, q_abs
+# float32 full-grid fields ConicalRenderer reads: Re and modulus of the six centre phasors, |E|^2, |H|, S_z, q_abs;
+# only CONICAL_DEVICE_FIELDS (the state() / loss-protocol keys couplings read) are run-backend arrays, the 14
+# rendered-only ones host numpy (CentreFieldRenderer uploads the read window; no 14 uploads per solve)
 CONICAL_STATE_NAMES = (FIELD_COMPONENTS + tuple(f'{name}_abs' for name in FIELD_COMPONENTS)
                        + ('e_intensity', 'h_abs', 'sz', 'q_abs'))
+CONICAL_DEVICE_FIELDS = frozenset({'e_intensity', 'q_abs'})
 COMPONENT_UNITS = {'ex': 'V/m', 'ey': 'V/m', 'ez': 'V/m', 'hx': 'A/m', 'hy': 'A/m', 'hz': 'A/m'}
 _CELL_EPS = {'x': 'eps_xx', 'y': 'eps_yy', 'z': 'eps_zz'}   # CrossSectionMaterials cell eps per E component
 
@@ -55,6 +59,7 @@ class ConicalPhysics(HostFDFDBase, PhysicsSolver):
     permittivity_arrays = CONICAL_PERMITTIVITY_ARRAYS   # eps_r (= eps_zz, E_z), eps_xx (E_x), eps_yy (E_y)
     permittivity_slots = CONICAL_PERMITTIVITY_SLOTS
     state_names = CONICAL_STATE_NAMES
+    device_field_names = CONICAL_DEVICE_FIELDS
     field_components = FIELD_COMPONENTS
     component_units = COMPONENT_UNITS
 
@@ -197,7 +202,7 @@ class ConicalPhysics(HostFDFDBase, PhysicsSolver):
         self.last_solve_seconds = time.perf_counter() - start
 
     def _show(self, system, yee_fields, materials):
-        """Centre phasors of the Yee fields into centre_phasors and the float32 fields (16 host-to-device copies on the
+        """Centre phasors of the Yee fields into centre_phasors and the float32 fields (2 host-to-device copies on the
         gpu); q_abs = 1/2 omega eps0 sum_c (-Im eps_c of the cell) <|E_c|^2> of the cell."""
         phasors, e_squared = centre_phasors(system, yee_fields)
         host_fields = shown_phasor_fields(phasors, FIELD_COMPONENTS[:3], FIELD_COMPONENTS[3:], sz=True)
@@ -208,17 +213,19 @@ class ConicalPhysics(HostFDFDBase, PhysicsSolver):
 
     def _conical_materials(self, omega):
         """CrossSectionMaterials at omega: host complex128 eps_xx / eps_yy / eps_zz (sigma_e, poles) and mu (sigma_m) of
-        every cell, host bool PEC cells, the subpixel-smoothing deltas of the background eps when enabled."""
+        every cell, host bool PEC cells, the subpixel-smoothing deltas of the background eps when enabled. Computed on
+        the host from float32 copies of the six material arrays and the cropped pole masks (only the host reads them:
+        no complex128 device temporaries, 24 instead of 64 B per cell transferred)."""
         materials = self.domain.materials
-        xp = self.xp
-        eps = {name: to_host(cell_permittivity(materials, name, self.dispersive_regions, omega, xp=xp))
-               for name in CONICAL_PERMITTIVITY_ARRAYS}
+        cells = SimpleNamespace(**{name: to_host(getattr(materials, name)) for name in SYSTEM_MATERIALS})
+        regions = [(pole, box, None if mask is None else to_host(mask))
+                   for pole, box, mask in self.dispersive_regions]
+        eps = {name: cell_permittivity(cells, name, regions, omega, xp=np) for name in CONICAL_PERMITTIVITY_ARRAYS}
         pec = (np.zeros((self.domain.grid.nx, self.domain.grid.ny), dtype=bool) if self.pec_cells is None
                else np.array(to_host(self.pec_cells), dtype=bool))
         deltas = None if self.subpixel_smoothing is None else self.subpixel_smoothing.point_deltas(materials)
         return CrossSectionMaterials(eps_xx=eps['eps_xx'], eps_yy=eps['eps_yy'], eps_zz=eps['eps_r'],
-                                     mu=to_host(cell_permeability(materials, omega, xp=xp)), pec=pec,
-                                     eps_point_deltas=deltas)
+                                     mu=cell_permeability(cells, omega, xp=np), pec=pec, eps_point_deltas=deltas)
 
     # --- sources and monitors (poles / PEC masks, field probes: HostFDFDBase) ---
 

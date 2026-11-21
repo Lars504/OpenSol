@@ -503,6 +503,13 @@ type's vocabulary and refusals are in its help texts and validation.
   the cross-section wall planes.
 - A cuDSS factor skips the host SuperLU size rule (`_refresh_system` / `_solve` of ConicalPhysics, definition
   `_solver_issues`, `solve_conical_resonances`): a change of that rule touches every caller of `conical.size_issue_for`.
+- The eigen search runs in the real gauge (E_x, E_y, w = -j E_z; `conical.real_gauge_operator`, module header), so
+  solve_resonances' complex-operator test (polish of a floored double LDL^T, complex64 basis, float64 filter storage)
+  sees only PML, loss and Bloch phases, never k_z: a new caller of solve_resonances on the conical operator goes
+  through it. The estimate and the eigen time recipe share `memory_estimates.conical_search_flags` (that rule).
+- Device memory: ConicalPhysics owns only `CONICAL_DEVICE_FIELDS` (e_intensity, q_abs) on the run backend, the 14
+  rendered-only fields host numpy (`HostFDFDBase.device_field_names`, as BOR); `_conical_materials` reads float32 host
+  copies of the material arrays and pole masks. Everything else on the device is a solver's (cuDSS factor, the search).
 - Verdict: 3 unknowns per cell and host SuperLU fill limit it near ~1e6 unknowns, so cuDSS pays for large
   cross-sections and long k_z sweeps; cudss_mixed only while its single_residual stays below 1e-3 (above it use cudss).
 - Self-tests: selftests_conical (CPU numerics, model runs), selftests_conical_fem (also the Yee symmetrizer and cuDSS
