@@ -24,7 +24,12 @@ solver_harmonic_fem.py header and the fem sub file "Complex scalar harmonic syst
   c22 is dropped with `_launch_cache` / `_pulse_tables` when the layout changes. The rigid keep mask is bool.
 - Parked material arrays (model path, gpu: `definition._parked_material_arrays` under the shared rule, core sub file
   `MaterialGrid.park`): the ten coefficient inputs, gruneisen unless a heat_pulse_source reads it every step, the
-  photoelastic / piezo arrays unless a coupling reads the physics; never c16 / c26 (monoclinic stress kernel). The
+  photoelastic / piezo arrays unless a coupling reads the physics; never c16 / c26 (monoclinic stress kernel). A
+  coupling into the physics stops the parking unless its type is in `definition._SLOT_COUPLINGS_IN` (slot-only
+  writers: photoacoustic keeps gruneisen, piezo the piezo arrays); a new coupling type into elastic_waves that writes
+  source slots only joins it with the arrays its slot readers take on the device. Arrays a coupling reads every
+  transfer (photoelastic, piezo) stay resident: a re-upload per transfer would save a few % of a peak set by the
+  FDFD factor / the coupled buffers. The
   first `_update_time_step` (in create) parks them right after its device coefficient build, before its temporaries,
   and the fields are allocated only after it, so the build peak never holds parked arrays, fields and step
   temporaries together. Every later rebuild (finalize, add_rigid, a new runner dt, materials_changed) runs the numpy
