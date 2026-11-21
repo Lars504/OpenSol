@@ -1256,20 +1256,28 @@ def cross_term_materials(vctx, prefix):
 
 
 def parkable_material_arrays(spec, registry, physics_spec, parameters, own_properties, arrays,
-                             read_by_couplings_out=()) -> tuple:
+                             read_by_couplings_out=(), slot_couplings_in=None) -> tuple:
     """The MaterialGrid arrays of `arrays` a time-stepping solver may move to the host once its coefficients are built
     (MaterialGrid.park; PhysicsType.parked_material_arrays, the one rule every parking type shares): on the gpu backend
-    when nothing rewrites them during the run (no enabled coupling into the physics; every property of own_properties
-    of every material a constant or an x / y / z expression of the parameters, so no DynamicMaterialUpdate), minus the
-    arrays another physics on the same mesh registers (material_schema, optional_material_schema) and, when an enabled
-    coupling reads the physics, `read_by_couplings_out` (arrays its transforms read); () otherwise (also for model
-    errors, which validate reports)."""
+    when nothing rewrites them during the run (no enabled coupling into the physics, except one of a type in
+    `slot_couplings_in`; every property of own_properties of every material a constant or an x / y / z expression of
+    the parameters, so no DynamicMaterialUpdate), minus the arrays another physics on the same mesh registers
+    (material_schema, optional_material_schema), when an enabled coupling reads the physics, `read_by_couplings_out`
+    (arrays its transforms read), and per enabled coupling into the physics, `slot_couplings_in[its type]` ({coupling
+    type name: arrays the physics reads on the device for the source slots that type writes}: types that write only
+    source slots, never material arrays, nor trigger a coefficient rebuild); () otherwise (also for model errors,
+    which validate reports)."""
     try:
         if solver_backend(spec) != 'gpu':
             return ()
         name = physics_spec.name
-        if any(coupling.enabled and coupling.target == name for coupling in spec.couplings):
-            return ()
+        slot_couplings_in = slot_couplings_in or {}
+        kept_for_slots = set()
+        for coupling in spec.couplings:
+            if coupling.enabled and coupling.target == name:
+                if coupling.type not in slot_couplings_in:
+                    return ()
+                kept_for_slots.update(slot_couplings_in[coupling.type])
         from ..materials import effective_material_data   # lazy: materials imports physics.em
         static_names = set(parameters) | FIELD_COORDINATE_NAMES
         for material in spec.materials:
@@ -1279,7 +1287,7 @@ def parkable_material_arrays(spec, registry, physics_spec, parameters, own_prope
                         and not referenced_names(value) <= static_names:
                     return ()
         mesh_name = spec.mesh_of(physics_spec).name
-        shared = set()
+        shared = kept_for_slots
         for other in spec.physics:
             if other.name == name or spec.mesh_of(other).name != mesh_name:
                 continue

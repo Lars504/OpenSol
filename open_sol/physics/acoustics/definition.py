@@ -35,6 +35,7 @@ PHYSICS_TYPE_NAME = 'elastic_waves'
 PHYSICS_NAME = 'acoustics'   # = selftests.PHYSICS_NAME (selftests never import this)
 PIEZO_COUPLING_TYPE_NAME = 'electrostatics_acoustics_piezo'   # = coupling/definitions_piezo (which imports physics)
 ACOUSTO_OPTIC_COUPLING_TYPE_NAME = 'acoustics_em_acousto_optic'   # = coupling/selftests_acoustics (shear strain reader)
+PHOTOACOUSTIC_COUPLING_TYPE_NAME = 'em_acoustics_photoacoustic'   # = coupling/definitions_acoustics
 _OFF_DIAGONAL_EM_TYPE = 'em_fdfd_hz'   # the EM type with an eps_xy slot: the isotropic shear term reads the shear too
 MIN_CELLS_PER_WAVELENGTH = 10   # resolution warning (shortest wavelength at the highest significant source frequency)
 
@@ -1004,19 +1005,24 @@ def _solver_faces(values) -> dict:
 _HEAT_PULSE_FEATURE = 'heat_pulse_source'   # its HeatPulseSource reads gruneisen every step
 # arrays only couplings out of this physics read: the acousto-optic transforms (photoelastic), the bound charge (piezo)
 _READ_BY_COUPLINGS_OUT = ('photoelastic_p11', 'photoelastic_p12', *PHOTOELASTIC_TENSOR_ARRAYS, *PIEZO_ARRAYS)
+# couplings into this physics that write source slots only (no material array, no coefficient rebuild), with the
+# arrays their slots read on the device: heating_power every step (gruneisen), the electric_field slots at each
+# transfer (piezo; two-way: also the bound charge and the stiffened dt)
+_SLOT_COUPLINGS_IN = {PHOTOACOUSTIC_COUPLING_TYPE_NAME: ('gruneisen',), PIEZO_COUPLING_TYPE_NAME: PIEZO_ARRAYS}
 
 
 def _parked_material_arrays(spec, registry, physics_spec, parameters) -> tuple:
     """MaterialGrid arrays elastic_waves moves to the host after its first coefficient build (AcousticPhysics
     park_arrays): solver.PARKABLE_ARRAYS without gruneisen when a heat pulse feature reads it every step, under the
     shared rule (definition_helpers.parkable_material_arrays over the elastic_waves material properties: no coupling
-    into the physics; one reading it keeps the photoelastic / piezo arrays). Names of unallocated optional arrays may
-    be listed (the solver and _allocated_parked skip them)."""
+    into the physics but the slot-only photoacoustic / piezo ones, which keep gruneisen / the piezo arrays; one
+    reading it keeps the photoelastic / piezo arrays). Names of unallocated optional arrays may be listed (the solver
+    and _allocated_parked skip them)."""
     heat_pulse = any(feature.enabled and feature.type == _HEAT_PULSE_FEATURE for feature in physics_spec.features)
     arrays = tuple(name for name in PARKABLE_ARRAYS if not (heat_pulse and name == 'gruneisen'))
     return parkable_material_arrays(spec, registry, physics_spec, parameters,
                                     {param.name for param in _MATERIAL_PROPERTIES}, arrays,
-                                    read_by_couplings_out=_READ_BY_COUPLINGS_OUT)
+                                    read_by_couplings_out=_READ_BY_COUPLINGS_OUT, slot_couplings_in=_SLOT_COUPLINGS_IN)
 
 
 def _allocated_parked(context) -> list:
@@ -1128,13 +1134,15 @@ def _memory_estimate(settings_values, mesh, context):
                                                               dt=acoustic_dt or 0.0)   # unknown dt: initial traces
     # build peak: the stable-step temporaries (_update_time_step) of finalize beside every kept array; parked material
     # arrays (meshing books them nowhere else) stay on the device from the materials stage until the first coefficient
-    # build of create (beside the storage choice's bool temporaries), and the fields, the rigid mask and the pressure
-    # buffer exist only after that first time step, which uploads a parked rho beside its temporaries
+    # build of create (beside the storage choice's bool temporaries), and the fields, the rigid mask, the pressure
+    # buffer and the two-way piezo buffers (enable_bound_charge, coupling create) exist only after that first time
+    # step, which uploads a parked rho beside its temporaries
     build_extra = _STEP_TEMPORARIES * FLOAT32_BYTES * cells
     parked = _allocated_parked(context)
     if parked:
         parked_bytes = FLOAT32_BYTES * len(parked) * cells
-        later = (n_fields * field_bytes + FLOAT32_BYTES + (BOOL_BYTES if has_rigid else 0)) * cells
+        later = (n_fields * field_bytes + FLOAT32_BYTES + (BOOL_BYTES if has_rigid else 0)
+                 + (3 * FLOAT32_BYTES if two_way else 0)) * cells
         build_extra = max(parked_bytes + 2 * BOOL_BYTES * cells - later,
                           build_extra + (FLOAT32_BYTES * cells if 'rho' in parked else 0))
         host_items = tuple(host_items) + ((f"material arrays parked on the host ({', '.join(parked)}, float32)",
