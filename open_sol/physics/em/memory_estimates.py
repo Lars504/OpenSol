@@ -880,6 +880,15 @@ def modes_memory_estimate(settings_values, mesh, context):
                                      external_items=external_items, external_extra=external_extra)
 
 
+def fem_modes_polished(factorization, unknowns) -> bool:
+    """Whether fem_modes.solve_fem_modes polishes a mixed LDL^T (cudss_mixed, mumps_mixed / pardiso_mixed: from
+    MIXED_EIGEN_MIN_UNKNOWNS on, below it they factor in double) and so keeps a complex64 device Krylov basis (eigs
+    single_basis): the memory items and the triangle time recipe (SolverWork.single_basis) read it."""
+    return int(unknowns) >= MIXED_EIGEN_MIN_UNKNOWNS and (
+        factorization == 'cudss_mixed' or (factorization in HOST_DIRECT_FACTORIZATIONS
+                                           and host_direct_precision(factorization) == 'mixed'))
+
+
 def _modes_fem_memory_estimate(settings_values, mesh, context):
     """em_modes on a triangles mesh (solvers/modes_fem, fem_modes): 2 float32 per-element state fields; host SuperLU
     (or a per-solve cuDSS LDL^T: external), blocks, Arnoldi basis, sample bases, mode candidates, display fields."""
@@ -922,12 +931,8 @@ def _modes_fem_memory_estimate(settings_values, mesh, context):
         (f'mode candidates ({n_eigen})', n_eigen * mode_bytes),
         ('nodal display fields (10 x float64)',
          10 * FLOAT64_BYTES * (int(mesh.n_nodes) + (int(mesh.n_edges) if order == 2 else 0)))]
-    # a polished mixed LDL^T (cudss_mixed, mumps_mixed / pardiso_mixed: from MIXED_EIGEN_MIN_UNKNOWNS on, below it
-    # they factor in double) keeps a complex64 device basis (fem_modes: eigs single_basis)
-    polished = int(unknowns) >= MIXED_EIGEN_MIN_UNKNOWNS and (
-        factorization == 'cudss_mixed' or (factorization in HOST_DIRECT_FACTORIZATIONS
-                                           and host_direct_precision(factorization) == 'mixed'))
-    _arnoldi_item(host_items, transient_items, unknowns, arnoldi_vectors, context, on_device, single_basis=polished)
+    _arnoldi_item(host_items, transient_items, unknowns, arnoldi_vectors, context, on_device,
+                  single_basis=fem_modes_polished(factorization, unknowns))
     return MemoryEstimate.from_items((('mode state fields (2 x float32 per element)', 2 * FLOAT32_BYTES * n_elements),),
                                      host_items=host_items, transient_items=transient_items,
                                      external_items=external_items, external_extra=external_extra)

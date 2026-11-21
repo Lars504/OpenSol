@@ -20,7 +20,7 @@ from .cross_section_modes import (BEND_MODELS, LINE_BLOCK_BOTH_PERIODIC_TEXT, cp
 from .definition_bloch import bloch_active_axes, bloch_params, fdfd_bloch_issues, fdfd_domain_requirements
 from .fem_modes import DISCRETIZATION_ORDERS, FEM_ENTRIES_PER_ROW, FEM_LU_FILL_FACTOR, PERIODIC_TEXT, estimated_unknowns
 from .materials import EM_MATERIAL_SCHEMAS, GYRATION_ARRAYS
-from .memory_estimates import modes_memory_estimate, pec_memory_estimate
+from .memory_estimates import fem_modes_polished, modes_memory_estimate, pec_memory_estimate
 from .nonlinear_overlap import RING_CRYSTALS, VOIGT_NAMES, shg_overlap_result, voigt_tensor
 from .renderer import ModeRenderer
 from .selftests_carriers import (PN_ELECTROSTATICS_DESCRIPTION, PN_ELECTROSTATICS_LABEL, PN_PRESCRIBED_DESCRIPTION,
@@ -727,7 +727,7 @@ def _time_estimate(settings_values, mesh, context):
 def _triangle_time_estimate(settings_values, mesh, context):
     """em_modes on a triangles mesh: per mode solve one FEM assembly (+ 2 with group_index: the perturbation pencils)
     and one eigen-solve of the estimated unknowns (host SuperLU priced at FEM_LU_FILL_FACTOR x the 2D curve, uncalibrated; the
-    arpack_shift_invert recipe leaves cuDSS in 2D unestimated)."""
+    arpack_shift_invert recipe leaves cuDSS in 2D unestimated); a polished mixed LDL^T prices its complex64 basis."""
     order = DISCRETIZATION_ORDERS[settings_values['discretization']]
     unknowns = float(estimated_unknowns(int(mesh.n_elements), int(mesh.n_edges), int(mesh.n_nodes), order))
     nnz = FEM_ENTRIES_PER_ROW[order] * unknowns
@@ -742,6 +742,8 @@ def _triangle_time_estimate(settings_values, mesh, context):
                                                    solves=points, factorizations=points,
                                                    eigenpairs=mode_eigen_count(int(settings_values['n_modes'])),
                                                    factor_scale=FEM_LU_FILL_FACTOR, solve_scale=FEM_LU_FILL_FACTOR,
+                                                   single_basis=fem_modes_polished(   # its complex64 device basis
+                                                       eigen_factorization(context.solvers), unknowns),
                                                    **host)))
 
 
