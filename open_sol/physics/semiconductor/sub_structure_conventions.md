@@ -24,9 +24,9 @@ docstrings; back ends, fallbacks and estimates: `_linear_solve` / `_factor_solve
   examples/semiconductor/analytic_photoconductor_gain.
 
 ## Memory and precision
-- The Newton state, Jacobian and SG / Bernoulli terms stay float64 on the host (carriers span ~1e-150 to 1e26 scaled,
-  contact currents are differences of SG terms); the device holds only the float32 output fields (read by couplings
-  and state-dependent materials) and a cuDSS factor. The kept coupled factor lives across solves (plan reuse); a cold
+- The Newton state, Jacobian and SG / Bernoulli terms stay float64 on the host (scaled carriers span the 1e-150
+  floor to ~1, contact currents are differences of SG terms); the device holds only the float32 output fields (read by
+  couplings and state-dependent materials) and a cuDSS factor. The kept coupled factor lives across solves (plan reuse); a cold
   start frees it before the equilibrium Poisson LU, so the estimate's Poisson phase before the coupled one holds.
   Parking the output fields would save ~70 B per full-grid cell beside a factor of a few kB per window cell: kept.
 
