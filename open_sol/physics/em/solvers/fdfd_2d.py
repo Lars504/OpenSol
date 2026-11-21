@@ -296,11 +296,11 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
         else the eigen role's own factor; host SuperLU after a line-block rejection) -> EigenSolve, kept as
         eigen_solve."""
         self.eigen_solve = None
+        # the eigen solve factors on its own: no cuDSS factor of the driven solves (current, transposed or kept for a
+        # plan) stays beside it, nor beside the assembly below; a later driven solve factorises again
+        self._release_device_factors()
         # SuperLU: the scipy_splu size rule below; line_block: the block-axis rule
         system = self._refresh_system(check_driven_size=self._line_block is not None)
-        # the eigen solve factors on its own: no cuDSS factor of the driven solves (current, transposed or kept for a
-        # plan) stays beside it on the device; a later driven solve factorises again
-        self._release_device_factors()
         shape = self._field_re.shape
         pinned = self._pinned_cells(system.pec_cells)   # identity rows: PEC and the outermost wall / mirror cells
         # host complex128 (cell_mu is a host array of the system)
