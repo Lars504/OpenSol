@@ -136,6 +136,11 @@ cells, anchors) and the damped iteration are in the core sub file, FEM assembly 
 - Tensor MagneticACPhysics runs the real DiffusionSystem assembly only for the mu_dc check, held cells, ring and the
   anchor check (`_AssemblyOnlySolver`), then assembles complex K in `ac_operator`. Complex face conductances are
   series means of complex c, so K(Re nu) + j K(Im nu) is NOT used (wrong at interfaces).
+  The real system keeps no Jacobi diagonal (`ignores_preconditioner`) and drops its A_solve after the checks (nothing
+  solves it: build_rhs / solve raise); its face conductances and assembled c stay for error_indicator
+  (`flux_jump_indicator`). The estimate (`_assembly_only_system_estimate`) books it pcg=False with A_solve a build
+  transient: a new reader of the real assembly keeps A_solve and moves it back. The kept `_HostSystem.operator` has no
+  matrix (face terms only): the eliminated `matrix_free` is the copy kept beside the factor.
 - Triangles: MagneticACFEMPhysics is no MagneticFEMPhysics subclass; it keeps a `MagneticFEMSystem` for the dof map,
   curl blocks and constraints only (its real 'linear' wrapper is never factorised). Load, mass, circuit rows and the
   loss integral on one rule make the circuit row and the Poynting identity exact to round-off. A solid conductor
