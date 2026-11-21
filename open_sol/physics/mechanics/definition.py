@@ -1438,10 +1438,11 @@ def eigen_device_items(context, dofs, entries, value_bytes, terms=2, term_bytes=
             + device_product_bytes(dofs, symmetric=symmetric, real=real_mass,
                                    complex_operand=complex_eigs or value_bytes > FLOAT64_BYTES)
             + value_bytes * dofs)
-    # modal.ModalPencil._shift_solve: a complex64 basis on a node tolerance >= SINGLE_BASIS_MIN_TOLERANCE
+    # modal.ModalPencil._shift_solve: a complex64 basis on a node tolerance >= SINGLE_BASIS_MIN_TOLERANCE and a
+    # symmetric pencil (eigs_shifted refuses it on a general one: no stationary float64 polish there)
     eigen = (context.solvers or {}).get('eigen')
     tolerance = float(eigen.values.get('tolerance', 0.0)) if eigen is not None else 0.0
-    single_basis = tolerance >= SINGLE_BASIS_MIN_TOLERANCE
+    single_basis = tolerance >= SINGLE_BASIS_MIN_TOLERANCE and bool(symmetric)
     basis_on_device, basis_bytes = (arnoldi_basis_bytes(dofs, n_basis, solver_backend(context.spec),
                                                         device_matvec=True, single_basis=single_basis)
                                     if complex_eigs else (False, 0))
