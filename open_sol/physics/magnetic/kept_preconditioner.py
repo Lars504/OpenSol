@@ -37,8 +37,9 @@ class KeptPreconditionerSolver:
     factorize builds afresh unless the owner offered the loop state (offer_state) and it moved by at most
     KEPT_SPREAD_LIMIT since the kept build; then the new operator is solved by PCG on the kept hierarchy / factor."""
 
-    _OWN = frozenset({'inner', 'kind', '_multigrid', '_kept_state', '_offer', '_bound_state', '_operator', '_kept',
-                      '_fresh_iterations', '_kept_pcg', 'n_kept_solves', 'n_kept_fallbacks', 'kept_cg_iterations'})
+    _OWN = frozenset({'inner', 'kind', '_multigrid', '_kept_state', '_offer', '_bound_state', '_operator',
+                      '_operator_shape', '_kept', '_fresh_iterations', '_kept_pcg', 'n_kept_solves', 'n_kept_fallbacks',
+                      'kept_cg_iterations'})
 
     def __init__(self, inner, kind):
         self.inner = inner
@@ -50,7 +51,8 @@ class KeptPreconditionerSolver:
         self._kept_state = None           # loop state (float64 copy) the kept hierarchy / factor was built at
         self._offer = None                # (state, fresh) of the next assembly (offer_state), taken by factorize
         self._bound_state = None          # the state of the bound operator (None: no loop state)
-        self._operator = None             # the bound operator (CSR of the backend)
+        self._operator = None             # the bound operator (CSR of the backend; None once released)
+        self._operator_shape = None       # its shape (kept through release_operator: the keep test reads it)
         self._kept = False                # the bound operator is solved on the kept hierarchy / factor
         self._fresh_iterations = 0        # multigrid: CG iterations of the first solve after the kept build
         self._kept_pcg = None             # direct: the PCGSolver iterating on the kept factor
@@ -78,8 +80,23 @@ class KeptPreconditionerSolver:
     def offer_state(self, state, fresh=False) -> None:
         """The loop state (ln of the coefficients up to a sign; device / host float64) of the next assembly: factorize
         keeps the earlier build while the state moved little since it; fresh (a loop's first assembly) builds afresh
-        and keeps this state's build. Without an offer factorize builds afresh and keeps nothing."""
+        and keeps this state's build. Without an offer factorize builds afresh and keeps nothing. The assembly that
+        follows builds the successor of the bound operator, so this releases it first (release_operator)."""
         self._offer = (state, bool(fresh))
+        self.release_operator()
+
+    def release_operator(self) -> None:
+        """Drop every reference of the wrapper to the bound operator: its own and the binding of the PCG that solves on
+        it (multigrid: the inner pcg; direct: the kept-factor pcg). The DiffusionSystem's _release_assembly reaches only
+        a PCGSolver, so without this the previous A_solve values (entries_per_row per cell) stayed alive through the
+        next assembly and its multigrid setup. The kept hierarchy / factor and the operator's shape stay (a kept
+        hierarchy still holds the operator it was built from: kept_preconditioner_bytes); solve raises until the next
+        factorize."""
+        self._operator = None
+        if self.kind == 'multigrid':
+            self.inner.release_operator()
+        elif self._kept_pcg is not None:
+            self._kept_pcg.release_operator()
 
     def work_counters(self) -> dict:
         """Kept solves, their fallbacks and (direct) PCG iterations (the physics adds them to its counters)."""
@@ -95,10 +112,12 @@ class KeptPreconditionerSolver:
         """Bind the assembled CSR: keep the earlier hierarchy / factor when the offered state moved by at most
         KEPT_SPREAD_LIMIT since it was built (same operator size), else build afresh."""
         (state, fresh), self._offer = self._offer or (None, True), None
-        previous, self._operator = self._operator, operator
+        previous_shape = self._operator_shape
+        self.release_operator()   # no reference to the previous operator lives into a fresh setup (the peak)
+        self._operator, self._operator_shape = operator, operator.shape
         self._bound_state = state
-        keep = (not fresh and state is not None and self._kept_state is not None and previous is not None
-                and previous.shape == operator.shape and state.shape == self._kept_state.shape
+        keep = (not fresh and state is not None and self._kept_state is not None
+                and previous_shape == operator.shape and state.shape == self._kept_state.shape
                 and not (self.kind == 'direct' and self.inner.runtime.back_end in CUDSS_BACK_ENDS)
                 and _spread(state - self._kept_state) <= KEPT_SPREAD_LIMIT[self.kind])
         if keep:
@@ -130,8 +149,8 @@ class KeptPreconditionerSolver:
         if self.kind == 'direct':
             self.inner.factorize(operator)
             return
-        # the pcg's binding of the previous operator goes before the setup (its peak): the system already dropped its
-        # own references, the setup drops the old hierarchy
+        # the pcg's binding goes before the setup (its peak; factorize released the previous operator already, a
+        # missed kept solve's rebuild unbinds the current one), the setup drops the old hierarchy
         self.inner.release_operator()
         start = time.perf_counter()
         self._multigrid.setup(operator)
