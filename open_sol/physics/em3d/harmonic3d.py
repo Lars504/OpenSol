@@ -33,6 +33,7 @@ _FIELD_ENERGY_3D = twin('em3d.harmonic_energy', cp.ReductionKernel(
     ' + MU0_SI * (double)mu * ((double)hx * hx + (double)hy * hy + (double)hz * hz))',
     'a + b', 'energy = 0.5 * a', '0', 'em3d_harmonic_energy', preamble=_CONSTANTS), _field_energy_3d_host)
 COMPONENTS = ('ex', 'ey', 'ez')
+ENERGY_CHUNK_CELLS = 1 << 22   # cells of one x-slab part of field_energy (its eps_r / mu_r uploads; em3d estimate)
 
 
 class HarmonicAccumulator3D:
@@ -85,18 +86,24 @@ class HarmonicAccumulator3D:
 
     def field_energy(self, physics):
         """Device float64 0-d EM energy [J] in the physical window (Bloch k != 0: of both field sets, |F|^2; axis-first:
-        core.kernels.axis_first_reduce)."""
-        materials, window = physics.domain.materials, self.window
-        # parked material arrays (engine3d park_arrays): window copies uploaded per call (one per chunk of the pulse)
-        eps, mu = materials.device_array('eps_r', window), materials.device_array('mu_r', window)
+        core.kernels.axis_first_reduce), summed over x-slab parts of at most ENERGY_CHUNK_CELLS cells: parked material
+        arrays (engine3d park_arrays) upload only one part's eps_r / mu_r at a time beside the fields (the run peak)."""
+        materials, (xs, ys, zs) = physics.domain.materials, self.window
+        per_part = max(1, ENERGY_CHUNK_CELLS // max((ys.stop - ys.start) * (zs.stop - zs.start), 1))
+        wx, wy, wz = self._widths
         energy = None
-        for field_set in (physics.fields, physics.fields.imag):
-            if field_set is None:
-                continue
-            term = axis_first_reduce(_FIELD_ENERGY_3D, eps, mu,
-                                     *(getattr(field_set, name)[window] for name in ('ex', 'ey', 'ez', 'hx', 'hy', 'hz')),
-                                     *self._widths)
-            energy = term if energy is None else energy + term
+        for start in range(xs.start, xs.stop, per_part):
+            part = (slice(start, min(start + per_part, xs.stop)), ys, zs)
+            eps, mu = materials.device_array('eps_r', part), materials.device_array('mu_r', part)
+            part_wx = wx[start - xs.start:part[0].stop - xs.start]
+            for field_set in (physics.fields, physics.fields.imag):
+                if field_set is None:
+                    continue
+                term = axis_first_reduce(_FIELD_ENERGY_3D, eps, mu,
+                                         *(getattr(field_set, name)[part] for name in ('ex', 'ey', 'ez', 'hx', 'hy',
+                                                                                       'hz')), part_wx, wy, wz)
+                energy = term if energy is None else energy + term
+            del eps, mu
         return energy
 
     def normalize(self, physics):
