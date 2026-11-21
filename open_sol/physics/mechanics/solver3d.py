@@ -141,8 +141,13 @@ class SolidMechanics3DPhysics(SolidMechanicsBase):
         self.selected_resonance = number
 
     def step(self, t: float = 0.0, dt: float = math.inf) -> None:
-        """Base step; a static re-solve ends the eigenfrequency state (reactions allowed again)."""
+        """Base step; a static re-solve ends the eigenfrequency state (reactions allowed again). A dirty operator means
+        re-assembly, rhs and solve in this call: the shown solution goes before the assembly, so _assemble makes no
+        _freeze_unknown copy of the unknown (a dof vector beside the assembly transients; nothing reads the outputs
+        before the new show)."""
         solves = self.system.n_solves
+        if self.system.operator_dirty:
+            self._drop_shown()
         super().step(t, dt)
         if self.system.n_solves != solves:
             self._shows_mode = False
