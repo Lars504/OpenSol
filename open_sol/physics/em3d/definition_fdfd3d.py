@@ -355,12 +355,13 @@ def _memory_estimate(settings_values, mesh, context):
                                                                      general, 'the curl-curl operator',
                                                                      fill=FactorFill(cudss_counted))
     # the Arnoldi basis (device Krylov-Schur where it runs, first pass only; a polished search keeps complex64 rows:
-    # _polished_search) and the filter's device A copy (fdfd3d passes no symmetric: a full A; float64 when real)
+    # _polished_search) and the filter's device A copy (fdfd3d passes no symmetric: a full A; float64 when real); the
+    # filter's D v block only where the search is polished (its row scale = the symmetrizer, on any LDL^T back end)
+    polished = _polished_search(factorization, unknowns, not general, config)
     search_host, search_transient = resonance_search_items(solver_backend(context.spec), unknowns, n_wanted, n_basis,
                                                            own_cudss=factorization in CUDSS_FACTORIZATIONS,
                                                            filter_entries=_ROW_ENTRIES * unknowns,
-                                                           single_basis=_polished_search(factorization, unknowns,
-                                                                                         not general, config),
+                                                           scaled_block=polished, single_basis=polished,
                                                            real_values=_real_values(settings_values, context, config))
     host_items = factor_items + (
         (f'operator A and its CSC copy ({_ROW_ENTRIES} entries per row)',
@@ -548,6 +549,7 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
     search_host, search_transient = resonance_search_items(solver_backend(context.spec), unknowns, n_wanted, n_basis,
                                                            own_cudss=factorization in CUDSS_FACTORIZATIONS,
                                                            filter_entries=row_entries * unknowns,
+                                                           scaled_block=False,   # fem3d: no symmetrizer, no D v
                                                            sparse_mass_entries=row_entries * unknowns,
                                                            symmetric_mass=symmetric, symmetric_operator=symmetric,
                                                            single_basis=_polished_search(factorization, unknowns,
@@ -586,7 +588,10 @@ def _time_estimate(settings_values, mesh, context):
     factorization = eigen_factorization(context.solvers)
     # the polished path (ARPACK floor 1e-6, complex64 device basis): a mixed factor (small operators factor in double,
     # S5c) or, with cpml (a complex A, floored), any LDL^T of D A (solve_resonances polishes a double one there too)
-    polished = _polished_search(factorization, unknowns, not config.has_bloch_phase, config)
+    # the mixed-size rule (MIXED_EIGEN_MIN_UNKNOWNS) reads the factored unknowns: the Nedelec ones on tetrahedra, not
+    # their Yee equivalent
+    factored = float(nedelec_unknowns(mesh, settings_values)) if mesh.kind == 'tetrahedra' else unknowns
+    polished = _polished_search(factorization, factored, not config.has_bloch_phase, config)
     if polished:
         applications_per_basis = MIXED_APPLICATIONS_PER_BASIS
     else:
@@ -599,7 +604,7 @@ def _time_estimate(settings_values, mesh, context):
     # sparse M and W, applied once per column block; was the "rest of the study": 628 ms against 16 ms on the Mie example)
     candidate_filter = resonance_filter_time_item(   # tetrahedra without a Bloch phase: a symmetric search
         context.backend, unknowns, 3.0 * nnz if mesh.kind == 'tetrahedra' else nnz, eigenpairs,
-        symmetric=mesh.kind == 'tetrahedra' and not config.has_bloch_phase)
+        symmetric=mesh.kind == 'tetrahedra' and not config.has_bloch_phase, single_basis=polished)
     return te.combine((te.TimeEstimate((assembly, candidate_filter)),
                        context.solver_work('eigen', unknowns=unknowns, nnz=nnz, value_bytes=COMPLEX128_BYTES,
                                            dimensions=3, solves=1.0, factorizations=1.0, eigenpairs=eigenpairs,

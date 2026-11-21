@@ -332,7 +332,28 @@ def solve_resonances(host_operator, mass, omega_target, energy_weights, in_windo
     sparse B and a sparse W are stored as lower triangles, their symmetry probed: ValueError if not); equilibration (n,)
     > 0: the row scale of such a factor (None = its |diag|^-1/2); in_region (n,) bool rows of a region (None: none)
     and min_region_fraction in [0, 1] (module header); rayleigh_symmetrizer (n,) D with D A complex symmetric, checked
-    by the caller: a complex A is polished (module header) on any factor, SuperLU and a given one too."""
+    by the caller: a complex A is polished (module header) on any factor, SuperLU and a given one too. An own factor
+    (factorization None) is released on return and on an exception (root "GPU memory and session lifetime": cuDSS /
+    MUMPS / PARDISO memory is invisible to the pools, and a traceback would keep it alive)."""
+    owned = []   # the own factor, once made
+    try:
+        return _solve_resonances(
+            owned, host_operator, mass, omega_target, energy_weights, in_window, n_resonances, field_of=field_of,
+            spectral_map=spectral_map, warnings=warnings, eigen_solver=eigen_solver, factorization=factorization,
+            ordering=ordering, tolerance_floor=tolerance_floor, basis_per_wanted=basis_per_wanted,
+            symmetrizer=symmetrizer, symmetric=symmetric, equilibration=equilibration, in_region=in_region,
+            min_region_fraction=min_region_fraction, rayleigh_symmetrizer=rayleigh_symmetrizer)
+    finally:
+        for factor in owned:
+            release = getattr(factor, 'release', None)   # a host SuperLU Factorization has none (numpy memory)
+            if release is not None:
+                release()
+
+
+def _solve_resonances(owned, host_operator, mass, omega_target, energy_weights, in_window, n_resonances, field_of,
+                      spectral_map, warnings, eigen_solver, factorization, ordering, tolerance_floor, basis_per_wanted,
+                      symmetrizer, symmetric, equilibration, in_region, min_region_fraction, rayleigh_symmetrizer):
+    """solve_resonances; its own factor is appended to `owned` as soon as it exists (the caller releases it)."""
     started = time.perf_counter()
     eigen_solver = ArpackShiftInvertSolver() if eigen_solver is None else eigen_solver
     omega_target = float(omega_target)
@@ -378,6 +399,7 @@ def solve_resonances(host_operator, mass, omega_target, energy_weights, in_windo
             factor_operator = (scipy.sparse.diags(symmetrizer) @ host_operator).tocsr()
         factorization = eigen_solver.factorize_host(factor_operator, ordering=ordering,
                                                     symmetric=symmetrized or bool(symmetric), row_scale=equilibration)
+        owned.append(factorization)
         on_device = factorization.back_end == 'cudss'
         # a mixed LDL^T: cuDSS on the device, MUMPS / PARDISO on the host (factor_precision 'double' after a fallback);
         # a double one of a complex A whose caller floored ARPACK (module constants)
@@ -720,21 +742,23 @@ def element_region_rows(dofs, free, element_mask) -> np.ndarray:
     return rows[np.asarray(free)]
 
 
-def resonance_filter_time_item(backend, unknowns, filter_entries, eigenpairs, symmetric=False):
+def resonance_filter_time_item(backend, unknowns, filter_entries, eigenpairs, symmetric=False, single_basis=False):
     """Run-time TimeItem of the resonance filter per eigenpair of a pass (_ResonanceFilter; filter_entries = stored
     entries of A and a sparse B / W): on the gpu the column uploaded once per operator (3), the pass's operator uploads
     shared by its eigenpairs, the sparse products and ~14 vector passes; on the cpu the batched host product (matrix
     read once per FILTER_BLOCK_COLUMNS). symmetric (solve_resonances(symmetric=True)): device lower triangles, half the
-    upload bytes, the quotient measures read them twice (bilinear). Count: the first pass, a guess up to the
-    widenings."""
+    upload bytes, the quotient measures read them twice (bilinear); single_basis: the parked basis rows are complex64.
+    Count: the first pass, a guess up to the widenings."""
     from ...core import time_estimate as te
     from ...core.memory_estimate import COMPLEX128_BYTES, COMPLEX128_CSR_ENTRY_BYTES
     vector_bytes = COMPLEX128_BYTES * float(unknowns)
     if backend == 'gpu':
         storage = 0.5 if symmetric else 1.0   # lower triangle + diagonal (real values: 12 of 20 B, not counted)
         uploads = storage * COMPLEX128_CSR_ENTRY_BYTES * float(filter_entries) / max(float(eigenpairs), 1.0)
-        # + the Krylov basis parked on the host (_parked_decomposition): ~5 rows per eigenpair (basis 5 x wanted)
-        ops = (te.Transfer(3.0 * vector_bytes + uploads + 5.0 * vector_bytes),
+        # + the Krylov basis parked on the host (_parked_decomposition): ~5 rows per eigenpair (basis 5 x wanted),
+        # complex64 rows on a polished search (eigs_device single_basis)
+        parked_rows = 5.0 * vector_bytes * (0.5 if single_basis else 1.0)
+        ops = (te.Transfer(3.0 * vector_bytes + uploads + parked_rows),
                te.Spmv(float(unknowns), (2.0 if symmetric else 1.0) * float(filter_entries), COMPLEX128_BYTES),
                te.Elementwise(12.0 * vector_bytes, 2.0 * vector_bytes, launches=2), te.PythonCalls(2))
     else:
