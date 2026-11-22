@@ -701,8 +701,9 @@ def _time_estimate(settings_values, mesh, context):
                                context.solver_work('eigen', product_ops=scaled_ops(
                                    factor_solve_ops(unknowns, block, nnz, shifted.values.get('precision', 'mixed')),
                                    2.0), **common)))
-        if eigen_factorization(context.solvers) in CUDSS_FACTORIZATIONS:   # complex64 basis on a polished mixed one
-            single_basis = search_single_basis(eigen_factorization(context.solvers), unknowns, True, True)
+        if eigen_factorization(context.solvers) in CUDSS_FACTORIZATIONS:   # squared Cayley: complex128 basis
+            single_basis = search_single_basis(eigen_factorization(context.solvers), unknowns, True, True,
+                                               spectral_map='squared_cayley')
             return te.combine((assembly, context.solver_work('eigen', factorizations=n_orders, rhs=2,
                                                              single_basis=single_basis, **common)))
         factors = te.TimeItem('shift-invert factorisations', 'factorisation', n_orders, 'exact',

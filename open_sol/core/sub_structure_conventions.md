@@ -43,7 +43,11 @@ coordinate rules stay in the root file.
 - `MaterialGrid.park(names)` (em3d / acoustics sub files "Parked material arrays"): parked arrays are host numpy;
   `assign` / `assign_window` write them there and `device_array(name, index)` uploads (a view when not parked). Code
   reading a MaterialGrid array as a device array (`getattr(materials, name)` into a kernel or xp expression) breaks on
-  a parked one: a parking solver's rule excludes the meshes where such readers run. The rule is shared:
+  a parked one: a parking solver's rule excludes the meshes where such readers run. A reader in ANOTHER physics that
+  never registers the array escapes that rule: it checks `materials.parked` itself (heat's finalize re-records n0
+  from eps after em finalize parked it: `record_reference_index` skips parked eps, `reference_index` refuses them;
+  cupy reports a numpy value written into a device array as 'non-scalar numpy.ndarray cannot be used for fill').
+  The rule is shared:
   `model.definition_helpers.parkable_material_arrays` (a new parking type calls it, never a copy).
 - `release_all`'s full `gc.collect` walks every tracked object (~25 ms): a sweep (`study._run_sweep`) freezes the gc
   after its first value (`freeze_collect_baseline` / `thaw_collect_baseline`), never undoing a freeze of its caller

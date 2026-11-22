@@ -363,7 +363,10 @@ first bring the background physics (those without the study's hook) to a station
   the device and copied down. A parked or lowered array changes the physics' memory estimate and time recipe in the
   same commit.
 - Reduced precision only where it is checked: a complex64 Krylov basis (`single_basis`) needs a float64 Rayleigh
-  polish of its Ritz values and refuses tolerances below SINGLE_BASIS_MIN_TOLERANCE (solvers sub file); accumulators,
+  polish of its Ritz values and refuses tolerances below SINGLE_BASIS_MIN_TOLERANCE (solvers sub file). The polish
+  repairs only pairs whose vectors the fp32 relation kept, which are those near |theta_max|: a spectral map that
+  spreads the wanted |theta| (the squared Cayley map: em3d, BOR, conical) keeps complex128 (em sub file,
+  eigenfrequency `single_basis_search`, measured). Accumulators,
   near-cancelling sums and gradients fed to an optimiser stay float64 / complex128. Lossless vs lossy is read from the
   values, never the dtype: an operator complex only by a gauge (j k_z, j m) or a polished real pencil keeps a spurious
   Im (finite Q of a lossless mode) unless solved in a real gauge (em sub file, eigenfrequency "Real spectra").

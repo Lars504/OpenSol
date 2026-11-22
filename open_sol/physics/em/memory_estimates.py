@@ -23,7 +23,7 @@ from .definition_bloch import bloch_active_axes
 from .definition_common import (FREQUENCY_DOMAIN_STUDY, _q_accum_referenced, _study_wavelengths, eigen_solved,
                                 fdtd_parked_material_arrays)
 from .solvers.fdtd_2d_base import PARKED_BLOCK_CELLS
-from .eigenfrequency import FILTER_DEVICE_BLOCK_COLUMNS
+from .eigenfrequency import FILTER_DEVICE_BLOCK_COLUMNS, single_basis_search
 from .materials import GYRATION_Z
 from .placement import PERMITTIVITY_ARRAYS
 
@@ -222,7 +222,7 @@ def resonance_search_items(backend, unknowns, n_wanted, n_basis, own_cudss, filt
     # one operator at a time (_ResonanceFilter.measures): the largest of A, the FEM W and an unshared B
     uploads = [(f'A {value_type} {stored(symmetric_operator)}',
                 device_matrix_bytes(unknowns, filter_entries, symmetric_operator, real_values))]
-    if sparse_mass_entries:
+    if sparse_mass_entries:   # a Bloch W is complex full CSR: A's pattern and storage there, so the max is unchanged
         uploads.append((f'W float64 {stored(symmetric_mass)}',
                         device_matrix_bytes(unknowns, sparse_mass_entries, symmetric_mass, True)))
         if not own_cudss:
@@ -252,20 +252,20 @@ def own_cudss_search_items(label, unknowns, entries, mixed, symmetric=True) -> l
 
 def _resonance_search(context, n_resonances, unknowns, own_cudss, filter_entries, basis_per_wanted=0,
                       scaled_block=None, sparse_mass_entries=0, symmetric_search=False, ldlt=None,
-                      polished_double=False, real_values=False):
+                      polished_double=False, real_values=False, *, spectral_map):
     """resonance_search_items (real_values passed on) on the run backend of a search for n_resonances: 2 n_resonances
     + 10 wanted (within 1 ..
     unknowns - 2), the Arnoldi basis of the eigen subspace_size, else basis_per_wanted x wanted, else scipy's;
     symmetric_search (solve_resonances(symmetric=True): A itself complex symmetric, FEM and the BOR FIT operator): the
     filter's lower triangles; ldlt (None = symmetric_search; True also for a symmetrized D A without Bloch phase /
-    gyration): the own factor is an LDL^T. Complex64 basis rows (every polished search, eigenfrequency
-    MIXED_ARPACK_TOLERANCE) on a polished_mixed_search or when polished_double (the caller's test that the search is
+    gyration): the own factor is an LDL^T. Complex64 basis rows by search_single_basis (a polished shift-invert search
+    of the solve's spectral_map: a polished_mixed_search or polished_double, the caller's test that the search is
     polished on a double factor too: E2, or a floored complex A of an LDL^T)."""
     n_wanted = max(min(2 * n_resonances + 10, unknowns - 2), 1)
     n_basis = arnoldi_basis_size(n_wanted, unknowns, eigen_subspace_size(context.solvers), basis_per_wanted * n_wanted)
     ldlt = symmetric_search if ldlt is None else ldlt
     single_basis = search_single_basis(eigen_factorization(context.solvers), unknowns, own_cudss, ldlt,
-                                       polished_double)
+                                       polished_double, spectral_map=spectral_map)
     return resonance_search_items(solver_backend(context.spec), unknowns, n_wanted, n_basis, own_cudss=own_cudss,
                                   filter_entries=filter_entries, scaled_block=scaled_block,
                                   sparse_mass_entries=sparse_mass_entries, symmetric_mass=symmetric_search,
@@ -313,12 +313,13 @@ def eigen_mixed(factorization, unknowns) -> bool:
     return factorization == 'cudss_mixed' and int(unknowns) >= MIXED_EIGEN_MIN_UNKNOWNS
 
 
-def search_single_basis(factorization, unknowns, own_cudss, ldlt, polished_double=False) -> bool:
-    """Whether solve_resonances keeps a complex64 Krylov basis (every polished search: eigenfrequency
-    MIXED_ARPACK_TOLERANCE): polished_double (the caller's test of a polish on a double factor too: E2, a floored
-    complex A of an LDL^T), else an own cuDSS factor (own_cudss) that is a mixed LDL^T (ldlt; polished_mixed_search).
-    The memory items (_resonance_search) and the eigen role's time recipe (SolverWork.single_basis) read it."""
-    return bool(polished_double) or bool(own_cudss and polished_mixed_search(factorization, unknowns, symmetric=ldlt))
+def search_single_basis(factorization, unknowns, own_cudss, ldlt, polished_double=False, *, spectral_map) -> bool:
+    """Whether solve_resonances keeps a complex64 Krylov basis (eigenfrequency.single_basis_search: a polished search
+    on the shift-invert map, never squared_cayley): polished when polished_double (the caller's test of a polish on a
+    double factor too: E2, a floored complex A of an LDL^T), else an own cuDSS factor (own_cudss) that is a mixed LDL^T
+    (ldlt; polished_mixed_search). The memory items (_resonance_search) and the eigen role's time recipe read it."""
+    polished = bool(polished_double) or bool(own_cudss and polished_mixed_search(factorization, unknowns, symmetric=ldlt))
+    return single_basis_search(polished, spectral_map)
 
 
 def polished_mixed_search(factorization, unknowns, symmetric=True) -> bool:
@@ -789,7 +790,8 @@ def _fdfd_fem_memory_estimate(settings_values, mesh, context):
                                                          sparse_mass_entries=entries,   # A, B, W: one pattern
                                                          symmetric_search=True,   # lossless, no PML ring: real
                                                          real_values=real_cross_section_operator(settings_values,
-                                                                                                 context))
+                                                                                                 context),
+                                                         spectral_map='shift_invert')   # fem_fdfd
         host_items += [*search_host,
                        (f'resonance vectors ({n_resonances} x complex128)', n_resonances * vector_bytes),
                        ('shifted operator copy (sparse complex128)', entries * COMPLEX128_CSR_ENTRY_BYTES)]
@@ -839,7 +841,8 @@ def _eigen_items(context, n_cells, sparse_row, superlu=True, ldlt=True, polished
         symmetric=True, eigen=True)) if superlu and not own_cudss else [])
     # any factor may be Rayleigh-polished (E2: a complex A with a measured symmetrizer): the D v block booked always
     search_host, transient_items = _resonance_search(context, n_resonances, n_cells, own_cudss, 5 * n_cells,
-                                                     scaled_block=True, ldlt=ldlt, polished_double=polished_double)
+                                                     scaled_block=True, ldlt=ldlt, polished_double=polished_double,
+                                                     spectral_map='shift_invert')   # fdfd_2d
     external_items, external_extra = [], 0
     if own_cudss:
         mixed = eigen_mixed(factorization, n_cells)
@@ -1089,7 +1092,7 @@ def conical_memory_estimate(settings_values, mesh, context):
         ldlt, polished, real_values = conical_search_flags(settings_values, context, factorization, unknowns)
         search_host, search_transient = _resonance_search(
             context, n_resonances, unknowns, on_device, 13 * unknowns, ldlt=ldlt, polished_double=polished,
-            real_values=real_values)
+            real_values=real_values, spectral_map='squared_cayley')
         transient_items += search_transient
         host_items += [*search_host,
                        (f'resonance fields ({n_resonances} x 6 components complex128)',
@@ -1116,8 +1119,8 @@ def conical_memory_estimate(settings_values, mesh, context):
 def conical_search_flags(settings_values, context, factorization, unknowns) -> tuple:
     """(ldlt, polished, real_values) of conical.solve_conical_resonances, shared by the memory items and the eigen time
     recipe: an LDL^T of D A unless a Bloch phase makes it an LU; the real-gauge operator is complex only with a cpml
-    face, sigma_e / sigma_m or poles (real_cross_section_operator; never by k_z), so polished (a complex64 device basis
-    beyond search_single_basis' own mixed cuDSS rule) = an LDL^T node on a complex operator (floored, conical's
+    face, sigma_e / sigma_m or poles (real_cross_section_operator; never by k_z), so polished (search_single_basis'
+    polished_double, beyond its own mixed cuDSS rule) = an LDL^T node on a complex operator (floored, conical's
     tolerance floor) or a host mixed LDL^T (mumps_mixed / pardiso_mixed from MIXED_EIGEN_MIN_UNKNOWNS); real_values:
     the filter stores A as float64."""
     from ...solvers.arpack_shift_invert import LDLT_FACTORIZATIONS
@@ -1155,7 +1158,7 @@ def _fem_resonance_memory_estimate(settings_values, mesh, context, n_resonances,
     fem_entries = FEM_ENTRIES_PER_ROW[order] * unknowns
     search_host, search_transient = _resonance_search(   # the filter's A, B and W: one operator's entries each
         context, n_resonances, unknowns, on_device, fem_entries, basis_per_wanted, sparse_mass_entries=fem_entries,
-        symmetric_search=True)
+        symmetric_search=True, spectral_map='squared_cayley')   # fem_bor / fem_conical
     vectors_label, n_vectors = (f'{n_resonances}', n_resonances) if n_orders is None else (
         f'{n_orders} x {n_resonances}', n_orders * n_resonances)
     host_items = ([] if on_device else solver_job_items(EIGEN_ROLE, host_factor_items(
@@ -1231,7 +1234,7 @@ def bor_memory_estimate(settings_values, mesh, context):
     if eigen:   # body_of_revolution.solve_bor_resonances, one per order of azimuthal_orders
         n_resonances = int(_study_values(context).get('n_resonances') or 1)
         search_host, search_transient = _resonance_search(   # one order's search at a time (symmetric=True)
-            context, n_resonances, unknowns, on_device, entries, symmetric_search=True)
+            context, n_resonances, unknowns, on_device, entries, symmetric_search=True, spectral_map='squared_cayley')
         transient_items += search_transient
         host_items += [*search_host,
                        (f'resonance fields ({n_orders} x {n_resonances} x complex128)',

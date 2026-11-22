@@ -179,9 +179,11 @@ def _values(values, real):
 
 def _uploaded(cupyx_sparse, csr, real):
     """cupyx CSR of a canonical host CSR in the storage dtype (int32 indices), flagged canonical: cupyx then never
-    re-sorts it per product."""
-    device = cupyx_sparse.csr_matrix((_values(csr.data, real), csr.indices.astype(np.int32, copy=False),
-                                      csr.indptr.astype(np.int32, copy=False)), shape=csr.shape)
+    re-sorts it per product. cupyx's (data, indices, indptr) form takes cupy arrays only (host ones raise)."""
+    import cupy as cp
+    device = cupyx_sparse.csr_matrix((cp.asarray(_values(csr.data, real)),
+                                      cp.asarray(csr.indices.astype(np.int32, copy=False)),
+                                      cp.asarray(csr.indptr.astype(np.int32, copy=False))), shape=csr.shape)
     device.has_canonical_format = True
     return device
 

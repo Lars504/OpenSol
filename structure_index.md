@@ -5,30 +5,30 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 ## Contents
 
 - open_sol/: lines 33-38
-- open_sol/core/: lines 40-76
-- open_sol/coupling/: lines 78-104
-- open_sol/fem/: lines 106-171
-- open_sol/gui/: lines 173-194
-- open_sol/io/: lines 196-200
-- open_sol/materials/: lines 202-219
-- open_sol/mesh_study/: lines 221-231
-- open_sol/model/: lines 233-303
-- open_sol/physics/: lines 305-307
-- open_sol/physics/acoustics/: lines 309-327
-- open_sol/physics/em/: lines 329-446
-- open_sol/physics/em/solvers/: lines 448-471
-- open_sol/physics/em3d/: lines 473-509
-- open_sol/physics/eme/: lines 511-528
-- open_sol/physics/fluid/: lines 530-541
-- open_sol/physics/heat/: lines 543-568
-- open_sol/physics/magnetic/: lines 570-601
-- open_sol/physics/mechanics/: lines 603-688
-- open_sol/physics/membrane/: lines 690-708
-- open_sol/physics/nlfd/: lines 710-729
-- open_sol/physics/potential/: lines 731-748
-- open_sol/physics/semiconductor/: lines 750-763
-- open_sol/solvers/: lines 765-780
-- open_sol/viz/: lines 782-791
+- open_sol/core/: lines 40-77
+- open_sol/coupling/: lines 79-105
+- open_sol/fem/: lines 107-172
+- open_sol/gui/: lines 174-195
+- open_sol/io/: lines 197-201
+- open_sol/materials/: lines 203-220
+- open_sol/mesh_study/: lines 222-232
+- open_sol/model/: lines 234-304
+- open_sol/physics/: lines 306-308
+- open_sol/physics/acoustics/: lines 310-328
+- open_sol/physics/em/: lines 330-447
+- open_sol/physics/em/solvers/: lines 449-472
+- open_sol/physics/em3d/: lines 474-510
+- open_sol/physics/eme/: lines 512-529
+- open_sol/physics/fluid/: lines 531-542
+- open_sol/physics/heat/: lines 544-569
+- open_sol/physics/magnetic/: lines 571-602
+- open_sol/physics/mechanics/: lines 604-689
+- open_sol/physics/membrane/: lines 691-709
+- open_sol/physics/nlfd/: lines 711-730
+- open_sol/physics/potential/: lines 732-749
+- open_sol/physics/semiconductor/: lines 751-764
+- open_sol/solvers/: lines 766-782
+- open_sol/viz/: lines 784-793
 
 ## open_sol/
 
@@ -69,6 +69,7 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - `renderer.py`: FieldInfo (label, unit, colormap, mirror parity of one field component), polar relabelling and the PhysicsRenderer ABC that maps a solver's state to fields over the physical window.
 - `resonance.py`: Harmonic inversion of time-stepped probe signals (the resonance_monitor of every time-stepped physics), host numpy only: mix the band down, Kaiser anti-alias FIR, decimate, matrix pencil -> frequency, decay rate, Q, amplitude and phase per ...
 - `selftests_harmonic_probe.py`: Self-test check of core.harmonic_probe (CPU, no model run): record / replace / keep-both / series round trip; the SelfTestCase that runs it lives in model.selftests_analytic, which passes its SubChecks.add (core imports no model).
+- `selftests_monitors.py`: Self-test check of the core.monitors ProbeRows host parking (CPU, no model run): rows recorded around parks, device growth and a column added later read back exactly; the SelfTestCase lives in model.selftests_analytic, which passes its ...
 - `solver_base.py`: PhysicsSolver ABC: the solver contract (prepare, step, dt_limit, state, inject_source) every physics implements.
 - `sources.py`: Temporal envelopes (GaussianPulse, ContinuousWave, RickerWavelet), their sampled DFT spectra and the soft PointSource / LineSource field injections of the FDTD steppers.
 - `time_estimate.py`: CPU run-time estimates: the op catalogue, TimeItem / TimeEstimate, pricing by a machine profile and the post-run time_check
@@ -450,14 +451,14 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - `__init__.py`: EM solver modules; re-exports the 2D FDTD engines FDTDEngine2D_Ez and FDTDEngine2D_Hz (fdfd_2d, modes_2d and the others are imported by module path).
 - `fdfd_2d.py`: 2D FDFD electromagnetics: one sparse Helmholtz solve per angular frequency for E_z ('ez') or H_z ('hz') on the A1 Yee operators (Bloch k != 0 on the wrap entries), with phasor sources, harmonic monitors, conducting sheets and the EM loss ...
 - `fdfd_2d_fem.py`: 2D FDFD on a TriangleDomain (em_fdfd_ez / em_fdfd_hz on a 'triangles' mesh): FEMFDFDPhysics solves physics/em/fem_fdfd on the host, driven (point sources, probes; stationary / frequency_domain) or eigen (eigenfrequency), and exposes the ...
-- `fdfd_bor.py`: Body-of-revolution FDFD on a Domain (x = r from the x_lo window edge = the axis, y = z; fields ~ exp(-j m phi)): BORPhysics assembles and solves on the host (body_of_revolution) and keeps float32 centre fields (run backend) for the ...
+- `fdfd_bor.py`: Body-of-revolution FDFD on a Domain (x = r from the x_lo window edge = the axis, y = z; fields ~ exp(-j m phi)): BORPhysics assembles and solves on the host (body_of_revolution) and keeps float32 centre fields for the renderer (the state() ...
 - `fdfd_bor_fem.py`: Body-of-revolution resonances on a TriangleDomain (em_fdfd_bor on a 'triangles' mesh, eigenfrequency study only): FEMBORPhysics solves physics/em/fem_bor per azimuthal order on the host and exposes the selected resonance per element ...
-- `fdfd_conical.py`: Conical FDFD on a Domain (symmetry 2.9: a z-invariant structure at a fixed out-of-plane wave number k_z, all six components): ConicalPhysics assembles and solves on the host (physics/em/conical) and keeps float32 centre fields (run ...
+- `fdfd_conical.py`: Conical FDFD on a Domain (symmetry 2.9: a z-invariant structure at a fixed out-of-plane wave number k_z, all six components): ConicalPhysics assembles and solves on the host (physics/em/conical) and keeps float32 centre fields for the ...
 - `fdfd_conical_fem.py`: Conical resonances on a TriangleDomain (em_fdfd_conical on a 'triangles' mesh, eigenfrequency study only): FEMConicalPhysics solves physics/em/fem_conical at the k_z setting on the host and exposes the selected resonance per element ...
 - `fdfd_sphere.py`: Spherically symmetric FDFD on a spherical Domain (x = r - radius_min; y = theta over the whole 0..pi, one cell across on a 1D line): SpherePhysics solves the radial equation of every listed multipole term (spherical_multipoles) on the host ...
 - `fdtd_2d_base.py`: _YeeEngine2DBase: shared part of the 2D FDTD Yee engines (curl spacings, field sets, solver contract, J.E window) plus PEC-mask and dispersive-region helpers.
 - `fdtd_bor.py`: Body-of-revolution FDTD on a Domain (x = r from the x_lo window edge = the axis, y = z; one azimuthal order m, or the driven order sum of point currents at phi = 0): BORFDTDPhysics steps fdtd_bor.BORTimeStepper / BOROrderSum on the ...
-- `fdtd_conformal_kernels.py`: Sparse conformal-PEC corrections of the 2D FDTD H updates (physics/em/conformal_pec): launched right after the Yee H kernel of each field set, on the listed faces (E_z) / cells (H_z) only, with the same db and curl spacings; core.kernels ...
+- `fdtd_conformal_kernels.py`: Sparse conformal-PEC corrections of the 2D FDTD H updates (physics/em/conformal_pec): launched right after the Yee H kernel of each field set, on the listed faces (E_z) / cells (H_z) only, with the same db and curl spacings (h_uniform 1: ...
 - `fdtd_ez_2d.py`: FDTDEngine2D_Ez: the 2D Yee engine of E_z polarisation (E_z, H_x, H_y) with fused kernels, CPML / BCs, Drude / Lorentz poles, PEC masks and J.E loss accounting.
 - `fdtd_ez_2d_kernels.py`: Fused kernels of the 2D E_z-polarisation Yee engine, each a core.kernels twin (cupy kernel + numpy twin of the same call; numba twins for the two Yee updates): the numpy twins below every cupy source must follow any change to it
 - `fdtd_gain.py`: C5 four-level gain media of the 2D FDTD engines (time domain only): a Lorentz polarisation driven by the population difference of a four-level two-electron system (Chang and Taflove, Opt
@@ -770,6 +771,7 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - `block_eigen.py`: 'block_eigen' solver type runtime (role 'eigen'): the factor-free preconditioned block eigensolver (LOBPCG with soft locking, row-block storage and chunked in-place updates) of the lowest eigenpairs of a symmetric pencil K x = lambda M x ...
 - `cudss_factor.py`: cuDSS sparse LU / LDL^T / Cholesky on the device (nvmath-python DirectSolver): the 'cudss' / 'cudss_mixed' factorizations of arpack_shift_invert and back ends of sparse_direct, a sparse_direct.Factorization stand-in. numpy only at module ...
 - `definition.py`: SolverType definitions ('pcg', 'line_block', 'sparse_direct', 'banded', 'arpack_shift_invert', 'block_eigen', 'explicit_kernels') and register(registry)
+- `device_matrices.py`: Device copies of host sparse matrices for GPU products (DeviceMatrix: real values kept float64, a symmetric matrix as its strict lower triangle + diagonal, a diagonal one as its vector) and their pool bytes for the memory estimators. numpy ...
 - `explicit_kernels.py`: 'explicit_kernels' solver type runtime (role 'stepper'): the settings bundle of an explicit time-stepping engine; the engine stays the loop. single = float32 fields; double = float64 fields and arithmetic (em_fdtd_ez / em_fdtd_hz); ...
 - `host_direct.py`: Host multicore sparse direct factors by MUMPS (python-mumps) and MKL PARDISO (pydiso): back ends mumps / pardiso (+ _mixed) of sparse_direct and arpack_shift_invert
 - `line_block.py`: 'line_block' shifted-solver runtime: batched block-tridiagonal direct solves of (K + sum_i s_i M_i + sum_j t_j N_j) x = b, M_i diagonal, N_j sparse block-tridiagonal, on line-ordered grid unknowns: per shift a block Thomas factorisation ...

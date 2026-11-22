@@ -414,12 +414,17 @@ type's vocabulary and refusals are in its help texts and validation.
   goes through `solvers.device_matrices.device_matrix`: a `symmetric` search stores A, B and a sparse W as lower
   triangles (probed: `symmetric=True` promises all three symmetric, so a caller passing it with an unsymmetric W
   fails loudly) measured by `bilinear`, real values float64 (a real B stays float64 on the host too: `_PencilMass`,
-  host products through `_host_product`, never `real_csr @ complex`). Estimators: `symmetric_search` (filter storage),
-  `ldlt` / `polished_double` (complex64 basis rows), `real_values` (materials test), sized by `device_matrix_bytes`.
-  Every polished search (mixed, a floored complex A on a double LDL^T, E2) runs a complex64 Krylov basis
-  (`eigs_device(single_basis=polish)`; argument at MIXED_ARPACK_TOLERANCE): a new polish path or a tolerance below
-  SINGLE_BASIS_MIN_TOLERANCE changes `memory_estimates.search_single_basis` too (memory items and the eigen time
-  recipe's `SolverWork.single_basis`). An eigen solve releases the physics' driven cuDSS factors first
+  host products through `_host_product`, never `real_csr @ complex`). A sparse W is real except on Bloch FEM lattices
+  (em3d fem P^H W P: complex Hermitian, never complex symmetric): kept complex128, full storage, one complex product,
+  never refused or reduced to its real part (the Im part is a real share). Estimators: `symmetric_search` (filter storage),
+  `ldlt` / `polished_double` (polish), `real_values` (materials test), sized by `device_matrix_bytes`.
+  A polished shift-invert search (mixed, a floored complex A on a double LDL^T, E2: the 2D FDFD and fem_fdfd
+  searches) runs a complex64 Krylov basis (`single_basis_search(polish, spectral_map)`; argument at
+  MIXED_ARPACK_TOLERANCE). Squared-Cayley searches (em3d, BOR, conical, FIT and FEM) keep complex128: theta = mu (1 +
+  mu) squares the |theta| spread of the wanted pairs, and complex64 lost two of the five nearest resonances of
+  em_conical_fem_cudss (bad vectors, Rayleigh move 3e3). A new polish path, map or tolerance below
+  SINGLE_BASIS_MIN_TOLERANCE changes `memory_estimates.search_single_basis` (its required `spectral_map`; fdfd3d
+  `_single_basis`) too: memory items and the eigen time recipe's `SolverWork.single_basis`. An eigen solve releases the physics' driven cuDSS factors first
   (`_release_device_factors`): two factors never share the device. 2D tensor FDFD on the gpu (no line_block) parks
   its device system during the search (`_park_device_system`: freed, reassembled after it, estimated as
   ASSEMBLY_PHASE items): a new consumer of `self.system` inside solve_eigenfrequencies reads it before the park, a new
@@ -508,7 +513,7 @@ type's vocabulary and refusals are in its help texts and validation.
 - A cuDSS factor skips the host SuperLU size rule (`_refresh_system` / `_solve` of ConicalPhysics, definition
   `_solver_issues`, `solve_conical_resonances`): a change of that rule touches every caller of `conical.size_issue_for`.
 - The eigen search runs in the real gauge (E_x, E_y, w = -j E_z; `conical.real_gauge_operator`, module header), so
-  solve_resonances' complex-operator test (polish of a floored double LDL^T, complex64 basis, float64 filter storage)
+  solve_resonances' complex-operator test (polish of a floored double LDL^T, float64 filter storage)
   sees only PML, loss and Bloch phases, never k_z: a new caller of solve_resonances on the conical operator goes
   through it. The estimate and the eigen time recipe share `memory_estimates.conical_search_flags` (that rule).
 - Device memory: ConicalPhysics owns only `CONICAL_DEVICE_FIELDS` (e_intensity, q_abs) on the run backend, the 14

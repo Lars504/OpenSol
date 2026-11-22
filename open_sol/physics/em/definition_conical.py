@@ -389,7 +389,7 @@ def _time_estimate(settings_values, mesh, context):
         factorization = eigen_factorization(context.solvers)
         ldlt, polished, _ = conical_search_flags(settings_values, context, factorization, unknowns)   # the memory rule
         single_basis = search_single_basis(factorization, unknowns, factorization in CUDSS_FACTORIZATIONS, ldlt,
-                                           polished)
+                                           polished, spectral_map='squared_cayley')
         return te.combine((te.TimeEstimate((te.TimeItem('conical assembly', 'assembly', 1.0, 'exact', assembly_ops),
                                             resonance_filter_time_item(context.backend, unknowns, nnz, eigenpairs))),
                            context.solver_work('eigen', unknowns=unknowns, nnz=nnz, value_bytes=16, solves=1.0,

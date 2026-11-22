@@ -965,7 +965,8 @@ def _fdfd_time_estimate(settings_values, mesh, context, polarization='ez'):
         bloch = bool(bloch_active_axes(settings_values))   # memory_estimates.fdfd_memory_estimate's basis rule
         single_basis = search_single_basis(factorization, unknowns, factorization in CUDSS_FACTORIZATIONS,
                                            not fdfd_general_lu(settings_values, context, polarization),
-                                           not bloch and cpml_cross_section(settings_values))
+                                           not bloch and cpml_cross_section(settings_values),
+                                           spectral_map='shift_invert')
         return te.combine((te.TimeEstimate((te.TimeItem('Helmholtz assembly', 'assembly', 1.0, 'exact', assembly_ops),
                                             resonance_filter_time_item(context.backend, unknowns, nnz, eigenpairs))),
                            context.solver_work('eigen', unknowns=unknowns, nnz=nnz, value_bytes=16, solves=1.0,
@@ -1019,7 +1020,8 @@ def _triangle_time_estimate(settings_values, mesh, context):
                                                factorizations=1.0, eigenpairs=eigenpairs,
                                                factor_scale=FEM_FDFD_LU_FILL[order],
                                                single_basis=search_single_basis(   # a polished mixed LDL^T
-                                                   eigen_factorization(context.solvers), unknowns, not host, True),
+                                                   eigen_factorization(context.solvers), unknowns, not host, True,
+                                                   spectral_map='shift_invert'),
                                                **host)))
     per_step = context.time_dependent
     points, kind, limit = _driven_points(context)

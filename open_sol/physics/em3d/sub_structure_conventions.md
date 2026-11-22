@@ -99,8 +99,8 @@ contracts"). em_fdtd_3d (B2) and the eigensolver em_fdfd_3d (tensor Yee and tetr
 - Device memory of a solve is solve_resonances' (em sub file "FDFD", eigenfrequency): the estimators book it through
   `resonance_search_items` with the storage the solve picks (`definition_fdfd3d._polished_search`, the memory items
   and the time recipe alike: an LDL^T without Bloch phase that is mixed, or double with a cpml face, is polished:
-  complex64 basis rows, on the tensor grid also the filter's D v block; tetrahedra: lower triangles of a symmetric
-  search, no D v),
+  on the tensor grid the filter's D v block; tetrahedra: lower triangles of a symmetric search, no D v; the basis
+  stays complex128 either way, `_single_basis`: squared Cayley, em sub file),
   so a change of what fdfd3d / fem3d pass to it (symmetrizer, symmetric, a sparse mass) changes both estimators.
   Nothing else of em_fdfd_3d lives on the device: the tensor resonance fields (`FDFDPhysics3D.fields`, complex64) are
   host numpy on either backend, and `renderer_fdfd3d` does its math on the host per read window / plane and uploads

@@ -20,6 +20,8 @@ Root rules: structure_conventions.md "Solver roles".
   per call. Real matrices meeting complex vectors go through `device_matrix` (float64 view of the operand), never a
   bare `cupyx...csr_matrix(real) @ complex`; a complex128 upload of a real matrix (`astype(np.complex128)` before the
   upload) is the same waste kept for good.
+- cupyx `csr_matrix((data, indices, indptr), shape=)` takes cupy arrays only: host numpy arrays raise 'data,
+  indices, and indptr should be 1-D' (whatever their ndim); `cp.asarray` each first, or pass the scipy matrix itself.
 - Naming: `PhysicsSolver` (core.solver_base) is the physics runtime; objects here are named by role (PCGSolver is a
   LinearSolver).
 
@@ -240,8 +242,10 @@ internals: cudss_factor.py header; MUMPS / PARDISO: section "host_direct"; nvmat
   ARPACK ignores it) only on a tolerance >= SINGLE_BASIS_MIN_TOLERANCE (ValueError below, on every path, so a misuse
   fails at any size): its Arnoldi relation holds to fp32 x |theta_max| (SINGLE_BASIS_RELATION), while the Ritz test
   asks tolerance x |theta_i|, so the wanted pairs far from the shift are not certified by it. Every caller therefore
-  has a float64 polish on a symmetric pencil: solve_resonances / fem_modes their own Rayleigh quotients (`refine`;
-  estimators book it through `memory_estimates.polished_mixed_search`); `eigs_shifted(single_basis=)` (mechanics
+  has a float64 polish on a symmetric pencil: solve_resonances (shift-invert map only:
+  `eigenfrequency.single_basis_search`; on the squared Cayley map the far pairs' vectors themselves went wrong, which no
+  quotient repairs) / fem_modes their own Rayleigh quotients (`refine`; estimators book it through
+  `memory_estimates.search_single_basis` / `polished_mixed_search`); `eigs_shifted(single_basis=)` (mechanics
   `ModalPencil._shift_solve`, node tolerance >= 1e-6; ValueError on a general pencil) through `polished_theta` (one
   float64 solve per far pair, counters eigen_single_basis_polished / _unpolished); fem.harmonic_resonances (complex
   symmetric LDL^T only) its own v^T K v / v^T M v. A new caller without such a polish keeps complex128 (em

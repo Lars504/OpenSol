@@ -53,11 +53,15 @@ _START_VECTOR_SEED = 6          # deterministic ARPACK start vector (no symmetry
 # ARPACK to 1e-10 dominated the PARDISO Mie run (39 ms solves, two per application, ~660 applications)
 # E2: a caller that measured D A complex symmetric passes rayleigh_symmetrizer (2D FDFD, never with a Bloch phase): any
 # factor of a complex A (SuperLU, line-block too) then takes the same floor and polish (DBR: ~124 applications at eps)
-# Every polished search (mixed or double factor, E2) keeps its device Krylov-Schur basis complex64
-# (eigs_device(single_basis=True), half the basis bytes): ARPACK stops at this tolerance, at or above
-# arpack_shift_invert.SINGLE_BASIS_MIN_TOLERANCE (the fp32 Arnoldi relation holds to ~1e-7 |H|; eigs_device refuses a
-# lower one loudly), the fp32 rows perturb the Ritz vectors by ~1e-7 against their 1e-6 residual, and the float64
-# Rayleigh quotients square either into the eigenvalue (~1e-12)
+# A polished shift-invert search (mixed or double factor, E2) keeps its device Krylov-Schur basis complex64
+# (eigs_device(single_basis=True), half the basis bytes; single_basis_search): ARPACK stops at this tolerance, at or
+# above arpack_shift_invert.SINGLE_BASIS_MIN_TOLERANCE (the fp32 Arnoldi relation holds to ~1e-7 |H|; eigs_device
+# refuses a lower one loudly), and the float64 Rayleigh quotients square the Ritz vector error into the eigenvalue.
+# That holds only for pairs near |theta_max| (arpack_shift_invert SINGLE_BASIS_RELATION). The squared Cayley map
+# (theta = mu (1 + mu), mu = k_t^2 / (k^2 - k_t^2)) squares the |theta| spread of the wanted pairs, so it keeps
+# complex128. Measured on em_conical_fem_cudss (cudss_mixed): the complex64 basis put the 2nd and 5th nearest resonances
+# 2.5e-2 / 3.8e-2 off, with a Rayleigh move of 3.1e3 x k^2 (bad vectors, not only bad Ritz values); complex128: 5.3e-10
+SINGLE_BASIS_SPECTRAL_MAPS = ('shift_invert',)
 # Real spectra: a polished search reads Q from the quotients' Im, but the unconjugated quotient of a complex Ritz vector
 # of a REAL pencil keeps an imaginary leftover ~(1e-6)^2 x a gap ratio, at or above _LOSSLESS_RELATIVE_IMAG: a lossless
 # closed model on a mixed factor got a finite Q. Polished pencils are symmetric, so a real (D A, D B) with D B definite
@@ -140,8 +144,9 @@ FILTER_DEVICE_BLOCK_COLUMNS = 4
 # complex / real symmetric, probed on upload, ValueError otherwise) keeps every sparse operator as its strict lower
 # triangle + diagonal (~0.27 GiB less for B than the full CSR on the 690k-unknown nanobeam eighth model) and applies it
 # by untransposed L products (bilinear: two per measure, twice the full CSR's reads, in a filter that is a small part of
-# eigs); real values stay float64 (12 of 20 B per stored entry: a lossless, PML-free B or A, and W always), applied to
-# complex operands through their float64 view, never as a complex128 copy (cuSPARSE casts a real CSR per product)
+# eigs); real values stay float64 (12 of 20 B per stored entry: a lossless, PML-free B or A, and W unless Bloch phases
+# make it complex Hermitian: P^H W P, full complex CSR, never lower-triangle storage), applied to complex operands
+# through their float64 view, never as a complex128 copy (cuSPARSE casts a real CSR per product)
 # host B v of a sparse B (_PencilMass.times: two per squared-Cayley application) cut into row blocks on this many threads
 # from this many stored entries: scipy's CSR kernel is serial but releases the GIL (tetrahedral Mie PARDISO profile,
 # 44k Nedelec unknowns: 609 serial products took 2.3 s, ~10 % of the run)
@@ -325,8 +330,8 @@ def solve_resonances(host_operator, mass, omega_target, energy_weights, in_windo
                      in_region=None, min_region_fraction=0.0, rayleigh_symmetrizer=None, definite_mass=None):
     """EigenSolve of up to n_resonances resonances nearest omega_target [rad/s] of the host operator A assembled there
     (module header) on flat unknowns: mass = complex M diagonal (0 = pinned row) or scipy sparse M (FEM; a pinned row
-    is all zero), energy_weights = (n,) |u|^2 weights or a sparse real energy matrix W (per-row share Re(conj(u) W u))
-    and in_window the non-PML rows of the PML share; field_of(vector) -> Resonance.field (None: the vector itself);
+    is all zero), energy_weights = (n,) |u|^2 weights or a sparse real (Bloch: Hermitian) energy matrix W (per-row
+    share Re(conj(u) W u)) and in_window the non-PML rows of the PML share; field_of(vector) -> Resonance.field (None: the vector itself);
     spectral_map of SPECTRAL_MAPS; warnings = the caller's size-rule notes; eigen_solver (solvers.arpack_shift_invert,
     None = default settings) on `factorization` of A (solve_host, host_bytes, description; None = the eigen solver's
     factorize_host: host SuperLU with the elimination `ordering` of the unknowns, None = SuperLU's minimum degree, or
@@ -481,7 +486,7 @@ def _solve_resonances(owned, host_operator, mass, omega_target, energy_weights, 
                 theta, vectors, pass_applications, converged, kept_decomposition = eigen_solver.eigs_device(
                     apply_on_backend, n_unknowns, n_wanted, start_vector, tolerance_floor=tolerance_floor,
                     default_basis=default_basis, resume=kept_decomposition, matvec_on_host=host_device,
-                    single_basis=polish)   # every polished search: complex64 basis (MIXED_ARPACK_TOLERANCE comment)
+                    single_basis=single_basis_search(polish, spectral_map))   # MIXED_ARPACK_TOLERANCE comment
                 # the filter runs beside the factor without the device basis: its rows wait on the host for a widening
                 kept_decomposition = _parked_decomposition(
                     kept_decomposition, widenings < MAX_WIDENINGS and n_wanted < n_free - 2)
@@ -567,6 +572,14 @@ def _solve_resonances(owned, host_operator, mass, omega_target, energy_weights, 
     return EigenSolve(resonances=resonances, info=info)
 
 
+def single_basis_search(polished, spectral_map) -> bool:
+    """Whether solve_resonances keeps a complex64 device Krylov basis: a polished search on a map of
+    SINGLE_BASIS_SPECTRAL_MAPS (the memory / time estimators ask the same)."""
+    if spectral_map not in SPECTRAL_MAPS:
+        raise ValueError(f"spectral_map must be one of {', '.join(SPECTRAL_MAPS)}, got {spectral_map!r}")
+    return bool(polished) and spectral_map in SINGLE_BASIS_SPECTRAL_MAPS
+
+
 def _is_complex(host_operator) -> bool:
     """Whether a scipy sparse operator has a non-zero imaginary entry (PML, loss)."""
     return bool(np.any(host_operator.data.imag)) if np.iscomplexobj(host_operator.data) else False
@@ -623,17 +636,18 @@ def _widened_start(start_vector, vectors, free):
 
 
 def _energy_weights(energy_weights, n_unknowns):
-    """(n,) float64 weights or a real scipy CSR energy matrix of n_unknowns rows (ValueError otherwise)."""
+    """(n,) float64 weights or a scipy CSR energy matrix of n_unknowns rows: float64 when real (also a complex one
+    without imaginary part), else complex128 (Hermitian: Bloch P^H W P); ValueError otherwise."""
     import scipy.sparse
     if scipy.sparse.issparse(energy_weights):
         if energy_weights.shape != (n_unknowns, n_unknowns):
             raise ValueError(f'solve_resonances needs an ({n_unknowns}, {n_unknowns}) energy matrix, got shape '
                              f'{energy_weights.shape}')
         energy_weights = energy_weights.tocsr()
-        if np.iscomplexobj(energy_weights.data):   # the filter applies W to Re v and Im v (real products)
-            if np.any(energy_weights.data.imag != 0.0):
-                raise ValueError('solve_resonances needs a real energy matrix W, got complex values')
-            energy_weights = energy_weights.real
+        if np.iscomplexobj(energy_weights.data):
+            if np.any(energy_weights.data.imag != 0.0):   # Bloch phases: the filter's complex product
+                return energy_weights.astype(np.complex128, copy=False)
+            energy_weights = energy_weights.real   # real: the filter's float64 products of Re v and Im v
         return energy_weights.astype(np.float64, copy=False)
     energy_weights = np.asarray(energy_weights, dtype=np.float64).ravel()
     if energy_weights.size != n_unknowns:
@@ -646,8 +660,8 @@ class _ResonanceFilter:
     """A, B = -M, the energy weights W, the window / region rows and the polish row scale D of solve_resonances:
     per-column measures of a pass's Ritz vectors, one sparse operator at a time over column blocks. On the device
     (on_gpu) the sparse operators stay on the host between passes: each measures call returns the pool's cached blocks,
-    uploads one operator (solvers.device_matrices: float64 when real, W always; symmetric: lower triangle + diagonal,
-    probed), applies it to every block of FILTER_DEVICE_BLOCK_COLUMNS and frees it before the next (beside an own factor
+    uploads one operator (solvers.device_matrices: float64 when real; symmetric: lower triangle + diagonal, probed;
+    a complex Hermitian W of Bloch phases full complex128), applies it to every block of FILTER_DEVICE_BLOCK_COLUMNS and frees it before the next (beside an own factor
     the filter never holds two; device_mass: the solves' device copy of a sparse B, read instead). On the host: blocks
     of FILTER_BLOCK_COLUMNS. quotients False (plain shift-invert, no polish): A and B are neither kept nor applied, their
     measures are 0."""
@@ -674,20 +688,23 @@ class _ResonanceFilter:
         # themselves are summed in float64: |v|^2 float64 x float32 promotes); B and D stay complex128 (Rayleigh polish)
         self.weights = (xp.asarray(energy_weights, dtype=np.float32)[:, None] if self.weights_diagonal
                         else energy_weights.tocsr())
+        # a complex sparse W is Hermitian (Bloch P^H W P), never complex symmetric: full storage, complex product
+        self.weights_real = self.weights_diagonal or not np.iscomplexobj(self.weights.data)
         self.window = xp.asarray(in_window, dtype=np.float32)[:, None]
         self.region = None if in_region is None else xp.asarray(in_region, dtype=np.float32)[:, None]
         self.row_scale = None if row_scale is None else xp.asarray(row_scale)[:, None]
 
-    def _applied_form(self, matrix, diagonal, kept=None, real=None):
+    def _applied_form(self, matrix, diagonal, kept=None, real=None, symmetric=None):
         """The operator measures applies: a diagonal column as stored, a sparse one on the host as is, on the device
         `kept` (an uploaded copy the caller holds) or a fresh device_matrix upload the caller frees after use (real:
-        float64 storage, None: float64 when the values are real; symmetric storage when the search is)."""
+        float64 storage, None: float64 when the values are real; symmetric storage when the search is, unless
+        `symmetric` says otherwise)."""
         if diagonal or not self.on_gpu:
             return matrix
         if kept is not None:
             return kept
         from ...solvers.device_matrices import device_matrix
-        return device_matrix(matrix, symmetric=self.symmetric, real=real)
+        return device_matrix(matrix, symmetric=self.symmetric if symmetric is None else symmetric, real=real)
 
     def measures(self, vectors) -> dict:
         """Host (k,) arrays per column v of host vectors (n, k): mass v^H B v, operator v^H A v, scaled_operator
@@ -707,11 +724,14 @@ class _ResonanceFilter:
 
         def to_host(parts):   # one read per block and operator
             return parts.get() if xp is not np else parts
-        weights = self._applied_form(self.weights, self.weights_diagonal, real=True)
+        weights = self._applied_form(self.weights, self.weights_diagonal, real=self.weights_real,
+                                     symmetric=None if self.weights_real else False)
         for block in blocks:
             columns = columns_of(block)
             if self.weights_diagonal:
                 energies = xp.abs(columns) ** 2 * weights
+            elif not self.weights_real:   # Hermitian W (Bloch): Re(conj(v) (W v)) per row, one complex product
+                energies = xp.real(xp.conj(columns) * (weights @ columns))
             else:   # W real: Re(conj(v) W v) = Re v W Re v + Im v W Im v, one real product (no complex copy of W)
                 n_block = columns.shape[1]
                 parts = xp.concatenate((columns.real, columns.imag), axis=1)
@@ -787,7 +807,7 @@ def resonance_filter_time_item(backend, unknowns, filter_entries, eigenpairs, sy
         storage = 0.5 if symmetric else 1.0   # lower triangle + diagonal (real values: 12 of 20 B, not counted)
         uploads = storage * COMPLEX128_CSR_ENTRY_BYTES * float(filter_entries) / max(float(eigenpairs), 1.0)
         # + the Krylov basis parked on the host (_parked_decomposition): ~5 rows per eigenpair (basis 5 x wanted),
-        # complex64 rows on a polished search (eigs_device single_basis)
+        # complex64 rows on a single_basis_search
         parked_rows = 5.0 * vector_bytes * (0.5 if single_basis else 1.0)
         ops = (te.Transfer(3.0 * vector_bytes + uploads + parked_rows),
                te.Spmv(float(unknowns), (2.0 if symmetric else 1.0) * float(filter_entries), COMPLEX128_BYTES),

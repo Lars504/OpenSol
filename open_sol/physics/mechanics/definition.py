@@ -1283,7 +1283,7 @@ def _memory_estimate(settings_values, mesh, context):
         host_items = (*_eigen_host_items(context, dofs, entries), *eigen_host_items)
     elif study == FREQUENCY_RESPONSE_STUDY:   # host stencils of K, loss, M and the complex factor per frequency
         host_items = (('frequency response host stencils', 3 * _GUIDED_ASSEMBLY_BYTES_PER_ENTRY * entries),
-                      *frequency_response_host_items(dofs, complex_factor=bool(context.material_sets(LOSS_ARRAYS[0])))))
+                      *frequency_response_host_items(dofs, complex_factor=bool(context.material_sets(LOSS_ARRAYS[0]))))
     elif host_back_end:   # the static solid's host factor of A_solve (gpu backend: of a downloaded copy)
         host_items = (('A_solve CSR copy for the host factor (float64)', (FLOAT64_BYTES + INT32_BYTES) * entries),
                       *host_factor_items(host_back_end, 'SuperLU L + U factors of A_solve (float64, heuristic)',

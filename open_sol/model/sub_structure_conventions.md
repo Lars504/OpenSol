@@ -73,10 +73,11 @@ templates, describe. Current state, no changelog.
   (`--all` writes light and heavy, split by case) and `selftest_report_analytic.json`; a run rewrites only its own,
   through `api._write_report_keeping_timings` (the old status / wall_time per case go to `<stem>_prev.json`, one run
   back), so run times compare across branches; a reused case keeps its old wall_time, so compare `--reset` runs.
-- CLI time split ('build / study / output / other'): 'other' = the check's Session reads plus per-run plumbing
-  (release_session's `gc.collect()`, validation, estimates, run directory). A large 'other' on few runs is the check's
-  reads, usually tetrahedron point location: check code sampling its own lattice per component re-pays it; read
-  through the Session or reuse one `locate` result.
+- CLI time split ('build / study / output / other'): 'other' = the whole check (its Session reads and any reference
+  solve it computes itself, e.g. em3d_conformal_pec_cavity's host ARPACK operators) plus per-run plumbing
+  (release_session's `gc.collect()`, validation, estimates, run directory). A large 'other' on few runs is the check:
+  a reference solve of its own, or its reads, usually tetrahedron point location (check code sampling its own lattice
+  per component re-pays it; read through the Session or reuse one `locate` result).
 - `SelfTestCase.backends`: without a usable GPU the check gets the cpu runs only (a cpu-vs-gpu check must cope); with
   none left the variants still judge the case (record `variants_only`, report warning). A check({}) case using cupy
   declares ('gpu',); one comparing both backends itself declares ('cpu', 'gpu') and skips its gpu half by

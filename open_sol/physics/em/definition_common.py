@@ -919,9 +919,9 @@ def fem_resonance_time_estimate(settings_values, mesh, context, label, bytes_per
     return te.combine((assembly, context.solver_work(
         'eigen', unknowns=unknowns, nnz=nnz, value_bytes=16, solves=n_orders, factorizations=n_orders, rhs=2,
         eigenpairs=eigenpairs, factor_scale=FEM_LU_FILL_FACTOR, solve_scale=FEM_LU_FILL_FACTOR,
-        single_basis=search_single_basis(   # an own polished mixed LDL^T of the complex symmetric pencil
+        single_basis=search_single_basis(   # squared Cayley (fem_bor / fem_conical): complex128 basis
             eigen_factorization(context.solvers), unknowns,
-            eigen_factorization(context.solvers) in CUDSS_FACTORIZATIONS, True),
+            eigen_factorization(context.solvers) in CUDSS_FACTORIZATIONS, True, spectral_map='squared_cayley'),
         **eigen_work, **eigen_backend_kwargs(context))))
 
 

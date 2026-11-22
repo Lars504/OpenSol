@@ -25,7 +25,7 @@ em_fdfd_conical (solvers/fdfd_conical)."""
 # The eigen search runs in that real gauge (real_gauge_operator: G^-1 A G, G = diag(1, 1, j), unknowns (E_x, E_y, w =
 # -j E_z) as fem_conical, symmetrizer D G^2 = (A_x, A_y, +A_z)): A itself has imaginary j k_z entries at any k_z != 0,
 # so solve_resonances took a lossless closed guide for a complex (open / lossy) operator and polished a double LDL^T
-# (ARPACK to 1e-6, complex64 basis), whose quotients keep ~(1e-6)^2 x gap-ratio imaginary round-off, at or above the
+# (ARPACK to 1e-6), whose quotients keep ~(1e-6)^2 x gap-ratio imaginary round-off, at or above the
 # lossless Q = inf threshold (eigenfrequency._LOSSLESS_RELATIVE_IMAG 1e-12): a finite Q of a lossless mode. In the
 # gauge only PML, loss and Bloch phases make it complex (the device resonance filter then stores a lossless A float64).
 # Flux through the hi face of a line of cells: 1/2 Re of E of the line cells x conj(H) on that face (the boundary term

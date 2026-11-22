@@ -30,10 +30,13 @@ index_shift_to_permittivity = twin('em.index_shift_to_permittivity', cp.Elementw
 
 def record_reference_index(materials, arrays=None):
     """Snapshot n0 = sqrt(max(eps, 0)) over the full grid for each permittivity array of `arrays` (default: all of
-    REFERENCE_INDEX_ARRAYS) that exists; idempotent while no coupling has rewritten that array yet."""
+    REFERENCE_INDEX_ARRAYS) that exists; idempotent while no coupling has rewritten that array yet. A parked (host)
+    permittivity is skipped: parking needs no coupling into its EM physics, so no index slot reads its n0
+    (reference_index refuses it)."""
     property_names = materials.property_names()
+    parked = materials.parked
     for eps_name in REFERENCE_INDEX_ARRAYS if arrays is None else arrays:
-        if eps_name in property_names:
+        if eps_name in property_names and eps_name not in parked:
             reference_index = materials.add_property(REFERENCE_INDEX_ARRAYS[eps_name], 1.0)
             permittivity = getattr(materials, eps_name)
             xp = array_module_of(permittivity)
@@ -41,10 +44,15 @@ def record_reference_index(materials, arrays=None):
 
 
 def reference_index(materials, slot):
-    """The n0 array of index slot `slot`; ValueError for a non-index slot or a component never recorded."""
+    """The n0 array of index slot `slot`; ValueError for a non-index slot, a component never recorded or a parked
+    permittivity (not recorded since parking: record_reference_index)."""
     if slot not in INDEX_SLOTS:
         raise ValueError(f"slot '{slot}' is not an index slot; index slots: {', '.join(INDEX_SLOTS)}")
     eps_name, n0_name = INDEX_SLOTS[slot]
+    if eps_name in materials.parked:
+        raise ValueError(f'{eps_name} is parked on the host (MaterialGrid.park: no coupling may write into its EM '
+                         f'physics), so its reference index {n0_name} is not kept: the parking rule missed this '
+                         'coupling')
     if n0_name not in materials.property_names():
         raise ValueError(f'{n0_name} was never recorded: the MaterialGrid has no {eps_name} (no EM physics with that '
                          f'permittivity component), or record_reference_index ran before it existed')
