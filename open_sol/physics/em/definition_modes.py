@@ -559,10 +559,12 @@ def _solver_issues(vctx, physics_spec, settings_values, path):
     issues = []
     factorization = eigen_factorization(vctx.solvers(physics_spec))
     if factorization in MIXED_FACTORIZATIONS and mesh_kind(vctx) == 'tensor':
-        issues.append(Issue('error', path, f'the eigen factorization {factorization} needs the complex symmetric '
-                                           'pencil of a triangles mesh (its loose complex64 solves are polished by '
-                                           'Rayleigh quotients); the Yee cross-section operator is not complex '
-                                           'symmetric: use '
+        eigen_node = vctx.solvers(physics_spec)['eigen'].node   # named: profiler --compare then keeps the role
+        named = f"eigen solver '{eigen_node}': " if eigen_node else ''
+        issues.append(Issue('error', path, f'{named}the eigen factorization {factorization} needs the complex '
+                                           'symmetric pencil of a triangles mesh (its loose complex64 solves are '
+                                           'polished by Rayleigh quotients); the Yee cross-section operator is not '
+                                           'complex symmetric: use '
                                            f"'{factorization.removesuffix('_mixed')}' (double) or a triangles mesh"))
     issues.extend(scipy_issues('em_modes', 'host sparse eigensolver', path))
     if settings_values['mode_number'] > settings_values['n_modes']:

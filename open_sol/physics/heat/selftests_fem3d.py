@@ -164,12 +164,12 @@ def _transient_runs():
 def _check_transient(results_by_name):
     """Decay rate of the centre probe between the TRANSIENT_WINDOW steps against ln(1 + mu dt) / dt, mu = D pi^2 / L^2;
     error = its relative deviation."""
-    measured, expected, samples, mode_rate, n_samples = _decay_rate(
+    measured, expected, samples, mode_rate, n_samples, run_step = _decay_rate(
         results_by_name['slab'], TRANSIENT_STEP, TRANSIENT_WINDOW, TRANSIENT_PROPERTIES, TRANSIENT_SIZE[0])
     error = abs(measured / expected - 1.0)
     return {'measured': measured, 'expected': expected, 'error': error, 'tolerance': TRANSIENT_TOLERANCE,
             'details': {'rises_K': samples, 'steps': TRANSIENT_WINDOW, 'continuum_rate_per_s': mode_rate,
-                        'n_samples': n_samples}}
+                        'n_samples': n_samples, 'run_time_step_s': run_step}}
 
 
 # ---- cpu vs gpu ----

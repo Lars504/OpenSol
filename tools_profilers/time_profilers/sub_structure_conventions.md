@@ -47,6 +47,9 @@ comments hold the mechanics; this file keeps the cross-file rules.
 - Selftest specs put the double, tolerance 1e-12 `exact_cg` node on every pcg physics; a profile on it times the
   selftest's accuracy, not production (~70 % of the tensor 3D profile once). Drop it (`without_exact_cg`) or keep
   only the setting under study on it (tensor 3D `_production`).
+- `--compare` / `--solver-type` leave a role as written only when its physics' validation error names the compared
+  node in quotes (`_refused_roles`): a physics validate refusing a solver node value names the node (`"... solver
+  '<node>': ..."`, membrane, em_modes), else the variant runs and fails its build.
 - A command's plotted point sums its runs' walls: a solver twin of a model gets its own script
   (`*_double_factor.py`, `*_3d_block_eigen.py`), not a run added to an existing one.
 - A result-changing option goes into the folder name (`output_name`) or into `case_input` in `main` (the reuse hash),
@@ -74,7 +77,9 @@ comments hold the mechanics; this file keeps the cross-file rules.
   sys.argv at call time and keeps module state harmless for the next script. A source run_all must see goes under
   `FINGERPRINT_FOLDERS`; a file a run writes must not (it would defeat the memory).
 - Solution check: `case_specs` tags each spec (`ORIGIN_ATTRIBUTE`); deepcopy, `refined` and in-place edits keep it,
-  a spec rebuilt from `to_dict()` or loaded from an example loses it ('no selftest').
+  a spec rebuilt from `to_dict()` or loaded from an example loses it ('no selftest'). The check runs on the scaled
+  spec (`scaled_spec`: dx / refine, time_step / steps), so a check() whose reference depends on dx or dt reads it from
+  the results (heat `_decay_rate` takes dt from the probe spacing), never from its case constants.
 
 ## example_profilers
 - The performance set (`example_profiler.py` `GROUPS`, one group = one command = one plotted point): a module's

@@ -143,31 +143,36 @@ def _check_slab(results_by_name):
 
 
 def _decay_rate(results, time_step, window, properties, length):
-    """(measured, expected, sampled rises, continuum rate mu, probe sample count) of the 'centre' probe of a transient
-    slab (also selftests_fem3d): its decay rate between the window steps against ln(1 + mu dt) / dt, mu = D pi^2 / L^2
-    (the implicit-Euler rate of the slowest continuum mode); measured NaN unless both rises are positive."""
+    """(measured, expected, sampled rises, continuum rate mu, probe sample count, run step dt) of the 'centre' probe of
+    a transient slab (also selftests_fem3d): its decay rate between the window times (steps of the nominal time_step)
+    against ln(1 + mu dt) / dt, mu = D pi^2 / L^2 (the implicit-Euler rate of the slowest continuum mode), dt the run's
+    own step read from the per-step probe spacing (a case profiler divides the time_step); NaN unless both rises > 0."""
     probe = results.result(PHYSICS_NAME, 'centre')
     times = np.asarray(probe['t'], dtype=np.float64)
     rises = np.asarray(probe['values'], dtype=np.float64) - REFERENCE_T
-    samples = []
+    samples, indices = [], []
     for step in window:
         index = int(np.argmin(np.abs(times - step * time_step))) if times.size else -1
         found = index >= 0 and abs(times[index] - step * time_step) <= 1e-6 * time_step
         samples.append(rises[index] if found else math.nan)
+        indices.append(index if found else -1)
+    later = indices[1]
+    run_step = float(times[later] - times[later - 1]) if later > 0 else math.nan
     diffusivity = properties['k'] / (properties['rho'] * properties['cp'])
     mode_rate = diffusivity * math.pi ** 2 / length ** 2
-    expected = math.log1p(mode_rate * time_step) / time_step
+    expected = math.log1p(mode_rate * run_step) / run_step if run_step > 0.0 else math.nan
     measured = (math.log(samples[0] / samples[1]) / ((window[1] - window[0]) * time_step)
                 if all(value > 0.0 for value in samples) else math.nan)
-    return measured, expected, samples, mode_rate, int(times.size)
+    return measured, expected, samples, mode_rate, int(times.size), run_step
 
 
 def _slab_rate(results):
     """Measured / expected decay rate and relative error of one slab run."""
-    measured, expected, samples, mode_rate, n_samples = _decay_rate(results, SLAB_STEP, SLAB_WINDOW, SLAB_PROPERTIES,
-                                                                    SLAB_LENGTH)
+    measured, expected, samples, mode_rate, n_samples, run_step = _decay_rate(
+        results, SLAB_STEP, SLAB_WINDOW, SLAB_PROPERTIES, SLAB_LENGTH)
     return {'measured': measured, 'expected': expected, 'error': abs(measured / expected - 1.0), 'rises_K': samples,
-            'steps': SLAB_WINDOW, 'continuum_rate_per_s': mode_rate, 'n_samples': n_samples}
+            'steps': SLAB_WINDOW, 'continuum_rate_per_s': mode_rate, 'n_samples': n_samples,
+            'run_time_step_s': run_step}
 
 
 # ---- cpu vs gpu ----
