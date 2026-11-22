@@ -507,4 +507,5 @@ first bring the background physics (those without the study's hook) to a station
   (script layout, wrap before the registry, unresolved parts, timed syncs, markers, profile points, reuse, solution
   check), example_profilers (choice rule, built on case_profilers, engine parts, backend).
 - `tools_profilers/memory_profilers/`: vram_profile (private names it patches, pool used vs reserved, memGetInfo
-  caveats).
+  caveats), gpu_selftests (checkout import, gpu-only patch), compare_vram_reports (run matching, reused records, base
+  worktree).
