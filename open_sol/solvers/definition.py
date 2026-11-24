@@ -30,6 +30,52 @@ def _host_direct_choice_labels(names) -> dict:
             for name in names}
 
 
+_GPU_ONLY_REASON = ("Runs on the graphics card only, and this model runs on the processor (Solvers, 'Run on').")
+_NO_SCIPY_REASON = 'Not available: needs the SciPy package, which is not installed.'
+_NO_CUDSS_REASON = 'Not available: needs the nvmath-python package (cuDSS), which is not installed.'
+
+
+def _host_direct_missing_reason(name) -> str:
+    """GUI reason a host direct back end / factorization cannot run here, '' when its wrapper and scipy are installed."""
+    if not host_direct.host_direct_available(name):
+        distribution = host_direct.WRAPPERS[host_direct.library_of(name)][1]
+        return (f'Not available: {_gui_library_name(name)} needs the {distribution} package, which is not installed '
+                f'or does not run on this processor.\n\nInstall: {host_direct.install_hint(name)}')
+    return '' if sparse_direct.scipy_available() else _NO_SCIPY_REASON
+
+
+def _direct_choice_reasons(choices, backend, gpu_only, cudss_names, superlu_name) -> dict:
+    """{choice: GUI reason} of the direct-factor choices this machine cannot run on the backend ('auto' always runs:
+    it resolves to an available one)."""
+    from .cudss_factor import cudss_available
+    reasons = {}
+    for name in choices:
+        if name in gpu_only and backend == 'cpu':
+            reasons[name] = _GPU_ONLY_REASON
+        elif name in cudss_names and not cudss_available():
+            reasons[name] = _NO_CUDSS_REASON
+        elif name in host_direct.HOST_DIRECT_BACK_ENDS:
+            reasons[name] = _host_direct_missing_reason(name)
+        elif name == superlu_name and not sparse_direct.scipy_available():
+            reasons[name] = _NO_SCIPY_REASON
+    return {name: reason for name, reason in reasons.items() if reason}
+
+
+def _sparse_direct_unavailable(backend) -> dict:
+    """SolverType.unavailable_choices of sparse_direct: back ends without their package or GPU-only on the cpu."""
+    gpu_only = ('cusolver_qr',) + sparse_direct.CUDSS_BACK_ENDS
+    return {'back_end': _direct_choice_reasons(sparse_direct.LINEAR_SOLVER_CHOICES, backend, gpu_only,
+                                               sparse_direct.CUDSS_BACK_ENDS, 'scipy_splu')}
+
+
+def _arpack_unavailable(backend) -> dict:
+    """SolverType.unavailable_choices of arpack_shift_invert: factorizations without their package or GPU-only on the
+    cpu."""
+    cudss_names = arpack_shift_invert.CUDSS_FACTORIZATIONS
+    return {'factorization': _direct_choice_reasons(arpack_shift_invert.FACTORIZATIONS, backend, cudss_names,
+                                                    cudss_names, 'superlu')}
+
+
 _GUI_HOST_LIBRARIES = ' / '.join(_gui_library_name(name) for name in host_direct.HOST_DIRECT_DOUBLE_BACK_ENDS)
 _GUI_HOST_MIXED_LIBRARIES = ' / '.join(_gui_library_name(name) for name in host_direct.HOST_DIRECT_MIXED_BACK_ENDS)
 _HOST_DIRECT_MIXED_HELP = (
@@ -311,7 +357,8 @@ SPARSE_DIRECT = SolverType(
     grids=('tensor', 'triangles', 'tetrahedra'), create=_create_sparse_direct, validate=_validate_sparse_direct,
     memory_estimate=_empty_memory_estimate, backend_misfit=sparse_direct.backend_misfit,
     time_estimate=sparse_direct.time_estimate,
-    opt_in_settings={'back_end': sparse_direct.CUDSS_BACK_ENDS + host_direct.HOST_DIRECT_BACK_ENDS})
+    opt_in_settings={'back_end': sparse_direct.CUDSS_BACK_ENDS + host_direct.HOST_DIRECT_BACK_ENDS},
+    unavailable_choices=_sparse_direct_unavailable)
 
 
 def _create_banded(ctx, request):
@@ -444,7 +491,7 @@ ARPACK_SHIFT_INVERT = SolverType(
     operators=('spd', 'complex_symmetric', 'general'), backends=('gpu', 'cpu'), precisions=('double',),
     grids=('tensor', 'triangles', 'tetrahedra'), create=_create_arpack, validate=_validate_arpack,
     memory_estimate=_empty_memory_estimate, backend_misfit=arpack_shift_invert.backend_misfit,
-    time_estimate=arpack_shift_invert.time_estimate)
+    time_estimate=arpack_shift_invert.time_estimate, unavailable_choices=_arpack_unavailable)
 
 
 BLOCK_EIGEN_PARAMS = (

@@ -30,7 +30,7 @@ from ..model.schema import (ADAPTATION_METHODS, GLOBAL_DERIVED_OPERATION, SOURCE
                             known_physics,
                             instance_space, output_field_names, param_in_space,
                             memory_check_level, scalar_output_names, solver_backend, solver_grid, solver_misfit,
-                            with_default_precision, with_node_precision)
+                            expected_auto_choice, unavailable_reason, with_default_precision, with_node_precision)
 from ..model.definition_helpers import DISCRETIZATION_SETTING
 from ..model.meshing import PHYSICS_BASE_DIVISOR, PHYSICS_OBJECT_DIVISOR, line_block_hint, mesh_values
 from ..model.spec import AdaptationSpec, MeshAxisSpec, MeshBandSpec, MeshSegmentSpec, RefinementSpec, SweepSpec
@@ -1394,14 +1394,16 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
         self._commit(section, apply, f'Remove {what} {key}', rebuild=True)
 
     def _add_param_group(self, layout, title, params, ctx, section, mapping_of, label_prefix, what=None,
-                         rebuild_keys=()):
+                         rebuild_keys=(), disabled_choices=None):
         """Titled ParamForm over the dict mapping_of(spec) (looked up by name on each commit / refresh); with
-        `what`, also the group of stored keys `params` does not declare; an edit of a rebuild_keys param rebuilds."""
+        `what`, also the group of stored keys `params` does not declare; an edit of a rebuild_keys param rebuilds;
+        disabled_choices {param name: {choice: reason}} greys choices out."""
         values = mapping_of(self._document.spec)
         if params:
             key_labels = {param.name: param.label or param.name for param in params}   # Undo texts: the form labels
             param_form = ParamForm(params, values, ctx, partial(self._set_item, section, mapping_of, label_prefix,
-                                                                rebuild_keys=rebuild_keys, key_labels=key_labels))
+                                                                rebuild_keys=rebuild_keys, key_labels=key_labels),
+                                   disabled_choices=disabled_choices)
             layout.addWidget(_group(title, param_form))
             self._refreshers.append(lambda: param_form.refresh(mapping_of(self._document.spec)))
         if what is not None:
@@ -1972,17 +1974,13 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
 
     def _solver_entries(self, spec, physics_type, role, solver_role, grid):
         """(entries, item tips, disabled reasons) of a physics' role combo on its solver grid kind: Automatic, then the
-        solver nodes whose type fills the role (misfits disabled with the solver_misfit reason)."""
-        automatic_type_name = solver_role.automatic(solver_backend(spec), grid, spec.study.type)[0]
-        try:
-            default_type = self._registry.solver_type(automatic_type_name)
-            automatic_label, automatic_tip = default_type.label, default_type.summary or default_type.description
-        except KeyError:
-            automatic_label, automatic_tip = automatic_type_name, ''
+        solver nodes whose type fills the role (misfits and nodes set to a back end this machine cannot run disabled
+        with the reason)."""
+        backend = solver_backend(spec)
+        automatic_label, automatic_tip = self._automatic_solver_text(solver_role, backend, grid, spec.study.type)
         automatic_tip += ('\n\nUses the default solver settings and the precision chosen under Solvers; add a solver '
                           'under Solvers to change them, then choose it here.')
         entries, tips, disabled = [(None, f'Automatic ({automatic_label})')], {None: automatic_tip}, {}
-        backend = solver_backend(spec)
         for node in spec.solvers:
             try:
                 solver_type = self._registry.solver_type(node.type)
@@ -1997,10 +1995,30 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
                                    with_node_precision(spec, solver_type, settings, solver_role, backend, grid,
                                                        spec.study.type))
             reason = (solver_misfit(solver_type, values, physics_type, role, spec.study.type, backend, grid)
-                      if backend in ('gpu', 'cpu') else '')
+                      or unavailable_reason(solver_type, values, backend) if backend in ('gpu', 'cpu') else '')
             if reason:
                 disabled[node.name] = reason
         return entries, tips, disabled
+
+    def _automatic_solver_text(self, solver_role, backend, grid, study):
+        """(label, tip) of a role's Automatic solver on this machine: the type label plus, for a direct solver, the back
+        end its 'auto' setting runs as here (schema.expected_auto_choice)."""
+        type_name, settings = solver_role.automatic(backend, grid, study)
+        try:
+            solver_type = self._registry.solver_type(type_name)
+        except KeyError:
+            return str(type_name), ''
+        label, tip = solver_type.label, solver_type.summary or solver_type.description
+        if backend not in ('gpu', 'cpu'):
+            return label, tip
+        expected = expected_auto_choice(fill_defaults(solver_type.params, settings), solver_role, backend, grid)
+        if expected is not None:
+            key, value = expected
+            param = next((param for param in solver_type.params if param.name == key), None)
+            choice_text = dict(param.choice_labels).get(value, value) if param is not None else value
+            label = f'{label}: {choice_text}'
+            tip += f'\n\nOn this computer it runs as: {choice_text}.'
+        return label, tip
 
     def _assigned_solver(self, physics_name, role):
         """Solver node assigned to a role of a physics (None = Automatic)."""
@@ -2772,9 +2790,9 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
                 if solver_role.used_in(spec.study.type):
                     node = self._assigned_solver(physics.name, role)
                     lines.append(f'{physics.name}, {SOLVER_ROLES[role].lower()}: '
-                                 + (node or 'Automatic ({})'.format(self._solver_type_label(
-                                     solver_role.automatic(solver_backend(spec), solver_grid(spec, physics),
-                                                           spec.study.type)[0]))))
+                                 + (node or 'Automatic ({})'.format(self._automatic_solver_text(
+                                     solver_role, solver_backend(spec), solver_grid(spec, physics),
+                                     spec.study.type)[0])))
         layout.addWidget(_group('In use', hint_label('\n'.join(lines) if lines else
                                                      'No physics of this model hands out a solver job in the current '
                                                      'study.')))
@@ -2801,13 +2819,6 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
             add_layout.addWidget(hint_label('No solver type fits the physics of this model in the current study.'))
         layout.addWidget(add_box)
 
-    def _solver_type_label(self, type_name):
-        """Label of a registered solver type, else its name."""
-        try:
-            return self._registry.solver_type(type_name).label
-        except KeyError:
-            return str(type_name)
-
     def _build_solver(self, path, layout):
         name = path[1]
         solver = self._document.spec.solver(name)
@@ -2832,8 +2843,12 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
         self._refreshers.append(show_users)
         form.addRow('Used by', used_by)
         self._add_summary(layout, solver_type)
+        backend = solver_backend(self._document.spec)
+        unavailable = (solver_type.unavailable_choices(backend)
+                       if solver_type.unavailable_choices is not None and backend in ('gpu', 'cpu') else None)
         self._add_param_group(layout, 'Settings', solver_type.params, self._context(), 'solvers',
-                              lambda spec: spec.solver(name).settings, name, what='setting')
+                              lambda spec: spec.solver(name).settings, name, what='setting',
+                              disabled_choices=unavailable)
         self._add_technical_details(layout, f'solver:{solver_type.name}', solver_type)
 
     def _build_study(self, path, layout):

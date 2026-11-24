@@ -19,7 +19,8 @@ from ..core.metric import GRIDS
 from ..core.renderer import FieldInfo
 from ..core.backend import cupy_installed
 from ..solvers.roles import (BACKENDS, PRECISIONS, SOLVER_ROLES, ResolvedSolver,   # pure (no model imports):
-                             SolverRole, SolverType, resolved_precision, solver_misfit)   # re-exported
+                             SolverRole, SolverType, resolved_precision, solver_misfit,   # re-exported
+                             unavailable_reason)
 from .expressions import (FIELD_COORDINATE_NAMES, TIME_NAMES, compile_expression, evaluate_parameters,
                           evaluate_scalar, is_identifier)
 
@@ -1369,6 +1370,22 @@ def auto_back_end_values(values, solver_role, backend, grid) -> dict:
     from ..solvers.cudss_factor import cudss_available   # numpy only at module level
     from ..solvers.sparse_direct import AUTO_BACK_END_KEY
     return {**values, key: back_end, AUTO_BACK_END_KEY: True} if cudss_available() else values
+
+
+def expected_auto_choice(values, solver_role, backend, grid):
+    """(setting name, value) a back_end / factorization 'auto' in values runs as on this machine (auto_back_end_values,
+    then sparse_direct.expected_back_end; arpack's unresolved 'auto' is superlu); None without an 'auto' setting.
+    find_spec only: GUI-thread safe."""
+    key = next((name for name in ('back_end', 'factorization') if values.get(name) == 'auto'), None)
+    if key is None:
+        return None
+    value = auto_back_end_values(values, solver_role, backend, grid)[key]
+    if value != 'auto':
+        return key, value
+    if key == 'factorization':
+        return key, 'superlu'   # ArpackShiftInvertSolver: an unresolved 'auto' = superlu
+    from ..solvers.sparse_direct import expected_back_end   # numpy only at module level
+    return key, expected_back_end('auto', backend)
 
 
 def restricted_feature_precisions(feature_type) -> tuple:

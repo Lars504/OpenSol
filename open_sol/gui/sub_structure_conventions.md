@@ -100,6 +100,9 @@ Sub file of the root `structure_conventions.md`. GUI gotchas.
 - Solver fits: a solver type over the whole model goes through `document.solver_fits` (Add solver menu, `add_solver`'s
   automatic assignment, `_line_block_fits`); the physics form's Solver combo judges its one (physics, role) by
   `schema.solver_misfit` on the node values resolved for that role (`with_node_precision`). No third local rule.
+  Machine availability (a package not installed, GPU-only on the cpu) is the SolverType's `unavailable_choices`: the
+  node form greys those choices, the physics' Solver combo greys nodes set to one (`schema.unavailable_reason`), and
+  Automatic labels name what 'auto' runs as here (`schema.expected_auto_choice`), never a local find_spec.
 - New node kind: an entry in every node table at the top of gui/document.py (SECTIONS, _ROOT_NODES, _NAMED_NODES,
   _TREE_NODE_KINDS, _PARENT_NODES, _SECTION_OF_KIND, _REFERENCED_KINDS) and in `spec_renames` / `delete_node`.
 - Canvas views: selecting Meshes / a mesh / Results switches to the mesh / field view (`_NODE_VIEWS`); when the view
@@ -140,6 +143,8 @@ Sub file of the root `structure_conventions.md`. GUI gotchas.
   rich-text tooltips). Text a user may want to copy (hints, errors, issues, estimates, banners, notes) is a
   `forms.hint_label` / `error_label` / `wrapped_label` or wrapped in `forms.selectable` (it takes click focus, so a
   click on it commits a pending edit); form row labels and the status bar stay plain.
+- Red marks go through `forms.mark_invalid`; combos are marked by palette, never a style sheet colour (Qt applies a
+  style sheet `color` to the popup list in every colour group, so greyed-out entries turned red too).
 - Colours, colour maps and drawing helpers are imported where they live (canvas `MATERIAL_COLORS` /
   `CATEGORY_COLORS` / `HIGHLIGHT_COLOR`, viz `DARK_CMAPS`, `viz.common`), never copied into another GUI module.
 - Polar / spherical domains: the canvas keeps the drawing plane; everything mapping it to cells goes through
