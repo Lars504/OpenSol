@@ -117,6 +117,9 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   support's F_x is sum R_r - sum R_phi at m = 1 (the net force along phi = 0), both components 0 at m >= 2; its W =
   sum R u_held takes every component. Triangles: record rows and the residual are solid-map rows, `held` /
   `held_values` full-mesh ids (index them by `dofs.global_ids[rows]`); tetrahedra: both full-mesh.
+- A reaction of a fully held stiff domain in a soft / viscous medium carries its own K rows' round-off (a rigid
+  translation cancels in K X only to ~1e-16 E per entry): a polystyrene bead in water at 1 Hz has Re F ~1e-4 of the
+  drag (E / (omega mu) ~ 6e11), above its physical inertia; grade only the dominant part (bead_wall_brenner example).
 
 ## Viscoelastic moduli and the N-term harmonic system (`viscoelastic.py`, `definition_viscoelastic.py`; FEM meshes)
 - Law, routes, member masks and groups: `viscoelastic.py` header. Displacement formulation: groups only over the
@@ -242,6 +245,8 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   on cuDSS double / mixed; frequency response is the best candidate (complex symmetric, one pattern, 100-600
   frequencies: plan reuse), double (near a resonance a float32 factor needs many refinement steps).
 - solid_fem_kirsch sets h_min: the default dx / 100 floored the hole sizes (1 % low stresses).
+- An x / y body force is one centroid value per element (`ctx.eval_field`), so it caps P2 convergence at O(h^2)
+  (sphere_breathing_viscoelastic_frequency_response); no load is normal to a curved boundary (tractions in model axes).
 
 ## Tetrahedron meshes (solid_mechanics_3d; `solver_fem3d.py`, `system_fem3d.py`, fem/elasticity3d.py)
 - `_create_solid_3d` builds SolidMechanicsFEMPhysics3D on 'tetrahedra' (every feature declares both grids); what runs
