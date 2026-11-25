@@ -91,7 +91,7 @@ class HarmonicSystem:
         zeros = {name: term * 0.0 for name, term in terms.items()}
         # the frequency terms' patterns join the summed one (their zeros); each term's (positions, values) on it once
         self._pattern = pattern_sum(list(zeros.values()) + [term * 0.0 for term in self._reduced_terms])
-        # Phase C estimator: per frequency-term entry int64 position + float64 value (16 B), host
+        # booked (estimate): per frequency-term entry int64 position + float64 value (16 B), host
         self._term_entries = [_pattern_positions(self._pattern, term) for term in self._reduced_terms]
         if self._reduced_terms:   # the pencil terms scattered on the united pattern (one search per term)
             aligned = {}
@@ -225,10 +225,10 @@ class HarmonicSystem:
                                        'pattern holds every term)')
                 mapped.append((np.asarray(slots, dtype=np.int64), values))
             union = np.unique(np.concatenate([slots for slots, _ in mapped]))
-            # Phase C estimator: the union slots (int64) + per term index (int64) and kept values (float64), host
+            # booked (estimate): the union slots (int64) + per term index (int64) and kept values (float64), host
             self._term_slots = (union, [(np.searchsorted(union, slots), values) for slots, values in mapped])
         union, mapped = self._term_slots
-        # Phase C estimator: one complex128 value per union slot per frequency (uploaded with the slots on cuDSS)
+        # booked (estimate): one complex128 value per union slot per frequency (uploaded with the slots on cuDSS)
         extra = np.zeros(union.size, dtype=np.complex128)
         for coefficient, (index, values) in zip(self._term_coefficients(omega), mapped):
             extra[index] += coefficient * values
@@ -414,10 +414,16 @@ class HarmonicSystem:
         return info
 
     def _refuse_reduced(self, what) -> None:
-        """ValueError with frequency terms: a reduced model needs a pencil polynomial in omega."""
+        """ValueError with frequency terms: a reduced model needs a pencil polynomial in omega (fem.reduced_harmonic
+        HarmonicTerm powers), which the per-frequency terms are not (or not as stored: a zero-coefficient term)."""
         if self._terms:
-            raise ValueError(f"{what} sweep needs a pencil polynomial in omega; viscoelastic moduli (viscosity, "
-                             "relaxation branches) or a mixed pressure block with them need sweep_method 'direct'")
+            labels = ', '.join(term.label or 'unnamed' for term in self._terms[:3])
+            more = f' and {len(self._terms) - 3} more' if len(self._terms) > 3 else ''
+            raise ValueError(f"{what} sweep needs a pencil polynomial in omega, but this system has "
+                             f"{len(self._terms)} per-frequency term(s) ({labels}{more}): frequency-dependent moduli "
+                             "(viscosity, relaxation branches) and, at azimuthal_order 1, the pressure block of an "
+                             "incompressible material of formulation mixed (kept as a zero term through the axis "
+                             "ties) need sweep_method 'direct'")
 
     def set_output_rows(self, rows) -> None:
         """Rows (over every dof) where solve(fields=False) must give x and A x exactly (records: probes, supports,

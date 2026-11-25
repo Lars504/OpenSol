@@ -123,7 +123,7 @@ def element_moduli(materials, window, youngs_modulus, poisson_ratio, label, requ
         return None
     window = np.asarray(window, dtype=bool)
     n_elements = window.size
-    # Phase C estimator: ElementModuli holds 5 + 4 VISCOELASTIC_BRANCHES float64 + 2 bool per element (kept per assembly)
+    # booked (estimate): ElementModuli holds 5 + 4 VISCOELASTIC_BRANCHES float64 + 2 bool per element (kept per assembly)
 
     def read(name, unset):
         if name not in names:

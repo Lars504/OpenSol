@@ -422,7 +422,7 @@ first bring the background physics (those without the study's hook) to a station
 - `open_sol/fem/`: layout and imports, mesh data, built-in mesher, gmsh, elements and geometry, dofs and assembly
   (FixedPatternCsr, block patterns, device tangents, Bloch), domain / sampling / transfers, scalar diffusion (2D and
   tetrahedra), factor entry count, error indicators, tetrahedra, vector elasticity on tetrahedra, complex scalar
-  harmonic systems, squeeze film, reduced sweeps, line elements, prestress, self-tests.
+  harmonic systems, mixed u-p, squeeze film, reduced sweeps, line elements, prestress, self-tests.
 - `open_sol/core/`: backends, GPU memory, accepted host syncs, kernel twins (numba traps), half storage, graded meshes,
   grid transfers, mirror planes, cut geometry, coordinate metric, 3D contracts, harmonic probe record, resonance
   finder, run-time estimate, damped iteration, DiffusionSystem (`fv_diffusion`; heat, potential, magnetic).
@@ -451,8 +451,9 @@ first bring the background physics (those without the study's hook) to a station
 - `open_sol/physics/mechanics/`: layout, backends, SolidMechanicsPhysics / ElasticSystem, anisotropic stiffness,
   eigenfrequency (2D, 3D), piezoelectric plane strain, frequency response, guided modes, 2D Bloch cells,
   optomechanical g0, squeeze film, ElasticSystem3D, triangle and tetrahedron meshes, prestress / damped modes /
-  complex records, geometric nonlinearity (held factor, device tangents), thermoelastic damping, reused sweep builds,
-  couplings and optics hooks, memory estimates, self-tests.
+  complex records, geometric nonlinearity (held factor, device tangents), thermoelastic damping, viscoelastic moduli and
+  the N-term harmonic system, mixed u-p formulation, reused sweep builds, couplings and optics hooks, memory estimates,
+  self-tests.
 - `open_sol/physics/membrane/`: layout, model (plate switch, system lifetime), self-tests.
 - `open_sol/physics/acoustics/`: elastic_waves (step graphs, kernel / numpy mirrors, adjoint pairs), couplings, not
   built / open (incl. pressure_acoustics).

@@ -223,6 +223,8 @@ _DESCRIPTION = (
     'tetrahedra; pressure_acoustics: -div(grad p / rho) - omega^2 p / (rho c^2) = j omega q on triangles / '
     'tetrahedra). Solids: (K (1 + j eta) - omega^2 M) u = f, consistent mass of rho (every solid cell needs rho > '
     '0), eta = mechanical_loss_factor, piezoelectric: the coupled potential with eps (1 - j dielectric_loss_tangent); '
+    'triangles / tetrahedra: frequency-dependent moduli G*(omega), K*(omega) per material (viscosity, relaxation '
+    'branches; sweep_method direct) and the setting formulation mixed (the u-p saddle point, liquids included); '
     'every load, prescribed displacement, electrode voltage and floating charge is a complex drive amplitude (phase '
     '0); one complex symmetric factor per frequency (2D: host SuperLU outside the solver roles, counters in the '
     "summary; solid_mechanics_3d: its 'linear' sparse_direct solver, SuperLU or cuDSS LDL^T with the plan reused). "
@@ -230,7 +232,8 @@ _DESCRIPTION = (
     'K_sigma joins K (real, no loss). A free body is allowed (regular at f > 0). membrane: the pressure_load / '
     "line_force / point_force phasors, one complex factor per frequency on its 'linear' sparse_direct solver. Results: "
     'the admittance feature (Y = I / V of an electrode versus f, Butterworth-Van Dyke fit); snapshots labelled "f = '
-    '<Hz> Hz" holding the real parts (phase 0), u_abs = |u|, u_x_im / u_y_im (/ u_z_im) the imaginary parts '
+    '<Hz> Hz" holding the real parts (phase 0), u_abs = |u|, u_x_im / u_y_im (/ u_z_im) the imaginary parts, '
+    'pressure / pressure_im '
     '(triangles / tetrahedra; store them through stored_fields); the last frequency stays live. Triangles / '
     'tetrahedra: frequency_probe records the complex displacement per frequency (u_x_re, u_x_im, u_x_abs, u_x_phase, '
     '...), every support result becomes a table of its complex reaction per frequency (F_x_re, F_x_im, ...); '

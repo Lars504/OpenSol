@@ -1060,7 +1060,7 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
         if kept is None or any(old is not new for old, new in zip(kept[0], key)) or kept[1].size != n_load:
             load = self._external_load()
             if load.size < n_load:
-                # Phase C estimator: the padded mixed load, float64 (3 n_u + n_p,), host (kept per sweep)
+                # booked (estimate): the padded mixed load, float64 (3 n_u + n_p,), host (kept per sweep)
                 load = np.concatenate([load, np.zeros(n_load - load.size)])
             load.flags.writeable = False
             self._harmonic_load = (key, load)
@@ -1089,11 +1089,14 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
 
     def _harmonic_fixed(self, operators) -> np.ndarray:
         """Held values over every unknown of the elastic harmonic system: the system's u values (0 on free and inactive
-        dofs), mixed + 0 on every pressure dof (the gauges of enclosed incompressible regions are held at 0)."""
+        dofs), mixed + 0 on every pressure dof (the gauges of enclosed incompressible regions are held at 0); ValueError
+        when they change the volume of an enclosed incompressible region (check_held_volumes)."""
         fixed = self.system.fixed_values()
         if operators.pressure is None:
             return fixed
-        return np.concatenate([fixed, np.zeros(operators.n_unknowns - fixed.size)])
+        fixed = np.concatenate([fixed, np.zeros(operators.n_unknowns - fixed.size)])
+        operators.check_held_volumes(fixed, self._label)
+        return fixed
 
     def _harmonic_output_rows(self) -> np.ndarray:
         """Int64 rows (node x 3 + component) the frequency probes and support reactions read."""
@@ -1297,7 +1300,7 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
         n_elements = self.domain.n_elements
         groups = parameter_groups(moduli, self._solid, label)
         indices = group_indices(groups, n_elements)
-        # Phase C estimator: the unit-shear D_g CSR per group (float64, full numbering 3 n_u), transient until embedded
+        # booked (estimate): the unit-shear D_g CSR per group (float64, full numbering 3 n_u), transient until embedded
         # (mixed_harmonic_operators)
         deviatoric = [matrices[0] for matrices in assemble_elastic_stiffness_groups_3d(
             system.full, [unit_modulus_matrix_3d('shear', n_elements)], indices, len(groups))]
@@ -1323,7 +1326,7 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
         parts = tuple(part for part in ('shear', 'bulk')
                       if any(group.law(part).frequency_dependent for group in groups))
         n_elements = self.domain.n_elements
-        # Phase C estimator: the group CSRs (float64, full numbering) of every (group, part), kept with the operators
+        # booked (estimate): the group CSRs (float64, full numbering) of every (group, part), kept with the operators
         matrices = assemble_elastic_stiffness_groups_3d(
             self.system.full, [unit_modulus_matrix_3d(part, n_elements) for part in parts],
             group_indices(groups, n_elements), len(groups))
@@ -1401,7 +1404,7 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
         if self.piezoelectric:   # after _write_outputs (which resets it): Im phi for pressure_im
             self._potential_im = np.ascontiguousarray(solution[n_vector:].imag)
         if pressure is not None:   # after _write_outputs (which resets them)
-            # Phase C estimator: the shown pressure, complex128 (n_p,), host (one per snapshot solution state)
+            # booked (estimate): the shown pressure, complex128 (n_p,), host (one per snapshot solution state)
             self._pressure = np.array(pressure, dtype=np.complex128)
             self._pressure_space = space
         self._electrode_values = {}
@@ -1758,7 +1761,7 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
         averaged = nodal_average_3d(full, np.stack([local[name] for name in names], axis=-1), elements=solid)
         self._nodal.update({name: averaged[:, column] for column, name in enumerate(names)})
         if self._pressure is not None:   # mixed: the P1 pressure unknowns themselves (groups at a node averaged)
-            # Phase C estimator: a complex128 (n_dofs,) temporary, then the two float64 nodal fields (replacing the
+            # booked (estimate): a complex128 (n_dofs,) temporary, then the two float64 nodal fields (replacing the
             # averaged ones), host; pressure_at_3d's (m, q) complex128 per output pass is transient
             nodal = nodal_pressure_3d(full, self._pressure_space, self._pressure)
             self._nodal['pressure'], self._nodal['pressure_im'] = nodal.real.copy(), nodal.imag.copy()

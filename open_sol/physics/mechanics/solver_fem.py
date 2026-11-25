@@ -965,7 +965,7 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
         if kept is None or kept[0] is not system.dofs or kept[1].size != operators.n_unknowns:
             load = self._external_load()
             if load.size < operators.n_unknowns:
-                # Phase C estimator: the padded mixed load, float64 (c n_u + n_p,), host (kept per sweep)
+                # booked (estimate): the padded mixed load, float64 (c n_u + n_p,), host (kept per sweep)
                 load = np.concatenate([load, np.zeros(operators.n_unknowns - load.size)])
             load.flags.writeable = False
             self._harmonic_load = (system.dofs, load)
@@ -973,11 +973,13 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
 
     def _harmonic_fixed(self, operators) -> np.ndarray:
         """Held values over every unknown of the harmonic system: the system's u values (0 on free dofs), mixed + 0 on
-        every pressure dof (the axis ones of m >= 1 and the gauges of enclosed incompressible regions are held at 0)."""
+        every pressure dof (the axis ones of m >= 1 and the gauges of enclosed incompressible regions are held at 0);
+        ValueError when they change the volume of an enclosed incompressible region (check_held_volumes)."""
         fixed = self.system.fixed_values()
-        if fixed.size == operators.n_unknowns:
-            return fixed
-        return np.concatenate([fixed, np.zeros(operators.n_unknowns - fixed.size)])
+        if fixed.size != operators.n_unknowns:
+            fixed = np.concatenate([fixed, np.zeros(operators.n_unknowns - fixed.size)])
+        operators.check_held_volumes(fixed, self._label)
+        return fixed
 
     def _split_harmonic(self, solution, operators) -> tuple:
         """(displacement (n_dofs, c), pressure (n_p,) or None) of a harmonic solution over every unknown."""
@@ -1191,7 +1193,7 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
         n_elements = self.domain.n_elements
         groups = parameter_groups(moduli, self._solid, label)
         indices = group_indices(groups, n_elements)
-        # Phase C estimator: the unit-shear D_g CSR per group (float64, solid-map numbering c n_u), transient until
+        # booked (estimate): the unit-shear D_g CSR per group (float64, solid-map numbering c n_u), transient until
         # embedded (mixed_harmonic_operators)
         deviatoric = [matrices[0] for matrices in assemble_elastic_stiffness_groups(
             dofs, [unit_operator_coefficients('shear', n_elements, self._axisymmetric)], indices, len(groups),
@@ -1227,7 +1229,7 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
                       if any(group.law(part).frequency_dependent for group in groups))
         n_elements = self.domain.n_elements
         system = self.system
-        # Phase C estimator: the group CSRs (float64, full numbering) of every (group, part), kept with the operators
+        # booked (estimate): the group CSRs (float64, full numbering) of every (group, part), kept with the operators
         matrices = assemble_elastic_stiffness_groups(
             system.dofs, [unit_operator_coefficients(part, n_elements, self._axisymmetric) for part in parts],
             group_indices(groups, n_elements), len(groups), axisymmetric=self._axisymmetric,
@@ -1303,7 +1305,7 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
                             imaginary=np.ascontiguousarray(displacement.imag),
                             moduli=self._harmonic_moduli(omega, viscoelastic))
         if pressure is not None:   # after _write_outputs (which resets them), as the complex displacement
-            # Phase C estimator: the shown pressure, complex128 (n_p,), host (one per snapshot solution state)
+            # booked (estimate): the shown pressure, complex128 (n_p,), host (one per snapshot solution state)
             self._pressure = np.array(pressure, dtype=np.complex128)
             self._pressure_space = space
         self._complex_displacement = np.array(displacement, dtype=np.complex128)   # read by the primary group
@@ -1839,7 +1841,7 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
             self._nodal[name] = np.zeros(system.n_global)
             self._nodal[name][full_index] = averaged[:, column]
         if self._pressure is not None:   # mixed: the P1 pressure unknowns themselves (groups at a node averaged)
-            # Phase C estimator: a complex128 (n_global,) temporary, then the two float64 nodal fields (replacing the
+            # booked (estimate): a complex128 (n_global,) temporary, then the two float64 nodal fields (replacing the
             # averaged ones), host; pressure_at's (m, q) complex128 per output pass is transient
             nodal = nodal_pressure(system.full_dofs, self._pressure_space, self._pressure)
             self._nodal['pressure'], self._nodal['pressure_im'] = nodal.real.copy(), nodal.imag.copy()

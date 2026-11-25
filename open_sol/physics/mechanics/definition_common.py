@@ -102,8 +102,8 @@ DENSITY_PARAM = _material_property(
               'frequency_response studies, where every solid or fluid cell of the solid (youngs_modulus, c11, '
               'shear_modulus or bulk_modulus > 0; with formulation mixed also a liquid with a viscosity) needs rho > 0. '
               'Typical: silica 2200, silicon 2329, gold 19300.',
-    tip="Mass density. Solid mechanics uses it only in an 'Eigenfrequency' study.\n\nTypical: silica 2200, silicon "
-        '2329, gold 19300.')
+    tip='Mass density. Solid mechanics uses it only in eigenfrequency, optomechanics and frequency response '
+        'studies.\n\nTypical: silica 2200, silicon 2329, gold 19300.')
 # 2D solid_mechanics only: read by the optomechanical_coupling overlap alone (the strain-optic couplings are diagonal).
 PHOTOELASTIC_P44_PARAM = _material_property(
     'photoelastic_p44', 'Photoelastic coefficient p44', '1',

@@ -56,7 +56,7 @@ def pressure_space_3d(mesh, groups, n_groups) -> PressureSpace3D:
     if groups.shape != (mesh.n_elements,):
         raise ValueError(f'pressure_space_3d: groups has shape {groups.shape}, expected ({mesh.n_elements},)')
     elements, nodes, offsets = [], [], [0]
-    # Phase C estimator: element_table int64 (n_mesh_elements, 4) + per group its elements and nodes (int64), host,
+    # booked (estimate): element_table int64 (n_mesh_elements, 4) + per group its elements and nodes (int64), host,
     # kept with the harmonic operators
     table = np.full((mesh.n_elements, PRESSURE_LOCAL_3D), -1, dtype=np.int64)
     for group in range(int(n_groups)):
@@ -86,7 +86,7 @@ def assemble_pressure_terms_3d(dofs, space, degree=None) -> tuple:
     rule = tetrahedron_rule(_rule_degree(2 * dofs.order - 2, degree))
     _, reference_gradients = lagrange_basis_3d(dofs.order, rule.points)
     pressure_basis = lagrange_basis_3d(1, rule.points, gradients=False)[0]   # (q, 4), the corners in mesh.tets order
-    # Phase C estimator: COO batches of B ((4 x 3 n_local) float64 + 2 int32 per element) and of each M_p,g (16 float64
+    # booked (estimate): COO batches of B ((4 x 3 n_local) float64 + 2 int32 per element) and of each M_p,g (16 float64
     # + 2 int32 per element) up to COO_BATCH_ENTRIES each, then the CSRs (float64 + int32 indices), host
     coupling = CsrAccumulator((n_p, n_u))
     masses = []

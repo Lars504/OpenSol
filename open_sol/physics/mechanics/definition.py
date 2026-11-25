@@ -58,7 +58,8 @@ from .definition_common import (DENSITY_PARAM, EIGENFREQUENCY_STUDY, ELECTRODE_C
                                 thermoelastic_damping_feature, union_masks)
 from .definition_frequency_response import (ADMITTANCE_FEATURE, FREQUENCY_RESPONSE_STUDY, anisotropy_issues,
                                             frequency_response_host_items, frequency_response_issues)
-from .definition_viscoelastic import viscoelastic_issues
+from .definition_viscoelastic import (scaled_fill, viscoelastic_counts, viscoelastic_issues, viscoelastic_memory_items,
+                                     viscoelastic_time_items)
 from .fields import (AZIMUTHAL_IMAG_FIELDS, ENERGY_DENSITY_FIELDS, HARMONIC_IMAG_FIELDS, INPUT_ARRAYS, OUTPUT_ARRAYS,
                      PRESSURE_FIELDS)
 from .generalized_plane_strain import BENDING_CHOICES, BENDING_TERMS
@@ -1040,6 +1041,13 @@ _FEM_FILL_FACTOR = 3.0
 _FEM_NODAL_OUTPUTS = 18   # host float64 nodal display arrays (solver_fem._nodal, energy densities and u_z included)
 
 
+def _output_moduli_item(elements):
+    """Host item of stiffness.harmonic_stiffness_pair (solver_fem._harmonic_moduli) of a shown complex solution: C''
+    always and C' where an element is frequency dependent, one float64 array per c_ij name each (an upper bound)."""
+    return ("harmonic output moduli C' and C'' of the shown solution (float64 per element)",
+            2 * len(STIFFNESS_TENSOR_ARRAYS) * FLOAT64_BYTES * elements)
+
+
 def _prestress_solved(settings_values, context, with_loads) -> bool:
     """Whether solve_static_state factorises K (or a Newton tangent) on the 'linear' role before the pencils."""
     prestressed = bool(settings_values.get('stress_stiffening') or settings_values.get('geometric_nonlinearity'))
@@ -1136,6 +1144,9 @@ def _fem_memory_estimate(settings_values, mesh, context):
         one_at_a_time = not static   # released before the pencil's factor is planned
         if not static and study == EIGENFREQUENCY_STUDY:   # its phase, never live with the pencil phases
             factor_phases = {factor[0]: LINEAR_STATIC_STATE_PHASE for factor in factors}
+    # viscoelastic group terms and the mixed u-p blocks (definition_viscoelastic; inactive outside frequency_response)
+    viscoelastic = viscoelastic_counts(context.spec, context.parameters, settings_values, mesh, components, local, 2,
+                                       vector_dofs, entries)
     host_items = [('dof maps (full and solid)', 2 * (_INT64_BYTES * local * elements + 2 * _INT64_BYTES * scalar_dofs)),
                   ('element stiffness / body force / held arrays', 20 * FLOAT64_BYTES * elements
                    + 3 * FLOAT64_BYTES * vector_dofs),
@@ -1163,23 +1174,30 @@ def _fem_memory_estimate(settings_values, mesh, context):
         host_items.extend(eigen_host_items)
         if pml:
             host_items.append(('stretched PML stiffness and mass (complex CSR)', 2 * (16 + INT32_BYTES) * entries))
+        if context.material_sets(LOSS_ARRAYS[0]):   # a shown damped mode's Re(C* eps): _harmonic_moduli
+            host_items.append(_output_moduli_item(elements))
         if settings_values.get('stress_stiffening'):
             host_items.append(('geometric stiffness K_sigma and K + K_sigma (float64 CSR)',
                                2 * csr_entry_bytes * entries))
     elif study == FREQUENCY_RESPONSE_STUDY:   # K factor never built; the kept HarmonicSystem on the 'linear' runtime
+        # mixed u-p: the pencil over [u; p] (counts.unknowns / entries: + n_p, + 2 nnz(B) + the pressure blocks)
+        unknowns, pencil_entries = viscoelastic.unknowns, viscoelastic.entries
         host_items.extend((('frequency response loss and mass CSR (float64)', 2 * csr_entry_bytes * entries),
-                           ('frequency response complex operator copies', 3 * (16 + INT32_BYTES) * entries),
-                           ('frequency response solution vectors (complex)', 4 * 16 * vector_dofs)))
-        if host_factor:
+                           ('frequency response complex operator copies', 3 * (16 + INT32_BYTES) * pencil_entries),
+                           ('frequency response solution vectors (complex)', 4 * 16 * unknowns)))
+        if context.material_sets(LOSS_ARRAYS[0]) or viscoelastic.active:   # _harmonic_moduli of the shown response
+            host_items.append(_output_moduli_item(elements))
+        if host_factor:   # the saddle point fills as (dofs per node)^2 over the u-only heuristic (fill_scale)
             host_items.extend(host_factor_items(linear_back_end,
                                                 'frequency response complex SuperLU L + U (heuristic)',
-                                                2 * _FEM_FILL_FACTOR * host_real_lu_bytes(vector_dofs), vector_dofs,
-                                                entries, complex_values=True))
-        else:   # the kept HarmonicSystem: cuDSS LDL^T refreshed from the DevicePencil (K + j L, M)
-            run_items += harmonic_pencil_items(vector_dofs, entries, linear_back_end, (16, FLOAT64_BYTES))
-            factors.append(('frequency response cuDSS factor', vector_dofs, entries, 16, 2,
-                            linear_back_end == 'cudss_mixed'))
-        host_items.extend(reduced_sweep_memory_items(context, vector_dofs, entries))
+                                                2 * _FEM_FILL_FACTOR * host_real_lu_bytes(vector_dofs)
+                                                * viscoelastic.fill_scale, unknowns, pencil_entries,
+                                                complex_values=True))
+        else:   # the kept HarmonicSystem: cuDSS LDL^T refreshed from the DevicePencil (K + j L, M) on the summed pattern
+            run_items += harmonic_pencil_items(unknowns, pencil_entries, linear_back_end, (16, FLOAT64_BYTES))
+            factors.append(('frequency response cuDSS factor', unknowns, pencil_entries, 16,
+                            scaled_fill(fill, viscoelastic), linear_back_end == 'cudss_mixed'))
+        host_items.extend(reduced_sweep_memory_items(context, unknowns, pencil_entries))
     else:
         if host_factor:
             host_items.extend(host_factor_items(linear_back_end, 'SuperLU L + U factors (float64, heuristic)',
@@ -1208,6 +1226,13 @@ def _fem_memory_estimate(settings_values, mesh, context):
                                                 'SuperLU L + U factors of the Newton tangent (float64, heuristic)',
                                                 _FEM_FILL_FACTOR * host_real_lu_bytes(vector_dofs), vector_dofs,
                                                 entries))
+    # the element moduli (every study, once any modulus / viscoelastic array exists) and the group / mixed items
+    extra_host, extra_run = viscoelastic_memory_items(
+        viscoelastic, elements=elements, local=local, scalar_dofs=scalar_dofs, matrix_rows=vector_dofs,
+        mass_entries=entries // components, back_end=linear_back_end,
+        loss=context.material_sets(LOSS_ARRAYS[0]), dimensions=2)
+    host_items += extra_host
+    run_items += extra_run
     return MemoryEstimate.from_items(((f'fields ({n_fields} x float32 per element)',
                                        n_fields * FLOAT32_BYTES * elements),
                                       ('window element mask', BOOL_BYTES * elements)),
@@ -1696,17 +1721,30 @@ def _fem_time_estimate(settings_values, mesh, context):
         # host rhs (K + j L - omega^2 M) applied to the held values and the reduction of the pencil terms once
         sweep = frequency_sweep_counts(context)
         extra_operators = 1.0 + float(context.material_sets(LOSS_ARRAYS[0]))   # mass (+ loss eta K)
-        host_rhs = (te.HostStream(3 * (FLOAT64_BYTES + INT32_BYTES) * entries + 4 * 2 * FLOAT64_BYTES * unknowns),
-                    te.PythonCalls(20))
+        # viscoelastic group terms and the mixed u-p blocks: the pencil over [u; p] (+ n_p unknowns, + 2 nnz(B) + the
+        # pressure blocks), their assemblies, positions and per-frequency values (definition_viscoelastic)
+        viscoelastic = viscoelastic_counts(context.spec, context.parameters, settings_values, mesh, components, local,
+                                           2, int(unknowns), int(entries))
+        pencil_unknowns, pencil_entries = float(viscoelastic.unknowns), float(viscoelastic.entries)
+        host_rhs = (te.HostStream(3 * (FLOAT64_BYTES + INT32_BYTES) * pencil_entries
+                                  + 4 * 2 * FLOAT64_BYTES * pencil_unknowns), te.PythonCalls(20))
+        linear = (context.solvers or {}).get('linear')
         items = (te.TimeItem('stiffness assembly', 'assembly', 1.0, 'exact', assembly_ops),
                  te.TimeItem('mass and loss assembly', 'assembly', extra_operators, 'exact', assembly_ops),
                  te.TimeItem('harmonic pencil terms on one pattern (once)', 'assembly', 1.0, 'exact',
-                             (_pattern_sum_stream(int(extra_operators) + 1, 2 * FLOAT64_BYTES, entries),)),
+                             (_pattern_sum_stream(int(extra_operators) + 1, 2 * FLOAT64_BYTES, pencil_entries),)),
                  te.TimeItem('harmonic rhs of the held values', 'factorisation', sweep['factorizations'],
                              sweep['factorizations_kind'], host_rhs),
                  te.TimeItem('outputs (full solution products)', 'frequency', sweep['field_points'], 'exact',
                              io_ops + host_rhs),
-                 *reduced_sweep_time_items(sweep, unknowns))
+                 *viscoelastic_time_items(
+                     viscoelastic, local=local, factorizations=sweep['factorizations'],
+                     kind=sweep['factorizations_kind'], field_points=sweep['field_points'],
+                     back_end=None if linear is None else linear.values.get('back_end'),
+                     assembly_bytes_per_coo=_FEM_ASSEMBLY_BYTES_PER_COO, assembly_calls=_FEM_ASSEMBLY_CALLS,
+                     pattern_sum_stream=_pattern_sum_stream, output_ops=io_ops),
+                 *reduced_sweep_time_items(sweep, pencil_unknowns))
+        unknowns, entries = pencil_unknowns, pencil_entries   # the factorised saddle point (mixed)
         work = context.solver_work('linear', unknowns=unknowns, nnz=entries, value_bytes=2 * FLOAT64_BYTES,
                                    dimensions=2, solves=sweep['solves'], solves_kind=sweep['solves_kind'],
                                    factorizations=sweep['factorizations'],
@@ -2345,10 +2383,12 @@ def _selftest_cases(em_types):
     from .selftests_reduced_sweep import REDUCED_SWEEP_CASES
     from .selftests_segment_load import SEGMENT_LOAD_CASES
     from .selftests_thermoelastic import THERMOELASTIC_CASES
+    from .selftests_viscoelastic import VISCOELASTIC_CASES
     return (SELFTEST_CASES + SEGMENT_LOAD_CASES + FORMULATION_CASES + EIGENFREQUENCY_CASES + EIGEN_SEARCH_CASES
             + GUIDED_MODES_CASES + PIEZO_CASES + ANISOTROPY_CASES + FREQUENCY_RESPONSE_CASES + FEM_CASES + PRESTRESS_CASES
             + PRESTRESS_STRING_CASES + PML_2D_CASES + AZIMUTHAL_CASES + NONLINEAR_CASES + REDUCED_SWEEP_CASES
-            + THERMOELASTIC_CASES + BLOCH_2D_CASES + optomechanics_cases(em_types) + backend_cases(em_types))
+            + THERMOELASTIC_CASES + BLOCH_2D_CASES + VISCOELASTIC_CASES + optomechanics_cases(em_types)
+            + backend_cases(em_types))
 
 
 def register(registry):

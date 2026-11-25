@@ -176,7 +176,9 @@ PARDISO: section "host_direct". Rules across files:
   with a valid previous (refreshed from the device values). symmetric_known, pencils and factorize_values match the
   pattern by identity of indptr / indices: callers never modify those arrays in place, and pass symmetric_known only
   for a canonical symmetric CSR. Pencil users book `device_pencil_bytes` as a run item (fem.harmonic, mechanics
-  HarmonicSystem; a HostPencil's copied terms as a host item).
+  HarmonicSystem; a HostPencil's copied terms as a host item). Per-frequency terms that are not polynomial in omega
+  (port DtN blocks, the mechanics viscoelastic groups) go through `factorize_pencil(extra=)` at slots mapped once
+  (`pencil.slots`; lower entries only on a lower-stored pencil), never as extra pencil terms.
 - `DiffusionDirectSolver.release_factor()` before another large factorisation, or `detach_factor()` (the caller owns
   the factor: released, or passed as previous= to a factorisation of the same kind); `positive_definite = False`
   first makes factorize_host_operator ask for the LDL^T of a shifted pencil instead of the SPD kind (mechanics stress

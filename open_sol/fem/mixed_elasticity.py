@@ -70,7 +70,7 @@ def pressure_space(displacement_dofs, groups, n_groups) -> PressureSpace:
     if outside.any():
         raise ValueError(f'pressure_space: {int(outside.sum())} grouped element(s) are not on the displacement map')
     maps, offsets = [], [0]
-    # Phase C estimator: element_table int64 (n_mesh_elements, 3) + per group a P1 DofMap (element_dofs int64 (m_g, 3),
+    # booked (estimate): element_table int64 (n_mesh_elements, 3) + per group a P1 DofMap (element_dofs int64 (m_g, 3),
     # global_ids int64 (n_g,), element_position int64 (n_mesh_elements,)), host, kept with the harmonic operators
     table = np.full((mesh.n_elements, PRESSURE_LOCAL), -1, dtype=np.int64)
     for group in range(int(n_groups)):
@@ -100,7 +100,7 @@ def assemble_pressure_terms(displacement_dofs, space, *, axisymmetric=False, azi
     group_of = np.full(len(dofs.elements), -1, dtype=np.int64)
     for group, pressure_dofs in enumerate(space.maps):
         group_of[dofs.element_position[pressure_dofs.elements]] = group
-    # Phase C estimator: COO of B ((3 x c n_local) float64 + 2 int64 per element) and of every M_p,g (9 float64 + 2
+    # booked (estimate): COO of B ((3 x c n_local) float64 + 2 int64 per element) and of every M_p,g (9 float64 + 2
     # int64 per element) held until the CSRs (float64 data + int32 indices; B ~ n_p x c x the P2 row entries around a
     # vertex, M_p,g ~ the P1 pattern of the group), host
     coupling = ([], [], [])
@@ -215,7 +215,7 @@ def embedded(matrix, n_total, row_offset=0, column_offset=0):
     indptr = np.concatenate([np.zeros(row_offset, dtype=np.int64), matrix.indptr.astype(np.int64),
                              np.full(n_total - row_offset - n_rows, matrix.nnz, dtype=np.int64)])
     indices = matrix.indices.astype(np.int64) + column_offset
-    # Phase C estimator: a copy of the block (data + int32 indices) at its new place, host
+    # booked (estimate): a copy of the block (data + int32 indices) at its new place, host
     return scipy.sparse.csr_matrix((matrix.data.copy(), indices.astype(index_dtype), indptr.astype(index_dtype)),
                                    shape=(n_total, n_total))
 
@@ -229,7 +229,7 @@ def saddle_coupling(coupling, n_u):
     if columns != int(n_u):
         raise ValueError(f'saddle_coupling: B has {columns} columns, expected n_u = {n_u}')
     n_total = int(n_u) + n_p
-    # Phase C estimator: -B and -B^T embedded (2 copies of B: float64 + int32 indices) before their pattern sum (the
+    # booked (estimate): -B and -B^T embedded (2 copies of B: float64 + int32 indices) before their pattern sum (the
     # saddle CSR: 2 x nnz(B) entries), host
     return pattern_sum([embedded(-coupling, n_total, row_offset=n_u),
                         embedded((-coupling.T).tocsr(), n_total, column_offset=n_u)])

@@ -172,7 +172,7 @@ def assemble_elastic_stiffness_groups(dofs, coefficient_sets, groups, n_groups, 
     components = AZIMUTHAL_COMPONENTS if azimuthal_order else COMPONENTS
     order = _check_azimuthal_order(azimuthal_order) if azimuthal_order else 0
     n_vector = components * dofs.n_dofs
-    # Phase C estimator: the COO blocks of every (group, set) are held until the end ((c n_local)^2 float64 + 2 int64
+    # booked (estimate): the COO blocks of every (group, set) are held until the end ((c n_local)^2 float64 + 2 int64
     # per element and set, as one assemble_elastic_stiffness per set), then one CSR per (group, set)
     lists = [[([], [], []) for _ in coefficient_sets] for _ in range(int(n_groups))]
     degree = 0 if azimuthal_order else max(2 * dofs.order - 2, 2)

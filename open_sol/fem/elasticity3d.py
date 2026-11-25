@@ -214,7 +214,7 @@ def assemble_elastic_stiffness_groups_3d(dofs, materials, groups, n_groups, degr
     if groups.shape != (mesh.n_elements,):
         raise ValueError(f'groups has shape {groups.shape}, expected ({mesh.n_elements},)')
     n_vector = COMPONENTS * dofs.n_dofs
-    # Phase C estimator: one CsrAccumulator per (group, set): COO batches up to COO_BATCH_ENTRIES each, then the CSRs
+    # booked (estimate): one CsrAccumulator per (group, set): COO batches up to COO_BATCH_ENTRIES each, then the CSRs
     accumulators = [[CsrAccumulator((n_vector, n_vector)) for _ in materials] for _ in range(int(n_groups))]
     elements = np.flatnonzero(groups >= 0).astype(np.int64)
     rule = tetrahedron_rule(_rule_degree(2 * dofs.order - 2, degree))
