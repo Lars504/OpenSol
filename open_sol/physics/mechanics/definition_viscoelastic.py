@@ -476,14 +476,20 @@ def viscoelastic_memory_items(counts, *, elements, local, scalar_dofs, matrix_ro
              'copies, the operator, loss and mass)', csr * blocks + index * (n_total + 1) * matrices),
             ('mixed pattern sums of the saddle-point operator (COO of every part)',
              _PATTERN_SUM_BYTES * (2 * coupling + deviatoric + pressure_mass)),
-            ('mixed row-scale diagonals (float64 per pressure group, every and free unknowns)',
-             FLOAT64_BYTES * (n_total + n_free) * groups),
+            ('mixed Schur row scale (B embedded over every unknown and its squared free-dof reduction, float64 CSR; '
+             'the per-frequency inverse diagonal and proxy)',
+             csr * 2 * coupling + index * (n_total + n_free + 2) + 2 * FLOAT64_BYTES * n_free),
             ('mixed shown pressure (complex), its nodal display fields and point values',
              COMPLEX128_BYTES * (n_p + elements * (local + 1)) + (COMPLEX128_BYTES + 2 * FLOAT64_BYTES) * scalar_dofs),
             ('mixed padded load and held values (float64)', 2 * FLOAT64_BYTES * n_total)])
         if counts.column_map:   # m = 1: block_diag(axis ties (the system prolongation), free pressure selection)
             host.append(('mixed column map (axis ties and the free-pressure selection, float64 CSR)',
                          csr * (2 * counts.displacement_unknowns + 2 * n_p) + index * 2 * (n_total + 1)))
+        if back_end not in CUDSS_BACK_ENDS and back_end not in HOST_DIRECT_BACK_ENDS:
+            # host SuperLU factors the equilibrated R A R (sparse_direct._equilibrated_host): its complex values beside
+            # A's, and the numpy gathers of scaled_values (int64 rows, float64 column scales)
+            host.append(('mixed equilibrated saddle point of the SuperLU route (complex128 values, scaling gathers)',
+                         (COMPLEX128_BYTES + _INT64_BYTES + FLOAT64_BYTES) * counts.entries))
     if counts.terms:
         terms, term_entries, entries = counts.terms, counts.term_entries, counts.entries
         reduced = (2 if counts.column_map else 1) * term_entries   # a congruence (m = 1) holds its product too
@@ -513,12 +519,12 @@ def viscoelastic_time_items(counts, *, local, factorizations, kind, field_points
     """core.time_estimate TimeItems of the viscoelastic group terms and the mixed blocks of counts (op counts from the
     code, never seconds): the group assembly (one strain operator per chunk, a material product per part), the mixed
     coupling / pressure-mass assembly and saddle-point blocks, the term positions and pencil slots (once), per
-    factorisation the term values, row-scale diagonals (and on cuDSS their upload) and per field frequency the
-    complex-correct stress pair and the pressure outputs. assembly_bytes_per_coo / assembly_calls: the caller's host
-    assembly price per COO entry and per assembly; pattern_sum_stream(parts, value_bytes, entries): its HostStream of a
-    pattern sum; output_ops: its per-solve output ops (the stress pair costs about half of them again); loss: a
-    mechanical_loss_factor is set (the solvers' _harmonic_moduli build the (C', C'') pair for it too, as the memory
-    item booked beside the frequency-response items)."""
+    factorisation the term values, the Schur row scale (on host SuperLU also the scaled copy; on cuDSS the upload)
+    and per field frequency the complex-correct stress pair and the pressure outputs. assembly_bytes_per_coo /
+    assembly_calls: the caller's host assembly price per COO entry and per assembly; pattern_sum_stream(parts,
+    value_bytes, entries): its HostStream of a pattern sum; output_ops: its per-solve output ops (the stress pair costs
+    about half of them again); loss: a mechanical_loss_factor is set (the solvers' _harmonic_moduli build the (C', C'')
+    pair for it too, as the memory item booked beside the frequency-response items)."""
     from ...solvers.host_direct import HOST_DIRECT_BACK_ENDS
     from ...solvers.sparse_direct import CUDSS_BACK_ENDS, LOWER_STORED_FRACTION
     items = []
@@ -562,8 +568,14 @@ def viscoelastic_time_items(counts, *, local, factorizations, kind, field_points
         if pencil:   # factorize_pencil(extra=): slots and values up, the scattered add on the device
             per_factor += [te.Transfer((_INT64_BYTES + COMPLEX128_BYTES) * union),
                            te.Elementwise(3 * COMPLEX128_BYTES * union, COMPLEX128_BYTES * union, launches=3)]
-    if counts.mixed:   # the row-scale weights and diagonals of every pressure group
-        per_factor += [te.HostStream(3 * FLOAT64_BYTES * n_free * counts.groups), te.PythonCalls(5 * counts.groups)]
+    if counts.mixed:   # the Schur proxy (one product of the squared B), its inverse diagonal and the row scale
+        per_factor += [te.HostStream(FLOAT64_CSR_ENTRY_BYTES * counts.coupling_entries + 6 * FLOAT64_BYTES * n_free),
+                       te.PythonCalls(10)]
+        if back_end not in CUDSS_BACK_ENDS and back_end not in HOST_DIRECT_BACK_ENDS:
+            # host SuperLU: E = R A R entry by entry (values in / out, the row and column gathers) and the scaled solve
+            # vectors
+            per_factor.append(te.HostStream(2 * (COMPLEX128_BYTES + FLOAT64_BYTES) * counts.entries
+                                            + _INT64_BYTES * counts.entries))
     if per_factor:
         items.append(te.TimeItem('harmonic per-frequency terms and row scales', 'factorisation', factorizations, kind,
                                  tuple(per_factor)))

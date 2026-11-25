@@ -339,7 +339,7 @@ class HarmonicOperators:
     """Host pieces of the frequency-response pencil of one assembly (the FEM solids' _build_harmonic_operators):
     `operator` the constant real part beyond the system K (None = the solver's pencil stiffness _pencil_stiffness;
     mixed: the saddle coupling + the constant groups' G0 D_g and pressure blocks, mixed_harmonic_operators), `loss` (or
-    None), `mass`, `terms` (frequency_response.FrequencyTerm), `scale_terms` (RowScaleTerm), `n_unknowns` (rows of the
+    None), `mass`, `terms` (frequency_response.FrequencyTerm), `scale_terms` (SchurScaleTerm), `n_unknowns` (rows of the
     full vector: c n_u (+ n_p mixed, x = [u; p])), `pressure` (the mixed fem PressureSpace / PressureSpace3D, or None),
     `free` (bool over the unknowns, or over the columns of column_map) and `column_map` (None, the m = 1 axis ties,
     mixed: ties (+) the selection of the free pressure dofs), `groups` the viscoelastic.ViscoelasticGroup of the terms
@@ -393,8 +393,6 @@ class HarmonicOperators:
         return text
 
 
-# floor [Pa] of |G*| in the Schur row-scale weight of a mixed pressure group (a member's G* is never 0 at omega > 0)
-_TINY_MODULUS = 1e-30
 # |B^T 1| on the free displacements below this share of its largest value: the constant pressure of an incompressible
 # region is a null vector of the saddle point (a liquid enclosed by held displacements; round-off ~1e-15 there)
 _ENCLOSED_TOLERANCE = 1e-9
@@ -414,15 +412,15 @@ def mixed_harmonic_operators(groups, deviatoric, coupling, pressure_masses, spac
     (fem.mixed_elasticity header): constant groups folded into operator (G0 D_g, -Re(1 / K*) M_p,g) and loss (eta G0
     D_g, -Im(1 / K*) M_p,g), omega-dependent ones FrequencyTerms (G*_g D_g; -1 / K*_g M_p,g); an incompressible group's
     pressure block is 0 but kept in the pattern (stored zeros without a column map, else a FrequencyTerm of coefficient
-    0: a congruence drops exact zeros); one RowScaleTerm per group, diag M_p,g (1 / max(|G*_g|, tiny) + |1 / K*_g|)
-    (the Schur scale of its rows). Column map: None (free = u free + pressure free) or block_diag(P, selection of the
-    free pressure dofs) (free = every column). The gauges of enclosed incompressible regions (_pressure_gauges: over the
-    union of the incompressible groups) are held at 0. ValueError for an incompressible region whose every coupled
-    displacement is held."""
+    0: a congruence drops exact zeros); one SchurScaleTerm of B (the per-frequency Schur proxy sum_j B_pj^2 / d_j of
+    the pressure rows, frequency_response). Column map: None (free = u free + pressure free) or block_diag(P,
+    selection of the free pressure dofs) (free = every column). The gauges of enclosed incompressible regions
+    (_pressure_gauges: over the union of the incompressible groups) are held at 0. ValueError for an incompressible
+    region whose every coupled displacement is held."""
     import scipy.sparse
     from ...fem.assembly import pattern_sum
     from ...fem.mixed_elasticity import embedded, saddle_coupling
-    from .frequency_response import FrequencyTerm, RowScaleTerm
+    from .frequency_response import FrequencyTerm, SchurScaleTerm
     groups = tuple(groups)
     n_p, n_u = coupling.shape
     if space.n_dofs != n_p or space.n_groups != len(groups) or len(deviatoric) != len(groups) \
@@ -445,10 +443,10 @@ def mixed_harmonic_operators(groups, deviatoric, coupling, pressure_masses, spac
         # the m = 1 column map (booked: definition_viscoelastic.viscoelastic_memory_items)
         column_map = scipy.sparse.block_diag((prolongation, selection), format='csr')
         free = np.ones(column_map.shape[1], dtype=bool)
-    # the embedded blocks, scaled constant copies, pattern sums and row-scale diagonals (booked:
+    # the embedded blocks, scaled constant copies and pattern sums (booked:
     # definition_viscoelastic.viscoelastic_memory_items, 'mixed saddle-point blocks ...')
     constant = [saddle_coupling(coupling, n_u)]
-    loss_parts, terms, scale_terms = [], [], []
+    loss_parts, terms = [], []
     for group, shear_matrix, pressure_mass in zip(groups, deviatoric, pressure_masses):
         index, shear, bulk = group.index, group.shear, group.bulk
         shear_block = embedded(shear_matrix, n_total)
@@ -471,10 +469,13 @@ def mixed_harmonic_operators(groups, deviatoric, coupling, pressure_masses, spac
             constant.append(-compliance.real * pressure_block)
             if compliance.imag:
                 loss_parts.append(-compliance.imag * pressure_block)
-        scale_terms.append(RowScaleTerm(np.abs(pressure_block.diagonal()), _schur_weight(group)))
+    # the pressure rows' row scale: B embedded at the pressure rows / u columns, its Schur proxy taken per frequency
+    # (frequency_response.SchurScaleTerm: a fixed modulus weight is (h / delta)^2 off in inertia-dominated cells;
+    # booked: definition_viscoelastic 'mixed Schur row scale')
+    scale_terms = (SchurScaleTerm(embedded(coupling, n_total, row_offset=n_u)),)
     return HarmonicOperators(pattern_sum(constant), pattern_sum(loss_parts) if loss_parts else None,
                              embedded(mass, n_total), free, n_total, column_map=column_map, terms=tuple(terms),
-                             scale_terms=tuple(scale_terms), pressure=space, groups=groups,
+                             scale_terms=scale_terms, pressure=space, groups=groups,
                              pressure_gauges=np.asarray(gauges, dtype=np.int64), volume_checks=volume_checks)
 
 
@@ -486,12 +487,6 @@ def _negative_compliance(law):
 def _zero_coefficient(omega) -> complex:
     """The coefficient of an incompressible group's pressure block (kept for its pattern)."""
     return 0j
-
-
-def _schur_weight(group):
-    """omega -> 1 / max(|G*_g|, tiny) + |1 / K*_g| (the Schur scale of a pressure group's rows per diag M_p,g)."""
-    shear, bulk = group.shear, group.bulk
-    return lambda omega: 1.0 / max(abs(shear.at(omega)), _TINY_MODULUS) + abs(bulk.compliance(omega))
 
 
 def _pressure_gauges(coupling, space, incompressible, pressure_free, displacement_free, prolongation,

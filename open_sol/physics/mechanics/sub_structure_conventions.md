@@ -123,8 +123,9 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   plain numbers, the solver for expressions): a spatially varying modulus is an error, not N groups.
 - Group terms are `frequency_response.FrequencyTerm`s added at fixed slots of the summed pattern per frequency (pencil
   `extra=`, host route `values[positions]`), never pencil terms of their own nor re-assembled per frequency; reduced
-  sweeps refuse any term (`_refuse_reduced`; validation V7 / V7b). A `RowScaleTerm` only enters the equilibration
-  diagonal: A, its products and residual rows stay unscaled.
+  sweeps refuse any term (`_refuse_reduced`; validation V7 / V7b). A `SchurScaleTerm` only enters the equilibration
+  diagonal: A, its products, residual rows and every solution handed out (solve, `_rows_solve`, last_solution) stay
+  unscaled.
 - `terms=()` / `scale_terms=()` stay bit-identical to the plain pencil (solid_harmonic_terms compares the bits): every
   new branch of HarmonicSystem is guarded by `self._terms` / `self._scale_terms`.
 - Every study but frequency_response reads the relaxed G0, K0 alone (V16 warns for user-set values). Shown harmonic
@@ -158,9 +159,14 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
 - The pressure display is nodal and averages the groups meeting at a node (a jump smears over one element, like
   stresses); stresses at element points take the per-zone values (`pressure_at`), so derived integrals of stresses see
   the jump.
-- Saddle-point equilibration: symmetric scaling only (R A R with d = |diag| + the RowScaleTerm Schur scale diag M_p
-  (1 / |G*| + |1 / K*|) on the pressure rows); never a row-only scale or a sign flip of the pressure rows, which would
-  break the complex symmetry cuDSS / PARDISO LDL^T and the lower-stored DevicePencil rely on.
+- Saddle-point equilibration: symmetric scaling only (R A R with d = |diag| + on the pressure rows the SchurScaleTerm
+  proxy sum_j B_pj^2 / d_j of the u diagonals, per frequency: every scaled B row has norm <= 1 whatever h or the
+  viscous / inertial balance; a fixed weight diag M_p / |G*| is ~(h / delta)^2 too large where w^2 rho h^2 dominates
+  |G*| in d_u). It reaches every back end, host SuperLU included (`scale_superlu`, the private SuperLU too; solvers sub
+  file "sparse_direct"): unscaled, SuperLU's diagonal pivot test compares u rows against p rows and loses the pressure
+  field while reactions survive (max |p| of solid_stokes_second_problem's cpu variant, the sphere pressure of
+  solid_oscillating_sphere_drag). Never a row-only scale or a sign flip of the pressure rows, which would break the
+  complex symmetry cuDSS / PARDISO LDL^T and the lower-stored DevicePencil rely on.
 
 ## Guided (2.5D) modes (`guided_modes.py`, setting axial_wavenumber)
 - Formulation (u_z = -i w, isotropic cells only): `guided_modes.py` header. The optomechanics study creates the solid

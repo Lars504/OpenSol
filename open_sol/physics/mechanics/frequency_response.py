@@ -5,10 +5,10 @@ model with precomputed record rows), the per-frequency electrode record and the 
 its BVD fit and kappa_e); host numpy (scipy inside functions)."""
 # Per-frequency terms (FrequencyTerm: coefficient(omega) X with a fixed real X, e.g. a viscoelastic modulus group) join
 # the pencil at fixed slots of its summed pattern, mapped once (factorize_pencil(extra=) on a pencil, the summed values
-# on the host route), never as pencil terms of their own (no per-term device storage) and never re-assembled. Row scale
-# terms (RowScaleTerm, e.g. the Schur scale of mixed pressure rows) only add to the diagonal d of the symmetric
-# equilibration R = d^-1/2 the factorisations apply (E = R A R, x = R E^-1 R b): A, its products and residual rows stay
-# unscaled.
+# on the host route), never as pencil terms of their own (no per-term device storage) and never re-assembled. Scale
+# terms (SchurScaleTerm: the coupling B of mixed pressure rows) only add their Schur proxy to the diagonal d of the
+# symmetric equilibration R = d^-1/2 the factorisations apply (E = R A R, x = R E^-1 R b), on every route, host SuperLU
+# included (_factorize): A, its products, residual rows and every solution handed out stay unscaled.
 # Convention exp(+j omega t) (as the EM frequency_domain study): losses enter as c -> c (1 + j eta) (mechanical loss
 # factor) and eps -> eps (1 - j tan delta) (dielectric loss tangent), so L = [[eta K_uu, 0], [0, +tan delta K_phiphi]] on
 # the coupled operator [[K_uu, K_uphi], [K_phiu, -K_phiphi]] (piezo.coupled_operator). Every load, prescribed
@@ -40,12 +40,15 @@ class FrequencyTerm:
 
 
 @dataclass(frozen=True, eq=False)
-class RowScaleTerm:
-    """Row-scale estimate only (never in A): a diagonal (n,) over every dof weighted by weight(omega) >= 0, added to the
-    equilibration diagonal of each factorisation (e.g. the Schur scale of mixed pressure rows: diag M_p,g / |G*_g| +
-    |1 / K*_g| diag M_p,g)."""
-    diagonal: np.ndarray
-    weight: Callable[[float], float]
+class SchurScaleTerm:
+    """Row-scale estimate only (never in A): the constraint block of a saddle point as a real host CSR (n, n) over every
+    dof, B at its constrained rows (the mixed pressure rows) and the columns they couple (the displacements), nothing
+    else stored. Per factorisation each constrained row i adds the diagonal Schur proxy s_i = sum_j B_ij^2 / d_j to the
+    equilibration diagonal, d_j that of its coupled free column at omega (|diag K| + omega^2 |diag M| + sum_k |c_k|
+    |diag X_k|), so every scaled row of R B R has sum_j |(R B R)_ij|^2 <= 1 whatever the mesh size, element shape or
+    the viscous / inertial balance of d_j (a fixed modulus weight such as diag M_p / |G*| matches s_i only where the
+    shear term dominates d_j: inertia-dominated cells, h >> the viscous depth, put it (h / delta)^2 too high)."""
+    coupling: object
 
 
 class HarmonicSystem:
@@ -59,8 +62,8 @@ class HarmonicSystem:
     / omega on that diagonal (a resistive electrode load, piezo.PiezoSystem). Direct solves with fields False after
     set_output_rows (no column map): x and A x only at those rows, the free solution kept (on the device after a cuDSS
     solve) for last_solution (R6). terms: FrequencyTerm list added as c_k(omega) X_k at slots of the summed pattern
-    (module header; reduced sweeps refuse them); scale_terms: RowScaleTerm list of the equilibration diagonal. Both
-    empty: exactly the pencil above."""
+    (module header; reduced sweeps refuse them); scale_terms: SchurScaleTerm list of the equilibration diagonal (also
+    applied by host SuperLU: _factorize). Both empty: exactly the pencil above."""
 
     def __init__(self, operator, loss, mass, free, column_map=None, runtime=None, previous=None, loads=(), terms=(),
                  scale_terms=()):
@@ -109,9 +112,10 @@ class HarmonicSystem:
         self._load_values = aligned.get('load')
         # |diag K|, |diag M| of the free dofs: the row scale of every cuDSS factorisation (computed once)
         self._diagonals = (np.abs(stiffness.diagonal()), np.abs(mass.diagonal()))
-        # per frequency term |diag X_k| and per row scale term its diagonal on the free dofs (equilibration)
+        # per frequency term |diag X_k| and per Schur scale term B_ij^2 on the free dofs (equilibration; booked
+        # (estimate): definition_viscoelastic 'mixed Schur row scale')
         self._term_diagonals = [np.abs(term.diagonal()) for term in self._reduced_terms]
-        self._scale_diagonals = [self._reduced_diagonal(term.diagonal) for term in self._scale_terms]
+        self._schur_squares = [_squared_entries(self._reduced_free(term.coupling)) for term in self._scale_terms]
         self._term_slots = None  # pencil route: (union slots U, [(index into U, values)] per term), mapped once
         self.runtime = runtime
         self._pencil = None      # sparse_direct DevicePencil (cuDSS) / HostPencil (MUMPS / PARDISO) of the terms, False
@@ -131,17 +135,6 @@ class HarmonicSystem:
             return None
         reduced = matrix if self.column_map is None else congruence(self.column_map, matrix)
         return reduced.tocsr()[self.free_dofs][:, self.free_dofs].tocsr()
-
-    def _reduced_diagonal(self, diagonal) -> np.ndarray:
-        """A diagonal over every dof on the free dofs (with a column map G: diag G^T D G = (G o G)^T d, the column
-        weights of that congruence)."""
-        diagonal = np.asarray(diagonal, dtype=np.float64).reshape(-1)
-        if diagonal.size != int(self.operator.shape[0]):
-            raise ValueError(f'a row scale term has {diagonal.size} values, the operator {self.operator.shape[0]} rows')
-        if self.column_map is not None:
-            column_map = self.column_map.tocsr()
-            diagonal = np.asarray(column_map.multiply(column_map).T @ diagonal).reshape(-1)
-        return diagonal[self.free_dofs]
 
     def _term_coefficients(self, omega) -> list:
         """c_k(omega) of the frequency terms (complex)."""
@@ -186,23 +179,21 @@ class HarmonicSystem:
         return applied
 
     def _equilibration_diagonal(self, omega) -> np.ndarray:
-        """d = |diag K| + omega^2 |diag M| + sum_k |c_k| |diag X_k| + sum_j weight_j D_j over the free dofs (frequency
-        or row scale terms present); ValueError naming the dofs where d <= 0 (a pressure row without a scale term)."""
+        """d = |diag K| + omega^2 |diag M| + sum_k |c_k| |diag X_k| over the free dofs, + on the constrained rows of
+        each SchurScaleTerm its proxy sum_j B_ij^2 / d_j (one product per term; frequency or scale terms present);
+        ValueError naming the dofs where d <= 0 (a pressure row coupled to no free displacement, without compliance)."""
         stiffness_diagonal, mass_diagonal = self._diagonals
         diagonal = stiffness_diagonal + (omega * omega) * mass_diagonal
         for coefficient, term_diagonal in zip(self._term_coefficients(omega), self._term_diagonals):
             diagonal = diagonal + abs(coefficient) * term_diagonal
-        for term, scale_diagonal in zip(self._scale_terms, self._scale_diagonals):
-            weight = float(term.weight(omega))
-            if not (math.isfinite(weight) and weight >= 0.0):
-                raise ValueError(f'a row scale term weighs {weight!r} at omega = {omega:.6g} rad/s (needs a finite '
-                                 'weight >= 0)')
-            diagonal = diagonal + weight * scale_diagonal
+        if self._schur_squares:   # B has no entry in a constrained column: the proxy reads the coupled columns only
+            inverse = np.divide(1.0, diagonal, out=np.zeros_like(diagonal), where=diagonal > 0.0)
+            diagonal = diagonal + sum(square @ inverse for square in self._schur_squares)
         bad = np.flatnonzero(~(diagonal > 0.0))
         if bad.size:
             raise ValueError(f'the harmonic operator has {bad.size} free row(s) without a positive equilibration '
                              f'diagonal (first free indices {bad[:5].tolist()}): a row with no stiffness, mass or scale '
-                             'term (a pressure row needs its RowScaleTerm)')
+                             'term (a pressure row needs its SchurScaleTerm and a free displacement to couple to)')
         return diagonal
 
     def _pencil_extra(self, omega):
@@ -246,14 +237,23 @@ class HarmonicSystem:
                 self._pattern.indptr, self._pattern.indices, terms, symmetric=True) or False
         # the scale of diag(K) + omega^2 diag(M) never cancels near a resonance (cuDSS equilibration)
         stiffness_diagonal, mass_diagonal = self._diagonals
-        if self._terms or self._scale_terms:   # + |c_k| |diag X_k| + the row scale terms (symmetric R A R)
-            scale = None if self.runtime is None else 1.0 / np.sqrt(self._equilibration_diagonal(omega))
+        # With pressure rows (scale terms: the mixed saddle point) host SuperLU factors R A R too (scale_superlu, the
+        # private one likewise; R the one every back end gets): its symmetric mode keeps a diagonal pivot only while
+        # |a_jj| >= the pivot threshold x its column max, a comparison across units (N/m displacement diagonals, the
+        # coupling B in m^2 in 3D, the pressure diagonal in m^3/Pa) that is meaningless unscaled
+        # (examples/mechanics/bead_drag_water_frequency_response: 8915 row swaps, fill 105x, 53 s per factor, backward
+        # error 1.7e-7; scaled: fill 5.2x, 0.37 s, 3.6e-16). Rows of one unit (every other system) keep SuperLU
+        # unscaled, bit-identical.
+        saddle = bool(self._scale_terms)
+        if self._terms or saddle:   # + |c_k| |diag X_k| + the Schur proxy of the pressure rows (symmetric R A R)
+            scale = (None if self.runtime is None and not saddle
+                     else 1.0 / np.sqrt(self._equilibration_diagonal(omega)))
         else:
             scale = None if self.runtime is None else 1.0 / np.sqrt(stiffness_diagonal + (omega * omega) * mass_diagonal)
         if self._pencil:   # cuDSS: values on the device; MUMPS / PARDISO: host values on the kept analysis
             extra = self._pencil_extra(omega) if self._terms else None
             self.factor = self.runtime.factorize_pencil(self._pencil, coefficients, row_scale=scale,
-                                                        previous=self.factor, extra=extra)
+                                                        previous=self.factor, extra=extra, scale_superlu=saddle)
         else:
             values = self._fixed_values - (omega * omega) * self._mass_values
             if self._load_values is not None:
@@ -262,11 +262,11 @@ class HarmonicSystem:
                 values[positions] += coefficient * term_values   # unique positions within a term
             matrix = scipy.sparse.csr_matrix((values, self._pattern.indices, self._pattern.indptr),
                                              shape=self._pattern.shape)
-            if self.runtime is None:
-                self.factor = factorize_host(matrix)
+            if self.runtime is None:   # the private SuperLU: scaled with pressure rows only
+                self.factor = factorize_host(matrix, row_scale=scale)
             else:
                 self.factor = self.runtime.factorize_host(matrix, symmetric=True, row_scale=scale,
-                                                          previous=self.factor)
+                                                          previous=self.factor, scale_superlu=saddle)
         self.factorizations += 1
         return self.factor
 
@@ -465,6 +465,13 @@ class HarmonicSystem:
         if product_at_rows and self._rows is not None:
             return solution, self._rows.evaluate(omega, coordinates)[1]
         return solution, self._product(omega, solution)
+
+
+def _squared_entries(matrix):
+    """The CSR of |m_ij|^2 on a CSR's pattern, its data replaced in place (pass a matrix no one else holds)."""
+    squared = matrix.tocsr()
+    squared.data = np.abs(squared.data) ** 2
+    return squared
 
 
 def _real_times(matrix, vector):
