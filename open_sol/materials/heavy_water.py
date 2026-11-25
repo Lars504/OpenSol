@@ -14,7 +14,9 @@ HEAVY_WATER = Material(
     fluid=dict(viscosity=1.25e-3),
     description='Heavy water (D2O) at 20 C, n = 1.3170, its absorption (extinction 4.47e-6, ~0.36 /cm) as sigma_e '
                 '(an optical loss proxy valid near 1.55 um only, as water). dndT is estimated from water; alpha = 0 '
-                'as water.',
+                'as water. viscosity also makes it an incompressible liquid of the solid types with formulation mixed '
+                '(frequency_response); set bulk_modulus for compressibility (no bulk modulus here: the displacement '
+                'formulation leaves it void).',
     summary='Heavy water at 1550 nm and 20 degrees Celsius: refractive index 1.317, with its weak absorption.\n\n'
             'The optical values hold only near 1550 nm.',
 )

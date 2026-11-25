@@ -34,7 +34,8 @@ from ...solvers.host_direct import (HOST_DIRECT_BACK_ENDS, double_of, factor_lab
                                     solver_host_bytes, superlu_bytes_scale)
 from ...solvers.pcg import workspace_bytes
 from ...solvers.sparse_direct import CUDSS_BACK_ENDS, SPLU_3D_LIMIT_UNKNOWNS, SPLU_3D_WARN_UNKNOWNS
-from .definition_common import (DENSITY_PARAM, EIGENFREQUENCY_STUDY, ELECTRODE_CONNECTION_HELP,
+from .definition_common import (DENSITY_PARAM, EIGENFREQUENCY_STUDY, ELECTRODE_CONNECTION_HELP, FORMULATION_PARAM,
+                                VISCOELASTIC_PROPERTIES, mixed_formulation,
                                 ELECTRODE_VOLTAGE_HELP, GEOMETRIC_NONLINEARITY_PARAMS, INITIAL_STRESS_PROPERTIES_3D,
                                 LOSS_PROPERTIES, MATERIAL_PROPERTIES, MODAL_STUDIES, PIEZO_MATERIAL_PROPERTIES_3D,
                                 ROLLER_FEATURES, STIFFNESS_TENSOR_PROPERTIES_3D, STRESS_STIFFENING_PARAM,
@@ -51,11 +52,14 @@ from .definition_common import (DENSITY_PARAM, EIGENFREQUENCY_STUDY, ELECTRODE_C
                                 stiffness_follows_state, support_holders, support_result, symmetry_issues,
                                 thermoelastic_damping_feature, union_masks)
 from .definition_frequency_response import ADMITTANCE_FEATURE, FREQUENCY_RESPONSE_STUDY, frequency_response_issues
+from .definition_viscoelastic import viscoelastic_issues
 from .definition_optomechanics import OPTOMECHANICAL_COUPLING_FEATURE, OPTOMECHANICS_STUDY
 from .fields3d import (ELECTRIC_OUTPUT_ARRAYS_3D, ENERGY_OUTPUT_ARRAYS_3D, HARMONIC_IMAG_FIELDS_3D, INPUT_ARRAYS_3D,
+                       PRESSURE_FIELDS_3D,
                        OUTPUT_ARRAYS_3D)
 from .materials import (DENSITY_SCHEMA, LOSS_ARRAYS, MECHANICAL_SCHEMA, OPTIONAL_LOSS_SCHEMA, OPTIONAL_PIEZO_SCHEMA_3D,
                         OPTIONAL_PRESTRESS_SCHEMA_3D, OPTIONAL_STIFFNESS_SCHEMA_3D, OPTIONAL_TED_SCHEMA,
+                        OPTIONAL_VISCOELASTIC_SCHEMA,
                         PIEZO_DEFAULTS_3D, PIEZO_TENSOR_ARRAYS_3D, SOLVER_PRECISIONS, STIFFNESS_TENSOR_ARRAYS_3D)
 from .modal import EXTRA_EIGENVALUES, LANCZOS_TOLERANCE_PER_CG, modal_table_result
 from .multigrid3d import (CHEBYSHEV_DEGREE, POWER_ITERATIONS, block_cycle_bytes, coarsest_host_bytes,
@@ -973,7 +977,7 @@ def _validate_solid_3d(vctx, physics_spec, settings_values):
     if not tetrahedra:
         issues.extend(Issue('error', path, f"stored field '{physics_spec.name}.{name}' exists on a tetrahedron mesh "
                                            'only (the rectangular-cell solid has no frequency response)')
-                      for name in HARMONIC_IMAG_FIELDS_3D
+                      for name in HARMONIC_IMAG_FIELDS_3D + PRESSURE_FIELDS_3D
                       if f'{physics_spec.name}.{name}' in (vctx.spec.study.stored_fields or []))
     return issues
 
@@ -999,13 +1003,15 @@ def _validate_solid_3d_rules(vctx, physics_spec, settings_values, path, tetrahed
     else:
         issues.extend(_tensor_issues(vctx, physics_spec, settings_values, path))
         element_name = 'trilinear'
-    issues.extend(material_issues(vctx, physics_spec, path, SOLID_3D_TYPE_NAME, element_name, tensor=tetrahedra))
+    issues.extend(material_issues(vctx, physics_spec, path, SOLID_3D_TYPE_NAME, element_name, tensor=tetrahedra,
+                                  fluid=mixed_formulation(vctx, settings_values)))
     issues.extend(modal_study_issues(vctx, physics_spec, path, MODAL_STUDIES, THERMAL_STRAIN_COUPLING,
                                      tensor=tetrahedra,
                                      stress_stiffening=bool(settings_values.get('stress_stiffening')
                                                             or (tetrahedra
                                                                 and settings_values.get('geometric_nonlinearity')))))
     issues.extend(frequency_response_issues(vctx, physics_spec, settings_values, path, THERMAL_STRAIN_COUPLING))
+    issues.extend(viscoelastic_issues(vctx, physics_spec, settings_values, path, tetrahedra, 3))
     issues.extend(eigen_search_issues(vctx, path, bool(settings_values.get('piezoelectric')),
                                       tensor_mesh_3d=not tetrahedra))
     return issues
@@ -1035,7 +1041,8 @@ def _create_solid_3d(ctx, physics_spec, values):
                                           load_steps=values['load_steps'],
                                           nonlinear_tolerance=values['nonlinear_tolerance'],
                                           nonlinear_max_iterations=values['nonlinear_max_iterations'],
-                                          tangent_update=values['tangent_update'])
+                                          tangent_update=values['tangent_update'],
+                                          formulation=values['formulation'])
     from .solver3d import SolidMechanics3DPhysics   # lazy: the solver imports cupy
     return SolidMechanics3DPhysics(ctx.domain, linear_solver=solid_linear_solver(ctx, physics_spec),
                                    eigen_solver=ctx.solvers(physics_spec.name).get('eigen'))
@@ -2098,18 +2105,23 @@ SOLID_MECHANICS_3D = PhysicsType(
                 'mode labelled "resonance k: f = <Hz> Hz", shape scaled to a peak node |u| of 1 m (no thermal part, no '
                 'support reactions), listed by resonance_table; frequency_response: (K (1 + j eta) - omega^2 M) u = f '
                 'per frequency (loads, prescribed displacements and electrode voltages are phase-0 amplitudes; '
-                'thermal loads static), one snapshot per frequency (real parts, u_abs = |u|); optomechanics: '
+                'thermal loads static), one snapshot per frequency (real parts, u_abs = |u|; tetrahedra: the shown '
+                'stresses are Re(C*(omega) eps(u)), the loss part included, with pressure / pressure_im = -tr(sigma*) '
+                '/ 3 in Pa; tetrahedra also take the shear_modulus / bulk_modulus route, viscoelastic moduli '
+                '(viscosity, relaxation branches: see shear_relaxation_modulus_1; sweep_method direct only) and the '
+                'setting formulation); optomechanics: '
                 'em_fdfd_bor optics, optomechanical_coupling samples the modes on rings about the BOR axis '
                 '(piezoelectric and periodic axes off). The strain-optic and optical-force couplings are 2D only.',
-    settings=(DISCRETIZATION_PARAM, _TARGET_FREQUENCY_PARAM, STRESS_STIFFENING_PARAM, *GEOMETRIC_NONLINEARITY_PARAMS,
-              _PIEZOELECTRIC_PARAM, _ELECTRODE_EDGE_SIZE_PARAM, *_periodic_params(), *_pml_params()),
+    settings=(DISCRETIZATION_PARAM, FORMULATION_PARAM, _TARGET_FREQUENCY_PARAM, STRESS_STIFFENING_PARAM,
+              *GEOMETRIC_NONLINEARITY_PARAMS, _PIEZOELECTRIC_PARAM, _ELECTRODE_EDGE_SIZE_PARAM, *_periodic_params(),
+              *_pml_params()),
     features=_FEATURES,
     material_properties=(MATERIAL_PROPERTIES + (DENSITY_PARAM,) + STIFFNESS_TENSOR_PROPERTIES_3D
-                         + PIEZO_MATERIAL_PROPERTIES_3D + LOSS_PROPERTIES + INITIAL_STRESS_PROPERTIES_3D
-                         + TED_MATERIAL_PROPERTIES),
+                         + PIEZO_MATERIAL_PROPERTIES_3D + LOSS_PROPERTIES + VISCOELASTIC_PROPERTIES
+                         + INITIAL_STRESS_PROPERTIES_3D + TED_MATERIAL_PROPERTIES),
     material_schema={**MECHANICAL_SCHEMA, **DENSITY_SCHEMA},
     optional_material_schema={**OPTIONAL_STIFFNESS_SCHEMA_3D, **OPTIONAL_PIEZO_SCHEMA_3D, **OPTIONAL_LOSS_SCHEMA,
-                              **OPTIONAL_PRESTRESS_SCHEMA_3D, **OPTIONAL_TED_SCHEMA},
+                              **OPTIONAL_VISCOELASTIC_SCHEMA, **OPTIONAL_PRESTRESS_SCHEMA_3D, **OPTIONAL_TED_SCHEMA},
     state_fields=_STATE_FIELD_INFOS,
     output_fields=_FIELD_INFOS,
     source_slots=_SLOT_DOCS,

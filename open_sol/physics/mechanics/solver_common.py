@@ -323,14 +323,42 @@ class FEMSolidCommon(HostInputCache):
         density = host_array(self.domain.materials.rho)
         massless = self._solid & ~(density > 0.0)
         if massless.any():
-            raise ValueError(f'{self._label()}: {int(massless.sum())} solid element(s) (youngs_modulus or c11 > 0) have '
-                             f'no density rho > 0: {study} needs the mass of every solid element')
+            raise ValueError(f'{self._label()}: {int(massless.sum())} solid element(s) (youngs_modulus, c11 or a shear '
+                             f'/ bulk modulus > 0; liquids in the mixed formulation) have no density rho > 0: {study} '
+                             'needs the mass of every solid element')
         return np.where(self._solid, density, 0.0)
 
     def _temperature_change(self):
         """Host dT [K] per element: coupled temperature_rise + applied temperature_rise_ext (cached, read-only)."""
         return self._host_input('temperature_change', lambda: host_array(self.fields.temperature_rise)
                                 + host_array(self.fields.temperature_rise_ext))
+
+
+@dataclass(frozen=True, eq=False)
+class HarmonicOperators:
+    """Host pieces of the frequency-response pencil of one assembly (the FEM solids' _build_harmonic_operators):
+    `operator` the constant real part beyond the system K (None = the solver's pencil stiffness _pencil_stiffness;
+    mixed, Phase B: K_c + the saddle coupling + constant pressure blocks), `loss` (or None), `mass`, `terms`
+    (frequency_response.FrequencyTerm), `scale_terms` (RowScaleTerm), `n_unknowns` (rows of the full vector: c n_u
+    (+ n_p mixed)), `pressure` (the mixed PressureSpace, or None), `free` (bool over the unknowns, or over the columns
+    of column_map) and `column_map` (None, the m = 1 axis ties, mixed: ties (+) pressure selection), `groups` the
+    viscoelastic.ViscoelasticGroup of the terms (summary)."""
+    operator: object
+    loss: object
+    mass: object
+    free: object
+    n_unknowns: int
+    column_map: object = None
+    terms: tuple = ()
+    scale_terms: tuple = ()
+    pressure: object = None
+    groups: tuple = ()
+
+    def summary(self) -> str:
+        """'' or '; viscoelastic: N group(s), M frequency term(s)'."""
+        if not self.terms:
+            return ''
+        return f'; viscoelastic: {len(self.groups)} group(s), {len(self.terms)} frequency term(s)'
 
 
 @dataclass(frozen=True, eq=False)

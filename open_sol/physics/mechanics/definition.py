@@ -28,7 +28,7 @@ from ...model.definition_helpers import (AXISYMMETRIC_SPACE_SETTINGS, AZIMUTHAL_
                                          on_triangles, own_mirror_face_conflicts, point_cells,
                                          reduced_sweep_memory_items,
                                          reduced_sweep_time_items, validate_points_inside)
-from ...model.geometry import expand_entities, line_orientation
+from ...model.geometry import bounding_box, expand_entities, line_orientation
 from ...model.schema import (STATIONARY_STUDY, TIME_DEPENDENT_STUDY, CouplingType, DomainRequirements, FeatureType,
                              Issue, Param, PhysicsType, SolverRole, feature_path, solver_backend)
 from ...solvers.arpack_shift_invert import CUDSS_FACTORIZATIONS, LANCZOS_APPLICATIONS_PER_BASIS, arnoldi_basis_size
@@ -41,7 +41,8 @@ from .definition_bloch2d import (BAND_TEMPLATE_2D, bloch_issues_2d, complex_bloc
                                 periodic_params_2d, solver_periodic_arguments, static_periodic_cell,
                                 trivial_bloch_phase_2d)
 from .definition_common import (DENSITY_PARAM, EIGENFREQUENCY_STUDY, ELECTRODE_CONNECTION_HELP,
-                                ELECTRODE_VOLTAGE_HELP, GEOMETRIC_NONLINEARITY_PARAMS, INITIAL_STRESS_PROPERTIES,
+                                ELECTRODE_VOLTAGE_HELP, FORMULATION_PARAM, GEOMETRIC_NONLINEARITY_PARAMS,
+                                INITIAL_STRESS_PROPERTIES, VISCOELASTIC_PROPERTIES, mixed_formulation,
                                 LOSS_PROPERTIES, MATERIAL_PROPERTIES, MODAL_STUDIES, PHOTOELASTIC_P44_PARAM,
                                 PIEZO_MATERIAL_PROPERTIES, ROLLER_FEATURES, STIFFNESS_TENSOR_PROPERTIES,
                                 STRESS_STIFFENING_PARAM, SUPPORT_FEATURES, SYMMETRY_FEATURE, SYMMETRY_HELP,
@@ -57,9 +58,12 @@ from .definition_common import (DENSITY_PARAM, EIGENFREQUENCY_STUDY, ELECTRODE_C
                                 thermoelastic_damping_feature, union_masks)
 from .definition_frequency_response import (ADMITTANCE_FEATURE, FREQUENCY_RESPONSE_STUDY, anisotropy_issues,
                                             frequency_response_host_items, frequency_response_issues)
-from .fields import ENERGY_DENSITY_FIELDS, HARMONIC_IMAG_FIELDS, INPUT_ARRAYS, OUTPUT_ARRAYS
+from .definition_viscoelastic import viscoelastic_issues
+from .fields import (AZIMUTHAL_IMAG_FIELDS, ENERGY_DENSITY_FIELDS, HARMONIC_IMAG_FIELDS, INPUT_ARRAYS, OUTPUT_ARRAYS,
+                     PRESSURE_FIELDS)
 from .generalized_plane_strain import BENDING_CHOICES, BENDING_TERMS
 from .materials import (DENSITY_SCHEMA, LOSS_ARRAYS, MECHANICAL_SCHEMA, OPTIONAL_LOSS_SCHEMA, OPTIONAL_PIEZO_SCHEMA,
+                        OPTIONAL_VISCOELASTIC_SCHEMA,
                         OPTIONAL_PRESTRESS_SCHEMA, OPTIONAL_STIFFNESS_SCHEMA, OPTIONAL_TED_SCHEMA, PIEZO_ARRAYS,
                         PIEZO_DEFAULTS,
                         PRESTRESS_ARRAYS, SHEAR_PHOTOELASTIC_SCHEMA, SOLVER_PRECISIONS, STIFFNESS_TENSOR_ARRAYS)
@@ -88,8 +92,11 @@ HEAT_TYPE_NAME = 'heat'
 _FDFD_EZ_TYPE_NAME = 'em_fdfd_ez'        # source of the optical force (E_z phasor)
 _CROSS_SECTION_EM_TYPE = 'em_modes'      # the EM type whose xy plane is a cross-section like the solid's
 _COMPONENT_NAMES = ('x', 'y')
+_HELD_COMPONENT_NAMES = ('x', 'y', 'z')   # held components of the displacement features (z: U_phi, m >= 1)
 _TRIANGLES = 'triangles'
-_PLANE_DISPLACEMENTS = ('u_x', 'u_y')   # load / held value names (follow_load / follow_held_values)
+# held value names (follow_held_values): u_z = U_phi of an azimuthal order (the displacement features' u_z)
+_HELD_DISPLACEMENTS = ('u_x', 'u_y', 'u_z')
+_AZIMUTHAL_LOAD_FEATURES = ('boundary_load', 'segment_load', 'body_force')   # refused in a frequency response at m >= 1
 _PLANE_TRACTIONS = ('t_x', 't_y')
 _PLANE_BODY_FORCES = ('f_x', 'f_y')
 _BOTH_GRIDS = ('tensor', _TRIANGLES)   # features the triangle solid (solver_fem) runs too
@@ -300,8 +307,15 @@ _SUPPORT_RESULT_TEXT = (
     'solid, sum of K u - f over its held dofs (0 for unheld components; a dof held by two supports counts in both, the '
     'later value holds it); N/m per m of depth, N with the thickness setting or axisymmetric (whole ring). After a '
     'frequency_response on triangles: the complex reaction per frequency instead (columns frequency, F_x_re, F_x_im, '
-    'F_y_re, F_y_im).')
+    'F_y_re, F_y_im); at azimuthal_order 1 F_x = sum R_r - sum R_phi is the net force along x (phi = 0) of the cos '
+    'phi / sin phi tractions and F_y = 0, at m >= 2 both 0 (no net force).')
 _SUPPORT_RESULT_REF = 'Result: the reaction table, as fixed.'
+# the displacement features' U_phi of an azimuthal order (triangles; validation refuses it at m = 0)
+_U_PHI_PARAM = replace(
+    displacement_param('u_z', 'phi'),
+    help='azimuthal_order m >= 1 only: the amplitude U_phi of u_phi = U_phi sin(m phi) (field u_z); a rigid sideways '
+         'translation by X along x (phi = 0) is u_x = X, u_z = -X at m = 1. Empty leaves it free.',
+    tip='Only with an azimuthal order of 1 or more: the displacement around the axis. Empty leaves it free.')
 _FACE_ONLY_TEXT = 'Outer faces only (on an object boundary use Fixed (domain)); every node of the face, corners included.'
 
 
@@ -325,10 +339,11 @@ def _apply_roller(ctx, solver, feature_spec, values, selection):
 
 
 def _apply_displacement(ctx, solver, feature_spec, values, selection):
-    """Prescribed u_x and / or u_y (None = free) on the selected outer faces; the held values follow a reused sweep
-    build (triangle meshes)."""
-    held = union_masks([solver.hold_face(face, values['u_x'], values['u_y']) for face in selection.outer_faces])
-    follow_held_values(ctx, solver, feature_spec, values, _PLANE_DISPLACEMENTS, held)
+    """Prescribed u_x and / or u_y (None = free; u_z = U_phi of an azimuthal order m >= 1, validated) on the selected
+    outer faces; the held values follow a reused sweep build (triangle meshes)."""
+    held = union_masks([solver.hold_face(face, values['u_x'], values['u_y'], u_z=values['u_z'])
+                        for face in selection.outer_faces])
+    follow_held_values(ctx, solver, feature_spec, values, _HELD_DISPLACEMENTS, held)
     return _support(solver, feature_spec, held)
 
 
@@ -338,10 +353,11 @@ def _apply_fixed_domain(ctx, solver, feature_spec, values, selection):
 
 
 def _apply_prescribed_displacement_domain(ctx, solver, feature_spec, values, selection):
-    """Prescribed u_x / u_y (None = free) on every dof of the selected elements (triangle meshes; u_phi of an azimuthal
-    order stays free); the held values follow a reused sweep build."""
-    held = solver.hold_cells(ctx.domain_mask(selection.entities), u_x=values['u_x'], u_y=values['u_y'], u_z=None)
-    follow_held_values(ctx, solver, feature_spec, values, _PLANE_DISPLACEMENTS, held)
+    """Prescribed u_x / u_y (None = free) on every dof of the selected elements (triangle meshes; u_z = U_phi of an
+    azimuthal order m >= 1, None = free); the held values follow a reused sweep build."""
+    held = solver.hold_cells(ctx.domain_mask(selection.entities), u_x=values['u_x'], u_y=values['u_y'],
+                             u_z=values['u_z'])
+    follow_held_values(ctx, solver, feature_spec, values, _HELD_DISPLACEMENTS, held)
     return _support(solver, feature_spec, held)
 
 
@@ -461,11 +477,34 @@ def _support_result(session, solver, region, feature_spec, options):
 
 # ---- validation helpers (CPU only) ----
 def _validate_displacement(vctx, physics_spec, feature_spec, values):
-    if values.get('u_x') is None and values.get('u_y') is None:
-        return [Issue('error', feature_path(physics_spec, feature_spec),
-                      'sets neither u_x nor u_y, so it holds nothing: set at least one (empty leaves a direction '
-                      'free)')]
-    return []
+    """Errors for no held component and for u_z (U_phi) outside an azimuthal order m >= 1; at m = 1 a warning for a
+    domain touching the axis (r = 0) that prescribes u_x without u_z = -u_x (the axis tie keeps U_phi = -U_r there)."""
+    path = feature_path(physics_spec, feature_spec)
+    if all(values.get(name) is None for name in _HELD_DISPLACEMENTS):
+        return [Issue('error', path, 'sets none of u_x, u_y (u_z), so it holds nothing: set at least one (empty leaves '
+                                     'a direction free)')]
+    settings = vctx.values(SOLID_MECHANICS.settings, physics_spec.settings) or {}
+    order = _azimuthal_order(settings) if on_triangles(vctx, physics_spec) else 0
+    issues = []
+    if values.get('u_z') is not None and not order:
+        issues.append(Issue('error', path, 'u_z is the U_phi amplitude of an azimuthal_order m >= 1 (geometry '
+                                           'axisymmetric, triangle mesh): leave it empty here'))
+    u_x, u_z = values.get('u_x'), values.get('u_z')
+    if order == 1 and feature_spec.type == 'prescribed_displacement_domain' and u_x is not None:
+        plain_x = u_x if isinstance(u_x, (int, float)) else None
+        tied = u_z is not None and plain_x is not None and isinstance(u_z, (int, float)) and u_z == -plain_x
+        tolerance = 1e-9 * max(vctx.domain_size or (1.0,))
+        touches_axis = False
+        for name in vctx.objects(feature_spec.selection):
+            try:
+                touches_axis = touches_axis or bounding_box(name, vctx.shapes)[0] <= tolerance
+            except (KeyError, ValueError, TypeError):   # an unresolved object: reported elsewhere
+                continue
+        if touches_axis and not tied and plain_x != 0.0:
+            issues.append(Issue('warning', path, 'azimuthal_order 1: this domain touches the axis (r = 0), where '
+                                                 'U_phi = -U_r is tied (an unheld U_phi of an axis node is held at 0); '
+                                                 'a rigid sideways translation X along x is u_x = X with u_z = -X'))
+    return issues
 
 
 _FACE_FEATURES = ('fixed', 'roller', 'displacement', 'boundary_load', 'electrode')   # act on selected outer faces
@@ -540,7 +579,7 @@ def _held_components(vctx, feature):
         return [('domain', 'x'), ('domain', 'y')]
     if feature.type == 'prescribed_displacement_domain':
         values = vctx.values(SOLID_MECHANICS.feature_type(feature.type).params, feature.params)
-        return [] if values is None else [('domain', component) for component in _COMPONENT_NAMES
+        return [] if values is None else [('domain', component) for component in _HELD_COMPONENT_NAMES
                                           if values[f'u_{component}'] is not None]
     try:
         faces = [entity for entity in expand_entities(vctx.spec, feature.selection) if entity in FACES]
@@ -555,7 +594,7 @@ def _held_components(vctx, feature):
     values = vctx.values(SOLID_MECHANICS.feature_type('displacement').params, feature.params)
     if values is None:
         return []
-    return [(face, component) for face in faces for component in _COMPONENT_NAMES
+    return [(face, component) for face in faces for component in _HELD_COMPONENT_NAMES
             if values[f'u_{component}'] is not None]
 
 
@@ -570,6 +609,8 @@ def _support_issues(vctx, physics_spec, path, axial_wavenumber=None, guided_by_s
     held_directions = {component for _, component in holders}
     if axisymmetric:
         held_directions.add('x')   # u_r = 0 on the axis; a radial translation strains the hoop, so it is no rigid mode
+    # the in-plane directions no support holds (a held z = U_phi of an azimuthal order stops no in-plane translation)
+    unheld = [component for component in _COMPONENT_NAMES if component not in held_directions]
     issues = []
     if axial_wavenumber == 0.0 and not held_elsewhere and not any(feature.enabled and feature.type in
                                                                   ('fixed', 'fixed_domain')
@@ -581,21 +622,21 @@ def _support_issues(vctx, physics_spec, path, axial_wavenumber=None, guided_by_s
     # guided k_z > 0 (backward Brillouin: 2 Re beta > 0): no rigid motion
     supports_optional = (guided_by_study or (axial_wavenumber is not None and axial_wavenumber > 0.0)
                          or held_elsewhere)
-    if free_body and held_directions != set(_COMPONENT_NAMES) and not held_elsewhere:
-        free = [component for component in _COMPONENT_NAMES if component not in held_directions]
+    if free_body and unheld and not held_elsewhere:
+        free = unheld
         consequence = ('regular at every frequency > 0 (its rigid motion follows the drive as a mass)'
                        if vctx.study_type == FREQUENCY_RESPONSE_STUDY else
                        'its rigid-body modes (0 Hz, below 1e-4 x target_frequency) are dropped')
         issues.append(Issue('info', path, f"no support holds u_{', u_'.join(free)}: a free body, {consequence}"))
         supports_optional = True
-    if not held_directions and not supports_optional:
+    if len(unheld) == len(_COMPONENT_NAMES) and not supports_optional:
         issues.append(Issue('error', path,
                             'a static or modal solve needs supports: add Fixed, Roller or Displacement on outer faces or '
                             'a Fixed '
                             '(domain) region (otherwise the solid can move as a rigid body and the system is '
                             'singular)'))
-    elif held_directions != set(_COMPONENT_NAMES) and not supports_optional:
-        free = next(component for component in _COMPONENT_NAMES if component not in held_directions)
+    elif unheld and not supports_optional:
+        free = unheld[0]
         issues.append(Issue('error', path,
                             f'no support holds u_{free}, so the solid can slide along {free}: add a Roller on a '
                             f"{free}_lo / {free}_hi face, a Fixed face or a Displacement with u_{free} set"))
@@ -789,7 +830,9 @@ def _anisotropic_materials(vctx) -> list:
 
 def _azimuthal_issues(vctx, physics_spec, settings_values, path, triangles):
     """azimuthal_order m >= 1: the shared rules (azimuthal_order_issues), then errors on a rectangular-cell mesh,
-    outside the eigenfrequency / optomechanics studies and per material with c_ij entries (isotropic only)."""
+    outside the eigenfrequency / optomechanics / frequency_response studies, per material with c_ij entries (isotropic
+    only) and, in a frequency response, per enabled load feature and coupling into the solid (cos(m phi) loads are not
+    modelled: prescribed displacements drive)."""
     issues = azimuthal_order_issues(vctx, physics_spec, path, settings_values)
     order = _azimuthal_order(settings_values)
     if not order:
@@ -798,10 +841,21 @@ def _azimuthal_issues(vctx, physics_spec, settings_values, path, triangles):
         issues.append(Issue('error', path, f"azimuthal_order {order} needs a triangle mesh (MeshSpec kind 'triangles'): "
                                            'the rectangular-cell solid solves m = 0 only'))
         return issues
-    if vctx.study_type not in MODAL_STUDIES:
-        issues.append(Issue('error', path, f"azimuthal_order {order} is solved by the {' / '.join(MODAL_STUDIES)} "
+    allowed = MODAL_STUDIES + (FREQUENCY_RESPONSE_STUDY,)
+    if vctx.study_type not in allowed:
+        issues.append(Issue('error', path, f"azimuthal_order {order} is solved by the {' / '.join(allowed)} "
                                            f'studies only (the {vctx.study_type} study would need cos(m phi) loads): '
                                            'set it to 0'))
+    if vctx.study_type == FREQUENCY_RESPONSE_STUDY:
+        loads = f'azimuthal_order {order}: cos(m phi) loads are not modelled, drive by prescribed displacements'
+        issues.extend(Issue('error', feature_path(physics_spec, feature), f'{loads} ({feature.type})')
+                      for feature in physics_spec.features
+                      if feature.enabled and feature.type in _AZIMUTHAL_LOAD_FEATURES)
+        issues.extend(Issue('error', ('coupling', coupling.name), f'{loads} (a coupled body force from '
+                                                                  f"'{coupling.source}')")
+                      for coupling in vctx.spec.couplings
+                      if coupling.enabled and coupling.target == physics_spec.name
+                      and coupling.type != THERMAL_STRAIN_COUPLING)
     issues.extend(Issue('error', ('material', name),
                         f"material '{name}' sets c_ij entries (or a crystal entry): azimuthal_order {order} takes "
                         'isotropic youngs_modulus / poisson_ratio only (the r-phi and z-phi shear moduli are not part of '
@@ -883,7 +937,7 @@ def _validate_solid(vctx, physics_spec, settings_values):
     if not triangles:
         issues.extend(Issue('error', path, f"stored field '{physics_spec.name}.{name}' exists on a triangle mesh only "
                                            '(the rectangular-cell solid stores the real parts and u_abs)')
-                      for name in HARMONIC_IMAG_FIELDS
+                      for name in HARMONIC_IMAG_FIELDS + AZIMUTHAL_IMAG_FIELDS + PRESSURE_FIELDS
                       if f'{physics_spec.name}.{name}' in (vctx.spec.study.stored_fields or []))
     if axial_wavenumber is not None and vctx.study_type != EIGENFREQUENCY_STUDY:
         if vctx.study_type == OPTOMECHANICS_STUDY:
@@ -912,7 +966,8 @@ def _validate_solid(vctx, physics_spec, settings_values):
         issues.extend(cg_solver_issues(vctx, physics_spec, path))
         issues.extend(_tensor_probe_issues(physics_spec))
         element_name = 'bilinear'
-    issues.extend(material_issues(vctx, physics_spec, path, SOLID_TYPE_NAME, element_name, tensor=True))
+    issues.extend(material_issues(vctx, physics_spec, path, SOLID_TYPE_NAME, element_name, tensor=True,
+                                  fluid=mixed_formulation(vctx, settings_values)))
     issues.extend(modal_study_issues(vctx, physics_spec, path, MODAL_STUDIES, THERMAL_STRAIN_COUPLING, tensor=True,
                                      stress_stiffening=bool(settings_values.get('stress_stiffening')
                                                             or (triangles
@@ -922,6 +977,7 @@ def _validate_solid(vctx, physics_spec, settings_values):
     issues.extend(anisotropy_issues(vctx, physics_spec, settings_values, path,
                                     guided=axial_wavenumber is not None or guided_by_study))
     issues.extend(frequency_response_issues(vctx, physics_spec, settings_values, path, THERMAL_STRAIN_COUPLING))
+    issues.extend(viscoelastic_issues(vctx, physics_spec, settings_values, path, triangles, 2))
     return issues
 
 
@@ -949,7 +1005,7 @@ def _create_solid(ctx, physics_spec, values):
                                         load_steps=values['load_steps'],
                                         nonlinear_tolerance=values['nonlinear_tolerance'],
                                         nonlinear_max_iterations=values['nonlinear_max_iterations'],
-                                        tangent_update=values['tangent_update'],
+                                        tangent_update=values['tangent_update'], formulation=values['formulation'],
                                         **solver_periodic_arguments(values))
     study = solid_study(ctx.spec, physics_spec.name)   # a background solid of solved_physics: 'stationary'
     guided = values['axial_wavenumber'] if study == EIGENFREQUENCY_STUDY else None
@@ -1826,6 +1882,9 @@ _ELECTRODE_TEXT = (
     'Piezoelectric only (else ignored, validation warning): one equipotential, connection voltage or floating. Two '
     'electrodes must not share a node (adjacent faces share a corner: build error; select both in one feature). Its '
     'nodes keep their supports and loads (a thin film without stiffness).')
+_FREQUENCY_PROBE_BASE = frequency_probe_feature(_apply_frequency_probe, ('u_x', 'u_y'), (_TRIANGLES,))
+_FREQUENCY_PROBE_2D = replace(_FREQUENCY_PROBE_BASE, description=_FREQUENCY_PROBE_BASE.description
+                              + ' azimuthal_order m >= 1: also u_z (the U_phi amplitude), same series.')
 
 
 # ---- type ----
@@ -1867,12 +1926,13 @@ _FEATURES = (
                             + f' {_SUPPORT_RESULT_TEXT}',
                 apply=_apply_roller, result=_support_result, validate=_validate_symmetry, grids=_BOTH_GRIDS),
     FeatureType('displacement', 'Displacement', 'boundary_condition', 'boundary', allow_interior=False,
-                params=following((displacement_param('u_x', 'x'), displacement_param('u_y', 'y'))),
+                params=following((displacement_param('u_x', 'x'), displacement_param('u_y', 'y'), _U_PHI_PARAM)),
                 result_kind='table',
                 summary='Moves the selected domain edges by a given displacement, for example to stretch a sample.',
-                description='Prescribed u_x and / or u_y; an empty component stays free (both empty: validation '
-                            'error; u_z of guided modes free). A later support on the same component sets its value '
-                            f'(warning). {_FACE_ONLY_TEXT} {_SUPPORT_RESULT_REF}',
+                description='Prescribed u_x and / or u_y (and u_z = U_phi of an azimuthal_order m >= 1); an empty '
+                            'component stays free (all empty: validation error; u_z of guided modes free). A later '
+                            f'support on the same component sets its value (warning). {_FACE_ONLY_TEXT} '
+                            f'{_SUPPORT_RESULT_REF}',
                 apply=_apply_displacement, result=_support_result, validate=_validate_displacement,
                 grids=_BOTH_GRIDS),
     FeatureType('fixed_domain', 'Fixed (domain)', 'domain_condition', 'domain', result_kind='table',
@@ -1885,12 +1945,13 @@ _FEATURES = (
                 params=following(tuple(replace(displacement_param(f'u_{axis}', axis),
                                                tip=f'Displacement along {axis} the selected domains are held at; empty '
                                                    'leaves this direction free.')
-                                       for axis in _COMPONENT_NAMES)),
+                                       for axis in _COMPONENT_NAMES) + (_U_PHI_PARAM,)),
                 result_kind='table',
                 summary='Holds chosen displacement components of the selected domains, for example the axial motion '
                         'of a strip while it may still deflect.',
-                description='Prescribed u_x and / or u_y on every node of the selected elements; an empty component '
-                            'stays free (both empty: validation error), e.g. u_x = 0, u_y free on a strip that may '
+                description='Prescribed u_x and / or u_y (and u_z = U_phi of an azimuthal_order m >= 1) on every node '
+                            'of the selected elements; an empty component stays free (all empty: validation error), '
+                            'e.g. u_x = 0, u_y free on a strip that may '
                             'deflect but not slide (with geometric nonlinearity a no-slip string). Holding u_x across a '
                             'member locks the rotation of its cross-sections (bending becomes shear). A later support '
                             f'on the same component sets its value. {_SUPPORT_RESULT_REF}',
@@ -1962,7 +2023,7 @@ _FEATURES = (
                             'flush (t = 0 in a stationary study): the containing cell on a tensor mesh, the node there '
                             'on triangles (strain / stress node-averaged).',
                 apply=_apply_probe, result=_probe_result, validate=validate_points_inside, grids=_BOTH_GRIDS),
-    frequency_probe_feature(_apply_frequency_probe, ('u_x', 'u_y'), (_TRIANGLES,)),
+    _FREQUENCY_PROBE_2D,
     replace(resonance_table_feature('nearest target_frequency first'), grids=_BOTH_GRIDS),
     thermoelastic_damping_feature(_BOTH_GRIDS, 'plane strain, plane stress or axisymmetric'),
     OPTOMECHANICAL_COUPLING_FEATURE,
@@ -2025,7 +2086,9 @@ SOLID_MECHANICS = PhysicsType(
                 'unless an elastic PML. Only there: initial_stress_*, stress_stiffening, geometric_nonlinearity, '
                 'Prescribed displacement (domain), damped modes (mechanical_loss_factor), free bodies at '
                 'target_frequency > 0 and in frequency responses, frequency_probe, complex support reactions, '
-                'pml_<face>, azimuthal_order, the energy densities; not there: piezoelectric (and admittance), guided '
+                'pml_<face>, azimuthal_order, the energy densities, the shear_modulus / bulk_modulus route, '
+                'viscoelastic moduli (viscosity, relaxation branches: see shear_relaxation_modulus_1), the setting '
+                'formulation and the pressure outputs; not there: piezoelectric (and admittance), guided '
                 f'modes, {STRAIN_OPTIC_COUPLING}, optomechanics except axisymmetric with em_fdfd_bor optics. Studies: '
                 'stationary (after the physics it reads); time_dependent quasi-static (re-solves when a material, '
                 'support, load or coupled input changed; no inertia); eigenfrequency: undamped modes K u = omega^2 M u '
@@ -2038,11 +2101,16 @@ SOLID_MECHANICS = PhysicsType(
                 'mechanical_loss_factor) - omega^2 M) u = f per frequency (loads, prescribed displacements and '
                 'electrode voltages are phase-0 amplitudes; a temperature change or coupled temperature is static, '
                 'never a drive, with stress_stiffening part of the prestress), one snapshot per frequency (real parts, '
-                'u_abs = |u|). azimuthal_order m >= 1 (triangles, axisymmetric, isotropic, eigenfrequency): u_r = U_r '
+                'u_abs = |u|; triangles: the shown stresses are Re(C*(omega) eps(u)), the loss part included, with '
+                'pressure / pressure_im = -tr(sigma*) / 3 in Pa; triangles with viscoelastic moduli: G*(omega), '
+                'K*(omega) per material, sweep_method direct only). azimuthal_order m >= 1 (triangles, axisymmetric, '
+                'isotropic; eigenfrequency, optomechanics and frequency_response): u_r = U_r '
                 'cos(m phi), u_z = U_z cos(m phi), u_phi = U_phi sin(m phi), field u_z = U_phi, strain / stress the '
                 'cos parts at phi = 0; the axis holds u_z = 0 and ties u_phi = -u_r at m = 1, holds all three at m >= '
                 '2; m = 1 keeps the sideways translation and tilt as rigid motions, m >= 2 none (supports optional); '
-                'stress_stiffening takes the initial stress alone. strain_energy_density / kinetic_energy_density '
+                'stress_stiffening takes the initial stress alone; a frequency response is driven by prescribed '
+                'displacements only (u_z of the displacement features is U_phi; loads are a validation error), its '
+                'reactions F_x = sum R_r - sum R_phi at m = 1. strain_energy_density / kinetic_energy_density '
                 '(triangles, J/m^3, not in state()): a static solve 1/2 sigma : eps_el (no initial stress) and 0, a '
                 'shown mode or response the time averages 1/4 Re(sigma : eps_el*) and 1/4 rho omega^2 |u|^2 (azimuthal '
                 'order: twice the phi mean, so ring integrals give totals); not physical in a PML ring. Bloch band '
@@ -2052,14 +2120,14 @@ SOLID_MECHANICS = PhysicsType(
     settings=(_GEOMETRY_PARAM, AZIMUTHAL_ORDER_PARAM, _OUT_OF_PLANE_PARAM, _THICKNESS_PARAM, _AXIAL_FORCE_PARAM,
               _BENDING_PARAM, _BENDING_MOMENT_X_PARAM, _BENDING_MOMENT_Y_PARAM, _TARGET_FREQUENCY_PARAM,
               STRESS_STIFFENING_PARAM, *GEOMETRIC_NONLINEARITY_PARAMS, _AXIAL_WAVENUMBER_PARAM, _PIEZOELECTRIC_PARAM,
-              _DISCRETIZATION_PARAM, *_pml_params(), *periodic_params_2d()),
+              _DISCRETIZATION_PARAM, FORMULATION_PARAM, *_pml_params(), *periodic_params_2d()),
     features=_FEATURES,
     material_properties=(MATERIAL_PROPERTIES + (DENSITY_PARAM, PHOTOELASTIC_P44_PARAM) + PIEZO_MATERIAL_PROPERTIES
-                         + STIFFNESS_TENSOR_PROPERTIES + LOSS_PROPERTIES + INITIAL_STRESS_PROPERTIES
-                         + TED_MATERIAL_PROPERTIES),
+                         + STIFFNESS_TENSOR_PROPERTIES + LOSS_PROPERTIES + VISCOELASTIC_PROPERTIES
+                         + INITIAL_STRESS_PROPERTIES + TED_MATERIAL_PROPERTIES),
     material_schema={**MECHANICAL_SCHEMA, **DENSITY_SCHEMA, **SHEAR_PHOTOELASTIC_SCHEMA},
     optional_material_schema={**OPTIONAL_PIEZO_SCHEMA, **OPTIONAL_STIFFNESS_SCHEMA, **OPTIONAL_LOSS_SCHEMA,
-                              **OPTIONAL_PRESTRESS_SCHEMA, **OPTIONAL_TED_SCHEMA},
+                              **OPTIONAL_VISCOELASTIC_SCHEMA, **OPTIONAL_PRESTRESS_SCHEMA, **OPTIONAL_TED_SCHEMA},
     state_fields=_STATE_FIELD_INFOS,
     output_fields=_FIELD_INFOS,
     source_slots=_SLOT_DOCS,

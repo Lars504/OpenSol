@@ -1,7 +1,7 @@
 """SolidRenderer3D: window-shaped (wx, wy, wz) displacement, strain and stress fields of a SolidMechanics3DPhysics."""
 from ...core.renderer import FieldInfo, PhysicsRenderer
 from ...model.schema import FREQUENCY_RESPONSE_STUDY
-from .fields3d import ELECTRIC_OUTPUT_ARRAYS_3D, ENERGY_OUTPUT_ARRAYS_3D, HARMONIC_IMAG_FIELDS_3D
+from .fields3d import ELECTRIC_OUTPUT_ARRAYS_3D, ENERGY_OUTPUT_ARRAYS_3D, HARMONIC_IMAG_FIELDS_3D, PRESSURE_FIELDS_3D
 
 
 def _signed(name, label, unit, parity, requires_study=''):
@@ -25,6 +25,9 @@ class SolidRenderer3D(PhysicsRenderer):
         'u_x_im': _signed('u_x_im', 'Displacement x, imaginary part', 'm', 'polar_x', FREQUENCY_RESPONSE_STUDY),
         'u_y_im': _signed('u_y_im', 'Displacement y, imaginary part', 'm', 'polar_y', FREQUENCY_RESPONSE_STUDY),
         'u_z_im': _signed('u_z_im', 'Displacement z, imaginary part', 'm', 'polar_z', FREQUENCY_RESPONSE_STUDY),
+        # frequency_response on tetrahedra: Re / Im of p = -tr(sigma*) / 3 (fields.PRESSURE_FIELDS)
+        'pressure': _signed('pressure', 'Pressure', 'Pa', 'even', FREQUENCY_RESPONSE_STUDY),
+        'pressure_im': _signed('pressure_im', 'Pressure, imaginary part', 'Pa', 'even', FREQUENCY_RESPONSE_STUDY),
         'von_mises': FieldInfo('von_mises', 'von Mises stress', unit='Pa', cmap='inferno'),
         'stress_xx': _signed('stress_xx', 'Stress xx', 'Pa', 'even'),
         'stress_yy': _signed('stress_yy', 'Stress yy', 'Pa', 'even'),
@@ -77,7 +80,7 @@ class SolidRenderer3D(PhysicsRenderer):
             return getattr(physics.domain.materials, component)[window]
         if component in ELECTRIC_OUTPUT_ARRAYS_3D or component in ENERGY_OUTPUT_ARRAYS_3D:
             return physics.domain.xp.zeros_like(physics.fields.u_x[window])
-        if component in HARMONIC_IMAG_FIELDS_3D:
+        if component in HARMONIC_IMAG_FIELDS_3D or component in PRESSURE_FIELDS_3D:
             raise ValueError(f"field '{component}' exists on a tetrahedron mesh only (the rectangular-cell solid has no "
                              'frequency response)')
         return getattr(physics.fields, component)[window]
