@@ -248,7 +248,9 @@ _SUPPORT_RESULT_TEXT = (
     "Result 'table' of the latest solve, row [feature, F_x, F_y, F_z] (N), extras F_x, F_y, F_z: the force the support "
     'exerts on the solid, sum of K u - f over its held dofs (0 for unheld components; a dof held by two supports counts '
     'in both, the later value holds it). After a frequency_response on tetrahedra: the complex reaction per frequency '
-    'instead (columns frequency, F_x_re, F_x_im, F_y_re, F_y_im, F_z_re, F_z_im).')
+    'instead (columns frequency, F_x_re, F_x_im, F_y_re, F_y_im, F_z_re, F_z_im, W_re, W_im): W = sum R u_held over '
+    'the held dofs (J), the work of the support force on the prescribed displacement (F X of a rigid translation X; '
+    'omega Im(W) / 2 the mean power the support delivers to the solid).')
 _SUPPORT_RESULT_REF = 'Result: the reaction table, as fixed.'
 _FACE_ONLY_TEXT = ('Outer faces and, on tetrahedra, domain objects (their interface and outer boundary faces; a tensor '
                    'mesh refuses objects: use Fixed (domain)); every node of the faces, edges and corners included.')

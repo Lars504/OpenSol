@@ -834,7 +834,8 @@ _SPHERE_RATIOS = (0.5, 2.0)             # a / delta
 _SPHERE_BEAD = {'youngs_modulus': float32_value(3.5e9), 'poisson_ratio': float32_value(0.34),
                 'rho': float32_value(1050.0)}
 _SPHERE_RUNS = ('m0', 'm1')
-_SPHERE_TOLERANCE = {'drag': 2e-2, 'm0 vs m1': 5e-3, 'axis pressure': 1e-9, 'pressure': 2e-2}   # first estimates
+_SPHERE_TOLERANCE = {'drag': 2e-2, 'm0 vs m1': 5e-3, 'axis pressure': 1e-9, 'pressure': 2e-2,   # first estimates
+                     'work': 1e-9}   # W = X F of a rigid translation: an identity of the held rows (round-off)
 _SPHERE_PRESSURE_DISTANCE = 1.5         # r / a of the pressure points (front, back on the axis, side at z = R)
 
 
@@ -916,6 +917,10 @@ def _check_sphere(results_by_name):
     errors, tolerances, details, forces = {}, {}, {}, {}
     for run, results in results_by_name.items():
         _, reaction = _reaction(results, 'bead_drive', 'F_y' if run == 'm0' else 'F_x')
+        _, work = _reaction(results, 'bead_drive', 'W')   # sum R u_held (m1: X R_r - X R_phi = X F_x)
+        item = f'{run} reaction work W = X F'
+        errors[item] = float(np.max(np.abs(work - _SPHERE_X * reaction) / np.abs(_SPHERE_X * reaction)))
+        tolerances[item] = _SPHERE_TOLERANCE['work']
         omega = 2.0 * math.pi * np.asarray(frequencies)
         forces[run] = -reaction - omega ** 2 * bead_mass * _SPHERE_X
         record = details[run] = {}
@@ -1048,7 +1053,9 @@ VISCOELASTIC_CASES = (
                      'on the axis is 0, and the pressure p = (3 / 2) mu a U (1 + lam a + lam^2 a^2 / 3) cos(theta) / '
                      f'r^2 (derivation in the module) at r = {_SPHERE_PRESSURE_DISTANCE:g} a, last frequency (m0: '
                      'front minus back on the axis, free of the enclosed water\'s pressure gauge; m1: the cos(phi) '
-                     f"amplitude beside the bead) within {_SPHERE_TOLERANCE['pressure']:g} relative. Tolerances are "
-                     'first estimates. measured = error = the worst deviation in tolerance units.'),
+                     f"amplitude beside the bead) within {_SPHERE_TOLERANCE['pressure']:g} relative; the reaction "
+                     'table work W = sum R u_held is X times the reaction (W = X F_y; m1 X R_r - X R_phi = X F_x) '
+                     f"within {_SPHERE_TOLERANCE['work']:g}. Tolerances are first estimates. measured = error = the "
+                     'worst deviation in tolerance units.'),
         specs=lambda: {run: _sphere_spec(run) for run in _SPHERE_RUNS}, check=_check_sphere),
 )

@@ -275,12 +275,26 @@ class ElasticFEMSystem(DirectElasticSystem):
 
     def hold(self, global_ids, u_x=None, u_y=None, u_z=None) -> np.ndarray:
         """Hold u_x and / or u_y [m] (and u_z = U_phi of an azimuthal order m >= 1; ignored with two components; None =
-        free) on full-mesh dof ids (later holds win the value); returns the held dof mask (n_global, c)."""
+        free) on full-mesh dof ids (later holds win the value); a value is a number or a callable of the (n, 2)
+        drawing-plane points [m] of the held dofs (P2 edge nodes on curved edges) returning their (n,) values (a
+        rigid rotation, ...); returns the held dof mask (n_global, c)."""
         dof_mask = np.zeros((self.n_global, self.components), dtype=bool)
+        global_ids = np.asarray(global_ids, dtype=np.int64)
+        points = None
         for component, value in tuple(enumerate((u_x, u_y, u_z)))[:self.components]:
-            if value is not None:
-                dof_mask[global_ids, component] = True
-                self.held_values[global_ids, component] = float(value)
+            if value is None:
+                continue
+            if callable(value):
+                if points is None:   # the full map numbers every dof by its global id
+                    points = self.full_dofs.dof_points()[global_ids]
+                values = np.broadcast_to(np.asarray(value(points), dtype=np.float64), global_ids.shape)
+                if not np.all(np.isfinite(values)):
+                    raise ValueError(f'{self.label()}: a prescribed displacement {("u_x", "u_y", "u_z")[component]} '
+                                     'is not finite at some held node')
+            else:
+                values = float(value)
+            dof_mask[global_ids, component] = True
+            self.held_values[global_ids, component] = values
         self.held |= dof_mask
         self.operator_dirty = True   # the free set changes
         return dof_mask

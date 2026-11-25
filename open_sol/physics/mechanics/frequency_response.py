@@ -27,6 +27,11 @@ from .bvd import bvd_admittance, bvd_fit, external_coupling
 
 ADMITTANCE_SERIES = ('abs', 're', 'im', 'phase', 'bvd_abs')
 _PHASE_DEGREES = 180.0 / math.pi
+# a support's reaction record component W = sum R u_held over its held dofs (the work of the support force on the
+# prescribed displacement: torque x theta of a rigid rotation, omega Im(W) / 2 the mean power into the solid); its unit
+# follows the record's force unit
+REACTION_WORK = 'W'
+_WORK_UNITS = {'N': 'J', 'N/m': 'J/m'}
 
 
 @dataclass(frozen=True, eq=False)
@@ -511,13 +516,14 @@ def solve_harmonic(operator, loss, mass, omega, free, fixed, load, column_map=No
 
 def reaction_table(record, name) -> dict:
     """'table' of a support's complex reaction per solved frequency from its core.harmonic_probe.HarmonicProbeRecord of
-    force components (ascending f): columns frequency, <F>_re, <F>_im per component; extras frequency [Hz], components,
-    support. ValueError before the first frequency."""
+    force components in record.unit and the work REACTION_WORK (ascending f): columns frequency, <F>_re, <F>_im per
+    component; extras frequency [Hz], components, support. ValueError before the first frequency."""
     frequencies, values = record.recorded()
     columns, units = ['frequency'], ['Hz']
     for component in record.components:
         columns += [f'{component}_re', f'{component}_im']
-        units += [record.unit, record.unit]
+        unit = _WORK_UNITS[record.unit] if component == REACTION_WORK else record.unit
+        units += [unit, unit]
     rows = [[float(frequency)] + [part for component in record.components
                                   for part in (float(values[component][index].real),
                                                float(values[component][index].imag))]

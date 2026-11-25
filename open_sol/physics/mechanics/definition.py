@@ -28,6 +28,7 @@ from ...model.definition_helpers import (AXISYMMETRIC_SPACE_SETTINGS, AZIMUTHAL_
                                          on_triangles, own_mirror_face_conflicts, point_cells,
                                          reduced_sweep_memory_items,
                                          reduced_sweep_time_items, validate_points_inside)
+from ...model.expressions import Expression, ExpressionError
 from ...model.geometry import bounding_box, expand_entities, line_orientation
 from ...model.schema import (STATIONARY_STUDY, TIME_DEPENDENT_STUDY, CouplingType, DomainRequirements, FeatureType,
                              Issue, Param, PhysicsType, SolverRole, feature_path, solver_backend)
@@ -305,8 +306,11 @@ _SUPPORT_RESULT_TEXT = (
     'solid, sum of K u - f over its held dofs (0 for unheld components; a dof held by two supports counts in both, the '
     'later value holds it); N/m per m of depth, N with the thickness setting or axisymmetric (whole ring). After a '
     'frequency_response on triangles: the complex reaction per frequency instead (columns frequency, F_x_re, F_x_im, '
-    'F_y_re, F_y_im); at azimuthal_order 1 F_x = sum R_r - sum R_phi is the net force along x (phi = 0) of the cos '
-    'phi / sin phi tractions and F_y = 0, at m >= 2 both 0 (no net force).')
+    'F_y_re, F_y_im, W_re, W_im); at azimuthal_order 1 F_x = sum R_r - sum R_phi is the net force along x (phi = 0) of '
+    'the cos phi / sin phi tractions and F_y = 0, at m >= 2 both 0 (no net force). W = sum R u_held over the held dofs '
+    '(J, J/m per m of depth; the u_z = U_phi component included): the work of the support force on the prescribed '
+    'displacement, F X for a rigid translation X, torque x theta for a rigid rotation by theta (T = W / theta, any '
+    'azimuthal order), and the mean power the support delivers to the solid is omega Im(W) / 2.')
 _SUPPORT_RESULT_REF = 'Result: the reaction table, as fixed.'
 # the displacement features' U_phi of an azimuthal order (triangles; validation refuses it at m = 0)
 _U_PHI_PARAM = replace(
@@ -352,11 +356,24 @@ def _apply_fixed_domain(ctx, solver, feature_spec, values, selection):
 
 def _apply_prescribed_displacement_domain(ctx, solver, feature_spec, values, selection):
     """Prescribed u_x / u_y (None = free) on every dof of the selected elements (triangle meshes; u_z = U_phi of an
-    azimuthal order m >= 1, None = free); the held values follow a reused sweep build."""
-    held = solver.hold_cells(ctx.domain_mask(selection.entities), u_x=values['u_x'], u_y=values['u_y'],
-                             u_z=values['u_z'])
+    azimuthal order m >= 1, None = free); an x, y expression is evaluated at every held dof's point (P2 edge nodes
+    included); uniform held values follow a reused sweep build (x, y ones never do: sweep_reuse refuses a live
+    parameter in them)."""
+    held = solver.hold_cells(ctx.domain_mask(selection.entities),
+                             **{name: _held_value(ctx.parameters, values[name]) for name in _HELD_DISPLACEMENTS})
     follow_held_values(ctx, solver, feature_spec, values, _HELD_DISPLACEMENTS, held)
     return _support(solver, feature_spec, held)
+
+
+def _held_value(parameters, value):
+    """A prescribed displacement for hold_cells: a number or None as it is, an x, y Expression the callable of the
+    held dofs' (n, 2) drawing-plane points [m] (x = r, y = z axisymmetric)."""
+    if not isinstance(value, Expression):
+        return value
+
+    def at_points(points):
+        return value.evaluate({**parameters, 'x': points[:, 0], 'y': points[:, 1]})
+    return at_points
 
 
 def _apply_boundary_load(ctx, solver, feature_spec, values, selection):
@@ -489,20 +506,46 @@ def _validate_displacement(vctx, physics_spec, feature_spec, values):
                                            'axisymmetric, triangle mesh): leave it empty here'))
     u_x, u_z = values.get('u_x'), values.get('u_z')
     if order == 1 and feature_spec.type == 'prescribed_displacement_domain' and u_x is not None:
-        plain_x = u_x if isinstance(u_x, (int, float)) else None
-        tied = u_z is not None and plain_x is not None and isinstance(u_z, (int, float)) and u_z == -plain_x
         tolerance = 1e-9 * max(vctx.domain_size or (1.0,))
-        touches_axis = False
+        heights = []   # sampled heights of the objects touching the axis
         for name in vctx.objects(feature_spec.selection):
             try:
-                touches_axis = touches_axis or bounding_box(name, vctx.shapes)[0] <= tolerance
+                x_low, y_low, _, y_high = bounding_box(name, vctx.shapes)
             except (KeyError, ValueError, TypeError):   # an unresolved object: reported elsewhere
                 continue
-        if touches_axis and not tied and plain_x != 0.0:
-            issues.append(Issue('warning', path, 'azimuthal_order 1: this domain touches the axis (r = 0), where '
-                                                 'U_phi = -U_r is tied (an unheld U_phi of an axis node is held at 0); '
-                                                 'a rigid sideways translation X along x is u_x = X with u_z = -X'))
+            if x_low <= tolerance:
+                heights.append(np.linspace(y_low, y_high, _AXIS_TIE_SAMPLES))
+        radial = _axis_values(u_x, vctx.parameters, heights)
+        azimuthal = None if u_z is None else _axis_values(u_z, vctx.parameters, heights)
+        if radial is not None and (u_z is None or azimuthal is not None):
+            scale = float(np.abs(radial).max())
+            tied = azimuthal is not None and float(np.abs(azimuthal + radial).max()) <= 1e-9 * scale
+            if scale > 0.0 and not tied:
+                issues.append(Issue('warning', path, 'azimuthal_order 1: this domain touches the axis (r = 0), where '
+                                                     'U_phi = -U_r is tied (an unheld U_phi of an axis node is held '
+                                                     'at 0); a rigid sideways translation X along x is u_x = X with '
+                                                     'u_z = -X, a rigid tilt by theta about y through the height z0 '
+                                                     'u_x = theta (y - z0), u_y = -theta x, u_z = -theta (y - z0)'))
     return issues
+
+
+_AXIS_TIE_SAMPLES = 17   # heights per axis-touching object at which the m = 1 tie u_z = -u_x of x, y values is checked
+
+
+def _axis_values(value, parameters, heights):
+    """Float64 values of a prescribed displacement (number or x, y Expression) on the axis x = 0 at the concatenated
+    heights [m] (a list of arrays); None without heights or when it does not evaluate (reported elsewhere)."""
+    if not heights:
+        return None
+    heights = np.concatenate(heights)
+    try:
+        if isinstance(value, Expression):
+            result = value.evaluate({**parameters, 'x': np.zeros_like(heights), 'y': heights})
+        else:
+            result = float(value)
+        return np.broadcast_to(np.asarray(result, dtype=np.float64), heights.shape)
+    except (ExpressionError, ArithmeticError, ValueError, TypeError):
+        return None
 
 
 _FACE_FEATURES = ('fixed', 'roller', 'displacement', 'boundary_load', 'electrode')   # act on selected outer faces
@@ -1998,19 +2041,26 @@ _FEATURES = (
                             f'around it, whatever its own stiffness. {_SUPPORT_RESULT_REF}',
                 apply=_apply_fixed_domain, result=_support_result, grids=_BOTH_GRIDS),
     FeatureType('prescribed_displacement_domain', 'Prescribed displacement (domain)', 'domain_condition', 'domain',
-                params=following(tuple(replace(displacement_param(f'u_{axis}', axis),
-                                               tip=f'Displacement along {axis} the selected domains are held at; empty '
-                                                   'leaves this direction free.')
-                                       for axis in _COMPONENT_NAMES) + (_U_PHI_PARAM,)),
+                params=following(tuple(replace(displacement_param(f'u_{axis}', axis), field_dependent=True,
+                                               tip=f'Displacement along {axis} the selected domains are held at (it may '
+                                                   'vary with the position); empty leaves this direction free.')
+                                       for axis in _COMPONENT_NAMES) + (replace(_U_PHI_PARAM, field_dependent=True),)),
                 result_kind='table',
                 summary='Holds chosen displacement components of the selected domains, for example the axial motion '
-                        'of a strip while it may still deflect.',
+                        'of a strip while it may still deflect, or a rigid rotation of a bead.',
                 description='Prescribed u_x and / or u_y (and u_z = U_phi of an azimuthal_order m >= 1) on every node '
                             'of the selected elements; an empty component stays free (all empty: validation error), '
                             'e.g. u_x = 0, u_y free on a strip that may '
                             'deflect but not slide (with geometric nonlinearity a no-slip string). Holding u_x across a '
-                            'member locks the rotation of its cross-sections (bending becomes shear). A later support '
-                            f'on the same component sets its value. {_SUPPORT_RESULT_REF}',
+                            'member locks the rotation of its cross-sections (bending becomes shear). Values may use '
+                            'x, y (x = r, y = z axisymmetric), evaluated at every held node (P2 edge nodes included, '
+                            'on the curve of a curved edge), so a linear field is held exactly: a rigid planar '
+                            'rotation by theta about (x0, y0) is u_x = -theta (y - y0), u_y = theta (x - x0); at '
+                            'azimuthal_order 1 a rigid tilt by theta about the transverse axis y through the height '
+                            'z0 is u_x = theta (y - z0), u_y = -theta x, u_z = -theta (y - z0) (then the reaction '
+                            'table W / theta is the torque about +y, below); a reused sweep build follows uniform '
+                            'values only (it refuses a swept parameter in an x, y value). A later support on the same '
+                            f'component sets its value. {_SUPPORT_RESULT_REF}',
                 apply=_apply_prescribed_displacement_domain, result=_support_result, validate=_validate_displacement,
                 grids=(_TRIANGLES,)),
     FeatureType('boundary_load', 'Boundary load', 'boundary_condition', 'boundary', allow_interior=False,

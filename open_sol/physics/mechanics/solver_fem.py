@@ -35,7 +35,7 @@ from ...fem.reduced_outputs import field_policy, wants_fields
 from ...solvers.arpack_shift_invert import ArpackShiftInvertSolver
 from .fields import (AZIMUTHAL_IMAG_FIELDS, ENERGY_DENSITY_FIELDS, HARMONIC_IMAG_FIELDS, INPUT_ARRAYS, OUTPUT_ARRAYS,
                      PRESSURE_FIELDS, SOURCE_SLOTS)
-from .frequency_response import FrequencyPoint, FrequencyTerm, HarmonicSystem
+from .frequency_response import REACTION_WORK, FrequencyPoint, FrequencyTerm, HarmonicSystem
 from .generalized_plane_strain import (BENDING_TERMS, condition_matrix, condition_targets, strain_term_values,
                                        terms_about_origin)
 from .materials import (DENSITY_SCHEMA, EXPANSION_ARRAYS, LOSS_ARRAYS, MECHANICAL_SCHEMA, PRESTRESS_ARRAYS,
@@ -693,8 +693,10 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
 
     def hold_cells(self, mask, u_x=0.0, u_y=0.0, u_z=0.0):
         """Hold components [m] (None = free; u_z = u_phi of an azimuthal order m >= 1, any value there, else only None
-        or 0) on every dof of the window elements under the element mask (n_elements,)."""
-        if u_z not in (None, 0.0) and not self.azimuthal_order:
+        or 0) on every dof of the window elements under the element mask (n_elements,); a value may be a callable of
+        the held dofs' (n, 2) drawing-plane points [m] (ElasticFEMSystem.hold: a field-dependent prescribed
+        displacement)."""
+        if (callable(u_z) or u_z not in (None, 0.0)) and not self.azimuthal_order:
             raise ValueError(f'hold_cells: u_z (U_phi) needs an azimuthal order >= 1 to be held != 0, got {u_z!r}')
         system = self.system
         return system.hold(system.global_ids_of_elements(self._element_mask(mask, 'fixed domain')), u_x, u_y, u_z)
@@ -1112,7 +1114,8 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
     def register_support(self, region):
         """Keep a support feature's region: its complex reaction is recorded per solved frequency."""
         self._supports.append(region)
-        self._harmonic_reactions[region.name] = HarmonicProbeRecord(('F_x', 'F_y'), unit=self.force_unit,
+        self._harmonic_reactions[region.name] = HarmonicProbeRecord(('F_x', 'F_y', REACTION_WORK),
+                                                                    unit=self.force_unit,
                                                                     label=f'Reaction of {region.name}')
         return region
 
@@ -1120,23 +1123,30 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
         """Record the frequency probes (complex displacement (n_dofs, c) of the solid map at their nodes, 0 off the
         solid) and the support reactions (sum of the complex A x - f over each support's held dofs, x the thickness;
         azimuthal order 1: F_x = sum R_r - sum R_phi, the net force along x (phi = 0) of the cos phi / sin phi
-        tractions with the pi ring weight, F_y = 0; m >= 2: no net force, both 0)."""
+        tractions with the pi ring weight, F_y = 0; m >= 2: no net force, both 0) with their work W = sum R u_held over
+        every held component (U_phi included: for a rigid tilt by theta the torque x theta)."""
         probes, supports = self._record_layout()
-        components = self.system.components
+        system = self.system
+        components = system.components
         for (record, _), row in zip(self.frequency_probes, probes):
             values = displacement[row] if row >= 0 else np.zeros(components, dtype=np.complex128)
             record.record(frequency, {name: complex(values[component])
                                       for component, name in enumerate(record.components)})
         depth = 1.0 if self.thickness is None else self.thickness
         order = self.azimuthal_order
+        ids = system.dofs.global_ids   # the rows are solid-map dofs, held_values full-mesh ids
         for region, rows in zip(self._supports, supports):
             totals = [depth * complex(residual[component_rows, component].sum())
                       for component, component_rows in enumerate(rows)]
+            work = depth * sum(complex(residual[component_rows, component]
+                                       @ system.held_values[ids[component_rows], component])
+                               for component, component_rows in enumerate(rows))
             if order == 1:
                 totals = [totals[0] - totals[2], 0j]
             elif order >= 2:
                 totals = [0j, 0j]
-            self._harmonic_reactions[region.name].record(frequency, {'F_x': totals[0], 'F_y': totals[1]})
+            self._harmonic_reactions[region.name].record(frequency, {'F_x': totals[0], 'F_y': totals[1],
+                                                                     REACTION_WORK: work})
 
     def _record_layout(self):
         """([solid-map row of each frequency probe node, -1 off the solid], [(held dof rows per component)] per

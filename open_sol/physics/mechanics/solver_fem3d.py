@@ -47,7 +47,7 @@ from ...solvers.arpack_shift_invert import ArpackShiftInvertSolver
 from .bloch3d import bloch_cell_3d
 from .fields3d import (ELECTRIC_OUTPUT_ARRAYS_3D, ENERGY_OUTPUT_ARRAYS_3D, HARMONIC_IMAG_FIELDS_3D, INPUT_ARRAYS_3D,
                        OUTPUT_ARRAYS_3D, PRESSURE_FIELDS_3D, SOURCE_SLOTS_3D)
-from .frequency_response import FrequencyPoint, FrequencyTerm, HarmonicSystem
+from .frequency_response import REACTION_WORK, FrequencyPoint, FrequencyTerm, HarmonicSystem
 from .materials import (DENSITY_SCHEMA, ELECTROMECHANICAL_ARRAYS_3D, EXPANSION_ARRAYS, ISOTROPIC_PATTERN_3D,
                         LOSS_ARRAYS, MECHANICAL_SCHEMA, PERMITTIVITY_TENSOR_ARRAYS_3D, PIEZO_DEFAULTS_3D,
                         PIEZO_TENSOR_ARRAYS_3D, PRESTRESS_ARRAYS_3D, PRESTRESS_NAMES, STIFFNESS_ARRAYS,
@@ -1213,23 +1213,27 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
     def register_support(self, region):
         """Keep a support feature's region: its complex reaction is recorded per solved frequency."""
         self._supports.append(region)
-        self._harmonic_reactions[region.name] = HarmonicProbeRecord(('F_x', 'F_y', 'F_z'), unit='N',
+        self._harmonic_reactions[region.name] = HarmonicProbeRecord(('F_x', 'F_y', 'F_z', REACTION_WORK), unit='N',
                                                                     label=f'Reaction of {region.name}')
         return region
 
     def _record_harmonic(self, frequency, displacement, residual):
         """Record the frequency probes (complex nodal displacement (n_dofs, 3) at their points) and the support
-        reactions (sum of the complex A x - f (n_dofs, 3) over each support's held active dofs)."""
+        reactions (sum of the complex A x - f (n_dofs, 3) over each support's held active dofs) with their work W = sum
+        R u_held."""
         probes, supports = self._record_layout()
         for (record, _, _), (dofs, weights) in zip(self.frequency_probes, probes):
             values = weights @ displacement[dofs]   # (3,) complex: the basis at the point, 0 on inactive dofs
             record.record(frequency, {name: complex(values[component])
                                       for component, name in enumerate(record.components)})
+        held_values = self.system.held_values   # full-mesh rows, as the residual
         for region, rows in zip(self._supports, supports):
             totals = [complex(residual[component_rows, component].sum())
                       for component, component_rows in enumerate(rows)]
+            work = sum(complex(residual[component_rows, component] @ held_values[component_rows, component])
+                       for component, component_rows in enumerate(rows))
             self._harmonic_reactions[region.name].record(frequency, {'F_x': totals[0], 'F_y': totals[1],
-                                                                     'F_z': totals[2]})
+                                                                     'F_z': totals[2], REACTION_WORK: work})
 
     def _record_layout(self):
         """([(element dofs, basis weights at the point, 0 on inactive dofs)] per frequency probe, [(held active dof

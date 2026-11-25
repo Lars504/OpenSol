@@ -114,7 +114,9 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   (supports, probes, `PiezoSystem.electrode_rows`). Fields only at `wants_fields` frequencies; a skipped last one is
   shown by `publish_frequency_response`.
 - azimuthal_order m >= 1 (triangles) is driven by prescribed displacements only (cos(m phi) loads are refused); a
-  support's F_x is sum R_r - sum R_phi at m = 1 (the net force along phi = 0), both components 0 at m >= 2.
+  support's F_x is sum R_r - sum R_phi at m = 1 (the net force along phi = 0), both components 0 at m >= 2; its W =
+  sum R u_held takes every component. Triangles: record rows and the residual are solid-map rows, `held` /
+  `held_values` full-mesh ids (index them by `dofs.global_ids[rows]`); tetrahedra: both full-mesh.
 
 ## Viscoelastic moduli and the N-term harmonic system (`viscoelastic.py`, `definition_viscoelastic.py`; FEM meshes)
 - Law, routes, member masks and groups: `viscoelastic.py` header. Displacement formulation: groups only over the
