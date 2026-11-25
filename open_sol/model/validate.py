@@ -1190,6 +1190,14 @@ class _Validator:
             return
         if mesh.note:   # meshing: why the grid differs from the requested mode
             self.info(path, mesh.note)
+        if mesh.kind == 'triangles':   # the size field floors refinements at h_min (default dx / 100) silently
+            below = {name: size for name, size in mesh.sizing.object_sizes.items()
+                     if size < mesh.sizing.h_min * (1.0 - 1e-9)}
+            if below:
+                self.warning(path, f"refinement dx of {', '.join(repr(name) for name in sorted(below))} "
+                                   f'({min(below.values()):.4g} m) is below the minimum element size h_min = '
+                                   f'{mesh.sizing.h_min:.4g} m (unset: dx / 100): the elements there stay at h_min '
+                                   'and an object smaller than it may get no element at all; set h_min')
         if (mesh.kind == 'tetrahedra' and mesh.sizing.mesher == 'builtin' and not mesh.sizing.sweep_axis
                 and mesh.sizing.edge_sizes):
             self.warning(path, f"mesher 'builtin' ignores the edge sizes the physics ask for along "
