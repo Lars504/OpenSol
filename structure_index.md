@@ -7,28 +7,28 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - open_sol/: lines 33-38
 - open_sol/core/: lines 40-76
 - open_sol/coupling/: lines 78-104
-- open_sol/fem/: lines 106-171
-- open_sol/gui/: lines 173-194
-- open_sol/io/: lines 196-200
-- open_sol/materials/: lines 202-219
-- open_sol/mesh_study/: lines 221-231
-- open_sol/model/: lines 233-303
-- open_sol/physics/: lines 305-307
-- open_sol/physics/acoustics/: lines 309-327
-- open_sol/physics/em/: lines 329-446
-- open_sol/physics/em/solvers/: lines 448-471
-- open_sol/physics/em3d/: lines 473-509
-- open_sol/physics/eme/: lines 511-528
-- open_sol/physics/fluid/: lines 530-541
-- open_sol/physics/heat/: lines 543-568
-- open_sol/physics/magnetic/: lines 570-601
-- open_sol/physics/mechanics/: lines 603-688
-- open_sol/physics/membrane/: lines 690-708
-- open_sol/physics/nlfd/: lines 710-729
-- open_sol/physics/potential/: lines 731-748
-- open_sol/physics/semiconductor/: lines 750-763
-- open_sol/solvers/: lines 765-780
-- open_sol/viz/: lines 782-791
+- open_sol/fem/: lines 106-173
+- open_sol/gui/: lines 175-196
+- open_sol/io/: lines 198-202
+- open_sol/materials/: lines 204-221
+- open_sol/mesh_study/: lines 223-233
+- open_sol/model/: lines 235-305
+- open_sol/physics/: lines 307-309
+- open_sol/physics/acoustics/: lines 311-329
+- open_sol/physics/em/: lines 331-448
+- open_sol/physics/em/solvers/: lines 450-473
+- open_sol/physics/em3d/: lines 475-511
+- open_sol/physics/eme/: lines 513-530
+- open_sol/physics/fluid/: lines 532-543
+- open_sol/physics/heat/: lines 545-570
+- open_sol/physics/magnetic/: lines 572-603
+- open_sol/physics/mechanics/: lines 605-693
+- open_sol/physics/membrane/: lines 695-713
+- open_sol/physics/nlfd/: lines 715-734
+- open_sol/physics/potential/: lines 736-753
+- open_sol/physics/semiconductor/: lines 755-768
+- open_sol/solvers/: lines 770-785
+- open_sol/viz/: lines 787-796
 
 ## open_sol/
 
@@ -131,6 +131,8 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - `mesh.py`: Triangle mesh data of the FEM path: analytic boundary curves, the mesher input (PSLG) and the frozen TriangleMesh
 - `mesh3d.py`: Tetrahedron mesh data: the frozen TetrahedronMesh with ascending element nodes, unique edges / faces and their element maps, outer-face and object-interface tags, region tags and quality; window / interface face selections; periodic node ...
 - `mesher.py`: Own conforming Delaunay mesher: size field, PSLG from straight pieces and closed curves, Ruppert / Shewchuk refinement on scipy.spatial.Delaunay (rebuilt, or updated locally in rounds adding few nodes), smoothing, the PML layer ring, ...
+- `mixed_elasticity.py`: Taylor-Hood u-p pieces of the 2D elasticity: P1 pressure spaces per element group and the coupling / pressure mass blocks of a P2 displacement map (planar plane strain, axisymmetric rings, azimuthal order m >= 1), the axis pressure dofs, ...
+- `mixed_elasticity3d.py`: Taylor-Hood u-p pieces of the elasticity on tetrahedra: P1 pressure spaces per element group and the coupling / pressure mass blocks of a P2 displacement DofMap3D, the pressure at element points and its nodal display values (the ...
 - `pml.py`: Physics-neutral PML coordinate stretches: PMLStretch of the layer ring of a TriangleMesh (planar or the axisymmetric stretched radius) or the shell of a TetrahedronMesh, with the coefficient transforms of a scalar operator -div(a grad u) + ...
 - `prism_layers.py`: Swept prism layers: a triangle mesh extruded through z layers, each prism split into 3 tetrahedra by the minimum-vertex rule (conforming between prisms, periodic sides matched by an order key)
 - `quadrature.py`: Quadrature of the FEM path: Dunavant rules of degree 2 / 4 / 5 / 6 on the reference triangle (0, 0), (1, 0), (0, 1), their s x s subdivisions (transfers), and Gauss-Legendre on [0, 1] (edges)
@@ -613,6 +615,7 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - `definition_common.py`: Model-layer pieces shared by the solid_mechanics (2D) and solid_mechanics_3d definitions: the build's linear solver, the material vocabulary (one Param object per name), support helpers, the CPU material / state / modal-study / prestress ...
 - `definition_frequency_response.py`: Model-layer pieces of the 2D solid_mechanics frequency response and anisotropic stiffness: the admittance feature, their validation rules and the host memory items; imported by definition.py.
 - `definition_optomechanics.py`: Model-layer definition of the solid_mechanics feature optomechanical_coupling (the vacuum g0 table of the optomechanics study): params, validation, apply, result, templates and self-tests; registered by definition.py
+- `definition_viscoelastic.py`: Model-layer rules and estimate counts of the solids' viscoelastic moduli and formulation setting (FEM meshes, frequency_response): the validation of the relaxed shear / bulk moduli, the frequency-dependent properties (viscosity, relaxation ...
 - `fields.py`: MechanicsFields2D: full-grid displacement, strain, stress and electric output arrays plus the coupled temperature-rise and body-force slots of solid_mechanics.
 - `fields3d.py`: Full-grid float32 fields of the 3D solid (outputs in kernels3d order, coupled / applied inputs) on the domain's array module; no cupy import, so definition3d can import the names.
 - `frequency_response.py`: Driven time-harmonic response of the solid (frequency_response study): the reduced pencil of (K + j L - omega^2 M) x = f with one complex symmetric factor per frequency (HarmonicSystem: private host SuperLU, or a sparse_direct runtime's ...
@@ -671,6 +674,7 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - `selftests_squeeze_film_model.py`: Model-run self-test of the solid_mechanics_3d squeeze_film_damping feature: the thickness mode of a roller-guided column (a rigid piston on its top face) under three films against the strip, compressible-strip and vented-rectangle closed ...
 - `selftests_swept_plate.py`: Model-run self-test of solid_mechanics_3d on swept prism layers: the first mode of a clamped square plate meshed with 3 P2 layers across its thickness against the Kirchhoff clamped-plate value. definition3d registers it.
 - `selftests_thermoelastic.py`: Model-run self-tests of the thermoelastic_damping feature (solid_mechanics on tensor and triangle meshes, solid_mechanics_3d on tetrahedra): Zener / Lifshitz-Roukes damping of thin-beam flexure and of a clamped circular plate ...
+- `selftests_viscoelastic.py`: Self-tests of the frequency-dependent viscoelastic moduli and the mixed u-p formulation of the FEM solids (frequency_response): the per-frequency term machinery of frequency_response.HarmonicSystem against dense solves, the validation ...
 - `solver.py`: Static 2D solid mechanics: planar per unit z length (plane strain, plane stress or generalized plane strain) or axisymmetric (r, z) whole rings; small strain, isotropic or anisotropic (c_ij, stiffness.py) linear elastic cells, thermal ...
 - `solver3d.py`: Static 3D solid mechanics on a Domain3D: small strain, isotropic linear elastic cells, thermal strain from the temperature-rise slot, supports, tractions and body forces; one ElasticSystem3D solve per change; the lowest vibration modes for ...
 - `solver_common.py`: Dimension-free part of the static solid mechanics physics (2D plane strain and 3D): the PhysicsSolver contract with the re-solve logic, coupled source slots, convergence record, reactions, warm start and the element Lame coefficients; ...
@@ -686,6 +690,7 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - `system_fem3d.py`: ElasticFEMSystem3D: the host float64 vector P1 / P2 elasticity of a solid on a tetrahedron mesh (fem.elasticity3d): holds on the full-mesh dof ids, the active dofs of the solid elements, the 6 x 6 Gram rigid-mode check per solid region, ...
 - `tangent_update.py`: Tangent refresh rule and Newton proposal of the total-Lagrangian solids (2D triangles, 3D tetrahedra): full Newton or modified Newton that keeps the factorised tangent while the residual falls fast
 - `thermoelastic.py`: Thermoelastic damping (TED) of the vibration modes of solid_mechanics (2D tensor and triangle meshes) and solid_mechanics_3d (tetrahedra): per mode the harmonic heat equation of its strain-rate heat source on the solid, Q_TED from the ...
+- `viscoelastic.py`: Frequency-dependent isotropic moduli of the FEM solids (frequency_response): the generalized Maxwell / Kelvin-Voigt law G*(omega), K*(omega) per element, the member mask of each formulation and the parameter groups the harmonic system ...
 
 ## open_sol/physics/membrane/
 

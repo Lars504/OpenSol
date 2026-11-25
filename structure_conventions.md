@@ -300,6 +300,8 @@ first bring the background physics (those without the study's hook) to a station
   factors) kept across api runs hides code from the tracer: scope it to one `run_study`, as
   `meshing.element_meshes_kept`, `cudss_factor.cudss_orderings_kept` and `host_direct.host_analyses_kept`. A disk
   cache across processes is off inside the self-tests (`gmsh3d.default_disk_cache_off`).
+- Timing on a loaded shared machine: threaded OpenBLAS can slow host SuperLU factorisations 50-300x (seen 0.1 s ->
+  30 s), so time self-tests and examples with `OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1`.
 - Solver roles: a physics' numerical jobs are `PhysicsType.solver_roles`; the build creates their runtimes in a stage
   of its own and the physics create takes them from `ctx.solvers(name)`, never building one itself (scripts still
   may). Solver knobs are never physics settings (a new type declares a role, a shared one from definition_helpers
