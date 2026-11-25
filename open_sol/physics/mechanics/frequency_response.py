@@ -3,6 +3,12 @@ reduced pencil of (K + j L - omega^2 M) x = f with one complex symmetric factor 
 private host SuperLU, or a sparse_direct runtime's SuperLU / cuDSS LDL^T with plan reuse; or a fem.reduced_harmonic
 model with precomputed record rows), the per-frequency electrode record and the admittance result of an electrode (with
 its BVD fit and kappa_e); host numpy (scipy inside functions)."""
+# Per-frequency terms (FrequencyTerm: coefficient(omega) X with a fixed real X, e.g. a viscoelastic modulus group) join
+# the pencil at fixed slots of its summed pattern, mapped once (factorize_pencil(extra=) on a pencil, the summed values
+# on the host route), never as pencil terms of their own (no per-term device storage) and never re-assembled. Scale
+# terms (SchurScaleTerm: the coupling B of mixed pressure rows) only add their Schur proxy to the diagonal d of the
+# symmetric equilibration R = d^-1/2 the factorisations apply (E = R A R, x = R E^-1 R b), on every route, host SuperLU
+# included (_factorize): A, its products, residual rows and every solution handed out stay unscaled.
 # Convention exp(+j omega t) (as the EM frequency_domain study): losses enter as c -> c (1 + j eta) (mechanical loss
 # factor) and eps -> eps (1 - j tan delta) (dielectric loss tangent), so L = [[eta K_uu, 0], [0, +tan delta K_phiphi]] on
 # the coupled operator [[K_uu, K_uphi], [K_phiu, -K_phiphi]] (piezo.coupled_operator). Every load, prescribed
@@ -11,6 +17,7 @@ its BVD fit and kappa_e); host numpy (scipy inside functions)."""
 # current is I = j omega Q and its admittance Y = I / V [S per m of depth; times the thickness setting in S].
 import math
 from dataclasses import dataclass
+from typing import Callable
 
 import numpy as np
 
@@ -20,6 +27,33 @@ from .bvd import bvd_admittance, bvd_fit, external_coupling
 
 ADMITTANCE_SERIES = ('abs', 're', 'im', 'phase', 'bvd_abs')
 _PHASE_DEGREES = 180.0 / math.pi
+# a support's reaction record component W = sum R u_held over its held dofs (the work of the support force on the
+# prescribed displacement: torque x theta of a rigid rotation, omega Im(W) / 2 the mean power into the solid); its unit
+# follows the record's force unit
+REACTION_WORK = 'W'
+_WORK_UNITS = {'N': 'J', 'N/m': 'J/m'}
+
+
+@dataclass(frozen=True, eq=False)
+class FrequencyTerm:
+    """A real host CSR X over every dof (the operator's numbering, before the column map) entering A(omega) as
+    coefficient(omega) X (complex): an omega-dependent modulus group (the excess G*_g - G0 (1 + j eta) on D_g, the
+    displacement formulation; G*_g D_g in the mixed one) or a mixed pressure block (-1 / K*_g(omega) M_p,g)."""
+    matrix: object
+    coefficient: Callable[[float], complex]
+    label: str = ''
+
+
+@dataclass(frozen=True, eq=False)
+class SchurScaleTerm:
+    """Row-scale estimate only (never in A): the constraint block of a saddle point as a real host CSR (n, n) over every
+    dof, B at its constrained rows (the mixed pressure rows) and the columns they couple (the displacements), nothing
+    else stored. Per factorisation each constrained row i adds the diagonal Schur proxy s_i = sum_j B_ij^2 / d_j to the
+    equilibration diagonal, d_j that of its coupled free column at omega (|diag K| + omega^2 |diag M| + sum_k |c_k|
+    |diag X_k|), so every scaled row of R B R has sum_j |(R B R)_ij|^2 <= 1 whatever the mesh size, element shape or
+    the viscous / inertial balance of d_j (a fixed modulus weight such as diag M_p / |G*| matches s_i only where the
+    shear term dominates d_j: inertia-dominated cells, h >> the viscous depth, put it (h / delta)^2 too high)."""
+    coupling: object
 
 
 class HarmonicSystem:
@@ -32,14 +66,21 @@ class HarmonicSystem:
     values (fem.assembly.pattern_sum), so the cuDSS plan holds across frequencies. loads = [(reduced free dof, b)]: + j b
     / omega on that diagonal (a resistive electrode load, piezo.PiezoSystem). Direct solves with fields False after
     set_output_rows (no column map): x and A x only at those rows, the free solution kept (on the device after a cuDSS
-    solve) for last_solution (R6)."""
+    solve) for last_solution (R6). terms: FrequencyTerm list added as c_k(omega) X_k at slots of the summed pattern
+    (module header; reduced sweeps refuse them); scale_terms: SchurScaleTerm list of the equilibration diagonal (also
+    applied by host SuperLU: _factorize). Both empty: exactly the pencil above."""
 
-    def __init__(self, operator, loss, mass, free, column_map=None, runtime=None, previous=None, loads=()):
+    def __init__(self, operator, loss, mass, free, column_map=None, runtime=None, previous=None, loads=(), terms=(),
+                 scale_terms=()):
         import scipy.sparse
         self.operator, self.loss, self.mass = operator.tocsr(), None if loss is None else loss.tocsr(), mass.tocsr()
         self.column_map = column_map
         self.free_dofs = np.flatnonzero(np.asarray(free, dtype=bool))
         self._reduced = [self._reduced_free(matrix) for matrix in (self.operator, self.loss, self.mass)]
+        self._terms = tuple(terms)
+        self._term_matrices = tuple(term.matrix.tocsr() for term in self._terms)   # every dof (products, rows)
+        self._reduced_terms = [self._reduced_free(matrix) for matrix in self._term_matrices]
+        self._scale_terms = tuple(scale_terms)
         self._load = None
         if loads:
             position = np.full(int(self.operator.shape[0]), -1, dtype=np.int64)
@@ -56,9 +97,19 @@ class HarmonicSystem:
         terms = {name: term for name, term in (('stiffness', stiffness), ('loss', loss), ('mass', mass),
                                                ('load', self._load)) if term is not None}
         zeros = {name: term * 0.0 for name, term in terms.items()}
-        self._pattern = pattern_sum(list(zeros.values()))
-        aligned = {name: pattern_sum([term if other == name else zeros[other] for other in terms]).data
-                   for name, term in terms.items()}
+        # the frequency terms' patterns join the summed one (their zeros); each term's (positions, values) on it once
+        self._pattern = pattern_sum(list(zeros.values()) + [term * 0.0 for term in self._reduced_terms])
+        # booked (estimate): per frequency-term entry int64 position + float64 value (16 B), host
+        self._term_entries = [_pattern_positions(self._pattern, term) for term in self._reduced_terms]
+        if self._reduced_terms:   # the pencil terms scattered on the united pattern (one search per term)
+            aligned = {}
+            for name, term in terms.items():
+                positions, values = _pattern_positions(self._pattern, term)
+                aligned[name] = np.zeros(self._pattern.nnz, dtype=values.dtype)
+                aligned[name][positions] = values
+        else:
+            aligned = {name: pattern_sum([term if other == name else zeros[other] for other in terms]).data
+                       for name, term in terms.items()}
         self._fixed_values = aligned['stiffness'].astype(np.complex128)
         if 'loss' in aligned:
             self._fixed_values += 1j * aligned['loss']
@@ -66,6 +117,11 @@ class HarmonicSystem:
         self._load_values = aligned.get('load')
         # |diag K|, |diag M| of the free dofs: the row scale of every cuDSS factorisation (computed once)
         self._diagonals = (np.abs(stiffness.diagonal()), np.abs(mass.diagonal()))
+        # per frequency term |diag X_k| and per Schur scale term B_ij^2 on the free dofs (equilibration; booked
+        # (estimate): definition_viscoelastic 'mixed Schur row scale')
+        self._term_diagonals = [np.abs(term.diagonal()) for term in self._reduced_terms]
+        self._schur_squares = [_squared_entries(self._reduced_free(term.coupling)) for term in self._scale_terms]
+        self._term_slots = None  # pencil route: (union slots U, [(index into U, values)] per term), mapped once
         self.runtime = runtime
         self._pencil = None      # sparse_direct DevicePencil (cuDSS) / HostPencil (MUMPS / PARDISO) of the terms, False
         #                          for the host route (made on the first factorize)
@@ -85,36 +141,98 @@ class HarmonicSystem:
         reduced = matrix if self.column_map is None else congruence(self.column_map, matrix)
         return reduced.tocsr()[self.free_dofs][:, self.free_dofs].tocsr()
 
+    def _term_coefficients(self, omega) -> list:
+        """c_k(omega) of the frequency terms (complex)."""
+        return [complex(term.coefficient(omega)) for term in self._terms]
+
     def _product(self, omega, vector):
-        """(operator + j loss - omega^2 mass) vector over every dof."""
+        """(operator + j loss - omega^2 mass + sum_k c_k X_k) vector over every dof."""
         product = _real_times(self.operator, vector) - (omega * omega) * _real_times(self.mass, vector)
-        return product if self.loss is None else product + 1j * _real_times(self.loss, vector)
+        product = product if self.loss is None else product + 1j * _real_times(self.loss, vector)
+        for coefficient, matrix in zip(self._term_coefficients(omega), self._term_matrices):
+            product = product + coefficient * _real_times(matrix, vector)
+        return product
 
     def _fixed_product(self, omega, fixed):
-        """A(omega) fixed from K / M / L times fixed, kept while the held values stay equal (0.0 when they are all 0)."""
+        """A(omega) fixed from K / M / L (and the frequency terms) times fixed, kept while the held values stay equal
+        (0.0 when they are all 0)."""
         if self._fixed_terms is None or not np.array_equal(self._fixed_terms[0], fixed):
             terms = None if not fixed.any() else tuple(None if matrix is None else _real_times(matrix, fixed)
-                                                       for matrix in (self.operator, self.mass, self.loss))
+                                                       for matrix in (self.operator, self.mass, self.loss)
+                                                       + self._term_matrices)
             self._fixed_terms = (fixed.copy(), terms)
         terms = self._fixed_terms[1]
         if terms is None:
             return 0.0
-        operator_fixed, mass_fixed, loss_fixed = terms
+        operator_fixed, mass_fixed, loss_fixed = terms[:3]
         product = operator_fixed - (omega * omega) * mass_fixed
-        return product if loss_fixed is None else product + 1j * loss_fixed
+        product = product if loss_fixed is None else product + 1j * loss_fixed
+        for coefficient, term_fixed in zip(self._term_coefficients(omega), terms[3:]):
+            product = product + coefficient * term_fixed
+        return product
 
     def _rows_product(self, omega, values):
         """A x over every dof, exact at the direct output rows and 0 elsewhere, from x at the row blocks' columns."""
-        rows, _, (operator_rows, mass_rows, loss_rows) = self._direct_rows
+        rows, _, (operator_rows, mass_rows, loss_rows, *term_rows) = self._direct_rows
         product = operator_rows @ values - (omega * omega) * (mass_rows @ values)
         if loss_rows is not None:
             product = product + 1j * (loss_rows @ values)
+        for coefficient, block in zip(self._term_coefficients(omega), term_rows):
+            product = product + coefficient * (block @ values)
         applied = np.zeros(self._n_reduced(), dtype=np.complex128)
         applied[rows] = product
         return applied
 
+    def _equilibration_diagonal(self, omega) -> np.ndarray:
+        """d = |diag K| + omega^2 |diag M| + sum_k |c_k| |diag X_k| over the free dofs, + on the constrained rows of
+        each SchurScaleTerm its proxy sum_j B_ij^2 / d_j (one product per term; frequency or scale terms present);
+        ValueError naming the dofs where d <= 0 (a pressure row coupled to no free displacement, without compliance)."""
+        stiffness_diagonal, mass_diagonal = self._diagonals
+        diagonal = stiffness_diagonal + (omega * omega) * mass_diagonal
+        for coefficient, term_diagonal in zip(self._term_coefficients(omega), self._term_diagonals):
+            diagonal = diagonal + abs(coefficient) * term_diagonal
+        if self._schur_squares:   # B has no entry in a constrained column: the proxy reads the coupled columns only
+            inverse = np.divide(1.0, diagonal, out=np.zeros_like(diagonal), where=diagonal > 0.0)
+            diagonal = diagonal + sum(square @ inverse for square in self._schur_squares)
+        bad = np.flatnonzero(~(diagonal > 0.0))
+        if bad.size:
+            raise ValueError(f'the harmonic operator has {bad.size} free row(s) without a positive equilibration '
+                             f'diagonal (first free indices {bad[:5].tolist()}): a row with no stiffness, mass or scale '
+                             'term (a pressure row needs its SchurScaleTerm and a free displacement to couple to)')
+        return diagonal
+
+    def _pencil_extra(self, omega):
+        """(slots, values) of the frequency terms at omega in the pencil's stored layout (lower entries of a
+        lower-stored one), the slots mapped once: union U of the terms' slots, each term's indices into U (unique within
+        a term, so a fancy += sums a term once)."""
+        if self._term_slots is None:
+            pencil = self._pencil
+            rows_of = np.repeat(np.arange(self._pattern.shape[0], dtype=np.int64), np.diff(self._pattern.indptr))
+            columns_of = self._pattern.indices.astype(np.int64)
+            mapped = []
+            for positions, values in self._term_entries:
+                rows, columns = rows_of[positions], columns_of[positions]
+                if pencil.lower_stored:
+                    keep = columns <= rows
+                    rows, columns, values = rows[keep], columns[keep], values[keep]
+                slots = pencil.slots(rows, columns)
+                if slots is None:
+                    raise RuntimeError('a frequency term entry is not in the pencil pattern (a bug: the summed '
+                                       'pattern holds every term)')
+                mapped.append((np.asarray(slots, dtype=np.int64), values))
+            union = np.unique(np.concatenate([slots for slots, _ in mapped]))
+            # booked (estimate): the union slots (int64) + per term index (int64) and kept values (float64), host
+            self._term_slots = (union, [(np.searchsorted(union, slots), values) for slots, values in mapped])
+        union, mapped = self._term_slots
+        # booked (estimate): one complex128 value per union slot per frequency (uploaded with the slots on cuDSS)
+        extra = np.zeros(union.size, dtype=np.complex128)
+        for coefficient, (index, values) in zip(self._term_coefficients(omega), mapped):
+            extra[index] += coefficient * values
+        return union, extra
+
     def _factorize(self, omega):
-        """Factor of the free-dof operator + j loss - omega^2 mass (+ j b / omega) at omega [rad/s] (counted)."""
+        """Factor of the free-dof operator + j loss - omega^2 mass (+ j b / omega) (+ sum_k c_k X_k) at omega [rad/s]
+        (counted)."""
         import scipy.sparse
         from ...solvers.sparse_direct import SparseDirectSolver, factorize_host
         coefficients = [1.0, -omega * omega] + ([] if self._load_values is None else [1j / omega])
@@ -124,21 +242,36 @@ class HarmonicSystem:
                 self._pattern.indptr, self._pattern.indices, terms, symmetric=True) or False
         # the scale of diag(K) + omega^2 diag(M) never cancels near a resonance (cuDSS equilibration)
         stiffness_diagonal, mass_diagonal = self._diagonals
-        scale = None if self.runtime is None else 1.0 / np.sqrt(stiffness_diagonal + (omega * omega) * mass_diagonal)
+        # With pressure rows (scale terms: the mixed saddle point) host SuperLU factors R A R too (scale_superlu, the
+        # private one likewise; R the one every back end gets): its symmetric mode keeps a diagonal pivot only while
+        # |a_jj| >= the pivot threshold x its column max, a comparison across units (N/m displacement diagonals, the
+        # coupling B in m^2 in 3D, the pressure diagonal in m^3/Pa) that is meaningless unscaled
+        # (examples/mechanics/bead_drag_water_frequency_response: 8915 row swaps, fill 105x, 53 s per factor, backward
+        # error 1.7e-7; scaled: fill 5.2x, 0.37 s, 3.6e-16). Rows of one unit (every other system) keep SuperLU
+        # unscaled, bit-identical.
+        saddle = bool(self._scale_terms)
+        if self._terms or saddle:   # + |c_k| |diag X_k| + the Schur proxy of the pressure rows (symmetric R A R)
+            scale = (None if self.runtime is None and not saddle
+                     else 1.0 / np.sqrt(self._equilibration_diagonal(omega)))
+        else:
+            scale = None if self.runtime is None else 1.0 / np.sqrt(stiffness_diagonal + (omega * omega) * mass_diagonal)
         if self._pencil:   # cuDSS: values on the device; MUMPS / PARDISO: host values on the kept analysis
+            extra = self._pencil_extra(omega) if self._terms else None
             self.factor = self.runtime.factorize_pencil(self._pencil, coefficients, row_scale=scale,
-                                                        previous=self.factor)
+                                                        previous=self.factor, extra=extra, scale_superlu=saddle)
         else:
             values = self._fixed_values - (omega * omega) * self._mass_values
             if self._load_values is not None:
                 values += (1j / omega) * self._load_values
+            for coefficient, (positions, term_values) in zip(self._term_coefficients(omega), self._term_entries):
+                values[positions] += coefficient * term_values   # unique positions within a term
             matrix = scipy.sparse.csr_matrix((values, self._pattern.indices, self._pattern.indptr),
                                              shape=self._pattern.shape)
-            if self.runtime is None:
-                self.factor = factorize_host(matrix)
+            if self.runtime is None:   # the private SuperLU: scaled with pressure rows only
+                self.factor = factorize_host(matrix, row_scale=scale)
             else:
                 self.factor = self.runtime.factorize_host(matrix, symmetric=True, row_scale=scale,
-                                                          previous=self.factor)
+                                                          previous=self.factor, scale_superlu=saddle)
         self.factorizations += 1
         return self.factor
 
@@ -221,6 +354,7 @@ class HarmonicSystem:
         """(HarmonicTerm list, HarmonicLoad list) of the free-dof problem of solve (fem.reduced_harmonic): K, j L, -omega^2
         M (+ j b / omega) and the rhs G^T (load - A(omega) fixed) - extra_rhs split by its powers of omega."""
         from ...fem.reduced_harmonic import HarmonicLoad, HarmonicTerm, PowerCoefficient
+        self._refuse_reduced('a reduced')
         stiffness, loss, mass = self._reduced
         terms = [HarmonicTerm(stiffness, PowerCoefficient(1.0, 0))]
         if loss is not None:
@@ -251,6 +385,7 @@ class HarmonicSystem:
         from ...fem.reduced_harmonic import SWEEP_METHODS, ReducedHarmonicModel
         if method not in SWEEP_METHODS:
             raise ValueError(f"reduced sweep method must be one of {', '.join(SWEEP_METHODS)}, got {method!r}")
+        self._refuse_reduced(f"{label}: sweep_method '{method}'")
         self.clear_reduced()
         omegas = np.atleast_1d(np.asarray(omegas, dtype=np.float64)).ravel()
         if not (omegas.size and np.all(np.isfinite(omegas)) and np.all(omegas > 0.0)):
@@ -283,6 +418,18 @@ class HarmonicSystem:
         self._planned = (model, fixed, load, [(int(dof), value) for dof, value in extra_rhs])
         return info
 
+    def _refuse_reduced(self, what) -> None:
+        """ValueError with frequency terms: a reduced model needs a pencil polynomial in omega (fem.reduced_harmonic
+        HarmonicTerm powers), which the per-frequency terms are not (or not as stored: a zero-coefficient term)."""
+        if self._terms:
+            labels = ', '.join(term.label or 'unnamed' for term in self._terms[:3])
+            more = f' and {len(self._terms) - 3} more' if len(self._terms) > 3 else ''
+            raise ValueError(f"{what} sweep needs a pencil polynomial in omega, but this system has "
+                             f"{len(self._terms)} per-frequency term(s) ({labels}{more}): frequency-dependent moduli "
+                             "(viscosity, relaxation branches) and, at azimuthal_order 1, the pressure block of an "
+                             "incompressible material of formulation mixed (kept as a zero term through the axis "
+                             "ties) need sweep_method 'direct'")
+
     def set_output_rows(self, rows) -> None:
         """Rows (over every dof) where solve(fields=False) must give x and A x exactly (records: probes, supports,
         electrodes): after plan_reduced their L V blocks (fem.reduced_outputs.ReducedRows), else for the direct solves
@@ -292,7 +439,8 @@ class HarmonicSystem:
         if self._planned is None:
             if self.column_map is None:
                 rows = np.unique(np.asarray(rows, dtype=np.int64))
-                blocks = [None if matrix is None else matrix[rows] for matrix in (self.operator, self.mass, self.loss)]
+                blocks = [None if matrix is None else matrix[rows]
+                          for matrix in (self.operator, self.mass, self.loss) + self._term_matrices]
                 columns = np.unique(np.concatenate([rows] + [block.indices for block in blocks if block is not None]))
                 self._direct_rows = (rows, columns, tuple(None if block is None else block[:, columns].tocsr()
                                                           for block in blocks))
@@ -324,6 +472,13 @@ class HarmonicSystem:
         return solution, self._product(omega, solution)
 
 
+def _squared_entries(matrix):
+    """The CSR of |m_ij|^2 on a CSR's pattern, its data replaced in place (pass a matrix no one else holds)."""
+    squared = matrix.tocsr()
+    squared.data = np.abs(squared.data) ** 2
+    return squared
+
+
 def _real_times(matrix, vector):
     """matrix @ vector; a real sparse matrix times a complex vector as two real products (scipy's sparsetools would
     upcast the matrix values to a complex copy on every call)."""
@@ -332,23 +487,43 @@ def _real_times(matrix, vector):
     return matrix @ np.ascontiguousarray(vector.real) + 1j * (matrix @ np.ascontiguousarray(vector.imag))
 
 
-def solve_harmonic(operator, loss, mass, omega, free, fixed, load, column_map=None, extra_rhs=()):
+def _pattern_positions(pattern, matrix) -> tuple:
+    """(int64 positions in the canonical CSR pattern, values) of the entries of a same-shape sparse matrix (duplicates
+    summed); ValueError when one is not in the pattern."""
+    block = matrix.tocsr(copy=True)
+    block.sum_duplicates()
+    n_columns = int(pattern.shape[1])
+    keys = np.repeat(np.arange(pattern.shape[0], dtype=np.int64), np.diff(pattern.indptr)) * n_columns \
+        + pattern.indices.astype(np.int64)
+    wanted = np.repeat(np.arange(block.shape[0], dtype=np.int64), np.diff(block.indptr)) * n_columns \
+        + block.indices.astype(np.int64)
+    if not wanted.size:
+        return np.zeros(0, dtype=np.int64), np.asarray(block.data)
+    where = np.minimum(np.searchsorted(keys, wanted), max(keys.size - 1, 0))
+    if not keys.size or not np.array_equal(keys[where], wanted):
+        raise ValueError('a harmonic term has entries outside the summed pattern')
+    return where.astype(np.int64), np.asarray(block.data)
+
+
+def solve_harmonic(operator, loss, mass, omega, free, fixed, load, column_map=None, extra_rhs=(), terms=(),
+                   scale_terms=()):
     """(x, A x, factor host bytes) of one frequency by a private HarmonicSystem (one complex host SuperLU; arguments as
     HarmonicSystem / its solve)."""
-    harmonic = HarmonicSystem(operator, loss, mass, free, column_map)
+    harmonic = HarmonicSystem(operator, loss, mass, free, column_map, terms=terms, scale_terms=scale_terms)
     solution, product = harmonic.solve(omega, fixed, load, extra_rhs)
     return solution, product, int(harmonic.factor.host_bytes or 0)
 
 
 def reaction_table(record, name) -> dict:
     """'table' of a support's complex reaction per solved frequency from its core.harmonic_probe.HarmonicProbeRecord of
-    force components (ascending f): columns frequency, <F>_re, <F>_im per component; extras frequency [Hz], components,
-    support. ValueError before the first frequency."""
+    force components in record.unit and the work REACTION_WORK (ascending f): columns frequency, <F>_re, <F>_im per
+    component; extras frequency [Hz], components, support. ValueError before the first frequency."""
     frequencies, values = record.recorded()
     columns, units = ['frequency'], ['Hz']
     for component in record.components:
         columns += [f'{component}_re', f'{component}_im']
-        units += [record.unit, record.unit]
+        unit = _WORK_UNITS[record.unit] if component == REACTION_WORK else record.unit
+        units += [unit, unit]
     rows = [[float(frequency)] + [part for component in record.components
                                   for part in (float(values[component][index].real),
                                                float(values[component][index].imag))]

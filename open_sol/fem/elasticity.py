@@ -1,7 +1,8 @@
 """Linear elasticity on triangle meshes: vector Lagrange P1 / P2 with interleaved dofs
 (2 d + component), planar Voigt rows (xx, yy, g = 2 strain_xy) or axisymmetric (r, z) rows (rr, zz, tt, g) with the
 hoop strain u_r / r and whole-ring weights 2 pi r; stiffness, consistent mass, stress / body / edge loads and element
-strains (nodal recovery: fem.assembly.nodal_average), the strain source int phi beta . eps (thermoelastic damping).
+strains (nodal recovery: fem.assembly.nodal_average), the strain source int phi beta . eps (thermoelastic damping),
+the stiffness of element groups for several coefficient sets on one gradient pass (viscoelastic group terms).
 Prestress pieces: StressField, geometric
 stiffness K_sigma, initial-stress force, stress sampling and the total-Lagrangian Green-Lagrange internal force /
 tangent (geometric nonlinearity, K6; Newton iterations on TangentAssembler, a fixed pattern). PML coordinate stretches (stretch= of the stiffness / mass / K_sigma, K5) and the
@@ -158,6 +159,46 @@ def assemble_elastic_stiffness(dofs, coefficients, *, axisymmetric=False, stretc
                                  weights)
         _append_blocks(rows, cols, values, dofs, positions, local)
     return _to_csr(rows, cols, values, (n_vector, n_vector))
+
+
+def assemble_elastic_stiffness_groups(dofs, coefficient_sets, groups, n_groups, *, axisymmetric=False,
+                                      azimuthal_order=0):
+    """[[CSR (c n, c n) of int B^T C_s B dV over the map elements of group g for each coefficient dict C_s] for each
+    group g]; groups: int64 per mesh element (-1 = none). B, the rule weights (planar w det J, axisymmetric x 2 pi r,
+    order m >= 1 x pi r: _weights / _azimuthal_terms) once per element chunk, then per set _material_blocks and per group
+    a COO -> CSR (_to_csr: explicit zeros kept). Same rules / degrees as assemble_elastic_stiffness /
+    assemble_azimuthal_stiffness (the viscoelastic group terms of the mechanics frequency response)."""
+    groups = np.asarray(groups, dtype=np.int64)
+    components = AZIMUTHAL_COMPONENTS if azimuthal_order else COMPONENTS
+    order = _check_azimuthal_order(azimuthal_order) if azimuthal_order else 0
+    n_vector = components * dofs.n_dofs
+    # booked (estimate): the COO blocks of every (group, set) are held until the end ((c n_local)^2 float64 + 2 int64
+    # per element and set, as one assemble_elastic_stiffness per set), then one CSR per (group, set)
+    lists = [[([], [], []) for _ in coefficient_sets] for _ in range(int(n_groups))]
+    degree = 0 if azimuthal_order else max(2 * dofs.order - 2, 2)
+    for positions, rule in _groups(dofs, axisymmetric or bool(azimuthal_order), degree):
+        member_groups = groups[dofs.elements[positions]]
+        keep = member_groups >= 0
+        if not keep.any():
+            continue
+        positions, member_groups = positions[keep], member_groups[keep]
+        elements = dofs.elements[positions]
+        if azimuthal_order:
+            _, basis, gradients, weights, radius = _azimuthal_terms(dofs, positions, rule, None, None)
+            operator = azimuthal_strain_operator(basis, gradients, radius, order)
+        else:
+            _, operator, weights = _operator_at(dofs, positions, rule, axisymmetric)
+        present = np.unique(member_groups)
+        selections = {int(group): member_groups == group for group in present}
+        for index, coefficients in enumerate(coefficient_sets):
+            material = (azimuthal_material_matrix(coefficients, elements) if azimuthal_order
+                        else material_matrix(coefficients, elements, axisymmetric))
+            local = _material_blocks(operator, material, weights)
+            for group, selection in selections.items():
+                rows, cols, values = lists[group][index]
+                _append_component_blocks(rows, cols, values, dofs, positions[selection], local[selection], components)
+    return [[_to_csr(rows, cols, values, (n_vector, n_vector)) for rows, cols, values in group_lists]
+            for group_lists in lists]
 
 
 def _scalar_mass(dofs, density, axisymmetric, stretch, radial_ratio):

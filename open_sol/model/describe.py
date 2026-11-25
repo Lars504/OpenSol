@@ -640,14 +640,29 @@ _SPEC_FIELD_HELP = {
 }
 
 _EXPRESSION_SYNTAX = (
-    'Arithmetic: + - * / // % ** and unary + -; ** is the power (^ is not allowed).',
+    'Arithmetic: + - * / // % ** and unary + -; ** is the power, the same as pow (^ is not allowed): real operands '
+    'give the real power whatever they are (numbers, parameters, fields), so a negative base to a fractional power '
+    'is nan like sqrt ((-8)**(1/3) = nan, (-2)**2 = 4); the principal complex power needs a complex operand, '
+    '(a + 0j)**b.',
     'Comparisons < <= > >= == != give 1 or 0, e.g. "(x > 1*um) * 2"; chained comparisons, and / or / not and if / '
     'else are not allowed: use where, min and max.',
-    'Integer literals become floats (1/2 = 0.5). Only numbers, names and positional calls of the functions below '
-    '(no attributes, indexing, strings or keywords). A function name without "(" is an ordinary name, which only a '
-    'result sample name can supply (see Derived values).',
-    f'At most {MAX_EXPRESSION_LENGTH} characters. Results must be real: a complex result (e.g. (-8)**(1/3)) is an '
-    'error; a value outside a function domain (log(-1)) gives nan, which fails where a finite number is needed.',
+    'Integer literals become floats (1/2 = 0.5); imaginary literals (1j, 2.5j) are complex. Only numbers, names and '
+    'positional calls of the functions below (no attributes, indexing, strings or keywords). A function name without '
+    '"(" is an ordinary name, which only a result sample name can supply (see Derived values).',
+    f'At most {MAX_EXPRESSION_LENGTH} characters. Results must be real: a complex result (e.g. (-8 + 0j)**(1/3), or '
+    '1j*w without re / im / abs / arg) is an error; a value outside a function domain (log(-1), (-8)**(1/3)) gives '
+    'nan, which fails where a finite number is needed.',
+    'Complex intermediates (e.g. analytic references with complex moduli: re(-6*pi*a*G*X*(1 + lam*a)) with G and '
+    'lam written out inline, G -> (G0*(1 + 1j*eta) + 1j*w*mu) and lam -> (1j*w*sqrt(rho/G)), since a complex '
+    'parameter is refused): arithmetic, ** / pow, sqrt, exp, log, log10, abs, the trigonometric and hyperbolic '
+    'functions and where(c, a, b) take complex values (principal branch); re, im, conj, arg and the complex Bessel '
+    'functions besselj, bessely, besseli, besselk, spherical_jn, spherical_yn are listed below. Real inputs give '
+    'exactly the real results (sqrt(-4), log(-1) and (-8)**(1/3) stay nan; sqrt(-4 + 0j) = 2j); a complex value '
+    'comes only from a 1j literal or a complex function. Comparisons, atan2, floor, ceil, sign, min, max, hypot and '
+    'the real '
+    'special functions (j0 ... erfc) refuse complex values (an error, never a silent ordering). Parameters and every '
+    'final value stay real. The complex Bessel functions run on the CPU (scipy): parameters, references and analytic '
+    'curves always do; a field expression of a gpu run calling one is an error.',
     'With numbers and parameters only an expression gives one float; with x, y, z or fields it is evaluated per '
     'cell.',
 )
@@ -2111,7 +2126,8 @@ def _results_section(registry, physics_types, with_selftests=True):
         'selftests': [{'name': case.name, 'label': case.label, 'description': case.description,
                        'max_wall_time': _plain(case.max_wall_time), 'heavy': case.heavy,
                        'variants': [{'name': variant.name, 'backend': variant.backend, 'precision': variant.precision,
-                                     'roles': list(variant.roles), 'tolerance': _plain(variant.tolerance)}
+                                     'roles': list(variant.roles), 'runs': list(variant.runs),
+                                     'tolerance': _plain(variant.tolerance)}
                                     for variant in case.variants]}
                       for case in (_sorted_by_name(registry.selftests()) if with_selftests else [])],
     }

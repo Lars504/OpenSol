@@ -15,10 +15,11 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   adds alpha_zz; rho read only by the modal and frequency_response studies; youngs_modulus / poisson_ratio /
   photoelastic_p11 / _p12 are elastic_waves' Param objects, `material_params.py`; optional c_ij, piezoelectric,
   axial_wavenumber = 2.5D guided modes, frequency_response study, periodic_x / _y + bloch_kx / _ky Bloch cells on both
-  mesh kinds: section "Bloch cells, 2D"). `solid_mechanics_3d` (3D only, separate type like em_fdtd_3d; default
-  'solid'; same material Params incl. rho; tensor meshes: lowest modes only; tetrahedra: target_frequency / search
-  targets / band, 21 c_IJ, piezoelectric (charges in C, static on 'linear' sparse_direct, short / open modes on
-  'eigen'), frequency_response on 'linear').
+  mesh kinds: section "Bloch cells, 2D"). Both FEM types: the shear_modulus / bulk_modulus route, viscoelastic moduli
+  and the setting formulation (sections "Viscoelastic moduli ..." and "Mixed u-p formulation").
+  `solid_mechanics_3d` (3D only, separate type like em_fdtd_3d; default 'solid'; same material Params incl. rho; tensor
+  meshes: lowest modes only; tetrahedra: target_frequency / search targets / band, 21 c_IJ, piezoelectric (charges in
+  C, static on 'linear' sparse_direct, short / open modes on 'eigen'), frequency_response on 'linear').
 - Exact self-test cases (1e-8 .. 1e-9) need float32-exact material constants (`selftest_helpers.float32_value`); an
   isotropic E / nu pair is not exact even then (its float32 storage shifts frequencies ~7e-9), so exact roller boxes
   use orthotropic c_ij.
@@ -112,6 +113,67 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   `solve(fields=False)` is exact ONLY at the registered rows, so a solver's records read only rows it registered
   (supports, probes, `PiezoSystem.electrode_rows`). Fields only at `wants_fields` frequencies; a skipped last one is
   shown by `publish_frequency_response`.
+- azimuthal_order m >= 1 (triangles) is driven by prescribed displacements only (cos(m phi) loads are refused); a
+  support's F_x is sum R_r - sum R_phi at m = 1 (the net force along phi = 0), both components 0 at m >= 2; its W =
+  sum R u_held takes every component. Triangles: record rows and the residual are solid-map rows, `held` /
+  `held_values` full-mesh ids (index them by `dofs.global_ids[rows]`); tetrahedra: both full-mesh.
+- A reaction of a fully held stiff domain in a soft / viscous medium carries its own K rows' round-off (a rigid
+  translation cancels in K X only to ~1e-16 E per entry): a polystyrene bead in water at 1 Hz has Re F ~1e-4 of the
+  drag (E / (omega mu) ~ 6e11), above its physical inertia; grade only the dominant part (bead_wall_brenner example).
+
+## Viscoelastic moduli and the N-term harmonic system (`viscoelastic.py`, `definition_viscoelastic.py`; FEM meshes)
+- Law, routes, member masks and groups: `viscoelastic.py` header. Displacement formulation: groups only over the
+  omega-dependent members, each adding its excess G*(w) - G0 (1 + j eta) on unit-modulus D_g / V_g (the relaxed part
+  stays inside K + j L); mixed: every member is a group (the pressure zones). At most MAX_GROUPS (validation V20 for
+  plain numbers, the solver for expressions): a spatially varying modulus is an error, not N groups.
+- Group terms are `frequency_response.FrequencyTerm`s added at fixed slots of the summed pattern per frequency (pencil
+  `extra=`, host route `values[positions]`), never pencil terms of their own nor re-assembled per frequency; reduced
+  sweeps refuse any term (`_refuse_reduced`; validation V7 / V7b). A `SchurScaleTerm` only enters the equilibration
+  diagonal: A, its products, residual rows and every solution handed out (solve, `_rows_solve`, last_solution) stay
+  unscaled.
+- `terms=()` / `scale_terms=()` stay bit-identical to the plain pencil (solid_harmonic_terms compares the bits): every
+  new branch of HarmonicSystem is guarded by `self._terms` / `self._scale_terms`.
+- Every study but frequency_response reads the relaxed G0, K0 alone (V16 warns for user-set values). Shown harmonic
+  stresses on FEM meshes (responses and damped modes) are Re(C*(omega) eps) with the loss part (`_harmonic_moduli`);
+  energies stay the storage part; tensor meshes unchanged.
+- viscosity is laminar_flow's property too: a viscosity-only cell joins the solid only with formulation mixed (void in
+  the displacement formulation: V15 warning, not an error, since library water carries it). The viscoelastic arrays
+  are not STIFFNESS_ARRAYS (a T-dependent laminar_flow viscosity must not re-assemble the solid in the displacement
+  formulation): their change drops the kept harmonic operators (and the element moduli); with formulation mixed it also
+  sets `operator_dirty` (membership follows the viscosity), so the next solve re-assembles.
+
+## Mixed u-p formulation (setting formulation; `solver_common.mixed_harmonic_operators`, fem `mixed_elasticity*`)
+- x = [u; p], u in the system's numbering (2D the solid map, 3D the full map); the system's static K (relaxed moduli:
+  the full lambda of E / nu and K0 members, deviatoric where K0 is unset, liquids 0) carries the dof map and the rigid
+  check only and is never factorised. Reactions are the u rows of A x - f,
+  so they include -B^T p; a record reads u rows only (`_split_harmonic`).
+- Pressure zones: one P1 space per parameter group, duplicated where groups meet (the pressure jumps there); at m >= 1
+  the axis pressure dofs are held at 0 (a cos(m phi) pressure is regular there only when 0).
+- Gauge pin: the constant pressure of an incompressible region enclosed by held displacements is a null vector, so one
+  dof is pinned (`_pressure_gauges`), which drops the region's volume equation 1^T B u = 0. Regions are connected over
+  the UNION of the incompressible groups (fem `pressure_regions(space, groups)` joins their duplicated dofs at shared
+  nodes): at an interface of two incompressible groups the B^T 1 terms cancel, so e.g. an oil drop in water in a held
+  container is one enclosed region though neither group alone is (per-group detection left it singular). Held
+  displacements that change that volume make the system unsolvable: `HarmonicOperators.check_held_volumes` refuses
+  them per solve (from `_harmonic_fixed`: a new solve path takes its held vector from there). A region of one group
+  with every displacement held is refused at assembly. Both rely on the exact row sums B^T 1 (fem sub file "Mixed u-p").
+- Held regions (*_domain supports) sharing a compressible solid's material share its P1 pressure and drag it toward 0
+  (div u = 0 there; rigid_inclusion_compressible_frequency_response: 2.5e-3 vs 1.2e-5 at K = G): own material.
+- Stored zeros vs zero-coefficient terms: an incompressible group's zero pressure block stays in the pattern (PARDISO
+  symmetric types need every diagonal stored): as stored zeros of the operator without a column map, but through the
+  m = 1 axis-tie column map a congruence drops exact zeros, so there it is a FrequencyTerm of coefficient 0, which makes
+  reduced sweeps refuse that system (V7b).
+- The pressure display is nodal and averages the groups meeting at a node (a jump smears over one element, like
+  stresses); stresses at element points take the per-zone values (`pressure_at`), so derived integrals of stresses see
+  the jump.
+- Saddle-point equilibration: symmetric scaling only (R A R with d = |diag| + on the pressure rows the SchurScaleTerm
+  proxy sum_j B_pj^2 / d_j of the u diagonals, per frequency: every scaled B row has norm <= 1 whatever h or the
+  viscous / inertial balance; a fixed weight diag M_p / |G*| is ~(h / delta)^2 too large where w^2 rho h^2 dominates
+  |G*| in d_u). It reaches every back end, host SuperLU included (`scale_superlu`, the private SuperLU too; solvers sub
+  file "sparse_direct"): unscaled, SuperLU's diagonal pivot test compares u rows against p rows and loses the pressure
+  field while reactions survive (max |p| of solid_stokes_second_problem's cpu variant, the sphere pressure of
+  solid_oscillating_sphere_drag). Never a row-only scale or a sign flip of the pressure rows, which would break the
+  complex symmetry cuDSS / PARDISO LDL^T and the lower-stored DevicePencil rely on.
 
 ## Guided (2.5D) modes (`guided_modes.py`, setting axial_wavenumber)
 - Formulation (u_z = -i w, isotropic cells only): `guided_modes.py` header. The optomechanics study creates the solid
@@ -183,6 +245,8 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   on cuDSS double / mixed; frequency response is the best candidate (complex symmetric, one pattern, 100-600
   frequencies: plan reuse), double (near a resonance a float32 factor needs many refinement steps).
 - solid_fem_kirsch sets h_min: the default dx / 100 floored the hole sizes (1 % low stresses).
+- An x / y body force is one centroid value per element (`ctx.eval_field`), so it caps P2 convergence at O(h^2)
+  (sphere_breathing_viscoelastic_frequency_response); no load is normal to a curved boundary (tractions in model axes).
 
 ## Tetrahedron meshes (solid_mechanics_3d; `solver_fem3d.py`, `system_fem3d.py`, fem/elasticity3d.py)
 - `_create_solid_3d` builds SolidMechanicsFEMPhysics3D on 'tetrahedra' (every feature declares both grids); what runs
@@ -266,12 +330,21 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   `factor_fill`; definition3d `host_factor_items` / `eigen_host_direct` (MUMPS / PARDISO). What each item holds and
   why: their comments. definition imports definition3d at module level, so definition3d imports these inside its
   estimators.
+- Viscoelastic group terms and mixed u-p blocks: `definition_viscoelastic` (`viscoelastic_counts`,
+  `viscoelastic_memory_items`, `viscoelastic_time_items`), shared by both estimators. The factorised pencil of mixed is
+  the saddle point: every frequency-response item takes `ViscoelasticCounts.unknowns` / `entries`, the factor fill is
+  the u-block fill times `fill_scale` ((dofs per node)^2: `scaled_fill` on a counted FactorFill, the SuperLU heuristic
+  alike), and 3D `_tetrahedra_unknowns` / `_entries` include the pressure, so the size rule and the time recipe see it.
+  Member shares (`_solid_fraction`, the pressure nodes) count the moduli route and, mixed, the liquids.
 - Unverified against counters (no gpu run in selftest_out): the static 'linear' cuDSS items, the solid
-  frequency-response HarmonicSystem, solid DevicePencils, device Newton tangents.
+  frequency-response HarmonicSystem (with its viscoelastic group terms and mixed u-p blocks), solid DevicePencils,
+  device Newton tangents.
 
 ## Self-tests (`selftests.py`)
 - Shared case helpers live in selftests.py, selftests_3d.py, selftests_fem3d.py, selftests_eigenfrequency.py,
   selftests_formulations.py and selftests_nonlinear.py (the 3D nonlinear twins reuse its helpers): reuse, never a local
   copy. Case notes are in the case descriptions.
+- A frequency_response run with several frequencies keeps only the last one live: derived field values read that one,
+  earlier frequencies are checked through frequency_probe series and support reaction tables (selftests_viscoelastic).
 - Template modules (mechanics entries of `TEMPLATE_SOURCES`, model/import_contracts.py) import no non-template sibling
   at module level: get_registry loads them, and contract selftests_lazy does not follow their imports.

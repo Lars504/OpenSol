@@ -191,6 +191,21 @@ file ("Triangle meshes"). Error indicators: section "Error indicators" (users: g
   `fixed_value`, `ensure_assembled()`); `load_vector`, `operator` and `reactions` hold pencil terms only. Subclass
   hooks (`_assemble_terms`, `_physical_values`, ...) are for subclasses (grep `class .*HarmonicSystem` under physics).
 
+## Mixed u-p (`mixed_elasticity.py`, `mixed_elasticity3d.py`; the mechanics mixed formulation)
+- B and M_p take the elasticity rules and weights (`_operator_at` / `_azimuthal_terms`: x 2 pi r RING, x pi r at m >= 1)
+  and tr eps from the stiffness's own strain operator rows, never fem.assembly's x r: B must match K's rules. The
+  integrands are polynomial on isoparametric P2 elements at the stiffness's rule degrees (CURVED_DEGREE,
+  AXISYMMETRIC_DEGREE; 3D affine), so the row sums B^T 1 are exact to round-off: the mechanics gauge detection and
+  volume check (tolerance 1e-9) rely on it; a lower rule there breaks them.
+- Pressure maps per group take the displacement map's geometry order; a group's dofs are offsets[g] + its own
+  numbering (nodes shared by groups carry one dof per group): node values go through `nodal_pressure[_3d]` (groups
+  averaged) or `pressure_at[_3d]`, never a global-id lookup; regions across groups through `pressure_regions(space,
+  groups)` (joins the duplicates by `dof_nodes()`).
+- Group assemblers (`assemble_elastic_stiffness_groups[_3d]`, `assemble_pressure_terms[_3d]`): one strain operator per
+  element chunk for every group and set; 3D CsrAccumulators per (group, set), never `kept_pattern` (group patterns
+  would evict K's kept block pattern). `embedded` / `saddle_coupling` keep explicit zeros (index shifts and
+  pattern_sum, no bmat).
+
 ## Squeeze film (`squeeze_film.py`; runtimes: physics/mechanics/squeeze_film.py tets, physics/membrane/squeeze_film.py)
 - Equation, units, vents and the two routes of w: module header. A shape that is not the film's own full coefficients
   goes through the volume source on the ACTIVE dof map (never the full map: a boundary dof's support outside the film

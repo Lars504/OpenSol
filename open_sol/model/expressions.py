@@ -64,38 +64,77 @@ _ARRAY_FUNCTIONS = {   # expression function -> numpy / cupy attribute
 }
 # real special functions of one argument: scipy.special on numpy (imported on first call), cupyx.scipy.special on cupy
 _SPECIAL_FUNCTIONS = ('j0', 'j1', 'y0', 'y1', 'i0', 'i1', 'k0', 'k1', 'erf', 'erfc')
+# complex intermediates (the final value must stay real: Expression.evaluate). A complex literal (1j) or a call of
+# one of these switches an expression to the complex function table (_function_table(xp, True): real-only functions
+# and comparisons refuse complex values there; real inputs give the real results); every other expression keeps the
+# real table unchanged. ** compiles to the table's pow (_power: numpy semantics for real operands, so a negative base
+# to a fractional power is nan whatever the scalar type), so ** alone never makes a value complex.
+_COMPLEX_ARRAY_FUNCTIONS = {'re': 'real', 'im': 'imag', 'conj': 'conj', 'arg': 'angle'}   # -> numpy / cupy attribute
+# Bessel functions of complex argument -> scipy.special name; host only (cupyx.scipy.special has no complex ones:
+# a cupy array argument raises); 'spherical' ones take a whole order n and an optional derivative flag
+_COMPLEX_SPECIAL_FUNCTIONS = {'besselj': 'jv', 'bessely': 'yv', 'besseli': 'iv', 'besselk': 'kv'}
+_SPHERICAL_FUNCTIONS = {'spherical_jn': 'spherical_jn', 'spherical_yn': 'spherical_yn'}
+COMPLEX_FUNCTION_NAMES = (frozenset(_COMPLEX_ARRAY_FUNCTIONS) | frozenset(_COMPLEX_SPECIAL_FUNCTIONS)
+                          | frozenset(_SPHERICAL_FUNCTIONS))
+# real-only functions: refuse complex arguments in the complex table (numpy would order complex values
+# lexicographically in min / max, give z/|z| for sign and scipy a complex erf, cupy may not: never silently)
+_REAL_ONLY_FUNCTIONS = ('atan2', 'floor', 'ceil', 'sign', 'min', 'max', 'hypot', *_SPECIAL_FUNCTIONS)
+_COMPLEX_SPELLINGS = {'j0': 'besselj(0, z)', 'j1': 'besselj(1, z)', 'y0': 'bessely(0, z)', 'y1': 'bessely(1, z)',
+                      'i0': 'besseli(0, z)', 'i1': 'besseli(1, z)', 'k0': 'besselk(0, z)', 'k1': 'besselk(1, z)'}
 # elementwise only: 3D derived values reduce one z plane at a time (field_access_tensor._evaluate_planes) and 3D
 # builds evaluate per z-slab, so a non-local function (a gradient, a neighbour read) would silently break both
-FUNCTION_NAMES = frozenset(_ARRAY_FUNCTIONS) | frozenset(_SPECIAL_FUNCTIONS)
+FUNCTION_NAMES = frozenset(_ARRAY_FUNCTIONS) | frozenset(_SPECIAL_FUNCTIONS) | COMPLEX_FUNCTION_NAMES
 _VARIADIC_FUNCTIONS = frozenset({'min', 'max'})
-# (min args, max args or None) in _ARRAY_FUNCTIONS then _SPECIAL_FUNCTIONS order (independent of the hash seed)
-FUNCTION_ARITY = {name: (1, 1) for name in (*_ARRAY_FUNCTIONS, *_SPECIAL_FUNCTIONS)}
+# (min args, max args or None) in _ARRAY_FUNCTIONS, _SPECIAL_FUNCTIONS, then the complex functions' order
+# (independent of the hash seed)
+FUNCTION_ARITY = {name: (1, 1) for name in (*_ARRAY_FUNCTIONS, *_SPECIAL_FUNCTIONS, *_COMPLEX_ARRAY_FUNCTIONS)}
 FUNCTION_ARITY.update(atan2=(2, 2), pow=(2, 2), hypot=(2, 2), where=(3, 3), min=(2, None), max=(2, None))
+FUNCTION_ARITY.update(dict.fromkeys(_COMPLEX_SPECIAL_FUNCTIONS, (2, 2)), **dict.fromkeys(_SPHERICAL_FUNCTIONS, (2, 3)))
 FUNCTION_DESCRIPTIONS = {   # function -> one-line signature and meaning (describe('expressions'))
-    'sin': 'sin(x): sine of an angle x in rad',
-    'cos': 'cos(x): cosine of an angle x in rad',
-    'tan': 'tan(x): tangent of an angle x in rad',
-    'asin': 'asin(x): inverse sine in rad, for x in [-1, 1]',
-    'acos': 'acos(x): inverse cosine in rad, for x in [-1, 1]',
-    'atan': 'atan(x): inverse tangent in rad, in (-pi/2, pi/2)',
-    'atan2': 'atan2(y, x): angle of the point (x, y) in rad, in [-pi, pi], counter-clockwise from +x',
-    'sinh': 'sinh(x): hyperbolic sine',
-    'cosh': 'cosh(x): hyperbolic cosine',
-    'tanh': 'tanh(x): hyperbolic tangent',
-    'exp': 'exp(x): e to the power x',
-    'log': 'log(x): natural logarithm, for x > 0',
-    'log10': 'log10(x): base-10 logarithm, for x > 0',
-    'sqrt': 'sqrt(x): square root, for x >= 0',
-    'abs': 'abs(x): absolute value',
-    'min': 'min(a, b, ...): element-wise minimum of 2 or more arguments',
-    'max': 'max(a, b, ...): element-wise maximum of 2 or more arguments',
+    'sin': 'sin(x): sine of an angle x in rad (complex x too)',
+    'cos': 'cos(x): cosine of an angle x in rad (complex x too)',
+    'tan': 'tan(x): tangent of an angle x in rad (complex x too)',
+    'asin': 'asin(x): inverse sine in rad, for real x in [-1, 1] (nan outside); principal value for complex x',
+    'acos': 'acos(x): inverse cosine in rad, for real x in [-1, 1] (nan outside); principal value for complex x',
+    'atan': 'atan(x): inverse tangent in rad, in (-pi/2, pi/2); principal value for complex x',
+    'atan2': 'atan2(y, x): angle of the point (x, y) in rad, in [-pi, pi], counter-clockwise from +x (real y, x; '
+             'the angle of a complex z is arg(z))',
+    'sinh': 'sinh(x): hyperbolic sine (complex x too)',
+    'cosh': 'cosh(x): hyperbolic cosine (complex x too)',
+    'tanh': 'tanh(x): hyperbolic tangent (complex x too)',
+    'exp': 'exp(x): e to the power x (complex x too: exp(1j*phi) = cos(phi) + 1j*sin(phi))',
+    'log': 'log(x): natural logarithm, for real x > 0 (nan below 0); principal value for complex x (imaginary part '
+           'in (-pi, pi])',
+    'log10': 'log10(x): base-10 logarithm, for real x > 0 (nan below 0); principal value for complex x',
+    'sqrt': 'sqrt(x): square root, for real x >= 0 (nan below 0); principal root for complex x (real part >= 0), so '
+            'sqrt(x + 0j) of a real x < 0 gives 1j*sqrt(-x)',
+    'abs': 'abs(x): absolute value; the modulus |z| of a complex z',
+    'min': 'min(a, b, ...): element-wise minimum of 2 or more real arguments',
+    'max': 'max(a, b, ...): element-wise maximum of 2 or more real arguments',
     'where': 'where(condition, a, b): element-wise a where condition is true (non-zero), else b; both a and b '
-             'are evaluated everywhere',
+             'are evaluated everywhere (a, b may be complex, the condition is real)',
     'floor': 'floor(x): largest whole number <= x (a float)',
     'ceil': 'ceil(x): smallest whole number >= x (a float)',
-    'sign': 'sign(x): -1, 0 or 1 by the sign of x',
-    'pow': 'pow(a, b): a to the power b, same as a**b',
-    'hypot': 'hypot(a, b): sqrt(a**2 + b**2) without intermediate overflow',
+    'sign': 'sign(x): -1, 0 or 1 by the sign of a real x',
+    'pow': 'pow(a, b): a to the power b, same as a**b: real a, b give the real power (nan for a < 0 and a '
+           'fractional b, like sqrt); principal value exp(b*log(a)) when a or b is complex, e.g. pow(a + 0j, 1/3)',
+    'hypot': 'hypot(a, b): sqrt(a**2 + b**2) of real a, b without intermediate overflow',
+    're': 're(z): real part of a complex z (a real z unchanged)',
+    'im': 'im(z): imaginary part of a complex z (0 for a real z)',
+    'conj': 'conj(z): complex conjugate of z',
+    'arg': 'arg(z): angle of a complex z in rad, in (-pi, pi] (0 or pi for a real z)',
+    'besselj': 'besselj(v, z): Bessel function of the first kind J_v of real order v (integer n for J_n) and real '
+               'or complex z (nan for a real z < 0 and a non-integer v; CPU only: a gpu array argument raises)',
+    'bessely': 'bessely(v, z): Bessel function of the second kind Y_v of real order v and real z > 0 or complex z '
+               '(CPU only)',
+    'besseli': 'besseli(v, z): modified Bessel function of the first kind I_v of real order v and real or complex z '
+               '(nan for a real z < 0 and a non-integer v; CPU only)',
+    'besselk': 'besselk(v, z): modified Bessel function of the second kind K_v of real order v and real z > 0 or '
+               'complex z (CPU only)',
+    'spherical_jn': 'spherical_jn(n, z[, derivative]): spherical Bessel function of the first kind j_n of whole '
+                    'order n >= 0 and real or complex z; derivative 1 gives dj_n/dz (default 0; CPU only)',
+    'spherical_yn': 'spherical_yn(n, z[, derivative]): spherical Bessel function of the second kind y_n of whole '
+                    'order n >= 0 and real z > 0 or complex z; derivative 1 gives dy_n/dz (default 0; CPU only)',
     'j0': 'j0(x): Bessel function of the first kind J_0 (real x)',
     'j1': 'j1(x): Bessel function of the first kind J_1 (real x)',
     'y0': 'y0(x): Bessel function of the second kind Y_0, for x > 0 (-inf at 0, nan below)',
@@ -132,7 +171,9 @@ def reserved_name_message(name):
                or (f'spelling of {_NAME_ALIASES[name]!r}' if name in _NAME_ALIASES else None))
     return f"'{name}' is a reserved name" + (f' ({meaning}): choose another name' if meaning else '')
 
-_FUNCTION_SPELLINGS = {'ln': 'log'}   # common spelling -> expression function (unknown-function hint)
+_FUNCTION_SPELLINGS = {   # common spelling -> expression function (unknown-function hint)
+    'ln': 'log', 'real': 're', 'imag': 'im', 'conjugate': 'conj', 'angle': 'arg', 'phase': 'arg',
+    'jv': 'besselj', 'yv': 'bessely', 'iv': 'besseli', 'kv': 'besselk', 'jn': 'besselj', 'yn': 'bessely'}
 _SYNTAX_HINTS = {   # disallowed AST node / operator class -> actionable message
     'BitXor': "'^' is not allowed: use ** for powers",
     'BitAnd': "'&' is not allowed: use (a < x)*(x < b) for 'and'",
@@ -156,20 +197,29 @@ _UNARY_OPERATORS = (ast.UAdd, ast.USub)
 _COMPARISON_OPERATORS = (ast.Lt, ast.LtE, ast.Gt, ast.GtE, ast.Eq, ast.NotEq)
 _EVALUATION_ERRORS = (OverflowError, ZeroDivisionError, FloatingPointError, RecursionError, MemoryError,
                       TypeError, ValueError)
+# eval-scope names of the comparison-operand guard a complex expression's comparisons are wrapped in and of the power
+# every ** compiles to (_compile_cached); refused as free names
+_REAL_OPERAND = 'real_operand__'
+_POWER = 'power__'
+_INTERNAL_NAMES = frozenset((_REAL_OPERAND, _POWER))
 
 
 class Expression:
     """Compiled, whitelisted expression shared through the compile cache; `names` = free names (called functions
-    and builtin constants excluded; an uncalled function name is a free name)."""
+    and builtin constants excluded; an uncalled function name is a free name); `complex_values`: it has a complex
+    literal or a complex function call (evaluated with the complex function table, comparisons guarded);
+    `_powers`: it has a ** (compiled to a call of the table's pow)."""
 
-    __slots__ = ('text', 'names', '_code', '_constant_names', '_function_names')
+    __slots__ = ('text', 'names', '_code', '_constant_names', '_function_names', 'complex_values', '_powers')
 
-    def __init__(self, text, names, code, constant_names, function_names):
+    def __init__(self, text, names, code, constant_names, function_names, complex_values=False, powers=False):
         self.text = text
         self.names = names
         self._code = code
         self._constant_names = constant_names
         self._function_names = function_names
+        self.complex_values = complex_values
+        self._powers = powers
 
     def __repr__(self):
         return f'Expression({self.text!r})'
@@ -189,7 +239,7 @@ class Expression:
         scope = {name: namespace[name] for name in self.names}
         for name in self._constant_names:
             scope[name] = namespace[name] if name in namespace else BUILTIN_CONSTANTS[name]
-        table = _function_table(xp)
+        table = _function_table(xp, self.complex_values)
         for name in self._function_names:
             if name in table:
                 scope[name] = table[name]
@@ -197,6 +247,10 @@ class Expression:
                 scope[name] = functions[name]
             else:
                 raise ExpressionError(f'{name}() is not available here (derived-curve expressions only)')
+        if self.complex_values:
+            scope[_REAL_OPERAND] = _real_operand
+        if self._powers:
+            scope[_POWER] = table['pow']
         try:
             # numpy warns on NaN / inf where cupy is silent (e.g. the unused branch of where(x > 0, sqrt(x), 0)):
             # silent on both backends, non-finite values that are used are refused downstream
@@ -204,8 +258,9 @@ class Expression:
                 result = eval(self._code, _EVAL_GLOBALS, scope)
         except _EVALUATION_ERRORS as exc:
             raise ExpressionError(f'cannot evaluate {_quoted(self.text)}: {exc}') from exc
-        if isinstance(result, complex) or getattr(getattr(result, 'dtype', None), 'kind', '') == 'c':
-            raise ExpressionError(f'{_quoted(self.text)} gives complex values')
+        if _is_complex(result):
+            raise ExpressionError(f'{_quoted(self.text)} gives complex values: a value must be real, so take the '
+                                  'part you mean with re(...), im(...), abs(...) or arg(...)')
         return result
 
 
@@ -233,6 +288,19 @@ def _compile_cached(text, extra_arity=()):
     try:
         tree = ast.parse(source, mode='eval')
         _check_node(tree.body, free_names, constant_names, function_names, dict(extra_arity))
+        internal = sorted(free_names & _INTERNAL_NAMES)
+        if internal:
+            raise ExpressionError(f"'{internal[0]}' is an internal name of expressions; rename it in "
+                                  f'{_quoted(source)}')
+        # complex intermediates come only from a 1j literal or a complex function (** of real operands stays real:
+        # _power): those expressions take the complex table and guarded comparisons
+        complex_values = bool(function_names & COMPLEX_FUNCTION_NAMES) or any(
+            isinstance(node, ast.Constant) and isinstance(node.value, complex) for node in ast.walk(tree))
+        if complex_values:
+            _guard_comparisons(tree)
+        powers = any(isinstance(node, ast.BinOp) and isinstance(node.op, ast.Pow) for node in ast.walk(tree))
+        if powers:
+            tree = ast.fix_missing_locations(_PowerCalls().visit(tree))
         code = compile(tree, '<expression>', 'eval')
     except ExpressionError:
         raise
@@ -247,12 +315,33 @@ def _compile_cached(text, extra_arity=()):
         raise ExpressionError(f"'{both[0]}' is used both as a name and as the function {both[0]}(...) in "
                               f'{_quoted(source)}; use it one way only')
     return Expression(source, frozenset(free_names), code, tuple(sorted(constant_names)),
-                      tuple(sorted(function_names)))
+                      tuple(sorted(function_names)), complex_values, powers)
+
+
+def _guard_comparisons(tree):
+    """Wrap both operands of every comparison of a complex expression in the _REAL_OPERAND guard (in place): numpy
+    orders complex arrays lexicographically, so a complex comparison would pass silently."""
+    def guarded(operand):
+        return ast.copy_location(ast.Call(ast.Name(_REAL_OPERAND, ast.Load()), [operand], []), operand)
+
+    for node in [node for node in ast.walk(tree) if isinstance(node, ast.Compare)]:   # one operator each
+        node.left, node.comparators = guarded(node.left), [guarded(node.comparators[0])]
+    ast.fix_missing_locations(tree)
+
+
+class _PowerCalls(ast.NodeTransformer):
+    """Rewrites every a ** b into a call of the _POWER scope name (the table's pow), so ** and pow are one rule."""
+
+    def visit_BinOp(self, node):
+        self.generic_visit(node)
+        if isinstance(node.op, ast.Pow):
+            return ast.copy_location(ast.Call(ast.Name(_POWER, ast.Load()), [node.left, node.right], []), node)
+        return node
 
 
 def _check_node(node, free_names, constant_names, function_names, extra_arity):
-    """Whitelist walk: raise on disallowed syntax, coerce int constants to float in place, collect names
-    (extra_arity: {name: (min, max)} of call names allowed besides FUNCTION_NAMES)."""
+    """Whitelist walk: raise on disallowed syntax, coerce int constants to float and keep imaginary literals (1j)
+    complex in place, collect names (extra_arity: {name: (min, max)} of call names allowed besides FUNCTION_NAMES)."""
     names = (free_names, constant_names, function_names, extra_arity)
     if isinstance(node, ast.BinOp):
         if not isinstance(node.op, _BINARY_OPERATORS):
@@ -287,9 +376,10 @@ def _check_node(node, free_names, constant_names, function_names, extra_arity):
         node.id = _NAME_ALIASES.get(node.id, node.id)
         (constant_names if node.id in BUILTIN_CONSTANTS else free_names).add(node.id)
     elif isinstance(node, ast.Constant):
-        if isinstance(node.value, bool) or not isinstance(node.value, (int, float)):
+        if isinstance(node.value, bool) or not isinstance(node.value, (int, float, complex)):
             raise ExpressionError(f'constant {node.value!r} is not allowed')
-        node.value = float(node.value)
+        if not isinstance(node.value, complex):   # the parser gives imaginary literals (2.5j) as complex already
+            node.value = float(node.value)
     else:
         raise ExpressionError(_not_allowed_message(node, None))
 
@@ -356,8 +446,22 @@ def _unknown_names_message(names, available_names=(), allowed=None):
 
 
 @functools.lru_cache(maxsize=None)
-def _function_table(xp):
-    """Expression function name -> callable for array module `xp`."""
+def _function_table(xp, complex_values=False):
+    """Expression function name -> callable for array module `xp`; complex_values: the table of complex expressions
+    (Expression.complex_values): the real one plus the complex functions, real-only functions refusing complex
+    arguments (where: its condition)."""
+    if complex_values:
+        table = dict(_function_table(xp, False))
+        for name in _REAL_ONLY_FUNCTIONS:
+            table[name] = _real_only(name, table[name])
+        table['where'] = _real_only('where', table['where'], checked=1)
+        for name, attribute in _COMPLEX_ARRAY_FUNCTIONS.items():
+            table[name] = _dispatching(getattr(np, attribute), getattr(xp, attribute), xp.ndarray)
+        for name, scipy_name in (*_COMPLEX_SPECIAL_FUNCTIONS.items(), *_SPHERICAL_FUNCTIONS.items()):
+            host = (_spherical_function(name, scipy_name) if name in _SPHERICAL_FUNCTIONS
+                    else _lazy_function('scipy.special', scipy_name))
+            table[name] = _dispatching(host, host if xp is np else _host_only(name), xp.ndarray)
+        return table
     table = {}
     for name, attribute in _ARRAY_FUNCTIONS.items():
         xp_function = getattr(xp, attribute)
@@ -365,11 +469,80 @@ def _function_table(xp):
             xp_function = lambda condition, if_true, if_false: xp.where(xp.asarray(condition), if_true, if_false)
         function = _dispatching(getattr(np, attribute), xp_function, xp.ndarray)
         table[name] = _variadic(function) if name in _VARIADIC_FUNCTIONS else function
+    table['pow'] = _power   # also every ** (_PowerCalls); the operator dispatches to numpy / cupy itself
     xp_special_module = 'scipy.special' if xp is np else 'cupyx.scipy.special'
     for name in _SPECIAL_FUNCTIONS:
         table[name] = _dispatching(_lazy_function('scipy.special', name), _lazy_function(xp_special_module, name),
                                    xp.ndarray)
     return table
+
+
+_PYTHON_REALS = (float, int)   # exact types: numpy scalars (np.float64 is a float subclass) already give nan
+
+
+def _power(base, exponent):
+    """a ** b and pow(a, b) of an expression: numpy power semantics for real operands (nan for a negative base to a
+    fractional power, like sqrt), also for two Python numbers, where float ** float would be complex; the principal
+    value when an operand is complex. Arrays take the operator itself: their dtype (float32 stays float32) and
+    numpy's fast scalar powers (** 2 -> square, ** 0.5 -> sqrt) as before; Python numbers stay Python floats (an
+    integer power of a negative number exact, an overflow or 0 ** -1 raises as Python does)."""
+    if (type(base) in _PYTHON_REALS and type(exponent) in _PYTHON_REALS and base < 0
+            and not float(exponent).is_integer()):
+        return math.nan
+    return base ** exponent
+
+
+def _is_complex(value):
+    """True for a Python / numpy complex scalar or a complex numpy / cupy array (O(1): the dtype only)."""
+    return isinstance(value, complex) or getattr(getattr(value, 'dtype', None), 'kind', '') == 'c'
+
+
+def _real_only(name, function, checked=None):
+    """`function` refusing complex values among its arguments (the first `checked`; None = all)."""
+    hint = f' (for a complex argument: {_COMPLEX_SPELLINGS[name]})' if name in _COMPLEX_SPELLINGS else ''
+
+    def call(*args):
+        for argument in args[:checked]:
+            if _is_complex(argument):
+                raise ExpressionError(f'{name}() takes real values, got a complex one: pass re(...), im(...) or '
+                                      f'abs(...) of it{hint}')
+        return function(*args)
+    return call
+
+
+def _real_operand(value):
+    """Comparison operand of a complex expression, unchanged when real (_guard_comparisons)."""
+    if _is_complex(value):
+        raise ExpressionError('comparisons take real values, got a complex one: compare re(...), im(...) or abs(...)')
+    return value
+
+
+def _host_only(name):
+    """Stand-in of a scipy-only function for a cupy array argument: raises (no silent host round trip)."""
+    def call(*args):
+        raise ExpressionError(f'{name}() is evaluated by scipy on the CPU only and cannot take a gpu array: use it '
+                              'in parameters, references and analytic curves, or run on the cpu backend')
+    return call
+
+
+def _spherical_function(name, scipy_name):
+    """scipy.special spherical Bessel function as an expression call (n, z[, derivative]): n a whole number >= 0,
+    derivative 0 or 1 (expression numbers arrive as floats; scipy wants an integer order and a bool)."""
+    def call(order, argument, derivative=0.0):
+        n = _whole_number(name, 'order n', order)
+        flag = _whole_number(name, 'derivative', derivative)
+        if flag > 1:
+            raise ExpressionError(f'{name}() takes derivative 0 or 1, got {flag}')
+        return getattr(importlib.import_module('scipy.special'), scipy_name)(n, argument, derivative=bool(flag))
+    return call
+
+
+def _whole_number(name, what, value):
+    """int of a single real whole number >= 0 (an argument of `name`), else ExpressionError."""
+    if np.ndim(value) != 0 or _is_complex(value) or not math.isfinite(float(value)) or float(value) < 0 \
+            or not float(value).is_integer():
+        raise ExpressionError(f'{name}() takes a single whole number >= 0 as {what}, got {value!r}')
+    return int(value)
 
 
 def _lazy_function(module_name, name):

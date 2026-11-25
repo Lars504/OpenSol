@@ -702,13 +702,16 @@ class TemplateEntry:
 @dataclass(frozen=True)
 class SelfTestVariant:
     """A repeat of a SelfTestCase's runs on another backend and / or solver precision, passed against its own
-    tolerance: api.selftest re-runs specs() moved by api._variant_spec and re-uses check()."""
+    tolerance: api.selftest re-runs specs() (or only its `runs`) moved by api._variant_spec and re-uses check()."""
     name: str                       # identifier, unique within the case (report key, run directory variant_<name>)
     tolerance: float                # replaces the tolerance check() returns
     backend: str | None = None      # 'cpu' | 'gpu': solver_defaults.backend of every run; None = the specs' own
     precision: str | None = None    # PRECISIONS key set on the solver of every role in `roles`; None = unchanged
     # roles the precision applies to; () = every role whose resolved solver type has a 'precision' setting
     roles: tuple = ()
+    # run names of specs() the variant repeats (e.g. a cpu variant leaving out a 3D direct solve the cpu cannot hold);
+    # () = every run; a name specs() lacks raises at the variant's run (api._variant_specs)
+    runs: tuple = ()
 
     def __post_init__(self):
         owner = f"selftest variant '{self.name}'"
@@ -723,6 +726,8 @@ class SelfTestVariant:
                              f'{self.precision!r}')
         if not isinstance(self.roles, tuple) or not set(self.roles) <= set(SOLVER_ROLES):
             raise ValueError(f"{owner}: roles must be a tuple of {', '.join(SOLVER_ROLES)}, got {self.roles!r}")
+        if not isinstance(self.runs, tuple) or not all(isinstance(run, str) and run for run in self.runs):
+            raise ValueError(f'{owner}: runs must be a tuple of run names, got {self.runs!r}')
         if self.roles and self.precision is None:
             raise ValueError(f'{owner}: roles need a precision')
         if self.backend is None and self.precision is None:
