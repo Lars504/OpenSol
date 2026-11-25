@@ -6,7 +6,17 @@ templates, describe. Current state, no changelog.
 ## Model layer
 - Expressions: `evaluate` is silent on invalid / divide on both backends, so consumers of its values check finiteness
   themselves (evaluate_scalar, builder `_check_range`, curves drop non-finite samples). An uncalled function name is a
-  free name that only a namespace entry supplies (an FDFD probe xy series 'abs').
+  free name that only a namespace entry supplies (an FDFD probe xy series 'abs'; the admittance series 're' / 'im'
+  of frequency_response likewise, so `re(re)` is refused as name-and-function).
+- Complex intermediates: `evaluate` refuses a complex final value, so consumers (parameters, materials, features,
+  derived values, references, curves) stay real and never see complex dtypes; complex parameters are impossible. Only
+  an expression with a 1j literal, a `COMPLEX_FUNCTION_NAMES` call or a `**` (`Expression.complex_values`) takes the
+  complex function table, where real-only functions and every comparison (AST-wrapped in `real_operand__`) refuse
+  complex values; others run the unchanged real table, so real arrays are never cast to complex. The complex Bessel
+  functions (besselj ... spherical_yn) are scipy only: a cupy argument raises (no host round trip); references,
+  analytic and derived curves always evaluate on numpy, field expressions only on cpu runs. A new function goes in
+  one of the tables with its arity and FUNCTION_DESCRIPTIONS entry (describe checks the keys); a real-only one also
+  joins `_REAL_ONLY_FUNCTIONS`. Self-test: `expressions_complex` (selftests_analytic).
 - Names: `<physics>_<field>` always, plain `<field>` when one physics alone provides it (parameters may not use it).
   Settings / feature params / material properties see parameters + x, y (field_dependent) + state names and t
   (state_dependent) / t alone (time_dependent: no x, y with t, `schema._number`); coupling 'expression': value + x, y +
