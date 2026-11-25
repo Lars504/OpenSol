@@ -2111,7 +2111,8 @@ def _results_section(registry, physics_types, with_selftests=True):
         'selftests': [{'name': case.name, 'label': case.label, 'description': case.description,
                        'max_wall_time': _plain(case.max_wall_time), 'heavy': case.heavy,
                        'variants': [{'name': variant.name, 'backend': variant.backend, 'precision': variant.precision,
-                                     'roles': list(variant.roles), 'tolerance': _plain(variant.tolerance)}
+                                     'roles': list(variant.roles), 'runs': list(variant.runs),
+                                     'tolerance': _plain(variant.tolerance)}
                                     for variant in case.variants]}
                       for case in (_sorted_by_name(registry.selftests()) if with_selftests else [])],
     }

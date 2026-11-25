@@ -8,7 +8,7 @@ import math
 
 import numpy as np
 
-from ...model.schema import FREQUENCY_RESPONSE_STUDY, SelfTestCase
+from ...model.schema import FREQUENCY_RESPONSE_STUDY, SelfTestCase, SelfTestVariant
 from ...model.selftest_helpers import (SubChecks, available_host_direct, cpu_defaults, float32_value,
                                        scaled_worst_result)
 from ...model.spec import (DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec,
@@ -60,9 +60,11 @@ def _pair(value):
 # 0.02 K, node 0 held at 1e-3 (the held-value product), a fixed pseudo-random load; terms D1 (the Laplacian on nodes
 # 0-24) with c1(w) = 1e3 (1 + 0.3 j w tau) / (1 + j w tau) and D2 (nodes 15-39) with c2(w) = j w mu. 'saddle' adds
 # _TERMS_PRESSURE pressure rows: [[A, -B^T], [-B, 0]] with B on 10-wide node bands, the zero pressure block kept as a
-# zero-coefficient FrequencyTerm (stored diagonal) and a RowScaleTerm diag M_p / |c1|. Per runtime (private SuperLU,
+# zero-coefficient FrequencyTerm (stored diagonal) and a SchurScaleTerm of B (equilibrated on every route, SuperLU
+# included: the saddle runs check that every solution is the unscaled one). Per runtime (private SuperLU,
 # scipy_splu, MUMPS / PARDISO when installed, cuDSS on a GPU) and frequency: x and A x against the dense solve, the
-# product_at_rows rows (0 elsewhere); plan_reduced refuses the terms; terms=() is bit-identical to no keyword.
+# product_at_rows rows (0 elsewhere), the rows-only solve (fields False) and its last_solution; plan_reduced refuses the
+# terms; terms=() is bit-identical to no keyword.
 _TERMS_NODES = 40
 _TERMS_PRESSURE = 4
 _TERMS_TAU = 1e-4                       # s
@@ -105,7 +107,7 @@ def _terms_problem(saddle):
     import scipy.sparse
     from ...fem.assembly import pattern_sum
     from ...fem.mixed_elasticity import embedded, saddle_coupling
-    from .frequency_response import FrequencyTerm, RowScaleTerm
+    from .frequency_response import FrequencyTerm, SchurScaleTerm
     n = _TERMS_NODES
     n_total = n + (_TERMS_PRESSURE if saddle else 0)
     stiffness = pattern_sum([_chain(0, n, 1e4, n_total),
@@ -125,8 +127,7 @@ def _terms_problem(saddle):
                                                 + np.diag(np.full(_TERMS_PRESSURE - 1, 0.1), -1))
         block = embedded(pressure_mass, n_total, row_offset=n, column_offset=n)
         terms.append(FrequencyTerm(block, _zero_coefficient, 'incompressible block'))
-        scale_terms.append(RowScaleTerm(np.abs(block.diagonal()),
-                                        lambda omega: 1.0 / abs(_shear_coefficient(omega))))
+        scale_terms.append(SchurScaleTerm(embedded(coupling, n_total, row_offset=n)))
     free = np.ones(n_total, dtype=bool)
     free[0] = False
     fixed = np.zeros(n_total)
@@ -197,6 +198,15 @@ def _check_terms(_):
                                                                                    - expected_product[rows]))
                                  / np.max(np.abs(expected_product)), tolerance)
                 checks.add(f'{label} A x 0 off the output rows', bool(np.all(row_product[others] == 0.0)))
+                # rows-only direct solve (_rows_solve) and its kept free solution (last_solution)
+                row_solution, row_product = on_rows.solve(omega, fixed, load, fields=False)
+                scale = np.max(np.abs(expected))
+                checks.add_error(f'{label} rows-only x at the output rows',
+                                 np.max(np.abs(row_solution[rows] - expected[rows])) / scale, tolerance)
+                checks.add_error(f'{label} rows-only A x at the output rows', np.max(np.abs(
+                    row_product[rows] - expected_product[rows])) / np.max(np.abs(expected_product)), tolerance)
+                checks.add_error(f'{label} last_solution', np.max(np.abs(on_rows.last_solution() - expected)) / scale,
+                                 tolerance)
             checks.add_raises(f'{variant} {name} plan_reduced refuses the terms',
                               lambda: harmonic.plan_reduced(np.array(_TERMS_OMEGAS), 'adaptive', fixed, load))
             details[f'{variant} {name}'] = {'factorizations': int(harmonic.factorizations)}
@@ -540,7 +550,9 @@ def _check_strip(results_by_name):
 # principal root, Re lam > 0), sigma_xy = j w mu u_x', the bottom reaction F_x = j w mu lam coth(lam H) X A (A = the
 # bottom length per m of depth, its area in 3D). Two frequencies per run with delta = sqrt(2 mu / (rho w)) = H / 3 and
 # H / 8: the probes and the reaction at both, the stress and the pressure at the last. 3D: the layer normal along z.
-# GPU: Automatic 'linear' -> cuDSS LDL^T of the complex symmetric saddle point with its zero pressure block.
+# GPU: Automatic 'linear' -> cuDSS LDL^T of the complex symmetric saddle point with its zero pressure block; the cpu
+# variant: host SuperLU of the equilibrated saddle point R A R (unscaled, its diagonal pivot test across the u / p units
+# loses the pressure field while the reactions hold: max |p| is the item that catches it).
 # Two-layer runs (triangles): the liquid below y = h1 = _STOKES_INTERFACE H, a second incompressible liquid (viscosity
 # 4x, rho 800: its own pressure group, the groups touch along y = h1) above. 'two_layers': the same holds; [u_x,
 # sigma_xy] crosses a layer of depth d by T = [[cosh(lam d), sinh(lam d) / Z], [Z sinh(lam d), cosh(lam d)]], Z = j w
@@ -560,12 +572,17 @@ _STOKES_DEPTHS = (1.0 / 3.0, 1.0 / 8.0)   # delta / H
 _STOKES_FRACTIONS = (0.25, 0.5, 0.75)   # y / H of the probes
 _STOKES_H_TRIANGLES = _STOKES_H / 40.0
 _STOKES_H_TETRAHEDRA = _STOKES_H / 32.0
-_STOKES_TOLERANCE = {'u': 2e-3, 'reaction': 2e-3, 'stress': 1e-2, 'pressure': 1e-3}   # first estimates
+# first estimates; pressure: max |p| of the exact-zero field is P2 / P1 discretisation of the exponential profile on an
+# unstructured mesh (cpu SuperLU runs: 3.1e-3 of the wall shear at H / 40 on triangles and two_layers, 3.9e-3 on
+# tetrahedra at H / 32, 8.0e-4 at H / 80: ~4x per halving), not solver error
+_STOKES_TOLERANCE = {'u': 2e-3, 'reaction': 2e-3, 'stress': 1e-2, 'pressure': 1e-2}
 _STOKES_INTERFACE = 0.4                 # h1 / H of the two-layer runs (between the probes, on a mesh line)
 _STOKES_UPPER_VISCOSITY = float32_value(4e-3)
 _STOKES_UPPER_DENSITY = float32_value(800.0)
 _STOKES_LAYER_RUNS = ('two_layers', 'enclosed_layers')
 _STOKES_RUNS = ('triangles', 'tetrahedra', *_STOKES_LAYER_RUNS)
+# the cpu variant leaves out tetrahedra: a 3D P2 saddle point on host SuperLU (12288 tets: 67 s, 2.0 GB factor)
+_STOKES_CPU_RUNS = tuple(run for run in _STOKES_RUNS if run != 'tetrahedra')
 # enclosed_layers (exact up to round-off): of X, relative, of the pressure rise (float32 fields); first estimates
 _STOKES_ENCLOSED_TOLERANCE = {'u': 1e-6, 'reaction': 1e-6, 'pressure': 1e-5}
 
@@ -798,6 +815,18 @@ def _check_enclosed_layers(results, frequencies, add) -> dict:
 # the bead moves rigidly: -w^2 m_b X = R + F, so F_fem = -R - w^2 m_b X (m_b = rho_b 4/3 pi a^3, whole ring; at m = 1
 # R = F_x = sum R_r - sum R_phi, the net force along x). Frequencies a / delta = 0.5 and 2. Wall corrections: the
 # vortical part decays as exp(-(R - a) / delta), the potential dipole as (a / R)^3.
+# Pressure (same solution, p > 0 in compression): the linearised momentum rho j w u = -grad p + mu lap u with div u = 0
+# makes p harmonic; u = curl curl (f(r) U) gives p = mu U . grad(lap f - lam^2 f), and f = -c1 / (lam^2 r) + b
+# exp(-lam r) / r (lap f - lam^2 f = c1 / r). u = U on r = a (u_r = -2 U cos(theta) f' / r, u_theta = U sin(theta) (f''
+# + f' / r): f'(a) = -a / 2, f''(a) = -1 / 2) fixes c1 = -(3 a / 2) (1 + lam a + lam^2 a^2 / 3), so p(r, theta) =
+# (3 / 2) mu a U (1 + lam a + lam^2 a^2 / 3) cos(theta) / r^2, theta from the direction of motion. Checks: w -> 0 gives
+# Stokes' (3 / 2) mu a U cos(theta) / r^2; lam -> inf the potential dipole rho j w U a^3 cos(theta) / (2 r^2) (p = -rho
+# d phi / dt); - int p cos(theta) dS on r = a = -2 pi mu a U (1 + lam a + lam^2 a^2 / 3): one third of the Stokes drag
+# and the whole added-mass term of F above. Read at r = 1.5 a in the water (the nodal display averages the bead's own
+# pressure group at the surface nodes) at the last frequency (the live one): m0 the axis points z = R +- 1.5 a as the
+# difference p(front) - p(back) (the enclosed water's pressure gauge, a wall dof, shifts p by a constant; the box is
+# symmetric about z = R, so the difference is free of it), m1 the cos(phi) amplitude at r = 1.5 a, z = R (no gauge at
+# m >= 1; u_r = X cos(phi) moves the bead towards phi = 0, the front). Wall reflection of the dipole ~ 2 (1.5 a / R)^3.
 _SPHERE_RADIUS = 1e-6
 _SPHERE_CONTAINER = 12.0                # R / a
 _SPHERE_X = 1e-9                        # m
@@ -805,7 +834,8 @@ _SPHERE_RATIOS = (0.5, 2.0)             # a / delta
 _SPHERE_BEAD = {'youngs_modulus': float32_value(3.5e9), 'poisson_ratio': float32_value(0.34),
                 'rho': float32_value(1050.0)}
 _SPHERE_RUNS = ('m0', 'm1')
-_SPHERE_TOLERANCE = {'drag': 2e-2, 'm0 vs m1': 5e-3, 'axis pressure': 1e-9}   # first estimates
+_SPHERE_TOLERANCE = {'drag': 2e-2, 'm0 vs m1': 5e-3, 'axis pressure': 1e-9, 'pressure': 2e-2}   # first estimates
+_SPHERE_PRESSURE_DISTANCE = 1.5         # r / a of the pressure points (front, back on the axis, side at z = R)
 
 
 def _water_constants():
@@ -826,11 +856,15 @@ def _sphere_spec(run):
     held = ({'u_x': 0.0, 'u_y': _SPHERE_X} if run == 'm0'
             else {'u_x': _SPHERE_X, 'u_y': 0.0, 'u_z': -_SPHERE_X})
     pressure = f'sqrt({_PHYSICS}_pressure**2 + {_PHYSICS}_pressure_im**2)'
+    distance = _SPHERE_PRESSURE_DISTANCE * radius
+    points = {'front': (0.0, container + distance), 'back': (0.0, container - distance), 'side': (distance, container)}
+    parts = {'re': f'{_PHYSICS}_pressure', 'im': f'{_PHYSICS}_pressure_im'}
     return ModelSpec(
         title=f'Self-test: sphere oscillating in water ({run})',
         domain=DomainSpec(size_x=container, size_y=2.0 * container),
         geometry=[GeometrySpec('bead', 'circle', {'cx': 0.0, 'cy': container, 'r': radius}),
-                  GeometrySpec('axis_point', 'point', {'x': 0.0, 'y': container + 3.0 * radius})],
+                  GeometrySpec('axis_point', 'point', {'x': 0.0, 'y': container + 3.0 * radius}),
+                  *(GeometrySpec(f'{name}_point', 'point', {'x': x, 'y': y}) for name, (x, y) in points.items())],
         materials=[MaterialSpec('water', library='water', selection=['all']),
                    MaterialSpec('bead', properties=dict(_SPHERE_BEAD), selection=['bead'])],
         physics=[PhysicsSpec(_PHYSICS, _SOLID_TYPE, settings={
@@ -842,7 +876,26 @@ def _sphere_spec(run):
         solver_defaults=cpu_defaults(),
         study=StudySpec(type=FREQUENCY_RESPONSE_STUDY, settings={'frequencies': _sphere_frequencies()}),
         derived_values=[DerivedValueSpec('pressure_axis', pressure, [], 'at', point='axis_point'),
-                        DerivedValueSpec('pressure_max', pressure, [], 'max')])
+                        DerivedValueSpec('pressure_max', pressure, [], 'max'),
+                        *(DerivedValueSpec(f'pressure_{name}_{part}', field, [], 'at', point=f'{name}_point')
+                          for name in points for part, field in parts.items())])
+
+
+def _sphere_pressure(frequency, distance):
+    """Complex pressure amplitude [Pa] in front of the bead (theta = 0) at distance [m] from its centre (case
+    comment: (3 / 2) mu a U (1 + lam a + lam^2 a^2 / 3) / r^2, U = j w X)."""
+    viscosity, density = _water_constants()
+    omega = 2.0 * math.pi * frequency
+    lam = np.sqrt(1j * omega * density / viscosity)
+    if lam.real <= 0.0:
+        raise ValueError('the principal root of j omega rho / mu has Re > 0')
+    radius = _SPHERE_RADIUS
+    return (1.5 * viscosity * radius * 1j * omega * _SPHERE_X * (1.0 + lam * radius + (lam * radius) ** 2 / 3.0)
+            / distance ** 2)
+
+
+def _measured_pressure(results, name) -> complex:
+    return complex(_derived(results, f'pressure_{name}_re'), _derived(results, f'pressure_{name}_im'))
 
 
 def _sphere_drag(frequency):
@@ -877,6 +930,17 @@ def _check_sphere(results_by_name):
             maximum = _derived(results, 'pressure_max')
             errors['m1 axis pressure'] = _derived(results, 'pressure_axis') / maximum if maximum > 0.0 else math.inf
             tolerances['m1 axis pressure'] = _SPHERE_TOLERANCE['axis pressure']
+        # the pressure at r = 1.5 a at the last frequency (case comment): m0 front - back, m1 the side amplitude
+        expected = _sphere_pressure(frequencies[-1], _SPHERE_PRESSURE_DISTANCE * _SPHERE_RADIUS)
+        if run == 'm0':   # p(back) = -p(front) + the gauge constant
+            measured = _measured_pressure(results, 'front') - _measured_pressure(results, 'back')
+            expected = 2.0 * expected
+        else:
+            measured = _measured_pressure(results, 'side')
+        item = f'{run} pressure at r = {_SPHERE_PRESSURE_DISTANCE:g} a'
+        errors[item] = abs(measured - expected) / abs(expected)
+        tolerances[item] = _SPHERE_TOLERANCE['pressure']
+        record['pressure'] = {'measured': _pair(measured), 'expected': _pair(expected)}
     if len(forces) == 2:
         for index, ratio in enumerate(_SPHERE_RATIOS):
             item = f'm0 vs m1 a / delta = {ratio:g}'
@@ -892,13 +956,15 @@ VISCOELASTIC_CASES = (
         description=('No model run: a synthetic 1D P1 chain pencil (K, 0.02 K loss, consistent M, node 0 held) with two '
                      'FrequencyTerms (a Maxwell-like c1(w) = 1e3 (1 + 0.3 j w tau) / (1 + j w tau) and a viscous c2 = '
                      f'j w mu on overlapping sub-blocks) and its saddle variant ({_TERMS_PRESSURE} pressure rows, '
-                     '[[A, -B^T], [-B, 0]], the zero block a zero-coefficient term, a RowScaleTerm) solved by '
+                     '[[A, -B^T], [-B, 0]], the zero block a zero-coefficient term, a SchurScaleTerm) solved by '
                      'frequency_response.HarmonicSystem at '
                      f"{', '.join(f'{omega:g}' for omega in _TERMS_OMEGAS)} rad/s with the private SuperLU, "
                      'scipy_splu, MUMPS / PARDISO when installed (the HostPencil extra slots) and, with a GPU and '
                      'nvmath-python, cuDSS (the DevicePencil extra slots): x and A x against the dense solve '
                      f'({_TERMS_TOLERANCE:g} SuperLU, {_TERMS_DIRECT_TOLERANCE:g} refined factors; first estimates), '
-                     'product_at_rows exact at the output rows and 0 elsewhere, plan_reduced refusing the terms, '
+                     'product_at_rows exact at the output rows and 0 elsewhere, the rows-only solve (fields False) '
+                     'and its last_solution against the dense solve (the saddle variant equilibrates SuperLU too: the '
+                     'scaled factor must hand out the unscaled solution), plan_reduced refusing the terms, '
                      'terms=() bit-identical to no keyword. error = number of failed sub-checks.'),
         specs=dict, check=_check_terms, backends=('cpu', 'gpu')),
     SelfTestCase(
@@ -937,18 +1003,20 @@ VISCOELASTIC_CASES = (
         specs=lambda: {run: _strip_spec(run) for run in _STRIP_RUNS}, check=_check_strip),
     SelfTestCase(
         name='solid_stokes_second_problem',
-        label="Solid mechanics: Stokes' second problem, a viscous liquid on an oscillating plate (mixed, GPU)",
+        label="Solid mechanics: Stokes' second problem, a viscous liquid on an oscillating plate (mixed)",
         description=(f'A {_STOKES_H * 1e6:g} um liquid layer (viscosity {_STOKES_VISCOSITY:g} Pa s, rho '
                      f'{_STOKES_DENSITY:g}, no modulus: G* = j w mu, incompressible, formulation mixed) driven by its '
                      f'bottom moving u_x = {_STOKES_X:g} m, the top fixed, the sides holding the normal-free u_y only; '
                      'runs triangles (planar, h = H / 40) and tetrahedra (the layer along z, h = H / 32), P2, gpu '
                      "backend (Automatic 'linear': cuDSS LDL^T of the complex symmetric saddle point with its zero "
-                     'pressure block; skipped without a GPU), at delta = sqrt(2 mu / (rho w)) = H / 3 and H / 8. '
+                     'pressure block; skipped without a GPU) and variant cpu (host SuperLU of the equilibrated saddle '
+                     'point; the 2D runs only), at delta = sqrt(2 mu / (rho w)) = H / 3 and H / 8. '
                      'Reference u_x = X sinh(lam (H - y)) / sinh(lam H), lam = sqrt(j w rho / mu): the probes at H / '
                      f"4, H / 2, 3 H / 4 within {_STOKES_TOLERANCE['u']:g} of X, the bottom reaction j w mu lam "
                      f"coth(lam H) X A within {_STOKES_TOLERANCE['reaction']:g} relative, Re sigma_xy at H / 2 "
-                     f"within {_STOKES_TOLERANCE['stress']:g} and max |p| below {_STOKES_TOLERANCE['pressure']:g} of "
-                     'the wall shear stress w mu |lam| X (last frequency). Two-layer runs on triangles (the liquid '
+                     f"within {_STOKES_TOLERANCE['stress']:g} and max |p| (exact 0; P2 / P1 discretisation ~3e-3 here) "
+                     f"below {_STOKES_TOLERANCE['pressure']:g} of the wall shear stress w mu |lam| X (last frequency). "
+                     'Two-layer runs on triangles (the liquid '
                      f'below {_STOKES_INTERFACE:g} H, above it a second incompressible liquid of viscosity '
                      f'{_STOKES_UPPER_VISCOSITY:g} Pa s, rho {_STOKES_UPPER_DENSITY:g}): two_layers (the same holds) '
                      'against the transfer-matrix solution (per layer [[cosh(lam d), sinh(lam d) / Z], [Z sinh(lam '
@@ -963,7 +1031,7 @@ VISCOELASTIC_CASES = (
                      'fields). Tolerances are first estimates. measured = error = the worst deviation in tolerance '
                      'units.'),
         specs=lambda: {run: _stokes_spec(run) for run in _STOKES_RUNS}, check=_check_stokes,
-        backends=('gpu',)),
+        backends=('gpu',), variants=(SelfTestVariant('cpu', tolerance=1.0, backend='cpu', runs=_STOKES_CPU_RUNS),)),
     SelfTestCase(
         name='solid_oscillating_sphere_drag',
         label='Solid mechanics: drag of a sphere oscillating in water (axisymmetric m = 0 and m = 1, mixed)',
@@ -977,7 +1045,10 @@ VISCOELASTIC_CASES = (
                      'mu a U (1 + lam a + lam^2 a^2 / 9), U = j w X, lam = sqrt(j w rho / mu) (Re > 0; sign check in '
                      f"the module): within {_SPHERE_TOLERANCE['drag']:g} relative (wall corrections exp(-(R - a) / "
                      f"delta), (a / R)^3), m0 and m1 agree within {_SPHERE_TOLERANCE['m0 vs m1']:g}, the m1 pressure "
-                     'on the axis is 0. Tolerances are first estimates. measured = error = the worst deviation in '
-                     'tolerance units.'),
+                     'on the axis is 0, and the pressure p = (3 / 2) mu a U (1 + lam a + lam^2 a^2 / 3) cos(theta) / '
+                     f'r^2 (derivation in the module) at r = {_SPHERE_PRESSURE_DISTANCE:g} a, last frequency (m0: '
+                     'front minus back on the axis, free of the enclosed water\'s pressure gauge; m1: the cos(phi) '
+                     f"amplitude beside the bead) within {_SPHERE_TOLERANCE['pressure']:g} relative. Tolerances are "
+                     'first estimates. measured = error = the worst deviation in tolerance units.'),
         specs=lambda: {run: _sphere_spec(run) for run in _SPHERE_RUNS}, check=_check_sphere),
 )

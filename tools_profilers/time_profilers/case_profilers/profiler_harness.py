@@ -517,7 +517,7 @@ def case_specs(case_name, runs=None, variant=None):
         variants = {entry.name: entry for entry in case.variants}
         if variant not in variants:
             raise KeyError(f"case {case_name!r} has no variant {variant!r} (has: {', '.join(variants) or 'none'})")
-        specs = {name: api._variant_spec(spec, variants[variant], registry) for name, spec in specs.items()}
+        specs = api._variant_specs(case, variants[variant], registry)   # its runs only (SelfTestVariant.runs)
     if runs:
         unknown = [name for name in runs if name not in specs]
         if unknown:

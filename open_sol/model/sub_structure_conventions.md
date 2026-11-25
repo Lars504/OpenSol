@@ -80,7 +80,8 @@ templates, describe. Current state, no changelog.
 - `SelfTestCase.backends`: without a usable GPU the check gets the cpu runs only (a cpu-vs-gpu check must cope); with
   none left the variants still judge the case (record `variants_only`, report warning). A check({}) case using cupy
   declares ('gpu',); one comparing both backends itself declares ('cpu', 'gpu') and skips its gpu half by
-  `gpu_available()`.
+  `gpu_available()`. A variant repeats only `SelfTestVariant.runs` when set (a cpu variant leaving out a 3D direct
+  solve): code repeating a variant's runs takes them from api `_variant_specs`, never `case.specs()` directly.
 - Timing: a study of several runs (sweep values, refinement levels, parity sectors, estimation points) sums ticks /
   study_seconds and merges time_check through `study.summed_runs` (a new multi-run loop uses it too; `solvers` stays
   the last run's), and `run_study` sums builds into `build_seconds_total`, else the selftest split counts only the
