@@ -154,6 +154,8 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   displacements that change that volume make the system unsolvable: `HarmonicOperators.check_held_volumes` refuses
   them per solve (from `_harmonic_fixed`: a new solve path takes its held vector from there). A region of one group
   with every displacement held is refused at assembly. Both rely on the exact row sums B^T 1 (fem sub file "Mixed u-p").
+- Held regions (*_domain supports) sharing a compressible solid's material share its P1 pressure and drag it toward 0
+  (div u = 0 there; rigid_inclusion_compressible_frequency_response: 2.5e-3 vs 1.2e-5 at K = G): own material.
 - Stored zeros vs zero-coefficient terms: an incompressible group's zero pressure block stays in the pattern (PARDISO
   symmetric types need every diagonal stored): as stored zeros of the operator without a column map, but through the
   m = 1 axis-tie column map a congruence drops exact zeros, so there it is a FrequencyTerm of coefficient 0, which makes
