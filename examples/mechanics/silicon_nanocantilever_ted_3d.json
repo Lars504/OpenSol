@@ -1,0 +1,64 @@
+{
+  "title": "Silicon nanocantilever 500 x 50 x 15 nm: thermoelastic damping (3D eigenfrequency)",
+  "description": "The cantilever of silicon_nanocantilever_modes_3d (L = 500 nm along x, w = 50 nm along y, t = 15 nm along z, library silicon, fixed on x_lo, uniform 5 nm cubes of 6 quadratic tetrahedra each) with a thermoelastic_damping feature at T0 = 293.15 K: per mode the strain-rate heat source drives the heat equation on the beam (adiabatic on every face, the clamp included) and the out-of-phase part of the thermal stress gives Q_TED. Library silicon thermal data: rho = 2329 kg/m^3, cp = 700 J/(kg K), alpha = 2.6e-6 1/K, k = k_beam (default 130 W/(m K), the bulk value). Eigenfrequency study, 5 lowest modes (out-of-plane flexure 1 ~82 MHz, in-plane flexure 1 ~270 MHz, out-of-plane flexure 2 ~509 MHz, torsion 1 and out-of-plane flexure 3 near 1.4 GHz).\nNo reference (the undamped frequencies are graded in silicon_nanocantilever_modes_3d). For orientation, Zener's thin-beam estimate 1 / Q = Delta omega tau / (1 + (omega tau)^2), Delta = E alpha^2 T0 / (rho cp) = 2.0e-4, tau = h^2 rho cp / (pi^2 k) with h the thickness the heat crosses (t out of plane, w in plane), is the parameter Q_zener_*: far below the Debye peak here (omega tau ~1.5e-4 out of plane, ~5e-3 in plane), so 1 / Q ~ Delta omega tau and Q_TED ~3.4e7 (out-of-plane 1), ~9e5 (in-plane 1), ~5.4e6 (out-of-plane 2). In this regime Q_TED grows in proportion to k.\nCaveat: the feature is continuum Fourier heat flow. At 15 nm the phonon mean free path of silicon (~100-300 nm at room temperature) exceeds the thickness, so the in-film conductivity is several times below bulk (thin-film measurements ~20-30 W/(m K) near 20 nm: set k_beam), and tau (~3e-13 s at bulk k) approaches phonon relaxation times, where Fourier TED is only an estimate.\nDerived values tab: q_ted_oop1, q_ted_ip1, q_ted_oop2 (Q_TED of each mode, picked from the damping table by a +-10 % frequency window) and shift_oop1 (ted_frequency_shift of mode 1: relative rise toward the adiabatic stiffness). The damping table itself (solid.ted) lists every mode.",
+  "version": 2,
+  "parameters": [
+    {"name": "L_cant", "expression": "500*nm", "description": "cantilever length along x"},
+    {"name": "w_cant", "expression": "50*nm", "description": "cantilever width along y"},
+    {"name": "t_cant", "expression": "15*nm", "description": "cantilever thickness along z"},
+    {"name": "dx_mesh", "expression": "5*nm", "description": "uniform cell size (3 cells over t, 10 over w, 100 along L; each cell 6 tetrahedra)"},
+    {"name": "T_ref", "expression": 293.15, "description": "reference temperature T0 [K]"},
+    {"name": "k_beam", "expression": 130.0, "description": "thermal conductivity [W/(m K)]: library silicon 130 (bulk); a 15 nm film is several times lower (phonon boundary scattering)"},
+    {"name": "E_si", "expression": 165000000000.0, "description": "library silicon Young's modulus [Pa]"},
+    {"name": "rho_si", "expression": 2329.0, "description": "library silicon density [kg/m^3]"},
+    {"name": "cp_si", "expression": 700.0, "description": "library silicon specific heat [J/(kg K)]"},
+    {"name": "alpha_si", "expression": 2.6e-06, "description": "library silicon thermal expansion [1/K]"},
+    {"name": "c_bend", "expression": "sqrt(E_si/(12*rho_si))", "description": "sqrt(E / (12 rho)) [m/s]: Euler-Bernoulli f_n = (beta_n L)^2 h c_bend / (2 pi L^2)"},
+    {"name": "f_oop1", "expression": "1.875104069**2*t_cant*c_bend/(2*pi*L_cant**2)", "description": "Euler-Bernoulli out-of-plane flexure 1 [Hz] (mode window)"},
+    {"name": "f_ip1", "expression": "1.875104069**2*w_cant*c_bend/(2*pi*L_cant**2)", "description": "Euler-Bernoulli in-plane flexure 1 [Hz] (mode window; the 3D mode is ~0.75 % lower)"},
+    {"name": "f_oop2", "expression": "4.694091133**2*t_cant*c_bend/(2*pi*L_cant**2)", "description": "Euler-Bernoulli out-of-plane flexure 2 [Hz] (mode window)"},
+    {"name": "D_th", "expression": "k_beam/(rho_si*cp_si)", "description": "thermal diffusivity [m^2/s]"},
+    {"name": "Delta_ted", "expression": "E_si*alpha_si**2*T_ref/(rho_si*cp_si)", "description": "Zener relaxation strength"},
+    {"name": "wtau_oop1", "expression": "2*pi*f_oop1*t_cant**2/(pi**2*D_th)", "description": "omega tau of out-of-plane flexure 1 (heat across t)"},
+    {"name": "wtau_ip1", "expression": "2*pi*f_ip1*w_cant**2/(pi**2*D_th)", "description": "omega tau of in-plane flexure 1 (heat across w)"},
+    {"name": "wtau_oop2", "expression": "2*pi*f_oop2*t_cant**2/(pi**2*D_th)", "description": "omega tau of out-of-plane flexure 2 (heat across t)"},
+    {"name": "Q_zener_oop1", "expression": "(1 + wtau_oop1**2)/(Delta_ted*wtau_oop1)", "description": "Zener Q_TED estimate, out-of-plane flexure 1"},
+    {"name": "Q_zener_ip1", "expression": "(1 + wtau_ip1**2)/(Delta_ted*wtau_ip1)", "description": "Zener Q_TED estimate, in-plane flexure 1"},
+    {"name": "Q_zener_oop2", "expression": "(1 + wtau_oop2**2)/(Delta_ted*wtau_oop2)", "description": "Zener Q_TED estimate, out-of-plane flexure 2"}
+  ],
+  "domain": {"size_x": "L_cant", "size_y": "w_cant", "size_z": "t_cant"},
+  "geometry": [],
+  "selections": [],
+  "materials": [
+    {"name": "beam", "library": "silicon", "properties": {"k": "k_beam"}, "dispersion": null, "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "solid",
+      "type": "solid_mechanics_3d",
+      "settings": {"discretization": "quadratic", "target_frequency": 0.0},
+      "every": 1,
+      "features": [
+        {"name": "clamp", "type": "fixed", "selection": ["x_lo"], "params": {}, "enabled": true},
+        {"name": "modes", "type": "resonance_table", "selection": [], "params": {}, "enabled": true},
+        {"name": "ted", "type": "thermoelastic_damping", "selection": [], "params": {"T0": "T_ref"}, "enabled": true}
+      ]
+    }
+  ],
+  "couplings": [],
+  "mesh": {"kind": "tetrahedra", "mode": "uniform", "dx": "dx_mesh", "max_ratio": null, "wavelength_min": null,
+           "points_per_wavelength": null, "mesher": "builtin", "refinements": []},
+  "study": {"type": "eigenfrequency", "settings": {"n_resonances": 5},
+            "stored_fields": ["solid.u_z", "solid.u_y", "solid.u_abs"]},
+  "derived_values": [
+    {"name": "q_ted_oop1", "expression": "where(abs(frequency/f_oop1 - 1) < 0.1, q_ted, 0)", "selection": [],
+     "operation": "max", "source": "solid.ted", "at": null, "reference": null, "tolerance": null},
+    {"name": "q_ted_ip1", "expression": "where(abs(frequency/f_ip1 - 1) < 0.1, q_ted, 0)", "selection": [],
+     "operation": "max", "source": "solid.ted", "at": null, "reference": null, "tolerance": null},
+    {"name": "q_ted_oop2", "expression": "where(abs(frequency/f_oop2 - 1) < 0.1, q_ted, 0)", "selection": [],
+     "operation": "max", "source": "solid.ted", "at": null, "reference": null, "tolerance": null},
+    {"name": "shift_oop1", "expression": "where(abs(frequency/f_oop1 - 1) < 0.1, ted_frequency_shift, 0)", "selection": [],
+     "operation": "max", "source": "solid.ted", "at": null, "reference": null, "tolerance": null}
+  ],
+  "analytic_curves": []
+}
