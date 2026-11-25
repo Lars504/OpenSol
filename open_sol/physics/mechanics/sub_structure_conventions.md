@@ -132,20 +132,25 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   energies stay the storage part; tensor meshes unchanged.
 - viscosity is laminar_flow's property too: a viscosity-only cell joins the solid only with formulation mixed (void in
   the displacement formulation: V15 warning, not an error, since library water carries it). The viscoelastic arrays
-  are not STIFFNESS_ARRAYS (a T-dependent laminar_flow viscosity must not re-assemble the solid): their change drops the
-  kept harmonic operators only.
+  are not STIFFNESS_ARRAYS (a T-dependent laminar_flow viscosity must not re-assemble the solid in the displacement
+  formulation): their change drops the kept harmonic operators (and the element moduli); with formulation mixed it also
+  sets `operator_dirty` (membership follows the viscosity), so the next solve re-assembles.
 
 ## Mixed u-p formulation (setting formulation; `solver_common.mixed_harmonic_operators`, fem `mixed_elasticity*`)
-- x = [u; p], u in the system's numbering (2D the solid map, 3D the full map); the system's static K (deviatoric,
-  liquids 0) carries the dof map and the rigid check only and is never factorised. Reactions are the u rows of A x - f,
+- x = [u; p], u in the system's numbering (2D the solid map, 3D the full map); the system's static K (relaxed moduli:
+  the full lambda of E / nu and K0 members, deviatoric where K0 is unset, liquids 0) carries the dof map and the rigid
+  check only and is never factorised. Reactions are the u rows of A x - f,
   so they include -B^T p; a record reads u rows only (`_split_harmonic`).
 - Pressure zones: one P1 space per parameter group, duplicated where groups meet (the pressure jumps there); at m >= 1
   the axis pressure dofs are held at 0 (a cos(m phi) pressure is regular there only when 0).
 - Gauge pin: the constant pressure of an incompressible region enclosed by held displacements is a null vector, so one
-  dof is pinned (`_pressure_gauges`), which drops the region's volume equation 1^T B u = 0. Held displacements that
-  change that volume make the system unsolvable: `HarmonicOperators.check_held_volumes` refuses them per solve (from
-  `_harmonic_fixed`: a new solve path takes its held vector from there). A region with every displacement held is
-  refused at assembly. Both rely on the exact row sums B^T 1 (fem sub file "Mixed u-p").
+  dof is pinned (`_pressure_gauges`), which drops the region's volume equation 1^T B u = 0. Regions are connected over
+  the UNION of the incompressible groups (fem `pressure_regions(space, groups)` joins their duplicated dofs at shared
+  nodes): at an interface of two incompressible groups the B^T 1 terms cancel, so e.g. an oil drop in water in a held
+  container is one enclosed region though neither group alone is (per-group detection left it singular). Held
+  displacements that change that volume make the system unsolvable: `HarmonicOperators.check_held_volumes` refuses
+  them per solve (from `_harmonic_fixed`: a new solve path takes its held vector from there). A region of one group
+  with every displacement held is refused at assembly. Both rely on the exact row sums B^T 1 (fem sub file "Mixed u-p").
 - Stored zeros vs zero-coefficient terms: an incompressible group's zero pressure block stays in the pattern (PARDISO
   symmetric types need every diagonal stored): as stored zeros of the operator without a column map, but through the
   m = 1 axis-tie column map a congruence drops exact zeros, so there it is a FrequencyTerm of coefficient 0, which makes

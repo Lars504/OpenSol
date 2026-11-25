@@ -49,6 +49,10 @@ class PressureSpace3D:
         """Float64 (n_dofs, 3) node positions of the pressure dofs."""
         return self.mesh.points[np.concatenate(self.nodes)] if self.nodes else np.zeros((0, 3))
 
+    def dof_nodes(self) -> np.ndarray:
+        """Int64 (n_dofs,) mesh node of every pressure dof (a node shared by groups appears once per group)."""
+        return np.concatenate(self.nodes).astype(np.int64) if self.nodes else np.zeros(0, dtype=np.int64)
+
 
 def pressure_space_3d(mesh, groups, n_groups) -> PressureSpace3D:
     """PressureSpace3D of the groups (int64 per mesh element, -1 = none); ValueError for an empty group."""

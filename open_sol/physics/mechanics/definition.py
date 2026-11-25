@@ -40,34 +40,31 @@ from .coupling import make_temperature_rise_transform
 from .definition_bloch2d import (BAND_TEMPLATE_2D, bloch_issues_2d, complex_bloch_pencil_2d, periodic_axes_2d,
                                 periodic_params_2d, solver_periodic_arguments, static_periodic_cell,
                                 trivial_bloch_phase_2d)
-from .definition_common import (DENSITY_PARAM, EIGENFREQUENCY_STUDY, ELECTRODE_CONNECTION_HELP,
-                                ELECTRODE_VOLTAGE_HELP, FORMULATION_PARAM, GEOMETRIC_NONLINEARITY_PARAMS,
-                                INITIAL_STRESS_PROPERTIES, VISCOELASTIC_PROPERTIES, mixed_formulation,
+from .definition_common import (DENSITY_PARAM, EIGENFREQUENCY_STUDY, ELECTRODE_CONNECTION_HELP, ELECTRODE_VOLTAGE_HELP,
+                                FORMULATION_PARAM, GEOMETRIC_NONLINEARITY_PARAMS, INITIAL_STRESS_PROPERTIES,
                                 LOSS_PROPERTIES, MATERIAL_PROPERTIES, MODAL_STUDIES, PHOTOELASTIC_P44_PARAM,
                                 PIEZO_MATERIAL_PROPERTIES, ROLLER_FEATURES, STIFFNESS_TENSOR_PROPERTIES,
                                 STRESS_STIFFENING_PARAM, SUPPORT_FEATURES, SYMMETRY_FEATURE, SYMMETRY_HELP,
-                                TED_MATERIAL_PROPERTIES, apply_body_force,
-                                apply_temperature_change,
-                                background_context, displacement_param, eigen_search_issues, electrode_result,
-                                follow_held_values, follow_load, following, free_body_allowed, frequency_probe_feature,
-                                initial_stress_materials, material_issues, materials_setting, modal_kept_count,
-                                modal_resonance_count, modal_study_issues, model_mirror_issues, nonlinear_state_infos,
-                                outer_faces, piezo_material_issues, pml_crossing_issues, prestress_issues,
-                                register_support, resonance_table_feature, solid_linear_solver, solid_study,
-                                stiffness_follows_state, support_holders, support_result, symmetry_issues,
-                                thermoelastic_damping_feature, union_masks)
+                                TED_MATERIAL_PROPERTIES, VISCOELASTIC_PROPERTIES, apply_body_force,
+                                apply_temperature_change, background_context, displacement_param, eigen_search_issues,
+                                electrode_result, follow_held_values, follow_load, following, free_body_allowed,
+                                frequency_probe_feature, initial_stress_materials, material_issues, materials_setting,
+                                mixed_formulation, modal_kept_count, modal_resonance_count, modal_study_issues,
+                                model_mirror_issues, nonlinear_state_infos, outer_faces, piezo_material_issues,
+                                pml_crossing_issues, prestress_issues, register_support, resonance_table_feature,
+                                solid_linear_solver, solid_study, stiffness_follows_state, support_holders,
+                                support_result, symmetry_issues, thermoelastic_damping_feature, union_masks)
 from .definition_frequency_response import (ADMITTANCE_FEATURE, FREQUENCY_RESPONSE_STUDY, anisotropy_issues,
                                             frequency_response_host_items, frequency_response_issues)
 from .definition_viscoelastic import (scaled_fill, viscoelastic_counts, viscoelastic_issues, viscoelastic_memory_items,
-                                     viscoelastic_time_items)
+                                      viscoelastic_time_items)
 from .fields import (AZIMUTHAL_IMAG_FIELDS, ENERGY_DENSITY_FIELDS, HARMONIC_IMAG_FIELDS, INPUT_ARRAYS, OUTPUT_ARRAYS,
                      PRESSURE_FIELDS)
 from .generalized_plane_strain import BENDING_CHOICES, BENDING_TERMS
 from .materials import (DENSITY_SCHEMA, LOSS_ARRAYS, MECHANICAL_SCHEMA, OPTIONAL_LOSS_SCHEMA, OPTIONAL_PIEZO_SCHEMA,
-                        OPTIONAL_VISCOELASTIC_SCHEMA,
-                        OPTIONAL_PRESTRESS_SCHEMA, OPTIONAL_STIFFNESS_SCHEMA, OPTIONAL_TED_SCHEMA, PIEZO_ARRAYS,
-                        PIEZO_DEFAULTS,
-                        PRESTRESS_ARRAYS, SHEAR_PHOTOELASTIC_SCHEMA, SOLVER_PRECISIONS, STIFFNESS_TENSOR_ARRAYS)
+                        OPTIONAL_PRESTRESS_SCHEMA, OPTIONAL_STIFFNESS_SCHEMA, OPTIONAL_TED_SCHEMA,
+                        OPTIONAL_VISCOELASTIC_SCHEMA, PIEZO_ARRAYS, PIEZO_DEFAULTS, PRESTRESS_ARRAYS,
+                        SHEAR_PHOTOELASTIC_SCHEMA, SOLVER_PRECISIONS, STIFFNESS_TENSOR_ARRAYS)
 from .piezo import ELECTRODE_CONNECTIONS, PIEZO_COMPONENTS
 from .pml2d import DEFAULT_PML_CELLS, DEFAULT_PML_REFLECTION, pml_padding
 from .definition_optomechanics import (OPTICAL_TYPES, OPTOMECHANICAL_COUPLING_FEATURE, OPTOMECHANICS_STUDY,
@@ -1038,7 +1035,24 @@ _GUIDED_ASSEMBLY_BYTES_PER_ENTRY = 1 + 2 * _INT64_BYTES + 2 * INT32_BYTES + 3 * 
 _FEM_LOCAL_DOFS = {'linear': 3, 'quadratic': 6}
 _FEM_COO_PER_CSR_ENTRY = 2.0
 _FEM_FILL_FACTOR = 3.0
-_FEM_NODAL_OUTPUTS = 18   # host float64 nodal display arrays (solver_fem._nodal, energy densities and u_z included)
+# solver_fem output pass (_write_derived_outputs): the derived outputs of _output_values (_point_outputs' strains,
+# elastic strains, stresses, von Mises, strain energy, pressure, pressure_im, + kinetic_energy_density), each a host
+# float64 nodal array (n_global) and, while the pass runs, an (m, q) array at the dof points plus its stacked copy; the
+# primary nodal arrays u_x, u_y (u_z at an azimuthal order), u_abs and, of a shown complex solution, u_x_im, u_y_im
+# (u_z_im); per element float64 the derived centroid fields (energy densities, pressure, pressure_im) and the Im u
+# centroids of a complex one
+_FEM_DERIVED_OUTPUTS = 15
+_FEM_CENTROID_OUTPUTS = 4
+
+
+def _fem_output_items(components, complex_shown, scalar_dofs, local, elements):
+    """Host item of the solver_fem nodal display arrays, their element point values and the centroid fields (comment
+    above; components 2, or 3 at an azimuthal order; complex_shown: a complex response / damped mode can be shown)."""
+    imaginary = components if complex_shown else 0
+    nodal = _FEM_DERIVED_OUTPUTS + components + 1 + imaginary
+    return (f'nodal outputs ({nodal} x float64), their element point values and centroid fields',
+            FLOAT64_BYTES * (nodal * scalar_dofs + 2 * _FEM_DERIVED_OUTPUTS * local * elements
+                             + (_FEM_CENTROID_OUTPUTS + imaginary) * elements))
 
 
 def _output_moduli_item(elements):
@@ -1147,13 +1161,16 @@ def _fem_memory_estimate(settings_values, mesh, context):
     # viscoelastic group terms and the mixed u-p blocks (definition_viscoelastic; inactive outside frequency_response)
     viscoelastic = viscoelastic_counts(context.spec, context.parameters, settings_values, mesh, components, local, 2,
                                        vector_dofs, entries)
+    # a shown complex solution (the Im u display fields): every frequency response, a mode of a complex pencil
+    complex_shown = study == FREQUENCY_RESPONSE_STUDY or (study == EIGENFREQUENCY_STUDY and bool(
+        context.material_sets(LOSS_ARRAYS[0]) or _pml_faces(settings_values)
+        or complex_bloch_pencil_2d(settings_values)))
     host_items = [('dof maps (full and solid)', 2 * (_INT64_BYTES * local * elements + 2 * _INT64_BYTES * scalar_dofs)),
                   ('element stiffness / body force / held arrays', 20 * FLOAT64_BYTES * elements
                    + 3 * FLOAT64_BYTES * vector_dofs),
                   ('COO assembly (rows, columns, values)', (2 * _INT64_BYTES + FLOAT64_BYTES) * coo_entries),
                   ('stiffness CSR and its free-dof copy', 2 * csr_entry_bytes * entries),
-                  (f'nodal outputs ({_FEM_NODAL_OUTPUTS} x float64) and their element values',
-                   _FEM_NODAL_OUTPUTS * FLOAT64_BYTES * (scalar_dofs + local * elements))]
+                  _fem_output_items(components, complex_shown, scalar_dofs, local, elements)]
     if study == EIGENFREQUENCY_STUDY:
         host_items.append(('consistent mass CSR', csr_entry_bytes * entries))
         pml = bool(_pml_faces(settings_values))
@@ -1742,7 +1759,8 @@ def _fem_time_estimate(settings_values, mesh, context):
                      kind=sweep['factorizations_kind'], field_points=sweep['field_points'],
                      back_end=None if linear is None else linear.values.get('back_end'),
                      assembly_bytes_per_coo=_FEM_ASSEMBLY_BYTES_PER_COO, assembly_calls=_FEM_ASSEMBLY_CALLS,
-                     pattern_sum_stream=_pattern_sum_stream, output_ops=io_ops),
+                     pattern_sum_stream=_pattern_sum_stream, output_ops=io_ops,
+                     loss=bool(context.material_sets(LOSS_ARRAYS[0]))),
                  *reduced_sweep_time_items(sweep, pencil_unknowns))
         unknowns, entries = pencil_unknowns, pencil_entries   # the factorised saddle point (mixed)
         work = context.solver_work('linear', unknowns=unknowns, nnz=entries, value_bytes=2 * FLOAT64_BYTES,

@@ -349,7 +349,9 @@ FORMULATION_PARAM = Param(
          'azimuthal_order) or 3D, isotropic materials only; unset bulk_modulus = incompressible; liquids (viscosity, no '
          'modulus) join the solid. Outputs pressure / pressure_im (the pressure unknown, p > 0 in compression); '
          'reactions include the pressure. Not with piezoelectric, plane_stress, stress_stiffening, '
-         'geometric_nonlinearity, pml_*, periodic axes or sweep_method modal.',
+         'geometric_nonlinearity, pml_*, periodic axes or sweep_method modal; sweep_method adaptive is refused with a '
+         'viscous or relaxing member (frequency-dependent moduli: every liquid) and, at azimuthal_order 1, with an '
+         'incompressible one (direct only).',
     tip='How the deformation is computed. Displacement and pressure is needed for liquids such as water and for nearly '
         'incompressible materials such as rubber; it runs only in a frequency response study on a triangle or '
         'tetrahedron mesh with quadratic elements.')

@@ -1,8 +1,9 @@
 """Self-tests of the frequency-dependent viscoelastic moduli and the mixed u-p formulation of the FEM solids
 (frequency_response): the per-frequency term machinery of frequency_response.HarmonicSystem against dense solves, the
 validation rules and the enclosed-volume check, a viscoelastic P-wave strip (triangles, axisymmetric, tetrahedra;
-displacement and mixed), Stokes' second problem of a viscous liquid (mixed, GPU) and the drag of a rigid sphere
-oscillating in water (axisymmetric m = 0 and m = 1). definition registers them; no physics imports at module level."""
+displacement and mixed), Stokes' second problem of a viscous liquid and of two touching liquid layers (mixed, GPU) and
+the drag of a rigid sphere oscillating in water (axisymmetric m = 0 and m = 1). definition registers them; no physics
+imports at module level."""
 import math
 
 import numpy as np
@@ -13,7 +14,7 @@ from ...model.selftest_helpers import (SubChecks, available_host_direct, cpu_def
 from ...model.spec import (DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec,
                            PhysicsSpec, RefinementSpec, SolverDefaultsSpec, StudySpec)
 from .selftests import _rectangle
-from .selftests_fem import _patch_mesh
+from .selftests_fem import _PATCH_SIZE, _patch_mesh
 from .selftests_fem3d import _point, _solid_spec
 
 _PHYSICS = 'solid'
@@ -218,14 +219,19 @@ def _check_terms(_):
 # ---- solid_viscoelastic_validation (check({}), no run): one spec per rule of definition_viscoelastic, and the
 # enclosed-volume check of an incompressible region (solver_common.HarmonicOperators.check_held_volumes) on the 2 x 2 um
 # patch mesh of solid_fem_patch (P2, every boundary dof held: the whole liquid is enclosed, one gauge): a rigid
-# translation of the boundary keeps the volume (passes), a uniform expansion changes it (refused).
+# translation of the boundary keeps the volume (passes), a uniform expansion changes it (refused); then two touching
+# liquids (an oil drop of 4x viscosity in the patch disc, by element centroid, water around it): neither group is
+# enclosed alone, their union is (one gauge; the per-group detection found none and left the saddle point singular).
 _RULE_SIZE = 1e-3
 _RULE_FREQUENCY = 1e3
 _GEL = {'rho': 1000.0, 'shear_modulus': 1e6, 'bulk_modulus': 1e7}
 _GEL_VISCOUS = {**_GEL, 'viscosity': 1.0}
 _LIQUID = {'rho': 1000.0, 'viscosity': 1e-3}
+_INCOMPRESSIBLE_GEL = {'rho': 1000.0, 'shear_modulus': 1e6}   # mixed: no bulk modulus, not frequency dependent
 _GAUGE_STRAIN = 1e-3
 _GAUGE_SHIFT = 1e-9                     # m
+_PATCH_CENTRE = 0.5 * _PATCH_SIZE      # the solid_fem_patch disc (centre, radius): the oil drop of the gauge check
+_PATCH_DROP_RADIUS = 0.25 * _PATCH_SIZE
 
 
 def _rule_spec(properties, settings=None, study=FREQUENCY_RESPONSE_STUDY, kind=_TRIANGLE_MESH, materials=None,
@@ -274,8 +280,8 @@ def _rule_cases():
                                            'stress_stiffening or geometric_nonlinearity'),
         'V7 frequency-dependent adaptive sweep': (_rule_spec(_GEL_VISCOUS, study_settings={'sweep_method': 'adaptive'}),
                                                   'error', 'needs a pencil polynomial'),
-        'V7 mixed incompressible adaptive at m = 1': (
-            _rule_spec(_LIQUID, {**_MIXED, 'azimuthal_order': 1}, axisymmetric=True,
+        'V7b mixed incompressible adaptive at m = 1': (   # not viscous: V7 (frequency dependent) would fire first
+            _rule_spec(_INCOMPRESSIBLE_GEL, {**_MIXED, 'azimuthal_order': 1}, axisymmetric=True,
                        study_settings={'sweep_method': 'adaptive'}), 'error', 'cannot take an incompressible material'),
         'V8 two routes': (_rule_spec({'rho': 1000.0, 'youngs_modulus': 1e9, 'poisson_ratio': 0.3,
                                       'shear_modulus': 1e6}), 'error', 'one route per material'),
@@ -361,6 +367,30 @@ def _gauge_checks(checks):
     expansion[2 * boundary] = _GAUGE_STRAIN * points[:, 0]
     expansion[2 * boundary + 1] = _GAUGE_STRAIN * points[:, 1]
     checks.add_raises('gauge: a uniform expansion is refused',
+                      lambda: operators.check_held_volumes(expansion, lambda: 'enclosed-volume self-test'))
+    # two touching incompressible liquids (an oil drop of 4x viscosity in the disc, water around it): neither group is
+    # enclosed alone (the interface displacements are free), their union is: one gauge for both
+    centroids = mesh.points[mesh.triangles].mean(axis=1)
+    drop = np.hypot(centroids[:, 0] - _PATCH_CENTRE, centroids[:, 1] - _PATCH_CENTRE) < _PATCH_DROP_RADIUS
+    indices = drop.astype(np.int64)
+    oil = ViscoelasticGroup(1, drop, ModulusLaw(0.0, 0.0, 4e-3, ()), ModulusLaw(math.inf, 0.0, 0.0, ()))
+    water = ViscoelasticGroup(0, ~drop, ModulusLaw(0.0, 0.0, 1e-3, ()), ModulusLaw(math.inf, 0.0, 0.0, ()))
+    deviatoric = [matrices[0] for matrices in assemble_elastic_stiffness_groups(
+        dofs, [unit_operator_coefficients('shear', n_elements, False)], indices, 2)]
+    space = pressure_space(dofs, indices, 2)
+    coupling, masses = assemble_pressure_terms(dofs, space)
+    operators = mixed_harmonic_operators((water, oil), deviatoric, coupling, masses, space,
+                                         scipy.sparse.identity(n_u, format='csr'), free,
+                                         np.ones(space.n_dofs, dtype=bool), None, lambda: 'enclosed-volume self-test')
+    checks.add('gauge: two touching liquids pinned once (their union)', len(operators.pressure_gauges) == 1
+               and len(operators.volume_checks) == 1, value=len(operators.pressure_gauges),
+               drop_elements=int(drop.sum()))
+    try:
+        operators.check_held_volumes(translation, lambda: 'enclosed-volume self-test')
+        checks.add('gauge: two touching liquids, a rigid translation keeps the volume', True)
+    except ValueError as error:
+        checks.add('gauge: two touching liquids, a rigid translation keeps the volume', False, message=str(error))
+    checks.add_raises('gauge: two touching liquids, a uniform expansion is refused',
                       lambda: operators.check_held_volumes(expansion, lambda: 'enclosed-volume self-test'))
 
 
@@ -511,6 +541,16 @@ def _check_strip(results_by_name):
 # bottom length per m of depth, its area in 3D). Two frequencies per run with delta = sqrt(2 mu / (rho w)) = H / 3 and
 # H / 8: the probes and the reaction at both, the stress and the pressure at the last. 3D: the layer normal along z.
 # GPU: Automatic 'linear' -> cuDSS LDL^T of the complex symmetric saddle point with its zero pressure block.
+# Two-layer runs (triangles): the liquid below y = h1 = _STOKES_INTERFACE H, a second incompressible liquid (viscosity
+# 4x, rho 800: its own pressure group, the groups touch along y = h1) above. 'two_layers': the same holds; [u_x,
+# sigma_xy] crosses a layer of depth d by T = [[cosh(lam d), sinh(lam d) / Z], [Z sinh(lam d), cosh(lam d)]], Z = j w
+# mu lam (u and sigma_xy continuous at h1, p = 0 exact), u(H) = 0 of T2 T1 [X, sigma_xy(0)] fixes sigma_xy(0), the
+# bottom reaction is -sigma_xy(0) A. 'enclosed_layers': rollers on the sides and both walls moved by u_y = X, so every
+# normal displacement is held: q = 1 over BOTH groups is a null vector (the interface terms of the groups cancel),
+# neither group alone is (solver_common._pressure_gauges pins the union region; without it the saddle point is
+# singular); the held translation keeps the volume (check_held_volumes passes). Exact: u = (0, X), dp/dy = rho w^2 X
+# per layer (p continuous at h1), the summed wall reactions R_y = -w^2 X W (rho1 h1 + rho2 (H - h1)); P2 / P1 hold it,
+# so only round-off and float32 field storage remain.
 _STOKES_H = 100e-6
 _STOKES_WIDTH = _STOKES_H / 4.0
 _STOKES_X = 1e-9                        # m
@@ -521,6 +561,13 @@ _STOKES_FRACTIONS = (0.25, 0.5, 0.75)   # y / H of the probes
 _STOKES_H_TRIANGLES = _STOKES_H / 40.0
 _STOKES_H_TETRAHEDRA = _STOKES_H / 32.0
 _STOKES_TOLERANCE = {'u': 2e-3, 'reaction': 2e-3, 'stress': 1e-2, 'pressure': 1e-3}   # first estimates
+_STOKES_INTERFACE = 0.4                 # h1 / H of the two-layer runs (between the probes, on a mesh line)
+_STOKES_UPPER_VISCOSITY = float32_value(4e-3)
+_STOKES_UPPER_DENSITY = float32_value(800.0)
+_STOKES_LAYER_RUNS = ('two_layers', 'enclosed_layers')
+_STOKES_RUNS = ('triangles', 'tetrahedra', *_STOKES_LAYER_RUNS)
+# enclosed_layers (exact up to round-off): of X, relative, of the pressure rise (float32 fields); first estimates
+_STOKES_ENCLOSED_TOLERANCE = {'u': 1e-6, 'reaction': 1e-6, 'pressure': 1e-5}
 
 
 def _stokes_frequencies():
@@ -536,6 +583,75 @@ def _stokes_closed_form(frequency, y):
     return displacement, 1j * omega * _STOKES_VISCOSITY * slope, lam
 
 
+def _layer_transfer(omega, viscosity, density, depth):
+    """2 x 2 complex transfer matrix of [u_x, sigma_xy] across a liquid layer of `depth` [m] (G* = j w mu): u = A
+    cosh(lam s) + B sinh(lam s), sigma_xy = Z (A sinh + B cosh), Z = j w mu lam, lam = sqrt(j w rho / mu)."""
+    lam = np.sqrt(1j * omega * density / viscosity)
+    impedance = 1j * omega * viscosity * lam
+    return np.array([[np.cosh(lam * depth), np.sinh(lam * depth) / impedance],
+                     [impedance * np.sinh(lam * depth), np.cosh(lam * depth)]])
+
+
+def _layers_closed_form(frequency, y):
+    """(u_x(y), sigma_xy(y), sigma_xy(0)) of the two-layer shear wave at frequency [Hz] (case comment)."""
+    omega = 2.0 * math.pi * frequency
+    interface = _STOKES_INTERFACE * _STOKES_H
+    lower = _layer_transfer(omega, _STOKES_VISCOSITY, _STOKES_DENSITY, interface)
+    whole = _layer_transfer(omega, _STOKES_UPPER_VISCOSITY, _STOKES_UPPER_DENSITY, _STOKES_H - interface) @ lower
+    bottom = np.array([_STOKES_X, -whole[0, 0] * _STOKES_X / whole[0, 1]])   # u(H) = 0 fixes sigma_xy(0)
+    if y <= interface:
+        state = _layer_transfer(omega, _STOKES_VISCOSITY, _STOKES_DENSITY, y) @ bottom
+    else:
+        state = _layer_transfer(omega, _STOKES_UPPER_VISCOSITY, _STOKES_UPPER_DENSITY, y - interface) @ lower @ bottom
+    return state[0], state[1], bottom[1]
+
+
+def _enclosed_pressure_rise(frequency, low, high):
+    """p(high) - p(low) [Pa] of the enclosed two-layer translation (dp/dy = rho w^2 X per layer, case comment)."""
+    omega = 2.0 * math.pi * frequency
+    interface = _STOKES_INTERFACE * _STOKES_H
+
+    def level(y):
+        return omega ** 2 * _STOKES_X * (_STOKES_DENSITY * min(y, interface)
+                                         + _STOKES_UPPER_DENSITY * max(y - interface, 0.0))
+    return level(high) - level(low)
+
+
+def _layered_spec(run, study, probes, gpu):
+    """The two-layer runs on triangles: 'two_layers' (the shear wave, the side and wall holds of the triangles run)
+    and 'enclosed_layers' (rollers on the sides, both walls moved by u_y = X: every normal displacement held)."""
+    middle = 0.5 * _STOKES_WIDTH
+    interface = _STOKES_INTERFACE * _STOKES_H
+    materials = [MaterialSpec('liquid', properties={'viscosity': _STOKES_VISCOSITY, 'rho': _STOKES_DENSITY},
+                              selection=['lower']),
+                 MaterialSpec('upper_liquid', properties={'viscosity': _STOKES_UPPER_VISCOSITY,
+                                                          'rho': _STOKES_UPPER_DENSITY}, selection=['upper'])]
+    if run == 'two_layers':
+        features = [FeatureSpec('sides', 'displacement', ['x_lo', 'x_hi'], {'u_y': 0.0}),
+                    FeatureSpec('bottom', 'displacement', ['y_lo'], {'u_x': _STOKES_X, 'u_y': 0.0}),
+                    FeatureSpec('top', 'fixed', ['y_hi'])]
+        derived = [DerivedValueSpec('stress_mid', 'stress_xy', [], 'at', point='p1'),
+                   DerivedValueSpec('pressure_max', f'sqrt({_PHYSICS}_pressure**2 + {_PHYSICS}_pressure_im**2)',
+                                    [], 'max')]
+    else:
+        features = [FeatureSpec('sides', 'roller', ['x_lo', 'x_hi']),
+                    FeatureSpec('bottom', 'displacement', ['y_lo'], {'u_y': _STOKES_X}),
+                    FeatureSpec('top', 'displacement', ['y_hi'], {'u_y': _STOKES_X})]
+        derived = [DerivedValueSpec(f'pressure_p{index}', f'{_PHYSICS}_pressure', [], 'at', point=f'p{index}')
+                   for index in (0, len(_STOKES_FRACTIONS) - 1)]
+    return ModelSpec(
+        title=f'Self-test: Stokes second problem, two liquid layers ({run})',
+        domain=DomainSpec(size_x=_STOKES_WIDTH, size_y=_STOKES_H),
+        geometry=[_rectangle('lower', 0.0, 0.0, _STOKES_WIDTH, interface),
+                  _rectangle('upper', 0.0, interface, _STOKES_WIDTH, _STOKES_H),
+                  *(GeometrySpec(f'p{index}', 'point', {'x': middle, 'y': fraction * _STOKES_H})
+                    for index, fraction in enumerate(_STOKES_FRACTIONS))],
+        materials=materials,
+        physics=[PhysicsSpec(_PHYSICS, _SOLID_TYPE, settings={**_QUADRATIC, **_MIXED}, features=features + probes)],
+        meshes=[MeshSpec(name=_TRIANGLE_MESH, kind='triangles', mode='uniform', dx=_STOKES_H_TRIANGLES)],
+        solver_defaults=gpu, study=study, derived_values=derived)
+
+
 def _stokes_spec(run):
     material = [MaterialSpec('liquid', properties={'viscosity': _STOKES_VISCOSITY, 'rho': _STOKES_DENSITY},
                              selection=['all'])]
@@ -544,6 +660,8 @@ def _stokes_spec(run):
               for index in range(len(_STOKES_FRACTIONS))]
     pressure = f'sqrt({_PHYSICS}_pressure**2 + {_PHYSICS}_pressure_im**2)'
     gpu = SolverDefaultsSpec(backend='gpu')
+    if run in _STOKES_LAYER_RUNS:
+        return _layered_spec(run, study, probes, gpu)
     if run == 'tetrahedra':
         middle = 0.5 * _STOKES_WIDTH
         spec = _solid_spec(
@@ -579,10 +697,16 @@ def _check_stokes(results_by_name):
     frequencies = sorted(_stokes_frequencies())
     errors, tolerances, details = {}, {}, {}
 
-    def add(item, error, kind):
-        errors[item], tolerances[item] = float(error), _STOKES_TOLERANCE[kind]
+    def add(item, error, kind, table=_STOKES_TOLERANCE):
+        errors[item], tolerances[item] = float(error), table[kind]
 
     for run, results in results_by_name.items():
+        if run == 'enclosed_layers':
+            details[run] = _check_enclosed_layers(results, frequencies, add)
+            continue
+        if run == 'two_layers':
+            details[run] = _check_two_layers(results, frequencies, add)
+            continue
         area = _STOKES_WIDTH ** 2 if run == 'tetrahedra' else _STOKES_WIDTH
         _, reaction = _reaction(results, 'bottom', 'F_x')
         record = details[run] = {}
@@ -608,6 +732,57 @@ def _check_stokes(results_by_name):
         add(f'{run} pressure (exact 0)', _derived(results, 'pressure_max') / scale, 'pressure')
         record['stress_mid'] = {'measured': stress, 'expected': expected_stress, 'scale': scale}
     return scaled_worst_result(errors, tolerances, **details)
+
+
+def _check_two_layers(results, frequencies, add) -> dict:
+    """The two-layer shear wave against the transfer-matrix solution (_layers_closed_form): probes, the bottom
+    reaction at both frequencies, Re sigma_xy at H / 2 (the upper layer) and max |p| at the last; -> details."""
+    run, record = 'two_layers', {}
+    _, reaction = _reaction(results, 'bottom', 'F_x')
+    for index, frequency in enumerate(frequencies):
+        for probe, fraction in enumerate(_STOKES_FRACTIONS):
+            expected = _layers_closed_form(frequency, fraction * _STOKES_H)[0]
+            measured = _probe(results, f'probe_{probe}', 'u_x')[1][index]
+            add(f'{run} u_x at y = {fraction:g} H, {frequency:.6g} Hz', abs(measured - expected) / _STOKES_X, 'u')
+        expected_force = -_layers_closed_form(frequency, 0.0)[2] * _STOKES_WIDTH
+        add(f'{run} bottom reaction {frequency:.6g} Hz', abs(reaction[index] - expected_force) / abs(expected_force),
+            'reaction')
+        record[f'reaction {frequency:.6g} Hz'] = {'measured': _pair(reaction[index]), 'expected': _pair(expected_force)}
+    last = frequencies[-1]
+    _, middle, wall = _layers_closed_form(last, 0.5 * _STOKES_H)
+    scale = abs(wall)   # the wall shear stress amplitude
+    stress = _derived(results, 'stress_mid')
+    add(f'{run} stress at H / 2', abs(stress - float(middle.real)) / scale, 'stress')
+    add(f'{run} pressure (exact 0)', _derived(results, 'pressure_max') / scale, 'pressure')
+    record['stress_mid'] = {'measured': stress, 'expected': float(middle.real), 'scale': scale}
+    return record
+
+
+def _check_enclosed_layers(results, frequencies, add) -> dict:
+    """The enclosed two-layer translation (exact): u_y = X at the probes, the summed wall reactions -w^2 X W (rho1 h1 +
+    rho2 (H - h1)) at both frequencies, the pressure rise between the outer probes at the last; -> details."""
+    run, record = 'enclosed_layers', {}
+    interface = _STOKES_INTERFACE * _STOKES_H
+    mass = _STOKES_WIDTH * (_STOKES_DENSITY * interface + _STOKES_UPPER_DENSITY * (_STOKES_H - interface))   # kg/m
+    bottom, top = _reaction(results, 'bottom', 'F_y')[1], _reaction(results, 'top', 'F_y')[1]
+    for index, frequency in enumerate(frequencies):
+        omega = 2.0 * math.pi * frequency
+        for probe, fraction in enumerate(_STOKES_FRACTIONS):
+            measured = _probe(results, f'probe_{probe}', 'u_y')[1][index]
+            add(f'{run} u_y at y = {fraction:g} H, {frequency:.6g} Hz', abs(measured - _STOKES_X) / _STOKES_X, 'u',
+                _STOKES_ENCLOSED_TOLERANCE)
+        expected_force = -omega ** 2 * _STOKES_X * mass
+        total = bottom[index] + top[index]
+        add(f'{run} wall reactions {frequency:.6g} Hz', abs(total - expected_force) / abs(expected_force), 'reaction',
+            _STOKES_ENCLOSED_TOLERANCE)
+        record[f'wall reactions {frequency:.6g} Hz'] = {'measured': _pair(total), 'expected': expected_force}
+    low, high = _STOKES_FRACTIONS[0] * _STOKES_H, _STOKES_FRACTIONS[-1] * _STOKES_H
+    expected_rise = _enclosed_pressure_rise(frequencies[-1], low, high)
+    rise = _derived(results, f'pressure_p{len(_STOKES_FRACTIONS) - 1}') - _derived(results, 'pressure_p0')
+    add(f'{run} pressure rise p(3 H / 4) - p(H / 4)', abs(rise - expected_rise) / abs(expected_rise), 'pressure',
+        _STOKES_ENCLOSED_TOLERANCE)
+    record['pressure rise'] = {'measured': rise, 'expected': expected_rise}
+    return record
 
 
 # ---- solid_oscillating_sphere_drag: a rigid bead oscillating in water (axisymmetric, mixed) ----
@@ -739,7 +914,9 @@ VISCOELASTIC_CASES = (
                      'info) must report its severity and key phrase, two valid models none; and the enclosed-volume '
                      'check on the solid_fem_patch mesh (P2, every boundary dof held, one liquid group): one gauge, a '
                      'rigid translation passes, a uniform expansion is refused (relative tolerance 1e-9, first '
-                     'estimate). error = number of failed sub-checks.'),
+                     'estimate); the same with two touching incompressible liquids (an oil drop of 4x viscosity in '
+                     'water): one gauge for their union, neither being enclosed alone. error = number of failed '
+                     'sub-checks.'),
         specs=dict, check=_check_rules),
     SelfTestCase(
         name='solid_viscoelastic_strip',
@@ -756,7 +933,7 @@ VISCOELASTIC_CASES = (
                      f"{_STRIP_TOLERANCE['reaction']:g} relative (A = W per m, pi W^2, W^2), Re sigma at L / 2 of the "
                      f"last frequency within {_STRIP_TOLERANCE['stress']:g} of |t| (node-averaged; pins the "
                      'complex-correct stress). Tolerances are first estimates (P2 error ~ (k h)^3). measured = error = '
-                     'the worst deviation in tolerance units. Not yet run.'),
+                     'the worst deviation in tolerance units.'),
         specs=lambda: {run: _strip_spec(run) for run in _STRIP_RUNS}, check=_check_strip),
     SelfTestCase(
         name='solid_stokes_second_problem',
@@ -771,9 +948,21 @@ VISCOELASTIC_CASES = (
                      f"4, H / 2, 3 H / 4 within {_STOKES_TOLERANCE['u']:g} of X, the bottom reaction j w mu lam "
                      f"coth(lam H) X A within {_STOKES_TOLERANCE['reaction']:g} relative, Re sigma_xy at H / 2 "
                      f"within {_STOKES_TOLERANCE['stress']:g} and max |p| below {_STOKES_TOLERANCE['pressure']:g} of "
-                     'the wall shear stress w mu |lam| X (last frequency). Tolerances are first estimates. measured = '
-                     'error = the worst deviation in tolerance units. Not yet run.'),
-        specs=lambda: {run: _stokes_spec(run) for run in ('triangles', 'tetrahedra')}, check=_check_stokes,
+                     'the wall shear stress w mu |lam| X (last frequency). Two-layer runs on triangles (the liquid '
+                     f'below {_STOKES_INTERFACE:g} H, above it a second incompressible liquid of viscosity '
+                     f'{_STOKES_UPPER_VISCOSITY:g} Pa s, rho {_STOKES_UPPER_DENSITY:g}): two_layers (the same holds) '
+                     'against the transfer-matrix solution (per layer [[cosh(lam d), sinh(lam d) / Z], [Z sinh(lam '
+                     'd), cosh(lam d)]] on [u_x, sigma_xy], Z = j w mu lam) with the tolerances above (scale: the '
+                     'bottom wall shear stress); enclosed_layers (rollers on the sides, both walls moved by u_y = X: '
+                     'the two touching liquids are one enclosed incompressible region, singular unless its pressure '
+                     'level is pinned, and the held translation keeps its volume): u_y = X at the probes within '
+                     f"{_STOKES_ENCLOSED_TOLERANCE['u']:g} of X, the summed wall reactions -w^2 X W (rho1 h1 + rho2 "
+                     f"(H - h1)) within {_STOKES_ENCLOSED_TOLERANCE['reaction']:g} relative, the pressure rise "
+                     'p(3 H / 4) - p(H / 4) (dp/dy = rho w^2 X per layer) within '
+                     f"{_STOKES_ENCLOSED_TOLERANCE['pressure']:g} relative (exact in P2 / P1: round-off and float32 "
+                     'fields). Tolerances are first estimates. measured = error = the worst deviation in tolerance '
+                     'units.'),
+        specs=lambda: {run: _stokes_spec(run) for run in _STOKES_RUNS}, check=_check_stokes,
         backends=('gpu',)),
     SelfTestCase(
         name='solid_oscillating_sphere_drag',
@@ -789,6 +978,6 @@ VISCOELASTIC_CASES = (
                      f"the module): within {_SPHERE_TOLERANCE['drag']:g} relative (wall corrections exp(-(R - a) / "
                      f"delta), (a / R)^3), m0 and m1 agree within {_SPHERE_TOLERANCE['m0 vs m1']:g}, the m1 pressure "
                      'on the axis is 0. Tolerances are first estimates. measured = error = the worst deviation in '
-                     'tolerance units. Not yet run (heavy flag after a timed run).'),
+                     'tolerance units.'),
         specs=lambda: {run: _sphere_spec(run) for run in _SPHERE_RUNS}, check=_check_sphere),
 )

@@ -199,7 +199,8 @@ file ("Triangle meshes"). Error indicators: section "Error indicators" (users: g
   volume check (tolerance 1e-9) rely on it; a lower rule there breaks them.
 - Pressure maps per group take the displacement map's geometry order; a group's dofs are offsets[g] + its own
   numbering (nodes shared by groups carry one dof per group): node values go through `nodal_pressure[_3d]` (groups
-  averaged) or `pressure_at[_3d]`, never a global-id lookup.
+  averaged) or `pressure_at[_3d]`, never a global-id lookup; regions across groups through `pressure_regions(space,
+  groups)` (joins the duplicates by `dof_nodes()`).
 - Group assemblers (`assemble_elastic_stiffness_groups[_3d]`, `assemble_pressure_terms[_3d]`): one strain operator per
   element chunk for every group and set; 3D CsrAccumulators per (group, set), never `kept_pattern` (group patterns
   would evict K's kept block pattern). `embedded` / `saddle_coupling` keep explicit zeros (index shifts and

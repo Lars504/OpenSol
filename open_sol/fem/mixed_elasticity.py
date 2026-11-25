@@ -1,7 +1,7 @@
 """Taylor-Hood u-p pieces of the 2D elasticity: P1 pressure spaces per element group and the coupling / pressure mass
 blocks of a P2 displacement map (planar plane strain, axisymmetric rings, azimuthal order m >= 1), the axis pressure
-dofs, the pressure at element points and its nodal display values, the connected pressure regions of a group and the
-index shifts that place the blocks in the [u; p] numbering. Host numpy, scipy inside functions."""
+dofs, the pressure at element points and its nodal display values, the connected pressure regions of a union of groups
+and the index shifts that place the blocks in the [u; p] numbering. Host numpy, scipy inside functions."""
 # Weak form (exp(+j omega t), p > 0 in compression, sigma = 2 G* dev eps - p I, p = -K* tr eps): for every v, q
 #   int 2 G* dev eps(u) : eps(v) dV - int p tr eps(v) dV - omega^2 int rho u . v dV = int f . v dV   (momentum)
 #   -int q (tr eps(u) + p / K*) dV = 0                                                              (volume)
@@ -57,6 +57,12 @@ class PressureSpace:
         for group, dofs in enumerate(self.maps):
             points[int(self.offsets[group]):int(self.offsets[group + 1])] = dofs.mesh.points[dofs.global_ids]
         return points
+
+    def dof_nodes(self) -> np.ndarray:
+        """Int64 (n_dofs,) mesh node of every pressure dof (a node shared by groups appears once per group)."""
+        if not self.maps:
+            return np.zeros(0, dtype=np.int64)
+        return np.concatenate([dofs.global_ids for dofs in self.maps]).astype(np.int64)
 
 
 def pressure_space(displacement_dofs, groups, n_groups) -> PressureSpace:
@@ -185,20 +191,37 @@ def nodal_pressure(full_dofs, space, pressure) -> np.ndarray:
     return result
 
 
-def pressure_regions(space, group) -> list:
-    """[int64 sorted global pressure dofs] of each connected region (elements joined through pressure nodes) of group
-    `group`; space a PressureSpace or fem.mixed_elasticity3d.PressureSpace3D (group_element_dofs, offsets)."""
+def pressure_regions(space, groups) -> list:
+    """[int64 sorted global pressure dofs] of each connected region of the union of the groups `groups` (an iterable
+    of group indices): elements joined through their pressure nodes, and groups joined where they share a mesh node
+    (their duplicated dofs there are one region: a pressure constant over two touching groups is one mode). space a
+    PressureSpace or fem.mixed_elasticity3d.PressureSpace3D (group_element_dofs, offsets, dof_nodes)."""
     from scipy.sparse import coo_matrix
     from scipy.sparse.csgraph import connected_components
 
-    local = space.group_element_dofs(group) - int(space.offsets[group])
-    n_local = int(space.offsets[group + 1] - space.offsets[group])
-    first = np.broadcast_to(local[:, :1], local.shape).ravel()   # every element dof joined to its first dof
-    graph = coo_matrix((np.ones(first.size, dtype=np.int8), (first, local.ravel())), shape=(n_local, n_local))
+    groups = sorted({int(group) for group in groups})
+    if not groups:
+        return []
+    # the union's dofs, ascending (group blocks are contiguous and in offset order), and their local numbering
+    members = np.concatenate([np.arange(int(space.offsets[group]), int(space.offsets[group + 1]), dtype=np.int64)
+                              for group in groups])
+    local_of = np.full(space.n_dofs, -1, dtype=np.int64)
+    local_of[members] = np.arange(members.size, dtype=np.int64)
+    element_dofs = [local_of[space.group_element_dofs(group)] for group in groups]
+    # every element dof joined to its element's first dof
+    first = [np.broadcast_to(local[:, :1], local.shape).ravel() for local in element_dofs]
+    second = [local.ravel() for local in element_dofs]
+    # every dof joined to the first union dof at its mesh node (the other groups' duplicates there)
+    nodes = space.dof_nodes()[members]
+    order = np.argsort(nodes, kind='stable')
+    starts = np.flatnonzero(np.r_[True, nodes[order][1:] != nodes[order][:-1]])
+    lead = order[np.repeat(starts, np.diff(np.r_[starts, order.size]))]
+    rows, columns = np.concatenate(first + [lead]), np.concatenate(second + [order])
+    graph = coo_matrix((np.ones(rows.size, dtype=np.int8), (rows, columns)), shape=(members.size, members.size))
     n_regions, labels = connected_components(graph, directed=False)
-    order = np.argsort(labels, kind='stable')
-    split = np.split(order, np.cumsum(np.bincount(labels, minlength=n_regions))[:-1])
-    return [int(space.offsets[group]) + np.sort(members).astype(np.int64) for members in split]
+    by_label = np.argsort(labels, kind='stable')   # stable: ascending dofs within a region
+    split = np.split(by_label, np.cumsum(np.bincount(labels, minlength=n_regions))[:-1])
+    return [members[part] for part in split]
 
 
 def embedded(matrix, n_total, row_offset=0, column_offset=0):

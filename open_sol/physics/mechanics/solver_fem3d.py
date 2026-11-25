@@ -48,10 +48,10 @@ from .bloch3d import bloch_cell_3d
 from .fields3d import (ELECTRIC_OUTPUT_ARRAYS_3D, ENERGY_OUTPUT_ARRAYS_3D, HARMONIC_IMAG_FIELDS_3D, INPUT_ARRAYS_3D,
                        OUTPUT_ARRAYS_3D, PRESSURE_FIELDS_3D, SOURCE_SLOTS_3D)
 from .frequency_response import FrequencyPoint, FrequencyTerm, HarmonicSystem
-from .materials import (DENSITY_SCHEMA, ELECTROMECHANICAL_ARRAYS_3D, EXPANSION_ARRAYS, LOSS_ARRAYS, MECHANICAL_SCHEMA,
-                        PERMITTIVITY_TENSOR_ARRAYS_3D, PIEZO_DEFAULTS_3D, PIEZO_TENSOR_ARRAYS_3D, PRESTRESS_ARRAYS_3D,
-                        PRESTRESS_NAMES, STIFFNESS_ARRAYS, STIFFNESS_TENSOR_ARRAYS_3D, VISCOELASTIC_ARRAYS,
-                        ISOTROPIC_PATTERN_3D, lame_coefficients, lame_from_moduli)
+from .materials import (DENSITY_SCHEMA, ELECTROMECHANICAL_ARRAYS_3D, EXPANSION_ARRAYS, ISOTROPIC_PATTERN_3D,
+                        LOSS_ARRAYS, MECHANICAL_SCHEMA, PERMITTIVITY_TENSOR_ARRAYS_3D, PIEZO_DEFAULTS_3D,
+                        PIEZO_TENSOR_ARRAYS_3D, PRESTRESS_ARRAYS_3D, PRESTRESS_NAMES, STIFFNESS_ARRAYS,
+                        STIFFNESS_TENSOR_ARRAYS_3D, VISCOELASTIC_ARRAYS, lame_coefficients, lame_from_moduli)
 from .modal import ModalPencil, MultiShiftModes
 from .nonlinear_start import NonlinearStart, solve_from_start
 from .piezo import ELECTRODE_CONNECTIONS, RESISTIVE_LOAD, Electrode, PiezoSystem
@@ -1643,29 +1643,36 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
         potential) + the initial stress sigma0 (prestress: a static solve); pressure = -tr(T) / 3. material (C', C'')
         (n_elements, 6, 6) of a shown complex solution (_harmonic_moduli; thermal and prestress False): Re T* = C' S_r -
         C'' S_i - e^T E_r (- Re p I with the mixed pressure unknowns p (m, q) complex), pressure / pressure_im = -tr(T*)
-        / 3 (imaginary_strains / imaginary_field the Im parts, None = 0)."""
+        / 3 (imaginary_strains / imaginary_field the Im parts, None = 0); material None with imaginary parts (a shown
+        complex solution of a real C: a piezoelectric response with dielectric loss only, a resistive electrode):
+        Im T = C S_i - e^T E_i. pressure_im is 0 without imaginary parts."""
         alpha = self._expansion()[elements]
         beta = self._thermal_stress()[elements]
         temperature_change = self._temperature_change()[elements][:, None] if thermal else 0.0
         normal = [strains[..., axis] for axis in range(3)]
         imaginary_voigt = None
+        complex_parts = imaginary_strains is not None or imaginary_field is not None or pressure is not None
+        if (material is not None or complex_parts) and (thermal or prestress):
+            raise ValueError(f'{self._label()}: complex outputs take no thermal part or initial stress')
         if material is None:
-            voigt = stress_3d(self._stiffness[elements], strains)
+            stiffness = self._stiffness[elements]
+            voigt = stress_3d(stiffness, strains)
+            if complex_parts:   # lossless C: Im T = C S_i (- e^T E_i below)
+                imaginary_voigt = (np.zeros_like(voigt) if imaginary_strains is None
+                                   else stress_3d(stiffness, imaginary_strains))
         else:
-            if thermal or prestress:
-                raise ValueError(f'{self._label()}: complex outputs take no thermal part or initial stress')
             storage, loss = (part[elements] for part in material)
             voigt = stress_3d(storage, strains)
             imaginary_voigt = stress_3d(loss, strains)
             if imaginary_strains is not None:
                 voigt = voigt - stress_3d(loss, imaginary_strains)
                 imaginary_voigt = imaginary_voigt + stress_3d(storage, imaginary_strains)
-            if imaginary_field is not None:
-                imaginary_voigt = imaginary_voigt - np.einsum('mkJ,mqk->mqJ', self._piezo_tensor[elements],
-                                                              imaginary_field)
-            if pressure is not None:
-                voigt[..., :3] -= pressure.real[..., None]
-                imaginary_voigt[..., :3] -= pressure.imag[..., None]
+        if imaginary_field is not None:
+            imaginary_voigt = imaginary_voigt - np.einsum('mkJ,mqk->mqJ', self._piezo_tensor[elements],
+                                                          imaginary_field)
+        if pressure is not None:
+            voigt[..., :3] -= pressure.real[..., None]
+            imaginary_voigt[..., :3] -= pressure.imag[..., None]
         if field is not None:
             voigt = voigt - np.einsum('mkJ,mqk->mqJ', self._piezo_tensor[elements], field)
         initial = self._initial_stress() if prestress else None
@@ -1774,11 +1781,12 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
         self._release_point_values('mechanical')
 
     def _complex_output_parts(self, solid, reference_points) -> dict:
-        """_point_outputs keywords of a shown complex solution with a (C', C'') pair: material, the imaginary strains
-        (shared _point_values), Im E of a piezoelectric potential and the mixed pressure unknowns; {} otherwise."""
-        if self._output_moduli is None:
-            return {}
-        parts = {'material': self._output_moduli, 'pressure': self._pressure_points(solid, reference_points)}
+        """_point_outputs keywords of a shown complex solution: with a (C', C'') pair material and the mixed pressure
+        unknowns; the imaginary strains (shared _point_values) and Im E of a piezoelectric potential whenever they exist
+        (also without a pair: pressure_im = -tr(C S_i - e^T E_i) / 3, as the 2D solid); {} for a real solution."""
+        parts = {}
+        if self._output_moduli is not None:
+            parts.update(material=self._output_moduli, pressure=self._pressure_points(solid, reference_points))
         if self._complex_displacement is not None:
             parts['imaginary_strains'] = self._point_values(reference_points, imaginary=True)[1]
         if self._potential_im is not None:

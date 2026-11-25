@@ -34,44 +34,40 @@ from ...solvers.host_direct import (HOST_DIRECT_BACK_ENDS, double_of, factor_lab
                                     solver_host_bytes, superlu_bytes_scale)
 from ...solvers.pcg import workspace_bytes
 from ...solvers.sparse_direct import CUDSS_BACK_ENDS, SPLU_3D_LIMIT_UNKNOWNS, SPLU_3D_WARN_UNKNOWNS
-from .definition_common import (DENSITY_PARAM, EIGENFREQUENCY_STUDY, ELECTRODE_CONNECTION_HELP, FORMULATION_PARAM,
-                                VISCOELASTIC_PROPERTIES, mixed_formulation,
-                                ELECTRODE_VOLTAGE_HELP, GEOMETRIC_NONLINEARITY_PARAMS, INITIAL_STRESS_PROPERTIES_3D,
+from .definition_common import (DENSITY_PARAM, EIGENFREQUENCY_STUDY, ELECTRODE_CONNECTION_HELP, ELECTRODE_VOLTAGE_HELP,
+                                FORMULATION_PARAM, GEOMETRIC_NONLINEARITY_PARAMS, INITIAL_STRESS_PROPERTIES_3D,
                                 LOSS_PROPERTIES, MATERIAL_PROPERTIES, MODAL_STUDIES, PIEZO_MATERIAL_PROPERTIES_3D,
                                 ROLLER_FEATURES, STIFFNESS_TENSOR_PROPERTIES_3D, STRESS_STIFFENING_PARAM,
                                 SUPPORT_FEATURES, SYMMETRY_FEATURE, SYMMETRY_HELP, TED_MATERIAL_PROPERTIES,
-                                apply_body_force,
-                                apply_temperature_change, background_context, displacement_param, eigen_search_issues,
-                                electrode_result,
-                                follow_held_values, follow_load, following, free_body_allowed, frequency_probe_feature,
-                                material_issues, materials_setting, modal_kept_count, modal_resonance_count,
-                                modal_study_issues, model_mirror_issues,
-                                nonlinear_state_infos, outer_faces, piezo_material_issues, plain_value,
-                                pml_crossing_issues, prestress_issues,
+                                VISCOELASTIC_PROPERTIES, apply_body_force, apply_temperature_change, background_context,
+                                displacement_param, eigen_search_issues, electrode_result, follow_held_values,
+                                follow_load, following, free_body_allowed, frequency_probe_feature, material_issues,
+                                materials_setting, mixed_formulation, modal_kept_count, modal_resonance_count,
+                                modal_study_issues, model_mirror_issues, nonlinear_state_infos, outer_faces,
+                                piezo_material_issues, plain_value, pml_crossing_issues, prestress_issues,
                                 register_support, resonance_table_feature, solid_linear_solver, solid_study,
                                 stiffness_follows_state, support_holders, support_result, symmetry_issues,
                                 thermoelastic_damping_feature, union_masks)
 from .definition_frequency_response import ADMITTANCE_FEATURE, FREQUENCY_RESPONSE_STUDY, frequency_response_issues
-from .definition_viscoelastic import (scaled_fill, viscoelastic_counts, viscoelastic_issues, viscoelastic_memory_items,
-                                     viscoelastic_time_items)
 from .definition_optomechanics import OPTOMECHANICAL_COUPLING_FEATURE, OPTOMECHANICS_STUDY
+from .definition_viscoelastic import (scaled_fill, viscoelastic_counts, viscoelastic_issues, viscoelastic_memory_items,
+                                      viscoelastic_time_items)
 from .fields3d import (ELECTRIC_OUTPUT_ARRAYS_3D, ENERGY_OUTPUT_ARRAYS_3D, HARMONIC_IMAG_FIELDS_3D, INPUT_ARRAYS_3D,
-                       PRESSURE_FIELDS_3D,
-                       OUTPUT_ARRAYS_3D)
+                       OUTPUT_ARRAYS_3D, PRESSURE_FIELDS_3D)
 from .materials import (DENSITY_SCHEMA, LOSS_ARRAYS, MECHANICAL_SCHEMA, OPTIONAL_LOSS_SCHEMA, OPTIONAL_PIEZO_SCHEMA_3D,
                         OPTIONAL_PRESTRESS_SCHEMA_3D, OPTIONAL_STIFFNESS_SCHEMA_3D, OPTIONAL_TED_SCHEMA,
-                        OPTIONAL_VISCOELASTIC_SCHEMA,
-                        PIEZO_DEFAULTS_3D, PIEZO_TENSOR_ARRAYS_3D, SOLVER_PRECISIONS, STIFFNESS_TENSOR_ARRAYS_3D)
+                        OPTIONAL_VISCOELASTIC_SCHEMA, PIEZO_DEFAULTS_3D, PIEZO_TENSOR_ARRAYS_3D, SOLVER_PRECISIONS,
+                        STIFFNESS_TENSOR_ARRAYS_3D)
 from .modal import EXTRA_EIGENVALUES, LANCZOS_TOLERANCE_PER_CG, modal_table_result
 from .multigrid3d import (CHEBYSHEV_DEGREE, POWER_ITERATIONS, block_cycle_bytes, coarsest_host_bytes,
                           hierarchy_bytes,
                           level_element_shapes)
 from .pml3d import DEFAULT_PML_CELLS, DEFAULT_PML_REFLECTION, PMLPadding
 from .renderer3d import SolidRenderer3D
-from .viscoelastic import MIXED
 from .squeeze_film import GAP_SIDES, VENT_CHOICES
 from .selftests_3d import HEATED_CHIP_STRESS_DESCRIPTION, HEATED_CHIP_STRESS_LABEL, heated_chip_stress_3d_spec
 from .selftests_bloch3d import BAND_DIAGRAM_3D_DESCRIPTION, BAND_DIAGRAM_3D_LABEL, solid_bloch_band_diagram_3d_spec
+from .viscoelastic import MIXED
 
 SOLID_3D_TYPE_NAME = 'solid_mechanics_3d'               # = selftests_3d.SOLID_3D_TYPE_NAME (not imported)
 THERMAL_STRAIN_COUPLING = 'heat_solid_thermal_strain'   # = selftests_3d.THERMAL_STRAIN_COUPLING
@@ -95,7 +91,12 @@ _TET_SOLVE_TIME_SCALE = {1: 1.5, 2: 3.0}
 # fill ~ s^2; the top levels cut x, y, z in turn): the first cut across a periodic axis must close its ring with two
 # planes, so p periodic axes double the separators of the first p levels (flops x 8, fill x 4 there)
 _PERIODIC_SEPARATOR_WIDTH = 2.0
-_TET_NODAL_OUTPUTS = 22
+# solver_fem3d output groups: host float64 nodal arrays u_x, u_y, u_z, u_abs, the mechanical point outputs (strains,
+# elastic strains, stresses, von Mises, pressure, pressure_im: computed in every study) and the two energy densities
+# (the Im u fields are read from the complex solution, no arrays); while the mechanical pass runs its (m, q) values at
+# the dof points of the solid elements and their stacked copy (the largest point group)
+_TET_NODAL_OUTPUTS = 24
+_TET_POINT_OUTPUTS = 18
 _TET_ELECTRIC_NODAL_OUTPUTS = 7
 # geometric nonlinearity: Newton iterations per load step (a priori: a linear predictor and quadratic convergence to
 # the default 1e-8 take ~4-6) and the host numpy bytes per COO entry of one tangent + internal-force assembly on the
@@ -1365,7 +1366,8 @@ def _tetrahedra_time_estimate(settings_values, mesh, context):
             kind=sweep['factorizations_kind'], field_points=sweep['field_points'],
             back_end=None if linear is None else linear.values.get('back_end'),
             assembly_bytes_per_coo=_FEM_ASSEMBLY_BYTES_PER_COO, assembly_calls=_FEM_ASSEMBLY_CALLS,
-            pattern_sum_stream=_pattern_sum_stream, output_ops=())
+            pattern_sum_stream=_pattern_sum_stream, output_ops=(),
+            loss=bool(context.material_sets(LOSS_ARRAYS[0])))
         work = context.solver_work('linear', unknowns=unknowns, solves=sweep['solves'], solves_kind=sweep['solves_kind'],
                                    factorizations=sweep['factorizations'],
                                    factorizations_kind=sweep['factorizations_kind'], **complex_scales)
@@ -1549,6 +1551,7 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
     coo_entries = elements * (3 * local) ** 2
     factor_bytes = int(_TET_FILL_FACTOR[order] * host_real_lu_bytes(displacement_factored, dimensions=3)
                        * viscoelastic.fill_scale)   # mixed: the saddle point fills as (dofs per node)^2
+    solid_elements = int(round(elements * _solid_fraction(spec, mesh, settings_values)))   # the output elements
     host_items = [('dof maps (P1 / P2, P0)', _INT64_BYTES * (local + 1) * elements),
                   ('element arrays, loads and holds',
                    12 * FLOAT64_BYTES * elements + 8 * FLOAT64_BYTES * 3 * scalar_dofs),
@@ -1563,14 +1566,15 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
                    max(min(elements * local ** 2, 20_000_000) * (2 * _INT64_BYTES + FLOAT32_BYTES),
                        3 * _INT64_BYTES * min(entries, EXPAND_ENTRIES))),
                   ('stiffness CSR and its free-dof copy', 2 * csr_bytes),
-                  (f'nodal outputs ({_TET_NODAL_OUTPUTS} x float64) and their element point values',
-                   _TET_NODAL_OUTPUTS * FLOAT64_BYTES * (scalar_dofs + local * elements)),
+                  (f'nodal outputs ({_TET_NODAL_OUTPUTS} x float64) and the mechanical point values',
+                   FLOAT64_BYTES * (_TET_NODAL_OUTPUTS * scalar_dofs
+                                    + 2 * _TET_POINT_OUTPUTS * local * solid_elements)),
                   # solver_fem3d._point_values: (values (m, q, 3), Voigt strains (m, q, 6)) float64 of the solid
                   # elements at the dof points and the centroid, kept until the last point group is written; a complex
                   # solution (frequency response, a complex modal pencil) adds its imaginary part
                   ('shared output point values (displacement and strains at the dof points and centroid)',
                    (2 if frequency_response or eigen_bytes == _COMPLEX_BYTES else 1) * 9 * FLOAT64_BYTES * (local + 1)
-                   * int(round(elements * _solid_fraction(spec, mesh, settings_values))))]
+                   * solid_elements)]
     # the element moduli (every study, once a modulus / viscoelastic array exists), the viscoelastic group terms and
     # the mixed u-p blocks (definition_viscoelastic); the group matrices on the full map (3 x its scalar dofs)
     extra_host, extra_run = viscoelastic_memory_items(

@@ -509,19 +509,24 @@ def viscoelastic_memory_items(counts, *, elements, local, scalar_dofs, matrix_ro
 
 
 def viscoelastic_time_items(counts, *, local, factorizations, kind, field_points, back_end, assembly_bytes_per_coo,
-                            assembly_calls, pattern_sum_stream, output_ops) -> tuple:
+                            assembly_calls, pattern_sum_stream, output_ops, loss) -> tuple:
     """core.time_estimate TimeItems of the viscoelastic group terms and the mixed blocks of counts (op counts from the
     code, never seconds): the group assembly (one strain operator per chunk, a material product per part), the mixed
     coupling / pressure-mass assembly and saddle-point blocks, the term positions and pencil slots (once), per
     factorisation the term values, row-scale diagonals (and on cuDSS their upload) and per field frequency the
     complex-correct stress pair and the pressure outputs. assembly_bytes_per_coo / assembly_calls: the caller's host
     assembly price per COO entry and per assembly; pattern_sum_stream(parts, value_bytes, entries): its HostStream of a
-    pattern sum; output_ops: its per-solve output ops (the stress pair costs about half of them again)."""
+    pattern sum; output_ops: its per-solve output ops (the stress pair costs about half of them again); loss: a
+    mechanical_loss_factor is set (the solvers' _harmonic_moduli build the (C', C'') pair for it too, as the memory
+    item booked beside the frequency-response items)."""
     from ...solvers.host_direct import HOST_DIRECT_BACK_ENDS
     from ...solvers.sparse_direct import CUDSS_BACK_ENDS, LOWER_STORED_FRACTION
     items = []
+    if field_points and output_ops and (counts.active or loss):   # the caller's outputs priced its real-moduli pass
+        items.append(te.TimeItem('complex stress outputs (storage and loss moduli)', 'frequency', 0.5 * field_points,
+                                 'exact', tuple(output_ops)))
     if not counts.active:
-        return ()
+        return tuple(items)
     n_free = counts.unknowns
     if counts.group_matrices:
         parts = counts.group_matrices // max(counts.groups, 1)
@@ -562,9 +567,6 @@ def viscoelastic_time_items(counts, *, local, factorizations, kind, field_points
     if per_factor:
         items.append(te.TimeItem('harmonic per-frequency terms and row scales', 'factorisation', factorizations, kind,
                                  tuple(per_factor)))
-    if field_points and output_ops:   # the caller's outputs priced its real-moduli pass only
-        items.append(te.TimeItem('complex stress outputs (storage and loss moduli)', 'frequency', 0.5 * field_points,
-                                 'exact', tuple(output_ops)))
     if field_points and counts.mixed:   # nodal_pressure and pressure_at of every output pass (complex)
         items.append(te.TimeItem('mixed pressure outputs', 'frequency', field_points, 'exact', (
             te.HostStream(4 * COMPLEX128_BYTES * (counts.pressure_dofs + counts.grouped_elements * (local + 1))),
