@@ -1,0 +1,67 @@
+{
+  "title": "Silicon nanocantilever 500 x 50 x 15 nm: flexural modes (3D eigenfrequency, analytic)",
+  "description": "3D eigenfrequency study (solid_mechanics_3d on builtin tetrahedra, quadratic elements) of a silicon cantilever without damping: length L = 500 nm along x, width w = 50 nm along y, thickness t = 15 nm along z (library silicon: isotropic E = 165 GPa, nu = 0.22, rho = 2329 kg/m^3; a real <110> beam is ~2 % stiffer, a <100> one ~20 % softer). Clamped (fixed) on x_lo, every other face free. Uniform 5 nm cubes split into 6 tetrahedra each (3 elements over t, 10 over w, 100 along L; ~9e4 unknowns). The 5 lowest modes: out-of-plane flexure 1 (bending across t, ~82 MHz), in-plane flexure 1 (across w, ~270 MHz), out-of-plane flexure 2 (~509 MHz), then torsion 1 and out-of-plane flexure 3 near 1.4 GHz (within a few % of each other: not graded).\nAnalytic (Euler-Bernoulli, clamped-free): f_n = (beta_n L)^2 / (2 pi L^2) sqrt(E I / (rho A)) = (beta_n L)^2 h sqrt(E / (12 rho)) / (2 pi L^2), h = the thickness along the bending direction (t out of plane, w in plane), beta_1 L = 1.875104, beta_2 L = 4.694091 (cos(beta L) cosh(beta L) = -1): 81.58 MHz, 271.93 MHz, 511.25 MHz. The references add the first-order Timoshenko correction (shear and rotary inertia, Rayleigh quotient with the Euler-Bernoulli shape): f = f_EB (1 - J_n (1 + E / (kappa G)) h^2 / (24 L^2)), J_n = int phi'^2 / int phi^2 x L^2 = int phi'''^2 / int phi''^2 x L^2 of the clamped-free mode phi_n (J_1 = 4.6478, J_2 = 32.417), kappa = 10 (1 + nu) / (12 + 11 nu): -0.07 %, -0.75 % and -0.47 % (81.53, 269.89, 508.84 MHz).\nDerived values tab: f_oop1, f_ip1, f_oop2 against the corrected references (each picked from the resonance table by a +-10 % window; tolerances 5e-3 / 1e-2 / 5e-3 are first estimates: the 3D clamp holds the Poisson contraction and the shear warping of the root cross-section, a few 1e-3 stiffer than beam theory, most for the in-plane mode, w / L = 0.1); f_oop1_vs_eb (the same mode) against the plain Euler-Bernoulli value.\nLine profile tab (mid-height cut): u_z of snapshot 'resonance 1' along the centre line y = w / 2 from the clamp to the tip against the clamped-free shape phi_1(x) / 2 = (cosh(beta_1 x) - cos(beta_1 x) - sigma_1 (sinh(beta_1 x) - sin(beta_1 x))) / 2, sigma_1 = 0.734096 (peak node |u| = 1 m at the tip; the tip rotation adds ~2e-4 to the corner |u|). The thermoelastic twin is silicon_nanocantilever_ted_3d.",
+  "version": 2,
+  "parameters": [
+    {"name": "L_cant", "expression": "500*nm", "description": "cantilever length along x"},
+    {"name": "w_cant", "expression": "50*nm", "description": "cantilever width along y"},
+    {"name": "t_cant", "expression": "15*nm", "description": "cantilever thickness along z"},
+    {"name": "dx_mesh", "expression": "5*nm", "description": "uniform cell size (3 cells over t, 10 over w, 100 along L; each cell 6 tetrahedra)"},
+    {"name": "E_si", "expression": 165000000000.0, "description": "library silicon Young's modulus [Pa]"},
+    {"name": "nu_si", "expression": 0.22, "description": "library silicon Poisson ratio"},
+    {"name": "rho_si", "expression": 2329.0, "description": "library silicon density [kg/m^3]"},
+    {"name": "beta1", "expression": 1.875104069, "description": "clamped-free beta_1 L (cos(beta L) cosh(beta L) = -1)"},
+    {"name": "beta2", "expression": 4.694091133, "description": "clamped-free beta_2 L"},
+    {"name": "sigma1", "expression": 0.734095514, "description": "mode-1 shape coefficient (cosh(beta_1 L) + cos(beta_1 L)) / (sinh(beta_1 L) + sin(beta_1 L))"},
+    {"name": "J1", "expression": 4.6478, "description": "int phi_1'^2 / int phi_1^2 x L^2 (= int phi_1'''^2 / int phi_1''^2 x L^2) of the clamped-free mode 1"},
+    {"name": "J2", "expression": 32.417, "description": "the same integral ratio of mode 2"},
+    {"name": "kappa_s", "expression": "10*(1 + nu_si)/(12 + 11*nu_si)", "description": "Timoshenko shear coefficient of a rectangular section"},
+    {"name": "shear_rot", "expression": "1 + 2*(1 + nu_si)/kappa_s", "description": "1 + E / (kappa G): rotary inertia + shear weight of the Timoshenko correction"},
+    {"name": "c_bend", "expression": "sqrt(E_si/(12*rho_si))", "description": "sqrt(E / (12 rho)) [m/s]: f_n = beta_n^2 h c_bend / (2 pi L^2)"},
+    {"name": "f_oop1_eb", "expression": "beta1**2*t_cant*c_bend/(2*pi*L_cant**2)", "description": "Euler-Bernoulli out-of-plane flexure 1 [Hz]"},
+    {"name": "f_ip1_eb", "expression": "beta1**2*w_cant*c_bend/(2*pi*L_cant**2)", "description": "Euler-Bernoulli in-plane flexure 1 [Hz]"},
+    {"name": "f_oop2_eb", "expression": "beta2**2*t_cant*c_bend/(2*pi*L_cant**2)", "description": "Euler-Bernoulli out-of-plane flexure 2 [Hz]"},
+    {"name": "f_oop1_ref", "expression": "f_oop1_eb*(1 - J1*shear_rot*t_cant**2/(24*L_cant**2))", "description": "out-of-plane flexure 1 with the first-order Timoshenko correction [Hz]"},
+    {"name": "f_ip1_ref", "expression": "f_ip1_eb*(1 - J1*shear_rot*w_cant**2/(24*L_cant**2))", "description": "in-plane flexure 1 with the first-order Timoshenko correction [Hz]"},
+    {"name": "f_oop2_ref", "expression": "f_oop2_eb*(1 - J2*shear_rot*t_cant**2/(24*L_cant**2))", "description": "out-of-plane flexure 2 with the first-order Timoshenko correction [Hz]"}
+  ],
+  "domain": {"size_x": "L_cant", "size_y": "w_cant", "size_z": "t_cant"},
+  "geometry": [],
+  "selections": [],
+  "materials": [
+    {"name": "beam", "library": "silicon", "properties": {}, "dispersion": null, "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "solid",
+      "type": "solid_mechanics_3d",
+      "settings": {"discretization": "quadratic", "target_frequency": 0.0},
+      "every": 1,
+      "features": [
+        {"name": "clamp", "type": "fixed", "selection": ["x_lo"], "params": {}, "enabled": true},
+        {"name": "modes", "type": "resonance_table", "selection": [], "params": {}, "enabled": true}
+      ]
+    }
+  ],
+  "couplings": [],
+  "mesh": {"kind": "tetrahedra", "mode": "uniform", "dx": "dx_mesh", "max_ratio": null, "wavelength_min": null,
+           "points_per_wavelength": null, "mesher": "builtin", "refinements": []},
+  "study": {"type": "eigenfrequency", "settings": {"n_resonances": 5},
+            "stored_fields": ["solid.u_z", "solid.u_y", "solid.u_abs"]},
+  "derived_values": [
+    {"name": "f_oop1", "expression": "where(abs(frequency/f_oop1_ref - 1) < 0.1, frequency, 0)", "selection": [],
+     "operation": "max", "source": "solid.modes", "at": null, "reference": "f_oop1_ref", "tolerance": 5e-3},
+    {"name": "f_ip1", "expression": "where(abs(frequency/f_ip1_ref - 1) < 0.1, frequency, 0)", "selection": [],
+     "operation": "max", "source": "solid.modes", "at": null, "reference": "f_ip1_ref", "tolerance": 1e-2},
+    {"name": "f_oop2", "expression": "where(abs(frequency/f_oop2_ref - 1) < 0.1, frequency, 0)", "selection": [],
+     "operation": "max", "source": "solid.modes", "at": null, "reference": "f_oop2_ref", "tolerance": 5e-3},
+    {"name": "f_oop1_vs_eb", "expression": "where(abs(frequency/f_oop1_ref - 1) < 0.1, frequency, 0)", "selection": [],
+     "operation": "max", "source": "solid.modes", "at": null, "reference": "f_oop1_eb", "tolerance": 5e-3}
+  ],
+  "analytic_curves": [
+    {"name": "mode_1_u_z", "target": "line",
+     "expression": "(cosh(beta1*x/L_cant) - cos(beta1*x/L_cant) - sigma1*(sinh(beta1*x/L_cant) - sin(beta1*x/L_cant)))/2",
+     "tolerance": 1e-2, "line": [0.0, "w_cant/2", "L_cant", "w_cant/2"], "field": "solid.u_z",
+     "snapshot": "resonance 1"}
+  ]
+}
