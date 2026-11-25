@@ -1190,14 +1190,7 @@ class _Validator:
             return
         if mesh.note:   # meshing: why the grid differs from the requested mode
             self.info(path, mesh.note)
-        if mesh.kind == 'triangles':   # the size field floors refinements at h_min (default dx / 100) silently
-            below = {name: size for name, size in mesh.sizing.object_sizes.items()
-                     if size < mesh.sizing.h_min * (1.0 - 1e-9)}
-            if below:
-                self.warning(path, f"refinement dx of {', '.join(repr(name) for name in sorted(below))} "
-                                   f'({min(below.values()):.4g} m) is below the minimum element size h_min = '
-                                   f'{mesh.sizing.h_min:.4g} m (unset: dx / 100): the elements there stay at h_min '
-                                   'and an object smaller than it may get no element at all; set h_min')
+        self._check_element_floor(path, mesh_spec, mesh)
         if (mesh.kind == 'tetrahedra' and mesh.sizing.mesher == 'builtin' and not mesh.sizing.sweep_axis
                 and mesh.sizing.edge_sizes):
             self.warning(path, f"mesher 'builtin' ignores the edge sizes the physics ask for along "
@@ -1220,6 +1213,31 @@ class _Validator:
             self.info(path, f'auto mesh without a wave physics on it: base size ~{base_dx:.4g} m (longest domain '
                             f'side / {PHYSICS_BASE_DIVISOR:g}), the objects its physics use refined to their smallest '
                             f'side / {PHYSICS_OBJECT_DIVISOR:g} (set wavelength_min for the wavelength rule)')
+
+    def _check_element_floor(self, path, mesh_spec, mesh):
+        """Warning when an object's element size (its refinements, automatic ones included in auto mode) is below
+        h_min: the triangle mesher, gmsh and the swept in-plane mesher floor sizes at h_min silently (builtin
+        tetrahedra do not use h_min)."""
+        if mesh.kind not in FREE_MESH_KINDS:
+            return
+        sizing = mesh.sizing
+        if mesh.kind == 'tetrahedra' and sizing.mesher == 'builtin' and not sizing.sweep_axis:
+            return
+        sizes = dict(sizing.object_sizes)
+        for name, size in sizing.surface_sizes.items():
+            sizes[name] = min(sizes.get(name, math.inf), size)
+        below = {name: size for name, size in sizes.items() if size < sizing.h_min * (1.0 - 1e-9)}
+        if not below:
+            return
+        base = 'the auto base size' if sizing.auto_dx is not None else 'dx'
+        rule = ('set' if mesh_spec.h_min is not None
+                else f'unset: the maximum element size ({base}, {sizing.h_max:.4g} m) / 100')
+        self.warning(path, f"element size of {', '.join(repr(name) for name in sorted(below))} "
+                           f"({min(below.values()):.4g} m, from {'its' if len(below) == 1 else 'their'} refinements"
+                           f"{', automatic ones included' if sizing.auto_rule else ''}) is below the minimum element "
+                           f'size h_min = {sizing.h_min:.4g} m ({rule}): the elements there stay at h_min and an '
+                           f'object smaller than it may get no element at all; set h_min to at most '
+                           f'{min(below.values()):.4g} m')
 
     def _check_triangle_mesh(self, path, mesh_spec):
         """Kind 'triangles': a 2D Cartesian model, no tensor-only options (axes error, outer grading warning), the

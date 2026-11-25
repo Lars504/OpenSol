@@ -64,10 +64,11 @@ _ARRAY_FUNCTIONS = {   # expression function -> numpy / cupy attribute
 }
 # real special functions of one argument: scipy.special on numpy (imported on first call), cupyx.scipy.special on cupy
 _SPECIAL_FUNCTIONS = ('j0', 'j1', 'y0', 'y1', 'i0', 'i1', 'k0', 'k1', 'erf', 'erfc')
-# complex intermediates (the final value must stay real: Expression.evaluate). A complex literal (1j), a call of one
-# of these or a ** (Python's float ** float of a negative base is complex) switches an expression to the complex
-# function table (_function_table(xp, True): real-only functions and comparisons refuse complex values there; real
-# inputs give the real results); every other expression keeps the real table unchanged.
+# complex intermediates (the final value must stay real: Expression.evaluate). A complex literal (1j) or a call of
+# one of these switches an expression to the complex function table (_function_table(xp, True): real-only functions
+# and comparisons refuse complex values there; real inputs give the real results); every other expression keeps the
+# real table unchanged. ** compiles to the table's pow (_power: numpy semantics for real operands, so a negative base
+# to a fractional power is nan whatever the scalar type), so ** alone never makes a value complex.
 _COMPLEX_ARRAY_FUNCTIONS = {'re': 'real', 'im': 'imag', 'conj': 'conj', 'arg': 'angle'}   # -> numpy / cupy attribute
 # Bessel functions of complex argument -> scipy.special name; host only (cupyx.scipy.special has no complex ones:
 # a cupy array argument raises); 'spherical' ones take a whole order n and an optional derivative flag
@@ -115,7 +116,8 @@ FUNCTION_DESCRIPTIONS = {   # function -> one-line signature and meaning (descri
     'floor': 'floor(x): largest whole number <= x (a float)',
     'ceil': 'ceil(x): smallest whole number >= x (a float)',
     'sign': 'sign(x): -1, 0 or 1 by the sign of a real x',
-    'pow': 'pow(a, b): a to the power b, same as a**b (principal value exp(b*log(a)) when a or b is complex)',
+    'pow': 'pow(a, b): a to the power b, same as a**b: real a, b give the real power (nan for a < 0 and a '
+           'fractional b, like sqrt); principal value exp(b*log(a)) when a or b is complex, e.g. pow(a + 0j, 1/3)',
     'hypot': 'hypot(a, b): sqrt(a**2 + b**2) of real a, b without intermediate overflow',
     're': 're(z): real part of a complex z (a real z unchanged)',
     'im': 'im(z): imaginary part of a complex z (0 for a real z)',
@@ -195,24 +197,29 @@ _UNARY_OPERATORS = (ast.UAdd, ast.USub)
 _COMPARISON_OPERATORS = (ast.Lt, ast.LtE, ast.Gt, ast.GtE, ast.Eq, ast.NotEq)
 _EVALUATION_ERRORS = (OverflowError, ZeroDivisionError, FloatingPointError, RecursionError, MemoryError,
                       TypeError, ValueError)
-# eval-scope name of the comparison-operand guard a complex expression's comparisons are wrapped in (_compile_cached)
+# eval-scope names of the comparison-operand guard a complex expression's comparisons are wrapped in and of the power
+# every ** compiles to (_compile_cached); refused as free names
 _REAL_OPERAND = 'real_operand__'
+_POWER = 'power__'
+_INTERNAL_NAMES = frozenset((_REAL_OPERAND, _POWER))
 
 
 class Expression:
     """Compiled, whitelisted expression shared through the compile cache; `names` = free names (called functions
     and builtin constants excluded; an uncalled function name is a free name); `complex_values`: it has a complex
-    literal, a complex function call or a ** (evaluated with the complex function table, comparisons guarded)."""
+    literal or a complex function call (evaluated with the complex function table, comparisons guarded);
+    `_powers`: it has a ** (compiled to a call of the table's pow)."""
 
-    __slots__ = ('text', 'names', '_code', '_constant_names', '_function_names', 'complex_values')
+    __slots__ = ('text', 'names', '_code', '_constant_names', '_function_names', 'complex_values', '_powers')
 
-    def __init__(self, text, names, code, constant_names, function_names, complex_values=False):
+    def __init__(self, text, names, code, constant_names, function_names, complex_values=False, powers=False):
         self.text = text
         self.names = names
         self._code = code
         self._constant_names = constant_names
         self._function_names = function_names
         self.complex_values = complex_values
+        self._powers = powers
 
     def __repr__(self):
         return f'Expression({self.text!r})'
@@ -242,6 +249,8 @@ class Expression:
                 raise ExpressionError(f'{name}() is not available here (derived-curve expressions only)')
         if self.complex_values:
             scope[_REAL_OPERAND] = _real_operand
+        if self._powers:
+            scope[_POWER] = table['pow']
         try:
             # numpy warns on NaN / inf where cupy is silent (e.g. the unused branch of where(x > 0, sqrt(x), 0)):
             # silent on both backends, non-finite values that are used are refused downstream
@@ -279,13 +288,19 @@ def _compile_cached(text, extra_arity=()):
     try:
         tree = ast.parse(source, mode='eval')
         _check_node(tree.body, free_names, constant_names, function_names, dict(extra_arity))
-        # complex intermediates come only from a 1j literal, a complex function or Python's float ** float of a
-        # negative base (numpy powers give nan): those expressions take the complex table and guarded comparisons
+        internal = sorted(free_names & _INTERNAL_NAMES)
+        if internal:
+            raise ExpressionError(f"'{internal[0]}' is an internal name of expressions; rename it in "
+                                  f'{_quoted(source)}')
+        # complex intermediates come only from a 1j literal or a complex function (** of real operands stays real:
+        # _power): those expressions take the complex table and guarded comparisons
         complex_values = bool(function_names & COMPLEX_FUNCTION_NAMES) or any(
-            (isinstance(node, ast.Constant) and isinstance(node.value, complex))
-            or (isinstance(node, ast.BinOp) and isinstance(node.op, ast.Pow)) for node in ast.walk(tree))
+            isinstance(node, ast.Constant) and isinstance(node.value, complex) for node in ast.walk(tree))
         if complex_values:
-            _guard_comparisons(tree, source, free_names)
+            _guard_comparisons(tree)
+        powers = any(isinstance(node, ast.BinOp) and isinstance(node.op, ast.Pow) for node in ast.walk(tree))
+        if powers:
+            tree = ast.fix_missing_locations(_PowerCalls().visit(tree))
         code = compile(tree, '<expression>', 'eval')
     except ExpressionError:
         raise
@@ -300,21 +315,28 @@ def _compile_cached(text, extra_arity=()):
         raise ExpressionError(f"'{both[0]}' is used both as a name and as the function {both[0]}(...) in "
                               f'{_quoted(source)}; use it one way only')
     return Expression(source, frozenset(free_names), code, tuple(sorted(constant_names)),
-                      tuple(sorted(function_names)), complex_values)
+                      tuple(sorted(function_names)), complex_values, powers)
 
 
-def _guard_comparisons(tree, source, free_names):
+def _guard_comparisons(tree):
     """Wrap both operands of every comparison of a complex expression in the _REAL_OPERAND guard (in place): numpy
     orders complex arrays lexicographically, so a complex comparison would pass silently."""
-    if _REAL_OPERAND in free_names:
-        raise ExpressionError(f"'{_REAL_OPERAND}' is an internal name of complex expressions; rename it in "
-                              f'{_quoted(source)}')
     def guarded(operand):
         return ast.copy_location(ast.Call(ast.Name(_REAL_OPERAND, ast.Load()), [operand], []), operand)
 
     for node in [node for node in ast.walk(tree) if isinstance(node, ast.Compare)]:   # one operator each
         node.left, node.comparators = guarded(node.left), [guarded(node.comparators[0])]
     ast.fix_missing_locations(tree)
+
+
+class _PowerCalls(ast.NodeTransformer):
+    """Rewrites every a ** b into a call of the _POWER scope name (the table's pow), so ** and pow are one rule."""
+
+    def visit_BinOp(self, node):
+        self.generic_visit(node)
+        if isinstance(node.op, ast.Pow):
+            return ast.copy_location(ast.Call(ast.Name(_POWER, ast.Load()), [node.left, node.right], []), node)
+        return node
 
 
 def _check_node(node, free_names, constant_names, function_names, extra_arity):
@@ -447,11 +469,27 @@ def _function_table(xp, complex_values=False):
             xp_function = lambda condition, if_true, if_false: xp.where(xp.asarray(condition), if_true, if_false)
         function = _dispatching(getattr(np, attribute), xp_function, xp.ndarray)
         table[name] = _variadic(function) if name in _VARIADIC_FUNCTIONS else function
+    table['pow'] = _power   # also every ** (_PowerCalls); the operator dispatches to numpy / cupy itself
     xp_special_module = 'scipy.special' if xp is np else 'cupyx.scipy.special'
     for name in _SPECIAL_FUNCTIONS:
         table[name] = _dispatching(_lazy_function('scipy.special', name), _lazy_function(xp_special_module, name),
                                    xp.ndarray)
     return table
+
+
+_PYTHON_REALS = (float, int)   # exact types: numpy scalars (np.float64 is a float subclass) already give nan
+
+
+def _power(base, exponent):
+    """a ** b and pow(a, b) of an expression: numpy power semantics for real operands (nan for a negative base to a
+    fractional power, like sqrt), also for two Python numbers, where float ** float would be complex; the principal
+    value when an operand is complex. Arrays take the operator itself: their dtype (float32 stays float32) and
+    numpy's fast scalar powers (** 2 -> square, ** 0.5 -> sqrt) as before; Python numbers stay Python floats (an
+    integer power of a negative number exact, an overflow or 0 ** -1 raises as Python does)."""
+    if (type(base) in _PYTHON_REALS and type(exponent) in _PYTHON_REALS and base < 0
+            and not float(exponent).is_integer()):
+        return math.nan
+    return base ** exponent
 
 
 def _is_complex(value):

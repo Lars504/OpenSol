@@ -304,6 +304,21 @@ def _check_expressions_complex(results_by_name):
     checks.add('log_negative_real_nan', math.isnan(value('log(-1)')))
     checks.add('real_expression_real_table', not compile_expression('sqrt(x) + j0(x) * (x > 0)').complex_values)
     checks.add('literal_complex_table', compile_expression('re(1j * x)').complex_values)
+    # ** = pow, numpy power semantics for real operands of any scalar type; the principal power needs a complex one
+    checks.add('power_real_table', not compile_expression('x**(1/3) > 0').complex_values)
+    for label, base in (('python_float', -8.0), ('numpy_scalar', np.float64(-8.0))):
+        for spelling, text in (('operator', 'a**(1/3)'), ('pow', 'pow(a, 1/3)')):
+            result = value(text, {'a': base})
+            checks.add(f'fractional_power_negative_nan_{label}_{spelling}', math.isnan(result), repr(result))
+    checks.add('fractional_power_negative_literal_nan', math.isnan(value('(-8)**(1/3)')))
+    principal = cmath.exp(cmath.log(-8.0) / 3.0)
+    add('principal_power_re', value('re((-8 + 0j)**(1/3))'), principal.real, _COMPLEX_RTOL)
+    add('principal_power_im', value('im((-8 + 0j)**(1/3))'), principal.imag, _COMPLEX_RTOL)
+    checks.add('pow_equals_operator_complex', value('re(pow(-8 + 0j, 1/3)) - re((-8 + 0j)**(1/3))') == 0.0
+               and value('im(pow(-8 + 0j, 1/3)) - im((-8 + 0j)**(1/3))') == 0.0)
+    add('integer_power_negative_square', value('(-2)**2'), 4.0, 0.0)
+    add('integer_power_negative_cube', value('a**3', {'a': -2.0}), -8.0, 0.0)
+    add('pow_equals_operator_real', value('pow(a, 2.5)', {'a': 3.0}), value('a**2.5', {'a': 3.0}), 0.0)
 
     # the viscoelastic reference, G and lam inlined (lam also as a parameter), against cmath
     visco = _VISCO_PARAMETERS
@@ -337,7 +352,7 @@ def _check_expressions_complex(results_by_name):
     add_raises('floor_complex_refused', lambda: value('floor(re(1j) + 2j)'))
     add_raises('max_complex_refused', lambda: value('re(max(1j, 2))'))
     add_raises('comparison_complex_refused', lambda: value('(1j*w > 0)', visco))
-    add_raises('fractional_power_comparison_refused', lambda: value('(a - 1)**(1/3) > 0', {'a': 0.0}))
+    add_raises('complex_power_comparison_refused', lambda: value('(a - 1 + 0j)**(1/3) > 0', {'a': 0.0}))
 
     # arrays (numpy): a Womersley-type profile with J0 of a complex argument, real results, real arrays stay real
     radius = np.linspace(0.0, 1.0, 11)
@@ -351,6 +366,9 @@ def _check_expressions_complex(results_by_name):
     real_field = value('sqrt(T) * 2 + T', {'T': field})
     checks.add('real_array_stays_float32', real_field.dtype == np.float32, str(real_field.dtype))
     checks.add('real_array_sqrt_negative_nan', bool(np.isnan(real_field[0]) and not np.isnan(real_field[-1])))
+    power_field = value('T**0.5 + T**2', {'T': field})
+    checks.add('real_array_power_float32', power_field.dtype == np.float32, str(power_field.dtype))
+    checks.add('real_array_power_negative_nan', bool(np.isnan(power_field[0]) and not np.isnan(power_field[-1])))
     principal = value('im(sqrt(T + 0j))', {'T': field})
     checks.add_error('array_principal_sqrt', float(np.max(np.abs(principal - np.sqrt(np.maximum(-field, 0.0))))),
                      1e-6)
@@ -507,10 +525,12 @@ ANALYTIC_SELFTEST_CASES = (
                     'cmath, besselj / bessely / besseli / besselk / spherical_jn / spherical_yn (with derivative) of '
                     'a complex argument vs scipy.special (round-off), a Womersley profile re(1 - J0(alpha 1j^1.5 r) '
                     '/ J0(alpha 1j^1.5)) on a numpy array (float64 result), a float32 real array staying float32 '
-                    '(real function table), and the refusals: a complex final value (scalar, array, parameter; the '
-                    'message names re()), complex arguments of comparisons, floor, max and j0, a fractional '
-                    'spherical order, a fractional power of a negative number compared. error = number of failed '
-                    'sub-checks, tolerance 0.',
+                    '(real function table; also under ** 0.5 and ** 2), ** = pow with numpy semantics for real '
+                    'operands ((-8)**(1/3) nan for a Python float and a numpy scalar, (-2)**2 = 4 exact, ** keeping '
+                    'the real table) and the principal power of a complex base ((-8 + 0j)**(1/3) vs cmath, pow == '
+                    '**), and the refusals: a complex final value (scalar, array, parameter; the message names '
+                    're()), complex arguments of comparisons, floor, max and j0, a fractional spherical order, a '
+                    'complex power compared. error = number of failed sub-checks, tolerance 0.',
         specs=lambda: {},
         check=_check_expressions_complex,
         max_wall_time=10.0),

@@ -422,10 +422,12 @@ def _check_rules(_):
 
 # ---- solid_viscoelastic_strip: 1D P-wave in a viscoelastic strip (rollers on x_lo, traction t on x_hi) ----
 # M*(w) = K*(w) + 4/3 G*(w), G* = G0 (1 + j eta) + j w mu + G1 j w tau1 / (1 + j w tau1), K* = K0 (1 + j eta) + j w mu_b
-# + K1 j w tauK / (1 + j w tauK), k = w sqrt(rho / M*) (exp(+j w t); even in k: the branch is irrelevant): u(x) = t
-# sin(k x) / (M* k cos kL), sigma_xx = M* u' = t cos(k x) / cos(kL), the x_lo roller reaction -t A / cos(kL) (A = W per
-# m of depth, pi W^2 whole-ring axisymmetric, W^2 in 3D). Two frequencies per run (0.5 and 1.3 f1, f1 = sqrt(M0 / rho)
-# / (4 L), M0 = K0 + 4/3 G0): the frequency probes and the reaction at both, the stress at the last (the live one).
+# + K1 j w tauK / (1 + j w tauK), k = w sqrt(rho / M*) (exp(+j w t); even in k: the branch is irrelevant). With the x_lo
+# anchor at u_x = X (tetrahedra: X = _STRIP_SHIFT, a moving roller; else X = 0): u(x) = (X cos(k (L - x)) + t sin(k x) /
+# (M* k)) / cos kL, sigma_xx = M* u' = (X M* k sin(k (L - x)) + t cos(k x)) / cos kL, the anchor reaction -sigma(0) A
+# (A = W per m of depth, pi W^2 whole-ring axisymmetric, W^2 in 3D; X = 0: -t A / cos kL) and its work W = X F_x. Two
+# frequencies per run (0.5 and 1.3 f1, f1 = sqrt(M0 / rho) / (4 L), M0 = K0 + 4/3 G0): the frequency probes and the
+# reaction at both, the stress at the last (the live one).
 _STRIP = (10e-3, 1e-3)                  # L, W [m]
 _STRIP_H = 0.5e-3
 _STRIP_TRACTION = 1.0                   # Pa
@@ -435,7 +437,9 @@ _STRIP_MATERIAL = {name: float32_value(value) for name, value in (
     ('shear_relaxation_time_1', 5e-5), ('viscosity', 20.0), ('bulk_relaxation_modulus_1', 5e6),
     ('bulk_relaxation_time_1', 2e-4), ('bulk_viscosity', 10.0), ('mechanical_loss_factor', 0.02))}
 _STRIP_RUNS = ('triangles', 'triangles_mixed', 'axisymmetric', 'tetrahedra', 'tetrahedra_mixed')
-_STRIP_TOLERANCE = {'u': 2e-3, 'stress': 1e-2, 'reaction': 2e-3}   # of |u(L)|, |t|, relative (first estimates)
+_STRIP_TOLERANCE = {'u': 2e-3, 'stress': 1e-2, 'reaction': 2e-3,   # of |u(L)|, |t|, relative (first estimates)
+                    'work': 1e-9}   # W = X F_x of the moved anchor: an identity of the held rows (round-off)
+_STRIP_SHIFT = 1e-9                     # m: the tetrahedra runs' x_lo anchor u_x (~|u(L)| of the traction at 0.5 f1)
 
 
 def _strip_moduli(omega):
@@ -457,16 +461,24 @@ def _strip_frequencies():
     return [factor * first for factor in _STRIP_FACTORS]
 
 
-def _strip_closed_form(frequency, x):
-    """(u(x), sigma(x), cos kL) of the strip at frequency [Hz]."""
+def _strip_shift(run):
+    """The x_lo anchor's prescribed u_x [m] of a run (_STRIP_SHIFT on tetrahedra, else 0: a plain roller)."""
+    return _STRIP_SHIFT if run.startswith('tetrahedra') else 0.0
+
+
+def _strip_closed_form(frequency, x, shift=0.0):
+    """(u(x), sigma(x)) of the strip at frequency [Hz] with the x_lo anchor at u_x = shift [m]."""
     omega = 2.0 * math.pi * frequency
     shear, bulk = _strip_moduli(omega)
     modulus = bulk + 4.0 * shear / 3.0
     wavenumber = omega * np.sqrt(_STRIP_MATERIAL['rho'] / modulus)
-    end = np.cos(wavenumber * _STRIP[0])
-    displacement = _STRIP_TRACTION * np.sin(wavenumber * x) / (modulus * wavenumber * end)
-    stress = _STRIP_TRACTION * np.cos(wavenumber * x) / end
-    return displacement, stress, end
+    length = _STRIP[0]
+    end = np.cos(wavenumber * length)
+    displacement = (shift * np.cos(wavenumber * (length - x))
+                    + _STRIP_TRACTION * np.sin(wavenumber * x) / (modulus * wavenumber)) / end
+    stress = (shift * modulus * wavenumber * np.sin(wavenumber * (length - x))
+              + _STRIP_TRACTION * np.cos(wavenumber * x)) / end
+    return displacement, stress
 
 
 def _strip_spec(run):
@@ -478,7 +490,8 @@ def _strip_spec(run):
     if run.startswith('tetrahedra'):
         spec = _solid_spec(
             f'Self-test: viscoelastic strip on tetrahedra ({run})', (length, width, width), material,
-            [FeatureSpec('anchor', 'roller', ['x_lo']), FeatureSpec('rails', 'roller', ['y_lo', 'y_hi', 'z_lo', 'z_hi']),
+            [FeatureSpec('anchor', 'displacement', ['x_lo'], {'u_x': _strip_shift(run), 'u_y': None, 'u_z': None}),
+             FeatureSpec('rails', 'roller', ['y_lo', 'y_hi', 'z_lo', 'z_hi']),
              FeatureSpec('push', 'boundary_load', ['x_hi'], {'t_x': _STRIP_TRACTION, 't_y': 0.0, 't_z': 0.0}), *probes],
             [_point('mid', 0.5 * length, 0.5 * width, 0.5 * width), _point('end', length, 0.5 * width, 0.5 * width)],
             cell=_STRIP_H, study=study, settings=settings)
@@ -521,24 +534,29 @@ def _check_strip(results_by_name):
         force = 'F_y' if run == 'axisymmetric' else 'F_x'
         area = math.pi * width ** 2 if run == 'axisymmetric' else (width ** 2 if run.startswith('tetrahedra')
                                                                    else width)
+        shift = _strip_shift(run)
         _, reaction = _reaction(results, 'anchor', force)
         record = details[run] = {}
+        if shift:   # W = sum R u_held of the moved anchor (u_x only held): X F_x, an identity of the held rows
+            work = _reaction(results, 'anchor', 'W')[1]
+            add(f'{run} reaction work W = X F_x', np.max(np.abs(work - shift * reaction) / np.abs(shift * reaction)),
+                'work')
         for index, frequency in enumerate(sorted(frequencies)):
-            scale = abs(_strip_closed_form(frequency, length)[0])
+            scale = abs(_strip_closed_form(frequency, length, shift)[0])
             for feature, fraction in (('probe_mid', 0.5), ('probe_end', 1.0)):
-                expected = _strip_closed_form(frequency, fraction * length)[0]
+                expected = _strip_closed_form(frequency, fraction * length, shift)[0]
                 measured = _probe(results, feature, axial)[1][index]
                 add(f'{run} {feature} {frequency:.6g} Hz', abs(measured - expected) / scale, 'u')
                 record[f'{feature} {frequency:.6g} Hz'] = {'measured': _pair(measured),
                                                            'expected': _pair(expected)}
-            expected_force = -_STRIP_TRACTION * area / _strip_closed_form(frequency, length)[2]
+            expected_force = -area * _strip_closed_form(frequency, 0.0, shift)[1]
             add(f'{run} reaction {frequency:.6g} Hz', abs(reaction[index] - expected_force) / abs(expected_force),
                 'reaction')
             record[f'reaction {frequency:.6g} Hz'] = {'measured': _pair(reaction[index]),
                                                       'expected': _pair(expected_force)}
         last = frequencies[-1]
         stress = _derived(results, 'stress_mid')
-        expected_stress = float(_strip_closed_form(last, 0.5 * length)[1].real)
+        expected_stress = float(_strip_closed_form(last, 0.5 * length, shift)[1].real)
         add(f'{run} stress at L / 2 ({last:.6g} Hz)', abs(stress - expected_stress) / abs(_STRIP_TRACTION), 'stress')
         record['stress_mid'] = {'measured': stress, 'expected': expected_stress}
     return scaled_worst_result(errors, tolerances, **details)
@@ -998,10 +1016,12 @@ VISCOELASTIC_CASES = (
                      'viscosity 20, K1 5e6 tauK 2e-4 s, bulk_viscosity 10, mechanical_loss_factor 0.02 on G0, K0), '
                      f'P2, h = {_STRIP_H * 1e3:g} mm, cpu, at {_STRIP_FACTORS[0]:g} and {_STRIP_FACTORS[1]:g} x f1 = '
                      'sqrt(M0 / rho) / (4 L): runs triangles and triangles_mixed (plane strain), axisymmetric, '
-                     'tetrahedra and tetrahedra_mixed (builtin). Reference u = t sin(k x) / (M* k cos kL), M* = K* + '
-                     '4/3 G*, k = w sqrt(rho / M*): frequency probes at L / 2 and L within '
-                     f"{_STRIP_TOLERANCE['u']:g} of |u(L)|, the x_lo roller reaction -t A / cos kL within "
-                     f"{_STRIP_TOLERANCE['reaction']:g} relative (A = W per m, pi W^2, W^2), Re sigma at L / 2 of the "
+                     'tetrahedra and tetrahedra_mixed (builtin; their x_lo anchor a displacement u_x = X = '
+                     f'{_STRIP_SHIFT:g} m, a moving roller). Reference u = (X cos(k (L - x)) + t sin(k x) / (M* k)) / '
+                     'cos kL, M* = K* + 4/3 G*, k = w sqrt(rho / M*): frequency probes at L / 2 and L within '
+                     f"{_STRIP_TOLERANCE['u']:g} of |u(L)|, the x_lo anchor reaction -sigma(0) A (X = 0: -t A / cos "
+                     f"kL) within {_STRIP_TOLERANCE['reaction']:g} relative (A = W per m, pi W^2, W^2), the tetrahedra "
+                     f"reaction work W = X F_x within {_STRIP_TOLERANCE['work']:g}, Re sigma at L / 2 of the "
                      f"last frequency within {_STRIP_TOLERANCE['stress']:g} of |t| (node-averaged; pins the "
                      'complex-correct stress). Tolerances are first estimates (P2 error ~ (k h)^3). measured = error = '
                      'the worst deviation in tolerance units.'),

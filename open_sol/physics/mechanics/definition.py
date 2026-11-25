@@ -29,7 +29,7 @@ from ...model.definition_helpers import (AXISYMMETRIC_SPACE_SETTINGS, AZIMUTHAL_
                                          reduced_sweep_memory_items,
                                          reduced_sweep_time_items, validate_points_inside)
 from ...model.expressions import Expression, ExpressionError
-from ...model.geometry import bounding_box, expand_entities, line_orientation
+from ...model.geometry import bounding_box, expand_entities, line_orientation, rasterize
 from ...model.schema import (STATIONARY_STUDY, TIME_DEPENDENT_STUDY, CouplingType, DomainRequirements, FeatureType,
                              Issue, Param, PhysicsType, SolverRole, feature_path, solver_backend)
 from ...solvers.arpack_shift_invert import CUDSS_FACTORIZATIONS, LANCZOS_APPLICATIONS_PER_BASIS, arnoldi_basis_size
@@ -309,8 +309,11 @@ _SUPPORT_RESULT_TEXT = (
     'F_y_re, F_y_im, W_re, W_im); at azimuthal_order 1 F_x = sum R_r - sum R_phi is the net force along x (phi = 0) of '
     'the cos phi / sin phi tractions and F_y = 0, at m >= 2 both 0 (no net force). W = sum R u_held over the held dofs '
     '(J, J/m per m of depth; the u_z = U_phi component included): the work of the support force on the prescribed '
-    'displacement, F X for a rigid translation X, torque x theta for a rigid rotation by theta (T = W / theta, any '
-    'azimuthal order), and the mean power the support delivers to the solid is omega Im(W) / 2.')
+    'displacement. W / X is the force of a rigid translation by X; W / theta is the torque of a rigid rotation by '
+    'theta where one can be prescribed (x, y expressions of prescribed_displacement_domain): in a planar model (u_x '
+    '= -theta y, u_y = theta x), or axisymmetric a tilt about the transverse axis y at azimuthal_order 1 (the torque '
+    'about +y; a rotation about the symmetry axis would need u_phi at m = 0, which is refused); omega Im(W) / 2 is '
+    'the mean power the support delivers to the solid.')
 _SUPPORT_RESULT_REF = 'Result: the reaction table, as fixed.'
 # the displacement features' U_phi of an azimuthal order (triangles; validation refuses it at m = 0)
 _U_PHI_PARAM = replace(
@@ -507,14 +510,17 @@ def _validate_displacement(vctx, physics_spec, feature_spec, values):
     u_x, u_z = values.get('u_x'), values.get('u_z')
     if order == 1 and feature_spec.type == 'prescribed_displacement_domain' and u_x is not None:
         tolerance = 1e-9 * max(vctx.domain_size or (1.0,))
-        heights = []   # sampled heights of the objects touching the axis
+        heights = []   # sampled heights where the objects touch the axis
         for name in vctx.objects(feature_spec.selection):
             try:
                 x_low, y_low, _, y_high = bounding_box(name, vctx.shapes)
+                if x_low > tolerance:
+                    continue
+                samples = np.linspace(y_low, y_high, _AXIS_TIE_SAMPLES)   # odd: a tangent circle's height included
+                touching = rasterize(name, vctx.shapes, np.full_like(samples, tolerance), samples, np)
             except (KeyError, ValueError, TypeError):   # an unresolved object: reported elsewhere
                 continue
-            if x_low <= tolerance:
-                heights.append(np.linspace(y_low, y_high, _AXIS_TIE_SAMPLES))
+            heights.append(samples[touching])
         radial = _axis_values(u_x, vctx.parameters, heights)
         azimuthal = None if u_z is None else _axis_values(u_z, vctx.parameters, heights)
         if radial is not None and (u_z is None or azimuthal is not None):
@@ -529,15 +535,17 @@ def _validate_displacement(vctx, physics_spec, feature_spec, values):
     return issues
 
 
-_AXIS_TIE_SAMPLES = 17   # heights per axis-touching object at which the m = 1 tie u_z = -u_x of x, y values is checked
+# heights over the box of an axis-touching object; the tie u_z = -u_x of x, y values is checked at those inside it on
+# the axis (x = the touch tolerance, so the half-open rectangle and polygon tests count an edge on x = 0)
+_AXIS_TIE_SAMPLES = 33
 
 
 def _axis_values(value, parameters, heights):
     """Float64 values of a prescribed displacement (number or x, y Expression) on the axis x = 0 at the concatenated
     heights [m] (a list of arrays); None without heights or when it does not evaluate (reported elsewhere)."""
-    if not heights:
+    heights = np.concatenate(heights) if heights else np.zeros(0)
+    if not heights.size:
         return None
-    heights = np.concatenate(heights)
     try:
         if isinstance(value, Expression):
             result = value.evaluate({**parameters, 'x': np.zeros_like(heights), 'y': heights})

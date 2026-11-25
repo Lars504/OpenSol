@@ -10,9 +10,11 @@ templates, describe. Current state, no changelog.
   of frequency_response likewise, so `re(re)` is refused as name-and-function).
 - Complex intermediates: `evaluate` refuses a complex final value, so consumers (parameters, materials, features,
   derived values, references, curves) stay real and never see complex dtypes; complex parameters are impossible. Only
-  an expression with a 1j literal, a `COMPLEX_FUNCTION_NAMES` call or a `**` (`Expression.complex_values`) takes the
-  complex function table, where real-only functions and every comparison (AST-wrapped in `real_operand__`) refuse
-  complex values; others run the unchanged real table, so real arrays are never cast to complex. The complex Bessel
+  an expression with a 1j literal or a `COMPLEX_FUNCTION_NAMES` call (`Expression.complex_values`) takes the complex
+  function table, where real-only functions and every comparison (AST-wrapped in `real_operand__`) refuse complex
+  values; others run the unchanged real table, so real arrays are never cast to complex. Every `**` compiles to a call
+  of the table's pow (`power__`, `expressions._power`): numpy semantics for real operands of any scalar type (Python's
+  float ** float would be complex), the operator itself on arrays (dtype, fast ** 2 / ** 0.5). The complex Bessel
   functions (besselj ... spherical_yn) are scipy only: a cupy argument raises (no host round trip); references,
   analytic and derived curves always evaluate on numpy, field expressions only on cpu runs. A new function goes in
   one of the tables with its arity and FUNCTION_DESCRIPTIONS entry (describe checks the keys); a real-only one also
@@ -157,7 +159,9 @@ templates, describe. Current state, no changelog.
   span meshes live on the parent (`_window_transfers`, freed by close). Warm starts compare every mesh
   (`study._mesh_key`).
 - Triangle meshes (MeshSpec kind 'triangles'): `meshing.triangle_sizing` is the one size rule of estimate and mesher;
-  every size is floored at h_min (default h_max / 100), so a finer refinement needs an explicit h_min. The raster
+  every size is floored at h_min (default h_max / 100), so a finer refinement needs an explicit h_min (validate
+  `_check_element_floor` warns for the base parameter values only, gmsh / swept tetrahedra too: a swept parameter
+  that shrinks a refinement is not seen, so such a model sets h_min below its smallest value). The raster
   estimate (`_triangle_estimate`) sets memory, run time and MAX_MESH_CELLS: recalibrate TRIANGLE_FILL /
   TRIANGLE_EDGE_FILL against selftest mesh_triangle_estimate when the mesher's refinement rule changes. Element meshes
   (triangles and tetrahedra) go through `meshing.element_mesh`, reused per mesh name while `element_mesh_key` matches.
