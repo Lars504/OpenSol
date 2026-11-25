@@ -338,11 +338,13 @@ class FEMSolidCommon(HostInputCache):
 class HarmonicOperators:
     """Host pieces of the frequency-response pencil of one assembly (the FEM solids' _build_harmonic_operators):
     `operator` the constant real part beyond the system K (None = the solver's pencil stiffness _pencil_stiffness;
-    mixed, Phase B: K_c + the saddle coupling + constant pressure blocks), `loss` (or None), `mass`, `terms`
-    (frequency_response.FrequencyTerm), `scale_terms` (RowScaleTerm), `n_unknowns` (rows of the full vector: c n_u
-    (+ n_p mixed)), `pressure` (the mixed PressureSpace, or None), `free` (bool over the unknowns, or over the columns
-    of column_map) and `column_map` (None, the m = 1 axis ties, mixed: ties (+) pressure selection), `groups` the
-    viscoelastic.ViscoelasticGroup of the terms (summary)."""
+    mixed: the saddle coupling + the constant groups' G0 D_g and pressure blocks, mixed_harmonic_operators), `loss` (or
+    None), `mass`, `terms` (frequency_response.FrequencyTerm), `scale_terms` (RowScaleTerm), `n_unknowns` (rows of the
+    full vector: c n_u (+ n_p mixed, x = [u; p])), `pressure` (the mixed fem PressureSpace / PressureSpace3D, or None),
+    `free` (bool over the unknowns, or over the columns of column_map) and `column_map` (None, the m = 1 axis ties,
+    mixed: ties (+) the selection of the free pressure dofs), `groups` the viscoelastic.ViscoelasticGroup of the terms
+    (mixed: every member, the pressure zones), `pressure_gauges` the pressure dofs held at 0 as the gauge of an enclosed
+    incompressible region (int64, mixed)."""
     operator: object
     loss: object
     mass: object
@@ -353,12 +355,164 @@ class HarmonicOperators:
     scale_terms: tuple = ()
     pressure: object = None
     groups: tuple = ()
+    pressure_gauges: object = ()
 
     def summary(self) -> str:
-        """'' or '; viscoelastic: N group(s), M frequency term(s)'."""
-        if not self.terms:
-            return ''
-        return f'; viscoelastic: {len(self.groups)} group(s), {len(self.terms)} frequency term(s)'
+        """'' or '; mixed: N pressure dofs in K groups[ (G enclosed incompressible region(s): ...)]' and / or ';
+        viscoelastic: N group(s), M frequency term(s)'."""
+        text = ''
+        if self.pressure is not None:
+            text += f'; mixed: {self.pressure.n_dofs:,} pressure dofs in {self.pressure.n_groups} groups'
+            if len(self.pressure_gauges):
+                text += (f' ({len(self.pressure_gauges)} enclosed incompressible region(s): the pressure level of a '
+                         'liquid enclosed by held displacements is free, p = 0 at one node of each)')
+        if self.terms:
+            text += f'; viscoelastic: {len(self.groups)} group(s), {len(self.terms)} frequency term(s)'
+        return text
+
+
+# floor [Pa] of |G*| in the Schur row-scale weight of a mixed pressure group (a member's G* is never 0 at omega > 0)
+_TINY_MODULUS = 1e-30
+# |B^T 1| on the free displacements below this share of its largest value: the constant pressure of an incompressible
+# region is a null vector of the saddle point (a liquid enclosed by held displacements; round-off ~1e-15 there)
+_ENCLOSED_TOLERANCE = 1e-9
+
+
+def mixed_harmonic_operators(groups, deviatoric, coupling, pressure_masses, space, mass, displacement_free,
+                             pressure_free, prolongation, label) -> HarmonicOperators:
+    """HarmonicOperators of the mixed u-p frequency response (both FEM solids) in x = [u; p] (n = n_u + n_p) from the
+    viscoelastic.ViscoelasticGroup of every member (the pressure zones, in index order), their unit-shear stiffness D_g
+    (n_u, n_u), the coupling B (n_p, n_u) and pressure masses M_p,g (fem.mixed_elasticity), the space, the u mass,
+    the free u dofs (bool (n_u,)), the free pressure dofs (bool (n_p,): the axis ones False at m >= 1) and the m = 1
+    axis-tie prolongation (n_u, n_r) or None. A = [[sum_g G*_g D_g - w^2 M, -B^T], [-B, -sum_g M_p,g / K*_g]]
+    (fem.mixed_elasticity header): constant groups folded into operator (G0 D_g, -Re(1 / K*) M_p,g) and loss (eta G0
+    D_g, -Im(1 / K*) M_p,g), omega-dependent ones FrequencyTerms (G*_g D_g; -1 / K*_g M_p,g); an incompressible group's
+    pressure block is 0 but kept in the pattern (stored zeros without a column map, else a FrequencyTerm of coefficient
+    0: a congruence drops exact zeros); one RowScaleTerm per group, diag M_p,g (1 / max(|G*_g|, tiny) + |1 / K*_g|)
+    (the Schur scale of its rows). Column map: None (free = u free + pressure free) or block_diag(P, selection of the
+    free pressure dofs) (free = every column). The gauges of enclosed incompressible regions (_pressure_gauges) are
+    held at 0. ValueError for an incompressible region whose every coupled displacement is held."""
+    import scipy.sparse
+    from ...fem.assembly import pattern_sum
+    from ...fem.mixed_elasticity import embedded, saddle_coupling
+    from .frequency_response import FrequencyTerm, RowScaleTerm
+    groups = tuple(groups)
+    n_p, n_u = coupling.shape
+    if space.n_dofs != n_p or space.n_groups != len(groups) or len(deviatoric) != len(groups) \
+            or len(pressure_masses) != len(groups) or any(group.index != index for index, group in enumerate(groups)):
+        raise ValueError(f'{label()}: the mixed pieces disagree ({len(groups)} groups, {space.n_groups} pressure '
+                         f'zones, {n_p} pressure dofs, B {coupling.shape})')
+    n_total = n_u + n_p
+    pressure_free = np.array(pressure_free, dtype=bool)
+    gauges = _pressure_gauges(coupling, space, [group.index for group in groups if group.bulk.incompressible],
+                              pressure_free, np.asarray(displacement_free, dtype=bool), prolongation, label)
+    pressure_free[gauges] = False
+    if prolongation is None:
+        column_map = None
+        free = np.concatenate([np.asarray(displacement_free, dtype=bool), pressure_free])
+    else:
+        kept = np.flatnonzero(pressure_free)
+        selection = scipy.sparse.csr_matrix((np.ones(kept.size), (kept, np.arange(kept.size))), shape=(n_p, kept.size))
+        # Phase C estimator: the column map (P entries + one per free pressure dof: float64 + int32), host
+        column_map = scipy.sparse.block_diag((prolongation, selection), format='csr')
+        free = np.ones(column_map.shape[1], dtype=bool)
+    # Phase C estimator: per group D_g and M_p,g embedded in the [u; p] numbering (float64 + int32 copies), the scaled
+    # constant copies and their pattern sums (the operator: saddle 2 nnz(B) + constant D_g + pressure blocks; the loss),
+    # the embedded mass (nnz of M), one float64 (n,) diagonal per RowScaleTerm, host, kept with the operators
+    constant = [saddle_coupling(coupling, n_u)]
+    loss_parts, terms, scale_terms = [], [], []
+    for group, shear_matrix, pressure_mass in zip(groups, deviatoric, pressure_masses):
+        index, shear, bulk = group.index, group.shear, group.bulk
+        shear_block = embedded(shear_matrix, n_total)
+        if shear.frequency_dependent:
+            terms.append(FrequencyTerm(shear_block, shear.at, f'G* of group {index}'))
+        else:
+            constant.append(shear.relaxed * shear_block)
+            if shear.loss_factor:
+                loss_parts.append((shear.relaxed * shear.loss_factor) * shear_block)
+        pressure_block = embedded(pressure_mass, n_total, row_offset=n_u, column_offset=n_u)
+        if bulk.frequency_dependent:
+            terms.append(FrequencyTerm(pressure_block, _negative_compliance(bulk), f'-1 / K* of group {index}'))
+        elif bulk.incompressible:   # 1 / K* = 0: the pressure diagonal stays stored (PARDISO symmetric types need it)
+            if column_map is None:
+                constant.append(pressure_block * 0.0)
+            else:
+                terms.append(FrequencyTerm(pressure_block, _zero_coefficient, f'incompressible group {index}'))
+        else:
+            compliance = bulk.compliance(0.0)   # constant: (1 - j eta) / (K0 (1 + eta^2))
+            constant.append(-compliance.real * pressure_block)
+            if compliance.imag:
+                loss_parts.append(-compliance.imag * pressure_block)
+        scale_terms.append(RowScaleTerm(np.abs(pressure_block.diagonal()), _schur_weight(group)))
+    return HarmonicOperators(pattern_sum(constant), pattern_sum(loss_parts) if loss_parts else None,
+                             embedded(mass, n_total), free, n_total, column_map=column_map, terms=tuple(terms),
+                             scale_terms=tuple(scale_terms), pressure=space, groups=groups,
+                             pressure_gauges=np.asarray(gauges, dtype=np.int64))
+
+
+def _negative_compliance(law):
+    """omega -> -1 / K*(omega) of a bulk ModulusLaw (the pressure block coefficient)."""
+    return lambda omega: -law.compliance(omega)
+
+
+def _zero_coefficient(omega) -> complex:
+    """The coefficient of an incompressible group's pressure block (kept for its pattern)."""
+    return 0j
+
+
+def _schur_weight(group):
+    """omega -> 1 / max(|G*_g|, tiny) + |1 / K*_g| (the Schur scale of a pressure group's rows per diag M_p,g)."""
+    shear, bulk = group.shear, group.bulk
+    return lambda omega: 1.0 / max(abs(shear.at(omega)), _TINY_MODULUS) + abs(bulk.compliance(omega))
+
+
+def _pressure_gauges(coupling, space, incompressible, pressure_free, displacement_free, prolongation,
+                     label) -> np.ndarray:
+    """Int64 pressure dofs held at 0, one per connected region of an incompressible group (fem.mixed_elasticity
+    pressure_regions, its free dofs) whose constant pressure q = 1 is a null vector of the saddle point: B^T q vanishes
+    on the free displacements (a liquid enclosed by held displacements: int q div v dV is a boundary integral of v . n
+    there, so the pressure level is undetermined; at an azimuthal order m >= 1 q is no cos(m phi) null vector and no
+    region is pinned). The gauge is the region's dof farthest from its centroid (a wall far from the drive). ValueError
+    for a region whose every coupled displacement is held (no free displacement in an incompressible zone: its whole
+    pressure block is singular)."""
+    from ...fem.mixed_elasticity import pressure_regions
+    gauges = []
+    if not incompressible:
+        return np.zeros(0, dtype=np.int64)
+    coupling = coupling.tocsr()
+    if prolongation is None:
+        free_rows = displacement_free
+
+        def restricted(vector):
+            return vector[displacement_free]
+    else:
+        prolongation = prolongation.tocsr()
+        free_rows = np.diff(prolongation.indptr) > 0   # u dofs that some reduced column moves (ties included)
+
+        def restricted(vector):
+            return prolongation.T @ vector
+    points = space.dof_points()
+    for group in incompressible:
+        for region in pressure_regions(space, group):
+            region = region[pressure_free[region]]
+            if not region.size:
+                continue
+            rows = coupling[region]
+            coupled = np.unique(rows.indices[np.abs(rows.data) > 0.0])
+            if not free_rows[coupled].any():
+                low, high = points[region].min(axis=0), points[region].max(axis=0)
+                where = ', '.join(f'{low[axis]:.4g} .. {high[axis]:.4g} m' for axis in range(low.size))
+                raise ValueError(f'{label()}: an incompressible region of viscoelastic parameter group {group} (no '
+                                 f'bulk modulus; {region.size} pressure nodes in {where}) has every displacement held, '
+                                 'so its pressure is undetermined: give the held region a bulk_modulus or '
+                                 'youngs_modulus, or leave a free displacement in it')
+            force = np.asarray(rows.sum(axis=0)).ravel()   # B^T q of q = 1 on the region
+            scale = float(np.abs(force).max())
+            residual = restricted(force)
+            if scale > 0.0 and (not residual.size or float(np.abs(residual).max()) <= _ENCLOSED_TOLERANCE * scale):
+                offsets = points[region] - points[region].mean(axis=0)
+                gauges.append(int(region[np.argmax(np.sum(offsets ** 2, axis=1))]))
+    return np.asarray(gauges, dtype=np.int64)
 
 
 @dataclass(frozen=True, eq=False)

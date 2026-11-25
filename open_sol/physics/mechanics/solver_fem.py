@@ -29,6 +29,8 @@ from ...fem.elasticity import (AXIS_TOLERANCE, CENTROID, COMPONENTS, StressField
 from ...fem.elements import element_geometry, lagrange_basis
 from ...fem.fixed_pattern import scatter_rows
 from ...fem.indicators import CHUNK_ITEMS, add_edge_terms, edge_sides, lagrange_at
+from ...fem.mixed_elasticity import (assemble_pressure_terms, axis_pressure_dofs, nodal_pressure, pressure_at,
+                                     pressure_space)
 from ...fem.reduced_outputs import field_policy, wants_fields
 from ...solvers.arpack_shift_invert import ArpackShiftInvertSolver
 from .fields import (AZIMUTHAL_IMAG_FIELDS, ENERGY_DENSITY_FIELDS, HARMONIC_IMAG_FIELDS, INPUT_ARRAYS, OUTPUT_ARRAYS,
@@ -45,7 +47,7 @@ from .pml2d import DEFAULT_PML_REFLECTION, check_ring, elastic_pml_ring, ring_wa
 from .renderer import SolidRenderer
 from .solver import GENERALIZED_PLANE_STRAIN, GEOMETRIES, OUT_OF_PLANE_CONDITIONS, PLANE_STRAIN, PLANE_STRESS
 from .solver_common import (MATERIAL_STATE_ARRAYS, FEMSolidCommon, HarmonicOperators, _copy_or_none,
-                            host_array as _host)
+                            host_array as _host, mixed_harmonic_operators)
 from .stiffness import (HOOP_NAMES, OPERATOR_NAMES, ElementStiffness, check_positive_definite, element_stiffness,
                         elastic_stress, harmonic_stiffness_pair, operator_coefficients, plane_stress_strain,
                         thermal_coefficients, unit_operator_coefficients)
@@ -94,7 +96,10 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
     driven by prescribed displacements): the amplitudes (U_r, U_z, U_phi) of u_r, u_z ~ cos(m phi), u_phi ~ sin(m phi)
     (fields u_x, u_y, u_z). geometric_nonlinearity: every static solve total-Lagrangian (Green-Lagrange strain, second
     Piola-Kirchhoff stress outputs). Viscoelastic moduli (viscoelastic.py): the frequency response adds one fixed term
-    per parameter group and part; formulation mixed (Phase B) raises NotImplementedError in _harmonic_inputs."""
+    per parameter group and part. formulation mixed (frequency_response only, P2): Taylor-Hood u-p, x = [u; p] with a P1
+    pressure per parameter group (fem.mixed_elasticity, solver_common.mixed_harmonic_operators; the axis pressure held
+    at 0 at m >= 1), outputs sigma = 2 G* dev eps - p I and the pressure fields from the pressure unknowns; the static
+    K of the system (deviatoric where K0 is unset, liquids 0) only carries the dof map and the rigid-mode check."""
 
     _output_groups = _OUTPUT_GROUPS
 
@@ -251,7 +256,8 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
         self._moduli = None                          # viscoelastic.ElementModuli of the last assembly (None: no array)
         self._frequency_elements = None              # bool members with omega-dependent moduli (None / all False: none)
         self._output_moduli = None                   # (C', C'') ElementStiffness of a shown complex solution, or None
-        self._pressure = None                        # mixed (Phase B): host pressure unknowns of a shown response
+        self._pressure = None                        # mixed: host complex pressure unknowns (n_p,) of a shown response
+        self._pressure_space = None                  # mixed: its fem.mixed_elasticity.PressureSpace (shared, read-only)
         self._element_dofs = None                    # P0 map of the input / material fields (fem_field)
         self._body_force = np.zeros((n_elements, COMPONENTS))   # applied [N/m^3] per element
         self._tractions = []                         # [(mesh edges, t_x, t_y)] of the features
@@ -938,8 +944,7 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
 
     def _harmonic_inputs(self):
         """(load, HarmonicOperators) of a driven solve: the checks, assembly and harmonic operators (an azimuthal
-        order: driven by prescribed displacements only, its load is 0). NotImplementedError for formulation mixed
-        (Phase B)."""
+        order: driven by prescribed displacements only, its load is 0); the load over every unknown (mixed: [f; 0])."""
         if self.out_of_plane == GENERALIZED_PLANE_STRAIN:
             raise ValueError(f'{self._label()}: generalized plane strain has no frequency response (the uniform eps_zz '
                              'carries no mass)')
@@ -947,21 +952,41 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
         if only:
             raise ValueError(f'{self._label()}: {only} is solved by the eigenfrequency study only (no frequency '
                              'response yet)')
-        if self.formulation == MIXED:   # Phase B builds the u-p operators here
-            raise NotImplementedError('mixed u-p formulation: Phase B')
         system = self.system
         if system.operator_dirty:
             self._assemble()
-        # the load is frequency independent: kept until a load input changes (_loads_dirty) or the dof map is rebuilt;
-        # the dead loads only: the initial stress and thermal strain are static (the prestress), never a drive
-        if self._harmonic_load is None or self._harmonic_load[0] is not system.dofs:
-            load = self._external_load()
-            load.flags.writeable = False
-            self._harmonic_load = (system.dofs, load)
-        load = self._harmonic_load[1]
         if self._harmonic_operators is None:
             self._harmonic_operators = self._build_harmonic_operators()
-        return load, self._harmonic_operators
+        operators = self._harmonic_operators
+        # the load is frequency independent: kept until a load input changes (_loads_dirty) or the dof map / unknown
+        # count changes; the dead loads only: the initial stress and thermal strain are static (the prestress), never a
+        # drive; the mixed pressure rows carry no load
+        kept = self._harmonic_load
+        if kept is None or kept[0] is not system.dofs or kept[1].size != operators.n_unknowns:
+            load = self._external_load()
+            if load.size < operators.n_unknowns:
+                # Phase C estimator: the padded mixed load, float64 (c n_u + n_p,), host (kept per sweep)
+                load = np.concatenate([load, np.zeros(operators.n_unknowns - load.size)])
+            load.flags.writeable = False
+            self._harmonic_load = (system.dofs, load)
+        return self._harmonic_load[1], operators
+
+    def _harmonic_fixed(self, operators) -> np.ndarray:
+        """Held values over every unknown of the harmonic system: the system's u values (0 on free dofs), mixed + 0 on
+        every pressure dof (the axis ones of m >= 1 and the gauges of enclosed incompressible regions are held at 0)."""
+        fixed = self.system.fixed_values()
+        if fixed.size == operators.n_unknowns:
+            return fixed
+        return np.concatenate([fixed, np.zeros(operators.n_unknowns - fixed.size)])
+
+    def _split_harmonic(self, solution, operators) -> tuple:
+        """(displacement (n_dofs, c), pressure (n_p,) or None) of a harmonic solution over every unknown."""
+        n_vector = self.system.components * self.system.dofs.n_dofs
+        if solution.size != operators.n_unknowns:
+            raise ValueError(f'{self._label()}: a harmonic solution of {solution.size} values, the system has '
+                             f'{operators.n_unknowns} unknowns')
+        pressure = None if operators.pressure is None else solution[n_vector:]
+        return solution[:n_vector].reshape(-1, self.system.components), pressure
 
     def _harmonic_system(self, operators):
         """The frequency_response.HarmonicSystem of the driven solves (direct and reduced) on the 'linear' runtime (host
@@ -988,7 +1013,7 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
         harmonic = self._harmonic_system(operators)
         if not harmonic.has_output_rows:   # also with fields: A x is read only at the record rows
             harmonic.set_output_rows(self._harmonic_output_rows())
-        solution, product = harmonic.solve(omega, self.system.fixed_values(), load, fields=fields,
+        solution, product = harmonic.solve(omega, self._harmonic_fixed(operators), load, fields=fields,
                                            product_at_rows=True)
         return solution, product, load
 
@@ -1021,7 +1046,7 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
         load, operators = self._harmonic_inputs()
         harmonic = self._harmonic_system(operators)
         info = harmonic.plan_reduced(
-            2.0 * math.pi * frequencies, method, self.system.fixed_values(), load,
+            2.0 * math.pi * frequencies, method, self._harmonic_fixed(operators), load,
             tolerance=options.get('tolerance', 1e-6), moments=options.get('moments', 4),
             max_points=options.get('max_points', 40), modal_count=options.get('modal_count', 20),
             eigen_solver=self.eigen_solver, label=self._label())
@@ -1036,7 +1061,8 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
         (K (1 + j eta) + K_sigma - omega^2 M) u = f by one complex symmetric factor of the kept HarmonicSystem on the
         'linear' runtime (host SuperLU or cuDSS LDL^T, plan reused across frequencies; a free body is regular at f > 0)
         or the plan_frequency_response model; records the frequency probes and support reactions, shows the real parts,
-        u_abs = |u| where the field policy asks (a skipped frequency is solved at the record rows only)."""
+        u_abs = |u| where the field policy asks (a skipped frequency is solved at the record rows only). Mixed: x = [u;
+        p], the reactions are the u rows of A x - f (they hold the coupling -B^T p, so they include the pressure)."""
         frequency = float(frequency)
         if not (math.isfinite(frequency) and frequency > 0.0):
             raise ValueError(f'{self._label()}: a frequency response needs a frequency > 0 Hz, got {frequency!r}')
@@ -1044,11 +1070,12 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
         omega = 2.0 * math.pi * frequency
         solution, product, load = self._harmonic_solve(omega, fields)
         self.frequency_points.append(FrequencyPoint(frequency, {}))
-        components = self.system.components
-        displacement = solution.reshape(-1, components)
-        self._record_harmonic(frequency, displacement, (product - load).reshape(-1, components))
+        operators = self._harmonic_operators
+        displacement, pressure = self._split_harmonic(solution, operators)
+        residual, _ = self._split_harmonic(product - load, operators)
+        self._record_harmonic(frequency, displacement, residual)
         if fields:
-            self._show_harmonic(displacement, omega=omega)
+            self._show_harmonic(displacement, omega=omega, pressure=pressure, space=operators.pressure)
         self._unpublished_frequency = None if fields else frequency
 
     def publish_frequency_response(self):
@@ -1059,11 +1086,14 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
             return
         omega = 2.0 * math.pi * frequency
         solution = None
-        if self.reduced_sweep is None and self._harmonic is not None:
+        if (self.reduced_sweep is None and self._harmonic is not None
+                and self._harmonic[0][1] is self._harmonic_operators is not None):   # kept by these operators
             solution = self._harmonic[1].last_solution()
         if solution is None:
             solution, _, _ = self._harmonic_solve(omega)
-        self._show_harmonic(solution.reshape(-1, self.system.components), omega=omega)
+        operators = self._harmonic_operators
+        displacement, pressure = self._split_harmonic(solution, operators)
+        self._show_harmonic(displacement, omega=omega, pressure=pressure, space=operators.pressure)
 
     # --- complex records of the frequency response (K4) ------------------------
 
@@ -1129,7 +1159,9 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
         """HarmonicOperators of the last assembly: the loss operator eta K or None (eta = mechanical_loss_factor of the
         solid elements, viscoelastic ones included: eta multiplies their G0, K0), the consistent mass, the system's
         free set (m = 1: the axis tie prolongation, free over its columns) and the viscoelastic group terms (operator
-        None: the pencil stiffness)."""
+        None: the pencil stiffness); formulation mixed: _mixed_operators."""
+        if self.formulation == MIXED:
+            return self._mixed_operators()
         system = self.system
         loss = self._stiffness_loss(stretched=False)
         mass = system.mass(self._solid_density('a frequency response'))
@@ -1138,6 +1170,41 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
         terms, groups = self._viscoelastic_terms()
         return HarmonicOperators(None, loss, mass, free, system.components * system.dofs.n_dofs,
                                  column_map=column_map, terms=terms, groups=groups)
+
+    def _mixed_operators(self) -> HarmonicOperators:
+        """HarmonicOperators of the mixed u-p frequency response (solver_common.mixed_harmonic_operators) on the solid
+        map of the last assembly: the parameter groups of every member (viscoelastic.parameter_groups: the pressure
+        zones, at most MAX_GROUPS), their unit-shear stiffness D_g (one gradient pass), the P1 pressure space and B /
+        M_p,g (fem.mixed_elasticity, the elasticity ring weights), the consistent mass; pressure dofs on the axis held
+        at 0 at an azimuthal order m >= 1, the column map at m = 1 block_diag(axis ties, free pressure selection).
+        ValueError outside quadratic plane strain / axisymmetric or with a prestress (also refused by the constructor
+        and validation)."""
+        label = self._label
+        if self.order != 2 or (not self._axisymmetric and self.out_of_plane != PLANE_STRAIN) or self.prestressed:
+            raise ValueError(f'{label()}: formulation mixed needs discretization quadratic, plane strain or '
+                             'axisymmetric and no stress_stiffening / geometric_nonlinearity')
+        moduli = self._viscoelastic_moduli()
+        if moduli is None:
+            raise ValueError(f'{label()}: formulation mixed needs the element moduli (a bug: they are required)')
+        system = self.system
+        dofs = system.dofs
+        n_elements = self.domain.n_elements
+        groups = parameter_groups(moduli, self._solid, label)
+        indices = group_indices(groups, n_elements)
+        # Phase C estimator: the unit-shear D_g CSR per group (float64, solid-map numbering c n_u), transient until
+        # embedded (mixed_harmonic_operators)
+        deviatoric = [matrices[0] for matrices in assemble_elastic_stiffness_groups(
+            dofs, [unit_operator_coefficients('shear', n_elements, self._axisymmetric)], indices, len(groups),
+            axisymmetric=self._axisymmetric, azimuthal_order=self.azimuthal_order)]
+        space = pressure_space(dofs, indices, len(groups))
+        coupling, pressure_masses = assemble_pressure_terms(dofs, space, axisymmetric=self._axisymmetric,
+                                                            azimuthal_order=self.azimuthal_order)
+        pressure_free = np.ones(space.n_dofs, dtype=bool)
+        if self.azimuthal_order:   # a cos(m phi) pressure is regular on the axis only when 0 there (x_lo: r = 0)
+            pressure_free[axis_pressure_dofs(space, system.global_ids_of_edges(system.face_edges('x_lo')))] = False
+        return mixed_harmonic_operators(groups, deviatoric, coupling, pressure_masses, space,
+                                        system.mass(self._solid_density('a frequency response')), system.free,
+                                        pressure_free, system.prolongation, label)
 
     def _viscoelastic_terms(self) -> tuple:
         """(FrequencyTerm tuple, ViscoelasticGroup tuple) of the omega-dependent members: per parameter group the excess
@@ -1200,7 +1267,14 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
     def _harmonic_moduli(self, omega, viscoelastic):
         """(C', C'') ElementStiffness of C*(omega) for the complex-correct outputs of a shown response / damped mode:
         eta C and (viscoelastic: a frequency response) the group laws of the omega-dependent members; None when C* = C
-        (no loss factor, no frequency-dependent member: the outputs stay those of C)."""
+        (no loss factor, no frequency-dependent member: the outputs stay those of C). Mixed: the deviatoric pair 2 G*
+        dev eps of every member (its group law, eta included; the pressure unknowns carry the volumetric part)."""
+        if self.formulation == MIXED:
+            if not (viscoelastic and omega):
+                raise ValueError(f'{self._label()}: formulation mixed shows frequency responses only')
+            shear, bulk = harmonic_parts(self._viscoelastic_moduli(), self._solid, omega)
+            return harmonic_stiffness_pair(self._stiffness, shear, bulk, np.zeros(self.domain.n_elements), self._solid,
+                                           deviatoric=True)
         moduli = self._viscoelastic_moduli() if viscoelastic and omega else None
         frequency = None if moduli is None else self._frequency_elements
         frequency = None if frequency is None or not frequency.any() else frequency
@@ -1213,19 +1287,25 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
             shear, bulk = harmonic_parts(moduli, frequency, omega)
         return harmonic_stiffness_pair(self._stiffness, shear, bulk, loss, frequency)
 
-    def _show_harmonic(self, displacement, omega=None, pressure=None, viscoelastic=True):
+    def _show_harmonic(self, displacement, omega=None, pressure=None, viscoelastic=True, space=None):
         """Write the real parts of a complex response or damped mode (n_dofs, c) into the outputs (no thermal part, no
         initial stress: both are static), u_abs = |u| (nodal and at the centroids), the imaginary parts (u_x_im /
         u_y_im / u_z_im), the complex-correct stresses Re(C*(omega) eps(u)) (viscoelastic False: a damped mode, eta
         only) with the pressure fields and the time-averaged energy densities at omega [rad/s]; reactions become
-        unavailable. pressure: the mixed formulation's host pressure unknowns (Phase B), else None."""
-        if pressure is not None:
-            raise NotImplementedError('mixed u-p formulation: Phase B (pressure outputs)')
+        unavailable. pressure: the mixed formulation's complex pressure unknowns (n_p,) on its PressureSpace `space`
+        (sigma = 2 G* dev eps - p I, the pressure fields from p), else None (the displacement formulation)."""
+        if (pressure is None) != (self.formulation != MIXED) or (pressure is None) != (space is None):
+            raise ValueError(f'{self._label()}: a shown mixed response needs its pressure unknowns and space (and only '
+                             'the mixed formulation has them)')
         self.system.unknown = np.ascontiguousarray(displacement.real)
         omega = 0.0 if omega is None else float(omega)
         self._write_outputs(thermal=False, prestress=False, omega=omega,
                             imaginary=np.ascontiguousarray(displacement.imag),
                             moduli=self._harmonic_moduli(omega, viscoelastic))
+        if pressure is not None:   # after _write_outputs (which resets them), as the complex displacement
+            # Phase C estimator: the shown pressure, complex128 (n_p,), host (one per snapshot solution state)
+            self._pressure = np.array(pressure, dtype=np.complex128)
+            self._pressure_space = space
         self._complex_displacement = np.array(displacement, dtype=np.complex128)   # read by the primary group
         self._shows_mode, self._shows_harmonic = False, True
         self.selected_resonance = None
@@ -1239,7 +1319,8 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
                 'thermal': self._output_thermal, 'prestress': self._output_prestress, 'omega': self._output_omega,
                 'green_lagrange': self._output_green_lagrange,
                 'moduli': self._output_moduli,   # read-only (C', C'') of that frequency: shared, never written
-                'pressure': _copy_or_none(self._pressure)}
+                'pressure': _copy_or_none(self._pressure),
+                'pressure_space': self._pressure_space}   # read-only, shared (its operators may be rebuilt since)
 
     def _show_solution_state(self, shown) -> None:
         """Show a _shown_solution again: its outputs pending, computed on the next read."""
@@ -1249,6 +1330,7 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
                             imaginary=_copy_or_none(shown['imaginary']), green_lagrange=shown['green_lagrange'],
                             moduli=shown.get('moduli'))
         self._pressure = _copy_or_none(shown.get('pressure'))
+        self._pressure_space = shown.get('pressure_space')
         self._complex_displacement = _copy_or_none(shown['complex'])   # after _write_outputs, as _show_harmonic
 
     def _computed_outputs(self) -> dict:
@@ -1634,11 +1716,11 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
         return values, strains
 
     def _pressure_points(self, reference_points):
-        """Complex (m, q) pressure unknowns of a shown mixed response at reference points of the solid elements, None
-        in the displacement formulation (Phase B: fem.mixed_elasticity.pressure_at of _pressure)."""
+        """Complex (m, q) pressure unknowns of a shown mixed response at reference points of every solid-map element
+        (fem.mixed_elasticity.pressure_at), None in the displacement formulation."""
         if self._pressure is None:
             return None
-        raise NotImplementedError('mixed u-p formulation: Phase B (pressure_at)')
+        return pressure_at(self.system.dofs, self._pressure_space, self._pressure, reference_points)
 
     def _density_values(self):
         """Host rho per element on the solid (0 elsewhere; cached, read-only)."""
@@ -1694,7 +1776,7 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
         self._output_omega = omega
         self._output_imaginary = imaginary
         self._output_moduli = moduli
-        self._pressure = None   # a shown mixed response sets its pressure unknowns after this (as the complex u)
+        self._pressure = self._pressure_space = None   # a shown mixed response sets them after this (as the complex u)
         self._output_green_lagrange = bool(green_lagrange)
         self._complex_displacement = self._imag_centroids = self._derived_centroids = None
         self._nodal = {}
@@ -1756,6 +1838,11 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
         for column, name in enumerate(local):
             self._nodal[name] = np.zeros(system.n_global)
             self._nodal[name][full_index] = averaged[:, column]
+        if self._pressure is not None:   # mixed: the P1 pressure unknowns themselves (groups at a node averaged)
+            # Phase C estimator: a complex128 (n_global,) temporary, then the two float64 nodal fields (replacing the
+            # averaged ones), host; pressure_at's (m, q) complex128 per output pass is transient
+            nodal = nodal_pressure(system.full_dofs, self._pressure_space, self._pressure)
+            self._nodal['pressure'], self._nodal['pressure_im'] = nodal.real.copy(), nodal.imag.copy()
         centre_points = (element_geometry(dofs.mesh, dofs.elements, CENTROID, dofs.geometry_order).points
                          if generalized else None)
         _, centre = self._output_values(displacement, imaginary, CENTROID, thermal, centre_points, prestress, omega)

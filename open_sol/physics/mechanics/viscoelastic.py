@@ -8,7 +8,7 @@ assembles once (one fixed real term per group and part); host numpy (core.backen
 # formulation only). Every study but frequency_response reads G0, K0 alone. Displacement formulation: the relaxed part
 # G0 (1 + j eta) D + K0 (1 + j eta) V is inside K + j L of the system (an isotropic C = G C_shear + K C_bulk exactly,
 # stiffness.UNIT_MODULI), so a group adds only its excess G*(w) - G0 (1 + j eta) (ModulusLaw.excess) on the unit
-# matrices D_g, V_g; groups over the omega-dependent members only. Mixed formulation (Phase B): groups over every member
+# matrices D_g, V_g; groups over the omega-dependent members only. Mixed formulation: groups over every member
 # (the pressure zones).
 import math
 from dataclasses import dataclass
