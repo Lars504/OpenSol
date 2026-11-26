@@ -230,7 +230,8 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   file). The drive is the transpose of the optomechanics overlap (non-conjugated E_c E_i, the same Nye / Johnson
   forms): change both together (Q1 cell / face drives are the transposes of `element_strains` /
   `face_displacements`: brillouin_tensor_transpose). Moduli laws are `viscoelastic.ModulusLaw.at` (the one formula),
-  evaluated per distinct frequency (`brillouin.modulus_values`).
+  called once per omega array (`brillouin.modulus_values`; the scalar path of `at` / `excess` stays the Python-number
+  one the harmonic terms use).
 - Flow: the apply adds a BrillouinDrive (constructor = the frozen contract) in every study, inert outside
   frequency_response (validation warns); that study binds it through `solver_hooks.PhysicsDriveSolver` after the
   background stage and the static states, before `reset_frequency_response` (model sub file "Physics drives"), never

@@ -594,26 +594,32 @@ def sideband_factors(frequencies, temperature) -> tuple:
 
 
 # ---- moduli laws ----
-# A law is a callable of one angular frequency omega [rad/s] -> complex modulus [Pa] (viscoelastic.ModulusLaw.at, the
-# one formula of the generalized Maxwell / Kelvin-Voigt law); the reference spectra evaluate it per distinct omega.
+# A law is a callable omega [rad/s] (a float64 array) -> complex modulus [Pa] of omega's shape, or one number for a
+# constant law (viscoelastic.ModulusLaw.at, the one formula of the generalized Maxwell / Kelvin-Voigt law, takes
+# arrays); the reference spectra call it once per omega array.
 def longitudinal_function(bulk_law, shear_law):
     """Law omega -> M*(omega) = K*(omega) + 4/3 G*(omega) of a bulk and a shear law (e.g. ModulusLaw.at)."""
     def value(omega):
-        return complex(bulk_law(omega)) + 4.0 / 3.0 * complex(shear_law(omega))
+        return bulk_law(omega) + 4.0 / 3.0 * shear_law(omega)
     return value
 
 
 def modulus_values(law, omega) -> np.ndarray:
-    """Complex law(omega) with omega's shape, the law called once per distinct omega [rad/s]; ValueError for a
-    non-finite modulus (an incompressible law, ModulusLaw.at = inf: a reference needs a finite bulk modulus)."""
+    """Complex128 law(omega) with omega's shape (one call on the float64 array; a 0-d result is a constant law,
+    broadcast); ValueError for another result shape or a non-finite modulus (an incompressible law, ModulusLaw.at =
+    inf: a reference needs a finite bulk modulus)."""
     omega = np.asarray(omega, dtype=np.float64)
-    unique, inverse = np.unique(omega, return_inverse=True)
-    values = np.array([complex(law(float(item))) for item in unique], dtype=np.complex128)
+    values = np.asarray(law(omega), dtype=np.complex128)
+    if values.ndim == 0:
+        values = np.full(omega.shape, complex(values), dtype=np.complex128)
+    elif values.shape != omega.shape:
+        raise ValueError(f'modulus law: returned shape {values.shape} for omega of shape {omega.shape}')
     if not np.isfinite(values).all():
-        first = int(np.argmin(np.isfinite(values)))
-        raise ValueError(f'modulus law: {values[first]} Pa at omega = {unique[first]:.6g} rad/s is not finite (an '
-                         'incompressible law has no finite modulus: give the material a bulk_modulus)')
-    return values[np.asarray(inverse).reshape(-1)].reshape(omega.shape)
+        first = int(np.argmin(np.isfinite(values).reshape(-1)))
+        raise ValueError(f'modulus law: {values.reshape(-1)[first]} Pa at omega = {omega.reshape(-1)[first]:.6g} '
+                         'rad/s is not finite (an incompressible law has no finite modulus: give the material a '
+                         'bulk_modulus)')
+    return values
 
 
 # ---- reference spectra ----

@@ -740,7 +740,9 @@ class BrillouinDrive:
         """(columns complex128 (n_positions x n_parts, solid.n_unknowns): position-major, each the drive kappa (w_pe +
         w_mb) on the u rows; [(log level, text)]) of the solid (SolidDriveInputs) against the solved optics of
         physics_by_name (module header); progress(done, n_positions) after each position (it may raise the study's
-        Cancelled: the previous bound state is kept). ValueError naming the value for every mismatch."""
+        Cancelled: the previous bound state is kept). ValueError naming the value for every mismatch. The columns
+        array is handed over to the solver, which freezes it in place (solver.bind_drive_columns sets it read-only
+        without a copy): the drive keeps no reference to it and never rewrites it."""
         label = self._label
         if not isinstance(solid, (SolidDriveInputs, CellDriveInputs)):   # _geometry relies on it
             raise TypeError(f'{label}: bind takes the SolidDriveInputs (triangles) or CellDriveInputs (rectangular '

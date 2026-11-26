@@ -438,11 +438,13 @@ def _check_homogeneous_reference(_):
     sheared = np.stack([random, -random, random])
     checks.add_raises('static_shear_without_modulus_raises',
                       lambda: homogeneous_static(sheared, 0.3, 0.2, 2.2e9, 0.0, _TEMPERATURE, 1.0))
-    # (d) a law evaluated per distinct omega (a repeat included) is K* + 4/3 G* of viscoelastic.ModulusLaw.at per
+    # (d) ModulusLaw.at on an omega array equals its scalar values; the combined law of the arrays is K* + 4/3 G* per
     # omega; an incompressible law (ModulusLaw.at = inf) raises
     law = ModulusLaw(relaxed=2.0e9, loss_factor=0.01, viscosity=3e-3, branches=((5e8, 1e-10), (2e8, 3e-9)))
     shear_law = ModulusLaw(relaxed=1.0e9, loss_factor=0.02, viscosity=1e-3, branches=((1e8, 2e-10),))
     omegas = np.array([0.0, 1e6, 4.7e10, 3e12, 1e6])
+    checks.add_bound('modulus_law_array_vs_scalar', max_relative_error(law.at(omegas), np.array(
+        [law.at(float(w)) for w in omegas])), _LAW_RTOL)
     combined = modulus_values(longitudinal_function(law.at, shear_law.at), omegas)
     expected = np.array([law.at(w) + 4.0 / 3.0 * shear_law.at(w) for w in omegas])
     checks.add_bound('longitudinal_function', max_relative_error(combined, expected), _LAW_RTOL)
@@ -546,8 +548,9 @@ BRILLOUIN_DRIVE_CASES = (
           '1e-3), a nearly lossless medium raises '
           '(padded raster above the limit); the static '
           'sum equals k_B T / M int |c|^2 dA '
-          '(Parseval, 1e-10), a shear drive without shear modulus raises; a law evaluated per distinct frequency '
-          'gives K* + 4/3 G* of viscoelastic.ModulusLaw.at (1e-14), an incompressible law raises.',
+          '(Parseval, 1e-10), a shear drive without shear modulus raises; viscoelastic.ModulusLaw.at of an '
+          'omega array equals its scalar values and the combined law K* + 4/3 G* per omega (1e-14), an '
+          'incompressible law raises.',
           _check_homogeneous_reference),
     _case('brillouin_bilinear', 'Brillouin: bilinear and phase-corrected sampling, local wavenumbers',
           'CPU check of brillouin.bilinear_weights / bilinear_sample on non-uniform centres: exact for a bilinear '
