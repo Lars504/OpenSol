@@ -3,8 +3,9 @@ frequency_response study): params, validation, apply, result and the memory / ru
 definition.py."""
 # Conventions and formulas: brillouin.py header (cited by the help texts); runtime: brillouin_drive.BrillouinDrive
 # (its constructor is the contract of _apply). The optical physics run on their own tensor mesh, the solid on
-# triangles: optical_physics / collection_physics are kind 'str' (a 'ref' physics Param must share the feature's mesh,
-# validate._check_physics_refs), checked here. Estimator items mirror what BrillouinDrive.bind / record / result and
+# triangles, or (planar, loss factor only) on the rectangular cells of the optics' own tensor mesh: optical_physics /
+# collection_physics are kind 'str' (a 'ref' physics Param must share the feature's mesh, validate._check_physics_refs),
+# checked here. Estimator items mirror what BrillouinDrive.bind / record / result and
 # the HarmonicSystem column path allocate (counts from brillouin.py, fem.elastic_drives and fem.quadrature); a new
 # allocation there updates brillouin_memory_items / brillouin_time_items.
 import math
@@ -21,7 +22,7 @@ from ...fem.elastic_drives import DRIVE_DEGREE
 from ...fem.quadrature import gauss_line, triangle_rule
 from ...model.definition_helpers import (ORDER_SPLIT_READERS, azimuthal_order_of, element_order,
                                          enabled_feature_entities, frequency_sweep_counts, is_axisymmetric,
-                                         study_frequencies)
+                                         mesh_kind_of, study_frequencies)
 from ...model.geometry import domain_object_boxes, domain_size, expand_entities, rasterize, resolve_geometry
 from ...model.schema import (FREQUENCY_RESPONSE_STUDY, FeatureType, Issue, Param, coupling_writes, feature_path,
                              resolve_values)
@@ -47,6 +48,7 @@ _DRIVEN_ORDERS = (0, 2)          # two order-1 optical fields drive the solid or
 _BEAM_DIRECTIONS = {'positive': 1, 'negative': -1, '+z': 1, '-z': -1}   # focused_beam direction: sign of travel
 _OPTICAL_CELLS_PER_WAVELENGTH = 15.0   # warning below: optical cells per lambda0 / n in the drive region
 _SOLID_SIZE_DIVISOR = {2: 12.0, 1: 24.0}   # warning: solid element size h > lambda0 / (divisor n), by element order
+#                                            (rectangular Q1 cells: the linear divisor)
 _LINEWIDTHS = 3.0                # info: no study frequency within this many estimated linewidths of f_B
 _TOLERANCE = 1e-9                # relative (domain size) slack of the geometric checks
 _WAVELENGTH_RTOL = 1e-9          # collection physics: same vacuum wavelength
@@ -129,7 +131,7 @@ _PARAMS = (
                "its material; 'homogeneous' (planar, no model mirror planes, one uniform isotropic material over the "
                'drive selection on uniform optical cells) the exact plane-wave sum of an unbounded medium; none. Both '
                'need isotropic moduli with a finite bulk modulus in the drive selection (no c_ij route, no '
-               "incompressible material of formulation mixed): else reference 'none'.',
+               "incompressible material of formulation mixed): else reference 'none'.",
           tip='Approximate spectrum shown beside the computed one for comparison.\n\n'
               '- Local plane-wave estimate: works in any sample.\n'
               '- Unbounded uniform medium: exact for one uniform material, planar models only.\n'
@@ -149,17 +151,23 @@ if ORDER_SPLIT_READERS.get(BRILLOUIN_FEATURE) != _PARAMS[0].name:
 
 _DESCRIPTION = (
     'Spontaneous Brillouin scattering spectrum by the fluctuation-dissipation theorem (frequency_response study only; '
-    'triangle meshes; convention exp(+j omega t), conventions and formulas in physics/mechanics/brillouin.py). After '
-    'the background stage the incident and collection fields of the optics (optical_physics, its focused_beam; '
-    'collection_physics) are sampled at the quadrature points of the selected solid elements and drive the solid '
-    'with the generalised force w = kappa (int B^T sigma~ dV + moving-boundary edge tractions), sigma~ = p^T G the '
+    "triangle meshes, or the rectangular cells of the optics' own tensor mesh; convention exp(+j omega t), "
+    'conventions and formulas in physics/mechanics/brillouin.py). After the background stage the incident and '
+    'collection fields of the optics (optical_physics, its focused_beam; collection_physics) are sampled at the '
+    "quadrature points of the selected solid elements (rectangular cells: each cell's own optical values, no "
+    'interpolation) and drive the solid with the generalised force w = kappa (int B^T sigma~ dV + moving-boundary '
+    'edge tractions; rectangular cells: B at the cell centre and the Yee faces), sigma~ = p^T G the '
     'optical stress of the NON-conjugated field products G_I = -eps_ii eps_jj (E_c,i E_i,j + [i != j] E_c,j E_i,i), '
     'kappa = omega eps0 / (4 sqrt(P_i P_c)) (beam powers incident_power). Per frequency f the solid solves K(Omega) u '
     '= w (Omega = 2 pi f, the Brillouin shift) and psd(f) = (2 k_B T / Omega) (-Im(w^H u)) x mirror factor / L '
     '[1/Hz]: the classical power fraction per Hz scattered into the collected channel in ONE sideband (Stokes or '
     'anti-Stokes; the one-sided spectrum of both sidebands is 2 psd); sum rule 2 int_0^inf psd df = k_B T w^H K0^-1 w. '
     'L = axial_length planar (fields per m of depth, 2D powers in W/m), 1 axisymmetric; the mirror factor is 2 per '
-    'model mirror plane (the solid must hold each by Symmetry or Roller). The drive must be the only load of the '
+    'model mirror plane (the solid must hold each by Symmetry or Roller). Rectangular cells (tensor mesh): the '
+    "optical and collection physics on the solid's own mesh, planar plane_strain, no piezoelectric, "
+    'mechanical_loss_factor as the only loss (no viscoelastic moduli), Q1 cells <= lambda0 / (24 n) in the drive '
+    'region (bilinear cells with their consistent mass raise the shift by about (q h)^2 / 24: 1.1 % at that size). '
+    'The drive must be the only load of the '
     'solid (no boundary / segment loads, body forces, coupled forces or nonzero prescribed displacements); the solid '
     'needs loss (mechanical_loss_factor, viscosity, viscoelastic branches): a lossless solid has psd 0 between delta '
     'lines. Axisymmetric (em_fdfd_bor, m = 1 fields): co_polarized drives the solid orders 0 and 2 (one solid '
@@ -186,11 +194,17 @@ _SUMMARY = ('Spectrum of the light scattered by thermal vibrations (spontaneous 
 # ---- feature callbacks ----
 def _apply(ctx, solver, feature_spec, values, selection):
     """BrillouinDrive of the feature (element mask of the selection, None for 'all'; scan positions; mirror factor
-    2^(model mirror planes); planar crystal regions with photoelastic on) added to the triangle solid (the
-    frequency_response study binds it after the background stage)."""
+    2^(model mirror planes); planar crystal regions with photoelastic on) added to the solid (the frequency_response
+    study binds it after the background stage). Rectangular cells: the masks per window cell, flat C order."""
     from ...core.backend import to_host   # lazy: definitions never load the backend at import
-    mask = None if selection.is_all else np.array(to_host(ctx.domain_mask(selection.entities)), dtype=bool)
-    crystals = tuple(_crystal_regions(ctx)) if values['photoelastic'] and not solver.axisymmetric else ()
+    window = solver.system.window if getattr(ctx.domain, 'grid_kind', 'tensor') == 'tensor' else None
+
+    def members(mask):   # bool per solid mesh element, or per window cell (flat) of a rectangular-cell solid
+        mask = np.array(to_host(mask), dtype=bool)
+        return mask if window is None else np.ascontiguousarray(mask[window]).reshape(-1)
+    mask = None if selection.is_all else members(ctx.domain_mask(selection.entities))
+    crystals = (tuple((members(region), tensor) for region, tensor in _crystal_regions(ctx))
+                if values['photoelastic'] and not solver.axisymmetric else ())
     drive = BrillouinDrive(feature_spec.name, values['optical_physics'], values['collection_physics'],
                            values['incident_source'], values['collection_source'], values['detection'],
                            values['temperature'], values['photoelastic'], values['moving_boundary'],
@@ -211,7 +225,7 @@ def _positions(values) -> np.ndarray:
 
 BRILLOUIN_SCATTERING_FEATURE = FeatureType(
     BRILLOUIN_FEATURE, 'Brillouin scattering spectrum', 'monitor', 'domain', params=_PARAMS, result_kind='xy',
-    description=_DESCRIPTION, summary=_SUMMARY, apply=_apply, result=_result, grids=('triangles',))
+    description=_DESCRIPTION, summary=_SUMMARY, apply=_apply, result=_result, grids=('tensor', 'triangles'))
 
 
 # ---- spec helpers (validation and estimators) ----
@@ -404,8 +418,8 @@ def _box_widths(edges, low, high) -> np.ndarray:
 
 # ---- validation (CPU; vctx in the study the solid takes: definition_common.background_context) ----
 def brillouin_issues(vctx, physics_spec, settings_values) -> list:
-    """Every enabled brillouin_scattering feature of a triangle solid: one per solid (errors for more), then
-    _feature_issues each (values that do not resolve are reported by the param checks)."""
+    """Every enabled brillouin_scattering feature of a solid (triangles or tensor): one per solid (errors for more),
+    then _feature_issues each (values that do not resolve are reported by the param checks)."""
     features = brillouin_features(physics_spec)
     if not features or not settings_values:
         return []
@@ -422,6 +436,7 @@ def brillouin_issues(vctx, physics_spec, settings_values) -> list:
 
 def _feature_issues(vctx, physics_spec, settings_values, feature, values) -> list:
     path = feature_path(physics_spec, feature)
+    tensor = mesh_kind_of(vctx, physics_spec) == 'tensor'
     issues = []
     if vctx.study_type != FREQUENCY_RESPONSE_STUDY:
         issues.append(Issue('warning', path, f'brillouin_scattering is filled only by a {FREQUENCY_RESPONSE_STUDY} '
@@ -433,15 +448,43 @@ def _feature_issues(vctx, physics_spec, settings_values, feature, values) -> lis
     issues.extend(_solid_form_issues(vctx, physics_spec, settings_values, path, values))
     issues.extend(_other_load_issues(vctx, physics_spec, path))
     issues.extend(_sweep_issues(vctx, path, values))
+    if tensor:
+        issues.extend(_tensor_issues(vctx, physics_spec, settings_values, path, values))
     optical, optical_settings = _optical_issues(vctx, physics_spec, settings_values, path, values, issues)
     if optical is None:
         return issues
     bor = optical.type == BOR_OPTICAL_TYPE
     issues.extend(_detection_issues(vctx, physics_spec, settings_values, path, values, bor))
     issues.extend(_mirror_issues(vctx, physics_spec, path, values, bor))
-    issues.extend(_region_issues(vctx, feature, path, values, optical, bor))
+    issues.extend(_region_issues(vctx, feature, path, values, optical, bor, tensor))
     issues.extend(_material_issues(vctx, physics_spec, settings_values, feature, path, values, optical,
-                                   optical_settings, bor))
+                                   optical_settings, bor, tensor))
+    return issues
+
+
+def _tensor_issues(vctx, physics_spec, settings_values, path, values) -> list:
+    """A rectangular-cell solid (BrillouinDrive's _CellGeometry): planar without piezoelectric, the optical and
+    collection physics on its own mesh (the drive reads their cells as its cells: no interpolation). Its loss is the
+    mechanical_loss_factor alone: viscoelastic moduli are refused by the material checks of the tensor mesh (V18)."""
+    issues = []
+    if is_axisymmetric(settings_values):
+        issues.append(Issue('error', path, 'an axisymmetric solid on a tensor mesh has no Brillouin drive (the '
+                                           'em_fdfd_bor drive needs the azimuthal orders of a triangle-mesh solid): '
+                                           'put the solid on a triangle mesh'))
+    if settings_values.get('piezoelectric'):
+        issues.append(Issue('error', path, 'piezoelectric is on: the Brillouin drive of a rectangular-cell solid pairs '
+                                           'the plane-strain displacement only (the coupled potential is not '
+                                           'modelled); turn piezoelectric off'))
+    mesh_spec = vctx.spec.find_mesh(physics_spec)
+    for key in ('optical_physics', 'collection_physics'):
+        name = values[key]
+        other = _physics_named(vctx.spec, name) if name else None
+        other_mesh = None if other is None else vctx.spec.find_mesh(other)
+        if mesh_spec is not None and other_mesh is not None and other_mesh.name != mesh_spec.name:
+            issues.append(Issue('error', path, f"{key} '{name}' runs on the mesh '{other_mesh.name}', the "
+                                               f"rectangular-cell solid '{physics_spec.name}' on '{mesh_spec.name}': "
+                                               'on a tensor mesh the drive reads the optical cells as its own cells, '
+                                               'so put both physics on one mesh (or the solid on a triangle mesh)'))
     return issues
 
 
@@ -748,10 +791,11 @@ def _beam_lines(vctx, optical, source_name):
     return lines
 
 
-def _region_issues(vctx, feature, path, values, optical, bor) -> list:
+def _region_issues(vctx, feature, path, values, optical, bor, tensor=False) -> list:
     """The drive selection: on the total-field side of the incident (and collection) beam line, at least half an
-    optical cell inside the window (the drive samples' hull: window cell centres), except on mirror planes and the
-    em_fdfd_bor axis x_lo; scan offsets of em_fdfd_bor along x refused."""
+    optical cell inside the window (the drive samples' hull: window cell centres; a tensor solid reads the cells
+    themselves: no hull), except on mirror planes and the em_fdfd_bor axis x_lo; scan offsets of em_fdfd_bor along x
+    refused."""
     issues = []
     if bor and values.get('scan_offsets_x'):
         issues.append(Issue('error', path, 'scan_offsets_x with em_fdfd_bor optics: the focus stays on the axis; scan '
@@ -780,7 +824,8 @@ def _region_issues(vctx, feature, path, values, optical, bor) -> list:
                                                    f"focused_beam '{beam}' line of '{physics.name}' at {axis} = "
                                                    f'{position:.6g} m, where only the scattered field is solved: keep '
                                                    f'the selection {side} the line (total-field side)'))
-    issues.extend(_window_issues(vctx, path, optical, box, bor, slack))
+    if not tensor:
+        issues.extend(_window_issues(vctx, path, optical, box, bor, slack))
     return issues
 
 
@@ -807,7 +852,7 @@ def _window_issues(vctx, path, optical, box, bor, slack) -> list:
 
 
 def _material_issues(vctx, physics_spec, settings_values, feature, path, values, optical, optical_settings,
-                     bor) -> list:
+                     bor, tensor=False) -> list:
     """Materials under the drive selection (material preview): photoelastic data and loss (warnings), crystals with
     em_fdfd_bor (error), the reference laws and the reference homogeneous rules (errors), with photoelastic off an
     optical interface at the selection (error), optical and solid resolution (warnings) and the estimated Brillouin
@@ -846,7 +891,8 @@ def _material_issues(vctx, physics_spec, settings_values, feature, path, values,
         issues.extend(_interface_issues(vctx, feature, path))
     wavelength = optical_settings.get('wavelength')
     if isinstance(wavelength, (int, float)) and wavelength > 0.0:
-        issues.extend(_resolution_issues(vctx, feature, path, optical, data, settings_values, float(wavelength)))
+        issues.extend(_resolution_issues(vctx, feature, path, optical, data, settings_values, float(wavelength),
+                                         tensor))
         issues.extend(_line_issues(vctx, path, data, float(wavelength)))
     return issues
 
@@ -940,9 +986,9 @@ def _homogeneous_issues(vctx, feature, path, optical, indices, data, settings_va
     return issues
 
 
-def _resolution_issues(vctx, feature, path, optical, data, settings_values, wavelength) -> list:
-    """Optical cells per lambda0 / n and the solid element size against lambda0 / (12 n) (linear: / 24) in the drive
-    region (n = the largest plain index of its materials)."""
+def _resolution_issues(vctx, feature, path, optical, data, settings_values, wavelength, tensor=False) -> list:
+    """Optical cells per lambda0 / n and the solid element size against lambda0 / (12 n) (linear: / 24; a tensor
+    solid's Q1 cells, the optical ones: / 24) in the drive region (n = the largest plain index of its materials)."""
     indices = [_refractive_index(properties, vctx.parameters) for _, properties, _ in data]
     indices = [index for index in indices if index is not None]
     if not indices:
@@ -961,6 +1007,15 @@ def _resolution_issues(vctx, feature, path, optical, data, settings_values, wave
                                                  f'{wavelength / index:.4g} m in the drive region (n = {index:.4g}, '
                                                  f'cells up to {widest:.4g} m): the drive E_c E_i oscillates on half '
                                                  f'that; use >= {_OPTICAL_CELLS_PER_WAVELENGTH:g}'))
+        limit = wavelength / (_SOLID_SIZE_DIVISOR[1] * index)
+        if tensor and widest > limit * (1.0 + _TOLERANCE):
+            issues.append(Issue('warning', path, f'the rectangular solid cells up to {widest:.4g} m in the drive '
+                                                 f'region exceed lambda0 / ({_SOLID_SIZE_DIVISOR[1]:g} n) = '
+                                                 f'{limit:.4g} m (n = {index:.4g}): bilinear cells raise the Brillouin '
+                                                 'shift by about (q h)^2 / 24 (q = 4 pi n / lambda0); refine the '
+                                                 'tensor mesh there or put the solid on a triangle mesh'))
+    if tensor:
+        return issues
     solid = vctx.mesh
     sizing = getattr(solid, 'sizing', None)
     if sizing is not None:
@@ -1018,7 +1073,8 @@ def _line_issues(vctx, path, data, wavelength) -> list:
 
 
 # ---- memory and run-time estimates (CPU; the solid's MemoryContext / TimeContext in its study) ----
-# Counted from the allocations of SolidMechanicsFEMPhysics.bind_physics_drives / _drive_inputs / _record_drives,
+# Counted from the allocations of SolidMechanicsFEMPhysics.bind_physics_drives / _drive_inputs / _record_drives (a
+# tensor solid: SolidMechanicsPhysics' twins and BrillouinDrive's _CellGeometry: _cell_bind_bytes),
 # BrillouinDrive.bind / result, brillouin.py, fem.elastic_drives and frequency_response.HarmonicSystem (set_functionals,
 # _rows_solve, _kept_functionals, _reduced_functionals, solve_columns). Kept: the ONE drive array W (columns =
 # positions x parts, every unknown; complex128) that is also the load (row 0, a view) and the HarmonicSystem
@@ -1062,7 +1118,8 @@ _LOCAL_WINDOW_BYTES = _COMPLEX_BYTES + _BOOL_BYTES + 2 * _FLOAT_BYTES + 2 * _COM
 # (bool), one property's two gathers (float64) and its three comparison masks (bool)
 _INTERFACE_SEARCH_BYTES = 3 * _INT64_BYTES + 2 * _BOOL_BYTES + 2 * _FLOAT_BYTES + 3 * _BOOL_BYTES
 # per moving-boundary Gauss point, held through a bind: EdgeDrivePoints points, normals (2 float64 each), weights
-# (float64); the two side samplers (+ axis factor) and their isotropic eps (complex); per position the side samples (2
+# (float64); the two field side samplers (+ axis factor) and the isotropic eps of each side (complex, read by two
+# transient diagonal samplers: their set-up and arrays are the bind set-up's); per position the side samples (2
 # sides x components, complex, x 2 with a separate collection field) and the Johnson forms' temporaries and traction
 # (_EDGE_POSITION_VALUES complex)
 _EDGE_POINT_BYTES = 5 * _FLOAT_BYTES + 2 * (_SAMPLER_BYTES + _AXIS_FACTOR_BYTES) + 2 * _COMPLEX_BYTES
@@ -1099,6 +1156,25 @@ _RASTER_CELL_BYTES = 3 * _INT64_BYTES + 3 * _FLOAT_BYTES
 _COLUMN_HOST_PASSES = 6
 _COLUMN_DEVICE_HOST_PASSES = 2
 BRILLOUIN_COLUMN_PHASE = 'Brillouin column solve'   # the extra drive columns on the kept cuDSS factor
+# rectangular cells (BrillouinDrive._CellGeometry, a tensor solid on the optics' mesh): per drive point (a selected
+# window cell) held through a bind: elements (int64) and weights (float64) (its sampler shares elements); p11 / p12 /
+# p44 are _POINT_MATERIAL_BYTES
+_CELL_POINT_BYTES = _INT64_BYTES + _FLOAT_BYTES
+# per window cell of the bind set-up: the dA raster np.outer (float64) and the flat cell index of the face search
+# (int64)
+_CELL_SETUP_BYTES = _FLOAT_BYTES + _INT64_BYTES
+# per interior Yee face of the interface search (both axes): the lo / hi index copies (int64), the candidate faces and
+# their lo / hi gathers (int64), the two eps gathers (complex), the abs / max temporaries (3 float64) and the touching /
+# member / differ / comparison / keep masks (8 bool)
+_CELL_FACE_SEARCH_BYTES = 5 * _INT64_BYTES + 2 * _COMPLEX_BYTES + 3 * _FLOAT_BYTES + 8 * _BOOL_BYTES
+# per moving-boundary face held through a bind: normal (2 float64), length (float64), its face index and its lo / hi
+# cells (3 int64), the isotropic eps of both sides (complex)
+_CELL_FACE_BYTES = 3 * _FLOAT_BYTES + 3 * _INT64_BYTES + 2 * _COMPLEX_BYTES
+# complex values per window cell of one stress assembly (stress_drive / brillouin.cell_stress_drive): the zero-padded
+# raster (3 rows), the normal / shear products (4) and one corner sum's two temporaries; of one face drive
+# (traction_drive / face_drive): the x and y face loads (about 2 per cell) and a half-load temporary
+_CELL_DRIVE_VALUES = 3 + 4 + 2
+_CELL_FACE_DRIVE_VALUES = 2 + 1
 
 
 def _rule_points() -> tuple:
@@ -1164,19 +1240,26 @@ def _optical_cells(spec, parameters, optical, feature, shapes):
 
 class _SolidForm:
     """The solid's sizes the drive items read: its strain rows (planar 3, axisymmetric m = 0 4, m >= 1 6), axisymmetric
-    (em_fdfd_bor optics), the azimuthal order, mesh elements and edges, the drive vector (u rows: c x dofs) and the
-    harmonic unknowns (mixed: + the pressure dofs), local dofs and components per element, the MaterialGrid arrays
-    _drive_inputs copies and whether the viscoelastic ElementModuli are kept (else the bind builds them)."""
+    (em_fdfd_bor optics), the azimuthal order, mesh elements and edges (a tensor solid: its window cells and interior
+    Yee faces), the drive vector (u rows: c x dofs) and the harmonic unknowns (mixed: + the pressure dofs), local dofs
+    and components per element, the MaterialGrid arrays _drive_inputs copies and whether the viscoelastic
+    ElementModuli are kept (else the bind builds them)."""
 
     def __init__(self, context, settings_values, mesh, *, unknowns, vector_dofs, local, components, moduli_kept=True):
+        self.tensor = getattr(mesh, 'kind', '') == 'tensor'
         self.axisymmetric = is_axisymmetric(settings_values)
         self.order = azimuthal_order_of(settings_values) if self.axisymmetric else 0
         self.rows = 3 if not self.axisymmetric else (6 if self.order else 4)
-        self.elements = int(mesh.n_elements)
-        self.mesh_edges = int(getattr(mesh, 'n_edges', 0) or 0)
+        if self.tensor:
+            n_x, n_y = (len(edges) - 1 for edges in _window_edges(mesh))
+            self.elements, self.mesh_edges = n_x * n_y, (n_x - 1) * n_y + n_x * (n_y - 1)
+            self.material_arrays = _solid_array_count(context)
+        else:
+            self.elements = int(mesh.n_elements)
+            self.mesh_edges = int(getattr(mesh, 'n_edges', 0) or 0)
+            self.material_arrays = _material_array_count(context)
         self.vector_dofs, self.unknowns = float(vector_dofs), float(unknowns)
         self.local, self.components = int(local), int(components)
-        self.material_arrays = _material_array_count(context)
         self.moduli_kept = bool(moduli_kept)
 
 
@@ -1193,6 +1276,33 @@ def _material_array_count(context) -> int:
         except KeyError:   # reported by validate
             continue
     return len(names)
+
+
+def _solid_array_count(context) -> int:
+    """MaterialGrid arrays a tensor solid's _drive_inputs copies: its own material_schema and, when a material sets it,
+    mechanical_loss_factor (other optional arrays it reads, c_ij, not counted)."""
+    try:
+        schema = context.registry.physics_type(context.physics_spec.type).material_schema
+    except KeyError:   # reported by validate
+        return 0
+    return len(schema) + int(bool(context.material_sets(LOSS_ARRAYS[0])))
+
+
+def _tensor_drive_cells(spec, feature, mesh, shapes) -> int:
+    """Window cells of a tensor MeshEstimate under the drive selection: every one for 'all', else those overlapping
+    the union bounding box of its domain objects (exact for one rectangle)."""
+    x_edges, y_edges = _window_edges(mesh)
+    try:
+        expanded = expand_entities(spec, feature.selection)
+    except (ValueError, KeyError, TypeError):
+        return 0
+    if 'all' in expanded:
+        return (len(x_edges) - 1) * (len(y_edges) - 1)
+    boxes = [box for _, box in domain_object_boxes(spec, shapes, [feature.selection])]
+    if not boxes:
+        return 0
+    box = (min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes))
+    return int(_box_widths(x_edges, box[0], box[2]).size * _box_widths(y_edges, box[1], box[3]).size)
 
 
 class _DriveCounts:
@@ -1226,13 +1336,15 @@ def _drive_parts(values, settings_values) -> int:
 
 def _drive_counts(context, settings_values, mesh) -> list:
     """[_DriveCounts] of the solid's enabled brillouin_scattering features in a frequency_response study ([]
-    otherwise; values that do not resolve are skipped: validate reports them)."""
+    otherwise; values that do not resolve are skipped: validate reports them). A tensor solid: one point per drive
+    cell, one per moving-boundary face."""
     spec, parameters = context.spec, context.parameters
     features = brillouin_features(context.physics_spec)
-    if spec.study.type != FREQUENCY_RESPONSE_STUDY or not features or getattr(mesh, 'kind', '') != 'triangles':
+    kind = getattr(mesh, 'kind', '')
+    if spec.study.type != FREQUENCY_RESPONSE_STUDY or not features or kind not in ('triangles', 'tensor'):
         return []
     shapes = resolve_geometry(spec, parameters, errors={})
-    element_points, edge_rule_points = _rule_points()
+    element_points, edge_rule_points = (1, 1) if kind == 'tensor' else _rule_points()
     counts = []
     for feature in features:
         try:
@@ -1242,7 +1354,8 @@ def _drive_counts(context, settings_values, mesh) -> list:
         optical = _physics_named(spec, values['optical_physics'])
         if optical is None:
             continue
-        elements = _drive_elements(spec, parameters, feature, mesh, shapes)
+        elements = (_tensor_drive_cells(spec, feature, mesh, shapes) if kind == 'tensor'
+                    else _drive_elements(spec, parameters, feature, mesh, shapes))
         edges = int(math.ceil(_INTERFACE_EDGES_GUESS * math.sqrt(elements))) if values['moving_boundary'] else 0
         collection = values['collection_physics']
         reads = 2 if collection and collection != optical.name else 1
@@ -1279,7 +1392,9 @@ def _bind_bytes(drive, form) -> int:
     (samplers, interface search, the isotropic eps window, the element laws, one property copy's temporaries) and one
     position's steps (the new samples beside the previous ones; the optical-stress peak; the assembly with one element
     chunk and the new and previous drive vectors; the local lines on the window; the next position's optics read
-    beside the previous field grid)."""
+    beside the previous field grid). A tensor solid: _cell_bind_bytes."""
+    if form.tensor:
+        return _cell_bind_bytes(drive, form)
     points, edge_points = drive.points, drive.edge_points
     optical = drive.field_components
     window = drive.cells[0]
@@ -1292,7 +1407,7 @@ def _bind_bytes(drive, form) -> int:
             + edge_points * _EDGE_POINT_BYTES + drive.edges * _EDGE_BYTES)
     if not form.moduli_kept:   # _drive_inputs: element_moduli of the E / nu values (and the two np.where reads)
         held += (_ELEMENT_MODULI_BYTES + 2 * _FLOAT_BYTES) * form.elements
-    setup = ((points + 2 * edge_points) * _SAMPLER_SETUP_BYTES
+    setup = ((points + 4 * edge_points) * _SAMPLER_SETUP_BYTES + 2 * edge_points * _SAMPLER_BYTES
              + (form.mesh_edges * _INTERFACE_SEARCH_BYTES if drive.values['moving_boundary'] else 0)
              + 2 * _COMPLEX_BYTES * window + _INT64_BYTES * form.elements
              + (_FLOAT_BYTES + _FLOAT32_BYTES) * form.elements)
@@ -1304,6 +1419,38 @@ def _bind_bytes(drive, form) -> int:
     steps = (points * (2 * samples + _GATHER_BYTES + rows) + vector,
              points * (samples + rows + _STRESS_PEAK_VALUES[form.axisymmetric] * _COMPLEX_BYTES) + vector,
              points * (samples + rows + form.rows * _COMPLEX_BYTES) + chunk + 2 * vector,
+             points * (samples + rows + _LINE_POINT_BYTES) + window * _LOCAL_WINDOW_BYTES + vector,
+             points * (samples + rows) + vector + (window * optical * _COMPLEX_BYTES if drive.positions > 1 else 0))
+    return int(held + max(setup, max(steps) + edge))
+
+
+def _cell_bind_bytes(drive, form) -> int:
+    """_bind_bytes of a tensor solid (BrillouinDrive._CellGeometry, SolidMechanicsPhysics._drive_inputs), in bind's
+    order. Held through every position: the window copies of the solid's material arrays (float64), the solid and
+    selection masks, the ElementModuli and its two E / nu reads (built per bind), the drive points (one per selected
+    cell) with their materials, eps and law, the moving-boundary faces. On top the largest of: the first position's
+    set-up (dA raster, face search over every interior face, the isotropic eps window, the cell laws, one property
+    copy's float32 / float64 temporaries) and one position's steps (as _bind_bytes, the stress assembly and the face
+    drive on the whole window: _CELL_DRIVE_VALUES / _CELL_FACE_DRIVE_VALUES complex per cell)."""
+    points, faces, cells = drive.points, drive.edge_points, form.elements
+    optical = drive.field_components
+    window = drive.cells[0]
+    vector = _COMPLEX_BYTES * form.vector_dofs
+    laws = _INT64_BYTES if drive.values['reference'] != 'none' else 0
+    held = ((form.material_arrays * _FLOAT_BYTES + 2 * _BOOL_BYTES + _ELEMENT_MODULI_BYTES + 2 * _FLOAT_BYTES) * cells
+            + points * (_CELL_POINT_BYTES + _POINT_MATERIAL_BYTES + optical * _COMPLEX_BYTES + laws)
+            + faces * _CELL_FACE_BYTES)
+    setup = (_CELL_SETUP_BYTES * cells + (form.mesh_edges * _CELL_FACE_SEARCH_BYTES if drive.values['moving_boundary']
+                                          else 0)
+             + 2 * _COMPLEX_BYTES * window + _INT64_BYTES * cells + (_FLOAT_BYTES + _FLOAT32_BYTES) * cells)
+    samples = drive.reads * optical * _COMPLEX_BYTES
+    rows = form.rows * drive.parts * _COMPLEX_BYTES
+    edge = (faces * (2 * drive.reads * optical + _EDGE_POSITION_VALUES) * _COMPLEX_BYTES
+            + (_CELL_FACE_DRIVE_VALUES * _COMPLEX_BYTES * cells + vector if faces else 0))
+    steps = (points * (samples + rows) + vector,
+             points * (samples + rows + _STRESS_PEAK_VALUES[False] * _COMPLEX_BYTES) + vector,
+             points * (samples + rows + form.rows * _COMPLEX_BYTES) + _CELL_DRIVE_VALUES * _COMPLEX_BYTES * cells
+             + 2 * vector,
              points * (samples + rows + _LINE_POINT_BYTES) + window * _LOCAL_WINDOW_BYTES + vector,
              points * (samples + rows) + vector + (window * optical * _COMPLEX_BYTES if drive.positions > 1 else 0))
     return int(held + max(setup, max(steps) + edge))
@@ -1410,8 +1557,9 @@ def brillouin_time_items(context, settings_values, mesh, *, unknowns, vector_dof
     element-chunk assembly (strain operator streams and the einsum flops), edge tractions and local lines; per solve
     the functional readout W^H x over every column (reduced sweeps: the once-per-model block); per extra column and
     frequency the host passes of solve_columns (counter column_solves; its factor solves are the returned count, priced
-    by the 'linear' role); the reference spectra and the peak fits. Several columns solve sweep_method direct only
-    (validate)."""
+    by the 'linear' role; a tensor solid: by its private SuperLU); the reference spectra and the peak fits. Several
+    columns solve sweep_method direct only (validate). A tensor solid: cell gathers, the window-sized cell / face
+    drives (no element chunks, no einsum) and its face search."""
     counts = _drive_counts(context, settings_values, mesh)
     if not counts:
         return te.TimeEstimate(()), 0.0
@@ -1429,7 +1577,15 @@ def brillouin_time_items(context, settings_values, mesh, *, unknowns, vector_dof
     setup_bytes = form.material_arrays * form.elements * (_FLOAT32_BYTES + 2 * _FLOAT_BYTES)
     items = []
     for drive in counts:
+        if form.tensor:   # dA raster, ElementModuli, points, face search
+            setup_bytes += (2.0 * form.elements * (_CELL_SETUP_BYTES + _ELEMENT_MODULI_BYTES)
+                            + 2.0 * drive.points * _CELL_POINT_BYTES
+                            + (2.0 * form.mesh_edges * _CELL_FACE_SEARCH_BYTES if drive.values['moving_boundary']
+                               else 0.0))
+            continue
+        # an edge point builds four side samplers (two eps diagonal ones, two field ones) beside its point set-up
         setup_bytes += (2.0 * (drive.points + drive.edge_points) * _POINT_SETUP_BYTES
+                        + 2.0 * 3.0 * drive.edge_points * (_SAMPLER_SETUP_BYTES + _SAMPLER_BYTES)
                         + (2.0 * form.mesh_edges * _INTERFACE_SEARCH_BYTES if drive.values['moving_boundary'] else 0.0))
     items.append(te.TimeItem('Brillouin drives: solid inputs, drive points, samplers and interface search', 'setup',
                              1.0, 'exact', (te.HostStream(setup_bytes),
@@ -1453,18 +1609,26 @@ def brillouin_time_items(context, settings_values, mesh, *, unknowns, vector_dof
         label = f"Brillouin '{drive.feature.name}': "
         positions = float(drive.positions)
         optical = drive.field_components
-        chunks = max(math.ceil(drive.elements / CHUNK_ELEMENTS), 1)
-        samples = 2.0 * drive.reads * optical * (_GATHER_BYTES + _COMPLEX_BYTES)
         stress = 2.0 * _STRESS_PEAK_VALUES[form.axisymmetric] * _COMPLEX_BYTES
-        assembly = 2.0 * drive.parts * (2.0 * form.rows * _COMPLEX_BYTES + _chunk_point_bytes(form))
+        if form.tensor:   # cell gathers, the window-sized stress raster / cell drive and face drive (elementwise)
+            samples = 2.0 * drive.reads * optical * 2.0 * _COMPLEX_BYTES
+            assembly = 2.0 * drive.parts * 2.0 * form.rows * _COMPLEX_BYTES
+            window_drive = 2.0 * drive.parts * form.elements * _COMPLEX_BYTES * (
+                _CELL_DRIVE_VALUES + (_CELL_FACE_DRIVE_VALUES if drive.edge_points else 0))
+            ops = (te.PythonCalls(_BIND_CALLS),)
+        else:
+            chunks = max(math.ceil(drive.elements / CHUNK_ELEMENTS), 1)
+            samples = 2.0 * drive.reads * optical * (_GATHER_BYTES + _COMPLEX_BYTES)
+            assembly = 2.0 * drive.parts * (2.0 * form.rows * _COMPLEX_BYTES + _chunk_point_bytes(form))
+            window_drive = 0.0
+            # the complex x real einsum of the element chunks
+            flops = 4.0 * drive.points * drive.parts * form.rows * form.components * form.local
+            ops = (te.DenseFlops(flops, host=True), te.PythonCalls(_BIND_CALLS + 10 * chunks))
         position = (drive.points * (samples + stress + assembly + 2.0 * _LINE_POINT_BYTES)
                     + drive.edge_points * (samples + 2.0 * _EDGE_POSITION_VALUES * _COMPLEX_BYTES)
-                    + 2.0 * drive.parts * drive_vector + 2.0 * drive.cells[0] * _LOCAL_WINDOW_BYTES)
-        flops = 4.0 * drive.points * drive.parts * form.rows * form.components * form.local   # complex x real einsum
+                    + 2.0 * drive.parts * drive_vector + 2.0 * drive.cells[0] * _LOCAL_WINDOW_BYTES + window_drive)
         items.append(te.TimeItem(label + 'drive assembly (samples, optical stress, B^T sigma, edge tractions, local q)',
-                                 'position', positions, 'exact',
-                                 (te.HostStream(position), te.DenseFlops(flops, host=True),
-                                  te.PythonCalls(_BIND_CALLS + 10 * chunks))))
+                                 'position', positions, 'exact', (te.HostStream(position),) + ops))
         reference = drive.values['reference']
         if reference == 'local':   # per position and frequency the line of every kept bin
             items.append(te.TimeItem(label + 'local reference spectra', 'position', positions, 'exact',

@@ -1075,6 +1075,7 @@ def _validate_solid(vctx, physics_spec, settings_values):
     else:
         issues.extend(cg_solver_issues(vctx, physics_spec, path))
         issues.extend(_tensor_probe_issues(physics_spec))
+        issues.extend(brillouin_issues(vctx, physics_spec, settings_values))
         element_name = 'bilinear'
     issues.extend(material_issues(vctx, physics_spec, path, SOLID_TYPE_NAME, element_name, tensor=True,
                                   fluid=mixed_formulation(vctx, settings_values)))
@@ -1478,6 +1479,12 @@ def _memory_estimate(settings_values, mesh, context):
     elif study == FREQUENCY_RESPONSE_STUDY:   # host stencils of K, loss, M and the complex factor per frequency
         host_items = (('frequency response host stencils', 3 * _GUIDED_ASSEMBLY_BYTES_PER_ENTRY * entries),
                       *frequency_response_host_items(dofs))
+        # brillouin_scattering drives (definition_brillouin): columns, bind / reference temporaries; the kept
+        # HarmonicSystem of the drives holds what one private solve_harmonic does (the items above), one factor at a
+        # time
+        drive_host, _, _ = brillouin_memory_items(context, settings_values, mesh, unknowns=dofs, vector_dofs=dofs,
+                                                  local=4, components=2, device=False, moduli_kept=False)
+        host_items += tuple(drive_host)
     elif host_back_end:   # the static solid's host factor of A_solve (gpu backend: of a downloaded copy)
         host_items = (('A_solve CSR copy for the host factor (float64)', (FLOAT64_BYTES + INT32_BYTES) * entries),
                       *host_factor_items(host_back_end, 'SuperLU L + U factors of A_solve (float64, heuristic)',
@@ -2029,7 +2036,13 @@ def _time_estimate(settings_values, mesh, context):
         return _modal_time_estimate(settings_values, context, nodes, dofs, entries, assembly_ops, value_bytes)
     io_ops = _solve_io_ops(elements, dofs, value_bytes)
     if context.study.type == FREQUENCY_RESPONSE_STUDY:
-        return _frequency_response_time_estimate(context, dofs, entries, assembly_ops, io_ops)
+        # brillouin_scattering drives: bind, readouts, references, fits and the extra columns on each private factor
+        drives, column_solves = brillouin_time_items(context, settings_values, mesh, unknowns=dofs, vector_dofs=dofs,
+                                                     local=4, components=2)
+        columns = (te.TimeEstimate((te.TimeItem('Brillouin drive column back substitutions', 'solve', column_solves,
+                                                'exact', (te.HostSolve(dofs, 2, True),)),)) if column_solves else None)
+        return te.combine((_frequency_response_time_estimate(context, dofs, entries, assembly_ops, io_ops), drives,
+                           *(() if columns is None else (columns,))))
     per_step, follows, outer_solves, kind, assemblies, assemblies_kind, solves = _static_counts(settings_values, context)
     items = (te.TimeItem('stiffness assembly', 'assembly', assemblies, assemblies_kind, assembly_ops,
                          per_step=per_step and follows),
@@ -2290,8 +2303,9 @@ SOLID_MECHANICS = PhysicsType(
                 'target_frequency > 0 and in frequency responses, frequency_probe, complex support reactions, '
                 'pml_<face>, azimuthal_order, the energy densities, the shear_modulus / bulk_modulus route, '
                 'viscoelastic moduli (viscosity, relaxation branches: see shear_relaxation_modulus_1), the setting '
-                'formulation, the pressure outputs and brillouin_scattering (spontaneous Brillouin spectra driven by '
-                'focused-beam optics on a tensor mesh); not there: piezoelectric (and admittance), guided '
+                'formulation, the pressure outputs, axisymmetric brillouin_scattering (spontaneous Brillouin spectra '
+                "driven by focused-beam optics on a tensor mesh; planar on both meshes, a tensor solid on the optics' "
+                'own mesh with mechanical_loss_factor only); not there: piezoelectric (and admittance), guided '
                 f'modes, {STRAIN_OPTIC_COUPLING}, optomechanics except axisymmetric with em_fdfd_bor optics. Studies: '
                 'stationary (after the physics it reads); time_dependent quasi-static (re-solves when a material, '
                 'support, load or coupled input changed; no inertia); eigenfrequency: undamped modes K u = omega^2 M u '
@@ -2551,11 +2565,14 @@ def _selftest_cases(em_types):
     from .selftests_thermoelastic import THERMOELASTIC_CASES
     from .selftests_viscoelastic import VISCOELASTIC_CASES
     from .selftests_brillouin_drive import BRILLOUIN_DRIVE_CASES
+    from .selftests_brillouin_spectrum import BRILLOUIN_SPECTRUM_CASES
+    from .selftests_brillouin_tensor import BRILLOUIN_TENSOR_CASES
     return (SELFTEST_CASES + SEGMENT_LOAD_CASES + FORMULATION_CASES + EIGENFREQUENCY_CASES + EIGEN_SEARCH_CASES
             + GUIDED_MODES_CASES + PIEZO_CASES + ANISOTROPY_CASES + FREQUENCY_RESPONSE_CASES + FEM_CASES + PRESTRESS_CASES
             + PRESTRESS_STRING_CASES + PML_2D_CASES + AZIMUTHAL_CASES + NONLINEAR_CASES + REDUCED_SWEEP_CASES
             + THERMOELASTIC_CASES + BLOCH_2D_CASES + VISCOELASTIC_CASES + BRILLOUIN_DRIVE_CASES
-            + optomechanics_cases(em_types) + backend_cases(em_types))
+            + BRILLOUIN_SPECTRUM_CASES + BRILLOUIN_TENSOR_CASES + optomechanics_cases(em_types)
+            + backend_cases(em_types))
 
 
 def register(registry):

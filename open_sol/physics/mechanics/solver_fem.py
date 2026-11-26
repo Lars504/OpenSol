@@ -35,7 +35,7 @@ from ...fem.reduced_outputs import field_policy, wants_fields
 from ...solvers.arpack_shift_invert import ArpackShiftInvertSolver
 from .fields import (AZIMUTHAL_IMAG_FIELDS, ENERGY_DENSITY_FIELDS, HARMONIC_IMAG_FIELDS, INPUT_ARRAYS, OUTPUT_ARRAYS,
                      PRESSURE_FIELDS, SOURCE_SLOTS)
-from .brillouin_drive import BrillouinDrive, SolidDriveInputs
+from .brillouin_drive import SolidDriveInputs
 from .frequency_response import REACTION_WORK, FrequencyPoint, FrequencyTerm, HarmonicSystem
 from .generalized_plane_strain import (BENDING_TERMS, condition_matrix, condition_targets, strain_term_values,
                                        terms_about_origin)
@@ -46,7 +46,9 @@ from .modal import ModalPencil, MultiShiftModes
 from .nonlinear_start import NonlinearStart, solve_from_start
 from .pml2d import DEFAULT_PML_REFLECTION, check_ring, elastic_pml_ring, ring_wave_speed
 from .renderer import SolidRenderer
-from .solver import GENERALIZED_PLANE_STRAIN, GEOMETRIES, OUT_OF_PLANE_CONDITIONS, PLANE_STRAIN, PLANE_STRESS
+from .solver import (GENERALIZED_PLANE_STRAIN, GEOMETRIES, OUT_OF_PLANE_CONDITIONS, PLANE_STRAIN, PLANE_STRESS,
+                     bind_drive_columns, checked_physics_drive, record_drive_columns, refuse_drive_loads,
+                     refuse_reduced_drive_columns)
 from .solver_common import (MATERIAL_STATE_ARRAYS, FEMSolidCommon, HarmonicOperators, _copy_or_none,
                             host_array as _host, mixed_harmonic_operators)
 from .stiffness import (HOOP_NAMES, OPERATOR_NAMES, ElementStiffness, check_positive_definite, element_stiffness,
@@ -1093,10 +1095,8 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
             raise ValueError(f"{self._label()}: sweep_method 'modal' needs the real (K, M) modes of the solid, but an "
                              'elastic PML stretches them complex (its PML modes would fill the basis): use '
                              "sweep_method 'adaptive' or 'direct'")
-        if self._drive_columns is not None and len(self._drive_columns[3]) > 1:
-            raise ValueError(f"{self._label()}: sweep_method '{method}' reduces one load, but its physics drives have "
-                             f'{len(self._drive_columns[3])} columns (scan positions x azimuthal parts): use '
-                             "sweep_method 'direct'")
+        if self._drive_columns is not None:
+            refuse_reduced_drive_columns(self._label(), method, len(self._drive_columns[3]))
         frequencies = np.asarray(frequencies, dtype=np.float64).ravel()
         if not (frequencies.size and np.all(np.isfinite(frequencies)) and np.all(frequencies > 0.0)):
             raise ValueError(f'{self._label()}: a reduced frequency sweep needs frequencies > 0 Hz')
@@ -1160,10 +1160,7 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
         """Add the BrillouinDrive of a brillouin_scattering feature (its apply, in every study): inert until the
         frequency_response study binds it (bind_physics_drives); bound, its columns are the solid's only load and
         every column is read out per frequency."""
-        if not isinstance(drive, BrillouinDrive):
-            raise TypeError(f'{self._label()}: a physics drive is a brillouin_drive.BrillouinDrive, got '
-                            f'{type(drive).__name__}')
-        self.physics_drives.append(drive)
+        self.physics_drives.append(checked_physics_drive(drive, self._label()))
         self._drive_columns = None
         self._harmonic_load = None
 
@@ -1183,42 +1180,16 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
                              f'optical stress pairs the plane-strain rows), got {self.out_of_plane}')
         operators = self._checked_harmonic_operators()
         self._refuse_drive_loads()
-        system = self.system
-        inputs = self._drive_inputs(operators)
-        bound, blocks, messages, start = [], [], [], 0
-        for drive in self.physics_drives:
-            columns, lines = drive.bind(inputs, physics_by_name, progress)
-            if columns.ndim != 2 or columns.shape[1] != operators.n_unknowns or not len(columns):
-                raise ValueError(f'{label}: drive {drive.name} returned columns of shape {columns.shape}, expected '
-                                 f'(k >= 1, {operators.n_unknowns}) (a bug)')
-            bound.append((drive, start, len(columns)))
-            blocks.append(columns)
-            start += len(columns)
-            messages.extend(lines)
-        # booked (estimate): the columns, kept as the load and the functional weights (one array, no copy for one drive)
-        weights = blocks[0] if len(blocks) == 1 else np.concatenate(blocks)
-        del blocks
-        weights.flags.writeable = False
-        self._drive_columns = (system.dofs, operators.n_unknowns, tuple(bound), weights)
+        bound, weights, messages = bind_drive_columns(self.physics_drives, self._drive_inputs(operators),
+                                                      physics_by_name, progress, operators.n_unknowns, label)
+        self._drive_columns = (self.system.dofs, operators.n_unknowns, bound, weights)
         self._harmonic_load = None
-        if len(weights) > 1:
-            messages.append(('info', f'{label}: {len(weights)} drive columns: one factorisation and '
-                                     f'{len(weights) - 1} extra solves on it per frequency'))
         return messages
 
     def _refuse_drive_loads(self) -> None:
         """ValueError when a dead load or a non-zero held value sits beside the physics drives."""
-        label = self._label()
         loaded = int(np.count_nonzero(self._external_load()))   # m >= 1: raises itself for cos(m phi) loads
-        if loaded:
-            raise ValueError(f'{label}: a physics drive (brillouin_scattering) is the only load of the frequency '
-                             f'response, but tractions / body forces load {loaded} dofs: disable them (the FDT readout '
-                             'takes the drive as the only load)')
-        held = int(np.count_nonzero(self.system.fixed_values()))
-        if held:
-            raise ValueError(f'{label}: a physics drive (brillouin_scattering) needs held displacements of 0, but '
-                             f'{held} dofs are prescribed != 0: hold them at 0 (supports) or drop the prescribed '
-                             'displacement')
+        refuse_drive_loads(self._label(), loaded, int(np.count_nonzero(self.system.fixed_values())))
 
     def _drive_inputs(self, operators) -> SolidDriveInputs:
         """brillouin_drive.SolidDriveInputs of the last assembly (host copies of every material property, the element
@@ -1259,17 +1230,7 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
         """Readouts w_s^H u_s of every bound column at omega: the first from the main solve's functionals, the others
         by solve_columns on its factor (direct sweeps only); each drive records its slice."""
         _, _, bound, weights = self._drive_columns
-        harmonic = self._harmonic[1]
-        readouts = np.empty(len(weights), dtype=np.complex128)
-        readouts[0] = harmonic.last_functionals[0]
-        if len(weights) > 1:
-            if harmonic.reduced_model is not None:
-                raise ValueError(f'{self._label()}: {len(weights)} drive columns need sweep_method direct')
-            # booked (estimate): one column's free rhs and solution at a time (complex128)
-            readouts[1:] = harmonic.solve_columns(omega, weights[1:], np.arange(1, len(weights)))
-            self._column_solves += len(weights) - 1
-        for drive, start, count in bound:
-            drive.record(frequency, readouts[start:start + count])
+        self._column_solves += record_drive_columns(self._harmonic[1], bound, weights, frequency, omega, self._label())
 
     # --- complex records of the frequency response (K4) ------------------------
 

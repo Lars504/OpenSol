@@ -9,32 +9,44 @@ sampled at the solid's quadrature points, the complex drive columns, the per-fre
 # - scan_offsets: (n, 2) focus offsets [m] in position order, brillouin.scan_positions(offsets_x, offsets_y) (x outer,
 #   y inner; BOR: (0, dz)); position 1 = row 0 = the shown solution and the reduced-sweep load;
 # - reference: brillouin.REFERENCES; fit_peak: bool;
-# - element_mask: bool per solid mesh element of the drive selection (None = every solid element);
+# - element_mask: bool per solid mesh element of the drive selection (None = every solid element; a rectangular-cell
+#   solid: per window cell, flat C order (n_x, n_y));
 # - mirror_factor: 2 ** (model mirror planes) (core.mirror.mirror_faces(spec)), >= 1;
-# - crystal_regions: ((bool mask per solid mesh element, (6, 6) Voigt p in model axes), ...) (planar only).
-# Flow (SolidMechanicsFEMPhysics.bind_physics_drives, called by the frequency_response study after its background
-# stage and the static states, before reset_frequency_response):
-# - bind(SolidDriveInputs, physics_by_name, progress) -> (columns (n_positions x n_parts, n_unknowns) complex128 on the
-#   u rows (mixed: the pressure rows stay 0), [(log level, text)]): per scan position one optical solve on the optics'
-#   kept factor (solve_moved_beam: only the illumination moves; the collection field is the collection physics'
-#   solution, fixed: transmission detection does not co-move) and its DriveFields, then the column kappa (int B^T
-#   sigma~ dV + int N^T n f ds). The optics are read as the background stage left them: a system or source changed
-#   since (a coupling or material update) raises in solve_moved_beam / drive_fields; nothing here re-solves them.
-#   Columns per position: planar one; axisymmetric one per part of brillouin.AZIMUTHAL_PARTS[detection] at the solid's
-#   azimuthal order (0: (0, even); 2: (2, even) co- / (2, odd) cross-polarised), summed per position in record.
-# - Sampling: fields bilinear between the window cell centres at the DrivePoints (points of the half cell between the
-#   outermost centres and the window edge, i.e. within one centre spacing of the centres' hull, take the hull value;
-#   farther ones raise: brillouin.bilinear_weights), eps the staircase value of the containing (nearest-centre) cell;
-#   a drive point in a PEC cell raises. The clamped edge half cell is the even mirror rule on a mirror-plane edge
-#   (bilinear between a centre and its even image); em_fdfd_bor adds the axis rule on x_lo (r = 0): the order-1 E_z
-#   ~ r is scaled by r / r_0 below the first centre r_0 (E_r, A_phi stay finite there). An odd field component on a
-#   mirror plane keeps its edge value in that half cell (no mirror signs here: an O(half cell) error of the strip).
-# - Moving boundary: interior edges between two window elements, touching the drive selection, whose sides differ in
-#   a solid material value (the conforming solid mesh marks material interfaces exactly; an optical interface inside
-#   one solid material, or between two materials of equal mechanics, is not found) AND in the optical eps of the cells
-#   containing the points one local cell diagonal off the edge midpoint into each side (so the centre-tested staircase
-#   cell lies on that side of a locally straight interface); per Gauss point the fields and eps of each side are read
-#   at those shifted points, f = the Johnson value (isotropic eps per side: the mean of the component eps).
+# - crystal_regions: ((bool mask per solid mesh element (rectangular cells: per window cell, flat), (6, 6) Voigt p in
+#   model axes), ...) (planar only).
+# Flow (SolidMechanicsFEMPhysics / SolidMechanicsPhysics.bind_physics_drives, called by the frequency_response study
+# after its background stage and the static states, before reset_frequency_response):
+# - bind(SolidDriveInputs | CellDriveInputs, physics_by_name, progress) -> (columns (n_positions x n_parts,
+#   n_unknowns) complex128 on the u rows (mixed: the pressure rows stay 0), [(log level, text)]): per scan position one
+#   optical solve on the optics' kept factor (solve_moved_beam: only the illumination moves; the collection field is
+#   the collection physics' solution, fixed: transmission detection does not co-move) and its DriveFields, then the
+#   column kappa (int B^T sigma~ dV + int N^T n f ds). The optics are read as the background stage left them: a system
+#   or source changed since (a coupling or material update) raises in solve_moved_beam / drive_fields; nothing here
+#   re-solves them. Columns per position: planar one; axisymmetric one per part of brillouin.AZIMUTHAL_PARTS[detection]
+#   at the solid's azimuthal order (0: (0, even); 2: (2, even) co- / (2, odd) cross-polarised), summed per position in
+#   record. The solid's form is a geometry object (_ElementGeometry: triangles; _CellGeometry: rectangular cells), the
+#   only place the two mesh kinds differ (points, samplers, interfaces, assembly, raster cells).
+# - Sampling (triangles): fields bilinear between the window cell centres at the DrivePoints (points of the half cell
+#   between the outermost centres and the window edge, i.e. within one centre spacing of the centres' hull, take the
+#   hull value; farther ones raise: brillouin.bilinear_weights), eps the staircase value of the containing
+#   (nearest-centre) cell; a drive point in a PEC cell raises. The clamped edge half cell is the even mirror rule on a
+#   mirror-plane edge (bilinear between a centre and its even image); em_fdfd_bor adds the axis rule on x_lo (r = 0):
+#   the order-1 E_z ~ r is scaled by r / r_0 below the first centre r_0 (E_r, A_phi stay finite there). An odd field
+#   component on a mirror plane keeps its edge value in that half cell (no mirror signs here: an O(half cell) error of
+#   the strip). Rectangular cells (the optics on the solid's own mesh: same window cells, checked): one point per
+#   selected cell at its centre with weight dA, the cell's own fields and eps (no interpolation).
+# - Moving boundary (triangles): interior edges between two window elements, touching the drive selection, whose sides
+#   differ in a solid material value (the conforming solid mesh marks material interfaces exactly; an optical interface
+#   inside one solid material, or between two materials of equal mechanics, is not found) AND in the optical eps of
+#   the cells containing the points one local cell diagonal off the edge midpoint into each side (so the
+#   centre-tested staircase cell lies on that side of a locally straight interface); per Gauss point the eps of each
+#   side is read at such diagonal points, its fields at FIELD_SHIFT x the local centre spacing along the normal (the
+#   two straddling centres for an edge on an optical face, as the rectangular cells read them; a diagonal shift
+#   lowered E_c E_i of a normal-incidence beam by ~1 - cos(1.5 q dx), 40 % at 20 cells per wavelength), f = the
+#   Johnson value (isotropic eps per side: the mean of the component eps). Rectangular cells: the interior Yee faces
+#   between two window cells, touching the selection, one of them a solid member, differing in a solid material value
+#   and in the optical eps; the sides are the two cells (normal +x / +y out of the lo cell), f l_face per face
+#   (brillouin.face_drive).
 # - record(frequency, readouts w^H u per column): psd per position (brillouin.fdt_psd x scale, parts summed; an active
 #   readout raises). result(): frequencies ascending, the references describe the photoelastic drive: local = per
 #   position and material group the DHO lines of the points, compressed in relative |q| bins of LINE_BIN with the
@@ -50,9 +62,9 @@ import numpy as np
 from ...fem.elastic_drives import assemble_edge_drive, assemble_stress_drive, drive_points, edge_drive_points
 from .brillouin import (AZIMUTHAL_PARTS, DETECTIONS, PLANAR_COMPONENTS, REFERENCES, BrillouinSpectra,
                         amplitude_prefactor, azimuthal_moving_boundary, azimuthal_parts, bilinear_sample,
-                        bilinear_weights, brillouin_result, fdt_psd, field_products, homogeneous_reference,
-                        local_reference, local_wavenumbers, longitudinal_function, modulus_function,
-                        moving_boundary_traction, optical_stress, solid_rows)
+                        bilinear_weights, brillouin_result, cell_stress_drive, face_drive, fdt_psd, field_products,
+                        homogeneous_reference, local_reference, local_wavenumbers, longitudinal_function,
+                        modulus_function, moving_boundary_traction, optical_stress, solid_rows)
 from .viscoelastic import parameter_groups
 
 TORSION_WARNING = 1e-3   # bind warns when the dropped m = 0 torsion share of a cross-polarised drive exceeds it
@@ -60,6 +72,7 @@ LINE_BIN = 1e-4          # relative |q| bin of the compressed local-reference li
 _EPS_RTOL = 1e-12        # two eps samples differ (an optical interface) above this share of the larger
 _OMEGA_RTOL = 1e-9       # incident and collection optics at one wavelength
 _SPACING_RTOL = 1e-9     # uniform optical cells over the homogeneous raster
+FIELD_SHIFT = 0.5        # triangles: moving-boundary field samples this x the local centre spacing along the normal
 # DriveFields components -> brillouin field names: planar optics by polarization; em_fdfd_bor gives the m = 1
 # standing-wave amplitudes (E_r, A_phi = u = -j E_phi, E_z) as 'r', 'phi', 'z' already (fdfd_bor.drive_fields)
 _PLANAR_FIELDS = {'ez': (('ez', 'z'),), 'hz': (('ex', 'x'), ('ey', 'y'))}
@@ -100,6 +113,29 @@ class SolidDriveInputs:
     locate: object
 
 
+@dataclass(frozen=True, eq=False)
+class CellDriveInputs:
+    """What a drive reads of a rectangular-cell (Q1) solid at bind time (SolidMechanicsPhysics.bind_physics_drives):
+    its label, the window cell centres x (n_x,), y (n_y,) [m] in the drawing frame (the optics' DriveFields frame: the
+    optics must run on the solid's mesh, bind compares the centres), the window widths dx, dy [m], n_unknowns (2 per
+    window node, node-major (u_x, u_y) over (n_x + 1, n_y + 1) nodes), host bool per window cell `solid` (flat C order
+    (n_x, n_y): the members the frequency response solves), every material property the solid reads as host float64
+    per window cell (flat) and the viscoelastic.ElementModuli of the cells (the E / nu route: a constant loss factor
+    only). Planar plane strain only (axisymmetric False). Read-only."""
+    label: str
+    x: np.ndarray
+    y: np.ndarray
+    dx: np.ndarray
+    dy: np.ndarray
+    n_unknowns: int
+    solid: np.ndarray
+    materials: dict
+    moduli: object
+    axisymmetric = False   # class constants: the form the planar plane-strain drive needs
+    azimuthal_order = 0
+    ring_angle = 2.0 * math.pi
+
+
 class _GridSamples:
     """Bilinear samples of window cell arrays (n_x, n_y) at fixed points (brillouin.bilinear_weights, the edge half
     cells clamped: module header) and the containing (largest-weight) cell of each point; axis=True (em_fdfd_bor): the
@@ -130,6 +166,22 @@ class _GridSamples:
         return np.asarray(values).reshape(-1)[self.cell]
 
 
+class _CellSamples:
+    """_GridSamples' interface on the window cells themselves (a rectangular-cell solid on the optics' mesh): the value
+    of each listed flat cell, no interpolation."""
+
+    def __init__(self, cells):
+        self.cell = np.asarray(cells, dtype=np.int64)
+
+    def sample(self, values) -> np.ndarray:
+        return np.asarray(values).reshape(-1)[self.cell]
+
+    def fields(self, components) -> dict:
+        return {name: self.sample(values) for name, values in components.items()}
+
+    cells = sample
+
+
 def _clamped(x, y, points) -> np.ndarray:
     """(n, 2) copy of points with coordinates within one centre spacing outside the centres' hull moved onto it."""
     points = np.array(points, dtype=np.float64).reshape(-1, 2)
@@ -141,14 +193,27 @@ def _clamped(x, y, points) -> np.ndarray:
     return points
 
 
-def _side_shift(x, y, points) -> np.ndarray:
-    """(n,) diagonal of the local cell-centre spacing at points (the side-sample distance off an interface)."""
+def _centre_spacings(x, y, points) -> list:
+    """[(n,) x spacing, (n,) y spacing] of the cell centres around points."""
     points = np.asarray(points, dtype=np.float64).reshape(-1, 2)
     widths = []
     for axis, centres in enumerate((x, y)):
         index = np.clip(np.searchsorted(centres, points[:, axis]) - 1, 0, len(centres) - 2)
         widths.append(centres[index + 1] - centres[index])
-    return np.hypot(*widths)
+    return widths
+
+
+def _side_shift(x, y, points) -> np.ndarray:
+    """(n,) diagonal of the local cell-centre spacing at points (the eps side-sample distance off an interface)."""
+    return np.hypot(*_centre_spacings(x, y, points))
+
+
+def _field_shift(x, y, points, normals) -> np.ndarray:
+    """(n,) FIELD_SHIFT x the local centre spacing along the unit normals (|n_x| dx + |n_y| dy): the field side-sample
+    distance off an interface (the straddling centres of an axis-aligned edge on an optical face)."""
+    width_x, width_y = _centre_spacings(x, y, points)
+    normals = np.asarray(normals, dtype=np.float64).reshape(-1, 2)
+    return FIELD_SHIFT * (np.abs(normals[:, 0]) * width_x + np.abs(normals[:, 1]) * width_y)
 
 
 def _uniform_spacing(centres, what) -> float:
@@ -177,8 +242,9 @@ def _optical_arrays(fields, planar, label) -> tuple:
 
 @dataclass(frozen=True, eq=False)
 class _Interfaces:
-    """Moving-boundary samples: the EdgeDrivePoints, the two side samplers (side 0 = -shift n, side 1 = +shift n) of
-    their flattened Gauss points, the isotropic eps of each side (k, q) and the (k, q) shape."""
+    """Moving-boundary samples: the EdgeDrivePoints (rectangular cells: _FacePoints), the two side samplers (side 0 =
+    -shift n, side 1 = +shift n) of their flattened Gauss points (rectangular cells: the lo / hi cell of each face),
+    the isotropic eps of each side and the sample shape ((k, q); rectangular cells (k,))."""
     points: object
     sides: tuple
     eps_sides: tuple
@@ -236,6 +302,203 @@ class _Bound:
     raster: object    # _Raster or None
     n_points: int
     n_edge_points: int
+
+
+@dataclass(frozen=True, eq=False)
+class _CellPoints:
+    """Drive points of a rectangular-cell solid: one per selected window cell (flat C-order index `elements`, also the
+    row of its material values) at the cell centre, weight dA [m^2]."""
+    elements: np.ndarray
+    weights: np.ndarray
+
+    @property
+    def n_points(self) -> int:
+        return int(self.elements.size)
+
+
+@dataclass(frozen=True, eq=False)
+class _FacePoints:
+    """Moving-boundary Yee faces of a rectangular-cell solid, x faces first: unit normals (k, 2) (+x / +y out of the lo
+    cell, side 0), lengths (k,) [m] and the flat indices of the x faces into (n_x - 1, n_y) and of the y faces into
+    (n_x, n_y - 1)."""
+    normals: np.ndarray
+    lengths: np.ndarray
+    x_faces: np.ndarray
+    y_faces: np.ndarray
+
+
+class _ElementGeometry:
+    """Triangle solids (SolidDriveInputs): the fem.elastic_drives DrivePoints of the selected elements, bilinear
+    samplers of the optical cell centres, the moving-boundary mesh edges, int B^T sigma / int N^T t assembly and the
+    raster cells located in the mesh (module header)."""
+
+    def __init__(self, solid, selection, label):
+        self.solid, self.label = solid, label
+        try:
+            self.points = drive_points(solid.dofs, axisymmetric=solid.axisymmetric,
+                                       azimuthal_order=solid.azimuthal_order, elements=selection)
+        except ValueError as exc:
+            raise ValueError(f'{label}: {exc}') from exc
+        self.n_vector = self.points.components * solid.dofs.n_dofs
+
+    def sampler(self, x, y, what) -> _GridSamples:
+        return _GridSamples(x, y, self.points.points, what, axis=self.solid.axisymmetric)
+
+    def stress_drive(self, stress) -> np.ndarray:
+        """(n_vector,) complex int B^T stress dV of a stress (rows, n_points)."""
+        return assemble_stress_drive(self.solid.dofs, self.points, stress)
+
+    def traction_drive(self, interfaces, values) -> np.ndarray:
+        """(n_vector,) complex int N^T n f ds of a normal traction value f (k, q) on the interface edges."""
+        traction = values[..., None] * interfaces.points.normals
+        return assemble_edge_drive(self.solid.dofs, interfaces.points, traction)
+
+    def interfaces(self, selection, x, y, isotropic):
+        """_Interfaces of the moving boundary (module header), None when no interface touches the selection."""
+        solid, label = self.solid, self.label
+        planar = not solid.axisymmetric
+        dofs = solid.dofs
+        mesh = dofs.mesh
+        pairs = np.asarray(mesh.edge_elements, dtype=np.int64)
+        interior = np.flatnonzero(pairs[:, 1] >= 0)
+        first, second = pairs[interior, 0], pairs[interior, 1]
+        window = np.asarray(solid.window, dtype=bool)
+        members = np.asarray(solid.solid, dtype=bool)
+        touching = (selection[first] | selection[second]) & window[first] & window[second]
+        differ = members[first] != members[second]
+        for values in solid.materials.values():
+            a, b = values[first], values[second]
+            differ |= ~((a == b) | (np.isnan(a) & np.isnan(b)))
+        edges = interior[touching & differ]
+        if not edges.size:
+            return None
+        ends = np.asarray(mesh.points, dtype=np.float64)[np.asarray(mesh.edges)[edges]]   # (k, 2, 2)
+        middle = ends.mean(axis=1)
+        tangent = ends[:, 1] - ends[:, 0]
+        normal = np.stack([tangent[:, 1], -tangent[:, 0]], axis=1) / np.linalg.norm(tangent, axis=1)[:, None]
+        shift = _side_shift(x, y, middle)[:, None]
+        what = f'{label}: moving-boundary side samples'
+        eps_0 = _GridSamples(x, y, middle - shift * normal, what).cells(isotropic)
+        eps_1 = _GridSamples(x, y, middle + shift * normal, what).cells(isotropic)
+        optical = np.abs(eps_0 - eps_1) > _EPS_RTOL * np.maximum(np.abs(eps_0), np.abs(eps_1))
+        if not optical.any():
+            return None
+        edge_points = edge_drive_points(dofs, edges[optical], axisymmetric=solid.axisymmetric,
+                                        azimuthal_order=solid.azimuthal_order)
+        if not len(edge_points.edges):
+            return None
+        shape = tuple(edge_points.weights.shape)
+        flat = edge_points.points.reshape(-1, 2)
+        normals = edge_points.normals.reshape(-1, 2)
+        shift = _side_shift(x, y, flat)[:, None]   # eps: the staircase cell of each side (diagonal)
+        eps_sides = tuple(_GridSamples(x, y, flat + sign * shift * normals, what).cells(isotropic).reshape(shape)
+                          for sign in (-1.0, 1.0))
+        shift = _field_shift(x, y, flat, normals)[:, None]   # fields: next to the interface (FIELD_SHIFT)
+        sides = tuple(_GridSamples(x, y, flat + sign * shift * normals, what, axis=not planar) for sign in (-1.0, 1.0))
+        return _Interfaces(points=edge_points, sides=sides, eps_sides=eps_sides, shape=shape)
+
+    def raster_cells(self, x, y, selection) -> tuple:
+        """(flat optical cells whose centres lie in the selection, their mesh elements)."""
+        centres = np.stack(np.meshgrid(x, y, indexing='ij'), axis=-1).reshape(-1, 2)
+        elements = np.asarray(self.solid.locate(centres), dtype=np.int64)
+        inside = elements >= 0
+        inside[inside] = selection[elements[inside]]
+        cells = np.flatnonzero(inside)
+        return cells, elements[cells]
+
+
+class _CellGeometry:
+    """Rectangular-cell (Q1) solids (CellDriveInputs) on the optics' own mesh: one point per selected window cell, the
+    cells' own optical values, the moving-boundary Yee faces, brillouin.cell_stress_drive / face_drive and the
+    selected cells as the homogeneous raster (module header)."""
+
+    def __init__(self, solid, selection, label):
+        self.solid, self.label = solid, label
+        self.shape = (int(np.asarray(solid.x).size), int(np.asarray(solid.y).size))
+        n_x, n_y = self.shape
+        if (np.shape(solid.dx) != (n_x,) or np.shape(solid.dy) != (n_y,) or selection.shape != (n_x * n_y,)
+                or solid.n_unknowns != 2 * (n_x + 1) * (n_y + 1)):
+            raise ValueError(f'{label}: the rectangular-cell solid inputs do not fit its {n_x} x {n_y} window cells '
+                             f'(widths {np.shape(solid.dx)} / {np.shape(solid.dy)}, {selection.size} cells, '
+                             f'{solid.n_unknowns} unknowns; a bug)')
+        cells = np.flatnonzero(selection)
+        self.points = _CellPoints(elements=cells, weights=np.outer(solid.dx, solid.dy).reshape(-1)[cells])
+        self.n_vector = 2 * (n_x + 1) * (n_y + 1)
+
+    def sampler(self, x, y, what) -> _CellSamples:
+        solid = self.solid
+        if not (np.array_equal(x, solid.x) and np.array_equal(y, solid.y)):
+            raise ValueError(f'{what}: the optics run on other window cells ({len(x)} x {len(y)}) than the '
+                             f'rectangular-cell solid ({self.shape[0]} x {self.shape[1]}): the drive reads the '
+                             'optical cells as the solid cells, so both physics need one tensor mesh')
+        return _CellSamples(self.points.elements)
+
+    def stress_drive(self, stress) -> np.ndarray:
+        """(n_vector,) complex sum dA B_c^T stress of a stress (3, n_points) at the selected cells."""
+        n_x, n_y = self.shape
+        raster = np.zeros((3, n_x * n_y), dtype=np.complex128)
+        raster[:, self.points.elements] = stress
+        return cell_stress_drive(raster.reshape(3, n_x, n_y), self.solid.dx, self.solid.dy).reshape(-1)
+
+    def traction_drive(self, interfaces, values) -> np.ndarray:
+        """(n_vector,) complex face sum of a Johnson value f (k,) per interface face: f l_face on the face's normal,
+        half on each corner node."""
+        faces = interfaces.points
+        loads = np.asarray(values, dtype=np.complex128) * faces.lengths
+        n_x, n_y = self.shape
+        count = faces.x_faces.size
+        face_x = np.zeros((n_x - 1) * n_y, dtype=np.complex128)
+        face_y = np.zeros(n_x * (n_y - 1), dtype=np.complex128)
+        face_x[faces.x_faces] = loads[:count]
+        face_y[faces.y_faces] = loads[count:]
+        return face_drive(face_x.reshape(n_x - 1, n_y), face_y.reshape(n_x, n_y - 1)).reshape(-1)
+
+    def interfaces(self, selection, x, y, isotropic):
+        """_Interfaces of the moving boundary on the interior Yee faces (module header), None when none."""
+        solid = self.solid
+        n_x, n_y = self.shape
+        index = np.arange(n_x * n_y, dtype=np.int64).reshape(n_x, n_y)
+        members = np.asarray(solid.solid, dtype=bool)
+        eps = np.asarray(isotropic, dtype=np.complex128).reshape(-1)
+        found = []   # per axis (face indices, lo cells, hi cells)
+        for axis in (0, 1):
+            lo = (index[:-1, :] if axis == 0 else index[:, :-1]).reshape(-1)
+            hi = (index[1:, :] if axis == 0 else index[:, 1:]).reshape(-1)
+            faces = np.flatnonzero((selection[lo] | selection[hi]) & (members[lo] | members[hi]))
+            lo, hi = lo[faces], hi[faces]
+            differ = members[lo] != members[hi]
+            for values in solid.materials.values():
+                a, b = values[lo], values[hi]
+                differ |= ~((a == b) | (np.isnan(a) & np.isnan(b)))
+            eps_lo, eps_hi = eps[lo], eps[hi]
+            keep = differ & (np.abs(eps_lo - eps_hi) > _EPS_RTOL * np.maximum(np.abs(eps_lo), np.abs(eps_hi)))
+            found.append((faces[keep], lo[keep], hi[keep]))
+        (x_faces, x_lo, x_hi), (y_faces, y_lo, y_hi) = found
+        if not (x_faces.size or y_faces.size):
+            return None
+        lengths = np.concatenate([np.asarray(solid.dy, dtype=np.float64)[x_faces % n_y],
+                                  np.asarray(solid.dx, dtype=np.float64)[y_faces // (n_y - 1)]])
+        normals = np.zeros((x_faces.size + y_faces.size, 2))
+        normals[:x_faces.size, 0] = 1.0
+        normals[x_faces.size:, 1] = 1.0
+        sides = (_CellSamples(np.concatenate([x_lo, y_lo])), _CellSamples(np.concatenate([x_hi, y_hi])))
+        return _Interfaces(points=_FacePoints(normals=normals, lengths=lengths, x_faces=x_faces, y_faces=y_faces),
+                           sides=sides, eps_sides=tuple(side.cells(eps) for side in sides), shape=(len(lengths),))
+
+    def raster_cells(self, x, y, selection) -> tuple:
+        """(flat optical cells of the selection, their material rows): the solid's own cells."""
+        cells = self.points.elements
+        return cells, cells
+
+
+def _geometry(solid, selection, label):
+    """The drive geometry of the solid's inputs (_ElementGeometry or _CellGeometry); TypeError for other inputs."""
+    if isinstance(solid, SolidDriveInputs):
+        return _ElementGeometry(solid, selection, label)
+    if isinstance(solid, CellDriveInputs):
+        return _CellGeometry(solid, selection, label)
+    raise TypeError(f'{label}: bind takes the SolidDriveInputs (triangles) or CellDriveInputs (rectangular cells) of '
+                    f'the solid, got {type(solid).__name__}')
 
 
 class BrillouinDrive:
@@ -319,9 +582,10 @@ class BrillouinDrive:
         w_mb) on the u rows; [(log level, text)]) of the solid (SolidDriveInputs) against the solved optics of
         physics_by_name (module header); progress(done, n_positions) after each position (it may raise the study's
         Cancelled: the previous bound state is kept). ValueError naming the value for every mismatch."""
-        if not isinstance(solid, SolidDriveInputs):
-            raise TypeError(f'{self._label}: bind takes the SolidDriveInputs of the solid, got {type(solid).__name__}')
         label = self._label
+        if not isinstance(solid, (SolidDriveInputs, CellDriveInputs)):
+            raise TypeError(f'{label}: bind takes the SolidDriveInputs (triangles) or CellDriveInputs (rectangular '
+                            f'cells) of the solid, got {type(solid).__name__}')
         planar = not solid.axisymmetric
         parts = self._parts(solid)
         optics, collection, incident, collected = self._resolve(physics_by_name)
@@ -332,13 +596,8 @@ class BrillouinDrive:
             raise ValueError(f'{label}: crystal photoelastic tensors are planar only (an axisymmetric drive needs an '
                              'isotropic, rotationally invariant p)')
         selection = self._selection(solid)
-        dofs = solid.dofs
-        try:
-            points = drive_points(dofs, axisymmetric=solid.axisymmetric, azimuthal_order=solid.azimuthal_order,
-                                  elements=selection)
-        except ValueError as exc:
-            raise ValueError(f'{label}: {exc}') from exc
-        n_vector = points.components * dofs.n_dofs
+        geometry = _geometry(solid, selection, label)
+        points, n_vector = geometry.points, geometry.n_vector
         if solid.n_unknowns < n_vector:
             raise ValueError(f'{label}: the solid has {solid.n_unknowns} unknowns, fewer than its {n_vector} '
                              'displacement dofs (a bug)')
@@ -371,7 +630,7 @@ class BrillouinDrive:
             fields = self._optical(self.optical_physics, lambda offset=offset: optics.drive_fields(
                 optics.solve_moved_beam(incident, offset)))
             if context is None:
-                context = self._context(solid, points, selection, fields, planar, collection_check)
+                context = self._context(solid, geometry, selection, fields, planar, collection_check)
                 kappa = amplitude_prefactor(context.omega, incident.incident_power, collected.incident_power)
                 if not self.photoelastic and context.interfaces is None:
                     raise ValueError(f'{label}: photoelastic is off and no optical interface touches the drive '
@@ -398,12 +657,11 @@ class BrillouinDrive:
             for index, stress in enumerate(stresses):
                 column = columns[position * n_parts + index, :n_vector]
                 if self.photoelastic:
-                    drive = assemble_stress_drive(dofs, points, kappa * stress)
+                    drive = geometry.stress_drive(kappa * stress)
                     column += drive
                     squares[0] += float(np.vdot(drive, drive).real)
                 if boundary is not None:
-                    traction = (kappa * boundary[index])[..., None] * context.interfaces.points.normals
-                    drive = assemble_edge_drive(dofs, context.interfaces.points, traction)
+                    drive = geometry.traction_drive(context.interfaces, kappa * boundary[index])
                     column += drive
                     squares[1] += float(np.vdot(drive, drive).real)
             if position == 0:
@@ -524,7 +782,7 @@ class BrillouinDrive:
                              'material schema)')
         return values
 
-    def _context(self, solid, points, selection, fields, planar, collection_check) -> _Context:
+    def _context(self, solid, geometry, selection, fields, planar, collection_check) -> _Context:
         """Sampling state of the optical grid of the first position: the volume sampler, eps at the points (PEC
         refused), the interfaces, the reference laws per point and the homogeneous raster cells."""
         label = self._label
@@ -540,66 +798,27 @@ class BrillouinDrive:
             if not (np.array_equal(collection_x, x) and np.array_equal(collection_y, y)):
                 raise ValueError(f"{label}: collection_physics '{self.collection_physics}' runs on another optical "
                                  'grid: the drive multiplies both fields cell by cell (put both on one mesh)')
-        volume = _GridSamples(x, y, points.points, f'{label}: drive points', axis=not planar)
+        volume = geometry.sampler(x, y, f'{label}: drive points')
         _, eps = _optical_arrays(fields, planar, label)
         eps_points = {key: volume.cells(values) for key, values in eps.items()}
         if fields.pec is not None:
             inside = np.asarray(fields.pec, dtype=bool).reshape(-1)[volume.cell]
             if inside.any():
-                first = points.points[int(np.argmax(inside))]
-                raise ValueError(f'{label}: {int(inside.sum())} drive points lie in PEC cells of the optics (first at '
-                                 f'({first[0]:.6g}, {first[1]:.6g}) m): keep the drive selection out of conductors')
+                first = int(volume.cell[int(np.argmax(inside))])
+                where = (x[first // len(y)], y[first % len(y)])
+                raise ValueError(f'{label}: {int(inside.sum())} drive points lie in PEC cells of the optics (first in '
+                                 f'the cell at ({where[0]:.6g}, {where[1]:.6g}) m): keep the drive selection out of '
+                                 'conductors')
         isotropic = sum(eps.values()) / len(eps)
-        interfaces = self._interfaces(solid, selection, x, y, isotropic, planar) if self.moving_boundary else None
+        interfaces = geometry.interfaces(selection, x, y, isotropic) if self.moving_boundary else None
         point_laws, laws, raster = None, (), None
         if self.reference != 'none':
             element_laws, laws = self._reference_laws(solid, selection)
-            point_laws = element_laws[points.elements]
+            point_laws = element_laws[geometry.points.elements]
             if self.reference == 'homogeneous':
-                raster = self._raster_cells(solid, selection, x, y, eps, element_laws)
+                raster = self._raster_cells(solid, geometry, selection, x, y, eps, element_laws)
         return _Context(x=x, y=y, omega=omega, volume=volume, eps_points=eps_points, interfaces=interfaces,
                         point_laws=point_laws, laws=laws, raster=raster)
-
-    def _interfaces(self, solid, selection, x, y, isotropic, planar):
-        """_Interfaces of the moving boundary (module header), None when no interface touches the selection."""
-        label = self._label
-        dofs = solid.dofs
-        mesh = dofs.mesh
-        pairs = np.asarray(mesh.edge_elements, dtype=np.int64)
-        interior = np.flatnonzero(pairs[:, 1] >= 0)
-        first, second = pairs[interior, 0], pairs[interior, 1]
-        window = np.asarray(solid.window, dtype=bool)
-        members = np.asarray(solid.solid, dtype=bool)
-        touching = (selection[first] | selection[second]) & window[first] & window[second]
-        differ = members[first] != members[second]
-        for values in solid.materials.values():
-            a, b = values[first], values[second]
-            differ |= ~((a == b) | (np.isnan(a) & np.isnan(b)))
-        edges = interior[touching & differ]
-        if not edges.size:
-            return None
-        ends = np.asarray(mesh.points, dtype=np.float64)[np.asarray(mesh.edges)[edges]]   # (k, 2, 2)
-        middle = ends.mean(axis=1)
-        tangent = ends[:, 1] - ends[:, 0]
-        normal = np.stack([tangent[:, 1], -tangent[:, 0]], axis=1) / np.linalg.norm(tangent, axis=1)[:, None]
-        shift = _side_shift(x, y, middle)[:, None]
-        what = f'{label}: moving-boundary side samples'
-        eps_0 = _GridSamples(x, y, middle - shift * normal, what).cells(isotropic)
-        eps_1 = _GridSamples(x, y, middle + shift * normal, what).cells(isotropic)
-        optical = np.abs(eps_0 - eps_1) > _EPS_RTOL * np.maximum(np.abs(eps_0), np.abs(eps_1))
-        if not optical.any():
-            return None
-        edge_points = edge_drive_points(dofs, edges[optical], axisymmetric=solid.axisymmetric,
-                                        azimuthal_order=solid.azimuthal_order)
-        if not len(edge_points.edges):
-            return None
-        shape = tuple(edge_points.weights.shape)
-        flat = edge_points.points.reshape(-1, 2)
-        normals = edge_points.normals.reshape(-1, 2)
-        shift = _side_shift(x, y, flat)[:, None]
-        sides = tuple(_GridSamples(x, y, flat + sign * shift * normals, what, axis=not planar) for sign in (-1.0, 1.0))
-        return _Interfaces(points=edge_points, sides=sides,
-                           eps_sides=tuple(side.cells(isotropic).reshape(shape) for side in sides), shape=shape)
 
     def _boundary_values(self, interfaces, grid, partner, same_field, parts, planar):
         """[Johnson value f (k, q) per part] of one position, None without interfaces."""
@@ -679,20 +898,15 @@ class BrillouinDrive:
             lines.append((int(law), moment / mass, mass))
         return mean, tuple(lines)
 
-    def _raster_cells(self, solid, selection, x, y, eps, element_laws) -> _Raster:
+    def _raster_cells(self, solid, geometry, selection, x, y, eps, element_laws) -> _Raster:
         """_Raster of the optical cells whose centres lie in the drive selection (one uniform isotropic material)."""
         label = self._label
         if any(mask[selection].any() for mask, _ in self.crystal_regions):
             raise ValueError(f"{label}: reference 'homogeneous' needs an isotropic medium (a crystal region lies in "
                              "the drive selection): use reference 'local'")
-        centres = np.stack(np.meshgrid(x, y, indexing='ij'), axis=-1).reshape(-1, 2)
-        elements = np.asarray(solid.locate(centres), dtype=np.int64)
-        inside = elements >= 0
-        inside[inside] = selection[elements[inside]]
-        cells = np.flatnonzero(inside)
+        cells, cell_elements = geometry.raster_cells(x, y, selection)
         if not cells.size:
             raise ValueError(f"{label}: reference 'homogeneous': no optical cell centre lies in the drive selection")
-        cell_elements = elements[cells]
         cell_laws = np.unique(element_laws[cell_elements])
         if cell_laws.size != 1 or cell_laws[0] < 0:
             raise ValueError(f"{label}: reference 'homogeneous' needs one uniform material over the drive selection, "

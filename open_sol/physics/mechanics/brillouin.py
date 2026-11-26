@@ -20,6 +20,11 @@ local and homogeneous reference spectra and the result dict."""
 # f = Delta eps (E_c,par . E_i,par) - Delta(1/eps) (eps E_c,n)(eps E_i,n), each product the mean of the two sides'
 # products (optomechanics_fem convention, |E|^2 -> E_c E_i); a_mb = kappa int (u . n) f ds, i.e. the normal traction
 # t = kappa n f (moving_boundary_traction). Total w = w_pe + w_mb.
+# Rectangular-cell (Q1) solids on the optics' own Yee grid (planar): sigma~ per window cell (the cell's own fields and
+# eps: no interpolation), w_pe = sum dA B_c^T sigma~ with B_c the centre strain of optomechanics.element_strains
+# (cell_stress_drive, its transpose) and w_mb = the transpose of the optomechanics face sum: per interior face between
+# two cells (normal +x / +y out of the lo cell = side 0, the two cells' fields as the sides) kappa f l_face, half on
+# each corner node of the face (face_drive, the transpose of face_displacements).
 # FDT (Callen-Welton / Levin, classical): the solid's K(Omega) (K (1 + j eta) + viscoelastic terms - Omega^2 M) is
 # complex symmetric with Im >= 0 (passive for exp(+j Omega t)); u = K(Omega)^-1 w (the drive the only load, held
 # values 0). The two-sided matrix FDT S_uu = (2 k_B T / Omega)(-Im chi), chi = K^-1 (Re / Im chi real symmetric) gives
@@ -331,6 +336,52 @@ def azimuthal_moving_boundary(normals, incident_sides, collection_sides, eps_sid
             return _harmonic_coefficient(collection_pattern[names[i]], _INCIDENT_PATTERN[names[j]], harmonic)
         parts[key] = _johnson_value(normals, incident_sides, collection_sides, eps_sides, names, coefficient)
     return parts
+
+
+# ---- rectangular-cell (Q1) solids on the optical Yee grid ----
+_LOWER, _UPPER = slice(None, -1), slice(1, None)
+# ((east, north), node slices) of the four corners of every cell: south-west, south-east, north-west, north-east
+_CELL_CORNERS = (((0, 0), (_LOWER, _LOWER)), ((1, 0), (_UPPER, _LOWER)), ((0, 1), (_LOWER, _UPPER)),
+                 ((1, 1), (_UPPER, _UPPER)))
+
+
+def cell_stress_drive(stress, dx, dy) -> np.ndarray:
+    """Complex (n_x + 1, n_y + 1, 2) nodal generalised force sum_cells dA sigma^T S(u) of a plane-strain stress
+    (3, n_x, n_y) with rows (xx, yy, xy) per window cell (0 outside the drive) on widths dx (n_x,), dy (n_y,) [m]: the
+    transpose of optomechanics.element_strains (one centre point per Q1 cell, engineering shear g = 2 S_xy), so w . u =
+    sum dA (sigma_xx S_xx + sigma_yy S_yy + sigma_xy g) for every nodal u (n_x + 1, n_y + 1, 2)."""
+    stress = np.asarray(stress, dtype=np.complex128)
+    dx, dy = np.asarray(dx, dtype=np.float64), np.asarray(dy, dtype=np.float64)
+    if stress.shape != (3, dx.size, dy.size):
+        raise ValueError(f'cell_stress_drive: stress must be (3, {dx.size}, {dy.size}), got {stress.shape}')
+    half_x, half_y = 0.5 * dx[:, None], 0.5 * dy[None, :]
+    # dA dS / du per corner: S_xx = sum +-u_x / (2 dx) (east +), S_yy = sum +-u_y / (2 dy) (north +), g = du_x / dy +
+    # du_y / dx
+    normal_x, shear_x = stress[0] * half_y, stress[2] * half_x   # u_x rows: sigma_xx dy / 2, sigma_xy dx / 2
+    normal_y, shear_y = stress[1] * half_x, stress[2] * half_y   # u_y rows: sigma_yy dx / 2, sigma_xy dy / 2
+    drive = np.zeros((dx.size + 1, dy.size + 1, 2), dtype=np.complex128)
+    for (east, north), corner in _CELL_CORNERS:
+        sign_x, sign_y = 2 * east - 1, 2 * north - 1
+        drive[corner + (0,)] += sign_x * normal_x + sign_y * shear_x
+        drive[corner + (1,)] += sign_y * normal_y + sign_x * shear_y
+    return drive
+
+
+def face_drive(face_x, face_y) -> np.ndarray:
+    """Complex (n_x + 1, n_y + 1, 2) nodal force of normal loads [N/m] on the interior Yee faces between window cells:
+    face_x (n_x - 1, n_y) on the x faces (normal +x, the u_x rows), face_y (n_x, n_y - 1) on the y faces (+y, u_y), each
+    half on its two corner nodes: the transpose of optomechanics.face_displacements (Q_d = the mean of the corners)."""
+    face_x, face_y = np.asarray(face_x, dtype=np.complex128), np.asarray(face_y, dtype=np.complex128)
+    n_x, n_y = face_y.shape[0], face_x.shape[1]
+    if face_x.shape != (n_x - 1, n_y) or face_y.shape != (n_x, n_y - 1):
+        raise ValueError(f'face_drive: face_x {face_x.shape} and face_y {face_y.shape} are not the interior faces of '
+                         'one (n_x, n_y) cell grid')
+    drive = np.zeros((n_x + 1, n_y + 1, 2), dtype=np.complex128)
+    drive[1:-1, :-1, 0] += 0.5 * face_x
+    drive[1:-1, 1:, 0] += 0.5 * face_x
+    drive[:-1, 1:-1, 1] += 0.5 * face_y
+    drive[1:, 1:-1, 1] += 0.5 * face_y
+    return drive
 
 
 # ---- sampling the optical grid ----
