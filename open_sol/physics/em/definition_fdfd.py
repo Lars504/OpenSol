@@ -19,8 +19,7 @@ from .definition_common import (BOTH_GRIDS, BOX_CELLS, CPML_BC_HELP, DEFAULT_WAV
                                 EM_FAMILY, EZ_CURRENT_TIP, EZ_PROBE_COMPONENT_TIP, FACE_MEAN, FOCUSED_BEAM_APERTURE_TEXT,
                                 FOCUSED_BEAM_FEATURE, FOCUSED_BEAM_LABEL, FOCUSED_BEAM_SCAN_TEXT,
                                 FREQUENCY_DOMAIN_STUDY, HOST_DIRECT_NAMES, apply_focused_beam,
-                                brillouin_drive_time_items, brillouin_scan_solves, focused_beam_focus_param,
-                                focused_beam_power_param,
+                                brillouin_drive_time_items, brillouin_scan_solves, focused_beam_power_param,
                                 MIRROR_BC_HELP, MODE_DIRECTION_CHOICE_LABELS, MODE_NUMBER_TIP_START, MODE_POWER_TIP,
                                 MODE_SOURCE_NUMBER_PARAM, MODE_TABLE_ROWS, N_ANGLES_PARAM, OPTOMECHANICS_STUDY,
                                 PERIODIC_BC_HELP, POINT_SOURCE_SIGN, PROBE_COMPONENT_CHOICE_LABELS, SPAN_CELLS,
@@ -296,8 +295,10 @@ _FOCUSED_BEAM_PARAMS = (
           tip='Optional limit on the angles of the light in the beam, as for a microscope objective: the refractive '
               'index times the sine of the largest angle.\n\nLeave empty to keep every angle of the Gaussian beam. '
               'It may not exceed the refractive index at the line.'),
-    focused_beam_focus_param('focus_x', 'x', f'x {_FOCUS_HELP}', _FOCUS_TIP.format(axis='Horizontal')),
-    focused_beam_focus_param('focus_y', 'y', f'y {_FOCUS_HELP}', _FOCUS_TIP.format(axis='Vertical')),
+    Param('focus_x', 'float', None, label='Focus x', unit='m', help=f'x {_FOCUS_HELP}',
+          tip=_FOCUS_TIP.format(axis='Horizontal')),
+    Param('focus_y', 'float', None, label='Focus y', unit='m', help=f'y {_FOCUS_HELP}',
+          tip=_FOCUS_TIP.format(axis='Vertical')),
     Param('direction', 'choice', 'positive', label='Direction', choices=('positive', 'negative'),
           help='positive: toward +x from a vertical line (x = const), toward +y from a horizontal one; negative: '
                'toward -x / -y. Nothing is launched the other way.',

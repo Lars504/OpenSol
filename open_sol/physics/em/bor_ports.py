@@ -126,7 +126,7 @@ def slice_positions(system, port_modes, slice_index):
         raise ValueError(f'port slice {slice_index} is outside the {system.shape[1]} z rows')
     if port_modes.n_line > system.shape[0]:
         raise ValueError(f'port line of {port_modes.n_line} r cells exceeds the {system.shape[0]} grid cells')
-    return _inverse_index(system)[_full_indices(system.shape, port_modes.codes, port_modes.indices, slice_index)]
+    return key_positions(system, port_modes.codes, port_modes.indices, slice_index)
 
 
 def unknown_slices(system):

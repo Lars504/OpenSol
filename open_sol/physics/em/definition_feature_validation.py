@@ -8,7 +8,7 @@ from ...core.constants import C0
 from ...core.domain import containing_cell
 from ...core.mesh import has_uniform_spacing
 from ...core.mirror import MIRROR_SIGNS, plane_wave_mirror_issue
-from ...model.definition_helpers import validate_points_inside, wavelength_range_issues
+from ...model.definition_helpers import evaluates_to, validate_points_inside, wavelength_range_issues
 from ...model.expressions import evaluate_scalar
 from ...model.geometry import bounding_box, line_orientation, preview_pixel_centers
 from ...model.schema import PERMITTIVITY_PROPERTY_NAMES, Issue, feature_path
@@ -900,13 +900,8 @@ def _focused_beam_row_messages(vctx, physics_spec, along_axis, position, span, n
                 properties, _ = _effective_material(material)
             except ValueError:   # reported at the material
                 continue
-            for name in _FOCUSED_BEAM_REFUSED_PROPERTIES:
-                raw = properties.get(name)
-                try:
-                    nonzero = raw is not None and evaluate_scalar(raw, vctx.parameters) != 0.0
-                except (ValueError, TypeError):   # field-dependent: possibly non-zero
-                    nonzero = True
-                if nonzero:
+            for name in _FOCUSED_BEAM_REFUSED_PROPERTIES:   # a field-dependent value counts as non-zero
+                if evaluates_to(properties.get(name), vctx.parameters, lambda value: value != 0.0):
                     messages.append(('error', f"has material '{material.name}' with {name} on its rows: the beam is a "
                                               'sum of plane waves of a diagonal medium; keep the line in an isotropic, '
                                               'unrotated, unmagnetised medium'))
@@ -1012,9 +1007,9 @@ def _focused_beam_messages(vctx, physics_spec, line, settings, polarization, val
         messages.append(('error', f'has numerical_aperture {aperture:g} above the index {index:.4g} of the medium at '
                                   'the line (NA = n sin(theta) <= n); lower it'))
         aperture = None
-    if math.isfinite(index) and wavelengths:
+    if math.isfinite(index):
         worst = {}
-        for wavelength in sorted({min(wavelengths), max(wavelengths)}):
+        for wavelength in focused_beam_end_wavelengths(wavelengths):
             levels = continuum_end_levels(2.0 * math.pi * float(C0) / wavelength, index, values['waist'], aperture,
                                           (start, end), position, focus_along, focus_normal, sign)
             for side, level in zip(('lo', 'hi'), levels):
@@ -1031,10 +1026,22 @@ def _focused_beam_messages(vctx, physics_spec, line, settings, polarization, val
         messages.append(('warning', f'has its focus at {along_axis} = {focus_along:.4g} m, off the line ({start:.4g} '
                                     f'to {end:.4g} m), so the line launches only the edge of the beam; put the focus '
                                     'over the line'))
-    if sign * (focus_normal - position) < 0.0:
-        messages.append(('info', f'has its focus upstream of the line ({normal_axis} = {focus_normal:.4g} m): the beam '
-                                 'diverges from a virtual focus'))
-    return messages
+    return messages + upstream_focus_messages(sign, focus_normal, position, normal_axis)
+
+
+def focused_beam_end_wavelengths(wavelengths):
+    """The solved wavelengths [m] a focused beam's line-end check samples (2D and BOR): the shortest and the longest,
+    ascending; () without any."""
+    return tuple(sorted({min(wavelengths), max(wavelengths)})) if wavelengths else ()
+
+
+def upstream_focus_messages(sign, focus_normal, position, axis_name):
+    """[info] when a focused beam toward sign (+1 / -1 along axis_name) has its focus upstream of its line at
+    `position` [m] (2D and BOR), else []."""
+    if not sign * (focus_normal - position) < 0.0:
+        return []
+    return [('info', f'has its focus upstream of the line ({axis_name} = {focus_normal:.4g} m): the beam diverges from '
+                     'a virtual focus')]
 
 
 def mode_line_issues(vctx, physics_spec, feature_spec, polarization, role, face_side):

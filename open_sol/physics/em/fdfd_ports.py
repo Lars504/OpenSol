@@ -14,7 +14,7 @@ from ...core.backend import array_module_of, to_host
 
 from ...core.constants import C0
 from .fdfd_monitors import _ascending_wavelength
-from .fdfd_sources import phase_factor
+from .fdfd_sources import one_sided_tfsf_rhs, phase_factor
 from .mode_ports import _DIRECTIONS, PortLine, _check_mode_number, mode_table_rows
 from .results import _MODE_TABLE_COLUMNS, _MODE_TABLE_UNITS, mode_power_series
 from .slab_modes import align_phase, mode_amplitudes, track_mode
@@ -31,32 +31,16 @@ def _check_bloch_line(physics, port):
                          f"shorten the line to the guide (truncated ends) or set bloch_k{port.axis} = 0")
 
 
-def _total_field_mask(port, n_normal, periodic_normal, direction_sign, xp):
-    """xp bool Q along the normal, shaped to broadcast over the (nx, ny) grid: the line cell and the cells downstream
-    of it (toward +normal for direction_sign +1)."""
-    downstream_distance = (np.arange(n_normal) - port.line_cell) * int(direction_sign)
-    if periodic_normal:
-        # A periodic normal axis has no half plane: Q = the half period downstream of the line cell (distance < n/2, up
-        # to the cell opposite it). b depends only on Q holding the line cell and its downstream neighbour and not the
-        # two upstream cells, which needs n >= 4.
-        if n_normal < 4:
-            raise ValueError(f"{port.label}: a one-sided mode source needs at least 4 cells along the periodic "
-                             f"{port.normal} axis, got {n_normal}")
-        downstream_distance %= n_normal
-        inside = 2 * downstream_distance < n_normal
-    else:
-        inside = downstream_distance >= 0
-    shape = (n_normal, 1) if port.normal == 'x' else (1, n_normal)
-    return xp.asarray(inside.reshape(shape))
-
-
 class ModeSourcePhasor:
     """One-sided slab-mode phasor source on a line: total field from the line cell downstream, scattered field upstream;
     injects `power` [W/m] of mode `mode_number` toward +normal ('positive') or -normal ('negative') at `phase` [deg]."""
-    # Right-hand side (TFSF sign of spec section 0): b += A (Q u_inc) - Q (A u_inc), Q = the total-field half plane and
-    # u_inc the incident mode on the line cells c and their upstream neighbours c' (c - 1 'positive', c + 1 'negative')
-    # only, so b is non-zero on those two rows: b[c] = -A[c, c'] u_inc[c'], b[c'] = +A[c', c] u_inc[c]. The mode varies
-    # as e^{-j k s} toward its direction: u_inc[c'] = u_inc[c] e^{+j k D_f}, D_f = the dual spacing between c' and c.
+    # Right-hand side (TFSF sign of spec section 0; fdfd_sources.one_sided_tfsf_rhs): b += A (Q u_inc) - Q (A u_inc),
+    # Q = the total-field side and u_inc the incident mode on the line cells c and their upstream neighbours c' (c - 1
+    # 'positive', c + 1 'negative') only, so b is non-zero on those two rows: b[c] = -A[c, c'] u_inc[c'], b[c'] =
+    # +A[c', c] u_inc[c]. A periodic normal axis has no half plane: Q is then the half period downstream of the line
+    # cell, and b keeps that two-row form only while Q holds c and its downstream neighbour but not the two upstream
+    # cells (n >= 4). The mode varies as e^{-j k s} toward its direction: u_inc[c'] = u_inc[c] e^{+j k D_f}, D_f = the
+    # dual spacing between c' and c.
     amplitude_params = ('power', 'phase')   # feature values of set_amplitude, in its argument order (sweep reuse)
 
     def __init__(self, physics, axis, line_cell, span_cells, power, mode_number, direction, phase, label):
@@ -95,10 +79,12 @@ class ModeSourcePhasor:
             self._upstream_wrap = wrap_factor
         else:
             self._upstream_wrap = 1.0
-        self._line = port.line_index(self.position)
-        self._upstream_line = port.line_index(upstream_cell)
+        if periodic_normal and n_normal < 4:
+            raise ValueError(f"{port.label}: a one-sided mode source needs at least 4 cells along the periodic "
+                             f"{port.normal} axis, got {n_normal}")
+        self._normal_axis = 0 if port.normal == 'x' else 1
+        self._upstream_cell = upstream_cell
         self._xp = physics.domain.xp
-        self._total_field_mask = _total_field_mask(port, n_normal, periodic_normal, 1 if positive else -1, self._xp)
         self._line_incident = None       # complex128 u_inc (run backend) on the line cells (solve range) once solved
         self._upstream_incident = None   # and on the upstream cells
         self._table = None
@@ -139,15 +125,8 @@ class ModeSourcePhasor:
         if self.mode is None or self.solved_omega != omega:
             raise ValueError(f"mode not solved yet: {self.port.label} has no mode at omega = {omega:.6g} rad/s "
                              f"(FDFDPhysics solves port modes at finalize and after every reassembly)")
-        operator = system.operator
-        incident = self._xp.zeros(rhs.shape, dtype=self._xp.complex128)
-        incident[self._line] = self._line_incident   # Q u_inc: the line cells are the incident cells inside Q
-        inside_product = (operator @ incident.ravel()).reshape(rhs.shape)
-        incident[self._upstream_line] = self._upstream_incident
-        masked_product = (operator @ incident.ravel()).reshape(rhs.shape)
-        masked_product *= self._total_field_mask
-        rhs += inside_product
-        rhs -= masked_product
+        one_sided_tfsf_rhs(rhs, system.operator, self._normal_axis, self.position, self._upstream_cell,
+                           slice(*self.port.solve_range), self._line_incident, self._upstream_incident)
 
     def mode_table(self):
         """Rows [mode number, Re n_eff, Im n_eff, loss dB/cm, Re n_group, edge field, selected] of the last solve's

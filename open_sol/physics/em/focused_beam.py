@@ -52,8 +52,8 @@ FOCUS_TOLERANCE = 1e-6        # x the along spacing: largest distance of a focus
 class FocusedBeamLine:
     """Cells of a focused-beam line on the full Yee grid (axis 'x' = along x at row line_cell of y): the two TFSF rows
     (line_cell = first total-field row, upstream_cell = its scattered-field neighbour), the uniform spacings, the
-    drawing-frame coordinates (window lower edges 0) of the span centres and the two rows, the flat i * ny + j indices of
-    both rows over the span, and the even mirror planes the span ends on (focus there; mirror_factor = 2 per plane)."""
+    drawing-frame coordinates (window lower edges 0) of the span centres and the two rows, the grid shape and the even
+    mirror planes the span ends on (focus there; mirror_factor = 2 per plane)."""
     axis: str                  # along the line, 'x' | 'y'
     normal: str                # the beam axis, the other one
     direction: str             # 'positive' (toward +normal) | 'negative'
@@ -65,8 +65,6 @@ class FocusedBeamLine:
     normal_spacing: float      # [m]
     line_coordinate: float     # [m] normal centre of the line row
     upstream_coordinate: float
-    line_index: np.ndarray     # (n,) int64 flat indices of the line row
-    upstream_index: np.ndarray
     shape: tuple               # (nx, ny)
     mirror_planes: tuple       # along coordinates [m] of the even mirror planes the span reaches
     mirror_factor: float       # unfolded / drawn power
@@ -84,21 +82,6 @@ class FocusedBeamLine:
     def normal_focus(self, focus) -> float:
         """Normal coordinate [m] of a drawing-frame focus (x, y)."""
         return float(focus[1 if self.axis == 'x' else 0])
-
-    def rows_index(self, normal_cells):
-        """Flat indices (len(normal_cells), n) of the span cells in the given normal cells."""
-        return flat_rows(self.shape, self.axis, self.span, normal_cells)
-
-
-def flat_rows(shape, axis, span, normal_cells):
-    """int64 flat i * ny + j indices (len(normal_cells), n) of the span cells [span) along a line (axis 'x' = along x)
-    in the given normal cells of an (nx, ny) grid."""
-    ny = int(shape[1])
-    along = np.arange(*span, dtype=np.int64)
-    rows = np.asarray(normal_cells, dtype=np.int64)
-    if axis == 'x':
-        return along[None, :] * ny + rows[:, None]
-    return rows[:, None] * ny + along[None, :]
 
 
 def focused_beam_line(domain, boundary_config, polarization, axis, position, span, direction, label):
@@ -160,7 +143,6 @@ def focused_beam_line(domain, boundary_config, polarization, axis, position, spa
     upstream_cell = line_cell - 1 if direction == 'positive' else line_cell + 1
     shape = (int(domain.grid.nx), int(domain.grid.ny))
     along = slice(*span_cells)
-    indices = flat_rows(shape, axis, span_cells, (line_cell, upstream_cell))
     return FocusedBeamLine(
         axis=axis, normal=normal, direction=direction, line_cell=int(line_cell), upstream_cell=int(upstream_cell),
         span=(int(span_cells[0]), int(span_cells[1])),
@@ -168,7 +150,6 @@ def focused_beam_line(domain, boundary_config, polarization, axis, position, spa
         along_spacing=float(along_widths[0]), normal_spacing=float(normal_widths[NORMAL_RANGE]),
         line_coordinate=float(centres[normal_axis][line_cell]),
         upstream_coordinate=float(centres[normal_axis][upstream_cell]),
-        line_index=indices[0].copy(), upstream_index=indices[1].copy(),
         shape=shape, mirror_planes=tuple(planes), mirror_factor=float(2 ** len(planes)), label=label)
 
 
@@ -346,3 +327,53 @@ class DriveFields:
     eps: dict
     pec: np.ndarray | None
     polarization: str
+
+
+class FocusedBeamDrive:
+    """Shared frame of the brillouin_scattering drive contract (physics/mechanics/brillouin_drive DriveOptics) of a
+    physics with focused beams (solvers.fdfd_2d.FDFDPhysics, solvers.fdfd_bor.BORPhysics): beam names, drive_sources,
+    the frame of solve_moved_beam and the extra_solves counter. The physics sets _drive_source_type (its beam class)
+    and implements _require_driven_solution(method) (ValueError unless solution is the driven solve of the current
+    system) and _moved_beam_solution(source, moved) (one solve of the kept system with `moved` in place of `source`,
+    in its solution layout); it holds sources, solution, n_extra_solves, last_recycled_iterations, last_linear_text."""
+    _drive_source_type = None
+
+    def _drive_source_name(self, name) -> str:
+        """name, or 'focused_beam_<k>' for '' (k = the beams so far + 1); ValueError when a beam of the physics has
+        it."""
+        existing = self.drive_sources()
+        name = str(name) or f'focused_beam_{len(existing) + 1}'
+        if name in existing:
+            raise ValueError(f"focused beam name '{name}' is taken; names of this physics: {', '.join(existing)}")
+        return name
+
+    def drive_sources(self) -> dict:
+        """{name: beam} of the focused beams, in source order: the illuminations a solid's drive may name (it reads
+        name, incident_power [2D: W/m, unfolded; BOR: W, the standing wave] and wavelength [m] of each)."""
+        return {source.name: source for source in self.sources if isinstance(source, self._drive_source_type)}
+
+    def solve_moved_beam(self, source, offset):
+        """Driven solution of the current system (_moved_beam_solution: the physics' layout) with the focused beam
+        `source` (one of drive_sources()) moved by the drawing-frame focus offset [m] (no snapping: only the phases
+        move) and every other source unchanged, on the kept factor of the last solve: one more solve, counted in
+        extra_solves; solution, monitors, q_abs, n_solves and the solve summary stay those of the last solve. Offset
+        (0, 0) returns self.solution itself (do not write into it). ValueError for a source of another physics, the
+        physics' _require_driven_solution refusals and the beam's `moved` refusals."""
+        if not isinstance(source, self._drive_source_type) or not any(item is source for item in self.sources):
+            raise ValueError(f"solve_moved_beam: {source!r} is not a focused beam of this physics (its focused beams: "
+                             f"{', '.join(self.drive_sources()) or 'none'})")
+        self._require_driven_solution('solve_moved_beam')
+        first, second = (float(value) for value in offset)
+        if first == 0.0 and second == 0.0:
+            return self.solution
+        moved = source.moved((first, second))
+        shown_texts = (self.last_recycled_iterations, self.last_linear_text)   # solve_summary keeps the last solve
+        solution = self._moved_beam_solution(source, moved)
+        self.last_recycled_iterations, self.last_linear_text = shown_texts
+        self.n_extra_solves += 1
+        return solution
+
+    def _drive_counters(self, counters):
+        """Add extra_solves (the scan solves of solve_moved_beam) to work counters when the physics has a beam."""
+        if self.drive_sources():
+            counters['extra_solves'] = self.n_extra_solves

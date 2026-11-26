@@ -39,23 +39,23 @@ line placement and the BORFocusedBeam source; host numpy, scipy.special inside f
 # standing-wave amplitudes with ring_angle(m) solid rings) is consistent with it. The continuum pupil power
 #   P = (4 pi |C|^2 / (eta k^2)) int_0^theta_max l^2 sin cos dtheta = pi f0^2 s_m^2 (1 - e^{-2 / f0^2}) |C|^2 / (eta k^2)
 # (eta = eta0 mu / n; the angular-spectrum flux of the Debye field, = the pupil integral n / (2 eta0) int |E_p|^2 dA of
-# an aplanatic lens) differs from it by O((kh)^2) (E at row centres, H on the face: ~ cos(kappa h / 2)); it is the
-# reference of the self-tests (pupil_unit_power).
+# an aplanatic lens) differs from it by O((kh)^2) (E at row centres, H on the face: ~ cos(kappa h / 2)).
 #
 # Quadrature: Gauss-Legendre over theta in [0, theta_max], MIN_THETA_NODES + THETA_NODES_PER_RADIAN x the largest
 # integrand phase excursion k (rho_max s_m + |d|_max (1 - cos theta_max)) nodes (ValueError above MAX_THETA_NODES),
 # vectorised over the points in blocks of CHUNK_VALUES (point, node) values.
 import math
+import weakref
 from dataclasses import dataclass
 
 import numpy as np
 
-from ...core.constants import C0, ETA0
+from ...core.constants import C0
 from ...core.mesh import has_uniform_spacing
 from ...core.metric import ring_angle
 from .boundaries import BCType
 from .bor_ports import key_positions, line_keys, slice_interface_power, slice_tfsf_rhs
-from .fdfd_sources import phase_factor
+from .fdfd_sources import FocusedBeamSource, uniform_value
 from .focused_beam import DIRECTIONS, MIN_SPAN_CELLS, NORMAL_RANGE
 from .placement import port_cells
 
@@ -66,7 +66,6 @@ MAX_THETA_NODES = 16384
 CHUNK_VALUES = 1 << 18              # (point, node) values per vectorised block
 QUADRATURE_BYTES_PER_VALUE = 56     # Bessel argument (8, complex 16), J_n (8), phases (16), product (16) per value
 QUADRATURE_FLOPS_PER_VALUE = 200    # one or two J_n, the complex phase and the weighted sum per value (rough)
-_MEDIUM_RTOL = 1e-9                 # largest relative spread of eps / mu over the cells the beam reads
 _Z_WALLS = (BCType.PEC, BCType.PMC)  # z faces the beam axis may not end on
 _COMPONENT_CODES = {0: 'r', 1: 'phi', 2: 'z'}   # bor_ports.line_keys codes: E_r, u, E_z
 
@@ -179,18 +178,6 @@ def beam_amplitudes(rule, wavenumber, rho, z_offsets, sign, component):
     raise ValueError(f"beam component must be 'r', 'phi' or 'z', got {component!r}")
 
 
-def pupil_unit_power(omega, index, mu, numerical_aperture, fill_factor) -> float:
-    """Continuum power [W] per |C|^2 of the standing-wave beam (module header): pi f0^2 s_m^2 (1 - e^{-2 / f0^2}) /
-    (eta k^2), eta = eta0 mu / n, k = k0 n (real parts: lossless)."""
-    index = complex(index).real
-    sin_max = aperture_sine(numerical_aperture, index)
-    fill_factor = float(fill_factor)
-    wavenumber = float(omega) / float(C0) * index
-    impedance = float(ETA0) * complex(mu).real / index
-    return (math.pi * fill_factor ** 2 * sin_max ** 2 * -math.expm1(-2.0 / fill_factor ** 2)
-            / (impedance * wavenumber ** 2))
-
-
 def line_end_level(omega, index, numerical_aperture, fill_factor, r_end, z_offset, sign, n_samples=401) -> float:
     """|E| at r = r_end over its largest value on [0, r_end] (max over phi: sqrt(max(|A_r|^2 + |A_z|^2, |A_phi|^2)))
     of the continuum beam on a line at z - z_f = z_offset [m] (validation: the line must hold the beam); NaN without a
@@ -282,16 +269,17 @@ def bor_focused_beam_line(domain, boundary_config, axis, position, span, directi
 
 
 # ---- the source ----
-class BORFocusedBeam:
+class BORFocusedBeam(FocusedBeamSource):
     """Focused-beam source of BORPhysics (module header): the x-polarised Debye beam of numerical_aperture and
     fill_factor focused on the axis at drawing-frame z = focus_z [m], launched one-sided from a BORBeamLine toward its
-    direction with `power` [W] in the standing wave (the physical beam; flux_monitor reads 2 x power), E_x at the focus
-    = |C| e^{j phase}. The unit slices (Debye values on the two TFSF slices and their power) are kept per omega and
-    line medium (read per right-hand side from the assembly's materials on the cells r [0, n_line) x rows line_row +-
-    NORMAL_RANGE: one isotropic medium, no PEC, ValueError otherwise). Azimuthal order 1 only, no order sums
-    (term_rhs raises). Attributes the Brillouin drive reads: name, incident_power, focus (drawing-frame (r, z) = (0,
-    focus_z)), direction, wavelength, polarization; axis / position / span are the line glyph (as the mode sources)."""
-    amplitude_params = ('power', 'phase')
+    direction with `power` [W] in the standing wave (ring weight: module header "Power"), E_x at the focus = |C| e^{j
+    phase}. The unit slices (Debye values on the two TFSF slices and their power) are kept per omega and line medium
+    (read per right-hand side from the assembly's materials on the cells r [0, n_line) x rows line_row +-
+    NORMAL_RANGE: one isotropic medium, no PEC, ValueError otherwise), their active positions per system. Azimuthal
+    order 1 only, no order sums (term_rhs raises). Attributes the Brillouin drive (physics/mechanics/brillouin_drive)
+    reads: name, incident_power, wavelength; axis / position / span are the line glyph (as the mode sources)."""
+    power_unit = 'W'
+    offset_names = ('dr', 'dz')
 
     def __init__(self, line, power, numerical_aperture, focus_z, fill_factor, phase, polarization, name):
         self.line = line
@@ -299,7 +287,6 @@ class BORFocusedBeam:
         self.name = str(name)
         self.polarization = polarization
         self.direction = line.direction
-        self.azimuthal_order = BEAM_ORDER
         self.axis, self.position, self.span = 'x', line.line_row, (0, line.n_line)
         numerical_aperture = float(numerical_aperture)
         if not (math.isfinite(numerical_aperture) and numerical_aperture > 0.0):
@@ -315,6 +302,7 @@ class BORFocusedBeam:
         self.focus_z = focus_z
         self.solved_omega = None   # rad/s of the last right-hand side
         self._unit = None          # ((omega, eps, mu), codes, indices, line values, upstream values, unit power)
+        self._positions = None     # (weakref of system.unknown_index, line positions, upstream positions)
         self.set_amplitude(power, phase)
 
     @property
@@ -322,40 +310,18 @@ class BORFocusedBeam:
         """Drawing-frame (r, z) [m] of the focus: (0, focus_z)."""
         return 0.0, self.focus_z
 
-    @property
-    def incident_power(self) -> float:
-        """Power [W] of the incident standing-wave (linearly polarised) beam: the scale of the injected slices."""
-        return self.power
-
-    @property
-    def wavelength(self) -> float:
-        """Vacuum wavelength [m] of the last right-hand side; ValueError before the first solve."""
-        if self.solved_omega is None:
-            raise ValueError(f'{self.label}: not solved yet (no wavelength)')
-        return 2.0 * math.pi * float(C0) / self.solved_omega
-
-    def set_amplitude(self, power, phase):
-        """New power [W] (finite, > 0: ValueError otherwise) and phase [deg] in place; the next right-hand side rescales
-        the kept unit slices."""
-        power = float(power)
-        if not (math.isfinite(power) and power > 0.0):
-            raise ValueError(f'{self.label} power must be finite and > 0 [W], got {power!r}')
-        self.power = power
-        self.phase = float(phase)
-        self._phasor = phase_factor(phase, self.label)
-
     def moved(self, offset):
         """New BORFocusedBeam on the same line with the focus moved by the drawing-frame offset (dr, dz) [m] (no
         snapping: only the phases of the angular components change); ValueError for dr != 0 (off the axis the beam is
         no m = 1 field)."""
-        dr, dz = (float(value) for value in offset)
-        if not (math.isfinite(dr) and math.isfinite(dz)):
-            raise ValueError(f'{self.label}: a focus offset must be finite (dr, dz) [m], got {offset!r}')
+        dr, dz = self._focus_offset(offset)
         if dr != 0.0:
             raise ValueError(f'{self.label}: a radial focus offset ({dr:.6g} m) moves the focus off the axis, where the '
                              'beam is no longer an azimuthal order 1 field; scan along z only')
-        return BORFocusedBeam(self.line, self.power, self.numerical_aperture, self.focus_z + dz, self.fill_factor,
-                              self.phase, self.polarization, self.name)
+        moved = BORFocusedBeam(self.line, self.power, self.numerical_aperture, self.focus_z + dz, self.fill_factor,
+                               self.phase, self.polarization, self.name)
+        moved._positions = self._positions   # same slices: no new position lookup per scan position
+        return moved
 
     def _medium(self, materials):
         """(eps, mu) complex of the one isotropic medium on the cells the beam reads (BORMaterials of the assembly);
@@ -371,8 +337,8 @@ class BORFocusedBeam:
         mu_block = np.asarray(materials.mu, dtype=np.complex128)[cells]
         mu = complex(mu_block.flat[0])
         for name, block, reference in (*((name, block, eps) for name, block in blocks.items()), ('mu_r', mu_block, mu)):
-            spread = float(np.max(np.abs(block - reference)))
-            if reference == 0.0 or not (np.all(np.isfinite(block)) and spread <= _MEDIUM_RTOL * abs(reference)):
+            spread, uniform = uniform_value(block, reference)
+            if not uniform:
                 raise ValueError(f'{self.label}: the line medium is not one homogeneous isotropic medium {where} ({name} '
                                  f'differs by {spread:.3g} from {reference:.6g}): the Debye beam is the field of one '
                                  'unbounded isotropic medium; move the line into a uniform region')
@@ -406,8 +372,8 @@ class BORFocusedBeam:
                 amplitudes[keys] = beam_amplitudes(rule, wavenumber, rho[keys], values[keys], line.sign, component)
             slices.append(amplitudes)
         line_values, upstream_values = slices
-        flux = slice_interface_power(system, key_positions(system, codes, indices, line.line_row), line_values,
-                                     key_positions(system, codes, indices, line.upstream_row), upstream_values)
+        line_positions, upstream_positions = self._slice_positions(system, codes, indices)
+        flux = slice_interface_power(system, line_positions, line_values, upstream_positions, upstream_values)
         unit_power = ring_angle(BEAM_ORDER) / (2.0 * math.pi) * flux   # the standing wave (module header)
         if not (math.isfinite(unit_power) and unit_power > 0.0):
             raise ValueError(f'{self.label}: the incident beam carries no power toward {self.direction} '
@@ -415,28 +381,31 @@ class BORFocusedBeam:
         self._unit = (key, codes, indices, line_values, upstream_values, unit_power)
         return self._unit[1:]
 
-    def _require_order(self, system):
+    def _slice_positions(self, system, codes, indices):
+        """(line positions, upstream positions) int64 of the slice keys in `system` (bor_ports.key_positions), kept
+        while the system's unknown_index array is the same object (a new active set recomputes them)."""
+        kept = self._positions
+        if kept is not None and kept[0]() is system.unknown_index:
+            return kept[1], kept[2]
+        line = self.line
+        positions = (key_positions(system, codes, indices, line.line_row),
+                     key_positions(system, codes, indices, line.upstream_row))
+        self._positions = (weakref.ref(system.unknown_index), *positions)
+        return positions
+
+    def rhs(self, physics, system):
+        """Active rhs of the one-sided launch (bor_ports.slice_tfsf_rhs) at the system's omega and power / phase."""
         if system.azimuthal_order != BEAM_ORDER:
             raise ValueError(f'{self.label}: a focused beam on the axis is the azimuthal order {BEAM_ORDER} field (an '
                              f'x-polarised beam), but the system solves order {system.azimuthal_order}; set '
                              f'azimuthal_order {BEAM_ORDER}')
-
-    def incident_slices(self, physics, system):
-        """(codes, indices, line values, upstream values) host complex128 of the incident field at power / phase on
-        the slice keys (bor_ports.line_keys) of the line and upstream slices (self-tests, references)."""
-        self._require_order(system)
         codes, indices, line_values, upstream_values, unit_power = self._unit_slices(physics, system)
         scale = math.sqrt(self.power / unit_power) * self._phasor
-        return codes, indices, scale * line_values, scale * upstream_values
-
-    def rhs(self, physics, system):
-        """Active rhs of the one-sided launch (bor_ports.slice_tfsf_rhs) at the system's omega."""
-        codes, indices, line_values, upstream_values = self.incident_slices(physics, system)
         line = self.line
         self.solved_omega = float(system.omega)
-        return slice_tfsf_rhs(system, line.line_row, line.direction,
-                              key_positions(system, codes, indices, line.line_row), line_values,
-                              key_positions(system, codes, indices, line.upstream_row), upstream_values)
+        line_positions, upstream_positions = self._slice_positions(system, codes, indices)
+        return slice_tfsf_rhs(system, line.line_row, line.direction, line_positions, scale * line_values,
+                              upstream_positions, scale * upstream_values)
 
     def term_rhs(self, system, order=None):
         """Refused: the beam is one m = 1 standing wave, not a sum of exp(-j m phi) terms of a point source."""

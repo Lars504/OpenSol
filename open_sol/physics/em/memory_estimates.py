@@ -10,7 +10,7 @@ from ...core.memory_estimate import (BOOL_BYTES, COMPLEX64_BYTES, COMPLEX128_BYT
 from ...model.definition_helpers import (eigen_factorization, eigen_subspace_size, host_direct_back_end,
                                          linear_solver_cudss, resolved_back_end, resolved_stepper_precision)
 from ...model.definition_resonance import point_trace_items
-from ...model.schema import EIGENFREQUENCY_STUDY, resolve_values, solver_backend
+from ...model.schema import resolve_values, solver_backend
 from ...solvers.arpack_shift_invert import (CUDSS_FACTORIZATIONS, MIXED_EIGEN_MIN_UNKNOWNS, arnoldi_basis_bytes,
                                             arnoldi_basis_size, device_arnoldi_fits)
 from ...solvers.cudss_factor import (CUDSS_SOLVE_PHASE, FactorFill, factor_device_bytes, index_map_bytes,
@@ -741,17 +741,16 @@ def design_region_memory_estimate(values, n_selected_cells, mesh):
 
 def focused_beam_memory_estimate(values, n_selected_cells, mesh):
     """FeatureType.memory_estimate of an FDFD focused_beam (fdfd_sources.FocusedBeamPhasor; n_selected_cells = the
-    line's cells): its two incident rows (complex128) and their flat indices (int64) kept on the run backend, the host
-    wave table of each right-hand side (focused_beam.wave_count: an upper bound, the NA and medium cuts unknown here)
-    and the right-hand side's full-grid temporaries (incident vector and two operator products, complex128)."""
+    line's cells): its two incident rows (complex128) kept on the run backend, the host wave table of each right-hand
+    side (focused_beam.wave_count: an upper bound, the NA and medium cuts unknown here) and the right-hand side's
+    full-grid temporaries (fdfd_sources.one_sided_tfsf_rhs: incident vector and two operator products, complex128)."""
     n_along = max(int(n_selected_cells), 1)
     spacing = float(max(max(mesh.dx_cells), max(mesh.dy_cells)))   # the widest cell: the most waves
     n_waves = min(wave_count(n_along, spacing, float(values.get('waist') or spacing)), 4 * n_along + 1)
     return MemoryEstimate.from_items(
         host_items=(('focused beam wave table (along-line phases x waves, complex128, per right-hand side)',
                      COMPLEX128_BYTES * (n_along + 8) * n_waves),),
-        run_items=(('focused beam incident rows (2 x complex128) and their indices (2 x int64)',
-                    2 * (COMPLEX128_BYTES + _INT64_BYTES) * n_along),),
+        run_items=(('focused beam incident rows (2 x complex128)', 2 * COMPLEX128_BYTES * n_along),),
         transient_items=((FOCUSED_BEAM_RHS_PHASE, 'incident vector and two operator products (3 x complex128)',
                           3 * COMPLEX128_BYTES * int(mesh.n_cells)),))
 
@@ -759,15 +758,16 @@ def focused_beam_memory_estimate(values, n_selected_cells, mesh):
 def bor_focused_beam_memory_estimate(values, n_selected_cells, mesh):
     """FeatureType.memory_estimate of an em_fdfd_bor focused_beam (bor_focused_beam.BORFocusedBeam; n_selected_cells =
     the line's r cells), all on the host (the BOR solves there): the kept unit slices (2 slices x (3 n + 1) keys of
-    complex128 values, the int64 codes / indices), one Debye quadrature block (bor_focused_beam.CHUNK_VALUES point x
-    angle values at QUADRATURE_BYTES_PER_VALUE: an upper bound, smaller lines use fewer) and the int64 inverse map
-    (full E vector) a key-position lookup builds; the right-hand side vectors themselves are the physics' items."""
+    complex128 values, the int64 codes / indices) and their int64 active positions in the system, one Debye quadrature
+    block (bor_focused_beam.CHUNK_VALUES point x angle values at QUADRATURE_BYTES_PER_VALUE: an upper bound, smaller
+    lines use fewer) and the int64 inverse map (full E vector) a key-position lookup builds once per system; the
+    right-hand side vectors themselves are the physics' items."""
     n_line = max(int(n_selected_cells), 1)
     keys = 3 * n_line + 1
     full_vector = 3 * int(mesh.n_cells) + int(mesh.nx) + int(mesh.ny)   # (nr + 1) nz + nr nz + nr (nz + 1)
     return MemoryEstimate.from_items(host_items=(
-        ('focused beam unit slices (2 x complex128 values per key, int64 codes and indices)',
-         2 * keys * (COMPLEX128_BYTES + _INT64_BYTES)),
+        ('focused beam unit slices (2 x complex128 values per key, int64 codes, indices and 2 positions)',
+         2 * keys * (COMPLEX128_BYTES + 2 * _INT64_BYTES)),
         ('focused beam Debye quadrature block (point x angle values, upper bound)',
          _DEBYE_CHUNK_VALUES * QUADRATURE_BYTES_PER_VALUE),
         ('focused beam key-position lookup (int64 inverse map of the full E vector)', _INT64_BYTES * full_vector)))
@@ -918,8 +918,7 @@ def bor_memory_estimate(settings_values, mesh, context):
         return _bor_fem_memory_estimate(settings_values, mesh, context)
     n_cells = int(mesh.n_cells)
     unknowns = 3 * n_cells
-    study_type = context.spec.study.type
-    eigen = study_type == EIGENFREQUENCY_STUDY
+    eigen = eigen_solved(context.spec, context.physics_spec.name)   # the create's test (definition_bor._create)
     shifted = (context.solvers or {}).get('shifted')
     line_block = shifted is not None and shifted.solver_type.name == 'line_block'
     factorization = host_factorization(context.solvers, eigen)
@@ -947,7 +946,7 @@ def bor_memory_estimate(settings_values, mesh, context):
                                           drive_field_vectors=2, on_host=True)
     host_items += drive_host
     n_listed = len(settings_values.get('azimuthal_orders') or ())
-    order_sum = bool(n_listed) and study_type in ('stationary', FREQUENCY_DOMAIN_STUDY)   # the driven order sum
+    order_sum = bool(n_listed) and not eigen   # the driven order sum (also as a background physics)
     n_orders = max(n_listed, 1) if eigen or order_sum else 1
     if order_sum:   # solvers/fdfd_bor._solve_order_sum: one order's factor at a time (the item above)
         host_items.append(('driven order sum: Yee fields of the +m / -m terms and their phi = 0 sum (complex128), '

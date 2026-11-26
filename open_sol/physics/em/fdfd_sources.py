@@ -22,7 +22,7 @@ from ...core.mesh import has_uniform_spacing
 from .focused_beam import (FOCUS_TOLERANCE, NORMAL_RANGE, beam_rows, discrete_waves, interface_power, line_medium)
 from .harmonic import face_current_rhs
 from .operators import axis_difference_weights
-from .yee_grid import cpml_grading_cell_size, grid_cell_widths, sheet_launch_factor
+from .yee_grid import cell_row, cpml_grading_cell_size, grid_cell_widths, sheet_launch_factor
 
 
 def _on_backend(cached, host_value, xp):
@@ -45,6 +45,34 @@ def _require_polarization(system, polarization, label):
     """ValueError when a source of one polarisation is solved in a system of the other."""
     if system.polarization != polarization:
         raise ValueError(f"{label} is an {polarization!r} source, but the system is {system.polarization!r}")
+
+
+def one_sided_tfsf_rhs(rhs, operator, normal_axis, line_cell, upstream_cell, along, line_values, upstream_values):
+    """Add the one-sided TFSF right-hand side of a line (the one writer of ModeSourcePhasor and FocusedBeamPhasor; 2D
+    twin of bor_ports.slice_tfsf_rhs) to the complex128 (nx, ny) rhs of the run backend: incident values u_inc on the
+    cells `along` (slice) of the line row line_cell (the first total-field row) and of its upstream neighbour
+    upstream_cell, rows across normal_axis (0: rhs[c, :], 1: rhs[:, c]); b = A (Q u_inc) - Q (A u_inc), Q = the
+    total-field side. Two full-grid operator products; written on the two rows only."""
+    # The operator couples adjacent rows only (5 points; 9 with eps_xy / gyration_z), so A (Q u_inc) = A u_c is non-zero
+    # on rows c', c and the downstream row c'' and A u_c' on c' - 1, c', c. Q holds c and c'' (never c' or c' - 1; on a
+    # periodic normal axis this needs >= 4 rows, which ModeSourcePhasor checks), so b[c'] = (A u_c)[c'], b[c] =
+    # (A u_c)[c] - (A u_inc)[c], and on c'' the two products hold the same terms and cancel exactly. The whole rows are
+    # written: a 9-point stencil reaches one cell beyond the span ends.
+    xp = array_module_of(rhs)
+    shape = rhs.shape
+    line_cells, upstream_cells = (((cell, along) if normal_axis == 0 else (along, cell))
+                                  for cell in (line_cell, upstream_cell))
+    incident = xp.zeros(shape, dtype=xp.complex128)
+    incident[line_cells] = line_values
+    inside = (operator @ incident.ravel()).reshape(shape)   # A (Q u_inc): the line row is the incident row inside Q
+    incident[upstream_cells] = upstream_values
+    both = (operator @ incident.ravel()).reshape(shape)     # A u_inc of both rows
+    del incident
+    upstream_row = cell_row(rhs, normal_axis, upstream_cell)
+    upstream_row += cell_row(inside, normal_axis, upstream_cell)
+    line_row = cell_row(rhs, normal_axis, line_cell)
+    line_row += cell_row(inside, normal_axis, line_cell)
+    line_row -= cell_row(both, normal_axis, line_cell)
 
 
 class PointCurrentPhasor:
@@ -375,23 +403,66 @@ class PlaneWavePhasor:
         rhs += correction
 
 
-_MEDIUM_RTOL = 1e-9   # largest relative spread of an operator value over the rows a focused beam reads
+MEDIUM_RTOL = 1e-9   # largest relative spread of a medium value over the cells a focused beam reads (2D and BOR)
 
 
-class FocusedBeamPhasor:
+def uniform_value(values, reference):
+    """(spread, uniform) of an array of medium values around `reference` (a focused beam's line medium): spread = max
+    |values - reference|, uniform = reference != 0, every value finite and spread <= MEDIUM_RTOL |reference|."""
+    spread = float(np.max(np.abs(values - reference)))
+    return spread, bool(reference != 0.0 and np.all(np.isfinite(values)) and spread <= MEDIUM_RTOL * abs(reference))
+
+
+class FocusedBeamSource:
+    """Shared frame of the focused-beam sources (FocusedBeamPhasor, bor_focused_beam.BORFocusedBeam): power
+    [power_unit] and phase [deg], the vacuum wavelength of the last right-hand side (solved_omega) and the offset check
+    of `moved`; a subclass sets label and solved_omega, power_unit and offset_names when they differ."""
+    amplitude_params = ('power', 'phase')   # as PointCurrentPhasor
+    power_unit = 'W/m'
+    offset_names = ('dx', 'dy')
+
+    @property
+    def incident_power(self) -> float:
+        """Incident power [power_unit] of the beam: the scale of the injected incident field (2D: in the unfolded
+        structure; BOR: the standing wave)."""
+        return self.power
+
+    @property
+    def wavelength(self) -> float:
+        """Vacuum wavelength [m] of the last right-hand side; ValueError before the first solve."""
+        if self.solved_omega is None:
+            raise ValueError(f'{self.label}: not solved yet (no wavelength)')
+        return 2.0 * math.pi * float(C0) / self.solved_omega
+
+    def set_amplitude(self, power, phase):
+        """New power [power_unit] (finite, > 0: ValueError otherwise) and phase [deg] in place (a reused sweep build);
+        the next right-hand side rescales the kept unit incident field."""
+        power = float(power)
+        if not (math.isfinite(power) and power > 0.0):
+            raise ValueError(f"{self.label} power must be finite and > 0 [{self.power_unit}], got {power!r}")
+        self.power = power
+        self.phase = float(phase)
+        self._phasor = phase_factor(phase, self.label)
+
+    def _focus_offset(self, offset):
+        """The two float components of a focus offset [m]; ValueError unless both are finite."""
+        first, second = (float(value) for value in offset)
+        if not (math.isfinite(first) and math.isfinite(second)):
+            raise ValueError(f"{self.label}: a focus offset must be finite ({', '.join(self.offset_names)}) [m], got "
+                             f"{offset!r}")
+        return first, second
+
+
+class FocusedBeamPhasor(FocusedBeamSource):
     """One-sided focused beam on a line (focused_beam.py: a Gaussian spectrum of the discrete plane waves of the line
     medium, all in phase at `focus` = drawing-frame (x, y) [m]): `power` [W/m] in the unfolded structure toward its
     direction, incident out-of-plane field (ez E_z, hz H_z) at the focus = |u| e^{j phase}; `line` = its
     focused_beam.FocusedBeamLine (TFSF rows: the line cells, total field, and their upstream neighbours). The incident
     rows are computed per solved omega and line medium (read from the assembled operator on the rows line_cell +-
     NORMAL_RANGE: one uniform medium, no PEC, conducting sheet, eps_xy or gyration there, ValueError otherwise) and kept
-    on the run backend. Attributes the Brillouin drive reads: name, incident_power, focus, direction, wavelength,
-    polarization; axis / position / span are the line glyph (as the mode source)."""
-    amplitude_params = ('power', 'phase')   # as PointCurrentPhasor
-    # Right-hand side (the ModeSourcePhasor identity, TFSF sign of PlaneWavePhasor): b = A (Q u_inc) - Q (A u_inc), Q =
-    # the total-field half plane, u_inc on the line row c and the upstream row c' only. Adjacent-row stencils (5 points,
-    # 9 with eps_xy) make b non-zero on those two rows alone: b[c'] = (A u_c)[c'], b[c] = (A u_c)[c] - (A (u_c +
-    # u_c'))[c] (two operator products of the flat incident vector).
+    on the run backend and written by one_sided_tfsf_rhs (as the mode source). Attributes the Brillouin drive
+    (physics/mechanics/brillouin_drive) reads: name, incident_power, wavelength; axis / position / span are the line
+    glyph (as the mode source)."""
 
     def __init__(self, line, power, waist, focus, numerical_aperture, phase, polarization, name):
         label = line.label
@@ -424,47 +495,25 @@ class FocusedBeamPhasor:
         self.solved_omega = None   # rad/s of the last right-hand side
         self._unit = None          # (omega, LineMedium, unit line row, unit upstream row, unit power) on the host
         self._device_rows = None   # (line values, upstream values) of the run backend at power / phase
-        self._device_index = None  # (line index, upstream index) of the run backend
         self.set_amplitude(power, phase)
 
-    @property
-    def incident_power(self) -> float:
-        """Incident power [W/m] of the beam in the unfolded structure (exact: the scale of the injected rows)."""
-        return self.power
-
-    @property
-    def wavelength(self) -> float:
-        """Vacuum wavelength [m] of the last right-hand side; ValueError before the first solve."""
-        if self.solved_omega is None:
-            raise ValueError(f'{self.label}: not solved yet (no wavelength)')
-        return 2.0 * math.pi * float(C0) / self.solved_omega
-
     def set_amplitude(self, power, phase):
-        """New power [W/m] (finite, > 0: ValueError otherwise) and phase [deg] in place (a reused sweep build); the
-        next right-hand side rescales the kept unit rows."""
-        power = float(power)
-        if not (math.isfinite(power) and power > 0.0):
-            raise ValueError(f"{self.label} power must be finite and > 0 [W/m], got {power!r}")
-        self.power = power
-        self.phase = float(phase)
-        self._phasor = phase_factor(phase, self.label)
+        """FocusedBeamSource.set_amplitude (power [W/m]); the run-backend rows are rebuilt at the next right-hand
+        side."""
+        super().set_amplitude(power, phase)
         self._device_rows = None
 
     def moved(self, offset):
         """New FocusedBeamPhasor on the same line with the focus moved by offset = (dx, dy) [m] (no snapping: only the
         wave phases change); ValueError for an along-line offset when the line ends on a mirror plane."""
-        dx, dy = (float(value) for value in offset)
-        if not (math.isfinite(dx) and math.isfinite(dy)):
-            raise ValueError(f"{self.label}: a focus offset must be finite (dx, dy) [m], got {offset!r}")
+        dx, dy = self._focus_offset(offset)
         along_shift = dx if self.axis == 'x' else dy
         if self.line.mirror_planes and along_shift != 0.0:
             raise ValueError(f"{self.label}: an offset along the line ({self.axis} {along_shift:.6g} m) moves the focus "
                              'off the mirror plane the line ends on; scan across the line only, or model the whole '
                              'structure')
-        moved = FocusedBeamPhasor(self.line, self.power, self.waist, (self.focus[0] + dx, self.focus[1] + dy),
-                                  self.numerical_aperture, self.phase, self.polarization, self.name)
-        moved._device_index = self._device_index   # same rows: no new index upload per scan position
-        return moved
+        return FocusedBeamPhasor(self.line, self.power, self.waist, (self.focus[0] + dx, self.focus[1] + dy),
+                                 self.numerical_aperture, self.phase, self.polarization, self.name)
 
     def _medium(self, physics, system):
         """LineMedium of the assembled operator on the rows the beam reads (uniform values; ValueError otherwise)."""
@@ -507,8 +556,8 @@ class FocusedBeamPhasor:
         for name, block in blocks.items():
             host = np.asarray(to_host(block), dtype=np.complex128).ravel()
             reference = host[0]
-            spread = float(np.max(np.abs(host - reference)))
-            if reference == 0.0 or not (np.all(np.isfinite(host)) and spread <= _MEDIUM_RTOL * abs(reference)):
+            spread, uniform = uniform_value(host, reference)
+            if not uniform:
                 raise ValueError(f'{self.label}: the line medium is not uniform {where} ({name} varies by '
                                  f'{spread:.3g} around {complex(reference):.6g}): the launch is exact only in one '
                                  'homogeneous medium there (interfaces, poles of another material, subpixel smoothing '
@@ -562,29 +611,16 @@ class FocusedBeamPhasor:
     def add_to_rhs(self, rhs, physics, system):
         _require_polarization(system, self.polarization, 'FocusedBeamPhasor')
         line = self.line
-        if tuple(rhs.shape) != line.shape or not rhs.flags.c_contiguous:
-            raise ValueError(f'{self.label}: rhs must be a C-contiguous array of the grid {line.shape} of its line, got '
-                             f'shape {tuple(rhs.shape)}')
+        if tuple(rhs.shape) != line.shape:
+            raise ValueError(f'{self.label}: rhs must be an array of the grid {line.shape} of its line, got shape '
+                             f'{tuple(rhs.shape)}')
         _, line_row, upstream_row, unit_power = self._unit_rows(physics, system)
         xp = array_module_of(rhs)
         if self._device_rows is None or array_module_of(self._device_rows[0]) is not xp:
             scale = self._scale(unit_power)
             self._device_rows = (xp.asarray(scale * line_row), xp.asarray(scale * upstream_row))
-        cached = self._device_index or (None, None)
-        self._device_index = (_on_backend(cached[0], line.line_index, xp), _on_backend(cached[1], line.upstream_index,
-                                                                                        xp))
-        line_index, upstream_index = self._device_index
-        line_values, upstream_values = self._device_rows
-        operator = system.operator
-        flat_rhs = rhs.reshape(-1)   # a view of the C-contiguous (nx, ny) rhs
-        incident = xp.zeros(flat_rhs.size, dtype=xp.complex128)
-        incident[line_index] = line_values
-        inside = operator @ incident            # A (Q u_inc): u_inc on the line row
-        incident[upstream_index] = upstream_values
-        both = operator @ incident              # A u_inc of both rows
-        del incident
-        flat_rhs[upstream_index] += inside[upstream_index]
-        flat_rhs[line_index] += inside[line_index] - both[line_index]
+        one_sided_tfsf_rhs(rhs, system.operator, 'xy'.index(line.normal), line.line_cell, line.upstream_cell,
+                           slice(*line.span), *self._device_rows)
         self.solved_omega = float(system.omega)
 
 

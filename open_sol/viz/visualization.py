@@ -54,6 +54,7 @@ _LEGEND_STYLES = {
                    label='Point source'),
     'line_source': dict(color=_STYLE['source_color'], linestyle='--', linewidth=1.5, label='Line source'),
     'mode_source': dict(color=_STYLE['source_color'], linestyle='--', linewidth=3.0, label='Mode source'),
+    'focused_beam': dict(color=_STYLE['source_color'], linestyle='--', linewidth=3.0, label='Focused beam'),
     'tfsf': dict(color=_STYLE['source_color'], linestyle='-.', linewidth=1.5, label='TFSF box'),
     'probe': dict(marker='o', color='w', markerfacecolor=_STYLE['probe_color'], markersize=6, label='Probe'),
     'flux': dict(color=_STYLE['flux_color'], linewidth=2.5, label='Flux monitor'),
@@ -763,7 +764,7 @@ class Visualizer:
                 # (axis / position / span; clipped to the window when PML-extended).
                 xs, ys = frame.segment(source.axis, source.position, source.span)
                 ax.plot(xs, ys, color=color, linewidth=3.0, linestyle='--', alpha=0.8, zorder=9)
-                kinds.add('mode_source')
+                kinds.add('focused_beam' if isinstance(source, (FocusedBeamPhasor, BORFocusedBeam)) else 'mode_source')
             else:
                 raise TypeError(f"cannot annotate EM source of type {type(source).__name__}")
         return kinds

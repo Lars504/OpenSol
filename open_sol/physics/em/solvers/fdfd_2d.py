@@ -31,7 +31,7 @@ from ..fdfd_monitors import HarmonicFluxMonitor, HarmonicNearToFar, HarmonicProb
 from ..fdfd_ports import HarmonicModeMonitor, ModeSourcePhasor
 from ..fdfd_sources import (ElectricDipolePhasor, FocusedBeamPhasor, MagneticCurrentPhasor, PlaneWavePhasor,
                             PointCurrentPhasor, SheetCurrentPhasor)
-from ..focused_beam import DriveFields, focused_beam_line
+from ..focused_beam import DriveFields, FocusedBeamDrive, focused_beam_line
 from ..harmonic import (HarmonicSystem, absorbed_power_ez, absorbed_power_hz, cell_permeability, cell_permittivity,
                         off_diagonal_entries)
 from ..index_reference import OFF_DIAGONAL_ARRAY
@@ -46,7 +46,7 @@ from ..renderer import FDFDRendererEz, FDFDRendererHz
 from ..sheet_conductivity import ConductingSheet, SheetConductivity
 from ..sources import bloch_line_phase
 from ..subpixel_smoothing import SubpixelSmoothing
-from ..yee_grid import cell_row, cpml_grading_cell_size, face_average, face_pec, grid_cell_widths
+from ..yee_grid import cell_row, cpml_grading_cell_size, face_average, face_pec, grid_cell_widths, lower_face
 from .fdtd_2d_base import add_pec_cells, record_dispersive_region
 from .harmonic_shell import COMPONENT_UNITS, HarmonicEMShell
 from .host_fdfd import fell_back_to_superlu
@@ -55,19 +55,12 @@ from .host_fdfd import fell_back_to_superlu
 def _window_faces(faces, axis, window, periodic, wrap_factor, xp):
     """New (mx + 1, my) / (mx, my + 1) array of the hi-face values `faces` (nx, ny) of the window cells along `axis`
     with the window's lower edge face first (FDFDPhysics.drive_fields): the hi face of the cell below, on a periodic
-    axis the wrapped last face x wrap_factor, at an unpadded wall the first face repeated (yee_grid.lower_face_partner's
-    rule for that row)."""
+    axis the wrapped last face x wrap_factor, at an unpadded wall the first face repeated (yee_grid.lower_face)."""
     part, other = window[axis], window[1 - axis]
-    start = part.start
-    if start > 0:
-        lower, factor = start - 1, 1.0
-    elif periodic:
-        lower, factor = faces.shape[axis] - 1, wrap_factor
-    else:
-        lower, factor = 0, 1.0
+    lower = lower_face(part.start, periodic)   # -1: the wrapped last face
     row = cell_row(faces, axis, lower)[other]
-    if factor != 1.0:
-        row = row * factor
+    if lower < 0 and wrap_factor != 1.0:
+        row = row * wrap_factor
     inner = faces[window]
     return xp.concatenate((xp.expand_dims(row, axis), inner), axis=axis)
 
@@ -80,7 +73,7 @@ _SPARSE_DIRECT_TEXT = 'sparse direct'
 _NOT_KEPT = 'not kept'   # _restored_sensitivity of a restored snapshot whose solve kept no adjoint gradient
 
 
-class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
+class FDFDPhysics(FocusedBeamDrive, HarmonicEMShell, PhysicsSolver):
     """Frequency-domain EM on a Domain, polarisation 'ez' (E_z, H_x, H_y) or 'hz' (H_z, E_x, E_y): assembles the complex
     Helmholtz system at omega, factorises it once per (omega, materials) and solves for the summed phasor sources."""
     # Dirty flags are host bools: _system_dirty (materials, eps slots, PEC, poles, a new omega) reassembles and
@@ -90,6 +83,7 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
     # every reassembly (before any add_to_rhs / record); finalize collects the warnings.
 
     name = 'em'
+    _drive_source_type = FocusedBeamPhasor   # focused_beam.FocusedBeamDrive: the beams of the drive contract
     subpixel_smoothing = None   # SubpixelSmoothing of the model-wide switch (set_subpixel_smoothing); ports read it
     objective_unit = 'W/m'      # J of the adjoint objectives (optimization study labels, design_region result)
     # Polar (r, phi) Domains (symmetry 2.16 item 5 / 2.18, scripts only: the em_fdfd_* PhysicsTypes stay Cartesian until
@@ -899,8 +893,7 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
         solve_moved_beam), plus the counters of private (script) linear / eigen solvers; a build's role solvers report
         their own."""
         counters = {'solves': self.n_solves}
-        if self.drive_sources():
-            counters['extra_solves'] = self.n_extra_solves
+        self._drive_counters(counters)
         if self._line_block is not None:   # the reference sparse direct (rejected / adjoint solves) is private
             counters['line_block_fallbacks'] = self.n_line_block_fallbacks
         for solver in self._private_solvers:
@@ -1333,20 +1326,12 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
         polar grid; ValueError for a periodic axis, non-uniform cells along or across the line, a mirror face normal to
         the beam axis, a focus off the mirror plane the line ends on, or a repeated name."""
         self._require_cartesian('add_focused_beam')
-        existing = self.drive_sources()
-        name = str(name) or f'focused_beam_{len(existing) + 1}'
-        if name in existing:
-            raise ValueError(f"focused beam name '{name}' is taken; names of this physics: {', '.join(existing)}")
+        name = self._drive_source_name(name)
         label = f"Focused beam '{name}'"
         line = focused_beam_line(self.domain, self.boundary_config, self.polarization, axis, position, span,
                                  direction, label)
         return self._add_source(FocusedBeamPhasor(line, power, waist, focus, numerical_aperture, phase,
                                                   self.polarization, name))
-
-    def drive_sources(self) -> dict:
-        """{name: FocusedBeamPhasor} of the focused beams, in source order: the illuminations a solid's drive may name
-        (each has name, incident_power [W/m, unfolded], focus (x, y) [m], direction, wavelength [m], polarization)."""
-        return {source.name: source for source in self.sources if isinstance(source, FocusedBeamPhasor)}
 
     def _require_driven_solution(self, method):
         """ValueError unless solution is the driven solve of the current system (no reassembly, no new source, no shown
@@ -1360,34 +1345,20 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
             raise ValueError(f'{method}: resonance {self.selected_resonance} is shown, not the driven solve; solve the '
                              'driven problem first (step())')
 
-    def solve_moved_beam(self, source, offset):
-        """Run-backend complex128 (nx, ny) driven solution with the focused beam `source` (one of drive_sources())
-        moved by offset = (dx, dy) [m] (no snapping: the waves' phases move) and every other source unchanged, on the
-        factor of the last solve (wall rows filled, PEC zeroed): one more solve of the kept system, counted in
-        extra_solves; solution, monitors, q_abs, n_solves and the face-field cache stay those of the last solve. Offset
-        (0, 0) returns self.solution itself (do not write into it). ValueError for a source of another physics, before
-        a solve, after a change of the system or a source since it, while a resonance is shown, and for an along-line
-        offset of a beam ending on a mirror plane."""
-        if not isinstance(source, FocusedBeamPhasor) or not any(item is source for item in self.sources):
-            raise ValueError(f"solve_moved_beam: {source!r} is not a focused beam of this physics (its focused beams: "
-                             f"{', '.join(self.drive_sources()) or 'none'})")
-        self._require_driven_solution('solve_moved_beam')
-        dx, dy = (float(value) for value in offset)
-        if dx == 0.0 and dy == 0.0:
-            return self.solution
-        moved = source.moved((dx, dy))
+    def _moved_beam_solution(self, source, moved):
+        """solve_moved_beam (focused_beam.FocusedBeamDrive; offset = (dx, dy) [m], an along-line offset of a beam
+        ending on a mirror plane refused): run-backend complex128 (nx, ny) solution with `moved` in place of `source`
+        on the factor of the last solve (wall rows filled, PEC zeroed); the face-field cache stays that of the last
+        solve."""
         system = self.system
         xp = self.xp
         rhs = xp.zeros(self._field_re.shape, dtype=xp.complex128)
         for item in self.sources:
             (moved if item is source else item).add_to_rhs(rhs, self, system)
         self._zero_fixed_rows(rhs, system)
-        shown_texts = (self.last_recycled_iterations, self.last_linear_text)   # solve_summary keeps the last solve
         solution = self._solve_linear(rhs.ravel()).reshape(rhs.shape)   # a fresh array of the back end
-        self.last_recycled_iterations, self.last_linear_text = shown_texts
         del rhs
         self._fill_wall_rows(system.pec_cells, solution)
-        self.n_extra_solves += 1
         return solution
 
     def drive_fields(self, solution):

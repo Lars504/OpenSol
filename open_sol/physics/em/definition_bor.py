@@ -10,9 +10,9 @@ from ...core.constants import C0, FACE_LABELS
 from ...core.domain import containing_cell
 from ...core.memory_estimate import window_cell_count
 from ...core.mesh import has_uniform_spacing
-from ...model.expressions import evaluate_scalar
 from ...model.definition_helpers import (AXISYMMETRIC, AXISYMMETRIC_SPACE_SETTINGS, CUDSS_LINEAR_ROLE, GEOMETRY_SETTING,
-                                         axisymmetric_issues, eigen_factorization, eigen_role, linear_solver_cudss)
+                                         axisymmetric_issues, eigen_factorization, eigen_role, linear_solver_cudss,
+                                         plain_number)
 from ...model.schema import FeatureType, Issue, Param, PhysicsType, SolverRole, feature_path
 from ...solvers.arpack_shift_invert import CUDSS_FACTORIZATIONS
 from .body_of_revolution import BOR_FIELD_COMPONENTS, BOR_SOURCE_COMPONENTS, size_issue_for
@@ -27,8 +27,8 @@ from .definition_common import (BOTH_GRIDS, BOX_CELLS, DEFAULT_WAVELENGTH, EIGEN
                                 OPTOMECHANICS_STUDY, POINT_SOURCE_SIGN, SPAN_CELLS, _effective_material, _window_axes,
                                 all_solved_wavelengths, apply_component_point_source, apply_focused_beam,
                                 apply_far_field, apply_field_probe, apply_flux_monitor, apply_pec, apply_resonance_table,
-                                brillouin_drive_time_items, brillouin_scan_solves, focused_beam_focus_param,
-                                focused_beam_power_param, resolved_solved_wavelengths,
+                                brillouin_drive_time_items, brillouin_scan_solves, focused_beam_power_param,
+                                resolved_solved_wavelengths,
                                 boundary_settings_params, eigen_only_feature_issues, eigen_solved, em_material_params,
                                 fem_resonance_time_estimate, fem_size_issues, first_solved_wavelength,
                                 host_matrix_back_end_issues, kept_line_block_factors, make_far_field_result_callback,
@@ -39,7 +39,8 @@ from .definition_common import (BOTH_GRIDS, BOX_CELLS, DEFAULT_WAVELENGTH, EIGEN
                                 unused_wavelength_issues, validate_driven_point, write_dispersive_materials)
 from .definition_feature_validation import (_box_issues, _focused_beam_row_messages, _line_axes, _line_cells,
                                             _line_issues, _line_material_indices, _line_medium_index,
-                                            _selected_shapes, _shape_issues, validate_line_feature)
+                                            _selected_shapes, _shape_issues, focused_beam_end_wavelengths,
+                                            upstream_focus_messages, validate_line_feature)
 from .eigenfrequency import resonance_filter_time_item
 from .focused_beam import MIN_SPAN_CELLS, NORMAL_RANGE
 from ...solvers.line_block import factor_solve_ops
@@ -437,14 +438,14 @@ _FOCUSED_BEAM_PARAMS = (
                'NA ~ f0 NA with weak side lobes. Typical 0.5 to 2.',
           tip='How much of the objective opening the incoming beam fills: 1 fills it to its edge, smaller values '
               'leave the rim dark and give a wider, smoother focus.'),
-    focused_beam_focus_param(
-        'focus_z', 'z',
-        'z coordinate [m] of the focus on the axis in the drawing frame (domain bottom edge at 0): every angular '
-        'component of the beam is in phase there, so |E| peaks there in a uniform medium. It may lie on either side of '
-        'the line (upstream: a beam diverging from a virtual focus) and outside the domain. A brillouin_scattering scan '
-        'moves it along z by scan_offsets_y (x offsets would leave the axis: refused).',
-        'Height of the focus on the rotation axis, where the beam is narrowest and brightest, in metres.\n\n'
-        'It may lie on either side of the line.'),
+    Param('focus_z', 'float', None, label='Focus z', unit='m',
+          help='z coordinate [m] of the focus on the axis in the drawing frame (domain bottom edge at 0): every '
+               'angular component of the beam is in phase there, so |E| peaks there in a uniform medium. It may lie '
+               'on either side of the line (upstream: a beam diverging from a virtual focus) and outside the domain. '
+               'A brillouin_scattering scan moves it along z by scan_offsets_y (x offsets would leave the axis: '
+               'refused).',
+          tip='Height of the focus on the rotation axis, where the beam is narrowest and brightest, in metres.\n\n'
+              'It may lie on either side of the line.'),
     Param('direction', 'choice', 'positive', label='Direction', choices=('positive', 'negative'),
           choice_labels=_BEAM_DIRECTION_LABELS,
           help="'positive': toward +z (total field on the line row and above, only what comes back below); "
@@ -481,10 +482,11 @@ def _focused_beam_physics_issues(vctx, physics_spec, path):
     as a background physics of frequency_response / optomechanics), a pec / pmc z face."""
     settings = raw_settings(physics_spec)
     issues = []
-    order = settings.get('azimuthal_order', 0)
-    if isinstance(order, bool) or order != BEAM_ORDER:
-        issues.append(Issue('error', path, f'needs azimuthal_order {BEAM_ORDER} (got {order!r}): an x-polarised beam '
-                                           f'on the axis is the azimuthal order {BEAM_ORDER} standing wave'))
+    raw_order = settings.get('azimuthal_order', 0)
+    order = None if isinstance(raw_order, bool) else plain_number(raw_order, vctx.parameters)   # None: unresolved
+    if isinstance(raw_order, bool) or (order is not None and order != BEAM_ORDER):
+        issues.append(Issue('error', path, f'needs azimuthal_order {BEAM_ORDER} (got {raw_order!r}): an x-polarised '
+                                           f'beam on the axis is the azimuthal order {BEAM_ORDER} standing wave'))
     if settings.get('azimuthal_orders') and not eigen_solved(vctx.spec, physics_spec.name):
         issues.append(Issue('error', path, f'cannot join the driven order sum of azimuthal_orders (the '
                                            f'{vctx.study_type} study solves {physics_spec.name} driven, and the beam '
@@ -513,11 +515,10 @@ def _line_medium_messages(vctx, position, span, neighbours):
             continue
 
         def value_of(name, default):
-            raw = properties.get(name)
-            try:
-                return default if raw is None else evaluate_scalar(raw, vctx.parameters)
-            except (ValueError, TypeError):   # field- / state-dependent: unknown here (the run checks the cells)
-                return math.nan
+            if properties.get(name) is None:
+                return default
+            value = plain_number(properties[name], vctx.parameters)
+            return math.nan if value is None else value   # field- / state-dependent: unknown here (the run checks)
 
         def differs(value, reference):
             return math.isfinite(value) and math.isfinite(reference) and value != reference
@@ -589,7 +590,7 @@ def _focused_beam_line_messages(vctx, physics_spec, line, values, physics_type, 
                                       'medium at the line (NA = n sin(theta_max), theta_max < 90 deg); lower it'))
             return messages
         worst = 0.0
-        for wavelength in sorted({min(wavelengths), max(wavelengths)}) if wavelengths else ():
+        for wavelength in focused_beam_end_wavelengths(wavelengths):
             try:
                 level = line_end_level(2.0 * math.pi * float(C0) / wavelength, index, aperture, values['fill_factor'],
                                        end, position - values['focus_z'], sign)
@@ -602,10 +603,7 @@ def _focused_beam_line_messages(vctx, physics_spec, line, values, physics_type, 
                                         f'the line (above {_BEAM_END_LEVEL:g}; continuum beam at the solved '
                                         'wavelengths), so the cut edge launches a diffracted wave and light leaks '
                                         'upstream; lengthen the line, or lower fill_factor (softer pupil edge)'))
-    if sign * (values['focus_z'] - position) < 0.0:
-        messages.append(('info', f"has its focus upstream of the line (z = {values['focus_z']:.4g} m): the beam "
-                                 'diverges from a virtual focus'))
-    return messages
+    return messages + upstream_focus_messages(sign, values['focus_z'], position, 'z')
 
 
 def _validate_focused_beam(vctx, physics_spec, feature_spec, values):

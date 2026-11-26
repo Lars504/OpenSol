@@ -1310,13 +1310,6 @@ def focused_beam_power_param(unit, definition_text, tip):
                  tip=tip)
 
 
-def focused_beam_focus_param(name, axis_label, help_text, tip):
-    """Required focus coordinate Param `name` ('focus_x' / 'focus_y' / 'focus_z') of a focused beam."""
-    if name not in _FOCUS_PARAMS:
-        raise ValueError(f'focused beam focus params are {_FOCUS_PARAMS}, got {name!r}')
-    return Param(name, 'float', None, label=f'Focus {axis_label}', unit='m', help=help_text, tip=tip)
-
-
 def apply_focused_beam(ctx, solver, feature_spec, values, selection):
     """solver.add_focused_beam(axis along the line, position across it, (start, end) along it, focus=(the focus_*
     values in x, y, z order), name=feature name, every other value by its Param name) of an FDFD focused_beam (no
