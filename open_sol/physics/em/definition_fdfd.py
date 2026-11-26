@@ -6,7 +6,7 @@ import numpy as np
 
 from ...core import time_estimate as te
 from ...core.backend import to_host
-from ...core.memory_estimate import BOOL_BYTES, MemoryEstimate
+from ...core.memory_estimate import BOOL_BYTES, MemoryEstimate, window_cell_count
 from ...core.renderer import FieldInfo
 from ...core.mirror import mirror_faces
 from ...model.definition_helpers import (FDFD_LINEAR_ROLE, eigen_factorization, eigen_role, evaluates_to,
@@ -16,8 +16,11 @@ from ...model.schema import (TIME_DEPENDENT_STUDY, FeatureType, Issue, Param, Ph
                              known_physics, solver_backend)
 from .definition_common import (BOTH_GRIDS, BOX_CELLS, CPML_BC_HELP, DEFAULT_WAVELENGTH, EIGENFREQUENCY_STUDY,
                                 EZ_GAUSSIAN_BEAM_DESCRIPTION, EZ_LINE_SOURCE_DESCRIPTION, PLANE_WAVE_SPAN,
-                                EM_FAMILY, EZ_CURRENT_TIP, EZ_PROBE_COMPONENT_TIP, FACE_MEAN, FREQUENCY_DOMAIN_STUDY,
-                                HOST_DIRECT_NAMES,
+                                EM_FAMILY, EZ_CURRENT_TIP, EZ_PROBE_COMPONENT_TIP, FACE_MEAN, FOCUSED_BEAM_APERTURE_TEXT,
+                                FOCUSED_BEAM_FEATURE, FOCUSED_BEAM_LABEL, FOCUSED_BEAM_SCAN_TEXT,
+                                FREQUENCY_DOMAIN_STUDY, HOST_DIRECT_NAMES, apply_focused_beam,
+                                brillouin_drive_time_items, brillouin_scan_solves, focused_beam_focus_param,
+                                focused_beam_power_param,
                                 MIRROR_BC_HELP, MODE_DIRECTION_CHOICE_LABELS, MODE_NUMBER_TIP_START, MODE_POWER_TIP,
                                 MODE_SOURCE_NUMBER_PARAM, MODE_TABLE_ROWS, N_ANGLES_PARAM, OPTOMECHANICS_STUDY,
                                 PERIODIC_BC_HELP, POINT_SOURCE_SIGN, PROBE_COMPONENT_CHOICE_LABELS, SPAN_CELLS,
@@ -31,8 +34,9 @@ from .definition_common import (BOTH_GRIDS, BOX_CELLS, CPML_BC_HELP, DEFAULT_WAV
                                 shortest_solved_wavelength, source_slot_docs, unused_wavelength_issues,
                                 write_dispersive_materials)
 from .definition_feature_validation import (bloch_period_line_issues, electric_dipole_issues,
-                                            harmonic_probe_interface_issues, make_validate_mode_monitor,
-                                            make_validate_mode_source, monitor_line_interface_issues,
+                                            harmonic_probe_interface_issues, make_validate_focused_beam,
+                                            make_validate_mode_monitor, make_validate_mode_source,
+                                            monitor_line_interface_issues,
                                             validate_ez_line_feature, validate_ez_point_feature, validate_far_field,
                                             validate_harmonic_tfsf, validate_hz_line_feature,
                                             validate_hz_point_source, validate_line_feature)
@@ -53,7 +57,7 @@ from .index_reference import OFF_DIAGONAL_ARRAY, OFF_DIAGONAL_SLOT
 from .definition_effective_index import effective_index_feature
 from .definition_phase_change import phase_change_medium_feature
 from .materials import EM_MATERIAL_SCHEMAS, GYRATION_Z
-from .memory_estimates import fdfd_memory_estimate, pec_memory_estimate
+from .memory_estimates import fdfd_memory_estimate, focused_beam_memory_estimate, pec_memory_estimate
 from .placement import PERMITTIVITY_SLOTS
 from .renderer import FDFDRendererEz, FDFDRendererHz
 from .solvers.fdfd_2d import FDFDPhysics
@@ -259,6 +263,50 @@ _MODE_MONITOR_PARAMS = (
                           'order.'),
 )
 _FAR_FIELD_PARAMS = (N_ANGLES_PARAM,)
+_FOCUS_HELP = ('coordinate [m] of the focus in the drawing frame (domain lower-left corner at 0): every plane wave of '
+               'the beam is in phase at (focus_x, focus_y), so |E| peaks there in a uniform medium. It may lie on '
+               'either side of the line (upstream: a beam diverging from a virtual focus) and outside the domain; '
+               'when the line ends on a mirror plane the focus must lie on that plane. A brillouin_scattering scan '
+               'moves it by its offsets.')
+_FOCUS_TIP = ('{axis} position of the focus, where the beam is narrowest and brightest, in metres.\n\n'
+              'It may lie on either side of the line.')
+_FOCUSED_BEAM_PARAMS = (
+    focused_beam_power_param(
+        'W/m', 'It is the exact discrete Poynting flux (per unit z length) of the injected incident field through the '
+               'interface face, the value a flux_monitor reads there, so a flux_monitor downstream in a uniform '
+               'lossless medium reads it to round-off (minus what the structure or the PML send back).',
+        'Power carried by the beam, per metre of depth out of the plane. Field strengths scale with its square root, '
+        'so 1 is typical.\n\nThe beam carries this power at every solved wavelength.'),
+    _PHASE_PARAM,
+    Param('waist', 'float', 1e-6, label='Focal waist radius', unit='m', min=0.0, min_exclusive=True,
+          help='1/e radius w0 of the field at the focus: the angular spectrum is exp(-(k_t w0 / 2)^2) over the '
+               'transverse wavenumbers k_t, so the far-field half-angle is ~ lambda0 / (pi n w0) and the Rayleigh '
+               'range pi n w0^2 / lambda0. Below ~ lambda0 / (2 n) the propagating waves of the medium or '
+               'numerical_aperture cut the spectrum and set the spot instead. Typical 0.3e-6 to 2e-6 m. The line must '
+               'hold the beam where it crosses it (validation warns when the beam is above 1e-6 of its peak at an '
+               'end).',
+          tip='Radius of the beam at its narrowest point, the focus, where the field falls to 37 % of its peak.\n\n'
+              'Smaller values focus more tightly but spread faster; the line must be long enough to hold the whole '
+              'beam where it crosses it.'),
+    Param('numerical_aperture', 'float', None, label='Numerical aperture', unit='1', min=0.0, min_exclusive=True,
+          optional=True,
+          help=f'Optional cap of the angular spectrum, {FOCUSED_BEAM_APERTURE_TEXT}: only plane waves with |k_t| <= '
+               'k0 NA (k0 = 2 pi / lambda0). Empty = no cap besides the Gaussian and the propagating waves. A cut '
+               'well inside the Gaussian adds slowly decaying side lobes along the line (lengthen it).',
+          tip='Optional limit on the angles of the light in the beam, as for a microscope objective: the refractive '
+              'index times the sine of the largest angle.\n\nLeave empty to keep every angle of the Gaussian beam. '
+              'It may not exceed the refractive index at the line.'),
+    focused_beam_focus_param('focus_x', 'x', f'x {_FOCUS_HELP}', _FOCUS_TIP.format(axis='Horizontal')),
+    focused_beam_focus_param('focus_y', 'y', f'y {_FOCUS_HELP}', _FOCUS_TIP.format(axis='Vertical')),
+    Param('direction', 'choice', 'positive', label='Direction', choices=('positive', 'negative'),
+          help='positive: toward +x from a vertical line (x = const), toward +y from a horizontal one; negative: '
+               'toward -x / -y. Nothing is launched the other way.',
+          tip='Direction the beam travels from the line.\n\n'
+              '- Positive (+x or +y): toward +x for a vertical line, toward +y for a horizontal one.\n'
+              '- Negative (-x or -y): toward -x or -y.\n\n'
+              'Nothing is sent the other way.',
+          choice_labels=MODE_DIRECTION_CHOICE_LABELS),
+)
 
 # ---- descriptions ----
 _PROBE_RESULT_TEXT = ("Result 'xy' versus vacuum wavelength (m, ascending; one point per solved wavelength, a re-solved "
@@ -329,6 +377,26 @@ _FAR_FIELD_DESCRIPTION = ('Near-to-far-field transform of the phasors on a recta
                           'per unit length and angle rho |E|^2 / (2 eta0) in W/(m rad) of the far-field |E| (H_z: '
                           '|eta0 H_z|; angle integral = power through a closed flux box) versus angle '
                           f'counter-clockwise from +x, {_FAR_FIELD_TEXT}')
+
+
+_FOCUSED_BEAM_DESCRIPTION = (
+    'One-sided focused beam launched from an axis-aligned line (total-field / scattered-field line, as mode_source): a '
+    'Gaussian angular spectrum exp(-(k_t waist / 2)^2) of the discrete plane waves of the uniform line medium '
+    '(transverse wavenumbers k_t on the cells of the line, |k_t| <= k0 numerical_aperture, propagating waves only, the '
+    'normal wavenumber from the FDFD dispersion), all in phase at (focus_x, focus_y); the out-of-plane field is E_z '
+    '(em_fdfd_ez) or H_z with the in-plane E across the beam (em_fdfd_hz), phase = its phase at the focus. The incident '
+    'field solves the discrete equations of the line medium exactly, so the launch is one-sided to round-off: what '
+    'comes back upstream is scattered or reflected light only. power is defined, not calibrated (see power). The '
+    'interface is the lo face of the line cells for positive, their hi face for negative: keep flux / mode monitors, '
+    'probes and far-field boxes off it (validation warns). The line needs uniform cells along it, uniform cells across '
+    'it (two on either side, inside the domain), one homogeneous medium on those five rows (no PEC, interface, eps_xy, '
+    'gyration_z or conducting sheet there; poles and loss allowed) and no periodic axis; it must hold the beam (above '
+    '1e-6 of its peak at an end: warning) unless it ends on a mirror plane through the focus (ez: symmetric, hz: '
+    'antisymmetric; mirror faces normal to the beam axis are refused). Every solved wavelength launches the same '
+    f'power. {FOCUSED_BEAM_SCAN_TEXT} Tensor meshes only. The line covers {SPAN_CELLS}.')
+_FOCUSED_BEAM_SUMMARY = ('Sends a focused light beam from a straight line in one direction, like light focused by a '
+                         'microscope objective, with a set power and its focus at a chosen point. Nothing is sent '
+                         'backward. It is the illumination of Brillouin scattering spectra.')
 
 
 def _mode_source_description(polarization):
@@ -831,6 +899,11 @@ def _fdfd_physics_type(polarization):
                     description=descriptions['mode_source'], summary=summaries['mode_source'],
                     apply=apply_mode_source, result=object_result(harmonic_mode_source_result),
                     validate=make_validate_mode_source(polarization)),
+        FeatureType(FOCUSED_BEAM_FEATURE, FOCUSED_BEAM_LABEL, 'source', 'line', params=_FOCUSED_BEAM_PARAMS,
+                    object_kinds=('line',), max_entities=1, description=_FOCUSED_BEAM_DESCRIPTION,
+                    summary=_FOCUSED_BEAM_SUMMARY, apply=apply_focused_beam,
+                    validate=make_validate_focused_beam(polarization),
+                    memory_estimate=focused_beam_memory_estimate),
         FeatureType('pec_domain', 'Perfect electric conductor', 'domain_condition', 'domain',
                     description=descriptions['pec_domain'], summary=summaries['pec_domain'], apply=apply_pec,
                     memory_estimate=pec_memory_estimate(0), grids=BOTH_GRIDS),
@@ -939,7 +1012,8 @@ def _fdfd_time_estimate(settings_values, mesh, context):
     """Per solved wavelength the Helmholtz assembly (host scipy) and one factorisation of the 'linear' role with one
     solve per enabled source; eigen-solved: one shift-invert of the 'eigen' role (2 n_resonances + 10 eigenpairs);
     optimization: per iteration (bounded) a forward and an adjoint solve; time_dependent: a re-solve per step of its
-    stride; triangle meshes: _triangle_time_estimate."""
+    stride; brillouin_scattering scans: one more solve per extra position and the drive-field reads
+    (definition_common.brillouin_drive_time_items); triangle meshes: _triangle_time_estimate."""
     if getattr(mesh, 'kind', 'tensor') == 'triangles':
         return _triangle_time_estimate(settings_values, mesh, context)
     unknowns = float(mesh.n_cells)
@@ -962,9 +1036,15 @@ def _fdfd_time_estimate(settings_values, mesh, context):
     # the line_block block holds the runtime's block axis (the periodic one, else the cheaper)
     block_axis = fdfd_block_axis(int(mesh.nx), int(mesh.ny), settings_values['bc_x_lo'] == 'periodic',
                                  settings_values['bc_y_lo'] == 'periodic', refuse=False)
+    # brillouin_scattering scan positions: one more solve each on the kept factor (solve_moved_beam), once after the
+    # background stage (never per step or per point)
+    scan_solves = 0.0 if per_step else float(brillouin_scan_solves(context.spec, context.name))
     return te.combine((te.TimeEstimate((assembly,)),
-                       context.solver_work('linear', unknowns=unknowns, nnz=nnz, value_bytes=16, solves=points * rhs,
-                                           solves_kind=kind, factorizations=points, factorizations_kind=kind,
+                       brillouin_drive_time_items(context, unknowns, nnz, window_cell_count(mesh),
+                                                  1 if context.physics_spec.type == 'em_fdfd_ez' else 2),
+                       context.solver_work('linear', unknowns=unknowns, nnz=nnz, value_bytes=16,
+                                           solves=points * rhs + scan_solves, solves_kind=kind,
+                                           factorizations=points, factorizations_kind=kind,
                                            per_step=per_step, device_values=points > 1.0,   # cuDSS: device refreshes
                                            block_size=int(mesh.nx) if block_axis == 0 else int(mesh.ny))))
 

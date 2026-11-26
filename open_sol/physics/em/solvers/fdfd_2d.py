@@ -29,10 +29,11 @@ from ....solvers.sparse_direct import (CUDSS_BACK_ENDS, SparseDirectSolver, host
 from ..fdfd_line_block import LINE_BLOCK_TEXT, MAX_BATCH_WAVELENGTHS, fdfd_block_axis, fdfd_layout
 from ..fdfd_monitors import HarmonicFluxMonitor, HarmonicNearToFar, HarmonicProbe
 from ..fdfd_ports import HarmonicModeMonitor, ModeSourcePhasor
-from ..fdfd_sources import (ElectricDipolePhasor, MagneticCurrentPhasor, PlaneWavePhasor, PointCurrentPhasor,
-                            SheetCurrentPhasor)
+from ..fdfd_sources import (ElectricDipolePhasor, FocusedBeamPhasor, MagneticCurrentPhasor, PlaneWavePhasor,
+                            PointCurrentPhasor, SheetCurrentPhasor)
+from ..focused_beam import DriveFields, focused_beam_line
 from ..harmonic import (HarmonicSystem, absorbed_power_ez, absorbed_power_hz, cell_permeability, cell_permittivity,
-                        off_diagonal_entries)
+                        face_mean_at_centres, off_diagonal_entries)
 from ..index_reference import OFF_DIAGONAL_ARRAY
 from ..materials import (GYRATION_Z, DrudePole, LorentzPole, material_solution_state, register_em_arrays,
                          restore_material_solution, tfsf_outline_warnings)
@@ -175,6 +176,7 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
         self.last_solve_seconds = None    # host wall time of the last whole solve (incl. any refactorisation)
         self.last_recycled_iterations = None   # GMRES iterations of the last solve if it reused an older factor
         self.n_solves = 0             # completed solves: cadenced couplings skip a transfer while it is unchanged
+        self.n_extra_solves = 0       # solve_moved_beam solves (scan positions; solution / monitors untouched)
         self.eigen_solve = None       # eigenfrequency.EigenSolve of the last solve_eigenfrequencies
         self.resonance_region = None  # eigenfrequency.ResonanceRegion of a resonance_table selection, None = none
         self.selected_resonance = None   # 1-based resonance shown in solution / state, None = the driven solve
@@ -361,20 +363,23 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
         self._refresh_state(self.system)
         self._solution_dirty = True
 
-    def face_curls(self):
-        """Fresh complex128 (hi-y, hi-x) (dy_h u, dx_h u) of the last solve; hz adds the sources' face currents (dy_h H_z
-        + J_x, dx_h H_z - J_y = D_x, -D_y up to j omega eps0): what face_fields weights and scales."""
-        if self.solution is None or self.system is None:
+    def face_curls(self, solution=None):
+        """Fresh complex128 (hi-y, hi-x) (dy_h u, dx_h u) of the last solve (solution: another driven solution of the
+        current system, e.g. solve_moved_beam's); hz adds the sources' face currents (dy_h H_z + J_x, dx_h H_z - J_y =
+        D_x, -D_y up to j omega eps0): what face_fields weights and scales."""
+        shown = solution is None
+        if (shown and self.solution is None) or self.system is None:
             raise ValueError("not solved yet: FDFDPhysics face fields need a solve (step or solve_harmonic) first")
         system = self.system
         ops = system.ops
-        solution = self.solution.ravel()
-        shape = self.solution.shape
-        y_face_curls = (ops.dy_h @ solution).reshape(shape)   # d/dy on the hi-y faces
-        x_face_curls = (ops.dx_h @ solution).reshape(shape)   # d/dx on the hi-x faces
+        field = self.solution if shown else solution
+        shape = field.shape
+        field = field.ravel()
+        y_face_curls = (ops.dy_h @ field).reshape(shape)   # d/dy on the hi-y faces
+        x_face_curls = (ops.dx_h @ field).reshape(shape)   # d/dx on the hi-x faces
         if system.polarization == 'hz':
             # Right-hand-side-only sources (TFSF / mode) have no face currents; a shown resonance is source-free.
-            for source in (self.sources if self.selected_resonance is None else ()):
+            for source in (self.sources if not shown or self.selected_resonance is None else ()):
                 if hasattr(source, 'face_currents'):
                     jx_faces, jy_faces = source.face_currents(self, system)
                     if jx_faces is not None:
@@ -383,38 +388,44 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
                         x_face_curls -= jy_faces
         return y_face_curls, x_face_curls
 
-    def face_fields(self):
+    def face_fields(self, solution=None):
         """complex128 (nx, ny) in-plane fields of the last solve: ez (hx on hi-y, hy on hi-x faces), hz (ex on hi-y, ey
-        on hi-x faces, 0 on PEC faces); face_curls weighted (+ the eps_xy couplings) and scaled, cached per solve."""
+        on hi-x faces, 0 on PEC faces); face_curls weighted (+ the eps_xy couplings) and scaled, cached per solve.
+        solution: those of another driven solution of the current system instead (fresh arrays, not cached)."""
+        if solution is not None:
+            return self._weighted_face_fields(*self.face_curls(solution))
         if self._face_fields is None:
-            y_face_fields, x_face_fields = self.face_curls()
-            system = self.system
-            shape = self.solution.shape
-            if system.polarization == 'ez':
-                # Faraday: H_x = -(dy_h E_z) / (j omega mu0 mu_face), H_y = (dx_h E_z) / (j omega mu0 mu_face)
-                curl_scale = 1.0 / (1j * system.omega * MU0)
-                y_scale, x_scale = -curl_scale, curl_scale
-            else:
-                # Ampere: E_x = (dy_h H_z + J_xF) / (j omega eps0 eps_xface), E_y = -(dx_h H_z - J_yF) / (j omega eps0
-                # eps_yface); on a sheet face the curl alone would be ~2/(k w_perp) times the field. Weight 0 on PEC
-                # faces gives E = 0 there.
-                curl_scale = 1.0 / (1j * system.omega * EPS0)
-                y_scale, x_scale = curl_scale, -curl_scale
-            # eps_xy (harmonic.py header): D_x = y_face_fields, D_y = -x_face_fields; E_x += X_xy D_y, E_y += X_yx D_x
-            coupled = None
-            if system.off_diagonal is not None:
-                y_faces_from_x_faces, x_faces_from_y_faces = system.off_diagonal
-                coupled = ((y_faces_from_x_faces @ x_face_fields.ravel()).reshape(shape),
-                           (x_faces_from_y_faces @ y_face_fields.ravel()).reshape(shape))
-            y_face_fields *= system.weight_hi_y_faces
-            x_face_fields *= system.weight_hi_x_faces
-            if coupled is not None:   # E_x = y_scale (V D_x - X_xy x_faces), E_y = x_scale (V x_faces - X_yx D_x)
-                y_face_fields -= coupled[0]
-                x_face_fields -= coupled[1]
-            y_face_fields *= y_scale
-            x_face_fields *= x_scale
-            self._face_fields = (y_face_fields, x_face_fields)
+            self._face_fields = self._weighted_face_fields(*self.face_curls())
         return self._face_fields
+
+    def _weighted_face_fields(self, y_face_fields, x_face_fields):
+        """face_fields from face_curls (written in place)."""
+        system = self.system
+        shape = y_face_fields.shape
+        if system.polarization == 'ez':
+            # Faraday: H_x = -(dy_h E_z) / (j omega mu0 mu_face), H_y = (dx_h E_z) / (j omega mu0 mu_face)
+            curl_scale = 1.0 / (1j * system.omega * MU0)
+            y_scale, x_scale = -curl_scale, curl_scale
+        else:
+            # Ampere: E_x = (dy_h H_z + J_xF) / (j omega eps0 eps_xface), E_y = -(dx_h H_z - J_yF) / (j omega eps0
+            # eps_yface); on a sheet face the curl alone would be ~2/(k w_perp) times the field. Weight 0 on PEC
+            # faces gives E = 0 there.
+            curl_scale = 1.0 / (1j * system.omega * EPS0)
+            y_scale, x_scale = curl_scale, -curl_scale
+        # eps_xy (harmonic.py header): D_x = y_face_fields, D_y = -x_face_fields; E_x += X_xy D_y, E_y += X_yx D_x
+        coupled = None
+        if system.off_diagonal is not None:
+            y_faces_from_x_faces, x_faces_from_y_faces = system.off_diagonal
+            coupled = ((y_faces_from_x_faces @ x_face_fields.ravel()).reshape(shape),
+                       (x_faces_from_y_faces @ y_face_fields.ravel()).reshape(shape))
+        y_face_fields *= system.weight_hi_y_faces
+        x_face_fields *= system.weight_hi_x_faces
+        if coupled is not None:   # E_x = y_scale (V D_x - X_xy x_faces), E_y = x_scale (V x_faces - X_yx D_x)
+            y_face_fields -= coupled[0]
+            x_face_fields -= coupled[1]
+        y_face_fields *= y_scale
+        x_face_fields *= x_scale
+        return y_face_fields, x_face_fields
 
     def error_indicator(self):
         """S7.7 hook: energy-weighted interpolation eta^2 parts (2, *window) of the shown solution (driven
@@ -507,11 +518,7 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
         rhs = xp.zeros(self._field_re.shape, dtype=xp.complex128)
         for source in self.sources:
             source.add_to_rhs(rhs, self, system)
-        if system.pec_cells is not None:
-            # ez: pinned rows (E_z = 0); hz: the uncoupled k0^2 mu row of a PEC cell then gives H_z = 0
-            xp.copyto(rhs, rhs.dtype.type(0), where=system.pec_cells)
-        for axis, outer, _, _, _ in self._wall_rows:   # pinned outermost wall / mirror cells
-            cell_row(rhs, axis, outer)[...] = 0
+        self._zero_fixed_rows(rhs, system)
         # Kept complex128: face fields, flux, q_abs and port amplitudes difference neighbours of it.
         solution = self._solve_linear(rhs.ravel()).reshape(rhs.shape)
         del rhs
@@ -528,6 +535,16 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
         if record_monitors:
             self.record_monitors()
         self.last_solve_seconds = time.perf_counter() - solve_start
+
+    def _zero_fixed_rows(self, rhs, system):
+        """Zero the rhs (in place) on the identity rows: the system's PEC cells and the pinned outermost wall / mirror
+        cells (every driven solve: _solve, solve_moved_beam)."""
+        xp = self.xp
+        if system.pec_cells is not None:
+            # ez: pinned rows (E_z = 0); hz: the uncoupled k0^2 mu row of a PEC cell then gives H_z = 0
+            xp.copyto(rhs, rhs.dtype.type(0), where=system.pec_cells)
+        for axis, outer, _, _, _ in self._wall_rows:   # pinned outermost wall / mirror cells
+            cell_row(rhs, axis, outer)[...] = 0
 
     def _refresh_system(self, check_driven_size):
         """HarmonicSystem at self.omega, reassembled when dirty (old system and any non-recyclable factor freed first);
@@ -596,18 +613,19 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
             loss_scale = 0.5 * sheet.sigma(system.omega).real / sheet.cell_width
             self._q_abs[sheet.line] += (loss_scale * self.xp.abs(tangential) ** 2).astype(DTYPE)
 
-    def _fill_wall_rows(self, fixed_cells):
-        """Outermost wall / mirror cells (solved as 0) = sign x their inner neighbour, as the FDTD rows; x faces first,
-        so a corner takes sign_x sign_y of its diagonal neighbour; the fixed PEC cells (HarmonicSystem.pec_cells) back
-        to 0."""
+    def _fill_wall_rows(self, fixed_cells, solution=None):
+        """Outermost wall / mirror cells (solved as 0) of `solution` (None = self.solution; in place) = sign x their
+        inner neighbour, as the FDTD rows; x faces first, so a corner takes sign_x sign_y of its diagonal neighbour; the
+        fixed PEC cells (HarmonicSystem.pec_cells) back to 0."""
+        solution = self.solution if solution is None else solution
         filled = False
         xp = self.xp
         for axis, outer, inner, _, sign in self._wall_rows:
             if sign != 0.0:
-                xp.multiply(cell_row(self.solution, axis, inner), sign, out=cell_row(self.solution, axis, outer))
+                xp.multiply(cell_row(solution, axis, inner), sign, out=cell_row(solution, axis, outer))
                 filled = True
         if filled and fixed_cells is not None:
-            xp.copyto(self.solution, self.solution.dtype.type(0), where=fixed_cells)
+            xp.copyto(solution, solution.dtype.type(0), where=fixed_cells)
 
     def _drop_line_factor(self):
         """Release the line-block factor of the previous system (none without a line_block solver; a wavelength batch
@@ -856,9 +874,12 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
         return f'{text} ({description} factorisation {factor_seconds})'
 
     def work_counters(self):
-        """Solves so far (summary 'solvers' physics counters), plus the counters of private (script) linear / eigen
-        solvers; a build's role solvers report their own."""
+        """Solves so far (summary 'solvers' physics counters; with a focused beam also extra_solves, the scan solves of
+        solve_moved_beam), plus the counters of private (script) linear / eigen solvers; a build's role solvers report
+        their own."""
         counters = {'solves': self.n_solves}
+        if self.drive_sources():
+            counters['extra_solves'] = self.n_extra_solves
         if self._line_block is not None:   # the reference sparse direct (rejected / adjoint solves) is private
             counters['line_block_fallbacks'] = self.n_line_block_fallbacks
         for solver in self._private_solvers:
@@ -1278,6 +1299,113 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
         line_cell, span_cells, label = port_cells(self.domain, axis, position, span, 'Mode source')
         return self._add_source(ModeSourcePhasor(self, axis, line_cell, span_cells, power, mode_number, direction,
                                                  phase, label))
+
+    # --- focused beams and their drive contract (brillouin_scattering: physics/mechanics) ---
+
+    def add_focused_beam(self, axis, position, span, power, waist, focus, numerical_aperture=None,
+                         direction='positive', phase=0.0, name=''):
+        """One-sided focused beam (fdfd_sources.FocusedBeamPhasor, focused_beam.py) from a line (axis 'x' = along x at
+        y = position; span = (start, end) along it [m]): `power` [W/m] in the unfolded structure toward +normal
+        ('positive') or -normal, waist [m] = 1/e field radius at the focus, focus = drawing-frame (x, y) [m],
+        numerical_aperture caps the angular spectrum (None: propagating waves only), phase [deg] of the incident
+        out-of-plane field at the focus; name keys drive_sources ('' = 'focused_beam_<k>'). NotImplementedError on a
+        polar grid; ValueError for a periodic axis, non-uniform cells along or across the line, a mirror face normal to
+        the beam axis, a focus off the mirror plane the line ends on, or a repeated name."""
+        self._require_cartesian('add_focused_beam')
+        existing = self.drive_sources()
+        name = str(name) or f'focused_beam_{len(existing) + 1}'
+        if name in existing:
+            raise ValueError(f"focused beam name '{name}' is taken; names of this physics: {', '.join(existing)}")
+        label = f"Focused beam '{name}'"
+        line = focused_beam_line(self.domain, self.boundary_config, self.polarization, axis, position, span,
+                                 direction, label)
+        return self._add_source(FocusedBeamPhasor(line, power, waist, focus, numerical_aperture, phase,
+                                                  self.polarization, name))
+
+    def drive_sources(self) -> dict:
+        """{name: FocusedBeamPhasor} of the focused beams, in source order: the illuminations a solid's drive may name
+        (each has name, incident_power [W/m, unfolded], focus (x, y) [m], direction, wavelength [m], polarization)."""
+        return {source.name: source for source in self.sources if isinstance(source, FocusedBeamPhasor)}
+
+    def _require_driven_solution(self, method):
+        """ValueError unless solution is the driven solve of the current system (no reassembly, no new source, no shown
+        resonance since)."""
+        if self.solution is None or self.system is None:
+            raise ValueError(f'{method}: not solved yet (the optics solves in the background stage of the study first)')
+        if self._system_dirty or self._solution_dirty:
+            raise ValueError(f'{method}: the system or a source of this physics changed since its last solve (a '
+                             'coupling or material update after the background solve?); solve it again first (step())')
+        if self.selected_resonance is not None:
+            raise ValueError(f'{method}: resonance {self.selected_resonance} is shown, not the driven solve; solve the '
+                             'driven problem first (step())')
+
+    def solve_moved_beam(self, source, offset):
+        """Run-backend complex128 (nx, ny) driven solution with the focused beam `source` (one of drive_sources())
+        moved by offset = (dx, dy) [m] (no snapping: the waves' phases move) and every other source unchanged, on the
+        factor of the last solve (wall rows filled, PEC zeroed): one more solve of the kept system, counted in
+        extra_solves; solution, monitors, q_abs, n_solves and the face-field cache stay those of the last solve. Offset
+        (0, 0) returns self.solution itself (do not write into it). ValueError for a source of another physics, before
+        a solve, after a change of the system or a source since it, while a resonance is shown, and for an along-line
+        offset of a beam ending on a mirror plane."""
+        if not isinstance(source, FocusedBeamPhasor) or not any(item is source for item in self.sources):
+            raise ValueError(f"solve_moved_beam: {source!r} is not a focused beam of this physics (its focused beams: "
+                             f"{', '.join(self.drive_sources()) or 'none'})")
+        self._require_driven_solution('solve_moved_beam')
+        dx, dy = (float(value) for value in offset)
+        if dx == 0.0 and dy == 0.0:
+            return self.solution
+        moved = source.moved((dx, dy))
+        system = self.system
+        xp = self.xp
+        rhs = xp.zeros(self._field_re.shape, dtype=xp.complex128)
+        for item in self.sources:
+            (moved if item is source else item).add_to_rhs(rhs, self, system)
+        self._zero_fixed_rows(rhs, system)
+        shown_texts = (self.last_recycled_iterations, self.last_linear_text)   # solve_summary keeps the last solve
+        solution = self._solve_linear(rhs.ravel()).reshape(rhs.shape)   # a fresh array of the back end
+        self.last_recycled_iterations, self.last_linear_text = shown_texts
+        del rhs
+        self._fill_wall_rows(system.pec_cells, solution)
+        self.n_extra_solves += 1
+        return solution
+
+    def drive_fields(self, solution):
+        """focused_beam.DriveFields (host) of a driven solution of the current system (self.solution or a
+        solve_moved_beam result): the window E at the cell centres (ez E_z; hz E_x / E_y as face means of Ampere's law,
+        the sources' face currents included), the staircase permittivity each component sees (ez eps_r of the system
+        without the subpixel-smoothing deltas; hz the eps_xx / eps_yy cells, which smoothing never changes), the
+        staircase PEC cells and omega. ValueError as solve_moved_beam's state checks, or for another shape."""
+        self._require_driven_solution('drive_fields')
+        if tuple(solution.shape) != self._field_re.shape:
+            raise ValueError(f'drive_fields: solution shape {tuple(solution.shape)} is not the grid '
+                             f'{self._field_re.shape}')
+        xp = self.xp
+        system = self.system
+        window = tuple(self.domain.physical_window())
+        x, y = (np.array(np.asarray(centres, dtype=np.float64)[part])
+                for centres, part in zip(self.domain.cell_centers(), window))
+        if self.polarization == 'ez':
+            cell_eps = system.cell_eps
+            if self.subpixel_smoothing is not None:   # the staircase, as optomechanics reads it
+                deltas = xp.zeros_like(cell_eps)
+                self.subpixel_smoothing.add_deltas('cells', deltas, self.domain.materials)
+                cell_eps = cell_eps - deltas
+                del deltas
+            fields = {'ez': host_copy(solution[window])}
+            eps = {'ez': host_copy(cell_eps[window])}
+        else:
+            ex_faces, ey_faces = self.face_fields(None if solution is self.solution else solution)
+            wrap_x, wrap_y = self.lower_wrap_factors
+            config = self.boundary_config
+            fields = {}
+            for name, faces, axis, periodic, wrap in (('ex', ex_faces, 1, config.periodic_y, wrap_y),
+                                                      ('ey', ey_faces, 0, config.periodic_x, wrap_x)):
+                fields[name] = host_copy(face_mean_at_centres(faces, axis, periodic, xp=xp, wrap_factor=wrap)[window])
+            del ex_faces, ey_faces
+            eps = {'ex': host_copy(system.cell_eps_xx[window]), 'ey': host_copy(system.cell_eps_yy[window])}
+        pec = None if self.pec_cells is None else np.array(to_host(self.pec_cells[window]), dtype=bool)
+        return DriveFields(omega=float(system.omega), x=x, y=y, fields=fields, eps=eps, pec=pec,
+                           polarization=self.polarization)
 
     # --- monitors ---
 

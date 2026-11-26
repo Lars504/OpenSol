@@ -20,8 +20,9 @@ from ...solvers.sparse_direct import LINEAR_SOLVER_CHOICES
 from ...solvers.explicit_kernels import stepper_precision
 # FREQUENCY_DOMAIN_STUDY (the study whose wavelengths replace the wavelength setting) and EIGENFREQUENCY_STUDY are
 # re-exported to the EM definitions
-from ...model.schema import (EIGENFREQUENCY_STUDY, FREQUENCY_DOMAIN_STUDY, GYRATION_PROPERTY_NAMES,
-                             OPTOMECHANICS_STUDY, PERMITTIVITY_PROPERTY_NAMES, DomainRequirements, Issue, Param,
+from ...model.schema import (EIGENFREQUENCY_STUDY, FREQUENCY_DOMAIN_STUDY, FREQUENCY_RESPONSE_STUDY,
+                             GYRATION_PROPERTY_NAMES, OPTOMECHANICS_STUDY, PERMITTIVITY_PROPERTY_NAMES,
+                             DomainRequirements, Issue, Param,
                              array_owner, coupling_reads_absorbed_power, coupling_writes, feature_path, known_physics,
                              output_field_names, permittivity_arrays, resolve_values, state_field_names)
 from . import EMPhysics
@@ -750,6 +751,79 @@ def eigen_solved(spec, physics_name):
         for physics in spec.physics for feature in physics.features)
 
 
+# ---- optical physics read by brillouin_scattering (solid_mechanics, frequency_response): scan solves ----
+BRILLOUIN_FEATURE = 'brillouin_scattering'   # solid_mechanics feature naming an optical (and a collection) physics
+_SCAN_OFFSET_PARAMS = ('scan_offsets_x', 'scan_offsets_y')   # its focus offset lists (positions = their product)
+
+
+def _brillouin_features(spec):
+    """Enabled brillouin_scattering features with dict params of the model's physics, in a frequency_response study
+    (the only one that binds them); [] otherwise."""
+    if spec.study.type != FREQUENCY_RESPONSE_STUDY:
+        return []
+    return [feature for physics in spec.physics for feature in physics.features
+            if feature.enabled and feature.type == BRILLOUIN_FEATURE and isinstance(feature.params, dict)]
+
+
+def brillouin_scan_positions(spec, physics_name) -> list:
+    """Scan positions per enabled brillouin_scattering feature whose optical_physics is physics_name (raw params:
+    the product of the scan_offsets_x / _y lengths, an empty, missing or malformed list counting 1; validate reports
+    malformed ones), [] outside a frequency_response study."""
+    positions = []
+    for feature in _brillouin_features(spec):
+        if feature.params.get('optical_physics') != physics_name:
+            continue
+        count = 1
+        for name in _SCAN_OFFSET_PARAMS:
+            offsets = feature.params.get(name)
+            count *= len(offsets) if isinstance(offsets, (list, tuple)) and offsets else 1
+        positions.append(count)
+    return positions
+
+
+def brillouin_scan_solves(spec, physics_name) -> int:
+    """Extra driven solves (solve_moved_beam, on the kept factor) the brillouin_scattering features request from this
+    optical physics: positions - 1 per feature (the first position is the background solve itself)."""
+    return sum(count - 1 for count in brillouin_scan_positions(spec, physics_name))
+
+
+def brillouin_reads(spec, physics_name) -> int:
+    """drive_fields calls the brillouin_scattering features make on this physics: one per scan position where it is
+    the optical physics, one per feature where it is only the collection physics (offset 0); 0 = not read."""
+    collection_only = sum(1 for feature in _brillouin_features(spec)
+                          if feature.params.get('collection_physics') == physics_name
+                          and feature.params.get('optical_physics') != physics_name)
+    return sum(brillouin_scan_positions(spec, physics_name)) + collection_only
+
+
+def brillouin_drive_time_items(context, unknowns, nnz, window_cells, field_components, host=False):
+    """TimeEstimate of what brillouin_scattering asks of this optical physics besides the scan solves themselves (the
+    caller adds brillouin_scan_solves to its role's solves): per scan solve the moved beam's right-hand side (2
+    operator products of the TFSF rows and the full-grid vectors; host: numpy passes of a host-solved type), per read
+    position the drive fields (field_components window phasors + their permittivities to the host). Empty without a
+    reading feature."""
+    spec, name = context.spec, context.name
+    positions = brillouin_reads(spec, name)
+    if not positions:
+        return te.TimeEstimate(())
+    scan = float(brillouin_scan_solves(spec, name))
+    vector = 16.0 * float(unknowns)
+    items = []
+    if scan:
+        rhs_ops = ((te.HostStream(2.0 * 20.0 * float(nnz) + 10.0 * vector),) if host else
+                   ((2.0, te.Spmv(float(unknowns), float(nnz), 16)),
+                    te.Elementwise(6.0 * vector, 4.0 * vector, launches=8)))
+        items.append(te.TimeItem('Brillouin scan right-hand sides (moved focused beam, TFSF rows)', 'solve', scan,
+                                 'exact', rhs_ops + (te.PythonCalls(40),),
+                                 counter=physics_counter(context, 'extra_solves')))
+    window_bytes = 16.0 * float(window_cells) * 2.0 * float(field_components)   # fields + their permittivities
+    drive_ops = ((te.HostStream(window_bytes + 4.0 * vector),) if host else
+                 (te.Elementwise(4.0 * vector, 2.0 * vector, launches=4), te.Transfer(window_bytes)))
+    items.append(te.TimeItem('Brillouin drive fields (window phasors to the host)', 'position', float(positions),
+                             'exact', drive_ops + (te.PythonCalls(20),)))
+    return te.TimeEstimate(tuple(items))
+
+
 def raw_settings(physics_spec) -> dict:
     """The physics' settings as written (a malformed non-dict, reported by validate, reads as {})."""
     return physics_spec.settings if isinstance(physics_spec.settings, dict) else {}
@@ -1211,6 +1285,46 @@ def apply_dft_monitor(ctx, solver, feature_spec, values, selection):
 def apply_far_field(ctx, solver, feature_spec, values, selection):
     x0, y0, x1, y1 = ctx.rect(single_object(selection, feature_spec, 'rectangle'))
     return solver.add_near_to_far(x0, y0, x1, y1, **_monitor_wavelength_kwargs(values))
+
+
+# ---- focused beams (em_fdfd_ez / _hz; em_fdfd_bor builds its own on these pieces) ----
+FOCUSED_BEAM_FEATURE = 'focused_beam'
+FOCUSED_BEAM_LABEL = 'Focused beam'
+_FOCUS_PARAMS = ('focus_x', 'focus_y', 'focus_z')   # drawing-frame focus coordinates a focused_beam may declare
+FOCUSED_BEAM_SCAN_TEXT = (
+    'A brillouin_scattering feature of a solid_mechanics physics (frequency_response study) reads it as its '
+    'illumination: each scan position moves the focus analytically (no remeshing, no snapping to cells) and costs one '
+    'more solve on the same factor.')
+FOCUSED_BEAM_APERTURE_TEXT = ('NA = n sin(theta_max) of the focusing optics, at most the index n of the medium at the '
+                              'line (validation error above)')
+
+
+def focused_beam_power_param(unit, definition_text, tip):
+    """'power' Param of a focused beam in `unit` (W/m planar, W axisymmetric): definition_text says how the power is
+    measured; the shared clauses follow."""
+    return Param('power', 'float', 1.0, label='Beam power', unit=unit, min=0.0, min_exclusive=True,
+                 help=f'Time-averaged power of the incident beam toward its direction, in the unfolded structure (a '
+                      f'line ending on a mirror plane launches the drawn part of it). {definition_text} Power-defined, '
+                      'not current-calibrated: fields scale with sqrt(power), the same power at every solved '
+                      'wavelength; a brillouin_scattering drive divides by it, so 1 is usual.',
+                 tip=tip)
+
+
+def focused_beam_focus_param(name, axis_label, help_text, tip):
+    """Required focus coordinate Param `name` ('focus_x' / 'focus_y' / 'focus_z') of a focused beam."""
+    if name not in _FOCUS_PARAMS:
+        raise ValueError(f'focused beam focus params are {_FOCUS_PARAMS}, got {name!r}')
+    return Param(name, 'float', None, label=f'Focus {axis_label}', unit='m', help=help_text, tip=tip)
+
+
+def apply_focused_beam(ctx, solver, feature_spec, values, selection):
+    """solver.add_focused_beam(axis along the line, position across it, (start, end) along it, focus=(the focus_*
+    values in x, y, z order), name=feature name, every other value by its Param name) of an FDFD focused_beam (no
+    'waveform' Param: phase only)."""
+    axis, position, span = mode_line(ctx, selection, feature_spec)
+    beam = {name: value for name, value in values.items() if name not in _FOCUS_PARAMS}
+    focus = tuple(float(values[name]) for name in _FOCUS_PARAMS if name in values)
+    return solver.add_focused_beam(axis, position, span, focus=focus, name=feature_spec.name, **beam)
 
 
 # ---- results ----

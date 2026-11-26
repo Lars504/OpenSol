@@ -378,7 +378,19 @@ type's vocabulary and refusals are in its help texts and validation.
   arrays (`_refresh_pending_state`); new readers of `_q_abs` / `_field_re` / `_field_im` refresh first.
 - Phasor sources with `set_amplitude(*values of amplitude_params)` re-set in place (a reused sweep build: nlfd
   `_FOLLOWING_SOURCE_PARAMS`): point / magnetic / dipole currents, sheet currents, TFSF plane wave, mode source
-  (rescales its solved incident phasors; power <= 0 raises at the run, not at validation).
+  (rescales its solved incident phasors; power <= 0 raises at the run, not at validation), focused beam.
+- Focused beams (`focused_beam.py`, `fdfd_sources.FocusedBeamPhasor`; feature focused_beam, tensor meshes only): the
+  incident field is a sum of discrete plane waves of the line medium, read per right-hand side from the assembled
+  operator (face weights, cell term) on the rows line_cell +- `NORMAL_RANGE` (a non-uniform block raises), so the launch
+  is exact and `power` is the discrete interface flux (unfolded over a mirror plane the line ends on, the focus on it).
+  Its interface face is a mode source's (`_total_field_regions` warns for both). Drive contract of brillouin_scattering:
+  `drive_sources()`, `solve_moved_beam(source, offset)` (one more solve on the kept factor, every other source as it
+  is; never touches solution, monitors, q_abs, n_solves or the face-field cache; refused while `_system_dirty` /
+  `_solution_dirty` or a resonance is shown) and `drive_fields(solution)` (`focused_beam.DriveFields`, host window
+  values, staircase eps). A new driven path through `_solve` keeps `_zero_fixed_rows` / `_fill_wall_rows(solution=)`
+  shared with it. Validation (`make_validate_focused_beam`) reports every runtime refusal first; estimators book the
+  scan solves through `definition_common.brillouin_scan_solves` / `memory_estimates.brillouin_drive_items`. nlfd does
+  not offer it (absent from its `_CHANNEL_FEATURE_NAMES`). Self-tests selftests_focused_beam, em_fdfd_cpu_gpu.
 - NLFD-chi (physics/nlfd): one FDFDPhysics per harmonic channel; nonlinear terms are sources whose `add_to_rhs` /
   `face_currents` read other channels' solutions (nothing assumes the rhs constant beyond `_solution_dirty`). Its
   channel features wrap the FDFD FeatureTypes: renaming an FDFD feature param, or a validate resolving FDFD params
