@@ -68,7 +68,9 @@ class HarmonicSystem:
     set_output_rows (no column map): x and A x only at those rows, the free solution kept (on the device after a cuDSS
     solve) for last_solution (R6). terms: FrequencyTerm list added as c_k(omega) X_k at slots of the summed pattern
     (module header; reduced sweeps refuse them); scale_terms: SchurScaleTerm list of the equilibration diagonal (also
-    applied by host SuperLU: _factorize). Both empty: exactly the pencil above."""
+    applied by host SuperLU: _factorize). Both empty: exactly the pencil above. set_functionals(W): every solve also
+    gives last_functionals = W^H x, and solve_columns solves extra right-hand sides on the factor of the last direct
+    solve (physics drives: one factorisation per frequency for every scan column); without W every path is unchanged."""
 
     def __init__(self, operator, loss, mass, free, column_map=None, runtime=None, previous=None, loads=(), terms=(),
                  scale_terms=()):
@@ -134,6 +136,13 @@ class HarmonicSystem:
         self._fixed_terms = None   # (fixed, (K fixed, M fixed, L fixed) or None when fixed is 0) of _fixed_product
         self._free_position = np.full(self._n_reduced(), -1, dtype=np.int64)   # dof -> free index, -1 held
         self._free_position[self.free_dofs] = np.arange(self.free_dofs.size)
+        # functionals W^H x (set_functionals; physics drives: the FDT readouts of brillouin_scattering); every branch
+        # reading them is guarded by `self._functionals is not None`, so without them every solve is bit-identical
+        self._functionals = None          # (k, n) complex host weights W over every dof, read-only (the caller's)
+        self._device_functionals = None   # W at the free dofs on the device (cuDSS rows-only / column solves; booked)
+        self._functional_block = None     # (model, conj(W P) V (k, basis), W^H fixed) of the reduced model
+        self._factored_omega = None       # omega [rad/s] of the current factor (_factorize)
+        self.last_functionals = None      # complex (k,) W^H x of the last solve (with functionals)
 
     def _reduced_free(self, matrix):
         if matrix is None:
@@ -273,6 +282,7 @@ class HarmonicSystem:
                 self.factor = self.runtime.factorize_host(matrix, symmetric=True, row_scale=scale,
                                                           previous=self.factor, scale_superlu=saddle)
         self.factorizations += 1
+        self._factored_omega = omega   # solve_columns reuses this factor only at this omega
         return self.factor
 
     def _n_reduced(self) -> int:
@@ -304,6 +314,8 @@ class HarmonicSystem:
             return self._rows_solve(omega, fixed, rhs[self.free_dofs])
         self._kept = None
         solution = self._full(self.factor.solve_host(rhs[self.free_dofs]), fixed)
+        if self._functionals is not None:
+            self.last_functionals = _adjoint_products(self._functionals, solution)
         if product_at_rows and self._direct_rows is not None:
             return solution, self._rows_product(omega, solution[self._direct_rows[1]])
         return solution, self._product(omega, solution)
@@ -315,6 +327,8 @@ class HarmonicSystem:
         on_device = getattr(self.factor, 'back_end', None) == 'cudss'   # a CudssFactorization (both precisions)
         free_solution = self.factor.solve(free_rhs) if on_device else self.factor.solve_host(free_rhs)
         self._kept = (free_solution, fixed)
+        if self._functionals is not None:   # from the kept free solution (on the device after a cuDSS solve)
+            self.last_functionals = self._kept_functionals(free_solution, fixed, on_device)
         positions = self._free_position[columns]
         free = positions >= 0
         values = fixed[columns].copy()   # x = fixed + the free solution scattered (as _full)
@@ -337,6 +351,110 @@ class HarmonicSystem:
         free_solution, fixed = self._kept
         return self._full(np.asarray(to_host(free_solution)), fixed)
 
+    # ---- functionals and extra columns (physics drives: brillouin_scattering's FDT readouts) ----
+    @property
+    def functionals(self):
+        """The weights W of set_functionals (the caller's array), or None."""
+        return self._functionals
+
+    def set_functionals(self, weights) -> None:
+        """Weights W (k, n) complex over every dof (the operator's numbering, before the column map; mixed: zero on the
+        pressure rows reads the displacements only), or None to drop them: every later solve sets last_functionals =
+        W^H x (direct: from x; rows-only: from the kept free solution, on the device after a cuDSS solve; reduced: from
+        a precomputed (k, basis) block). The array is kept, not copied (pass a read-only one)."""
+        self._device_functionals = None
+        self._functional_block = None
+        self.last_functionals = None
+        if weights is None:
+            self._functionals = None
+            return
+        weights = np.asarray(weights)
+        if weights.ndim != 2 or weights.shape[1] != self.operator.shape[0] or weights.dtype != np.complex128:
+            raise ValueError(f'set_functionals: weights must be complex128 (k, {self.operator.shape[0]}) over every '
+                             f'dof, got {weights.dtype} {weights.shape}')
+        self._functionals = weights
+
+    def _free_weights(self, xp):
+        """W at the free dofs (k, n_free) on the array module xp (the cuDSS device), uploaded row by row on first use
+        and kept with this system (booked (estimate): k x n_free complex128 on the device; no column map)."""
+        if self._device_functionals is None:
+            if self.column_map is not None:
+                raise RuntimeError('device functionals need the free dofs of every dof (no column map; a bug)')
+            device = xp.empty((len(self._functionals), self.free_dofs.size), dtype=xp.complex128)
+            for row in range(len(self._functionals)):   # one host row at a time (no (k, n_free) host copy)
+                device[row] = xp.asarray(self._functionals[row, self.free_dofs])
+            self._device_functionals = device
+        return self._device_functionals
+
+    def _kept_functionals(self, free_solution, fixed, on_device) -> np.ndarray:
+        """W^H x of a rows-only solve (no column map) from its free solution (device or host) and the held values."""
+        if on_device:
+            xp = array_module_of(free_solution)
+            values = np.asarray(to_host(xp.conj(self._free_weights(xp) @ xp.conj(free_solution))))
+            return values + _adjoint_products(self._functionals, fixed) if fixed.any() else values
+        solution = fixed.copy()
+        solution[self.free_dofs] += free_solution
+        return _adjoint_products(self._functionals, solution)
+
+    def _reduced_functionals(self, model, coordinates, fixed) -> np.ndarray:
+        """W^H x of the reduced model at its coordinates: conj(W P) V y + W^H fixed with P the prolongation of the free
+        dofs (the column map included), the (k, basis) block made once per model."""
+        import scipy.sparse
+        block = self._functional_block
+        if block is None or block[0] is not model:
+            selection = scipy.sparse.csr_matrix((np.ones(self.free_dofs.size), (self.free_dofs, np.arange(
+                self.free_dofs.size))), shape=(self._n_reduced(), self.free_dofs.size))
+            prolongation = selection if self.column_map is None else (self.column_map @ selection).tocsr()
+            projected = np.asarray(prolongation.T @ self._functionals.T)   # (n_free, k) = (W P)^T, P real
+            constant = (_adjoint_products(self._functionals, fixed) if fixed.any()
+                        else np.zeros(len(self._functionals), dtype=np.complex128))
+            block = self._functional_block = (model, np.conj(projected).T @ model.basis, constant)
+        return block[1] @ coordinates + block[2]
+
+    def solve_columns(self, omega, loads, rows) -> np.ndarray:
+        """Complex (m,) W[rows[s]]^H x_s of the extra right-hand sides loads (m, n) over every dof (held values 0, no
+        extra_rhs), each solved on the factor of the last factorisation, which must be a direct solve at this omega
+        [rad/s] (the column map and free set as solve; one solve per column: factor.solve_host, or on a cuDSS factor
+        without column map factor.solve and a device dot with the kept free weights). RuntimeError without
+        functionals, after plan_reduced or at another omega."""
+        if self._functionals is None:
+            raise RuntimeError('solve_columns needs set_functionals first (it returns W[rows]^H x of each column)')
+        if self._planned is not None:
+            raise RuntimeError('solve_columns after plan_reduced: a reduced model keeps no factor at each frequency '
+                               '(extra columns need direct solves)')
+        if self.factor is None or self._factored_omega != omega:
+            raise RuntimeError(f'solve_columns at omega {omega!r} rad/s, but the factor is of omega '
+                               f'{self._factored_omega!r}: solve the first column directly at this omega first')
+        loads = np.asarray(loads)
+        rows = np.asarray(rows, dtype=np.int64).reshape(-1)
+        n_dofs = int(self.operator.shape[0])
+        if loads.shape != (rows.size, n_dofs):
+            raise ValueError(f'solve_columns: loads {loads.shape} must be ({rows.size}, {n_dofs}): one per row index')
+        if rows.size and (rows.min() < 0 or rows.max() >= len(self._functionals)):
+            raise ValueError(f'solve_columns: row indices outside 0..{len(self._functionals) - 1}')
+        on_device = getattr(self.factor, 'back_end', None) == 'cudss' and self.column_map is None
+        values = np.empty(rows.size, dtype=np.complex128)
+        device_values = None
+        for index, (load, row) in enumerate(zip(loads, rows)):
+            rhs = np.asarray(load, dtype=np.complex128)
+            if self.column_map is not None:
+                rhs = self.column_map.T @ rhs
+            free_rhs = rhs[self.free_dofs]
+            if on_device:   # the solution stays on the device: one dot there, one transfer of m values at the end
+                free_solution = self.factor.solve(free_rhs)
+                xp = array_module_of(free_solution)
+                if device_values is None:
+                    device_values = xp.empty(rows.size, dtype=xp.complex128)
+                device_values[index] = xp.vdot(self._free_weights(xp)[row], free_solution)
+            else:
+                reduced = np.zeros(self._n_reduced(), dtype=np.complex128)
+                reduced[self.free_dofs] = self.factor.solve_host(free_rhs)
+                solution = reduced if self.column_map is None else self.column_map @ reduced
+                values[index] = np.vdot(self._functionals[row], solution)
+        if device_values is not None:
+            values = np.asarray(to_host(device_values), dtype=np.complex128)
+        return values
+
     # ---- reduced sweeps (fem.reduced_harmonic) ----
     @property
     def reduced_model(self):
@@ -349,6 +467,7 @@ class HarmonicSystem:
         self._planned = None
         self._rows = None
         self._kept = None
+        self._functional_block = None
 
     def reduced_problem(self, fixed, load, extra_rhs=()) -> tuple:
         """(HarmonicTerm list, HarmonicLoad list) of the free-dof problem of solve (fem.reduced_harmonic): K, j L, -omega^2
@@ -462,6 +581,8 @@ class HarmonicSystem:
             raise RuntimeError('the held values, loads or charges changed after plan_reduced: plan again or call '
                                'clear_reduced()')
         coordinates = model.reduced_coordinates([omega])[0]
+        if self._functionals is not None:
+            self.last_functionals = self._reduced_functionals(model, coordinates, fixed)
         if not fields:
             if self._rows is None:
                 raise RuntimeError('solve(fields=False) needs set_output_rows after plan_reduced')
@@ -477,6 +598,11 @@ def _squared_entries(matrix):
     squared = matrix.tocsr()
     squared.data = np.abs(squared.data) ** 2
     return squared
+
+
+def _adjoint_products(weights, vector) -> np.ndarray:
+    """Complex (k,) W^H x = conj(W conj(x)) of dense weights (k, n) and a vector (n,) (no conjugated copy of W)."""
+    return np.conj(weights @ np.conj(np.asarray(vector, dtype=np.complex128)))
 
 
 def _real_times(matrix, vector):
