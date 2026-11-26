@@ -231,8 +231,8 @@ first bring the background physics (those without the study's hook) to a station
   `source_slots` with `definition_common.source_slot_docs`.
 - A feature that reads another physics' solved state reads it through a study hook after that physics is solved
   (optomechanics: the study hands `runner.physics[...]` to the coupling's evaluate; frequency_response:
-  `solver_hooks.PhysicsDriveSolver`), never in its apply: build order is not solve order. Such a read is no coupling
-  (coupling sub file "Not a coupling").
+  `solver_hooks.PhysicsDriveSolver`, the physics it reads a `DriveOpticsSolver`), never in its apply: build order is
+  not solve order. Such a read is no coupling (coupling sub file "Not a coupling").
 - A type solving on several mesh kinds (one solver class per kind) keeps the rules every kind follows as module
   functions of its tensor `solver.py` that the element solvers call, never a copy (potential / heat sub files).
 - Source slot writers: every CouplingType declares `writes(vctx, spec)` (schema comment); validate allows one
