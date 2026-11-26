@@ -9,7 +9,7 @@ import numpy as np
 
 from ..core.gpu_memory import pool_used_bytes
 from .analytic import SEGMENT_SAMPLINGS, derived_curve_result, is_curve_source, result_value, split_key
-from .definition_helpers import AZIMUTHAL_ORDER_PARAM
+from .definition_helpers import holds_azimuthal_order, ring_angle_conflict
 from .expressions import ExpressionError, compile_expression, evaluate_parameters, evaluate_scalar, referenced_names
 from .field_access import DISPLAY_MAX_PIXELS
 from .field_access_tensor import LineAccess, MappedAccess, TensorAccess
@@ -685,22 +685,17 @@ class Session:
         names read (none read: of every one on this view's mesh, _axisymmetric_solvers); a solver without one (the BOR
         EM solvers) counts 2 pi, and pi wins when one of them solves m != 0 (a type without the azimuthal_order
         setting, e.g. magnetic, read with an order-m one). ValueError when physics holding the azimuthal_order setting
-        weigh differently (validate allows that only for an ORDER_SPLIT_READERS pair, e.g. the m = 0 and m = 2 solids
-        of one Brillouin beam): such a value must read the fields of one of them."""
+        weigh differently (definition_helpers.ring_angle_conflict, the rule validate refuses such a derived value by;
+        reachable only for an ORDER_SPLIT_READERS pair, e.g. the m = 0 and m = 2 solids of one Brillouin beam): such a
+        value must read the fields of one of them."""
         angles = {physics: float(getattr(solver, 'ring_angle', 2.0 * math.pi))
                   for physics, solver in self._axisymmetric_solvers(names).items()}
         ordered = {physics: angle for physics, angle in angles.items()
-                   if any(param is AZIMUTHAL_ORDER_PARAM for param in self._physics_type(physics).settings)}
-        if len(set(ordered.values())) > 1:
-            listed = ', '.join(f"'{physics}' ({angle / math.pi:g} pi)" for physics, angle in ordered.items())
-            if any(name in self._field_names for name in names):
-                raise ValueError('the expression reads the fields of axisymmetric physics whose azimuthal orders '
-                                 'weigh the (r, z) rings differently (ring angle 2 pi at m = 0, pi at m != 0): '
-                                 f'{listed}; read the fields of one of them per derived value')
-            raise ValueError("the expression reads no field, and the axisymmetric physics on mesh "
-                             f"'{self.domain.mesh_name}' weigh the (r, z) rings differently (ring angle 2 pi at "
-                             f'm = 0, pi at m != 0): {listed}; name a field of the physics whose rings it should '
-                             'weigh (e.g. add 0 * one of its fields)')
+                   if holds_azimuthal_order(self._physics_type(physics))}
+        problem = ring_angle_conflict(ordered, any(name in self._field_names for name in names),
+                                      self.domain.mesh_name)
+        if problem:
+            raise ValueError(problem)
         return min(angles.values(), default=2.0 * math.pi)
 
     def _plain_namespace(self, names, earlier=None):

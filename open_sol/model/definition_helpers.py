@@ -1367,7 +1367,7 @@ def azimuthal_order_issues(vctx, physics_spec, path, settings_values):
     for other, other_type in known_physics(vctx.spec, vctx.registry):
         if other.name == physics_spec.name:
             continue
-        if not any(param is AZIMUTHAL_ORDER_PARAM for param in other_type.settings):
+        if not holds_azimuthal_order(other_type):
             continue
         other_values = vctx.values(other_type.settings, other.settings)
         if other_values is None or not is_axisymmetric(other_values) or azimuthal_order_of(other_values) == order:
@@ -1380,7 +1380,7 @@ def azimuthal_order_issues(vctx, physics_spec, path, settings_values):
                                               f"{' / '.join(sorted(ORDER_SPLIT_READERS))} and share no coupling (no "
                                               'field passes between the orders); a field derived value must read the '
                                               'fields of one of them (one reading both, or no field on their shared '
-                                              'mesh, fails: its ring angle would be ambiguous)'))
+                                              'mesh, is refused: its ring angle would be ambiguous)'))
             continue
         issues.append(Issue('error', path, f"azimuthal_order {order} differs from that of '{other.name}' "
                                            f'({other_order}): field derived values weight the rings of a model by one '
@@ -1406,6 +1406,35 @@ def _order_split_reads(physics_spec) -> set:
         if isinstance(name, str) and name:
             names.add(name)
     return names
+
+
+def holds_azimuthal_order(physics_type) -> bool:
+    """True when the type has the shared azimuthal_order setting (AZIMUTHAL_ORDER_PARAM, found by identity; the BOR EM
+    types carry an order of their own and count 2 pi ring angles)."""
+    return any(param is AZIMUTHAL_ORDER_PARAM for param in physics_type.settings)
+
+
+# field derived-value operations that weight the (r, z) rings by ring_angle r_c (the field_access reductions; 'at',
+# 'max' and 'min' read values only): ring_angle_conflict applies to these
+RING_WEIGHTED_OPERATIONS = ('mean', 'integral', 'mode_volume')
+
+
+def ring_angle_conflict(ordered_angles, reads_fields, mesh_name) -> str:
+    """'' when the axisymmetric physics holding the azimuthal_order setting whose rings one field derived value weighs
+    ({physics: ring angle [rad]}: those whose fields the expression reads; reads_fields False: every one on mesh
+    mesh_name, where an expression reading no field is evaluated) weigh alike, else the error text. They differ only
+    for an ORDER_SPLIT_READERS pair (azimuthal_order_issues), and such a value must read the fields of one of them.
+    The one rule of Session._ring_angle (raises the text) and validate (reports it at the derived value)."""
+    if len(set(ordered_angles.values())) < 2:
+        return ''
+    listed = ', '.join(f"'{physics}' ({angle / math.pi:g} pi)" for physics, angle in ordered_angles.items())
+    if reads_fields:
+        return ('the expression reads the fields of axisymmetric physics whose azimuthal orders weigh the (r, z) rings '
+                f'differently (ring angle 2 pi at m = 0, pi at m != 0): {listed}; read the fields of one of them per '
+                'derived value')
+    return (f"the expression reads no field, and the axisymmetric physics on mesh '{mesh_name}' weigh the (r, z) "
+            f'rings differently (ring angle 2 pi at m = 0, pi at m != 0): {listed}; name a field of the physics '
+            'whose rings it should weigh (e.g. add 0 * one of its fields)')
 
 
 def _coupled_partner_names(vctx, physics_spec) -> set:

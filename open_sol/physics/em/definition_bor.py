@@ -52,7 +52,6 @@ from .solvers.fdfd_bor import (BOR_MATERIAL_SCHEMA_KEY, BOR_PERMITTIVITY_ARRAYS,
 from .solvers.fdfd_bor_fem import FEMBORPhysics
 
 _TYPE_NAME = 'em_fdfd_bor'
-_DRIVEN_STUDIES = ('stationary', FREQUENCY_DOMAIN_STUDY)   # an azimuthal_orders list = the driven order sum
 _AXIS = 'axis'
 _WALL_FACES = ('x_hi', 'y_lo', 'y_hi')
 _WALL_CHOICES = ('cpml', 'pec', 'pmc')
@@ -475,17 +474,19 @@ _LOSS_PROPERTIES = ('sigma_e', 'sigma_m')
 
 
 def _focused_beam_physics_issues(vctx, physics_spec, path):
-    """Errors of the physics settings a focused beam refuses: azimuthal_order other than 1, an azimuthal_orders list in
-    a driven study (the order sum), a pec / pmc z face."""
+    """Errors of the physics settings a focused beam refuses: azimuthal_order other than 1, an azimuthal_orders list
+    wherever the study does not eigen-solve the physics (the create's test: the list is then the driven order sum, also
+    as a background physics of frequency_response / optomechanics), a pec / pmc z face."""
     settings = raw_settings(physics_spec)
     issues = []
     order = settings.get('azimuthal_order', 0)
     if isinstance(order, bool) or order != BEAM_ORDER:
         issues.append(Issue('error', path, f'needs azimuthal_order {BEAM_ORDER} (got {order!r}): an x-polarised beam '
                                            f'on the axis is the azimuthal order {BEAM_ORDER} standing wave'))
-    if settings.get('azimuthal_orders') and vctx.study_type in _DRIVEN_STUDIES:
-        issues.append(Issue('error', path, 'cannot join the driven order sum of azimuthal_orders (it is one order '
-                                           f'{BEAM_ORDER} field): clear azimuthal_orders'))
+    if settings.get('azimuthal_orders') and not eigen_solved(vctx.spec, physics_spec.name):
+        issues.append(Issue('error', path, f'cannot join the driven order sum of azimuthal_orders (the '
+                                           f'{vctx.study_type} study solves {physics_spec.name} driven, and the beam '
+                                           f'is one order {BEAM_ORDER} field): clear azimuthal_orders'))
     for face in ('y_lo', 'y_hi'):
         if settings.get(f'bc_{face}', 'cpml') in _MIRROR_FACES:
             issues.append(Issue('error', path, f"bc_{face} = {settings[f'bc_{face}']} is the mirror plane of a "
@@ -834,12 +835,13 @@ def azimuthal_order_list_issues(orders, path, context='', sum_check=True):
 
 
 def _order_list_issues(vctx, physics_spec, settings_values, path):
-    """azimuthal_orders: integers, distinct (errors); in a driven study (the order sum) no mode ports (error) and every
-    order 0..max (warning: a point source's sum would miss terms)."""
+    """azimuthal_orders: integers, distinct (errors); where the study does not eigen-solve the physics (the create's
+    test: the list is the driven order sum, also as a background physics) no mode ports (error) and every order 0..max
+    (warning: a point source's sum would miss terms)."""
     orders = settings_values.get('azimuthal_orders') or []
     if not orders:
         return []
-    driven = vctx.study_type in _DRIVEN_STUDIES
+    driven = not eigen_solved(vctx.spec, physics_spec.name)
     issues, orders = azimuthal_order_list_issues(orders, path, f' in a {vctx.study_type} study', sum_check=driven)
     if orders is None or not driven:
         return issues

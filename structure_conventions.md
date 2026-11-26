@@ -241,8 +241,10 @@ first bring the background physics (those without the study's hook) to a station
   to the domain touches one place; the BOR types carry it with the single choice 'axisymmetric'. The solver exposes
   `axisymmetric` (Session ring-weights the derived values reading its fields). With `azimuthal_order` m != 0 rings
   carry pi: code weighting (r, z) rings takes `core.metric.ring_angle` / the solver's `ring_angle`, never a literal
-  2 pi. A symmetry option that changes what the drawn plane is becomes a space (`schema.SPACES`, GUI only), never a
-  free-standing setting.
+  2 pi. Orders may differ only for a `definition_helpers.ORDER_SPLIT_READERS` pair; a ring-weighted derived value
+  whose angle is then ambiguous is judged by `ring_angle_conflict` (Session raises, validate refuses it). A symmetry
+  option that changes what the drawn plane is becomes a space (`schema.SPACES`, GUI only), never a free-standing
+  setting.
 - Help texts are API contract (describe -> api_reference.md): units, sign / axis conventions, typical values and
   gotchas, ASCII only (describe raises); describe prints the Param's unit, default, range and choices, so the help
   need not restate them. Unit '1' = dimensionless, '' non-numeric; units with spaces ('W/(m K)'), never '*'; a unit

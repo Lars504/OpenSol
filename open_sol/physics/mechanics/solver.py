@@ -608,6 +608,7 @@ class SolidMechanicsPhysics(MultiShiftModes, SolidMechanicsBase):
             drive.reset_records()
         if self._harmonic is not None:
             self._harmonic[1].clear_reduced()
+        self._drop_drive_factor()
 
     def _checked_harmonic_operators(self):
         """(operator, loss, mass) of a driven solve after its refusals (guided modes, generalized plane strain, Bloch
@@ -729,15 +730,24 @@ class SolidMechanicsPhysics(MultiShiftModes, SolidMechanicsBase):
         self._unpublished_solution = None if fields or planned else solution
 
     def publish_frequency_response(self):
-        """ReducedSweepSolver hook: show the last solved frequency when the field policy skipped it (the kept direct
-        solution, or a re-solve of the reduced model)."""
+        """ReducedSweepSolver hook (the study calls it after every sweep): show the last solved frequency when the
+        field policy skipped it (the kept direct solution, or a re-solve of the reduced model); then drop the factor
+        of the physics drives' kept HarmonicSystem (_drop_drive_factor)."""
         frequency, self._unpublished_frequency = self._unpublished_frequency, None
         solution, self._unpublished_solution = self._unpublished_solution, None
-        if frequency is None:
-            return
-        if solution is None:
-            solution = self._harmonic_solve(2.0 * math.pi * frequency)[0]
-        self._show_frequency_response(solution)
+        if frequency is not None:
+            if solution is None:
+                solution = self._harmonic_solve(2.0 * math.pi * frequency)[0]
+            self._show_frequency_response(solution)
+        self._drop_drive_factor()
+
+    def _drop_drive_factor(self) -> None:
+        """Drop the private host SuperLU factor the physics drives' kept HarmonicSystem holds after its last solve
+        (memory outside numpy, invisible to the ledgers; the estimate books one factor during the sweep only): every
+        direct solve factorises afresh (_harmonic_solve), so nothing reads it after the sweep. A scipy_splu
+        Factorization has no release(): dropping the reference frees it."""
+        if self._harmonic is not None:
+            self._harmonic[1].factor = None
 
     # --- physics drives (solver_hooks.PhysicsDriveSolver: brillouin_scattering) ---
 
