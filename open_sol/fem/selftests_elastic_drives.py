@@ -7,7 +7,7 @@ import math
 import numpy as np
 
 from ..model.schema import SelfTestCase
-from ..model.selftest_helpers import SubChecks
+from ..model.selftest_helpers import SubChecks, no_runs, random_complex
 from .selftests_mesher import _DISC_SIZES, disc_mesh
 
 _UM = 1e-6
@@ -27,10 +27,6 @@ def _mesh():
 
 def _selection(mesh) -> np.ndarray:
     return mesh.points[mesh.triangles].mean(axis=1)[:, 0] < _SELECTION_X
-
-
-def _random_complex(rng, shape, scale) -> np.ndarray:
-    return scale * (rng.standard_normal(shape) + 1j * rng.standard_normal(shape))
 
 
 def _relative_to_terms(value, expected, terms) -> float:
@@ -58,7 +54,7 @@ def _check_transpose(_):
         dofs = lagrange_dofs(mesh, element_order)
         for name, axisymmetric, order in _FORMS:
             points = drive_points(dofs, axisymmetric=axisymmetric, azimuthal_order=order, elements=_selection(mesh))
-            stress = _random_complex(rng, (points.rows, points.n_points), _STRESS_SCALE)
+            stress = random_complex(rng, (points.rows, points.n_points), _STRESS_SCALE)
             displacement = _DISPLACEMENT_SCALE * rng.standard_normal((dofs.n_dofs, points.components))
             drive = assemble_stress_drive(dofs, points, stress)
             terms = []
@@ -151,7 +147,7 @@ def _check_azimuthal_quadrature(_):
     for element_order in (1, 2):
         dofs = lagrange_dofs(mesh, element_order)
         points = drive_points(dofs, axisymmetric=True, azimuthal_order=2, elements=_selection(mesh))
-        stress = _random_complex(rng, (points.rows, points.n_points), _STRESS_SCALE)
+        stress = random_complex(rng, (points.rows, points.n_points), _STRESS_SCALE)
         amplitudes = _DISPLACEMENT_SCALE * rng.standard_normal((dofs.n_dofs, 3))
         flipped = stress.copy()
         flipped[4:] *= -1.0   # the odd parity in the even convention: shear rows negated
@@ -188,7 +184,7 @@ ELASTIC_DRIVES_SELFTEST_CASES = (
                     'from fem.elasticity element_strains / azimuthal_element_strains at the same rule points (complex '
                     'random stress, real random u; 1e-13 of the summed term magnitudes: round-off); an empty '
                     'selection raises. error = number of failed sub-checks, tolerance 0.',
-        specs=lambda: {},
+        specs=no_runs,
         check=_check_transpose,
         max_wall_time=60.0),
     SelfTestCase(
@@ -199,7 +195,7 @@ ELASTIC_DRIVES_SELFTEST_CASES = (
                     'exact rules, 1e-13), and a constant traction on the window edges as an edge drive equals '
                     'assemble_edge_traction (straight edges, exact rules, 1e-13); edge normals are unit; points of '
                     'another dof map raise. error = number of failed sub-checks, tolerance 0.',
-        specs=lambda: {},
+        specs=no_runs,
         check=_check_constant_loads,
         max_wall_time=60.0),
     SelfTestCase(
@@ -211,7 +207,7 @@ ELASTIC_DRIVES_SELFTEST_CASES = (
                     'shear rows x sin (pins the pi r ring weight and the rows); the odd parity (u = (U_r sin, U_z sin, '
                     '-U_phi cos), normal x sin, shear x cos) equals the even drive with the shear rows negated '
                     '(1e-12; the trapezoid in phi is exact). error = number of failed sub-checks, tolerance 0.',
-        specs=lambda: {},
+        specs=no_runs,
         check=_check_azimuthal_quadrature,
         max_wall_time=60.0),
 )

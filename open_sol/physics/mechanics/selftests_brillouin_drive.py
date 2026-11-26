@@ -2,20 +2,20 @@
 products and optical stress vs a 3D four-index contraction, the azimuthal m = 0 / 2 split vs a phi quadrature of the 3D
 work, the FDT readout vs a closed-form oscillator and the sum rule, the damped-oscillator fit, the homogeneous and local
 reference spectra with their zero padding, and the bilinear / phase-corrected / phase-gradient sampling. error =
-number of failed sub-checks (tolerance 0); physics imports inside the checks."""
+number of failed sub-checks (tolerance 0); physics and materials imports inside the checks. Also holds the
+damped-oscillator area of the spectrum self-tests (_dho_area)."""
 import math
 
 import numpy as np
 
 from ...core.constants import EPS0, HBAR, K_B
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import SubChecks, max_relative_error, norm_relative_error, no_runs
+from ...model.selftest_helpers import SubChecks, max_relative_error, no_runs, norm_relative_error, random_complex
 
 _POINTS = 9                 # random sample points of the algebraic checks
 _ALGEBRA_RTOL = 1e-13       # identities of sums of a few products (round-off)
 _PHI_POINTS = 64            # phi quadrature (exact for the trigonometric degree 4 of sigma . S)
 _TEMPERATURE = 293.15       # K
-_VOIGT = {(0, 0): 0, (1, 1): 1, (2, 2): 2, (1, 2): 3, (2, 1): 3, (0, 2): 4, (2, 0): 4, (0, 1): 5, (1, 0): 5}
 _CUBIC_P = (0.12, 0.27, -0.06)   # p11, p12, p44 of a cubic crystal (silicon-like) for the rotated tensor
 _EULER = (0.4, 1.1, -0.7)        # rad: z-x-z rotation of the cubic tensor
 _ISOTROPIC_P = (0.31, 0.27, 0.05)   # p11, p12 and an explicit p44 != (p11 - p12) / 2
@@ -26,8 +26,8 @@ _VISCOUS_BETA = 2e-3        # C = beta K: damping ratios 1e-3 .. 3e-3 (a constan
 _SUM_RULE_STEP = 2e-4       # rad/s grid of the sum rule (5 points per half width of the sharpest line)
 _SUM_RULE_TOP = 20.0        # rad/s: the tail above carries ~1e-7
 _SUM_RULE_RTOL = 1e-4       # first estimate (quadrature and tails ~1e-6)
-# DHO fit round trip (water_532nm numbers of the plan)
-_DHO = (7.439e9, 0.65e9, 1e-12)   # f0 [Hz], gamma [Hz], peak psd [1/Hz]
+# DHO fit round trip: f0 [Hz] (2 n v / lambda0 of water_532nm at 532 nm), gamma [Hz], peak psd [1/Hz]
+_DHO = (7.439e9, 0.65e9, 1e-12)
 _DHO_BAND = (6.5e9, 8.3e9, 61)
 _DHO_RTOL = 1e-8
 # homogeneous reference (dimensionless medium: rho 1, M 1, v 1, a phonon wavelength 1 m, Gamma = 0.2 Omega_0)
@@ -41,37 +41,14 @@ _ENVELOPE = (80.0, 20.0, 0.125, 2.0, 4.0)   # w_x, w_y [m], dx, dy, half extent 
 _ENVELOPE_RTOL = 2e-3       # L2 over the band: q spread (1 / (w_x Gamma / 2))^2 ~ 4e-4 + transverse shift ~3e-4
 _STATIC_RTOL = 1e-10
 _BAND = (0.6, 1.4, 21)      # Hz around f0 = 1 Hz
-# a short drive (2 x 2 m, 2 phonon wavelengths along x): the automatic padding against twice as much per axis; the
-# two nearest images per axis hold together below brillouin.IMAGE_TOLERANCE = 1e-3 of the readout at the automatic
-# padding (first estimate)
+# a short drive (2 x 2 m, 2 phonon wavelengths along x): the automatic padding against twice as much per axis
 _SHORT_GRID = (32, 4, 1.0 / 16.0, 0.5)
 _SHORT_PADDING_RTOL = 3e-3
-# ceil(1 + ln(2 / 1e-3) / (delta L)) per axis (brillouin.reference_padding), L_x = 32 / 16 = L_y = 4 x 0.5 = 2 m,
-# delta = |Im k| at the band's lowest 0.6 Hz: eta_L = 0.2 / (2 pi), Omega eta_L = 0.12, M* = 1 + 0.12j, |Im k| =
-# Omega |Im (M*)^(-1/2)| = 3.7699 x 1.0144^(-1/4) sin(atan(0.12) / 2) = 3.7699 x 0.99643 x 0.059679 = 0.22418 1/m (the
-# shear law of viscosity 0.01, |Im k| ~ 13.7 1/m, attenuates far faster); ln(2000) = 7.6009, 7.6009 / (0.22418 x 2)
-# = 16.953, so P = ceil(17.953) = 18 on both axes (ln(1000) alone would give ceil(16.407) = 17)
+# ceil(1 + ln(2 / 1e-3) / (delta L)) per axis (brillouin.reference_padding), L = 2 m, delta = |Im k| = 0.22418 1/m of
+# the longitudinal law at the band's lowest 0.6 Hz (M* = 1 + 0.12j; the shear law attenuates far faster): ceil(17.953)
 _SHORT_PADDING = (18, 18)
 _PHASE_RTOL = 1e-12         # phase-corrected sampling of a plane wave (round-off)
 _LAW_RTOL = 1e-14
-
-
-def _complex(rng, shape) -> np.ndarray:
-    return rng.standard_normal(shape) + 1j * rng.standard_normal(shape)
-
-
-def _four_index(voigt) -> np.ndarray:
-    """(3, 3, 3, 3) p_ijkl = p_IJ of a Voigt (6, 6) p (engineering strains: Delta(1/eps)_ij = p_ijkl S_kl)."""
-    tensor = np.empty((3, 3, 3, 3))
-    for (i, j), first in _VOIGT.items():
-        for (k, l), second in _VOIGT.items():
-            tensor[i, j, k, l] = voigt[first, second]
-    return tensor
-
-
-def _voigt_matrix(tensor) -> np.ndarray:
-    pairs = ((0, 0), (1, 1), (2, 2), (1, 2), (0, 2), (0, 1))
-    return np.array([[tensor[i, j, k, l] for k, l in pairs] for i, j in pairs])
 
 
 def _isotropic_voigt(p11, p12, p44) -> np.ndarray:
@@ -80,7 +57,10 @@ def _isotropic_voigt(p11, p12, p44) -> np.ndarray:
 
 
 def _rotated(voigt, angles) -> np.ndarray:
-    """Voigt p of the four-index tensor rotated by z-x-z Euler angles."""
+    """Voigt p of the four-index tensor (materials.crystal_tensors full_stiffness / voigt_stiffness: p_IJ = p_ijkl, no
+    shear factors) rotated by z-x-z Euler angles [rad]."""
+    from ...materials.crystal_tensors import full_stiffness, voigt_stiffness
+
     def axis_rotation(angle, axis):
         c, s = math.cos(angle), math.sin(angle)
         rows = np.eye(3)
@@ -88,8 +68,8 @@ def _rotated(voigt, angles) -> np.ndarray:
         rows[a, a], rows[a, b], rows[b, a], rows[b, b] = c, -s, s, c
         return rows
     rotation = axis_rotation(angles[0], 2) @ axis_rotation(angles[1], 0) @ axis_rotation(angles[2], 2)
-    tensor = np.einsum('ia,jb,kc,ld,abcd->ijkl', rotation, rotation, rotation, rotation, _four_index(voigt))
-    return _voigt_matrix(tensor)
+    tensor = np.einsum('ia,jb,kc,ld,abcd->ijkl', rotation, rotation, rotation, rotation, full_stiffness(voigt))
+    return voigt_stiffness(tensor)
 
 
 def _brute_amplitude(tensor, strain, eps, collection, incident) -> np.ndarray:
@@ -106,13 +86,14 @@ def _engineering(strain) -> np.ndarray:
 
 
 def _check_field_products(_):
+    from ...materials.crystal_tensors import full_stiffness
     from .brillouin import (PLANAR_COMPONENTS, field_products, interface_traction, moving_boundary_traction,
                             optical_stress)
     from .optomechanics_fem import moving_boundary_weights
 
     checks = SubChecks()
     rng = np.random.default_rng(61)
-    incident, collection = _complex(rng, (3, _POINTS)), _complex(rng, (3, _POINTS))
+    incident, collection = random_complex(rng, (3, _POINTS)), random_complex(rng, (3, _POINTS))
     eps = 1.0 + 2.0 * rng.random((3, _POINTS))
     strain = rng.standard_normal((3, 3, _POINTS))
     strain = 0.5 * (strain + strain.transpose(1, 0, 2))
@@ -126,7 +107,7 @@ def _check_field_products(_):
                'general': rng.standard_normal((6, 6))}   # not symmetric in (I, J): pins the transposed contraction
     everywhere = np.ones(_POINTS, dtype=bool)
     for name, voigt in tensors.items():
-        expected = _brute_amplitude(_four_index(voigt), strain, eps, collection, incident)
+        expected = _brute_amplitude(full_stiffness(voigt), strain, eps, collection, incident)
         checks.add_bound(f'products_{name}', max_relative_error(np.einsum('in,ij,jn->n', products, voigt,
                                                                           engineering), expected), _ALGEBRA_RTOL)
         regions = () if name == 'isotropic' else ((everywhere, voigt),)
@@ -134,8 +115,8 @@ def _check_field_products(_):
         checks.add_bound(f'stress_{name}', max_relative_error(np.einsum('in,in->n', stress, engineering), expected),
                          _ALGEBRA_RTOL)
     default = optical_stress(products, p11, p12)   # p44 unset: (p11 - p12) / 2
-    expected = _brute_amplitude(_four_index(_isotropic_voigt(p11, p12, 0.5 * (p11 - p12))), strain, eps, collection,
-                                incident)
+    expected = _brute_amplitude(full_stiffness(_isotropic_voigt(p11, p12, 0.5 * (p11 - p12))), strain, eps,
+                                collection, incident)
     checks.add_bound('stress_default_p44', max_relative_error(np.einsum('in,in->n', default, engineering), expected),
                      _ALGEBRA_RTOL)
     # em_fdfd_ez: E_z only, a pure dilation drive sigma_xx = sigma_yy = p12 G_zz, sigma_zz = p11 G_zz, no shear
@@ -147,7 +128,7 @@ def _check_field_products(_):
     # moving boundary with E_c = E_i*: the optomechanics_fem bracket (cylindrical (r, phi, z) = planar (x, z, y))
     normals = rng.standard_normal((_POINTS, 2))
     normals /= np.linalg.norm(normals, axis=1)[:, None]
-    sides = [_complex(rng, (3, _POINTS)) for _ in range(2)]
+    sides = [random_complex(rng, (3, _POINTS)) for _ in range(2)]
     eps_sides = (1.0 + rng.random(_POINTS), 2.0 + rng.random(_POINTS))
     value = moving_boundary_traction(normals, [dict(zip(names, side)) for side in sides],
                                      [dict(zip(names, np.conj(side))) for side in sides], eps_sides)
@@ -160,11 +141,11 @@ def _check_field_products(_):
     tangent = np.stack([-normals[:, 1], normals[:, 0]], axis=1)
     fields = {}
     for name in ('incident', 'collection'):
-        parallel, out_of_plane, normal_d = (_complex(rng, _POINTS) for _ in range(3))
+        parallel, out_of_plane, normal_d = (random_complex(rng, _POINTS) for _ in range(3))
         sides_of = [{'x': parallel * tangent[:, 0] + normal_d / eps * normals[:, 0],
                      'y': parallel * tangent[:, 1] + normal_d / eps * normals[:, 1], 'z': out_of_plane}
                     for eps in eps_sides]
-        stray = _complex(rng, _POINTS)   # tangential D: not read
+        stray = random_complex(rng, _POINTS)   # tangential D: not read
         point_d = {'x': normal_d * normals[:, 0] + stray * tangent[:, 0],
                    'y': normal_d * normals[:, 1] + stray * tangent[:, 1]}
         fields[name] = (sides_of, sides_of[1], point_d)
@@ -202,8 +183,8 @@ def _check_azimuthal_split(_):
     checks = SubChecks()
     rng = np.random.default_rng(67)
     names = CYLINDRICAL_COMPONENTS
-    incident = {name: _complex(rng, _POINTS) for name in names}
-    collection = {name: _complex(rng, _POINTS) for name in names}
+    incident = {name: random_complex(rng, _POINTS) for name in names}
+    collection = {name: random_complex(rng, _POINTS) for name in names}
     eps = {'rr': 1.5 + rng.random(_POINTS), 'zz': 1.5 + rng.random(_POINTS), 'phiphi': 1.5 + rng.random(_POINTS)}
     p11, p12, p44 = _ISOTROPIC_P
     weights = rng.random(_POINTS)
@@ -212,7 +193,7 @@ def _check_azimuthal_split(_):
     normals = rng.standard_normal((_POINTS, 2))
     normals /= np.linalg.norm(normals, axis=1)[:, None]
     # interface amplitudes: E and D (the D phi entry is not read) of the incident and collection fields
-    interface = {key: {name: _complex(rng, _POINTS) for name in names}
+    interface = {key: {name: random_complex(rng, _POINTS) for name in names}
                  for key in ('incident', 'collection', 'incident_d', 'collection_d')}
     eps_sides = (1.0 + rng.random(_POINTS), 2.0 + rng.random(_POINTS))
     step = 2.0 * math.pi / _PHI_POINTS
@@ -272,7 +253,7 @@ def _check_azimuthal_split(_):
                                  _ALGEBRA_RTOL)
     # low NA: an x-polarised uniform field (A_r = E, A_phi = -E, A_z = 0) has E . E phi independent, so an isotropic
     # dilation drive (p11 = p12, p44 = 0) has no m = 2 part
-    field = _complex(rng, _POINTS)
+    field = random_complex(rng, _POINTS)
     uniform = {'r': field, 'phi': -field, 'z': np.zeros(_POINTS)}
     parts, _ = azimuthal_parts(uniform, uniform, 1.78, 'co_polarized', 0.31, 0.31, 0.0)
     checks.add_bound('low_na_no_m2', float(np.max(np.abs(parts[(2, 'even')])))
@@ -289,7 +270,7 @@ def _check_fdt_oscillator(_):
     rng = np.random.default_rng(71)
     stiffness = np.array([[2.0, -0.6, 0.1], [-0.6, 3.5, -0.9], [0.1, -0.9, 5.0]])
     mass = np.diag([1.2, 1.0, 0.8])
-    drive = _complex(rng, 3)
+    drive = random_complex(rng, 3)
     eigenvalues, modes = eigh(stiffness, mass)   # M-orthonormal: chi = sum phi phi^T / (lambda (..) - Omega^2)
     overlaps = np.abs(modes.T @ drive) ** 2
     scale = 2.0                                  # a mirror factor
@@ -319,7 +300,15 @@ def _check_fdt_oscillator(_):
 
 
 def _dho(frequencies, shift, gamma, amplitude):
+    """A / ((f0^2 - f^2)^2 + gamma^2 f^2): the one-sideband damped-oscillator line of dho_fit."""
     return amplitude / ((shift ** 2 - frequencies ** 2) ** 2 + gamma ** 2 * frequencies ** 2)
+
+
+def _dho_area(fit):
+    """One-sideband area int_0^inf _dho df = pi A / (2 gamma f0^2) of a dho_fit, from its peak A / D_min (D_min =
+    gamma^2 f0^2 - gamma^4 / 4 at f^2 = f0^2 - gamma^2 / 2): (pi / 2) peak gamma (1 - gamma^2 / (4 f0^2))."""
+    shift, gamma, peak = fit['shift'], fit['gamma'], fit['peak']
+    return 0.5 * math.pi * peak * gamma * (1.0 - gamma * gamma / (4.0 * shift * shift))
 
 
 def _check_dho_fit(_):
@@ -430,7 +419,7 @@ def _check_homogeneous_reference(_):
         frequencies, (n_x, n_y), dx, dy, nearly_lossless, shear, _DENSITY))
     # (c) static Parseval: k_B T / M int |c|^2 dA of a random dilation (liquid, no shear modulus); a shear drive
     # without shear modulus raises
-    random = _complex(rng, (12, 10))
+    random = random_complex(rng, (12, 10))
     grid = np.stack([random, random, np.zeros_like(random)])
     static = homogeneous_static(grid, 0.3, 0.2, 2.2e9, 0.0, _TEMPERATURE, 3.0)
     reference = K_B * _TEMPERATURE / 2.2e9 * float(np.sum(np.abs(random) ** 2)) * 0.3 * 0.2 * 3.0

@@ -27,7 +27,8 @@ type's vocabulary and refusals are in its help texts and validation.
   em_fdfd_conical solve on the host on either backend: their recipes pass `backend='cpu'` to solver_work (line_block
   'shifted' factors stay on the run backend).
 - Self-test helpers live mostly in `selftests` (also selftests_fdfd `cpu_specs`, selftests_mode_ports
-  `slab_waveguide_spec`, selftests_bor, selftests_eigenfrequency): grep the sibling imports before writing one.
+  `slab_waveguide_spec`, selftests_bor, selftests_eigenfrequency, selftests_focused_beam `focused_beam_feature`, which
+  the mechanics Brillouin self-tests import): grep the sibling imports before writing one.
 
 ## FDTD and shared EM
 - Permittivity array / slot names per polarisation only from `placement.PERMITTIVITY_ARRAYS` / `PERMITTIVITY_SLOTS`
@@ -516,7 +517,7 @@ type's vocabulary and refusals are in its help texts and validation.
   incident field would make it exact). Drive contract as the 2D FDFD's (`drive_sources`, `solve_moved_beam(source,
   (0, dz))` on the kept factor, host active vector; `drive_fields` with components {'r', 'phi' = -j E_phi, 'z'} on
   their Yee points (E_r on the r edges from the axis, E_z on the z edges: `yee_e_fields`), what
-  brillouin.azimuthal_parts reads). Self-tests em_bor_focused_beam_* (selftests_focused_beam).
+  brillouin.azimuthal_parts reads). Self-tests em_bor_focused_beam_* (selftests_focused_beam), em_bor_cpu_gpu.
 - 2D fill is mild (SuperLU copes to ~1e6 unknowns): cuDSS (unmeasured) buys host relief at the largest many-order
   grids. Not yet: the 2.16 metric layer, a measured line-block vs SuperLU crossover, line-block port mode solves.
 - Self-tests: selftests_bor, selftests_bor_orders, selftests_bor_backend; examples em/analytic_bor_*. SuperLU-only

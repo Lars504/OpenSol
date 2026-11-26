@@ -2,37 +2,30 @@
 against the continuum angular-spectrum integral, and solve_moved_beam against a rebuilt focus together with the
 discrete residual of the incident wave; em_fdfd_bor's Debye beam: its power with the standing-wave ring weight and its
 leakage, the focal field against the direct Debye integral, and solve_moved_beam / drive_fields against a rebuilt focus
-(model runs on the cpu; the moved cases scripted); no physics imports."""
-# Layout of the model runs: water (eps_r 1.78223, n = 1.335) everywhere, vacuum wavelength 532 nm (398 nm in water),
-# uniform 15 nm mesh (26.6 cells per wavelength in the medium), window 290 x 160 cells (4.35 x 2.4 um), 20-cell CPML
-# on every face (330 x 200 = 66,000 unknowns per run). The beam line spans the whole window width in row 26 (y =
-# 0.3975 um, interface = the lo face of row 26), direction positive (+y), waist 0.5 um, focus on the centre of cell
-# (145, 93) (2.1825, 1.4025) um, 67 cells (1.005 um) downstream; the beam is ~0.56 um wide at the line, so its
-# continuum level at the line ends (2.18 um from the focus) is ~3e-7 (< the 1e-6 validation level). Flux monitors span
-# the window width: downstream in row 133 (face at 2.01 um, 26 cells from the PML), upstream in row 12 (scattered
-# field).
+(model runs on the cpu; the moved cases scripted); physics and materials imports inside the functions. Exports the
+focused_beam FeatureSpec builder of the Brillouin self-tests and the power specs of the cpu-gpu parity cases."""
 import math
 
 from ...core.constants import C0, EPS0, MU0
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import (cell_centre, max_relative_error, no_runs, normalized_result, probe_phasor,
-                                       scaled_worst_result, single_value, worst_result)
+from ...model.selftest_helpers import (cell_centre, horizontal_line, max_relative_error, no_runs, normalized_result,
+                                       probe_phasor, raises, scaled_worst_result, single_value, worst_result)
 from ...model.spec import (DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec, PhysicsSpec,
                            StudySpec)
 from .selftests_fdfd import _PHYSICS_NAME, cpu_specs
 
 _POLARIZATIONS = ('ez', 'hz')
 _BEAM = 'beam'
+BEAM_LINE = 'beam_line'            # geometry name of the focused_beam line
 _DOWNSTREAM, _UPSTREAM = 'downstream', 'upstream'
 _BEAM_WAVELENGTH = 532e-9          # m, vacuum
-_WATER_EPS_R = 1.78223             # n = 1.3350 at 532 nm (materials water_532nm)
 _BEAM_CELL = 15e-9                 # m
-_BEAM_CELLS = (290, 160)           # window cells (x, y)
+_BEAM_CELLS = (290, 160)           # window cells (x, y); 330 x 200 = 66,000 unknowns with the CPML
 _BEAM_PML = 20                     # cells per CPML face
-_LINE_ROW = 26                     # window row of the beam line
-_FOCUS_CELL = (145, 93)            # window cell whose centre is the focus
-_DOWNSTREAM_ROW, _UPSTREAM_ROW = 133, 12
-_BEAM_WAIST = 0.5e-6               # m
+_LINE_ROW = 26                     # window row of the beam line (y = 0.3975 um; the TFSF interface is its lo face)
+_FOCUS_CELL = (145, 93)            # window cell whose centre is the focus: (2.1825, 1.4025) um, 1.005 um downstream
+_DOWNSTREAM_ROW, _UPSTREAM_ROW = 133, 12   # flux rows: 2.01 um (26 cells from the PML); upstream in the scattered field
+_BEAM_WAIST = 0.5e-6               # m: ~0.56 um wide at the line, ~3e-7 of the peak at its ends (2.18 um away)
 _BEAM_POWER = 1.0                  # W/m
 _FOCUS_APERTURES = {'ez': None, 'hz': 1.2}   # hz also exercises the numerical-aperture cut (Gaussian 3.5e-6 there)
 _PROBE_OFFSETS = ((0, 0), (1, 0), (-1, 0), (0, 1), (0, -1))   # cells from the focus cell; the first is the focus
@@ -40,29 +33,22 @@ _POWER_TOLERANCE = 1e-6            # relative, downstream - upstream flux vs pow
 _UPSTREAM_TOLERANCE = 1e-6         # of power: the upstream flux = PML reflection only (first estimate)
 _FOCUS_TOLERANCE = 1e-2            # relative |u| at the focus vs the continuum (discrete flux ~ (k h)^2 / 12 in |u|)
 
-# em_fdfd_focused_beam_moved (scripted, cpu): water, 20 nm cells, window 160 x 110 cells, 15-cell CPML (190 x 140 =
-# 26,600 unknowns), the beam line over the window width in row 15, focus on the centre of cell (80, 60), moved by a
-# non-integer number of cells.
+# ---- em_fdfd_focused_beam_moved (scripted, cpu) ----
 _MOVED_CELL = 20e-9
-_MOVED_CELLS = (160, 110)
+_MOVED_CELLS = (160, 110)          # 190 x 140 = 26,600 unknowns with the CPML
 _MOVED_PML = 15
 _MOVED_LINE_ROW = 15
 _MOVED_FOCUS_CELL = (80, 60)
 _MOVED_OFFSET = (0.113e-6, -0.071e-6)   # m (5.65 and -3.55 cells)
 _MOVED_TOLERANCE = 1e-10           # relative: identical operators and right-hand sides on SuperLU (round-off)
 
-# em_fdfd_bor (bor_focused_beam) model runs: water, the 532 nm vacuum wavelength, uniform 16 nm cells (24.9 cells per
-# wavelength in water), window 120 x 120 cells (r 1.92 um from the axis, z 1.92 um), 20-cell CPML on r_hi and both z
-# faces (140 x 160 = 22,400 cells, 67,200 unknowns), azimuthal_order 1. The beam line spans the window radius in row
-# 20 (z = 0.328 um; interface = the lo face of row 20), direction positive (+z), focus on the axis at the centre of row
-# 60 (z = 0.968 um, 0.64 um downstream). Flux monitors from the axis over the window radius: downstream in row 100
-# (face at z = 1.616 um, 0.65 um past the focus, 19 rows below the PML), upstream in row 8 (scattered field).
+# ---- em_fdfd_bor (bor_focused_beam) model runs ----
 _BOR_CELL = 16e-9
-_BOR_CELLS = (120, 120)            # window cells (r, z)
+_BOR_CELLS = (120, 120)            # window cells (r, z); 140 x 160 = 22,400 cells, 67,200 unknowns with the CPML
 _BOR_PML = 20
-_BOR_LINE_ROW = 20
-_BOR_FOCUS_ROW = 60
-_BOR_DOWNSTREAM_ROW, _BOR_UPSTREAM_ROW = 100, 8
+_BOR_LINE_ROW = 20                 # z = 0.328 um (the TFSF interface is its lo face)
+_BOR_FOCUS_ROW = 60                # z = 0.968 um, 0.64 um downstream
+_BOR_DOWNSTREAM_ROW, _BOR_UPSTREAM_ROW = 100, 8   # flux rows: z = 1.616 um (19 rows below the PML); scattered field
 _BOR_POWER = 1.0                   # W of the linearly polarised beam (the m = 1 standing wave)
 _BOR_POWER_BEAM = {'numerical_aperture': 0.8, 'fill_factor': 0.5}   # pupil edge at exp(-4) of its centre
 _BOR_DEBYE_BEAM = {'numerical_aperture': 0.9, 'fill_factor': 0.6}   # high NA: a strong E_z (pupil edge exp(-2.8))
@@ -72,11 +58,9 @@ _BOR_LEAKAGE_TOLERANCE = 2e-3      # upstream flux / launched flux (first estima
 _BOR_DEBYE_TOLERANCE = 1e-2        # relative focal amplitudes and component ratios vs the direct Debye integral
 _BOR_PROBES = (('er_axis', 'er', 0), ('ephi_axis', 'ephi', 0), ('ez_ring', 'ez', _BOR_EZ_PROBE_CELL))   # focal row
 
-# em_bor_focused_beam_moved (scripted, cpu): water, 20 nm cells, window 60 x 80 cells (r 1.2 um, z 1.6 um), 12-cell
-# CPML on r_hi and both z faces (72 x 104 = 7,488 cells, 22,464 unknowns), the beam line over the window radius in row
-# 12, NA 0.8 / fill 0.5, focus on the axis at the centre of row 45, moved along z by a non-integer number of cells.
+# ---- em_bor_focused_beam_moved (scripted, cpu; the beam of _BOR_POWER_BEAM) ----
 _BOR_MOVED_CELL = 20e-9
-_BOR_MOVED_CELLS = (60, 80)
+_BOR_MOVED_CELLS = (60, 80)        # 72 x 104 = 7,488 cells, 22,464 unknowns with the CPML
 _BOR_MOVED_PML = 12
 _BOR_MOVED_LINE_ROW = 12
 _BOR_MOVED_FOCUS_ROW = 45
@@ -85,41 +69,59 @@ _BOR_AXIS_TOLERANCE = 1e-12        # drive_fields A_phi (axis cell) / A_r (axis 
 
 
 # ---- specs ----
+def _water_eps_r():
+    """eps_r of library water_532nm (the specs hold an inline material of this eps_r only)."""
+    from ...materials import WATER_532NM
+    return WATER_532NM.optical['eps_r']
+
+
+def focused_beam_feature(power, direction='positive', **params):
+    """FeatureSpec 'beam' of type focused_beam on the geometry BEAM_LINE: params power, phase 0, then `params` in the
+    given order (waist / numerical_aperture / fill_factor, focus_x / focus_y or focus_z) and direction."""
+    return FeatureSpec(_BEAM, 'focused_beam', [BEAM_LINE], {'power': power, 'phase': 0.0, **params,
+                                                            'direction': direction})
+
+
 def _probe_name(index):
     return f'probe_{index}'
 
 
-def _beam_spec(polarization, aperture=None, probes=False):
-    """The model-run layout (module comment) in em_fdfd_<polarization>: the focused beam, both flux monitors and (probes)
-    field probes of the out-of-plane field at the focus cell and its four neighbours."""
-    size_x, size_y = (count * _BEAM_CELL for count in _BEAM_CELLS)
-    line_y = cell_centre(_LINE_ROW, _BEAM_CELL)
-    focus = tuple(cell_centre(index, _BEAM_CELL) for index in _FOCUS_CELL)
-    geometry = [GeometrySpec('beam_line', 'line', {'x0': 0.0, 'y0': line_y, 'x1': size_x, 'y1': line_y})]
-    features = [FeatureSpec(_BEAM, 'focused_beam', ['beam_line'], {
-        'power': _BEAM_POWER, 'phase': 0.0, 'waist': _BEAM_WAIST, 'numerical_aperture': aperture,
-        'focus_x': focus[0], 'focus_y': focus[1], 'direction': 'positive'})]
-    for name, row in ((_DOWNSTREAM, _DOWNSTREAM_ROW), (_UPSTREAM, _UPSTREAM_ROW)):
-        y = cell_centre(row, _BEAM_CELL)
-        geometry.append(GeometrySpec(f'{name}_line', 'line', {'x0': 0.0, 'y0': y, 'x1': size_x, 'y1': y}))
+def _water_beam_spec(title, physics_type, settings, cell, cells, line_row, beam, monitor_rows, probes):
+    """A stationary model on a uniform mesh of `cells` x `cell` [m] filled with water: `beam` (focused_beam_feature) on
+    a line over the window width / radius at the centre of row `line_row`, a flux monitor per (name, row) over the same
+    span at the row centre and a field probe per (feature, point, component, x, y)."""
+    size_x, size_y = (count * cell for count in cells)
+    geometry = [horizontal_line(BEAM_LINE, cell_centre(line_row, cell), 0.0, size_x)]
+    features = [beam]
+    for name, row in monitor_rows:
+        geometry.append(horizontal_line(f'{name}_line', cell_centre(row, cell), 0.0, size_x))
         features.append(FeatureSpec(name, 'flux_monitor', [f'{name}_line']))
-    if probes:
-        for index, (offset_i, offset_j) in enumerate(_PROBE_OFFSETS):
-            point = f'probe_point_{index}'
-            geometry.append(GeometrySpec(point, 'point', {
-                'x': cell_centre(_FOCUS_CELL[0] + offset_i, _BEAM_CELL),
-                'y': cell_centre(_FOCUS_CELL[1] + offset_j, _BEAM_CELL)}))
-            features.append(FeatureSpec(_probe_name(index), 'field_probe', [point], {'component': polarization}))
-    physics_type = f'em_fdfd_{polarization}'
+    for name, point, component, x, y in probes:
+        geometry.append(GeometrySpec(point, 'point', {'x': x, 'y': y}))
+        features.append(FeatureSpec(name, 'field_probe', [point], {'component': component}))
     return ModelSpec(
-        title=f'Self-test: {physics_type} focused beam in water',
+        title=title,
         domain=DomainSpec(size_x=size_x, size_y=size_y),
         geometry=geometry,
-        materials=[MaterialSpec('immersion_water', properties={'eps_r': _WATER_EPS_R}, selection=['all'])],
-        physics=[PhysicsSpec(_PHYSICS_NAME, physics_type,
-                             settings={'wavelength': _BEAM_WAVELENGTH, 'pml_cells': _BEAM_PML}, features=features)],
-        mesh=MeshSpec(mode='uniform', dx=_BEAM_CELL),
+        materials=[MaterialSpec('immersion_water', properties={'eps_r': _water_eps_r()}, selection=['all'])],
+        physics=[PhysicsSpec(_PHYSICS_NAME, physics_type, settings=settings, features=features)],
+        mesh=MeshSpec(mode='uniform', dx=cell),
         study=StudySpec(type='stationary'))
+
+
+def _beam_spec(polarization, aperture=None, probes=False):
+    """The planar model-run layout (module constants) in em_fdfd_<polarization>: the focused beam, both flux monitors
+    and (probes) field probes of the out-of-plane field at the focus cell and its four neighbours."""
+    focus = tuple(cell_centre(index, _BEAM_CELL) for index in _FOCUS_CELL)
+    beam = focused_beam_feature(_BEAM_POWER, waist=_BEAM_WAIST, numerical_aperture=aperture, focus_x=focus[0],
+                                focus_y=focus[1])
+    points = [(_probe_name(index), f'probe_point_{index}', polarization,
+               cell_centre(_FOCUS_CELL[0] + offset_i, _BEAM_CELL), cell_centre(_FOCUS_CELL[1] + offset_j, _BEAM_CELL))
+              for index, (offset_i, offset_j) in enumerate(_PROBE_OFFSETS)] if probes else []
+    physics_type = f'em_fdfd_{polarization}'
+    return _water_beam_spec(f'Self-test: {physics_type} focused beam in water', physics_type,
+                            {'wavelength': _BEAM_WAVELENGTH, 'pml_cells': _BEAM_PML}, _BEAM_CELL, _BEAM_CELLS,
+                            _LINE_ROW, beam, ((_DOWNSTREAM, _DOWNSTREAM_ROW), (_UPSTREAM, _UPSTREAM_ROW)), points)
 
 
 def focused_beam_power_specs():
@@ -162,8 +164,8 @@ def _check_focus(results_by_name):
         results = results_by_name[polarization]
         values = [abs(probe_phasor(results, _PHYSICS_NAME, _probe_name(index)))
                   for index in range(len(_PROBE_OFFSETS))]
-        flux_material = float(MU0) if polarization == 'ez' else float(EPS0) * _WATER_EPS_R
-        expected = continuum_focus_amplitude(omega, math.sqrt(_WATER_EPS_R), _BEAM_WAIST,
+        flux_material = float(MU0) if polarization == 'ez' else float(EPS0) * _water_eps_r()
+        expected = continuum_focus_amplitude(omega, math.sqrt(_water_eps_r()), _BEAM_WAIST,
                                              _FOCUS_APERTURES[polarization], flux_material, _BEAM_POWER)
         normalized[f'{polarization} focal amplitude'] = abs(values[0] / expected - 1.0) / _FOCUS_TOLERANCE
         normalized[f'{polarization} peak at the focus'] = 0.0 if values[0] > max(values[1:]) else math.inf
@@ -172,23 +174,33 @@ def _check_focus(results_by_name):
     return normalized_result(normalized, details)
 
 
-def _scripted_beam(polarization, focus):
-    """(FDFDPhysics, FocusedBeamPhasor) of the moved-case layout (module constants) on a cpu Domain, solved once."""
+def _solved_beam(make_physics, config, cells, cell, add_beam):
+    """(physics, beam) on a cpu Domain of `cells` x `cell` [m] filled with water: make_physics(domain) builds the
+    physics, add_beam(physics, size) adds the focused beam (size: the window extents [m]); finalized, solved once."""
     from ...core.domain import Domain
-    from .boundaries import BoundaryConfig
-    from .solvers.fdfd_2d import FDFDPhysics
-    config = BoundaryConfig.all_pml(_MOVED_PML)
-    size_x, size_y = (count * _MOVED_CELL for count in _MOVED_CELLS)
-    domain = Domain.uniform(size_x, size_y, _MOVED_CELL, boundary_config=config, verbose=False, backend='cpu')
-    physics = FDFDPhysics(domain, polarization, boundary_config=config, wavelength=_BEAM_WAVELENGTH)
+    size = tuple(count * cell for count in cells)
+    domain = Domain.uniform(size[0], size[1], cell, boundary_config=config, verbose=False, backend='cpu')
+    physics = make_physics(domain)
+    eps_r = _water_eps_r()
     for name in physics.permittivity_arrays:
-        getattr(domain.materials, name)[...] = _WATER_EPS_R
+        getattr(domain.materials, name)[...] = eps_r
     physics.materials_changed(physics.permittivity_arrays)
-    beam = physics.add_focused_beam('x', cell_centre(_MOVED_LINE_ROW, _MOVED_CELL), (0.0, size_x), _BEAM_POWER,
-                                    _BEAM_WAIST, focus)
+    beam = add_beam(physics, size)
     physics.finalize()
     physics.step()
     return physics, beam
+
+
+def _scripted_beam(polarization, focus):
+    """(FDFDPhysics, FocusedBeamPhasor) of the moved-case layout (module constants), solved once."""
+    from .boundaries import BoundaryConfig
+    from .solvers.fdfd_2d import FDFDPhysics
+    config = BoundaryConfig.all_pml(_MOVED_PML)
+    return _solved_beam(
+        lambda domain: FDFDPhysics(domain, polarization, boundary_config=config, wavelength=_BEAM_WAVELENGTH),
+        config, _MOVED_CELLS, _MOVED_CELL,
+        lambda physics, size: physics.add_focused_beam('x', cell_centre(_MOVED_LINE_ROW, _MOVED_CELL), (0.0, size[0]),
+                                                       _BEAM_POWER, _BEAM_WAIST, focus))
 
 
 def _incident_residual(physics, beam):
@@ -206,7 +218,7 @@ def _incident_residual(physics, beam):
     residual = (system.operator @ full.ravel()).reshape(line.shape)
     inner = residual[line.span[0] + 1:line.span[1] - 1, rows[1]:rows[-1]]
     k0_squared = (system.omega / float(C0)) ** 2
-    cell_material = _WATER_EPS_R if system.polarization == 'ez' else 1.0
+    cell_material = _water_eps_r() if system.polarization == 'ez' else 1.0
     return float(np.max(np.abs(inner))) / (k0_squared * cell_material * float(np.max(np.abs(values))))
 
 
@@ -240,39 +252,27 @@ def _check_moved(_results_by_name):
 
 # ---- em_fdfd_bor ----
 def _bor_beam_spec(beam, monitors=True, probes=()):
-    """The BOR model-run layout (module comment): em_fdfd_bor at azimuthal_order 1 with a focused_beam of `beam`
+    """The BOR model-run layout (module constants): em_fdfd_bor at azimuthal_order 1 with a focused_beam of `beam`
     (numerical_aperture, fill_factor), (monitors) both flux monitors and the field probes (name, component, r cell) in
     the focal row."""
-    size_r, size_z = (count * _BOR_CELL for count in _BOR_CELLS)
-    line_z = cell_centre(_BOR_LINE_ROW, _BOR_CELL)
-    geometry = [GeometrySpec('beam_line', 'line', {'x0': 0.0, 'y0': line_z, 'x1': size_r, 'y1': line_z})]
-    features = [FeatureSpec(_BEAM, 'focused_beam', ['beam_line'], {
-        'power': _BOR_POWER, 'phase': 0.0, **beam, 'focus_z': cell_centre(_BOR_FOCUS_ROW, _BOR_CELL),
-        'direction': 'positive'})]
-    for name, row in (((_DOWNSTREAM, _BOR_DOWNSTREAM_ROW), (_UPSTREAM, _BOR_UPSTREAM_ROW)) if monitors else ()):
-        z = cell_centre(row, _BOR_CELL)
-        geometry.append(GeometrySpec(f'{name}_line', 'line', {'x0': 0.0, 'y0': z, 'x1': size_r, 'y1': z}))
-        features.append(FeatureSpec(name, 'flux_monitor', [f'{name}_line']))
-    for name, component, cell in probes:
-        point = f'{name}_point'
-        geometry.append(GeometrySpec(point, 'point', {'x': cell_centre(cell, _BOR_CELL),
-                                                      'y': cell_centre(_BOR_FOCUS_ROW, _BOR_CELL)}))
-        features.append(FeatureSpec(name, 'field_probe', [point], {'component': component}))
-    return ModelSpec(
-        title='Self-test: em_fdfd_bor focused beam in water',
-        domain=DomainSpec(size_x=size_r, size_y=size_z),
-        geometry=geometry,
-        materials=[MaterialSpec('immersion_water', properties={'eps_r': _WATER_EPS_R}, selection=['all'])],
-        physics=[PhysicsSpec(_PHYSICS_NAME, 'em_fdfd_bor', settings={
-            'wavelength': _BEAM_WAVELENGTH, 'azimuthal_order': 1, 'pml_cells': _BOR_PML, 'bc_x_hi': 'cpml',
-            'bc_y_lo': 'cpml', 'bc_y_hi': 'cpml'}, features=features)],
-        mesh=MeshSpec(mode='uniform', dx=_BOR_CELL),
-        study=StudySpec(type='stationary'))
+    focal_z = cell_centre(_BOR_FOCUS_ROW, _BOR_CELL)
+    feature = focused_beam_feature(_BOR_POWER, **beam, focus_z=focal_z)
+    points = [(name, f'{name}_point', component, cell_centre(cell, _BOR_CELL), focal_z)
+              for name, component, cell in probes]
+    rows = ((_DOWNSTREAM, _BOR_DOWNSTREAM_ROW), (_UPSTREAM, _BOR_UPSTREAM_ROW)) if monitors else ()
+    return _water_beam_spec('Self-test: em_fdfd_bor focused beam in water', 'em_fdfd_bor', {
+        'wavelength': _BEAM_WAVELENGTH, 'azimuthal_order': 1, 'pml_cells': _BOR_PML, 'bc_x_hi': 'cpml',
+        'bc_y_lo': 'cpml', 'bc_y_hi': 'cpml'}, _BOR_CELL, _BOR_CELLS, _BOR_LINE_ROW, feature, rows, points)
+
+
+def bor_focused_beam_power_specs():
+    """{'bor': spec} of em_bor_focused_beam_power (no backend set: em_bor_cpu_gpu reuses it per backend)."""
+    return {'bor': _bor_beam_spec(_BOR_POWER_BEAM)}
 
 
 def _check_bor_power(results_by_name):
     """Standing-wave power = (downstream - upstream flux) x ring_angle(1) / (2 pi) vs power (flux_monitor counts the
-    travelling exp(-j phi) wave with 2 pi, the linearly polarised beam rings carry pi: R5 of the Brillouin plan) and
+    travelling exp(-j phi) wave with 2 pi, the linearly polarised beam rings carry pi) and
     the upstream leakage |upstream| / (downstream - upstream), in tolerance units."""
     from ...core.metric import ring_angle
     results = results_by_name['bor']
@@ -294,7 +294,7 @@ def _debye_reference(rho, z_offset, numerical_aperture, fill_factor):
     import scipy.integrate
     import scipy.special
     from ...core.constants import ETA0
-    index = math.sqrt(_WATER_EPS_R)
+    index = math.sqrt(_water_eps_r())
     wavenumber = 2.0 * math.pi * index / _BEAM_WAVELENGTH
     sin_max = numerical_aperture / index
     theta_max = math.asin(sin_max)
@@ -346,32 +346,17 @@ def _check_bor_debye(results_by_name):
 
 
 def _scripted_bor_beam(focus_z):
-    """(BORPhysics, BORFocusedBeam) of the BOR moved-case layout (module constants) on a cpu Domain, solved once."""
-    from ...core.domain import Domain
+    """(BORPhysics, BORFocusedBeam) of the BOR moved-case layout (module constants), solved once."""
     from .boundaries import BoundaryConfig
     from .solvers.fdfd_bor import BORPhysics
     config = BoundaryConfig(x_lo='pmc', x_hi='cpml', y_lo='cpml', y_hi='cpml')
     config.cpml_npml = _BOR_MOVED_PML
-    size_r, size_z = (count * _BOR_MOVED_CELL for count in _BOR_MOVED_CELLS)
-    domain = Domain.uniform(size_r, size_z, _BOR_MOVED_CELL, boundary_config=config, verbose=False, backend='cpu')
-    physics = BORPhysics(domain, boundary_config=config, wavelength=_BEAM_WAVELENGTH, azimuthal_order=1)
-    for name in physics.permittivity_arrays:
-        getattr(domain.materials, name)[...] = _WATER_EPS_R
-    physics.materials_changed(physics.permittivity_arrays)
-    beam = physics.add_focused_beam('x', cell_centre(_BOR_MOVED_LINE_ROW, _BOR_MOVED_CELL), (0.0, size_r), _BOR_POWER,
-                                    _BOR_POWER_BEAM['numerical_aperture'], (focus_z,),
-                                    fill_factor=_BOR_POWER_BEAM['fill_factor'])
-    physics.finalize()
-    physics.step()
-    return physics, beam
-
-
-def _raises_value_error(call):
-    try:
-        call()
-    except ValueError:
-        return True
-    return False
+    return _solved_beam(
+        lambda domain: BORPhysics(domain, boundary_config=config, wavelength=_BEAM_WAVELENGTH, azimuthal_order=1),
+        config, _BOR_MOVED_CELLS, _BOR_MOVED_CELL,
+        lambda physics, size: physics.add_focused_beam(
+            'x', cell_centre(_BOR_MOVED_LINE_ROW, _BOR_MOVED_CELL), (0.0, size[0]), _BOR_POWER,
+            _BOR_POWER_BEAM['numerical_aperture'], (focus_z,), fill_factor=_BOR_POWER_BEAM['fill_factor']))
 
 
 def _check_bor_moved(_results_by_name):
@@ -403,8 +388,8 @@ def _check_bor_moved(_results_by_name):
     kept = (np.array_equal(physics.solution, shown) and physics.n_solves == solves
             and physics.work_counters().get('extra_solves') == 1
             and physics.solve_moved_beam(beam, (0.0, 0.0)) is physics.solution
-            and _raises_value_error(lambda: physics.solve_moved_beam(beam, (1e-9, 0.0)))
-            and _raises_value_error(lambda: beam.term_rhs(system, order=1)))
+            and raises(lambda: physics.solve_moved_beam(beam, (1e-9, 0.0)))
+            and raises(lambda: beam.term_rhs(system, order=1)))
     errors['bookkeeping'] = 0.0 if kept else math.inf
     tolerances['bookkeeping'] = 1.0
     return scaled_worst_result(errors, tolerances, incident_power=beam.incident_power, wavelength=beam.wavelength,
@@ -412,14 +397,14 @@ def _check_bor_moved(_results_by_name):
                                extra_solves=physics.work_counters().get('extra_solves'))
 
 
-_LAYOUT_TEXT = (f'water (eps_r {_WATER_EPS_R:g}), vacuum wavelength {_BEAM_WAVELENGTH * 1e9:g} nm, uniform '
-                f'{_BEAM_CELL * 1e9:g} nm mesh ({_BEAM_WAVELENGTH / math.sqrt(_WATER_EPS_R) / _BEAM_CELL:.3g} cells '
-                f'per wavelength in water), a {_BEAM_CELLS[0]} x {_BEAM_CELLS[1]} cell window with {_BEAM_PML}-cell '
+_LAYOUT_TEXT = (f'water (eps_r of library water_532nm, n 1.335), vacuum wavelength {_BEAM_WAVELENGTH * 1e9:g} nm, '
+                f'uniform {_BEAM_CELL * 1e9:g} nm mesh (26.6 cells per wavelength in water), a {_BEAM_CELLS[0]} x '
+                f'{_BEAM_CELLS[1]} cell window with {_BEAM_PML}-cell '
                 f'CPML; a focused_beam over the window width (+y, waist {_BEAM_WAIST * 1e6:g} um) focused '
                 f'{_FOCUS_CELL[1] - _LINE_ROW} cells downstream of its line on a cell centre; cpu backend, stationary')
-_BOR_LAYOUT_TEXT = (f'water (eps_r {_WATER_EPS_R:g}), vacuum wavelength {_BEAM_WAVELENGTH * 1e9:g} nm, uniform '
-                    f'{_BOR_CELL * 1e9:g} nm mesh ({_BEAM_WAVELENGTH / math.sqrt(_WATER_EPS_R) / _BOR_CELL:.3g} cells '
-                    f'per wavelength in water), a {_BOR_CELLS[0]} x {_BOR_CELLS[1]} cell (r, z) window with '
+_BOR_LAYOUT_TEXT = (f'water (eps_r of library water_532nm, n 1.335), vacuum wavelength {_BEAM_WAVELENGTH * 1e9:g} '
+                    f'nm, uniform {_BOR_CELL * 1e9:g} nm mesh (24.9 cells per wavelength in water), a {_BOR_CELLS[0]} '
+                    f'x {_BOR_CELLS[1]} cell (r, z) window with '
                     f'{_BOR_PML}-cell CPML on r_hi and both z faces; a focused_beam (+z) from a line over the window '
                     f'radius in row {_BOR_LINE_ROW}, focused on the axis {_BOR_FOCUS_ROW - _BOR_LINE_ROW} rows '
                     'downstream at a row centre; cpu backend, stationary')
@@ -475,12 +460,12 @@ FOCUSED_BEAM_SELFTEST_CASES = (
                     'rings carry core.metric.ring_angle(1) = pi where flux_monitor weights the travelling exp(-j phi) '
                     'wave with 2 pi, so (downstream - upstream) x ring_angle(1) / (2 pi) must equal power '
                     f'({_BOR_POWER_TOLERANCE:g}): this pins the ring weight of the incident power that the '
-                    'brillouin_scattering normalisation divides by (Brillouin plan R5). The upstream flux is the '
+                    'brillouin_scattering normalisation divides by. The upstream flux is the '
                     'leakage of the launch plus the CPML reflection: |upstream| / (downstream - upstream) below '
-                    f'{_BOR_LEAKAGE_TOLERANCE:g} (R6; the z dependence is Yee-exact, the radial Bessel profiles are '
+                    f'{_BOR_LEAKAGE_TOLERANCE:g} (the z dependence is Yee-exact, the radial Bessel profiles are '
                     'continuum: O((k NA h)^2)). Tolerances first estimates; measured = error = the worst in tolerance '
                     'units, tolerance 1. Not yet run.',
-        specs=lambda: cpu_specs({'bor': _bor_beam_spec(_BOR_POWER_BEAM)}), check=_check_bor_power),
+        specs=lambda: cpu_specs(bor_focused_beam_power_specs()), check=_check_bor_power),
     SelfTestCase(
         name='em_bor_focused_beam_debye',
         label='EM BOR focused beam: focal field vs the direct Debye integral',

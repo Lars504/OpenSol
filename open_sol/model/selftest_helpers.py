@@ -1,8 +1,8 @@
 """Small helpers shared by the selftests*.py modules (numpy and model.spec at import): the sub-check list and case
-records (SubChecks, worst errors), relative errors, Results reads (solver roles, probe phasors), JSON lists,
-single-wavelength values, uniform-mesh cell centres / edges and lines, float32-exact material constants, the exact pcg
-solver node, the glass half-space block, the analytic symmetric-slab index and the numba vs numpy host-twin comparison
-of the *_numba cases."""
+records (SubChecks, worst errors), the raises predicate, relative errors, Results reads (solver roles, probe phasors),
+JSON lists, single-wavelength values, random complex arrays, uniform-mesh cell centres / edges and lines, float32-exact
+material constants, the exact pcg solver node, the glass half-space block, the analytic symmetric-slab index and the
+numba vs numpy host-twin comparison of the *_numba cases."""
 import math
 
 import numpy as np
@@ -60,6 +60,15 @@ class SubChecks(dict):
 
     def result(self, **details):
         return checks_result(self, **details)
+
+
+def raises(call, exceptions=ValueError) -> bool:
+    """True when call() raises one of `exceptions` (the predicate form of SubChecks.add_raises)."""
+    try:
+        call()
+    except exceptions:
+        return True
+    return False
 
 
 def worst_error(errors):
@@ -258,6 +267,13 @@ def single_value(values, what):
     return float(values[0])
 
 
+def random_complex(rng, shape, scale=1.0) -> np.ndarray:
+    """scale x (real + 1j imaginary) of two standard normal draws of `shape` from the numpy Generator rng (real part
+    drawn first)."""
+    values = rng.standard_normal(shape) + 1j * rng.standard_normal(shape)
+    return values if scale == 1.0 else scale * values
+
+
 def cell_centre(index, cell_size):
     """Coordinate [m] of the centre of window cell `index` (int or array) on a uniform mesh starting at 0."""
     return (index + 0.5) * cell_size
@@ -275,6 +291,11 @@ def cell_edges(centres, low_edge):
 def vertical_line(name, x, y_start, y_end):
     """GeometrySpec line at x [m] from y_start to y_end."""
     return GeometrySpec(name, 'line', {'x0': x, 'y0': y_start, 'x1': x, 'y1': y_end})
+
+
+def horizontal_line(name, y, x_start, x_end):
+    """GeometrySpec line at y [m] from x_start to x_end."""
+    return GeometrySpec(name, 'line', {'x0': x_start, 'y0': y, 'x1': x_end, 'y1': y})
 
 
 def float32_value(value):

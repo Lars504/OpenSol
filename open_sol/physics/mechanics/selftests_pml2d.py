@@ -169,29 +169,19 @@ def _check_bar(results):
 
 
 # ---- solid_fem_pml_frequency_response: a plane longitudinal wave driven into the elastic PML (frequency_response) ----
-# nu = 0 (lambda = 0: a plane longitudinal wave u(s) along s carries no lateral stress, so the free sides of the strip
-# and of the PML ring are exact), E 100 GPa, rho 2000: c = sqrt(E / rho), 2 um along s of 50 nm P2 triangles, a 12-layer
-# PML (0.6 um) beyond the far end, target_frequency f_t = c / 1 um (20 elements per wavelength), pml_reflection 1e-6,
-# frequencies f_t and 1.5 f_t (R^(f / f_t) above the target). Runs: 'planar' (a 0.1 um strip along x, rollers on y_lo /
-# y_hi, u_x = U0 prescribed on x_lo, PML on x_hi), 'axisymmetric' (a rod of radius 0.1 um along z, the axis on x_lo held
-# through the ring too, u_z = U0 on y_lo, PML on y_hi), and both with formulation mixed (stretched D_g, B, M_p). The
-# open strip is u = U0 exp(-j k s), k = omega / c: the drive's reaction work W = F U0 = j omega rho c A U0^2 (A = the
-# strip width per m of depth, or pi a^2; P = omega Im W / 2 the radiated power) and two_wave_fit of the frequency_probe
-# phasors along s: reflection_abs (a reflected wave of r raises |W - W_0| / |W_0| to ~2 r), beta / k and the forward
-# amplitude / U0. First estimates (not yet run): reflection 1e-2, beta 1e-3 (P2 dispersion ~(kh)^4 / 2880), forward
-# amplitude 1e-2, W 2e-2.
 _WAVE_STEP = 0.05 * UM
 _WAVE_LENGTH = 2.0 * UM
-_WAVE_SIDE = 0.1 * UM
-_WAVE_YOUNGS = 100e9
+_WAVE_SIDE = 0.1 * UM          # strip width (planar, per m of depth: A = the width) or rod radius a (A = pi a^2)
+_WAVE_YOUNGS = 100e9           # with nu = 0 (lambda = 0): no lateral stress in the plane wave, free sides exact
 _WAVE_DENSITY = 2000.0
-_WAVE_TARGET_WAVELENGTH = 1.0 * UM
-_WAVE_PML_CELLS = 12
+_WAVE_TARGET_WAVELENGTH = 1.0 * UM   # 20 elements per wavelength at f_t
+_WAVE_PML_CELLS = 12           # 0.6 um; pml_reflection 1e-6 at f_t, R^(f / f_t) above it
 _WAVE_AMPLITUDE = 1e-10        # m, the prescribed displacement at s = 0
 _WAVE_FACTORS = (1.0, 1.5)     # x target_frequency
 _WAVE_PROBES = 10              # s = 0.1, 0.3, ..., 1.9 um at mid width
 _WAVE_RUNS = (('planar', False, 'displacement'), ('planar_mixed', False, 'mixed'),
               ('axisymmetric', True, 'displacement'), ('axisymmetric_mixed', True, 'mixed'))
+# first estimates: beta above the P2 dispersion ~(k h)^4 / 2880; a reflected wave of r raises |W - W_0| / |W_0| to ~2 r
 _WAVE_TOLERANCES = {'reflection': 1e-2, 'wavenumber': 1e-3, 'forward amplitude': 1e-2, 'work': 2e-2}
 
 
@@ -371,10 +361,12 @@ PML_2D_CASES = (
         name='solid_fem_pml_frequency_response',
         label='Solid mechanics on triangles: elastic PML in the frequency response (plane wave, radiated power)',
         description=('frequency_response study of solid_mechanics (P2 triangles of 50 nm, nu 0, E 100 GPa, rho 2000) '
-                     'on a 2 um strip (planar, 0.1 um wide, rollers on its sides) or rod (axisymmetric, radius 0.1 um) '
-                     'driven by a prescribed displacement U0 at one end into a 12-layer elastic PML at the other, '
-                     'target_frequency f_t = c / 1 um, at f_t and 1.5 f_t, formulation displacement and mixed: the '
-                     'outgoing wave u = U0 exp(-j k s). two_wave_fit of 10 frequency_probe phasors: reflection_abs '
+                     'on a 2 um strip (planar, 0.1 um wide, rollers on its sides, u_x = U0 on x_lo, the PML on x_hi) '
+                     'or rod (axisymmetric, radius 0.1 um, the axis on x_lo held through the ring, u_z = U0 on y_lo, '
+                     'the PML on y_hi) driven by a prescribed displacement U0 at one end into a 12-layer elastic PML at '
+                     'the other, target_frequency f_t = c / 1 um (c = sqrt(E / rho)), at f_t and 1.5 f_t, formulation '
+                     'displacement and mixed (stretched D_g, B, M_p): the outgoing wave u = U0 exp(-j k s), k = omega '
+                     '/ c. two_wave_fit of 10 frequency_probe phasors: reflection_abs '
                      f"within {_WAVE_TOLERANCES['reflection']:g}, beta / k - 1 within "
                      f"{_WAVE_TOLERANCES['wavenumber']:g}, forward amplitude / U0 - 1 within "
                      f"{_WAVE_TOLERANCES['forward amplitude']:g}; the drive's reaction work W against j omega rho c A "

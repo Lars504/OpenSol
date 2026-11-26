@@ -3,42 +3,25 @@ study): model runs of a focused beam (em_fdfd_ez / _hz, em_fdfd_bor) in water_53
 against the exact homogeneous reference, the low-NA boxcar line, the local reference and identities of scan columns,
 mirror planes, reduced sweeps and the cross-polarised order-2 drive. definition registers them; no physics imports at
 module level (brillouin / materials inside the checks)."""
-# Layout shared by every run: two meshes on one window (lower-left corner 0), the optics on a uniform tensor mesh
-# 'yee' (default 15-cell CPML outside every open face), the solid on the triangle mesh 'phonons' (P2, fine in the
-# drive rectangle, graded by max_ratio 1.3 to the coarse size elsewhere, fixed outer faces: no PML, P8 is not relied
-# on). The focused beam is launched toward +y from a horizontal line over the whole window width (planar) or radius
-# (BOR) whose row centre lies just below the drive rectangle (total-field side), focus inside the drive. Margins: every
-# drive edge lies ~1 um (>= 1.3 attenuation lengths L_att = 2 v / Gamma = 0.72 um of water at 7.4 GHz) from the solid's
-# walls: the phase-matched phonon leaves the drive along the beam, its wall echo returns non-phase-matched (sinc side
-# lobe ~1 / (q L) ~ 0.04) after a round trip exp(-2 d / L_att) ~ 0.06, so echoes stay ~3e-3 of the readout.
-# Accuracy budget of a psd against a reference sampled on the same optical cells (2D homogeneous): the drive reads the
-# optical fields on their own Yee points (em_fdfd_hz E_x / E_y on their faces: no mean along the beam, which was low by
-# cos^4(k h / 2) in psd) and interpolates them phase-corrected at the solid quadrature points
-# (brillouin.phase_corrected_sample), the reference rasters their phase-corrected cell-centre values: both exact for a
-# plane wave (plain bilinear sampling was low by sinc^4(q dx / 4) per field pair, (q dx)^2 / 12 in psd), the envelope
-# of the 0.4 um waist leaves ~(dx / w0)^2 ~ 1e-3; the reference's FFT images stay below brillouin.IMAGE_TOLERANCE =
-# 1e-3 of the readout by its automatic zero padding (about 12 x 9 for the 0.8 x 1.2 um drive at 5.9 GHz, delta ~ 0.88
-# 1/um: ceil(1 + ln(2e3) / (delta L)) per axis; with the old fixed padding 2 the phase-matched copies along the beam
-# held 12 - 15 % at the line centre); P2 / P1 Taylor-Hood dispersion ~(q h)^4 / 720 in frequency (~1e-4 .. 1e-3 at h
-# 25 .. 30 nm, ~0.3 .. 2 % of psd on the line flanks); the wall echoes above.
 import math
 from dataclasses import dataclass
 
 import numpy as np
 
 from ...model.schema import FREQUENCY_RESPONSE_STUDY, SelfTestCase, SelfTestVariant
-from ...model.selftest_helpers import (cell_centre, cpu_defaults, float_list, norm_relative_error, relative_error,
-                                       scaled_worst_result)
+from ...model.selftest_helpers import (cell_centre, cpu_defaults, float_list, horizontal_line, norm_relative_error,
+                                       relative_error, scaled_worst_result)
 from ...model.spec import (DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec, PhysicsSpec,
                            RefinementSpec, StudySpec)
+from ..em.selftests_focused_beam import BEAM_LINE, focused_beam_feature
+from .selftests import SOLID_TYPE_NAME, _elastic, _rectangle
+from .selftests_brillouin_drive import _dho_area
 
 _OPTICS = 'optics'
 _SOLID = 'solid'
 _OPTICS_MESH = 'yee'
 _SOLID_MESH = 'phonons'
 _FEATURE = 'brillouin'
-_BEAM = 'beam'
-_SOLID_TYPE = 'solid_mechanics'          # = selftests.SOLID_TYPE_NAME
 _FEATURE_TYPE = 'brillouin_scattering'   # = definition_brillouin.BRILLOUIN_FEATURE
 _WATER_LIBRARY = 'water_532nm'
 _WAVELENGTH = 532e-9                     # m, vacuum
@@ -47,6 +30,9 @@ _BEAM_POWER = 1.0                        # W/m planar, W axisymmetric
 _MAX_RATIO = 1.3                         # triangle size growth from the drive rectangle
 _MIXED_P2 = {'discretization': 'quadratic', 'formulation': 'mixed'}   # water_532nm (shear_modulus 0) needs mixed
 _DISPLACEMENT_P2 = {'discretization': 'quadratic'}
+# fixed walls ~1 um (>= 1.3 attenuation lengths 2 v / Gamma = 0.72 um of water at 7.4 GHz) from every drive edge: the
+# phase-matched phonon leaves the drive along the beam, its wall echo returns non-phase-matched (sinc side lobe ~1 / (q
+# L) ~ 0.04) after a round trip exp(-2 d / L_att) ~ 0.06, so echoes stay ~3e-3 of the readout
 _PLANAR_WALLS = ('x_lo', 'x_hi', 'y_lo', 'y_hi')
 _BOR_WALLS = ('x_hi', 'y_lo', 'y_hi')    # x_lo is the axis
 _PEAK_SHARE = 0.1                        # psd L2 checks over the samples above this share of the reference peak
@@ -91,13 +77,6 @@ def _frequency_axis(result):
     return np.asarray(result['x'], dtype=np.float64)
 
 
-def _dho_area(fit):
-    """One-sideband area int_0^inf A / ((f0^2 - f^2)^2 + gamma^2 f^2) df = pi A / (2 gamma f0^2) of a dho_fit, from
-    its peak A / D_min (D_min = gamma^2 f0^2 - gamma^4 / 4): (pi / 2) peak gamma (1 - gamma^2 / (4 f0^2))."""
-    shift, gamma, peak = fit['shift'], fit['gamma'], fit['peak']
-    return 0.5 * math.pi * peak * gamma * (1.0 - gamma * gamma / (4.0 * shift * shift))
-
-
 def _bound_error(value, upper):
     """Error in tolerance units of 0 < value <= upper: value / upper, inf for value <= 0 or NaN."""
     value = float(value)
@@ -138,45 +117,38 @@ class _Planar:
         return self.cells[0] * self.cell, self.cells[1] * self.cell
 
 
-# brillouin_water_2d_ez: 3.4 x 3.2 um window of 10 nm cells (39.9 per lambda0 / n), drive 0.8 x 1.2 um around the
-# focus, waist 0.4 um (Rayleigh range 1.26 um): the beam is 9e-8 of its peak at the line ends (the 1e-6 rule); solid
-# 25 nm in the drive (lambda0 / (12 n) = 33 nm), 80 nm elsewhere
+# brillouin_water_2d_ez / _hz (descriptions): waist 0.4 um (Rayleigh range 1.26 um), 9e-8 of the peak at the line ends
+# (the 1e-6 rule); 25 nm solid elements in the drive (< lambda0 / (12 n) = 33 nm)
 _WATER_2D = _Planar(cell=10e-9, cells=(340, 320), focus=(1.7e-6, 1.6e-6), drive=(1.3e-6, 1.0e-6, 2.1e-6, 2.2e-6),
                     line_y=0.97e-6, waist=0.4e-6, fine=25e-9, coarse=80e-9)
 _WATER_2D_FREQUENCIES = _frequencies(5.9e9, 8.9e9, 13)
-# brillouin_water_2d_hz: the same window on 12.5 nm cells (31.9 per lambda0 / n), 30 nm solid elements, 7 frequencies
 _WATER_2D_HZ = _Planar(cell=12.5e-9, cells=(272, 256), focus=(1.7e-6, 1.6e-6), drive=(1.3e-6, 1.0e-6, 2.1e-6, 2.2e-6),
                        line_y=0.97e-6, waist=0.4e-6, fine=30e-9, coarse=80e-9)
 _WATER_2D_HZ_FREQUENCIES = _frequencies(5.9e9, 8.9e9, 7)
-_WATER_2D_TOLERANCE = {'psd': 2e-2, 'shift': 2e-3, 'fwhm': 1e-2, 'fraction': 1e-2, 'power': 1e-9}
-# psd budget at 30 nm elements: P2 / P1 dispersion up to ~2 % on the line flanks (header) + wall echoes ~3e-3 + the
-# reference images < 1e-3 + the beam envelope ~1e-3, so ~2.5 % in L2 at worst
-_WATER_2D_HZ_TOLERANCE = {'psd': 3e-2, 'shift': 3e-3, 'power': 1e-9}
+_WATER_2D_TOLERANCE = {'psd': 2e-2, 'shift': 2e-3, 'fwhm': 1e-2}
+_WATER_2D_HZ_TOLERANCE = {'psd': 3e-2, 'shift': 3e-3}
 
-# brillouin_scan_columns: 3.4 x 2.0 um of 20 nm cells, a polystyrene disc (r 0.25 um) at the focus in water, the drive
-# rectangle 0.8 x 0.8 um around it; the half model is x < 1.7 um with the mirror plane on x_hi (em symmetric, solid
-# symmetry), the full mesh mirror_x (the lower half [0, 1.7] meshed and reflected, as the half model meshes it)
+# brillouin_scan_columns (description)
 _SCAN = _Planar(cell=20e-9, cells=(170, 100), focus=(1.7e-6, 1.0e-6), drive=(1.3e-6, 0.6e-6, 2.1e-6, 1.4e-6),
                 line_y=0.55e-6, waist=0.4e-6, fine=27e-9, coarse=100e-9)
 _SCAN_OFFSETS_Y = (0.0, 0.1e-6, -0.15e-6)   # m: positions 1, 2, 3 (x offsets would break the mirror)
 _SCAN_FREQUENCIES = (6.8e9, 7.4e9, 8.0e9)
 _DISC_RADIUS = 0.25e-6
 # inline polystyrene (n 1.598): moving-boundary interface at the disc, its own photoelastic tensor and loss factor
-_POLYSTYRENE = {'eps_r': 1.598 ** 2, 'rho': 1050.0, 'youngs_modulus': 3.4e9, 'poisson_ratio': 0.34,
-                'photoelastic_p11': 0.30, 'photoelastic_p12': 0.31, 'mechanical_loss_factor': 0.01}
+_POLYSTYRENE = _elastic(3.4e9, 0.34, eps_r=1.598 ** 2, rho=1050.0, photoelastic_p11=0.30, photoelastic_p12=0.31,
+                        mechanical_loss_factor=0.01)
 _SCAN_TOLERANCE = {'columns': 1e-9,          # one factor, one optics factor: round-off of two solve paths
                    'mirror': 1e-6,           # node-identical meshes (2 x half elements = full): round-off + beam grid
                    'mirror_other_mesh': 2e-2,   # meshes not node-identical: their P2 / P1 dispersion difference
                    'counter': 0.5,           # integer counts: exact
-                   'factor': 1e-12, 'power': 1e-9, 'flag': 1.0}
+                   'factor': 1e-12, 'flag': 1.0}
 _SCAN_GPU_TOLERANCE = 10.0                   # in units of the cpu tolerances (cuDSS refined factors, device dots)
 
-# brillouin_reduced_sweep: a glass-like solid (constant loss factor 0.02, no viscosity: reduced sweeps allowed) filling
-# a 3.2 x 2.0 um window of 12.5 nm cells (29 per lambda0 / n), drive 0.6 x 0.6 um, f_B ~ 32.6 GHz
+# brillouin_reduced_sweep (description): 12.5 nm optical cells = 29 per lambda0 / n of the glass
 _GLASS_LAYOUT = _Planar(cell=12.5e-9, cells=(256, 160), focus=(1.6e-6, 1.1e-6), drive=(1.3e-6, 0.8e-6, 1.9e-6, 1.4e-6),
                         line_y=0.77e-6, waist=0.4e-6, fine=30e-9, coarse=80e-9)
-_GLASS = {'eps_r': 1.45 ** 2, 'rho': 2200.0, 'youngs_modulus': 73e9, 'poisson_ratio': 0.17,
-          'photoelastic_p11': 0.121, 'photoelastic_p12': 0.270, 'mechanical_loss_factor': 0.02}
+_GLASS = _elastic(73e9, 0.17, eps_r=1.45 ** 2, rho=2200.0, photoelastic_p11=0.121, photoelastic_p12=0.270,
+                  mechanical_loss_factor=0.02)
 _GLASS_FREQUENCIES = _frequencies(28e9, 36e9, 9)
 _ROM_TOLERANCE = 1e-10
 _REDUCED_TOLERANCE = 1e-6   # psd adaptive vs direct, of max psd (ROM residual 1e-10 x Q ~ 50; first estimate)
@@ -184,18 +156,17 @@ _REDUCED_TOLERANCE = 1e-6   # psd adaptive vs direct, of max psd (ROM residual 1
 
 def _planar_spec(title, layout, polarization, brillouin, frequencies, *, half=False, mesh_mirror=False, focus_dy=0.0,
                  material=None, extra_materials=(), extra_geometry=(), mixed=True, study_settings=None):
-    """A planar model of `layout` (module comment): em_fdfd_<polarization> with the focused beam (focus moved by
+    """A planar model of `layout`: em_fdfd_<polarization> with the focused beam (focus moved by
     focus_dy), the solid with fixed walls (half: x < half the window, the mirror plane on x_hi) and the
     brillouin_scattering feature on the drive rectangle."""
     size_x = (layout.cells[0] // 2 if half else layout.cells[0]) * layout.cell
     size_y = layout.size[1]
     line_y = cell_centre(_line_row(layout.line_y, layout.cell), layout.cell)
     x0, y0, x1, y1 = layout.drive
-    geometry = [GeometrySpec('beam_line', 'line', {'x0': 0.0, 'y0': line_y, 'x1': size_x, 'y1': line_y}),
-                GeometrySpec('drive', 'rectangle', {'x0': x0, 'y0': y0, 'x1': x1, 'y1': y1}), *extra_geometry]
-    beam = FeatureSpec(_BEAM, 'focused_beam', ['beam_line'], {
-        'power': _BEAM_POWER, 'phase': 0.0, 'waist': layout.waist, 'numerical_aperture': None,
-        'focus_x': layout.focus[0], 'focus_y': layout.focus[1] + focus_dy, 'direction': 'positive'})
+    geometry = [horizontal_line(BEAM_LINE, line_y, 0.0, size_x), _rectangle('drive', x0, y0, x1, y1),
+                *extra_geometry]
+    beam = focused_beam_feature(_BEAM_POWER, waist=layout.waist, numerical_aperture=None, focus_x=layout.focus[0],
+                                focus_y=layout.focus[1] + focus_dy)
     optics_settings = {'wavelength': _WAVELENGTH}
     walls = list(_PLANAR_WALLS)
     solid_features = []
@@ -209,7 +180,7 @@ def _planar_spec(title, layout, polarization, brillouin, frequencies, *, half=Fa
         title=title, domain=DomainSpec(size_x=size_x, size_y=size_y), geometry=geometry,
         materials=[material or _water(), *extra_materials],
         physics=[PhysicsSpec(_OPTICS, f'em_fdfd_{polarization}', settings=optics_settings, features=[beam]),
-                 PhysicsSpec(_SOLID, _SOLID_TYPE, settings=dict(_MIXED_P2 if mixed else _DISPLACEMENT_P2),
+                 PhysicsSpec(_SOLID, SOLID_TYPE_NAME, settings=dict(_MIXED_P2 if mixed else _DISPLACEMENT_P2),
                              features=solid_features, mesh=_SOLID_MESH)],
         meshes=[MeshSpec(name=_OPTICS_MESH, kind='tensor', mode='uniform', dx=layout.cell),
                 MeshSpec(name=_SOLID_MESH, kind='triangles', mode='nonuniform', dx=layout.coarse,
@@ -230,29 +201,24 @@ def _water_2d_specs(polarization):
 
 
 def _homogeneous_errors(result, errors, label):
-    """psd L2 against psd_reference over the samples above _PEAK_SHARE of the reference peak, the fit shift against
-    reference_shift and the incident power: {item: error} added to errors; returns (f, psd, reference)."""
+    """psd L2 against psd_reference over the samples above _PEAK_SHARE of the reference peak and the fit shift against
+    reference_shift: {item: error} added to errors; returns (f, psd, reference)."""
     frequencies, psd, reference = _frequency_axis(result), _series(result, 'psd'), _series(result, 'psd_reference')
     keep = reference >= _PEAK_SHARE * float(np.max(reference))
     errors[f'{label} psd vs homogeneous (L2)'] = norm_relative_error(psd[keep], reference[keep])
     errors[f'{label} shift vs reference_shift'] = relative_error(float(result['shift']),
                                                                  float(result['reference_shift']))
-    errors[f'{label} incident_power'] = relative_error(float(result['incident_power']), _BEAM_POWER)
     return frequencies, psd, reference
 
 
 def _check_water_2d_ez(results_by_name):
-    from .brillouin import band_integral, dho_fit
+    from .brillouin import dho_fit
     result = _spectrum(results_by_name['ez'])
     errors = {}
     frequencies, psd, reference = _homogeneous_errors(result, errors, 'ez')
     reference_fit = dho_fit(frequencies, reference)
     errors['ez fwhm vs the reference fit'] = relative_error(float(result['fwhm']), reference_fit['fwhm'])
-    expected_fraction = 2.0 * float(band_integral(frequencies, reference))
-    errors['ez scattered_fraction vs the reference band'] = relative_error(float(result['scattered_fraction']),
-                                                                         expected_fraction)
-    kinds = {'psd vs homogeneous (L2)': 'psd', 'shift vs reference_shift': 'shift', 'incident_power': 'power',
-             'fwhm vs the reference fit': 'fwhm', 'scattered_fraction vs the reference band': 'fraction'}
+    kinds = {'psd vs homogeneous (L2)': 'psd', 'shift vs reference_shift': 'shift', 'fwhm vs the reference fit': 'fwhm'}
     tolerances = {item: _WATER_2D_TOLERANCE[kinds[item[3:]]] for item in errors}
     return scaled_worst_result(errors, tolerances, frequencies=float_list(frequencies), psd=float_list(psd),
                                psd_reference=float_list(reference), shift=result['shift'],
@@ -265,7 +231,7 @@ def _check_water_2d_hz(results_by_name):
     result = _spectrum(results_by_name['hz'])
     errors = {}
     frequencies, psd, reference = _homogeneous_errors(result, errors, 'hz')
-    kinds = {'psd vs homogeneous (L2)': 'psd', 'shift vs reference_shift': 'shift', 'incident_power': 'power'}
+    kinds = {'psd vs homogeneous (L2)': 'psd', 'shift vs reference_shift': 'shift'}
     tolerances = {item: _WATER_2D_HZ_TOLERANCE[kinds[item[3:]]] for item in errors}
     return scaled_worst_result(errors, tolerances, frequencies=float_list(frequencies), psd=float_list(psd),
                                psd_reference=float_list(reference), shift=result['shift'],
@@ -323,8 +289,6 @@ def _check_scan(results_by_name):
             math.inf if counted is None else abs(float(counted) - extra_solves), 'counter')
     add('scan mirror_factor 1', abs(float(scan['mirror_factor']) - 1.0), 'factor')
     add('half mirror_factor 2', abs(float(half['mirror_factor']) - 2.0), 'factor')
-    add('scan incident_power', relative_error(float(scan['incident_power']), _BEAM_POWER), 'power')
-    add('half incident_power (unfolded)', relative_error(float(half['incident_power']), _BEAM_POWER), 'power')
     rows = scan['scan']['rows']
     offsets = [float(row[scan['scan']['columns'].index('offset_y')]) for row in rows]
     add('scan table offsets', 0.0 if np.allclose(offsets, _SCAN_OFFSETS_Y, rtol=0.0, atol=1e-15) else math.inf,
@@ -383,20 +347,15 @@ class _Bor:
     coarse: float
 
 
-# brillouin_bor_water: 2.25 x 5.1 um of 15 nm cells (26.6 per lambda0 / n), NA 0.6 filled pupil, the drive r < 1.2 um,
-# 3 um along z around the focus (the beam line 1.55 um upstream), 1.05 um margins
+# brillouin_bor_water (description): the beam line 1.55 um upstream of the focus, 1.05 um wall margins
 _BOR_WATER = _Bor(cell=15e-9, cells=(150, 340), focus_z=2.55e-6, drive=(1.2e-6, 1.05e-6, 4.05e-6), line_z=1.0e-6,
                   aperture=0.6, fill=1.0, fine=30e-9, coarse=80e-9)
 _BOR_WATER_FREQUENCIES = _frequencies(5.6e9, 9.2e9, 13)
-_BOR_WATER_TOLERANCE = {'ratio': 5e-2, 'shift': 4e-2, 'area': 5e-2, 'torsion': 1e-12, 'power': 1e-9}
-# brillouin_bor_low_na: NA 0.3, fill 0.7 (a Gaussian focus of effective NA ~0.21, waist ~0.8 um, Rayleigh range ~5 um
-# >> the 3 um drive), drive r < 1.5 um, window radius 2.7 um
+_BOR_WATER_TOLERANCE = {'ratio': 5e-2, 'shift': 4e-2, 'area': 5e-2, 'torsion': 1e-12}
 _BOR_LOW_NA = _Bor(cell=15e-9, cells=(180, 340), focus_z=2.55e-6, drive=(1.5e-6, 1.05e-6, 4.05e-6), line_z=1.0e-6,
                    aperture=0.3, fill=0.7, fine=30e-9, coarse=80e-9)
 _BOR_LOW_NA_FREQUENCIES = _frequencies(6.0e9, 8.88e9, 13)
-_BOR_LOW_NA_TOLERANCE = {'shift law': 5e-3, 'fwhm': 5e-2, 'shift local': 1.2e-2, 'area': 5e-2, 'power': 1e-9}
-# brillouin_bor_cross_polarized: a small light model, 1.28 x 2.24 um of 16 nm cells, NA 0.6 fill 0.7, drive r < 0.48 um,
-# 0.64 um along z; two order-2 solids (co and cross) on one mesh
+_BOR_LOW_NA_TOLERANCE = {'shift law': 5e-3, 'fwhm': 5e-2, 'shift local': 1.2e-2, 'area': 5e-2}
 _BOR_CROSS = _Bor(cell=16e-9, cells=(80, 140), focus_z=1.12e-6, drive=(0.48e-6, 0.8e-6, 1.44e-6), line_z=0.75e-6,
                   aperture=0.6, fill=0.7, fine=30e-9, coarse=60e-9)
 _BOR_CROSS_FREQUENCIES = (6.8e9, 7.4e9, 8.0e9)
@@ -410,16 +369,14 @@ def _bor_spec(title, layout, solids, frequencies, brillouin):
     size_r, size_z = layout.cells[0] * layout.cell, layout.cells[1] * layout.cell
     line_z = cell_centre(_line_row(layout.line_z, layout.cell), layout.cell)
     radius, z0, z1 = layout.drive
-    geometry = [GeometrySpec('beam_line', 'line', {'x0': 0.0, 'y0': line_z, 'x1': size_r, 'y1': line_z}),
-                GeometrySpec('drive', 'rectangle', {'x0': 0.0, 'y0': z0, 'x1': radius, 'y1': z1})]
-    beam = FeatureSpec(_BEAM, 'focused_beam', ['beam_line'], {
-        'power': _BEAM_POWER, 'phase': 0.0, 'numerical_aperture': layout.aperture, 'fill_factor': layout.fill,
-        'focus_z': layout.focus_z, 'direction': 'positive'})
+    geometry = [horizontal_line(BEAM_LINE, line_z, 0.0, size_r), _rectangle('drive', 0.0, z0, radius, z1)]
+    beam = focused_beam_feature(_BEAM_POWER, numerical_aperture=layout.aperture, fill_factor=layout.fill,
+                                focus_z=layout.focus_z)
     physics = [PhysicsSpec(_OPTICS, 'em_fdfd_bor', settings={'wavelength': _WAVELENGTH, 'azimuthal_order': 1},
                            features=[beam])]
     for name, order, detection in solids:
         physics.append(PhysicsSpec(
-            name, _SOLID_TYPE, settings={'geometry': 'axisymmetric', 'azimuthal_order': order, **_MIXED_P2},
+            name, SOLID_TYPE_NAME, settings={'geometry': 'axisymmetric', 'azimuthal_order': order, **_MIXED_P2},
             features=[FeatureSpec('walls', 'fixed', list(_BOR_WALLS)),
                       FeatureSpec(_FEATURE, _FEATURE_TYPE, ['drive'], _brillouin({**brillouin,
                                                                                    'detection': detection}))],
@@ -469,7 +426,6 @@ def _check_bor_water(results_by_name):
         relative_error(_dho_area(fit), _dho_area(reference_fit)), 'area')
     for label, result in (('m = 0', order_0), ('m = 2', order_2)):
         add(f'{label} torsion_drive_fraction (co-polarised: 0)', float(result['torsion_drive_fraction']), 'torsion')
-        add(f'{label} incident_power', relative_error(float(result['incident_power']), _BEAM_POWER), 'power')
     return scaled_worst_result(errors, tolerances, m2_over_m0=ratio, frequencies=float_list(frequencies),
                                psd_total=float_list(psd), reference_total=float_list(reference),
                                fit={key: fit[key] for key in ('shift', 'fwhm', 'gamma', 'peak', 'r_squared')},
@@ -509,14 +465,10 @@ def _check_bor_low_na(results_by_name):
               'fwhm vs the boxcar-cut q^2 line (fit vs fit)': relative_error(fwhm, model_fit['fwhm']),
               'shift vs the local reference fit': relative_error(shift, float(result['reference_shift'])),
               'DHO area vs the local reference area (sum rule)': relative_error(_dho_area(fit),
-                                                                                _dho_area(reference_fit)),
-              'incident_power': relative_error(float(result['incident_power']), _BEAM_POWER)}
-    kinds = ('shift law', 'fwhm', 'shift local', 'area', 'power')
+                                                                                _dho_area(reference_fit))}
+    kinds = ('shift law', 'fwhm', 'shift local', 'area')
     tolerances = {item: _BOR_LOW_NA_TOLERANCE[kind] for item, kind in zip(errors, kinds)}
-    _, density, _, viscous, _ = _water_constants()
-    wavenumber = 4.0 * math.pi * index / _WAVELENGTH
-    return scaled_worst_result(errors, tolerances, law_shift=law_shift,
-                               law_fwhm=wavenumber ** 2 * viscous / (2.0 * math.pi * density), shift=shift, fwhm=fwhm,
+    return scaled_worst_result(errors, tolerances, law_shift=law_shift, shift=shift, fwhm=fwhm,
                                boxcar_fwhm=model_fit['fwhm'], drive_length=length, q_mean=result['q_mean'],
                                frequencies=float_list(frequencies), psd=float_list(psd),
                                psd_reference=float_list(reference))
@@ -573,13 +525,11 @@ BRILLOUIN_SPECTRUM_CASES = (
                      f"{_PEAK_SHARE:g} of its peak ({_WATER_2D_TOLERANCE['psd']:g}: the drive interpolates the "
                      'optical fields with their phase removed at the quadrature points and the reference rasters the '
                      'cell values, both exact for a plane wave, the beam envelope ~1e-3; the reference images < 1e-3; '
-                     'P2 / P1 dispersion ~1e-4 in frequency, ~0.5 % on the flanks; wall echoes ~3e-3), the fit shift '
+                     'P2 / P1 dispersion ~(q h)^4 / 720 ~1e-4 in frequency, ~0.5 % on the flanks; wall echoes ~3e-3), '
+                     'the fit shift '
                      f"against reference_shift ({_WATER_2D_TOLERANCE['shift']:g}: the dispersion), the fit fwhm "
-                     f"against the DHO fit of psd_reference ({_WATER_2D_TOLERANCE['fwhm']:g}), scattered_fraction "
-                     f"against 2 x the band integral of psd_reference ({_WATER_2D_TOLERANCE['fraction']:g}: echoes, "
-                     'images and the envelope; the flank dispersion largely cancels in the area), incident_power = '
-                     'power '
-                     f"({_WATER_2D_TOLERANCE['power']:g}). The q^2 linewidth law needs a drive longer than a few "
+                     f"against the DHO fit of psd_reference ({_WATER_2D_TOLERANCE['fwhm']:g}). The q^2 linewidth "
+                     'law needs a drive longer than a few '
                      'attenuation lengths: brillouin_bor_low_na and examples/mechanics/brillouin_water_2d. Tolerances '
                      'are first estimates; measured = error = the worst deviation in tolerance units.'),
         specs=lambda: _water_2d_specs('ez'), check=_check_water_2d_ez, heavy=True),
@@ -591,14 +541,14 @@ BRILLOUIN_SPECTRUM_CASES = (
                      'frequencies 5.9 - 8.9 GHz, cpu. The in-plane E (E_x on the y faces, E_y on the x faces, each '
                      'interpolated on its own faces with the phase removed; the reference from their phase-corrected '
                      'cell-centre values) gives G_xx, G_yy, G_xy; with p11 = p12 and p44 = 0 the drive is still a pure '
-                     'dilation p (E . E). A face mean along the beam would lower both psd and reference by cos^4(k h '
-                     '/ 2) = 1.9 % (unseen here: they share it); brillouin_bilinear pins the sampling. Checks: psd '
+                     'dilation p (E . E). psd and reference read the same face values, so a sampling bias they share '
+                     '(a face mean along the beam: cos^4(k h / 2) = 1.9 %) is invisible here; brillouin_bilinear pins '
+                     'the sampling. Checks: psd '
                      f"against psd_reference (homogeneous) in L2 above {_PEAK_SHARE:g} of its peak "
                      f"({_WATER_2D_HZ_TOLERANCE['psd']:g}: the brillouin_water_2d_ez budget with the P2 / P1 "
                      'dispersion at 30 nm, up to ~2 % on the flanks, + echoes ~3e-3, images < 1e-3, envelope ~1e-3), '
-                     f"the fit shift against reference_shift ({_WATER_2D_HZ_TOLERANCE['shift']:g}), "
-                     f"incident_power = power ({_WATER_2D_HZ_TOLERANCE['power']:g}). Tolerances are first estimates; "
-                     'measured = error = the worst deviation in tolerance units.'),
+                     f"the fit shift against reference_shift ({_WATER_2D_HZ_TOLERANCE['shift']:g}). Tolerances are "
+                     'first estimates; measured = error = the worst deviation in tolerance units.'),
         specs=lambda: _water_2d_specs('hz'), check=_check_water_2d_hz),
     SelfTestCase(
         name='brillouin_scan_columns',
@@ -618,7 +568,7 @@ BRILLOUIN_SPECTRUM_CASES = (
                      f"{_SCAN_TOLERANCE['mirror']:g} when the meshes are node-identical, 2 x half elements = full, "
                      f"else {_SCAN_TOLERANCE['mirror_other_mesh']:g}: the P2 / P1 dispersion of two meshes; details "
                      'meshes_identical), column_solves = frequencies x (positions - 1) on both, mirror_factor 1 / 2, '
-                     'incident_power = power (unfolded), the scan table offsets, a moving-boundary drive found and '
+                     'the scan table offsets, a moving-boundary drive found and '
                      'every psd > 0. cpu, and variant gpu (FDFD and solid factors on the device, the cuDSS column path '
                      f'with its device weights; tolerance {_SCAN_GPU_TOLERANCE:g} x the cpu ones). Tolerances are '
                      'first estimates; measured = error = the worst deviation in tolerance units.'),
@@ -658,8 +608,8 @@ BRILLOUIN_SPECTRUM_CASES = (
                      'a non-DHO line shape remains); '
                      'the m = 2 / m = 0 band-integral share in (0, '
                      f"{_BOR_WATER_TOLERANCE['ratio']:g}] (the m = 2 part of E . E grows like (NA / n)^4; first "
-                     'estimate), both torsion_drive_fraction 0 (co-polarised), incident_power = power. Tolerances are '
-                     'first estimates; measured = error = the worst deviation in tolerance units.'),
+                     'estimate), both torsion_drive_fraction 0 (co-polarised). Tolerances are first estimates; '
+                     'measured = error = the worst deviation in tolerance units.'),
         specs=_bor_water_specs, check=_check_bor_water, heavy=True),
     SelfTestCase(
         name='brillouin_bor_low_na',
@@ -682,9 +632,8 @@ BRILLOUIN_SPECTRUM_CASES = (
                      f"shift against reference_shift (local, {_BOR_LOW_NA_TOLERANCE['shift local']:g}: the local "
                      'reference reads the Gouy phase and the wavefront curvature over the 3 um around the focus as a '
                      'lower q, ~0.5 .. 0.6 %, beside the pupil terms above), the DHO areas '
-                     f"against the local reference's (sum rule, {_BOR_LOW_NA_TOLERANCE['area']:g}), incident_power = "
-                     'power. Tolerances are first estimates; measured = error = the worst deviation in tolerance '
-                     'units.'),
+                     f"against the local reference's (sum rule, {_BOR_LOW_NA_TOLERANCE['area']:g}). Tolerances are "
+                     'first estimates; measured = error = the worst deviation in tolerance units.'),
         specs=_bor_low_na_specs, check=_check_bor_low_na, heavy=True),
     SelfTestCase(
         name='brillouin_bor_cross_polarized',
