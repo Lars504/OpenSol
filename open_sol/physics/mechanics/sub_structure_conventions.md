@@ -289,8 +289,8 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   estimate counts from the first stress drive on (`_kept_operator_bytes` in `_bind_peak`, not during the set-up) and
   the time recipe as one build per bind. The drive's `_Optical` values alias the DriveFields arrays (complex128), which
   the optics book (em `brillouin_drive_items`): the bind books only its centred copies (`_centred_copies`) and, with
-  several positions, the previous position's field arrays beside the next read. `result()` is built once per bind and records and kept
-  (references and peak fits), handed out as a deep copy.
+  several positions, the previous position's field arrays beside the next read. `result()` is built once per bind and
+  records and kept (references and peak fits), handed out as a deep copy.
 - Not built: 3D (em_fdfd_3d has no driven solve or 3D focused source; a water focal volume is ~5e7 Yee unknowns and a
   P2 phonon side ~1e7 dofs, beyond a direct factor; brillouin.py already works on six Voigt components, so a
   `fem/elastic_drives3d.py` twin plus a solid_mechanics_3d registration would be additive, an analytic Debye
