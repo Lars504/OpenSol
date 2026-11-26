@@ -229,6 +229,10 @@ first bring the background physics (those without the study's hook) to a station
   registered family-'em' types), keeps `state()['q_accum']` (None allowed) and the EM loss protocol when it absorbs
   (`coupling/definitions.py` header), takes thermo-optic writes through `index_reference.INDEX_SLOTS`, and builds its
   `source_slots` with `definition_common.source_slot_docs`.
+- A feature that reads another physics' solved state reads it through a study hook after that physics is solved
+  (optomechanics: the study hands `runner.physics[...]` to the coupling's evaluate; frequency_response:
+  `solver_hooks.PhysicsDriveSolver`), never in its apply: build order is not solve order. Such a read is no coupling
+  (coupling sub file "Not a coupling").
 - A type solving on several mesh kinds (one solver class per kind) keeps the rules every kind follows as module
   functions of its tensor `solver.py` that the element solvers call, never a copy (potential / heat sub files).
 - Source slot writers: every CouplingType declares `writes(vctx, spec)` (schema comment); validate allows one
@@ -434,13 +438,13 @@ first bring the background physics (those without the study's hook) to a station
   line_block, sparse_direct (entry points, cuDSS opt-in and 'auto', defer_check, ordering reuse), banded,
   arpack_shift_invert, block_eigen, tried and dropped, host_direct, explicit_kernels.
 - `open_sol/coupling/`: runner and couplings (cadence, hand-off, flush, protocol, change check, slots, EM loss
-  protocol, extension modules), registered coupling types, couplings across meshes, additive source slots
-  (`slot_sum`).
+  protocol, not a coupling: study-time drives, extension modules), registered coupling types, couplings across meshes,
+  additive source slots (`slot_sum`).
 - `open_sol/physics/em/`: type catalogue, imports, FDTD and shared EM (engines, sources, boundaries, Bloch, TFSF,
   monitors, slab modes, mode ports), nonlinear / gain and phase-change media, harmonic FDTD, FDFD (ports,
-  eigenfrequency, adjoint, design regions, conducting sheets), cross-section modes, conical k_z, em_modes, body of
-  revolution (FDFD, FDTD), spherical multipoles, the triangle paths and decisions, subpixel smoothing, definitions
-  and self-tests, effective index.
+  eigenfrequency, adjoint, design regions, conducting sheets, focused beams), cross-section modes, conical k_z,
+  em_modes, body of revolution (FDFD, FDTD, focused beams), spherical multipoles, the triangle paths and decisions,
+  subpixel smoothing, definitions and self-tests, effective index.
 - `open_sol/physics/eme/`: layout, sections / mode cache / normalisation, interfaces and cascade, model layer, meshes
   and cuDSS (decision), cascade adjoint, self-tests.
 - `open_sol/physics/nlfd/`: coupling to em_fdfd, channels (Bloch k, mirror parity), adding a nonlinear term,
@@ -448,16 +452,16 @@ first bring the background physics (those without the study's hook) to a station
 - `open_sol/physics/em3d/`: engine (step graphs, materials, Bloch, mirrors, poles, backends, half_storage),
   cylindrical sectors, subpixel smoothing, conformal PEC, em_fdfd_3d (tensor and tetrahedra), em_fdtd_3d on
   tetrahedra (decision), sources / monitors / definition.
-- `open_sol/physics/heat/`: solvers (shared names, values of t, direct back ends, outer grading), thermal noise,
-  self-tests (+ the DiffusionSystem notes of core).
+- `open_sol/physics/heat/`: solvers (shared names, values of t, direct back ends, outer grading), thermal noise (and
+  its Brillouin counterpart), self-tests (+ the DiffusionSystem notes of core).
 - `open_sol/physics/potential/`: solvers (kinds, `_dc` vocabulary, probes), element meshes, self-tests and open items
   (+ the DiffusionSystem notes of core).
 - `open_sol/physics/mechanics/`: layout, backends, SolidMechanicsPhysics / ElasticSystem, anisotropic stiffness,
   eigenfrequency (2D, 3D), piezoelectric plane strain, frequency response, guided modes, 2D Bloch cells,
-  optomechanical g0, squeeze film, ElasticSystem3D, triangle and tetrahedron meshes, prestress / damped modes /
-  complex records, geometric nonlinearity (held factor, device tangents), thermoelastic damping, viscoelastic moduli and
-  the N-term harmonic system, mixed u-p formulation, reused sweep builds, couplings and optics hooks, memory estimates,
-  self-tests.
+  optomechanical g0, spontaneous Brillouin (brillouin_scattering), squeeze film, ElasticSystem3D, triangle and
+  tetrahedron meshes, prestress / damped modes / complex records, geometric nonlinearity (held factor, device
+  tangents), thermoelastic damping, viscoelastic moduli and the N-term harmonic system, mixed u-p formulation, reused
+  sweep builds, couplings and optics hooks, memory estimates, self-tests.
 - `open_sol/physics/membrane/`: layout, model (plate switch, system lifetime), self-tests.
 - `open_sol/physics/acoustics/`: elastic_waves (step graphs, kernel / numpy mirrors, adjoint pairs), couplings, not
   built / open (incl. pressure_acoustics).
@@ -471,17 +475,18 @@ first bring the background physics (those without the study's hook) to a station
 - `open_sol/model/`: model layer (expressions, names, analytic / derived curves and values, curve errors, selftest
   examples / cache / subsets / backends / timing, schema, 3D prisms, polar / spherical / cylindrical domains, 1D
   models, arrays, per-physics meshes / build / Session, triangle / tetrahedron / swept prism meshing, memory estimate,
-  build memory, session lifetime, GPU OOM, conformal, subpixel, materials, BuildContext masks, Session reads,
-  validation, worker, progress stages, run_study, reused sweep builds, studies, snapshot solutions, solution feedback,
-  parity sectors, mesh refinement levels, parameter estimation, run-time estimate rules, solve flow); registry /
-  templates / describe; import contracts.
+  build memory, session lifetime, GPU OOM, conformal, subpixel, materials, BuildContext masks, Session reads, ring
+  angle of derived values, validation, worker, progress stages, run_study, reused sweep builds, studies, physics
+  drives, snapshot solutions, solution feedback, parity sectors, mesh refinement levels, parameter estimation,
+  run-time estimate rules, solve flow); registry / templates / describe; import contracts.
 - `open_sol/io/`: atomic writes, writer / reader pairs, non-finite floats.
 - `open_sol/gui/`: thread rule, bridge state, View in browser, post-processing edits, result plot views and plot
   settings, canvas (display grid, views, sweep sliders, layout, Export plot, interaction, fields), Examples menu,
   windows, documents and node paths, physics menu, memory budget, meshes and mesh refinement / estimation forms,
   element meshes, solver fits, snapshots, GUI texts, colours, polar domains, 3D views, mesh form, solve flow window.
-- `open_sol/viz/`: matplotlib figures (visualization, result_plots, curve_figure, scene_figure), HTML pages
-  (mode_player, field_viewer: self-contained, plot settings, layers, clocks, start-up, overlay, key bindings).
+- `open_sol/viz/`: matplotlib figures (visualization (open: BOR annotations), result_plots, curve_figure,
+  scene_figure), HTML pages (mode_player, field_viewer: self-contained, plot settings, layers, clocks, start-up,
+  overlay, key bindings).
 - `experiments/`: paper experiments (`<paper><year>/`, run_all), link to `build_experiments_guide.md` (layout, time
   estimates, cuDSS, model gotchas).
 - `tools_profilers/time_profilers/`: layout and imports (nothing here is checked by open_sol), solver_profiler

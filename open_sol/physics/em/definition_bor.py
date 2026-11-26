@@ -121,15 +121,17 @@ _SETTINGS = (
                'k0^2 M); a non-empty list replaces azimuthal_order, null or [] = azimuthal_order alone. Eigenfrequency: '
                'n_resonances per order near the wavelength setting, numbered order by order in list order; snapshot '
                "labels 'resonance k: m = <m>, lambda = ...'; resonance_table column azimuthal_order (lambda versus m: "
-               'the free spectral range). Stationary / frequency_domain: the driven order sum, every point_source a 3D '
+               'the free spectral range). Every study that does not eigen-solve the physics (stationary, '
+               'frequency_domain, and as a background physics of e.g. frequency_response or optomechanics): the '
+               'driven order sum, every point_source a 3D '
                'point current at phi = 0 (see point_source) expanded in exp(-j m phi), each m > 0 solved with -m (one '
                'factor: A(-m) is the phi mirror) and summed. Fields and field_probe show the phi = 0 half plane of '
                'the 3D field (their ring-weighted integrals are not 3D integrals); absorbed_power (q_abs, handed to '
                'heat) is its phi average; flux_monitor and far_field add the orders exactly and report each. List '
                'every order 0..M: far field and powers converge once M exceeds k rho_s by a few (rho_s = source '
-               'radius, k = n omega / c), near fields need more. mode_source / mode_monitor need a single order '
-               '(validation error). Cost: one factorisation per order and wavelength; a line_block shifted solver '
-               'factorises the orders of one axis class (|m| >= 1) in one batch.',
+               'radius, k = n omega / c), near fields need more. mode_source / mode_monitor / focused_beam need a '
+               'single order (validation error). Cost: one factorisation per order and wavelength; a line_block '
+               'shifted solver factorises the orders of one axis class (|m| >= 1) in one batch.',
           tip="Several azimuthal orders solved in one run, e.g. 14, 15, 16 or 0, 1, 2, ..., 8.\n\n"
               "- Eigenfrequency study: replaces 'Azimuthal order' for the resonance search; the resonance table then "
               'lists the order of each resonance.\n'

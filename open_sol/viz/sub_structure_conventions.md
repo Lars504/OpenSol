@@ -11,7 +11,8 @@ plot, imports of `viz.common` / `DARK_CMAPS`, canvas cell edges) live in the gui
   strong back-reference (the cycle kept dropped script Simulations' GPU arrays until a full gc).
 - A new EM physics class joins `Visualizer._em_solvers` (annotations, material map, boundary bars and the dashboard
   read it); a new EM source / monitor class needs its branch in `_annotate_sources` / `_annotate_monitors`, which
-  raise TypeError on an unknown class.
+  raise TypeError on an unknown class. Open: BORPhysics is not in `_em_solvers` yet (its point current, mode
+  port and monitor classes in fdfd_bor / bor_ports need branches first), so the BORFocusedBeam branch draws nothing.
 - A panel both modules draw lives once in visualization (`_draw_map`, `_draw_timeseries`, `_draw_flux_panel`,
   `_draw_far_field_panel`; result_plots passes `ascii_text=True`) and result_plots reuses its private helpers; never a
   copy. result_plots takes analytic curves already evaluated (api's job: viz never imports model) and draws them over

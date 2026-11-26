@@ -493,20 +493,22 @@ type's vocabulary and refusals are in its help texts and validation.
   skips it in `_solve`, `HostFDFDBase.finalize`, `_solver_issues` and `solve_bor_resonances` (passed factor); a rejected
   line-block solve checks it in `_factorize_host` before the SuperLU fallback. Change them together.
 - Driven order sum: a new source type builds its own b(-m) (`term_rhs(system, order=)`, never a mirrored b(m)), a new
-  monitor type needs `record_order` and `record`; mode ports and focused beams are refused.
+  monitor type needs `record_order` and `record`; mode ports and focused beams are refused. The list is the order sum
+  wherever `definition_common.eigen_solved` is False (create's test: also a background physics of frequency_response /
+  optomechanics), so a validation refusal of the sum tests the same, never the study type.
 - One TFSF writer for every BOR slice source: `bor_ports.slice_tfsf_rhs` (mode_source, focused beam) and its
   interface power `slice_interface_power`; a new one-sided BOR source goes through them.
-- Focused beams (`bor_focused_beam`, feature focused_beam; derivation, signs and quadrature: its header): the x-polarised
-  beam on the axis IS the m = 1 standing wave, so the solve's unknowns are its amplitudes (E_r, u = -j E_phi, E_z);
-  azimuthal_order 1 only, no order sum, no pec / pmc z face. Ring weight (Brillouin plan R5): `power` / incident_power
-  is the standing wave's, ring_angle(1) / (2 pi) = 1/2 of the travelling-wave flux every BOR flux_monitor / box_flux
+- Focused beams (`bor_focused_beam`, feature focused_beam; derivation, signs and quadrature: its header): the
+  x-polarised beam on the axis IS the m = 1 standing wave, so the solve's unknowns are its amplitudes (E_r, u = -j E_phi, E_z);
+  azimuthal_order 1 only, no order sum, no pec / pmc z face. Ring weight: `power` / incident_power is the standing
+  wave's, ring_angle(1) / (2 pi) = 1/2 of the travelling-wave flux every BOR flux_monitor / box_flux
   reports (pinned by em_bor_focused_beam_power), measured as the discrete interface flux of the injected field; code
   normalising by it weights solid rings by `core.metric.ring_angle(m)`. Launch: Yee-exact in z (semi-discrete kappa),
-  continuum Bessel in r, so the leakage is the radial O((k NA h)^2) (R6; a bor_ports discrete-mode expansion would make
-  it exact). Drive contract as the 2D FDFD's (`drive_sources`, `solve_moved_beam(source, (0, dz))` on the kept factor,
-  host active vector; `drive_fields` with components {'r', 'phi' = -j E_phi, 'z'} on their Yee points (E_r on the r
-  edges from the axis, E_z on the z edges: `yee_e_fields`), what brillouin.azimuthal_parts reads). Self-tests
-  em_bor_focused_beam_* (selftests_focused_beam).
+  continuum Bessel in r, so the leakage is the radial O((k NA h)^2) (open: a bor_ports discrete-mode expansion of the
+  incident field would make it exact). Drive contract as the 2D FDFD's (`drive_sources`, `solve_moved_beam(source,
+  (0, dz))` on the kept factor, host active vector; `drive_fields` with components {'r', 'phi' = -j E_phi, 'z'} on
+  their Yee points (E_r on the r edges from the axis, E_z on the z edges: `yee_e_fields`), what
+  brillouin.azimuthal_parts reads). Self-tests em_bor_focused_beam_* (selftests_focused_beam).
 - 2D fill is mild (SuperLU copes to ~1e6 unknowns): cuDSS (unmeasured) buys host relief at the largest many-order
   grids. Not yet: the 2.16 metric layer, a measured line-block vs SuperLU crossover, line-block port mode solves.
 - Self-tests: selftests_bor, selftests_bor_orders, selftests_bor_backend; examples em/analytic_bor_*. SuperLU-only

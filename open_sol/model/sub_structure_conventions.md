@@ -274,6 +274,13 @@ templates, describe. Current state, no changelog.
   within ~2 %, rectangles exact; the raw staircase is +27 % on circles).
 - Session reads: Session checks arguments, picks the mesh view and delegates to `session.access` (root "Meshes per
   physics"); a cross-mesh read asks the SOURCE view's access (`values_on_window(target, ...)`, `values_at(points)`).
+- Ring angle of a derived value (`Session._ring_angle`; mean / integral / mode_volume, `RING_WEIGHTED_OPERATIONS`): the
+  ring_angle of the axisymmetric physics whose fields the expression reads (no field read: every one on the mesh).
+  Orders differ only for an `ORDER_SPLIT_READERS` pair (`azimuthal_order_issues`: an info, both read one physics
+  through such a feature and share no coupling); a value whose angle is then ambiguous is judged by
+  `definition_helpers.ring_angle_conflict`, the one rule of Session (raises: NaN + warning) and validate (error at the
+  derived value). A new feature that lets orders differ joins ORDER_SPLIT_READERS only if no field passes between the
+  orders (one-way reads).
 - 3D field access: every 3D read (cuts, `segment_profile`, `volume`, snapshot cuts) slices planes from
   `TensorAccess._plane_source` (the renderer's `device_plane`, else ONE `device_field` volume per read, shared inside
   `Session.shared_plane_reads`), never a device_field per plane; host volumes come one z plane at a time. A closed /
@@ -342,6 +349,13 @@ templates, describe. Current state, no changelog.
 - Stress stiffening (`solver_hooks.PrestressSolver`): a study eigen- or harmonic-solving solids calls
   `study._solve_static_states(runner, solved, with_loads, emit)` right after its background stage (with_loads False
   only in frequency_response: its loads are the drive).
+- Physics drives (`solver_hooks.PhysicsDriveSolver`, frequency_response; brillouin_scattering): after the background
+  stage and the static states, before `reset_frequency_response`, stage 'Optical drives' (only when a solved physics
+  has drives) calls `bind_physics_drives(runner.physics, progress)`: the hook through which a feature of a solved
+  physics reads a background physics' solution (root "Physics definitions"). The hook must leave the background
+  physics' state as it is (extra solves through `solve_moved_beam`, which touches no solution, monitor or counter),
+  since snapshots and results read it afterwards. The solve flow lists the step for the features in
+  `solve_flow._PHYSICS_DRIVE_FEATURES`: a new drive feature joins it.
 - Background studies (`StudyType.background_study` 'stationary'): validate accepts a physics supporting the study or
   its background_study, needs >= 1 supporting the study itself and refuses an enabled coupling / material property
   reading a solved physics (`_check_background_study`, remedy `StudyType.feedback_alternative`; exceptions

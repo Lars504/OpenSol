@@ -267,8 +267,9 @@ _DESCRIPTION = (
     'triangles / tetrahedra: frequency-dependent moduli G*(omega), K*(omega) per material (viscosity, relaxation '
     'branches; sweep_method direct) and the setting formulation mixed (the u-p saddle point, liquids included); '
     'every load, prescribed displacement, electrode voltage and floating charge is a complex drive amplitude (phase '
-    '0); one complex symmetric factor per frequency (2D: host SuperLU outside the solver roles, counters in the '
-    "summary; solid_mechanics_3d: its 'linear' sparse_direct solver, SuperLU or cuDSS LDL^T with the plan reused). "
+    '0); one complex symmetric factor per frequency (2D tensor meshes: host SuperLU outside the solver roles, '
+    "counters in the summary; triangles and solid_mechanics_3d: the 'linear' sparse_direct solver, SuperLU or cuDSS "
+    'LDL^T with the plan reused). '
     'With stress_stiffening the initial_stress is first relaxed by a static solve (loads stay the drive) and its '
     'K_sigma joins K (real, no loss). A free body is allowed (regular at f > 0). membrane: the pressure_load / '
     "line_force / point_force phasors, one complex factor per frequency on its 'linear' sparse_direct solver. Results: "
@@ -283,9 +284,10 @@ _DESCRIPTION = (
     'planar model, or a tilt about a transverse axis at azimuthal_order 1; tetrahedra hold uniform values, so '
     'translations only), omega Im(W) / 2 the mean power into the solid); '
     'solid_probe samples and electrode tables stay empty; membrane: field_probe, port and mode_projection records '
-    'per frequency. Physics drives (solid_mechanics on triangles: brillouin_scattering) are built after the background '
-    'stage from the solved optics, one optical solve on its kept factor and one drive column per scan position, every '
-    'column solved on the same solid factor per frequency. Background physics run first (their couplings into the '
+    'per frequency. Physics drives (solid_mechanics on triangles and on planar tensor meshes: brillouin_scattering) '
+    'are built after the background stage from the solved optics (stage Optical drives), one optical solve on its '
+    'kept factor and one drive column per scan position, every column solved on the same solid factor per '
+    'frequency; the drive is then the only load. Background physics run first (their couplings into the '
     'solved physics apply once); couplings '
     'reading a solved physics: validation error; StudySpec.solved_physics restricts the solved physics. ticks = '
     'frequencies; summary response_frequencies (+ frequency_sweep with a reduced sweep). parity_sectors: membrane '
