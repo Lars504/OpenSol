@@ -330,7 +330,7 @@ class DriveFields:
 
 
 class FocusedBeamDrive:
-    """Shared frame of the brillouin_scattering drive contract (physics/mechanics/brillouin_drive DriveOptics) of a
+    """Shared frame of the brillouin_scattering drive contract (model.solver_hooks.DriveOpticsSolver) of a
     physics with focused beams (solvers.fdfd_2d.FDFDPhysics, solvers.fdfd_bor.BORPhysics): beam names, drive_sources,
     the frame of solve_moved_beam and the extra_solves counter. The physics sets _drive_source_type (its beam class)
     and implements _require_driven_solution(method) (ValueError unless solution is the driven solve of the current
