@@ -344,10 +344,10 @@ def _window_axes(estimate):
     """{'x' / 'y': (window widths, window edges [m])} of a tensor estimate (edges in its physical / logical frame)."""
     sides = estimate.npml_sides
     windows = {}
-    for axis, widths, edges in (('x', estimate.dx_cells, estimate.x_edges), ('y', estimate.dy_cells, estimate.y_edges)):
+    for axis, widths in (('x', estimate.dx_cells), ('y', estimate.dy_cells)):
         lo, hi = int(sides.get(f'{axis}_lo', 0)), int(sides.get(f'{axis}_hi', 0))
         windows[axis] = (np.asarray(widths[lo:len(widths) - hi], dtype=np.float64),
-                         np.asarray(edges[lo:len(edges) - hi], dtype=np.float64))
+                         np.asarray(estimate.window_edges(axis), dtype=np.float64))
     return windows
 
 

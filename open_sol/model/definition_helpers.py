@@ -16,10 +16,10 @@ from ..solvers.host_direct import HOST_DIRECT_BACK_ENDS, HOST_DIRECT_DOUBLE_BACK
 from ..solvers.pcg import CG_ITERATIONS_PER_AXIS_CELL, SOLVER_DTYPE_NAMES, auto_max_iterations
 from ..solvers.roles import SolverRole, resolved_precision
 from .expressions import TIME_NAMES, Expression, ExpressionError, evaluate_scalar, referenced_names
-from .geometry import (bounding_box, domain_size_z, expand_entities, perimeter_weights, point_z,
-                       preview_pixel_centers)
+from .geometry import (bounding_box, domain_object_rasterizer, domain_size_z, expand_entities, perimeter_weights,
+                       point_z, preview_pixel_centers)
 from .schema import (EIGENFREQUENCY_STUDY, FREE_MESH_KINDS, FREQUENCY_RESPONSE_STUDY, Issue, Param, feature_path,
-                     known_physics, state_field_names)
+                     known_physics, resolve_values, state_field_names)
 
 
 def evaluates_to(value, parameters, predicate):
@@ -293,6 +293,28 @@ def study_frequencies(values, ascending=False) -> list:
         return [math.sqrt(start * stop) if values['log_spacing'] else 0.5 * (start + stop)]
     spaced = np.geomspace(start, stop, count) if values['log_spacing'] else np.linspace(start, stop, count)
     return [float(frequency) for frequency in spaced]
+
+
+def frequency_response_values(spec, registry, parameters):
+    """Resolved settings of the model's frequency_response study; None for another study or settings that do not
+    resolve (validate reports them)."""
+    study = spec.study
+    if study.type != FREQUENCY_RESPONSE_STUDY:
+        return None
+    try:
+        return resolve_values(registry.study_type(study.type).params, study.settings or {}, parameters)
+    except (KeyError, ValueError, TypeError):
+        return None
+
+
+def study_frequency_band(spec, registry, parameters):
+    """(lowest, highest) frequency [Hz] of a frequency_response study (study_frequencies of
+    frequency_response_values), None for another study or values that do not resolve."""
+    values = frequency_response_values(spec, registry, parameters)
+    if values is None:
+        return None
+    frequencies = study_frequencies(values)
+    return min(frequencies), max(frequencies)
 
 
 def wavelength_range_issues(values, path):
@@ -1219,6 +1241,34 @@ def conducting_fraction(vctx, conducting):
     return float(conducting_pixels.mean()) if conducting_pixels.size else None
 
 
+def preview_selection_mask(vctx, selection, max_cells=None):
+    """bool (mx, my) mask of a domain selection on the pixels of vctx.material_map(max_cells) (None: its default
+    size): the pixel centres inside its domain objects, rasterised as the preview paints them; None when the preview
+    or the selection does not resolve."""
+    material_map = vctx.material_map() if max_cells is None else vctx.material_map(max_cells)
+    if material_map is None:
+        return None
+    image, _, extent = material_map
+    try:
+        entities = expand_entities(vctx.spec, selection)
+    except (ValueError, KeyError, TypeError):
+        return None
+    if 'all' in entities:
+        return np.ones(image.shape, dtype=bool)
+    x_centres, y_centres = preview_pixel_centers(extent, image.shape)
+    object_mask = domain_object_rasterizer(vctx.shapes, x_centres, y_centres, np)
+    mask = np.zeros(image.shape, dtype=bool)
+    for entity in entities:
+        try:
+            window_mask = object_mask(entity)
+        except (ValueError, KeyError, TypeError):   # a failed part of a composite: reported at the geometry
+            continue
+        if window_mask is not None:
+            window, cropped = window_mask
+            mask[window] |= cropped
+    return mask
+
+
 def selected_material_data(spec, unresolved=False) -> list:
     """[(MaterialSpec, merged properties, poles)] of the spec materials with a selection, library / crystal data merged
     as the builder does; a material whose data does not resolve (reported at the material) is left out, or listed with
@@ -1337,11 +1387,15 @@ AZIMUTHAL_ORDER_PARAM = Param(
           'couplings of an order-m physics warn (products such as Joule heating are no single order). '
           'solid_mechanics: U_r, U_z ~ cos(m phi), U_phi ~ sin(m phi).'))
 
+# physics-drive features: bound through solver_hooks.PhysicsDriveSolver by the frequency_response study after its
+# background stage (the solve flow lists its drive step for them: solve_flow._has_physics_drives); a new drive feature
+# joins it
+PHYSICS_DRIVE_FEATURES = ('brillouin_scattering',)
 # features through which a physics reads another physics' solved field one way at study time, feature type -> the param
 # naming that physics: two axisymmetric physics that each hold an enabled one reading the same physics and share no
 # coupling may differ in azimuthal_order (azimuthal_order_issues; brillouin_scattering: the solid orders 0 and 2 of one
 # em_fdfd_bor beam, no field passes between them)
-ORDER_SPLIT_READERS = {'brillouin_scattering': 'optical_physics'}
+ORDER_SPLIT_READERS = {PHYSICS_DRIVE_FEATURES[0]: 'optical_physics'}
 
 
 def azimuthal_order_of(settings_values):
@@ -1373,7 +1427,7 @@ def azimuthal_order_issues(vctx, physics_spec, path, settings_values):
         if other_values is None or not is_axisymmetric(other_values) or azimuthal_order_of(other_values) == order:
             continue
         other_order = azimuthal_order_of(other_values)
-        shared = sorted(_order_split_reads(physics_spec) & _order_split_reads(other))
+        shared = sorted(order_split_reads(physics_spec) & order_split_reads(other))
         if shared and other.name not in partners:
             issues.append(Issue('info', path, f"azimuthal_order {order} differs from that of '{other.name}' "
                                               f"({other_order}): allowed, both read '{shared[0]}' through "
@@ -1395,7 +1449,7 @@ def azimuthal_order_issues(vctx, physics_spec, path, settings_values):
     return issues
 
 
-def _order_split_reads(physics_spec) -> set:
+def order_split_reads(physics_spec) -> set:
     """Names of the physics an axisymmetric physics reads through its enabled ORDER_SPLIT_READERS features."""
     names = set()
     for feature in physics_spec.features:

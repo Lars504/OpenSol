@@ -259,7 +259,8 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   and no ledger sees it.
 - Mirror planes count x 2 (mirror_factor): each must be held by a solid Roller / Symmetry (the even mirror of u), no
   scan offset along its normal, none with em_fdfd_bor, none with reference 'homogeneous' (the FFT needs the unfolded
-  drive) (`_mirror_issues`).
+  drive) (`_mirror_issues`, errors; the planes it reports skip the generic `model_mirror_issues` warning, which counts
+  Fixed as a holder: `brillouin_issues(reported_planes=)`).
 - Window rule: a sampler covers the hull of its sample coordinates plus one spacing (`brillouin.bilinear_weights`
   raises beyond), so validation keeps the drive box inside the first / last window cell centre on every face but the
   mirror planes and the BOR axis x_lo (`_window_issues`): change the clamp and the check together.
@@ -421,8 +422,12 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   displacement formulation, pencil term bytes) switch on it; a new stretched allocation follows the same flag.
 - brillouin_scattering items: `definition_brillouin.brillouin_memory_items` / `brillouin_time_items`, called by both
   2D estimator branches (triangles, tensor), mirror bind / record / result and the HarmonicSystem column path (one W,
-  bind transients, local-reference bins, cuDSS device weights only on cuDSS); a new allocation there updates them.
-  Their `*_GUESS` constants are uncalibrated.
+  bind transients, local-reference bins, cuDSS device weights only on cuDSS: the caller passes `device`, False on the
+  tensor solid's private SuperLU); a new allocation there updates them. The MaterialGrid arrays the bind copies come
+  from `context.mesh_material_arrays()` (meshing.material_array_names, optional arrays included), the triangle drive
+  elements from `context.selection_cells`, a tensor solid's optical cells from its own MeshEstimate (a triangle
+  solid's context has no estimate of the optics' mesh: base-dx approximation). Their `*_GUESS` constants are
+  uncalibrated.
 - Unverified against counters (no gpu run in selftest_out): the static 'linear' cuDSS items, the solid
   frequency-response HarmonicSystem (with its viscoelastic group terms and mixed u-p blocks), solid DevicePencils,
   device Newton tangents, the brillouin_scattering items.

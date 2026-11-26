@@ -656,7 +656,7 @@ class _Validator:
         if mesh is None:
             return None
         shapes = self.vctx.shapes
-        x_edges, y_edges = _window_edges(mesh)
+        x_edges, y_edges = mesh.window_edges('x'), mesh.window_edges('y')
         x_centres = 0.5 * (x_edges[:-1] + x_edges[1:])
         y_centres = 0.5 * (y_edges[:-1] + y_edges[1:])
         own_entities = expanded_selections[index]
@@ -756,7 +756,7 @@ class _Validator:
         centres of the mesh estimate), else None; None also above MAX_COVERAGE_TEST_CELLS rasterised cells."""
         if self.vctx.mesh.domain_map is not None:
             return self._empty_mapped_object_message(name)
-        x_edges, y_edges = _window_edges(self.vctx.mesh)
+        x_edges, y_edges = self.vctx.mesh.window_edges('x'), self.vctx.mesh.window_edges('y')
         size_x, size_y = float(x_edges[-1]), float(y_edges[-1])
         x0, y0, x1, y1 = bounding_box(name, self.vctx.shapes)
         if x1 < 0.0 or y1 < 0.0 or x0 > size_x or y0 > size_y:
@@ -2718,13 +2718,6 @@ def _mapped_window_centres(mesh):
     x_edges, y_edges = mesh.x_edges, mesh.y_edges
     return mesh.domain_map.to_physical(0.5 * (x_edges[:-1] + x_edges[1:])[:, None],
                                        0.5 * (y_edges[:-1] + y_edges[1:])[None, :])
-
-
-def _window_edges(mesh):
-    """(x edges, y edges) float64 [m] of the physical window cells of a MeshEstimate (PML cells dropped)."""
-    sides = mesh.npml_sides
-    return (mesh.x_edges[sides['x_lo']:mesh.nx - sides['x_hi'] + 1],
-            mesh.y_edges[sides['y_lo']:mesh.ny - sides['y_hi'] + 1])
 
 
 def _covered_by_winners(shape, own_objects, winner_objects, rasterize_object):

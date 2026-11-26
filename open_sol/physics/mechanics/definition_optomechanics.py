@@ -6,9 +6,8 @@ import numpy as np
 from ...core.constants import FACES
 from ...core.mirror import MIRROR_SIGNS, feature_mirror_faces, mirror_faces
 from ...model.definition_helpers import evaluates_to
-from ...model.geometry import expand_entities
 from ...model.schema import FeatureType, Issue, Param, feature_path, subpixel_smoothing_physics
-from .definition_common import OPTOMECHANICS_STUDY, ROLLER_FEATURES, TED_FEATURE, plain_value
+from .definition_common import OPTOMECHANICS_STUDY, TED_FEATURE, held_faces, plain_value
 from .optomechanics import (NORMALISATIONS, OPTOMECHANICS_TABLE_COLUMNS, SCATTERING, OptomechanicalCoupling,
                             optomechanical_table_result)
 from .selftests_optomechanics import (SILICON_DISK_G0_DESCRIPTION, SILICON_DISK_G0_LABEL, SILICON_RING_G0_DESCRIPTION,
@@ -194,19 +193,6 @@ def _apply(ctx, solver, feature_spec, values, selection):
 
 def _result(session, solver, coupling, feature_spec, options):
     return optomechanical_table_result(coupling)
-
-
-def _roller_faces(vctx, physics_spec):
-    """Outer faces held by an enabled roller / symmetry (or fixed) feature of the solid."""
-    faces = set()
-    for feature in physics_spec.features:
-        if not feature.enabled or feature.type not in (*ROLLER_FEATURES, 'fixed'):
-            continue
-        try:
-            faces.update(entity for entity in expand_entities(vctx.spec, feature.selection) if entity in FACES)
-        except (ValueError, TypeError):
-            continue
-    return faces
 
 
 def _crystal_mirror_issues(vctx, physics_spec, values, path):
@@ -451,7 +437,7 @@ def _pairing_issues(vctx, physics_spec, values, optical, settings, path):
                                                'one, and m_eff would count the image (x 2); set a pec / pmc z wall, '
                                                'or remove the symmetry face'))
     own = feature_mirror_faces(vctx.spec, physics_spec)
-    rollers = _roller_faces(vctx, physics_spec)
+    rollers = held_faces(vctx, physics_spec, FACES)   # roller / symmetry / fixed faces
     for face in ('y_lo', 'y_hi'):
         if settings.get(f'bc_{face}') in _BOR_WALL_TYPES and face in rollers and face not in planes and face not in own:
             issues.append(Issue('info', path, f"optical face {face} of '{name}' is a {settings[f'bc_{face}']} wall and "
@@ -525,7 +511,7 @@ def _validate(vctx, physics_spec, feature_spec, values):
                                           'assignment), the fields, D_n and the mode energy those of the smoothed '
                                           'solve; the face sum is then not the exact first-order change of the smoothed '
                                           'operator (first order in the cell size, as without smoothing)'))
-    rollers = _roller_faces(vctx, physics_spec)
+    rollers = held_faces(vctx, physics_spec, FACES)   # roller / symmetry / fixed faces
     for face in FACES:
         if settings.get(f'bc_{face}') in MIRROR_SIGNS and face not in rollers:
             issues.append(Issue('warning', path, f"optical face {face} of '{name}' is a mirror, but no solid roller "

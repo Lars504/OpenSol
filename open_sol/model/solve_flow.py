@@ -18,6 +18,7 @@ import re
 from dataclasses import dataclass, fields, replace
 
 from ..solvers.roles import BACKENDS, PRECISIONS, SOLVER_ROLES, resolved_precision
+from .definition_helpers import PHYSICS_DRIVE_FEATURES
 from .schema import (EIGENFREQUENCY_STUDY, FREQUENCY_DOMAIN_STUDY, FREQUENCY_RESPONSE_STUDY, OPTOMECHANICS_STUDY,
                      STATIONARY_STUDY, TIME_DEPENDENT_STUDY, known_physics, resolved_solvers, solver_backend,
                      solver_grid)
@@ -726,7 +727,6 @@ def _mesh_facts(estimate):
 _BACKGROUND = ('Background stage', 'stationary solve of the physics the study does not solve itself',
                'Physics the study does not solve itself run as stationary background physics: solve_stationary over '
                'them, then every background coupling applies once (study._background_stage).', [])
-_PHYSICS_DRIVE_FEATURES = ('brillouin_scattering',)   # features bound by the frequency_response PhysicsDriveSolver hook
 _PHYSICS_DRIVES = ('Optical drives', 'drives built from the solved optics, one per scan position',
                    'After the background stage and the static states: bind_physics_drives of every solved physics '
                    'with drives (brillouin_scattering: per scan position one more optical solve on the kept factor, '
@@ -806,8 +806,8 @@ def _study_steps(spec, study_type, counts, run_time, registry):
 
 def _has_physics_drives(spec):
     """True when a physics has an enabled feature whose drive the frequency_response study binds after its background
-    stage (solver_hooks.PhysicsDriveSolver: brillouin_scattering)."""
-    return any(feature.enabled and feature.type in _PHYSICS_DRIVE_FEATURES
+    stage (solver_hooks.PhysicsDriveSolver: definition_helpers.PHYSICS_DRIVE_FEATURES)."""
+    return any(feature.enabled and feature.type in PHYSICS_DRIVE_FEATURES
                for physics_spec in spec.physics for feature in physics_spec.features)
 
 

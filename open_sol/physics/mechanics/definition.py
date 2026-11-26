@@ -904,8 +904,7 @@ def _pml_sweep_issues(vctx, settings_values, path, names):
     K, M), an info when the lowest swept frequency f lies below target_frequency f_t (the theoretical round-trip
     reflection R^(f / f_t) there), a warning above _PML_SWEEP_REFLECTION_WARNING; nothing when the study settings do
     not resolve (validate reports them)."""
-    from ...model.definition_helpers import study_frequencies
-    from ...model.schema import resolve_values
+    from ...model.definition_helpers import study_frequency_band
     study = vctx.spec.study
     settings = study.settings if isinstance(study.settings, dict) else {}
     issues = []
@@ -913,9 +912,11 @@ def _pml_sweep_issues(vctx, settings_values, path, names):
         issues.append(Issue('error', path, f"sweep_method 'modal' is not available with an elastic PML ({names}): the "
                                            'stretched stiffness and mass are complex and their PML modes would fill '
                                            "the modal basis; use sweep_method 'adaptive' or 'direct'"))
+    band = study_frequency_band(vctx.spec, vctx.registry, vctx.parameters)
+    if band is None:
+        return issues
+    lowest = band[0]
     try:
-        values = resolve_values(vctx.registry.study_type(study.type).params, settings, vctx.parameters)
-        lowest = min(study_frequencies(values))
         target = float(settings_values['target_frequency'])
         reflection = float(settings_values.get('pml_reflection') or DEFAULT_PML_REFLECTION)
     except (KeyError, ValueError, TypeError):
@@ -1067,16 +1068,19 @@ def _validate_solid(vctx, physics_spec, settings_values):
     own_mirrors = feature_mirror_faces(vctx.spec, physics_spec)   # its symmetry faces (model mirror planes)
     issues.extend(own_mirror_face_conflicts(vctx, physics_spec, _FACE_FEATURES, own_mirrors))
     issues.extend(_segment_plane_issues(vctx, physics_spec, own_mirrors))
-    issues.extend(model_mirror_issues(vctx, physics_spec, path, FACES, axis_held=is_axisymmetric(settings_values)))
+    # a brillouin_scattering drive reports its unheld mirror planes itself (an error): those take no warning here
+    drive_planes = set()
+    drive_issues = brillouin_issues(vctx, physics_spec, settings_values, drive_planes)
+    issues.extend(model_mirror_issues(vctx, physics_spec, path, FACES, axis_held=is_axisymmetric(settings_values),
+                                      reported=drive_planes))
     if triangles:
         issues.extend(_triangle_issues(vctx, physics_spec, settings_values, path))
-        issues.extend(brillouin_issues(vctx, physics_spec, settings_values))
         element_name = f"{settings_values.get('discretization', 'quadratic')} triangle"
     else:
         issues.extend(cg_solver_issues(vctx, physics_spec, path))
         issues.extend(_tensor_probe_issues(physics_spec))
-        issues.extend(brillouin_issues(vctx, physics_spec, settings_values))
         element_name = 'bilinear'
+    issues.extend(drive_issues)
     issues.extend(material_issues(vctx, physics_spec, path, SOLID_TYPE_NAME, element_name, tensor=True,
                                   fluid=mixed_formulation(vctx, settings_values)))
     issues.extend(modal_study_issues(vctx, physics_spec, path, MODAL_STUDIES, THERMAL_STRAIN_COUPLING, tensor=True,
@@ -1904,9 +1908,12 @@ def _fem_time_estimate(settings_values, mesh, context):
         unknowns, entries = pencil_unknowns, pencil_entries   # the factorised saddle point (mixed)
         # brillouin_scattering drives: their bind, readouts, references and fits; the extra drive columns are more
         # solves on each frequency's factor (direct sweeps only: validate)
+        from ...solvers.sparse_direct import CUDSS_BACK_ENDS   # numpy only at module level
         drives, column_solves = brillouin_time_items(context, settings_values, mesh, unknowns=unknowns,
                                                      vector_dofs=viscoelastic.displacement_unknowns, local=local,
-                                                     components=components)
+                                                     components=components,
+                                                     device=(linear is not None
+                                                             and linear.values.get('back_end') in CUDSS_BACK_ENDS))
         work = context.solver_work('linear', unknowns=unknowns, nnz=entries, value_bytes=2 * FLOAT64_BYTES,
                                    dimensions=2, solves=sweep['solves'] + column_solves,
                                    solves_kind=sweep['solves_kind'], factorizations=sweep['factorizations'],
@@ -2038,7 +2045,7 @@ def _time_estimate(settings_values, mesh, context):
     if context.study.type == FREQUENCY_RESPONSE_STUDY:
         # brillouin_scattering drives: bind, readouts, references, fits and the extra columns on each private factor
         drives, column_solves = brillouin_time_items(context, settings_values, mesh, unknowns=dofs, vector_dofs=dofs,
-                                                     local=4, components=2)
+                                                     local=4, components=2, device=False)
         columns = (te.TimeEstimate((te.TimeItem('Brillouin drive column back substitutions', 'solve', column_solves,
                                                 'exact', (te.HostSolve(dofs, 2, True),)),)) if column_solves else None)
         return te.combine((_frequency_response_time_estimate(context, dofs, entries, assembly_ops, io_ops), drives,

@@ -27,6 +27,7 @@ LOCKING_POISSON_RATIO = 0.45   # bilinear / trilinear elements grow too stiff (v
 # model mirror planes (unfolded fields, integrals x 2, max / min over the images); a support like the Roller
 SYMMETRY_FEATURE = 'symmetry'
 ROLLER_FEATURES = ('roller', SYMMETRY_FEATURE)   # hold the normal displacement of their outer faces (the Roller apply)
+MIRROR_HOLDERS = (*ROLLER_FEATURES, 'fixed')     # hold a model mirror plane (the even mirror of u: normal u 0)
 SUPPORT_FEATURES = frozenset({'fixed', 'roller', SYMMETRY_FEATURE, 'displacement', 'fixed_domain',
                               'prescribed_displacement_domain'})
 LOAD_FEATURES = frozenset({'boundary_load', 'body_force', 'temperature_change'})
@@ -631,16 +632,24 @@ def symmetry_issues(vctx, physics_spec, feature_spec, settings_params, faces_all
     return issues
 
 
-def model_mirror_issues(vctx, physics_spec, path, faces_all, axis_held=False) -> list:
+def held_faces(vctx, physics_spec, faces_all, holders=MIRROR_HOLDERS) -> set:
+    """Faces of faces_all that an enabled feature of the solid of the `holders` types selects (MIRROR_HOLDERS: the
+    even mirror of the displacement)."""
+    faces = set()
+    for _, entities in enabled_feature_entities(vctx, physics_spec, holders):
+        faces.update(entity for entity in entities if entity in faces_all)
+    return faces
+
+
+def model_mirror_issues(vctx, physics_spec, path, faces_all, axis_held=False, reported=()) -> list:
     """Warning per model mirror plane (core.mirror.mirror_faces: an EM mirror face, another physics' symmetry face) on
     one of faces_all that no Roller, Symmetry or Fixed of the solid holds (axis_held: x_lo of geometry axisymmetric,
-    held by the axis rule): the solid fields unfold there as the even mirror the face does not solve."""
-    planes = [face for face in mirror_faces(vctx.spec) if face in faces_all]
+    held by the axis rule): the solid fields unfold there as the even mirror the face does not solve. Planes in
+    `reported` are left out (a check of the caller reports them: the brillouin_scattering error)."""
+    planes = [face for face in mirror_faces(vctx.spec) if face in faces_all and face not in reported]
     if not planes:
         return []
-    held = {'x_lo'} if axis_held else set()
-    for _, entities in enabled_feature_entities(vctx, physics_spec, (*ROLLER_FEATURES, 'fixed')):
-        held.update(entity for entity in entities if entity in faces_all)
+    held = held_faces(vctx, physics_spec, faces_all) | ({'x_lo'} if axis_held else set())
     return [Issue('warning', path, f"{face} is a mirror plane of the model (an EM mirror face or another physics' "
                                    f"symmetry face), where the fields of '{physics_spec.name}' unfold as the even "
                                    'mirror (normal displacement 0), but no Roller, Symmetry or Fixed of it holds that '
@@ -735,17 +744,22 @@ def merged_materials(vctx) -> list:
     merge once per validation."""
     kept = getattr(vctx, '_merged_mechanics_materials', None)
     if kept is None or kept[0] is not vctx.spec.materials:
-        from ...materials import effective_material_data   # lazy: physics -> materials stays out of module import time
-        merged = []
-        for material in vctx.spec.materials:
-            try:
-                properties, _ = effective_material_data(material.library, material.properties, material.dispersion)
-            except (ValueError, TypeError):
-                properties = None
-            merged.append((material, properties))
-        kept = (vctx.spec.materials, merged)
+        kept = (vctx.spec.materials, spec_merged_materials(vctx.spec))
         vctx._merged_mechanics_materials = kept   # a plain attribute of this context (not a dataclass field)
     return kept[1]
+
+
+def spec_merged_materials(spec) -> list:
+    """merged_materials of a spec without the context cache (the estimators: a frozen TimeContext keeps none)."""
+    from ...materials import effective_material_data   # lazy: physics -> materials stays out of module import time
+    merged = []
+    for material in spec.materials:
+        try:
+            properties, _ = effective_material_data(material.library, material.properties, material.dispersion)
+        except (ValueError, TypeError):
+            properties = None
+        merged.append((material, properties))
+    return merged
 
 
 def materials_setting(vctx, names) -> list:

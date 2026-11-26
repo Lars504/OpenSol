@@ -355,7 +355,7 @@ templates, describe. Current state, no changelog.
   physics reads a background physics' solution (root "Physics definitions"). The hook must leave the background
   physics' state as it is (extra solves through `solve_moved_beam`, which touches no solution, monitor or counter),
   since snapshots and results read it afterwards. The solve flow lists the step for the features in
-  `solve_flow._PHYSICS_DRIVE_FEATURES`: a new drive feature joins it.
+  `definition_helpers.PHYSICS_DRIVE_FEATURES`: a new drive feature joins it.
 - Background studies (`StudyType.background_study` 'stationary'): validate accepts a physics supporting the study or
   its background_study, needs >= 1 supporting the study itself and refuses an enabled coupling / material property
   reading a solved physics (`_check_background_study`, remedy `StudyType.feedback_alternative`; exceptions
