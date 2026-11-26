@@ -1,6 +1,7 @@
 """CPU-only feature validation of the 2D EM types (placement on the MeshEstimate as the runtime looks cells up: lines,
 boxes, wall-pinned rows, mode lines, TFSF / mode-source interfaces, source media); physics validation: definition_common."""
 import math
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -11,10 +12,10 @@ from ...core.mirror import MIRROR_SIGNS, plane_wave_mirror_issue
 from ...model.definition_helpers import evaluates_to, validate_points_inside, wavelength_range_issues
 from ...model.expressions import evaluate_scalar
 from ...model.geometry import bounding_box, line_orientation, preview_pixel_centers
-from ...model.schema import PERMITTIVITY_PROPERTY_NAMES, Issue, feature_path
+from ...model.schema import PERMITTIVITY_PROPERTY_NAMES, Issue, feature_path, resolve_values
 from .boundaries import PINNED_FACE_TYPES, WALL_SIGNS
-from .definition_common import (_effective_material, _refractive_index, _window_axes, eigen_only_feature_issues,
-                                raw_settings, resolved_solved_wavelengths)
+from .definition_common import (FOCUSED_BEAM_FEATURE, _effective_material, _refractive_index, _window_axes,
+                                eigen_only_feature_issues, raw_settings, resolved_solved_wavelengths)
 from .focused_beam import FOCUS_TOLERANCE, MIN_SPAN_CELLS, NORMAL_RANGE, continuum_end_levels
 from .memory_estimates import _DFT_SPECTRA
 from .placement import TFSF_POLARIZATION_AXES
@@ -498,29 +499,29 @@ def _distinct_media(vctx, indices, names):
     return [name for medium_names in media.values() for name in medium_names] if len(media) > 1 else []
 
 
-def _end_in_outer_cell(vctx, settings, axis, side, coord, size, bc_types):
-    """True when a line end on a side whose bc is one of bc_types lies in the outermost window cell (without a mesh:
-    on the domain edge)."""
+def _end_in_outer_cell(mesh, settings, axis, side, coord, size, bc_types):
+    """True when a line end on a side whose bc is one of bc_types lies in the outermost window cell of the mesh
+    estimate `mesh` (None: on the domain edge)."""
     if settings.get(f'bc_{axis}_{side}', 'cpml') not in bc_types:
         return False
     axis_index = 'xy'.index(axis)
-    if vctx.mesh is None:
+    if mesh is None:
         edge = 0.0 if side == 'lo' else size[axis_index]
         return abs(coord - edge) <= 1e-9 * size[axis_index]
-    _, edges, first, last = _window_axes(vctx.mesh)[axis_index]
+    _, edges, first, last = _window_axes(mesh)[axis_index]
     return containing_cell(coord, edges, first, last) == (first if side == 'lo' else last)
 
 
-def _end_continues_into_pml(vctx, settings, axis, side, coord, size):
+def _end_continues_into_pml(mesh, settings, axis, side, coord, size):
     """A source line end on a cpml side in the outermost window cell: the line continues through the PML
     (placement.sheet_line)."""
-    return _end_in_outer_cell(vctx, settings, axis, side, coord, size, ('cpml',))
+    return _end_in_outer_cell(mesh, settings, axis, side, coord, size, ('cpml',))
 
 
-def _end_on_mirror(vctx, settings, axis, side, coord, size):
+def _end_on_mirror(mesh, settings, axis, side, coord, size):
     """A source line end on a symmetric / antisymmetric side in the outermost window cell, next to the mirror plane on
     the window edge: the mirror images the line, nothing is cut there."""
-    return _end_in_outer_cell(vctx, settings, axis, side, coord, size, ('symmetric', 'antisymmetric'))
+    return _end_in_outer_cell(mesh, settings, axis, side, coord, size, ('symmetric', 'antisymmetric'))
 
 
 def _beam_placement_messages(vctx, settings, along_axis, span, center, waist, size):
@@ -534,8 +535,9 @@ def _beam_placement_messages(vctx, settings, along_axis, span, center, waist, si
     reach = waist * math.sqrt(-math.log(_BEAM_EDGE_LEVEL))   # distance from the centre where the profile hits the level
     for side, coord in (('lo', start), ('hi', end)):
         level = math.exp(-((coord - center) / waist) ** 2)
-        if level > _BEAM_EDGE_LEVEL and not (_end_continues_into_pml(vctx, settings, along_axis, side, coord, size)
-                                             or _end_on_mirror(vctx, settings, along_axis, side, coord, size)):
+        if level > _BEAM_EDGE_LEVEL and not (
+                _end_continues_into_pml(vctx.mesh, settings, along_axis, side, coord, size)
+                or _end_on_mirror(vctx.mesh, settings, along_axis, side, coord, size)):
             messages.append(f'truncates the beam at {along_axis} = {coord:.4g} m, where the profile is still '
                             f'{level:.2g} of its peak (above {_BEAM_EDGE_LEVEL:g}), so the cut edge diffracts; extend '
                             f'the line to at least {reach:.4g} m from the centre')
@@ -754,7 +756,7 @@ def conducting_sheet_line_issues(vctx, physics_spec, feature_spec, polarization)
             found.append(('info', f'at {normal_axis} = {position:.4g} m: {label} pins the field on {where}, so the '
                                   f'sheet has no effect; {keep}'))
         continued = [side for side, coord in (('lo', span[0]), ('hi', span[1]))
-                     if _end_continues_into_pml(vctx, settings, along_axis, side, coord, size)]
+                     if _end_continues_into_pml(vctx.mesh, settings, along_axis, side, coord, size)]
         if continued:
             found.append(('info', f"continues through the {' and '.join(f'{along_axis}_{side}' for side in continued)} "
                                   'PML (its end lies in the outermost window cell next to a cpml face), so it acts as '
@@ -944,22 +946,15 @@ def _focused_beam_messages(vctx, physics_spec, line, settings, polarization, val
     focus = (values['focus_x'], values['focus_y'])
     focus_along, focus_normal = focus['xy'.index(along_axis)], focus['xy'.index(normal_axis)]
     sign = 1.0 if values['direction'] == 'positive' else -1.0
-    polarization_axis = 'z' if polarization == 'ez' else along_axis   # the incident E
     mesh = vctx.mesh
     tensor = mesh is not None and getattr(mesh, 'kind', 'tensor') == 'tensor'   # triangles: refused by the grids
     axes = dict(zip('xy', _window_axes(mesh))) if tensor else None
     along_size = size['xy'.index(along_axis)]
     mirror_ends = set()
-    for side, coord in (('lo', start), ('hi', end)):
-        if not _end_on_mirror(vctx, settings, along_axis, side, coord, size):
-            continue
-        face = f'{along_axis}_{side}'
-        if plane_wave_mirror_issue(face, MIRROR_SIGNS[settings[f'bc_{face}']], normal_axis, polarization_axis):
-            wanted = ('symmetric' if plane_wave_mirror_issue(face, 1, normal_axis, polarization_axis) is None
-                      else 'antisymmetric')
-            messages.append(('error', f'ends on the {face} mirror plane, about which the beam (E along '
-                                      f'{polarization_axis}) is even, so bc_{face} must be {wanted}; else end the line '
-                                      'at least one cell before the plane'))
+    for side, face, problem in _focused_beam_mirror_ends(mesh, settings, along_axis, normal_axis, polarization,
+                                                         (start, end), size):
+        if problem is not None:
+            messages.append(('error', problem))
             continue
         mirror_ends.add(side)
         if axes is not None:   # the meshed window edge (a uniform mesh may round the size up) and its cell
@@ -1001,17 +996,51 @@ def _focused_beam_messages(vctx, physics_spec, line, settings, polarization, val
             neighbours = [0.5 * (edges[row] + edges[row + 1]) for row in rows if row != line_cell]
             messages += _focused_beam_row_messages(vctx, physics_spec, along_axis, position, (start, end),
                                                    neighbours, (float(edges[rows[0]]), float(edges[rows[-1] + 1])))
-    index = _line_medium_index(vctx, along_axis, position, (start, end), physics_type)
+    aperture_error, end_messages = _focused_beam_end_messages(vctx, along_axis, position, (start, end), focus, sign,
+                                                              values, physics_type, wavelengths, mirror_ends)
+    if aperture_error is not None:
+        messages.append(('error', aperture_error))
+    return messages + end_messages + upstream_focus_messages(sign, focus_normal, position, normal_axis)
+
+
+def _focused_beam_mirror_ends(mesh, settings, along_axis, normal_axis, polarization, span, size):
+    """[(side, face, parity error text or None)] of the ends of a 2D focused-beam line on a mirror plane (in the
+    outermost window cell of the mesh estimate `mesh`; None: on the domain edge)."""
+    polarization_axis = 'z' if polarization == 'ez' else along_axis   # the incident E
+    ends = []
+    for side, coord in zip(('lo', 'hi'), span):
+        if not _end_on_mirror(mesh, settings, along_axis, side, coord, size):
+            continue
+        face = f'{along_axis}_{side}'
+        problem = None
+        if plane_wave_mirror_issue(face, MIRROR_SIGNS[settings[f'bc_{face}']], normal_axis, polarization_axis):
+            wanted = ('symmetric' if plane_wave_mirror_issue(face, 1, normal_axis, polarization_axis) is None
+                      else 'antisymmetric')
+            problem = (f'ends on the {face} mirror plane, about which the beam (E along {polarization_axis}) is even, '
+                       f'so bc_{face} must be {wanted}; else end the line at least one cell before the plane')
+        ends.append((side, face, problem))
+    return ends
+
+
+def _focused_beam_end_messages(vctx, along_axis, position, span, focus, sign, values, physics_type, wavelengths,
+                               mirror_ends):
+    """(numerical_aperture error text or None, [(level, text)] of the line-end and focus-off-the-line warnings) of a
+    2D focused-beam line for the drawing-frame focus (x, y) [m]: the continuum beam at focused_beam_end_wavelengths,
+    sides in mirror_ends exempt; no line-end warning after the aperture error (or with an unknown line index)."""
+    start, end = span
+    focus_along, focus_normal = focus['xy'.index(along_axis)], focus[1 - 'xy'.index(along_axis)]
+    index = _line_medium_index(vctx, along_axis, position, span, physics_type)
     aperture = values['numerical_aperture']
+    aperture_error = None
+    messages = []
     if aperture is not None and math.isfinite(index) and aperture > index:
-        messages.append(('error', f'has numerical_aperture {aperture:g} above the index {index:.4g} of the medium at '
-                                  'the line (NA = n sin(theta) <= n); lower it'))
-        aperture = None
-    if math.isfinite(index):
+        aperture_error = (f'has numerical_aperture {aperture:g} above the index {index:.4g} of the medium at the line '
+                          '(NA = n sin(theta) <= n); lower it')
+    elif math.isfinite(index):
         worst = {}
         for wavelength in focused_beam_end_wavelengths(wavelengths):
             levels = continuum_end_levels(2.0 * math.pi * float(C0) / wavelength, index, values['waist'], aperture,
-                                          (start, end), position, focus_along, focus_normal, sign)
+                                          span, position, focus_along, focus_normal, sign)
             for side, level in zip(('lo', 'hi'), levels):
                 if side not in mirror_ends and math.isfinite(level):
                     worst[side] = max(worst.get(side, 0.0), level)
@@ -1026,7 +1055,123 @@ def _focused_beam_messages(vctx, physics_spec, line, settings, polarization, val
         messages.append(('warning', f'has its focus at {along_axis} = {focus_along:.4g} m, off the line ({start:.4g} '
                                     f'to {end:.4g} m), so the line launches only the edge of the beam; put the focus '
                                     'over the line'))
-    return messages + upstream_focus_messages(sign, focus_normal, position, normal_axis)
+    return aperture_error, messages
+
+
+# ---- public helpers of brillouin_scattering validation (physics/mechanics/definition_brillouin) ----
+_FOCUSED_BEAM_POLARIZATIONS = {'em_fdfd_ez': 'ez', 'em_fdfd_hz': 'hz', 'em_fdfd_bor': None}   # None: the BOR beam
+_DIRECTION_SIGNS = {'positive': 1, 'negative': -1}
+
+
+@dataclass(frozen=True)
+class FocusedBeamLineBound:
+    """A focused_beam line as validation sees it (focused_beam_lines): feature and line object names, the normal axis
+    'x' | 'y' of the drawing frame (the beam axis), the direction sign +1 / -1 along it (None when the direction does
+    not resolve), the line position along the normal [m] and total_field_from [m]: the coordinate along the normal from
+    which every drive-field sample and its interpolation stencil is total field (the downstream edge of the line
+    cell; None without a tensor mesh estimate or a sign). Coordinates in the drawing frame (window lower edge 0)."""
+    feature: str
+    line: str
+    normal_axis: str
+    sign: int | None
+    position: float
+    total_field_from: float | None
+
+
+def _focused_beam_features(vctx, physics_spec):
+    """[(feature spec, its FeatureType)] of the enabled focused_beam features of an em_fdfd_ez / _hz / em_fdfd_bor
+    physics spec; ValueError for another physics type."""
+    if physics_spec.type not in _FOCUSED_BEAM_POLARIZATIONS:
+        raise ValueError(f"focused beams belong to {', '.join(_FOCUSED_BEAM_POLARIZATIONS)}, not to physics "
+                         f"'{physics_spec.name}' of type {physics_spec.type}")
+    physics_type = vctx.registry.physics_type(physics_spec.type)
+    return [(feature, physics_type.feature_type(feature.type)) for feature in physics_spec.features
+            if feature.enabled and feature.type == FOCUSED_BEAM_FEATURE]
+
+
+def _resolved_lines(vctx, feature):
+    """[(shape, (along axis, normal axis, position, (start, end)))] of the axis-aligned line objects of a feature
+    inside the domain (the others are reported at the feature)."""
+    size = vctx.domain_size
+    if size is None:
+        return []
+    lines = []
+    for shape in _selected_shapes(vctx, feature, 'line'):
+        line_axes = _line_axes(shape.values, size)
+        if line_axes is not None and not _outside_message(_shape_corners(shape), size):
+            lines.append((shape, line_axes))
+    return lines
+
+
+def focused_beam_lines(vctx, physics_spec, mesh) -> list:
+    """[FocusedBeamLineBound] of the enabled focused_beam features of an optical physics spec (em_fdfd_ez / _hz /
+    em_fdfd_bor; ValueError for another type), one per axis-aligned line object inside the domain. mesh = THAT
+    physics' mesh estimate (vctx.meshes of its mesh; never vctx.mesh of a caller validating another physics):
+    total_field_from takes the line cell by the runtime rule (containing_cell on its window edges) and is its
+    downstream edge: from there on the line row's own values (ez / BOR E_r, u at the row centre), the faces past it
+    (hz E_x / E_y from the curl of two total-field cells; BOR E_z on its z edges) and every interpolation between
+    neighbouring Yee points are total field, never the upstream row or the interface face (2D hz: the curl across
+    it mixes a scattered-field cell)."""
+    tensor = mesh is not None and getattr(mesh, 'kind', 'tensor') == 'tensor'
+    axes = dict(zip('xy', _window_axes(mesh))) if tensor else None
+    lines = []
+    for feature, feature_type in _focused_beam_features(vctx, physics_spec):
+        params = feature.params if isinstance(feature.params, dict) else {}
+        direction_default = next(param.default for param in feature_type.params if param.name == 'direction')
+        direction = params.get('direction', direction_default)
+        sign = _DIRECTION_SIGNS.get(direction) if isinstance(direction, str) else None
+        for shape, (_, normal_axis, position, _) in _resolved_lines(vctx, feature):
+            bound = None
+            if axes is not None and sign is not None:
+                _, edges, first, last = axes[normal_axis]
+                cell = containing_cell(position, edges, first, last)
+                bound = float(edges[cell + 1] if sign > 0 else edges[cell])
+            lines.append(FocusedBeamLineBound(feature=feature.name, line=shape.name, normal_axis=normal_axis,
+                                              sign=sign, position=float(position), total_field_from=bound))
+    return lines
+
+
+def focused_beam_scan_messages(vctx, physics_spec, feature_spec, mesh, offset=(0.0, 0.0)) -> list:
+    """[(level, "line '<name>' <text>")] of the focus-dependent warnings of one focused_beam feature (beam above its
+    end level at an open line end; 2D also a focus off the line) for its focus moved by the drawing-frame offset
+    (dx, dy) [m] (em_fdfd_bor: (0, dz); a radial offset gives [], it is refused elsewhere): the same continuum beam,
+    thresholds and wavelengths (focused_beam_end_wavelengths) as the beam's own validation, whose messages are these at
+    offset (0, 0). brillouin_scattering validation calls it once per scan position. mesh = the optical physics' own
+    mesh estimate (as focused_beam_lines); [] when the feature values do not resolve (reported at the beam), no line
+    warning after a numerical_aperture error (reported at the beam)."""
+    dx, dy = (float(value) for value in offset)
+    feature_type = next((found for feature, found in _focused_beam_features(vctx, physics_spec)
+                         if feature is feature_spec), None)
+    if feature_type is None:
+        raise ValueError(f"'{feature_spec.name}' is not an enabled focused_beam of physics '{physics_spec.name}'")
+    polarization = _FOCUSED_BEAM_POLARIZATIONS[physics_spec.type]
+    try:
+        values = resolve_values(feature_type.params, feature_spec.params if isinstance(feature_spec.params, dict)
+                                else {}, vctx.parameters)
+    except ValueError:   # reported at the beam
+        return []
+    focus_names = ('focus_z',) if polarization is None else ('focus_x', 'focus_y')
+    if values['direction'] not in _DIRECTION_SIGNS or any(values[name] is None for name in focus_names):
+        return []   # reported at the beam
+    physics_type = vctx.registry.physics_type(physics_spec.type)
+    wavelengths = resolved_solved_wavelengths(vctx, physics_spec, physics_type)
+    tensor_mesh = mesh if mesh is not None and getattr(mesh, 'kind', 'tensor') == 'tensor' else None
+    messages = []
+    for shape, (along_axis, normal_axis, position, span) in _resolved_lines(vctx, feature_spec):
+        if polarization is None:   # em_fdfd_bor (lazy: definition_bor imports this module)
+            from .definition_bor import bor_focused_beam_scan_messages
+            found = bor_focused_beam_scan_messages(vctx, along_axis, position, span, values, physics_type,
+                                                   wavelengths, (dx, dy))
+        else:
+            sign = float(_DIRECTION_SIGNS[values['direction']])
+            mirror_ends = {side for side, _, problem in _focused_beam_mirror_ends(
+                tensor_mesh, raw_settings(physics_spec), along_axis, normal_axis, polarization, span,
+                vctx.domain_size) if problem is None}
+            _, found = _focused_beam_end_messages(vctx, along_axis, position, span,
+                                                  (values['focus_x'] + dx, values['focus_y'] + dy), sign, values,
+                                                  physics_type, wavelengths, mirror_ends)
+        messages.extend((level, f"line '{shape.name}' {text}") for level, text in found)
+    return messages
 
 
 def focused_beam_end_wavelengths(wavelengths):

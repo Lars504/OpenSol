@@ -395,9 +395,13 @@ type's vocabulary and refusals are in its help texts and validation.
   (`focused_beam.DriveFields`, host window values on each component's own Yee points with their `grids`: hz E_x / E_y
   on their faces, edge faces included, never a face mean along the beam, which the Brillouin drive would read as a
   cos(k h / 2) amplitude loss; staircase cell eps). A new driven path through `_solve` keeps `_zero_fixed_rows` /
-  `_fill_wall_rows(solution=)` shared with it. Validation (`make_validate_focused_beam`) reports every runtime refusal first; estimators book the
-  scan solves through `definition_common.brillouin_scan_solves` / `memory_estimates.brillouin_drive_items`. nlfd does
-  not offer it (absent from its `_CHANNEL_FEATURE_NAMES`). Self-tests selftests_focused_beam, em_fdfd_cpu_gpu.
+  `_fill_wall_rows(solution=)` shared with it. Validation (`make_validate_focused_beam`) reports every runtime refusal
+  first; estimators book the scan solves through `definition_common.brillouin_scan_solves` /
+  `memory_estimates.brillouin_drive_items`. brillouin_scattering validation takes the beam lines and their
+  total-field bound (the downstream edge of the line cell) from `definition_feature_validation.focused_beam_lines`
+  and the line-end / off-the-line warnings of each scan position from `focused_beam_scan_messages` (the beams' own
+  messages are its offset (0, 0); 2D and BOR), both on the optics' own mesh estimate. nlfd does not offer it (absent
+  from its `_CHANNEL_FEATURE_NAMES`). Self-tests selftests_focused_beam, em_fdfd_cpu_gpu.
 - NLFD-chi (physics/nlfd): one FDFDPhysics per harmonic channel; nonlinear terms are sources whose `add_to_rhs` /
   `face_currents` read other channels' solutions (nothing assumes the rhs constant beyond `_solution_dirty`). Its
   channel features wrap the FDFD FeatureTypes: renaming an FDFD feature param, or a validate resolving FDFD params

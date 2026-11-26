@@ -579,31 +579,59 @@ def _focused_beam_line_messages(vctx, physics_spec, line, values, physics_type, 
             band = (float(z_edges[rows[0]]), float(z_edges[rows[-1] + 1]))
             messages += _focused_beam_row_messages(vctx, physics_spec, 'x', position, (start, end), neighbours, band)
             messages += _line_medium_messages(vctx, position, (start, end), neighbours)
-    index = _line_medium_index(vctx, 'x', position, (start, end), physics_type)
+    aperture_error, end_messages, complete = _beam_end_messages(vctx, position, (start, end), values, physics_type,
+                                                                wavelengths, values['focus_z'])
+    if aperture_error is not None:
+        return messages + [('error', aperture_error)]
+    messages += end_messages
+    if not complete:
+        return messages
+    sign = 1.0 if values['direction'] == 'positive' else -1.0
+    return messages + upstream_focus_messages(sign, values['focus_z'], position, 'z')
+
+
+def _beam_end_messages(vctx, position, span, values, physics_type, wavelengths, focus_z):
+    """(numerical_aperture error text or None, [(level, text)] of the line-end check, complete) of a BOR focused-beam
+    line for the focus at drawing-frame z = focus_z [m]: the continuum beam at focused_beam_end_wavelengths; complete
+    False after a quadrature error (an error message: the line is far too long for the beam); nothing without a known
+    line index or aperture."""
+    end = span[1]
+    index = _line_medium_index(vctx, 'x', position, span, physics_type)
     aperture = values['numerical_aperture']
     sign = 1.0 if values['direction'] == 'positive' else -1.0
-    if aperture is not None and math.isfinite(index):
+    if aperture is None or not math.isfinite(index):
+        return None, [], True
+    try:
+        aperture_sine(aperture, index)
+    except ValueError:
+        return (f'has numerical_aperture {aperture:g}, not below the index {index:.4g} of the medium at the line (NA = '
+                'n sin(theta_max), theta_max < 90 deg); lower it'), [], False
+    worst = 0.0
+    for wavelength in focused_beam_end_wavelengths(wavelengths):
         try:
-            aperture_sine(aperture, index)
-        except ValueError:
-            messages.append(('error', f'has numerical_aperture {aperture:g}, not below the index {index:.4g} of the '
-                                      'medium at the line (NA = n sin(theta_max), theta_max < 90 deg); lower it'))
-            return messages
-        worst = 0.0
-        for wavelength in focused_beam_end_wavelengths(wavelengths):
-            try:
-                level = line_end_level(2.0 * math.pi * float(C0) / wavelength, index, aperture, values['fill_factor'],
-                                       end, position - values['focus_z'], sign)
-            except ValueError as exc:   # a line far too long for its quadrature
-                messages.append(('error', str(exc)))
-                return messages
-            worst = max(worst, level) if math.isfinite(level) else worst
-        if worst > _BEAM_END_LEVEL:
-            messages.append(('warning', f'stops at r = {end:.4g} m where the beam is still {worst:.2g} of its peak on '
-                                        f'the line (above {_BEAM_END_LEVEL:g}; continuum beam at the solved '
-                                        'wavelengths), so the cut edge launches a diffracted wave and light leaks '
-                                        'upstream; lengthen the line, or lower fill_factor (softer pupil edge)'))
-    return messages + upstream_focus_messages(sign, values['focus_z'], position, 'z')
+            level = line_end_level(2.0 * math.pi * float(C0) / wavelength, index, aperture, values['fill_factor'],
+                                   end, position - focus_z, sign)
+        except ValueError as exc:   # a line far too long for its quadrature
+            return None, [('error', str(exc))], False
+        worst = max(worst, level) if math.isfinite(level) else worst
+    if worst <= _BEAM_END_LEVEL:
+        return None, [], True
+    return None, [('warning', f'stops at r = {end:.4g} m where the beam is still {worst:.2g} of its peak on the line '
+                              f'(above {_BEAM_END_LEVEL:g}; continuum beam at the solved wavelengths), so the cut '
+                              'edge launches a diffracted wave and light leaks upstream; lengthen the line, or lower '
+                              'fill_factor (softer pupil edge)')], True
+
+
+def bor_focused_beam_scan_messages(vctx, along_axis, position, span, values, physics_type, wavelengths, offset):
+    """[(level, text)] of the line-end check of one BOR focused-beam line (resolved feature values) for its focus moved
+    by the drawing-frame offset (0, dz) [m]: definition_feature_validation.focused_beam_scan_messages (the public entry
+    point); [] for a vertical line or a radial offset (refused elsewhere) and after a numerical_aperture error."""
+    dr, dz = offset
+    if along_axis != 'x' or dr != 0.0:
+        return []
+    _, end_messages, _ = _beam_end_messages(vctx, position, span, values, physics_type, wavelengths,
+                                            values['focus_z'] + dz)
+    return end_messages
 
 
 def _validate_focused_beam(vctx, physics_spec, feature_spec, values):
