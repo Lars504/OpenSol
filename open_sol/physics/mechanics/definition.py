@@ -38,6 +38,8 @@ from ...solvers.pcg import workspace_bytes
 from . import definition3d
 from .definition3d import eigen_host_direct, host_factor_items
 from .coupling import make_temperature_rise_transform
+from .definition_brillouin import (BRILLOUIN_SCATTERING_FEATURE, brillouin_issues, brillouin_memory_items,
+                                   brillouin_time_items)
 from .definition_bloch2d import (BAND_TEMPLATE_2D, bloch_issues_2d, complex_bloch_pencil_2d, periodic_axes_2d,
                                 periodic_params_2d, solver_periodic_arguments, static_periodic_cell,
                                 trivial_bloch_phase_2d)
@@ -1010,6 +1012,7 @@ def _validate_solid(vctx, physics_spec, settings_values):
     issues.extend(model_mirror_issues(vctx, physics_spec, path, FACES, axis_held=is_axisymmetric(settings_values)))
     if triangles:
         issues.extend(_triangle_issues(vctx, physics_spec, settings_values, path))
+        issues.extend(brillouin_issues(vctx, physics_spec, settings_values))
         element_name = f"{settings_values.get('discretization', 'quadratic')} triangle"
     else:
         issues.extend(cg_solver_issues(vctx, physics_spec, path))
@@ -1266,6 +1269,13 @@ def _fem_memory_estimate(settings_values, mesh, context):
             factors.append(('frequency response cuDSS factor', unknowns, pencil_entries, 16,
                             scaled_fill(fill, viscoelastic), linear_back_end == 'cudss_mixed'))
         host_items.extend(reduced_sweep_memory_items(context, unknowns, pencil_entries))
+        # brillouin_scattering drives: columns, functional weights, bind / reference temporaries (definition_brillouin)
+        drive_host, drive_run, drive_transient = brillouin_memory_items(
+            context, settings_values, mesh, unknowns=unknowns, local=local, components=components,
+            device=not host_factor)
+        host_items += drive_host
+        run_items += drive_run
+        transient_items += drive_transient
     else:
         if host_factor:
             host_items.extend(host_factor_items(linear_back_end, 'SuperLU L + U factors (float64, heuristic)',
@@ -1814,12 +1824,17 @@ def _fem_time_estimate(settings_values, mesh, context):
                      loss=bool(context.material_sets(LOSS_ARRAYS[0]))),
                  *reduced_sweep_time_items(sweep, pencil_unknowns))
         unknowns, entries = pencil_unknowns, pencil_entries   # the factorised saddle point (mixed)
+        # brillouin_scattering drives: their bind, readouts, references and fits; the extra drive columns are more
+        # solves on each frequency's factor (direct sweeps only: validate)
+        drives, column_solves = brillouin_time_items(context, settings_values, mesh, unknowns=unknowns, local=local,
+                                                     components=components)
         work = context.solver_work('linear', unknowns=unknowns, nnz=entries, value_bytes=2 * FLOAT64_BYTES,
-                                   dimensions=2, solves=sweep['solves'], solves_kind=sweep['solves_kind'],
-                                   factorizations=sweep['factorizations'],
+                                   dimensions=2, solves=sweep['solves'] + column_solves,
+                                   solves_kind=sweep['solves_kind'], factorizations=sweep['factorizations'],
                                    factorizations_kind=sweep['factorizations_kind'], device_values=True, **scales)
-        return te.combine((te.TimeEstimate(items), work, *prestress(with_loads=False), *_reduced_sweep_extra_time(
-            sweep, (te.HostSolve(unknowns, 2, True, scale=_FEM_FILL_FACTOR),))))
+        return te.combine((te.TimeEstimate(items), drives, work, *prestress(with_loads=False),
+                           *_reduced_sweep_extra_time(sweep, (te.HostSolve(unknowns, 2, True,
+                                                                           scale=_FEM_FILL_FACTOR),))))
     per_step, follows, outer_solves, kind, assemblies, assemblies_kind, solves = _static_counts(settings_values, context)
     items = (te.TimeItem('stiffness assembly', 'assembly', assemblies, assemblies_kind, assembly_ops,
                          per_step=per_step and follows),
@@ -2141,6 +2156,7 @@ _FEATURES = (
     replace(resonance_table_feature('nearest target_frequency first'), grids=_BOTH_GRIDS),
     thermoelastic_damping_feature(_BOTH_GRIDS, 'plane strain, plane stress or axisymmetric'),
     OPTOMECHANICAL_COUPLING_FEATURE,
+    BRILLOUIN_SCATTERING_FEATURE,
     FeatureType('electrode', 'Electrode', 'boundary_condition', 'boundary', allow_interior=False,
                 params=_ELECTRODE_PARAMS, result_kind='table',
                 summary='Puts an electrode on the selected domain edges of a piezoelectric solid: a fixed voltage, '
@@ -2202,7 +2218,8 @@ SOLID_MECHANICS = PhysicsType(
                 'target_frequency > 0 and in frequency responses, frequency_probe, complex support reactions, '
                 'pml_<face>, azimuthal_order, the energy densities, the shear_modulus / bulk_modulus route, '
                 'viscoelastic moduli (viscosity, relaxation branches: see shear_relaxation_modulus_1), the setting '
-                'formulation and the pressure outputs; not there: piezoelectric (and admittance), guided '
+                'formulation, the pressure outputs and brillouin_scattering (spontaneous Brillouin spectra driven by '
+                'focused-beam optics on a tensor mesh); not there: piezoelectric (and admittance), guided '
                 f'modes, {STRAIN_OPTIC_COUPLING}, optomechanics except axisymmetric with em_fdfd_bor optics. Studies: '
                 'stationary (after the physics it reads); time_dependent quasi-static (re-solves when a material, '
                 'support, load or coupled input changed; no inertia); eigenfrequency: undamped modes K u = omega^2 M u '
@@ -2223,7 +2240,8 @@ SOLID_MECHANICS = PhysicsType(
                 'cos parts at phi = 0; the axis holds u_z = 0 and ties u_phi = -u_r at m = 1, holds all three at m >= '
                 '2; m = 1 keeps the sideways translation and tilt as rigid motions, m >= 2 none (supports optional); '
                 'stress_stiffening takes the initial stress alone; a frequency response is driven by prescribed '
-                'displacements only (u_z of the displacement features is U_phi; loads are a validation error), its '
+                'displacements (u_z of the displacement features is U_phi; loads are a validation error) or a '
+                'brillouin_scattering drive (orders 0 and 2) only, its '
                 'reactions F_x = sum R_r - sum R_phi at m = 1. strain_energy_density / kinetic_energy_density '
                 '(triangles, J/m^3, not in state()): a static solve 1/2 sigma : eps_el (no initial stress) and 0, a '
                 'shown mode or response the time averages 1/4 Re(sigma : eps_el*) and 1/4 rho omega^2 |u|^2 (azimuthal '
@@ -2460,11 +2478,12 @@ def _selftest_cases(em_types):
     from .selftests_segment_load import SEGMENT_LOAD_CASES
     from .selftests_thermoelastic import THERMOELASTIC_CASES
     from .selftests_viscoelastic import VISCOELASTIC_CASES
+    from .selftests_brillouin_drive import BRILLOUIN_DRIVE_CASES
     return (SELFTEST_CASES + SEGMENT_LOAD_CASES + FORMULATION_CASES + EIGENFREQUENCY_CASES + EIGEN_SEARCH_CASES
             + GUIDED_MODES_CASES + PIEZO_CASES + ANISOTROPY_CASES + FREQUENCY_RESPONSE_CASES + FEM_CASES + PRESTRESS_CASES
             + PRESTRESS_STRING_CASES + PML_2D_CASES + AZIMUTHAL_CASES + NONLINEAR_CASES + REDUCED_SWEEP_CASES
-            + THERMOELASTIC_CASES + BLOCH_2D_CASES + VISCOELASTIC_CASES + optomechanics_cases(em_types)
-            + backend_cases(em_types))
+            + THERMOELASTIC_CASES + BLOCH_2D_CASES + VISCOELASTIC_CASES + BRILLOUIN_DRIVE_CASES
+            + optomechanics_cases(em_types) + backend_cases(em_types))
 
 
 def register(registry):
