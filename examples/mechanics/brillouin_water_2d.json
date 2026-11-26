@@ -1,369 +1,113 @@
 {
- "title": "Spontaneous Brillouin spectrum of water under a focused sheet beam (frequency response, em_fdfd_ez drive, analytic)",
- "description": "Spontaneous Brillouin scattering of water at 532 nm by the fluctuation-dissipation theorem: an em_fdfd_ez focused_beam (waist 1 um, 1 W/m, toward +y from a line just below the drive rectangle) in library water_532nm on a uniform 12.5 nm tensor mesh (31.9 cells per wavelength in water) is solved first as the background of the frequency_response study; its non-conjugated field product E_z E_z, times the photoelastic p12 = 0.31, drives a plane-strain solid of the same water (formulation mixed P2 / P1: a compressible viscous liquid, G* = j omega eta, K* = K + j omega eta_b) inside the 2.4 x 4 um drive rectangle around the focus (30 nm triangles there, 80 nm elsewhere, fixed walls 1.1 um or more away). brillouin_scattering reports psd(f) = (2 k_B T / Omega)(-Im w^H u) / L per sideband (L = axial_length 10 um) at 21 frequencies over 6.4 - 8.4 GHz, and psd_reference with reference homogeneous: the plane-wave sum of the same drive in an unbounded medium (zero padding chosen from the phonon attenuation, periodic images below 1e-3).\nAnalytic: f_B = 2 n v / lambda0 = 7.439 GHz (n 1.335, v = sqrt(K / rho) = 1482.3 m/s) and the intrinsic linewidth Gamma / (2 pi) = q^2 (4/3 eta + eta_b) / (2 pi rho) = 0.656 GHz at q = 4 pi n / lambda0. The drive rectangle cuts the beam to a length L_d = 4 um, 5.6 attenuation lengths 2 v / Gamma: the line is the Lorentzian-in-q phonon line convolved with the sinc^2 of the cut, s(x) = 1 / (1 + x^2) - eps (1 - x^2) / (1 + x^2)^2 (x = detuning / half width, eps = 2 v / (Gamma L_d) = 0.18, exp(-1 / eps) = 4e-3 dropped), whose half-maximum width is fwhm_box = 1.237 x 0.656 GHz = 0.811 GHz. The wide beam (Rayleigh range 7.9 um) keeps the drive a near plane wave: its q is within ~1e-3 of 2 n k0 (pupil pairs ~1e-3 lower, Yee dispersion (k dx)^2 / 24 = 1.6e-3 higher).\nDerived values tab: shift_fem (Lorentz-fit centre of psd) against the DHO peak sqrt(f_B^2 - fwhm_law^2 / 2) = 7.425 GHz (5e-3), fwhm_fem (half-maximum width of psd) against fwhm_box (3e-2: the beam taper along the drive, ~0.5 %, the Lorentzian-in-q kernel vs the damped oscillator, ~1 %, and the sampling of the half-maximum crossings), shift_ratio and fwhm_ratio against the homogeneous reference (2e-3, 1.5e-2: the solid's P2 / P1 dispersion). Derived curves tab: psd_over_homogeneous (psd / psd_reference over the band, dotted 1; 4e-2: mainly the solid's P2 / P1 dispersion on the flanks; the drive samples the optical fields phase-corrected, which avoids the (q dx)^2 / 12 loss of plain bilinear interpolation). Curves & tables tab: solid.brillouin (psd, psd_stokes, psd_anti_stokes, psd_reference, psd_db; extras shift, fwhm, gamma from the damped-oscillator fit, reference_shift, scattered_fraction, q_mean, incident_power). Cost: one optical factorisation and 21 solid factorisations of ~2e5 unknowns.",
- "version": 2,
- "solver_defaults": {
-  "backend": "cpu"
- },
- "parameters": [
-  {
-   "name": "lambda0",
-   "expression": 5.32e-07,
-   "description": "vacuum wavelength [m]"
-  },
-  {
-   "name": "n_w",
-   "expression": "sqrt(1.78223)",
-   "description": "refractive index of water_532nm (its eps_r)"
-  },
-  {
-   "name": "rho_w",
-   "expression": 998.2,
-   "description": "density [kg/m^3] (the library value)"
-  },
-  {
-   "name": "K_w",
-   "expression": 2193300000.0,
-   "description": "adiabatic bulk modulus [Pa] (the library value)"
-  },
-  {
-   "name": "mu_w",
-   "expression": 0.0010016,
-   "description": "shear viscosity [Pa s] (the library value)"
-  },
-  {
-   "name": "mub_w",
-   "expression": 0.0028,
-   "description": "bulk viscosity [Pa s] (the library value)"
-  },
-  {
-   "name": "v_w",
-   "expression": "sqrt(K_w/rho_w)",
-   "description": "longitudinal sound speed [m/s]"
-  },
-  {
-   "name": "dx_o",
-   "expression": "12.5*nm",
-   "description": "optical cell (31.9 cells per lambda0 / n)"
-  },
-  {
-   "name": "h_drive",
-   "expression": "30*nm",
-   "description": "triangle size in the drive rectangle (lambda0 / (12 n) = 33 nm)"
-  },
-  {
-   "name": "h_out",
-   "expression": "80*nm",
-   "description": "triangle size elsewhere"
-  },
-  {
-   "name": "W_dom",
-   "expression": "624*dx_o",
-   "description": "window width (7.8 um: the line holds the beam to 6.5e-7 of its peak)"
-  },
-  {
-   "name": "H_dom",
-   "expression": "496*dx_o",
-   "description": "window height (6.2 um)"
-  },
-  {
-   "name": "x_d0",
-   "expression": "2.7*um",
-   "description": "drive rectangle left edge (on an optical cell face)"
-  },
-  {
-   "name": "x_d1",
-   "expression": "5.1*um",
-   "description": "drive rectangle right edge"
-  },
-  {
-   "name": "y_d0",
-   "expression": "1.1*um",
-   "description": "drive rectangle bottom edge"
-  },
-  {
-   "name": "y_d1",
-   "expression": "5.1*um",
-   "description": "drive rectangle top edge"
-  },
-  {
-   "name": "L_d",
-   "expression": "y_d1 - y_d0",
-   "description": "drive length along the beam [m]"
-  },
-  {
-   "name": "y_line",
-   "expression": "83.5*dx_o",
-   "description": "beam line height: the centre of window row 83, just below the drive (total-field side)"
-  },
-  {
-   "name": "w0",
-   "expression": "1*um",
-   "description": "focal waist (1/e field radius); Rayleigh range pi n w0^2 / lambda0 = 7.9 um"
-  },
-  {
-   "name": "x_f",
-   "expression": "W_dom/2",
-   "description": "focus x"
-  },
-  {
-   "name": "y_f",
-   "expression": "(y_d0 + y_d1)/2",
-   "description": "focus y (the drive centre)"
-  },
-  {
-   "name": "q_B",
-   "expression": "4*pi*n_w/lambda0",
-   "description": "backscattering phonon wavenumber 2 n k0 [1/m]"
-  },
-  {
-   "name": "f_B",
-   "expression": "2*n_w*v_w/lambda0",
-   "description": "Brillouin shift 2 n v / lambda0 [Hz]"
-  },
-  {
-   "name": "Gam",
-   "expression": "q_B**2*(4/3*mu_w + mub_w)/rho_w",
-   "description": "phonon damping rate Gamma [1/s]"
-  },
-  {
-   "name": "fwhm_law",
-   "expression": "Gam/(2*pi)",
-   "description": "intrinsic linewidth (FWHM) of one plane-wave phonon [Hz]"
-  },
-  {
-   "name": "f_peak",
-   "expression": "sqrt(f_B**2 - fwhm_law**2/2)",
-   "description": "peak of the damped-oscillator line [Hz]"
-  },
-  {
-   "name": "eps_d",
-   "expression": "2*v_w/(Gam*L_d)",
-   "description": "attenuation length 2 v / Gamma over the drive length"
-  },
-  {
-   "name": "fwhm_box",
-   "expression": "fwhm_law*sqrt(((1 + eps_d) + sqrt(1 - 2*eps_d + 5*eps_d**2))/(1 - eps_d) - 1)",
-   "description": "half-maximum width of the line cut by the drive length [Hz] (description)"
-  },
-  {
-   "name": "f_lo",
-   "expression": 6400000000.0,
-   "description": "lowest study frequency [Hz]"
-  },
-  {
-   "name": "f_hi",
-   "expression": 8400000000.0,
-   "description": "highest study frequency [Hz]"
-  }
- ],
- "domain": {
-  "size_x": "W_dom",
-  "size_y": "H_dom"
- },
- "geometry": [
-  {
-   "name": "beam_line",
-   "kind": "line",
-   "params": {
-    "x0": 0.0,
-    "y0": "y_line",
-    "x1": "W_dom",
-    "y1": "y_line"
-   }
-  },
-  {
-   "name": "drive",
-   "kind": "rectangle",
-   "params": {
-    "x0": "x_d0",
-    "y0": "y_d0",
-    "x1": "x_d1",
-    "y1": "y_d1"
-   }
-  }
- ],
- "selections": [],
- "materials": [
-  {
-   "name": "water",
-   "library": "water_532nm",
-   "properties": {},
-   "dispersion": null,
-   "selection": [
-    "all"
-   ]
-  }
- ],
- "physics": [
-  {
-   "name": "optics",
-   "type": "em_fdfd_ez",
-   "settings": {
-    "wavelength": "lambda0"
-   },
-   "features": [
+  "title": "Spontaneous Brillouin spectrum of water under a focused sheet beam (frequency response, em_fdfd_ez drive, analytic)",
+  "description": "Spontaneous Brillouin scattering of water at 532 nm by the fluctuation-dissipation theorem: an em_fdfd_ez focused_beam (waist 1 um, 1 W/m, toward +y from a line just below the drive rectangle) in library water_532nm on a uniform 12.5 nm tensor mesh (31.9 cells per wavelength in water) is solved first as the background of the frequency_response study; its non-conjugated field product E_z E_z, times the photoelastic p12 = 0.31, drives a plane-strain solid of the same water (formulation mixed P2 / P1: a compressible viscous liquid, G* = j omega eta, K* = K + j omega eta_b) inside the 2.4 x 4 um drive rectangle around the focus (30 nm triangles there, 80 nm elsewhere, fixed walls 1.1 um or more away). brillouin_scattering reports psd(f) = (2 k_B T / Omega)(-Im w^H u) / L per sideband (L = axial_length 10 um) at 21 frequencies over 6.4 - 8.4 GHz, and psd_reference with reference homogeneous: the plane-wave sum of the same drive in an unbounded medium (zero padding chosen from the phonon attenuation, periodic images below 1e-3).\nAnalytic: f_B = 2 n v / lambda0 = 7.439 GHz (n 1.335, v = sqrt(K / rho) = 1482.3 m/s) and the intrinsic linewidth Gamma / (2 pi) = q^2 (4/3 eta + eta_b) / (2 pi rho) = 0.656 GHz at q = 4 pi n / lambda0. The drive rectangle cuts the beam to a length L_d = 4 um, 5.6 attenuation lengths 2 v / Gamma: the line is the Lorentzian-in-q phonon line convolved with the sinc^2 of the cut, s(x) = 1 / (1 + x^2) - eps (1 - x^2) / (1 + x^2)^2 (x = detuning / half width, eps = 2 v / (Gamma L_d) = 0.18, exp(-1 / eps) = 4e-3 dropped), whose half-maximum width is fwhm_box = 1.237 x 0.656 GHz = 0.811 GHz. The wide beam (Rayleigh range 7.9 um) keeps the drive a near plane wave: its q is within ~1e-3 of 2 n k0 (pupil pairs ~1e-3 lower, Yee dispersion (k dx)^2 / 24 = 1.6e-3 higher).\nDerived values tab: shift_fem (Lorentz-fit centre of psd) against the DHO peak sqrt(f_B^2 - fwhm_law^2 / 2) = 7.425 GHz (5e-3), fwhm_fem (half-maximum width of psd) against fwhm_box (3e-2: the beam taper along the drive, ~0.5 %, the Lorentzian-in-q kernel vs the damped oscillator, ~1 %, and the sampling of the half-maximum crossings), shift_ratio and fwhm_ratio against the homogeneous reference (2e-3, 1.5e-2: the solid's P2 / P1 dispersion). Derived curves tab: psd_over_homogeneous (psd / psd_reference over the band, dotted 1; 4e-2: mainly the solid's P2 / P1 dispersion on the flanks; the drive samples the optical fields phase-corrected, which avoids the (q dx)^2 / 12 loss of plain bilinear interpolation). Curves & tables tab: solid.brillouin (psd, psd_stokes, psd_anti_stokes, psd_reference, psd_db; extras shift, fwhm, gamma from the damped-oscillator fit, reference_shift, scattered_fraction, q_mean, incident_power). Cost: one optical factorisation and 21 solid factorisations of ~2e5 unknowns.",
+  "version": 2,
+  "solver_defaults": {"backend": "cpu"},
+  "parameters": [
+    {"name": "lambda0", "expression": 5.32e-07, "description": "vacuum wavelength [m]"},
+    {"name": "n_w", "expression": "sqrt(1.78223)", "description": "refractive index of water_532nm (its eps_r)"},
+    {"name": "rho_w", "expression": 998.2, "description": "density [kg/m^3] (the library value)"},
+    {"name": "K_w", "expression": 2193300000.0, "description": "adiabatic bulk modulus [Pa] (the library value)"},
+    {"name": "mu_w", "expression": 0.0010016, "description": "shear viscosity [Pa s] (the library value)"},
+    {"name": "mub_w", "expression": 0.0028, "description": "bulk viscosity [Pa s] (the library value)"},
+    {"name": "v_w", "expression": "sqrt(K_w/rho_w)", "description": "longitudinal sound speed [m/s]"},
+    {"name": "dx_o", "expression": "12.5*nm", "description": "optical cell (31.9 cells per lambda0 / n)"},
+    {"name": "h_drive", "expression": "30*nm",
+     "description": "triangle size in the drive rectangle (lambda0 / (12 n) = 33 nm)"},
+    {"name": "h_out", "expression": "80*nm", "description": "triangle size elsewhere"},
+    {"name": "W_dom", "expression": "624*dx_o",
+     "description": "window width (7.8 um: the line holds the beam to 6.5e-7 of its peak)"},
+    {"name": "H_dom", "expression": "496*dx_o", "description": "window height (6.2 um)"},
+    {"name": "x_d0", "expression": "2.7*um", "description": "drive rectangle left edge (on an optical cell face)"},
+    {"name": "x_d1", "expression": "5.1*um", "description": "drive rectangle right edge"},
+    {"name": "y_d0", "expression": "1.1*um", "description": "drive rectangle bottom edge"},
+    {"name": "y_d1", "expression": "5.1*um", "description": "drive rectangle top edge"},
+    {"name": "L_d", "expression": "y_d1 - y_d0", "description": "drive length along the beam [m]"},
+    {"name": "y_line", "expression": "83.5*dx_o",
+     "description": "beam line height: the centre of window row 83, just below the drive (total-field side)"},
+    {"name": "w0", "expression": "1*um",
+     "description": "focal waist (1/e field radius); Rayleigh range pi n w0^2 / lambda0 = 7.9 um"},
+    {"name": "x_f", "expression": "W_dom/2", "description": "focus x"},
+    {"name": "y_f", "expression": "(y_d0 + y_d1)/2", "description": "focus y (the drive centre)"},
+    {"name": "q_B", "expression": "4*pi*n_w/lambda0", "description": "backscattering phonon wavenumber 2 n k0 [1/m]"},
+    {"name": "f_B", "expression": "2*n_w*v_w/lambda0", "description": "Brillouin shift 2 n v / lambda0 [Hz]"},
+    {"name": "Gam", "expression": "q_B**2*(4/3*mu_w + mub_w)/rho_w", "description": "phonon damping rate Gamma [1/s]"},
+    {"name": "fwhm_law", "expression": "Gam/(2*pi)",
+     "description": "intrinsic linewidth (FWHM) of one plane-wave phonon [Hz]"},
+    {"name": "f_peak", "expression": "sqrt(f_B**2 - fwhm_law**2/2)",
+     "description": "peak of the damped-oscillator line [Hz]"},
+    {"name": "eps_d", "expression": "2*v_w/(Gam*L_d)",
+     "description": "attenuation length 2 v / Gamma over the drive length"},
+    {"name": "fwhm_box",
+     "expression": "fwhm_law*sqrt(((1 + eps_d) + sqrt(1 - 2*eps_d + 5*eps_d**2))/(1 - eps_d) - 1)",
+     "description": "half-maximum width of the line cut by the drive length [Hz] (description)"},
+    {"name": "f_lo", "expression": 6400000000.0, "description": "lowest study frequency [Hz]"},
+    {"name": "f_hi", "expression": 8400000000.0, "description": "highest study frequency [Hz]"}
+  ],
+  "domain": {"size_x": "W_dom", "size_y": "H_dom"},
+  "geometry": [
+    {"name": "beam_line", "kind": "line", "params": {"x0": 0.0, "y0": "y_line", "x1": "W_dom", "y1": "y_line"}},
+    {"name": "drive", "kind": "rectangle", "params": {"x0": "x_d0", "y0": "y_d0", "x1": "x_d1", "y1": "y_d1"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "water", "library": "water_532nm", "properties": {}, "dispersion": null, "selection": ["all"]}
+  ],
+  "physics": [
     {
-     "name": "beam",
-     "type": "focused_beam",
-     "selection": [
-      "beam_line"
-     ],
-     "params": {
-      "power": 1.0,
-      "phase": 0.0,
-      "waist": "w0",
-      "numerical_aperture": null,
-      "focus_x": "x_f",
-      "focus_y": "y_f",
-      "direction": "positive"
-     },
-     "enabled": true
-    }
-   ],
-   "every": 1,
-   "mesh": "yee"
-  },
-  {
-   "name": "solid",
-   "type": "solid_mechanics",
-   "settings": {
-    "discretization": "quadratic",
-    "formulation": "mixed"
-   },
-   "features": [
-    {
-     "name": "walls",
-     "type": "fixed",
-     "selection": [
-      "x_lo",
-      "x_hi",
-      "y_lo",
-      "y_hi"
-     ],
-     "params": {},
-     "enabled": true
+      "name": "optics",
+      "type": "em_fdfd_ez",
+      "settings": {"wavelength": "lambda0"},
+      "features": [
+        {"name": "beam", "type": "focused_beam", "selection": ["beam_line"],
+         "params": {"power": 1.0, "phase": 0.0, "waist": "w0", "numerical_aperture": null, "focus_x": "x_f",
+                    "focus_y": "y_f", "direction": "positive"}, "enabled": true}
+      ],
+      "every": 1,
+      "mesh": "yee"
     },
     {
-     "name": "brillouin",
-     "type": "brillouin_scattering",
-     "selection": [
-      "drive"
-     ],
-     "params": {
-      "optical_physics": "optics",
-      "temperature": 293.15,
-      "reference": "homogeneous",
-      "fit_peak": true
-     },
-     "enabled": true
+      "name": "solid",
+      "type": "solid_mechanics",
+      "settings": {"discretization": "quadratic", "formulation": "mixed"},
+      "features": [
+        {"name": "walls", "type": "fixed", "selection": ["x_lo", "x_hi", "y_lo", "y_hi"], "params": {},
+         "enabled": true},
+        {"name": "brillouin", "type": "brillouin_scattering", "selection": ["drive"],
+         "params": {"optical_physics": "optics", "temperature": 293.15, "reference": "homogeneous", "fit_peak": true},
+         "enabled": true}
+      ],
+      "every": 1,
+      "mesh": "phonons"
     }
-   ],
-   "every": 1,
-   "mesh": "phonons"
-  }
- ],
- "couplings": [],
- "meshes": [
-  {
-   "name": "yee",
-   "kind": "tensor",
-   "mode": "uniform",
-   "dx": "dx_o"
-  },
-  {
-   "name": "phonons",
-   "kind": "triangles",
-   "mode": "nonuniform",
-   "dx": "h_out",
-   "max_ratio": 1.3,
-   "refinements": [
-    {
-     "object": "drive",
-     "dx": "h_drive"
-    }
-   ]
-  }
- ],
- "study": {
-  "type": "frequency_response",
-  "settings": {
-   "frequency_start": "f_lo",
-   "frequency_stop": "f_hi",
-   "n_frequencies": 21,
-   "snapshots": "last"
-  },
-  "stored_fields": [],
-  "sweep": null
- },
- "derived_values": [
-  {
-   "name": "shift_fem",
-   "expression": "psd",
-   "selection": [],
-   "operation": "lorentz_fit",
-   "fit": "center",
-   "source": "solid.brillouin",
-   "reference": "f_peak",
-   "tolerance": 0.005
-  },
-  {
-   "name": "shift_ref",
-   "expression": "psd_reference",
-   "selection": [],
-   "operation": "lorentz_fit",
-   "fit": "center",
-   "source": "solid.brillouin"
-  },
-  {
-   "name": "shift_ratio",
-   "expression": "shift_fem/shift_ref",
-   "selection": [],
-   "operation": "expression",
-   "reference": 1.0,
-   "tolerance": 0.002
-  },
-  {
-   "name": "fwhm_fem",
-   "expression": "psd",
-   "selection": [],
-   "operation": "fwhm",
-   "source": "solid.brillouin",
-   "reference": "fwhm_box",
-   "tolerance": 0.03
-  },
-  {
-   "name": "fwhm_ref",
-   "expression": "psd_reference",
-   "selection": [],
-   "operation": "fwhm",
-   "source": "solid.brillouin"
-  },
-  {
-   "name": "fwhm_ratio",
-   "expression": "fwhm_fem/fwhm_ref",
-   "selection": [],
-   "operation": "expression",
-   "reference": 1.0,
-   "tolerance": 0.015
-  }
- ],
- "analytic_curves": [],
- "derived_curves": [
-  {
-   "name": "psd_over_homogeneous",
-   "inputs": {
-    "p": "solid.brillouin:psd",
-    "r": "solid.brillouin:psd_reference"
-   },
-   "expression": "p/r",
-   "plot": "",
-   "label": "psd / homogeneous reference",
-   "unit": "1",
-   "log_x": false,
-   "log_y": false,
-   "reference": 1.0,
-   "tolerance": 0.04
-  }
- ]
+  ],
+  "couplings": [],
+  "meshes": [
+    {"name": "yee", "kind": "tensor", "mode": "uniform", "dx": "dx_o"},
+    {"name": "phonons", "kind": "triangles", "mode": "nonuniform", "dx": "h_out", "max_ratio": 1.3,
+     "refinements": [{"object": "drive", "dx": "h_drive"}]}
+  ],
+  "study": {"type": "frequency_response",
+            "settings": {"frequency_start": "f_lo", "frequency_stop": "f_hi", "n_frequencies": 21,
+                         "snapshots": "last"}, "stored_fields": [], "sweep": null},
+  "derived_values": [
+    {"name": "shift_fem", "expression": "psd", "selection": [], "operation": "lorentz_fit", "fit": "center",
+     "source": "solid.brillouin", "reference": "f_peak", "tolerance": 0.005},
+    {"name": "shift_ref", "expression": "psd_reference", "selection": [], "operation": "lorentz_fit", "fit": "center",
+     "source": "solid.brillouin"},
+    {"name": "shift_ratio", "expression": "shift_fem/shift_ref", "selection": [], "operation": "expression",
+     "reference": 1.0, "tolerance": 0.002},
+    {"name": "fwhm_fem", "expression": "psd", "selection": [], "operation": "fwhm", "source": "solid.brillouin",
+     "reference": "fwhm_box", "tolerance": 0.03},
+    {"name": "fwhm_ref", "expression": "psd_reference", "selection": [], "operation": "fwhm",
+     "source": "solid.brillouin"},
+    {"name": "fwhm_ratio", "expression": "fwhm_fem/fwhm_ref", "selection": [], "operation": "expression",
+     "reference": 1.0, "tolerance": 0.015}
+  ],
+  "analytic_curves": [],
+  "derived_curves": [
+    {"name": "psd_over_homogeneous", "inputs": {"p": "solid.brillouin:psd", "r": "solid.brillouin:psd_reference"},
+     "expression": "p/r", "plot": "", "label": "psd / homogeneous reference", "unit": "1", "log_x": false,
+     "log_y": false, "reference": 1.0, "tolerance": 0.04}
+  ]
 }
