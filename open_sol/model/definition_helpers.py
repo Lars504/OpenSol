@@ -1380,7 +1380,7 @@ def azimuthal_order_issues(vctx, physics_spec, path, settings_values):
                                               f"{' / '.join(sorted(ORDER_SPLIT_READERS))} and share no coupling (no "
                                               'field passes between the orders); a field derived value must read the '
                                               'fields of one of them (one reading both, or no field on their shared '
-                                              'mesh, weights the rings by pi)'))
+                                              'mesh, fails: its ring angle would be ambiguous)'))
             continue
         issues.append(Issue('error', path, f"azimuthal_order {order} differs from that of '{other.name}' "
                                            f'({other_order}): field derived values weight the rings of a model by one '

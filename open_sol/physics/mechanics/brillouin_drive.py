@@ -624,8 +624,11 @@ class BrillouinDrive:
         moduli = solid.moduli
         anisotropic = selection & ~(moduli.youngs_route | moduli.moduli_route)
         if anisotropic.any():
-            raise ValueError(f"{label}: reference '{self.reference}' needs isotropic moduli, but "
-                             f"{int(anisotropic.sum())} drive element(s) take c_ij entries: set reference 'none'")
+            raise ValueError(f"{label}: reference '{self.reference}' needs isotropic moduli with a finite bulk "
+                             f"modulus, but {int(anisotropic.sum())} drive element(s) take neither the youngs_modulus "
+                             'nor the shear_modulus / bulk_modulus route (a material of the c_ij route, or an '
+                             'incompressible / viscosity-only liquid without bulk_modulus): set reference '
+                             "'none' (or give them youngs_modulus / poisson_ratio, or a bulk_modulus)")
         density = self._material(solid, 'rho')
         index = np.full(selection.size, -1, dtype=np.int64)
         laws = []

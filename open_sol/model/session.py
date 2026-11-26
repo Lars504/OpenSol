@@ -9,6 +9,7 @@ import numpy as np
 
 from ..core.gpu_memory import pool_used_bytes
 from .analytic import SEGMENT_SAMPLINGS, derived_curve_result, is_curve_source, result_value, split_key
+from .definition_helpers import AZIMUTHAL_ORDER_PARAM
 from .expressions import ExpressionError, compile_expression, evaluate_parameters, evaluate_scalar, referenced_names
 from .field_access import DISPLAY_MAX_PIXELS
 from .field_access_tensor import LineAccess, MappedAccess, TensorAccess
@@ -547,13 +548,14 @@ class Session:
         value name: number} over the window (or a domain selection): 'mean' (area-weighted), 'max', 'min', 'integral'
         (sum of value * cell area), 'mode_volume' (integral / max, or / the value at point) or 'at' (the cell holding
         point object `point`); 3D models: over the window volume; a model with an axisymmetric solver: over ring
-        volumes 2 pi r_c dx dy; polar / spherical: over the core.metric sector areas / shell volumes. An integral is
-        doubled per mirror face the selection reaches (the unfolded total of a mirror-even integrand); max / min (and
-        the mode_volume maximum) include the mirror images there (field parities). An 'interface' selection reduces
-        one-sided outline samples instead (no images). Several meshes (D3): on the mesh of the first physics (model
-        order) whose fields the expression names, the other fields interpolated onto it; a triangle mesh reduces
-        degree-4 quadrature samples, a tetrahedron mesh renderer samples at quadrature points (FieldAccess.evaluate of
-        the mesh's kind)."""
+        volumes ring_angle r_c dx dy (2 pi, pi at an azimuthal order m != 0: the angle of the physics whose fields it
+        reads, ValueError for orders that weigh differently, _ring_angle); polar / spherical: over the core.metric
+        sector areas / shell volumes. An integral is doubled per mirror face the selection reaches (the unfolded total
+        of a mirror-even integrand); max / min (and the mode_volume maximum) include the mirror images there (field
+        parities). An 'interface' selection reduces one-sided outline samples instead (no images). Several meshes
+        (D3): on the mesh of the first physics (model order) whose fields the expression names, the other fields
+        interpolated onto it; a triangle mesh reduces degree-4 quadrature samples, a tetrahedron mesh renderer samples
+        at quadrature points (FieldAccess.evaluate of the mesh's kind)."""
         self._require_open()
         if operation not in FIELD_DERIVED_OPERATIONS:
             raise ValueError(f"unknown operation {operation!r} for fields; valid: "
@@ -662,25 +664,44 @@ class Session:
                              f"pass physics= (available: {[(p, i.name) for p, i in self.available_fields()]})")
         return owners[0]
 
-    def _axisymmetric_solvers(self, names=()):
-        """Solvers with `axisymmetric` set among the physics whose output fields `names` read (none read: the physics
-        on this view's mesh), so a planar physics of a mixed model keeps plain areas."""
+    def _axisymmetric_solvers(self, names=()) -> dict:
+        """{physics: solver} (build order) of the solvers with `axisymmetric` set among the physics whose output fields
+        `names` read (none read: the physics on this view's mesh), so a planar physics of a mixed model keeps plain
+        areas."""
         read = {self._field_names[name][0] for name in names if name in self._field_names}
         if not read:
             read = {physics for physics in self.physics
                     if self.sim.domain_of(physics).mesh_name == self.domain.mesh_name}
-        return [solver for physics, solver in self.physics.items()
-                if physics in read and getattr(solver, 'axisymmetric', False)]
+        return {physics: solver for physics, solver in self.physics.items()
+                if physics in read and getattr(solver, 'axisymmetric', False)}
 
     def _has_axisymmetric_solver(self, names=()):
-        """True when an evaluation of `names` weighs by ring volumes 2 pi r_c (_axisymmetric_solvers)."""
+        """True when an evaluation of `names` weighs by ring volumes ring_angle r_c (_axisymmetric_solvers)."""
         return bool(self._axisymmetric_solvers(names))
 
     def _ring_angle(self, names=()):
-        """Ring angle of those axisymmetric solvers' `ring_angle` (pi when one solves an azimuthal order m != 0,
-        symmetry 2.14; validate keeps one m per model), else 2 pi."""
-        return min((solver.ring_angle for solver in self._axisymmetric_solvers(names) if hasattr(solver, 'ring_angle')),
-                   default=2.0 * math.pi)
+        """Ring angle [rad] an evaluation of `names` weighs its (r, z) rings by: the `ring_angle` (core.metric.
+        ring_angle: 2 pi, pi at an azimuthal order m != 0, symmetry 2.14) of the axisymmetric solvers whose fields the
+        names read (none read: of every one on this view's mesh, _axisymmetric_solvers); a solver without one (the BOR
+        EM solvers) counts 2 pi, and pi wins when one of them solves m != 0 (a type without the azimuthal_order
+        setting, e.g. magnetic, read with an order-m one). ValueError when physics holding the azimuthal_order setting
+        weigh differently (validate allows that only for an ORDER_SPLIT_READERS pair, e.g. the m = 0 and m = 2 solids
+        of one Brillouin beam): such a value must read the fields of one of them."""
+        angles = {physics: float(getattr(solver, 'ring_angle', 2.0 * math.pi))
+                  for physics, solver in self._axisymmetric_solvers(names).items()}
+        ordered = {physics: angle for physics, angle in angles.items()
+                   if any(param is AZIMUTHAL_ORDER_PARAM for param in self._physics_type(physics).settings)}
+        if len(set(ordered.values())) > 1:
+            listed = ', '.join(f"'{physics}' ({angle / math.pi:g} pi)" for physics, angle in ordered.items())
+            if any(name in self._field_names for name in names):
+                raise ValueError('the expression reads the fields of axisymmetric physics whose azimuthal orders '
+                                 'weigh the (r, z) rings differently (ring angle 2 pi at m = 0, pi at m != 0): '
+                                 f'{listed}; read the fields of one of them per derived value')
+            raise ValueError("the expression reads no field, and the axisymmetric physics on mesh "
+                             f"'{self.domain.mesh_name}' weigh the (r, z) rings differently (ring angle 2 pi at "
+                             f'm = 0, pi at m != 0): {listed}; name a field of the physics whose rings it should '
+                             'weigh (e.g. add 0 * one of its fields)')
+        return min(angles.values(), default=2.0 * math.pi)
 
     def _plain_namespace(self, names, earlier=None):
         """Mesh-free part of an evaluation namespace: parameters, earlier derived values {name: float}, solver scalars
