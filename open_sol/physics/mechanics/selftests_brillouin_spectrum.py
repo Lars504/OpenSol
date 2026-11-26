@@ -17,10 +17,10 @@ module level (brillouin / materials inside the checks)."""
 # (brillouin.phase_corrected_sample), the reference rasters their phase-corrected cell-centre values: both exact for a
 # plane wave (plain bilinear sampling was low by sinc^4(q dx / 4) per field pair, (q dx)^2 / 12 in psd), the envelope
 # of the 0.4 um waist leaves ~(dx / w0)^2 ~ 1e-3; the reference's FFT images stay below brillouin.IMAGE_TOLERANCE =
-# 1e-3 of the readout by its automatic zero padding (about 11 x 8 for the 0.8 x 1.2 um drive at 5.9 GHz: with the old
-# fixed padding 2 the phase-matched copies along the beam held 12 - 15 % at the line centre); P2 / P1 Taylor-Hood
-# dispersion ~(q h)^4 / 720 in frequency (~1e-4 .. 1e-3 at h 25 .. 30 nm, ~0.3 .. 2 % of psd on the line flanks); the
-# wall echoes above.
+# 1e-3 of the readout by its automatic zero padding (about 12 x 9 for the 0.8 x 1.2 um drive at 5.9 GHz, delta ~ 0.88
+# 1/um: ceil(1 + ln(2e3) / (delta L)) per axis; with the old fixed padding 2 the phase-matched copies along the beam
+# held 12 - 15 % at the line centre); P2 / P1 Taylor-Hood dispersion ~(q h)^4 / 720 in frequency (~1e-4 .. 1e-3 at h
+# 25 .. 30 nm, ~0.3 .. 2 % of psd on the line flanks); the wall echoes above.
 import math
 from dataclasses import dataclass
 
@@ -149,7 +149,9 @@ _WATER_2D_HZ = _Planar(cell=12.5e-9, cells=(272, 256), focus=(1.7e-6, 1.6e-6), d
                        line_y=0.97e-6, waist=0.4e-6, fine=30e-9, coarse=80e-9)
 _WATER_2D_HZ_FREQUENCIES = _frequencies(5.9e9, 8.9e9, 7)
 _WATER_2D_TOLERANCE = {'psd': 2e-2, 'shift': 2e-3, 'fwhm': 1e-2, 'fraction': 1e-2, 'power': 1e-9}
-_WATER_2D_HZ_TOLERANCE = {'psd': 2e-2, 'shift': 3e-3, 'power': 1e-9}
+# psd budget at 30 nm elements: P2 / P1 dispersion up to ~2 % on the line flanks (header) + wall echoes ~3e-3 + the
+# reference images < 1e-3 + the beam envelope ~1e-3, so ~2.5 % in L2 at worst
+_WATER_2D_HZ_TOLERANCE = {'psd': 3e-2, 'shift': 3e-3, 'power': 1e-9}
 
 # brillouin_scan_columns: 3.4 x 2.0 um of 20 nm cells, a polystyrene disc (r 0.25 um) at the focus in water, the drive
 # rectangle 0.8 x 0.8 um around it; the half model is x < 1.7 um with the mirror plane on x_hi (em symmetric, solid
@@ -565,7 +567,7 @@ BRILLOUIN_SPECTRUM_CASES = (
                      'elsewhere); brillouin_scattering with reference homogeneous at 13 frequencies 5.9 - 8.9 GHz, '
                      'cpu. The homogeneous reference is the plane-wave sum of the same drive (the kappa sigma~ '
                      'raster of the optical cells in the drive; its FFT images below 1e-3 of the readout by the '
-                     'automatic zero padding, about 11 x 8 here) in an unbounded medium, so it holds the finite drive '
+                     'automatic zero padding, about 12 x 9 here) in an unbounded medium, so it holds the finite drive '
                      'length (a 1.2 um drive is 1.7 attenuation lengths: the line is about twice the q^2 law width '
                      '0.66 GHz) and the beam q content. Checks: psd against psd_reference in L2 over the samples above '
                      f"{_PEAK_SHARE:g} of its peak ({_WATER_2D_TOLERANCE['psd']:g}: the drive interpolates the "
@@ -592,7 +594,8 @@ BRILLOUIN_SPECTRUM_CASES = (
                      'dilation p (E . E). A face mean along the beam would lower both psd and reference by cos^4(k h '
                      '/ 2) = 1.9 % (unseen here: they share it); brillouin_bilinear pins the sampling. Checks: psd '
                      f"against psd_reference (homogeneous) in L2 above {_PEAK_SHARE:g} of its peak "
-                     f"({_WATER_2D_HZ_TOLERANCE['psd']:g}: as brillouin_water_2d_ez, P2 / P1 dispersion at 30 nm), "
+                     f"({_WATER_2D_HZ_TOLERANCE['psd']:g}: the brillouin_water_2d_ez budget with the P2 / P1 "
+                     'dispersion at 30 nm, up to ~2 % on the flanks, + echoes ~3e-3, images < 1e-3, envelope ~1e-3), '
                      f"the fit shift against reference_shift ({_WATER_2D_HZ_TOLERANCE['shift']:g}), "
                      f"incident_power = power ({_WATER_2D_HZ_TOLERANCE['power']:g}). Tolerances are first estimates; "
                      'measured = error = the worst deviation in tolerance units.'),

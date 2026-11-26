@@ -69,11 +69,12 @@ local and homogeneous reference spectra and the result dict."""
 # sigma^ = dx dy FFT of the zero-padded raster (complex: a full fft2 per row) and d^2q / (2 pi)^2 = 1 / (P_x P_y dx dy).
 # The discrete q sum is the spectrum of the drive repeated with periods P_x L_x, P_y L_y (L = the raster box): copies
 # along the beam are phase-matched and coherent, so the sum is the unbounded one only up to their share, which decays
-# as exp(-delta (P - 1) L) with delta = |Im k| = |Im(Omega sqrt(rho / M*))| the amplitude attenuation of the phonon
-# (Gamma / (2 v); the shear law's where Im G* > 0). reference_padding takes per axis P >= 1 + ln(1 / IMAGE_TOLERANCE) /
-# (delta_min L) (delta_min over the band, at least MIN_PADDING), so the images hold < IMAGE_TOLERANCE of the readout
-# (the sum is exact to that, not exactly); a drive short against 1 / delta needs many copies (a padded raster above
-# MAX_REFERENCE_CELLS raises).
+# as exp(-delta (P - 1) L) per copy with delta = |Im k| = |Im(Omega sqrt(rho / M*))| the amplitude attenuation of the
+# phonon (Gamma / (2 v); the shear law's where Im G* > 0). The two nearest copies of an axis (at +P L and -P L) both
+# contribute, so reference_padding takes per axis P >= 1 + ln(2 / IMAGE_TOLERANCE) / (delta_min L) (delta_min over the
+# band, at least MIN_PADDING): the two nearest images of each axis hold together < IMAGE_TOLERANCE of the readout (the
+# farther copies add a relative ~IMAGE_TOLERANCE / 2 more; the sum is exact to that, not exactly); a drive short
+# against 1 / delta needs many copies (a padded raster above MAX_REFERENCE_CELLS raises).
 # Fit (dho_fit): S = A / ((f0^2 - f^2)^2 + gamma^2 f^2) by scipy least_squares from a peak / half-maximum start; shift =
 # f0, fwhm = the exact half-maximum width of the fitted curve; failures set fit_warning, never raise.
 import math
@@ -713,8 +714,9 @@ def attenuation_rate(omega, modulus, density) -> np.ndarray:
 
 def reference_padding(lengths, rate, tolerance=IMAGE_TOLERANCE) -> tuple:
     """(P_x, P_y) zero-padding factors of homogeneous_reference for a raster box of lengths (L_x, L_y) [m] and the
-    smallest attenuation rate delta [1/m] over the band (header): the least P >= MIN_PADDING with exp(-delta (P - 1) L)
-    <= tolerance; ValueError for delta <= 0 (a lossless medium: no finite padding)."""
+    smallest attenuation rate delta [1/m] over the band (header): the least P >= MIN_PADDING with 2 exp(-delta (P - 1)
+    L) <= tolerance (the two nearest images of the axis, at +P L and -P L); ValueError for delta <= 0 (a lossless
+    medium: no finite padding)."""
     rate, tolerance = float(rate), float(tolerance)
     if not (rate > 0.0):
         raise ValueError(f'homogeneous reference: the phonon attenuation rate must be > 0 1/m (a lossy medium), got '
@@ -723,7 +725,7 @@ def reference_padding(lengths, rate, tolerance=IMAGE_TOLERANCE) -> tuple:
         raise ValueError(f'homogeneous reference: the image tolerance must lie in (0, 1), got {tolerance!r}')
     if math.isinf(rate):
         return MIN_PADDING, MIN_PADDING
-    reach = math.log(1.0 / tolerance) / rate
+    reach = math.log(2.0 / tolerance) / rate   # both nearest images of an axis (header)
     padding = []
     for length in lengths:
         length = float(length)

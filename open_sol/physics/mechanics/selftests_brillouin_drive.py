@@ -42,12 +42,16 @@ _ENVELOPE_RTOL = 2e-3       # L2 over the band: q spread (1 / (w_x Gamma / 2))^2
 _STATIC_RTOL = 1e-10
 _BAND = (0.6, 1.4, 21)      # Hz around f0 = 1 Hz
 # a short drive (2 x 2 m, 2 phonon wavelengths along x): the automatic padding against twice as much per axis; the
-# images' share is below brillouin.IMAGE_TOLERANCE = 1e-3 of the readout at the automatic padding (first estimate)
+# two nearest images per axis hold together below brillouin.IMAGE_TOLERANCE = 1e-3 of the readout at the automatic
+# padding (first estimate)
 _SHORT_GRID = (32, 4, 1.0 / 16.0, 0.5)
 _SHORT_PADDING_RTOL = 3e-3
-# ceil(1 + ln(1e3) / (delta L)), L = 2 m, delta = |Im k| at the band's lowest 0.6 Hz: Omega eta_L = 0.12, |Im k| =
-# Omega |Im sqrt(rho / M*)| = 0.2242 1/m (the shear law of viscosity 0.01 attenuates far faster)
-_SHORT_PADDING = (17, 17)
+# ceil(1 + ln(2 / 1e-3) / (delta L)) per axis (brillouin.reference_padding), L_x = 32 / 16 = L_y = 4 x 0.5 = 2 m,
+# delta = |Im k| at the band's lowest 0.6 Hz: eta_L = 0.2 / (2 pi), Omega eta_L = 0.12, M* = 1 + 0.12j, |Im k| =
+# Omega |Im (M*)^(-1/2)| = 3.7699 x 1.0144^(-1/4) sin(atan(0.12) / 2) = 3.7699 x 0.99643 x 0.059679 = 0.22418 1/m (the
+# shear law of viscosity 0.01, |Im k| ~ 13.7 1/m, attenuates far faster); ln(2000) = 7.6009, 7.6009 / (0.22418 x 2)
+# = 16.953, so P = ceil(17.953) = 18 on both axes (ln(1000) alone would give ceil(16.407) = 17)
+_SHORT_PADDING = (18, 18)
 _PHASE_RTOL = 1e-12         # phase-corrected sampling of a plane wave (round-off)
 _LAW_RTOL = 1e-14
 
@@ -406,9 +410,9 @@ def _check_homogeneous_reference(_):
                                    1.0)
     checks.add_bound('envelope_dho', norm_relative_error(padded, _dho_line(frequencies, weight_sum, viscosity)),
                      _ENVELOPE_RTOL)
-    # (b') a short drive: the automatic padding from the attenuation (its expected factors) holds the periodic images
-    # below IMAGE_TOLERANCE, so twice the padding per axis changes the spectrum by about that; a nearly lossless medium
-    # would need a raster above MAX_REFERENCE_CELLS and raises
+    # (b') a short drive: the automatic padding from the attenuation (its expected factors) holds the two nearest
+    # periodic images per axis below IMAGE_TOLERANCE, so twice the padding per axis changes the spectrum by about
+    # that; a nearly lossless medium would need a raster above MAX_REFERENCE_CELLS and raises
     n_x, n_y, dx, dy = _SHORT_GRID
     x = (np.arange(n_x) + 0.5) * dx
     short = (0.4 + 0.3j) * np.exp(2j * math.pi * x)[:, None] * np.ones(n_y)[None, :]
@@ -537,8 +541,9 @@ BRILLOUIN_DRIVE_CASES = (
           'DHO line (k_B T / M) int |c|^2 dA 2 Gamma Omega_0^2 / ((Omega_0^2 - Omega^2)^2 + Gamma^2 Omega^2) and so '
           'does the local reference of its phase-gradient q (1e-10); a wide Gaussian envelope (80 x 20, automatic '
           'padding 2) the same line within 2e-3 (L2; the envelope q spread); a short 2 x 2 m drive takes the automatic '
-          'padding 17 x 17 (ceil(1 + ln(1e3) / (delta L)), delta = |Im k| at the lowest band frequency) and differs '
-          'from twice that padding by < 3e-3 (L2: the periodic images below 1e-3), a nearly lossless medium raises '
+          'padding 18 x 18 (ceil(1 + ln(2 / 1e-3) / (delta L)), delta = |Im k| at the lowest band frequency: the two '
+          'nearest images per axis) and differs from twice that padding by < 3e-3 (L2: the periodic images below '
+          '1e-3), a nearly lossless medium raises '
           '(padded raster above the limit); the static '
           'sum equals k_B T / M int |c|^2 dA '
           '(Parseval, 1e-10), a shear drive without shear modulus raises; modulus_function equals '

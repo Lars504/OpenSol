@@ -143,7 +143,8 @@ _PARAMS = (
                'the drive selection on uniform optical cells) the plane-wave sum of an unbounded medium with the same '
                'drive raster (its finite length and q content included), by an FFT whose periodic images are kept '
                f'below {IMAGE_TOLERANCE:g} of the readout by a zero padding per axis from the phonon attenuation '
-               '(padding P >= 1 + ln(1 / tolerance) / (delta L), delta = Gamma / (2 v) the smallest over the study '
+               '(padding P >= 1 + ln(2 / tolerance) / (delta L): the two nearest images of an axis together below '
+               'the tolerance, delta = Gamma / (2 v) the smallest over the study '
                f'band, L the drive box; more than {MAX_REFERENCE_CELLS:,} padded cells is an error: a drive short '
                'against the attenuation length); none. Both need isotropic moduli with a finite bulk modulus in the '
                "drive selection (no c_ij route, no incompressible material of formulation mixed): else reference "
