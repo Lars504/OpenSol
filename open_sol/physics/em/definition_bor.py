@@ -1,10 +1,16 @@
 """Model definition of 'em_fdfd_bor' (body-of-revolution FDFD: (r, z) half plane, azimuthal order
 m) on definition_common, with its template and self-tests; definition.register calls register."""
+import math
 from dataclasses import replace
 
+import numpy as np
+
 from ...core import time_estimate as te
-from ...core.constants import FACE_LABELS
+from ...core.constants import C0, FACE_LABELS
 from ...core.domain import containing_cell
+from ...core.memory_estimate import window_cell_count
+from ...core.mesh import has_uniform_spacing
+from ...model.expressions import evaluate_scalar
 from ...model.definition_helpers import (AXISYMMETRIC, AXISYMMETRIC_SPACE_SETTINGS, CUDSS_LINEAR_ROLE, GEOMETRY_SETTING,
                                          axisymmetric_issues, eigen_factorization, eigen_role, linear_solver_cudss)
 from ...model.schema import FeatureType, Issue, Param, PhysicsType, SolverRole, feature_path
@@ -12,12 +18,17 @@ from ...solvers.arpack_shift_invert import CUDSS_FACTORIZATIONS
 from .body_of_revolution import BOR_FIELD_COMPONENTS, BOR_SOURCE_COMPONENTS, size_issue_for
 from .fem_bor import FEM_BOR_ARNOLDI_BASIS_PER_WANTED, FEM_BOR_SIZE_REMEDY
 from .fem_modes import DISCRETIZATION_ORDERS
+from .bor_focused_beam import (BEAM_ORDER, QUADRATURE_FLOPS_PER_VALUE, aperture_sine, line_end_level,
+                               theta_node_count)
 from .bor_ports import bor_mode_monitor_result, bor_mode_source_result
 from .definition_common import (BOTH_GRIDS, BOX_CELLS, DEFAULT_WAVELENGTH, EIGENFREQUENCY_STUDY, EM_FAMILY,
-                                FREQUENCY_DOMAIN_STUDY, HOST_DIRECT_NAMES, N_ANGLES_PARAM, OPTOMECHANICS_STUDY,
-                                POINT_SOURCE_SIGN,
-                                SPAN_CELLS, _window_axes, all_solved_wavelengths, apply_component_point_source,
+                                FOCUSED_BEAM_APERTURE_TEXT, FOCUSED_BEAM_FEATURE, FOCUSED_BEAM_LABEL,
+                                FOCUSED_BEAM_SCAN_TEXT, FREQUENCY_DOMAIN_STUDY, HOST_DIRECT_NAMES, N_ANGLES_PARAM,
+                                OPTOMECHANICS_STUDY, POINT_SOURCE_SIGN, SPAN_CELLS, _effective_material, _window_axes,
+                                all_solved_wavelengths, apply_component_point_source, apply_focused_beam,
                                 apply_far_field, apply_field_probe, apply_flux_monitor, apply_pec, apply_resonance_table,
+                                brillouin_drive_time_items, brillouin_scan_solves, focused_beam_focus_param,
+                                focused_beam_power_param, resolved_solved_wavelengths,
                                 boundary_settings_params, eigen_only_feature_issues, eigen_solved, em_material_params,
                                 fem_resonance_time_estimate, fem_size_issues, first_solved_wavelength,
                                 host_matrix_back_end_issues, kept_line_block_factors, make_far_field_result_callback,
@@ -26,11 +37,14 @@ from .definition_common import (BOTH_GRIDS, BOX_CELLS, DEFAULT_WAVELENGTH, EIGEN
                                 raw_settings, resonance_eigenpairs, resonance_table_study_issues, role_counter,
                                 scaled_ops, scipy_issues, shortest_solved_wavelength, source_slot_docs,
                                 unused_wavelength_issues, validate_driven_point, write_dispersive_materials)
-from .definition_feature_validation import _box_issues, _line_cells, _selected_shapes, validate_line_feature
+from .definition_feature_validation import (_box_issues, _focused_beam_row_messages, _line_axes, _line_cells,
+                                            _line_issues, _line_material_indices, _line_medium_index,
+                                            _selected_shapes, _shape_issues, validate_line_feature)
 from .eigenfrequency import resonance_filter_time_item
+from .focused_beam import MIN_SPAN_CELLS, NORMAL_RANGE
 from ...solvers.line_block import factor_solve_ops
 from .materials import EM_MATERIAL_SCHEMAS
-from .memory_estimates import bor_memory_estimate, pec_memory_estimate
+from .memory_estimates import bor_focused_beam_memory_estimate, bor_memory_estimate, pec_memory_estimate
 from .renderer_bor import BORRenderer
 from .selftests_bor import MICRODISK_DESCRIPTION, MICRODISK_LABEL, MICRODISK_SUMMARY, microdisk_bor_eigenmodes_spec
 from .solvers.fdfd_bor import (BOR_MATERIAL_SCHEMA_KEY, BOR_PERMITTIVITY_ARRAYS, BOR_PERMITTIVITY_SLOTS, BORPhysics,
@@ -389,6 +403,222 @@ _MODE_MONITOR_RESULT_TEXT = (
     'and phase_positive / phase_negative (rad, not de-embedded); extras frequency, wavelength, n_eff, n_eff_imag, '
     'mode_number, normalized. Keep the line and the row above off the line rows of a mode_source.')
 
+# ---- focused beam (bor_focused_beam; the drive of brillouin_scattering) ----
+# beam |E| at the line's r end / its peak on the line above which validation warns: a hard pupil edge leaves a slowly
+# decaying side-lobe tail (unlike the 2D Gaussian's 1e-6), and the cut edge leaks ~ the square of this level
+_BEAM_END_LEVEL = 1e-2
+_BEAM_DIRECTION_LABELS = (('positive', 'Upward (+z)'), ('negative', 'Downward (-z)'))
+_FOCUSED_BEAM_PARAMS = (
+    focused_beam_power_param(
+        'W', 'Here the power of the linearly (x-) polarised beam, the azimuthal order 1 standing wave E_r, E_z ~ '
+             'cos(phi), E_phi ~ sin(phi) that the solve represents: the exact discrete Poynting flux of the injected '
+             'incident field through the interface face with the cos^2 / sin^2 ring weight pi. flux_monitor weights '
+             'the travelling exp(-j phi) wave with 2 pi, so downstream in a uniform lossless medium it reads 2 x '
+             'power (minus what the structure or the PML send back and the launch error).',
+        'Power carried by the light beam, in watts. Field strengths scale with its square root, so 1 is typical.\n\n'
+        'A flux monitor of this physics shows twice this value: it counts the rotating wave the solve stands for.'),
+    Param('phase', 'float', 0.0, label='Phase', unit='deg',
+          help='Phase of E_x (= E_r at phi = 0) at the focus: all angular components of the beam are in phase there.',
+          tip='Phase of the beam at its focus in degrees; it matters only with several sources.'),
+    Param('numerical_aperture', 'float', None, label='Numerical aperture', unit='1', min=0.0, min_exclusive=True,
+          help=f'{FOCUSED_BEAM_APERTURE_TEXT}; here strictly below n (theta_max < 90 deg): the cone half-angle of the '
+               'focused light, sin(theta_max) = NA / n. Typical 0.3 to 1.2 in water (n 1.33). With a fully filled '
+               'pupil the focus is an Airy spot of FWHM ~ 0.5 lambda0 / NA whose side lobes decay slowly along the line '
+               f'(validation warns when the beam keeps {_BEAM_END_LEVEL:g} of its peak at the line end; a smaller '
+               'fill_factor softens the edge).',
+          tip='Sine of the half-angle of the cone of focused light times the refractive index, as on a microscope '
+              'objective.\n\nIt must stay below the refractive index at the line.'),
+    Param('fill_factor', 'float', 1.0, label='Pupil fill factor', unit='1', min=0.0, min_exclusive=True,
+          help='f0 = Gaussian waist of the beam entering the objective / pupil radius: pupil field l(theta) = '
+               'exp(-(sin(theta) / (f0 sin(theta_max)))^2) with the aplanatic sqrt(cos(theta)) (Richards-Wolf, '
+               'Novotny-Hecht eq. 3.52); the aperture edge keeps exp(-1 / f0^2) of the centre field (1: 0.37). Large '
+               'f0: a filled pupil, the smallest focus; small f0: an underfilled pupil, a Gaussian focus of effective '
+               'NA ~ f0 NA with weak side lobes. Typical 0.5 to 2.',
+          tip='How much of the objective opening the incoming beam fills: 1 fills it to its edge, smaller values '
+              'leave the rim dark and give a wider, smoother focus.'),
+    focused_beam_focus_param(
+        'focus_z', 'z',
+        'z coordinate [m] of the focus on the axis in the drawing frame (domain bottom edge at 0): every angular '
+        'component of the beam is in phase there, so |E| peaks there in a uniform medium. It may lie on either side of '
+        'the line (upstream: a beam diverging from a virtual focus) and outside the domain. A brillouin_scattering scan '
+        'moves it along z by scan_offsets_y (x offsets would leave the axis: refused).',
+        'Height of the focus on the rotation axis, where the beam is narrowest and brightest, in metres.\n\n'
+        'It may lie on either side of the line.'),
+    Param('direction', 'choice', 'positive', label='Direction', choices=('positive', 'negative'),
+          choice_labels=_BEAM_DIRECTION_LABELS,
+          help="'positive': toward +z (total field on the line row and above, only what comes back below); "
+               "'negative': toward -z (total field on the row and below). Nothing is launched the other way.",
+          tip='Direction along the axis in which the beam travels from the line.\n\nNothing is sent the other way.'),
+)
+_FOCUSED_BEAM_DESCRIPTION = (
+    'One-sided focused beam on the axis launched from a horizontal line (z = const) that starts on the axis: the Debye '
+    '(Richards-Wolf) field of an aplanatic lens focusing an x-polarised Gaussian pupil (numerical_aperture, '
+    'fill_factor) to (r = 0, focus_z), in the homogeneous isotropic medium of the line. An x-polarised beam on the '
+    'axis is exactly the azimuthal order 1 standing wave (E_r, E_z ~ cos(phi), E_phi ~ sin(phi)), so the physics needs '
+    'azimuthal_order 1 and no azimuthal_orders list (validation error); shown fields and probes are the travelling-'
+    'wave phasors of this type: E_r, E_z the beam at phi = 0, E_phi = j x its sin(phi) amplitude. '
+    'Its incident field is written on the two z rows across the interface (one-sided TFSF as mode_source; the '
+    'interface is the lo face of the line row for positive, its hi face for negative): the z dependence of each '
+    'angular component is the Yee-exact one, so what leaks upstream comes only from the radial discretisation of the '
+    'continuum Bessel profiles (second order, ~(k0 NA h)^2: largest at high NA; >= 25 cells per wavelength in the '
+    'medium recommended). power is defined, not calibrated (see power; a flux_monitor reads 2 x power). The line '
+    'needs uniform r cells along it and uniform z rows across it (two on either side, inside the domain), one '
+    'homogeneous isotropic medium on those rows (no PEC there; loss allowed, warning: the beam then decays and power '
+    'is that at the line) and cpml on both z faces (a pec / pmc z face would mirror the beam onto itself: error); it should hold the beam (above '
+    f'{_BEAM_END_LEVEL:g} of its peak at its r end: warning). {FOCUSED_BEAM_SCAN_TEXT} Tensor meshes only. The line '
+    f'covers {SPAN_CELLS}.')
+_FOCUSED_BEAM_SUMMARY = ('Sends a focused light beam along the rotation axis from a horizontal line, like light '
+                         'focused by a microscope objective, with a set power and its focus at a chosen height. Nothing '
+                         'is sent backward. It is the illumination of axisymmetric Brillouin scattering spectra.')
+_ANISOTROPY_PROPERTIES = ('eps_xx', 'eps_yy', 'eps_zz')   # components a focused beam's line medium may not set apart
+_LOSS_PROPERTIES = ('sigma_e', 'sigma_m')
+
+
+def _focused_beam_physics_issues(vctx, physics_spec, path):
+    """Errors of the physics settings a focused beam refuses: azimuthal_order other than 1, an azimuthal_orders list in
+    a driven study (the order sum), a pec / pmc z face."""
+    settings = raw_settings(physics_spec)
+    issues = []
+    order = settings.get('azimuthal_order', 0)
+    if isinstance(order, bool) or order != BEAM_ORDER:
+        issues.append(Issue('error', path, f'needs azimuthal_order {BEAM_ORDER} (got {order!r}): an x-polarised beam '
+                                           f'on the axis is the azimuthal order {BEAM_ORDER} standing wave'))
+    if settings.get('azimuthal_orders') and vctx.study_type in _DRIVEN_STUDIES:
+        issues.append(Issue('error', path, 'cannot join the driven order sum of azimuthal_orders (it is one order '
+                                           f'{BEAM_ORDER} field): clear azimuthal_orders'))
+    for face in ('y_lo', 'y_hi'):
+        if settings.get(f'bc_{face}', 'cpml') in _MIRROR_FACES:
+            issues.append(Issue('error', path, f"bc_{face} = {settings[f'bc_{face}']} is the mirror plane of a "
+                                               'z-symmetric structure, but a beam along z is not symmetric about any z '
+                                               'plane: use cpml on both z faces (a reflector: a pec_domain)'))
+    return issues
+
+
+def _line_medium_messages(vctx, position, span, neighbours):
+    """(level, text) for line-row materials (material preview) with cylindrical anisotropy (error: the Debye beam is
+    the field of an isotropic medium) or loss (warning)."""
+    found = _line_material_indices(vctx, 'x', position, span, None, 'ez', neighbours)
+    if found is None:
+        return []
+    messages = []
+    indices, _ = found
+    for index in sorted(index for index in indices if index > 0):
+        material = vctx.spec.materials[index - 1]
+        try:
+            properties, dispersion = _effective_material(material)
+        except ValueError:   # reported at the material
+            continue
+
+        def value_of(name, default):
+            raw = properties.get(name)
+            try:
+                return default if raw is None else evaluate_scalar(raw, vctx.parameters)
+            except (ValueError, TypeError):   # field- / state-dependent: unknown here (the run checks the cells)
+                return math.nan
+
+        def differs(value, reference):
+            return math.isfinite(value) and math.isfinite(reference) and value != reference
+        eps = value_of('eps_r', 1.0)
+        anisotropic = [name for name in _ANISOTROPY_PROPERTIES if properties.get(name) is not None
+                       and differs(value_of(name, eps), eps)]
+        if anisotropic:
+            messages.append(('error', f"has material '{material.name}' with {', '.join(anisotropic)} different from "
+                                      'eps_r on its rows: the Debye beam is the field of one isotropic medium; keep the '
+                                      'line in an isotropic medium'))
+        if dispersion or any(differs(value_of(name, 0.0), 0.0) for name in _LOSS_PROPERTIES):
+            messages.append(('warning', f"has the lossy or dispersive material '{material.name}' on its rows: the "
+                                        'beam decays from the line on, power is its value at the line and the Debye '
+                                        'field is that of the complex index (a brillouin_scattering normalisation '
+                                        'then refers to the line, not the focus)'))
+    return messages
+
+
+def _focused_beam_line_messages(vctx, physics_spec, line, values, physics_type, wavelengths):
+    """(level, text) of one focused-beam line inside the domain (_validate_focused_beam); the cell checks need the
+    mesh estimate, the beam checks the material preview."""
+    line_axes = _line_axes(line, vctx.domain_size)
+    if line_axes is None:
+        return []   # reported by _line_issues
+    along_axis, _, position, (start, end) = line_axes
+    if along_axis != 'x':
+        return [('error', 'must be horizontal (z = const): the beam travels along the rotation axis')]
+    messages = []
+    mesh = vctx.mesh
+    if mesh is None and start > 1e-9 * vctx.domain_size[0]:
+        messages.append(('error', f'starts at r = {start:.4g} m: it must start on the axis (x0 = 0), the beam is '
+                                  'focused on it'))
+    if mesh is not None and getattr(mesh, 'kind', 'tensor') == 'tensor':   # triangles: refused by the grids
+        (r_widths, r_edges, r_first, r_last), (z_widths, z_edges, z_first, z_last) = _window_axes(mesh)
+        start_cell = containing_cell(start, r_edges, r_first, r_last)
+        end_cell = containing_cell(end, r_edges, r_first, r_last) + 1
+        if start_cell != 0:
+            messages.append(('error', f'starts at r = {start:.4g} m (r cell {start_cell}): it must start on the axis '
+                                      '(x0 = 0), the beam is focused on it'))
+        elif end_cell < MIN_SPAN_CELLS:
+            messages.append(('error', f'covers {end_cell} r cell(s); a focused beam needs at least {MIN_SPAN_CELLS} '
+                                      '(and should hold the whole beam)'))
+        elif not has_uniform_spacing(r_widths[:end_cell]):
+            messages.append(('error', f'has non-uniform r cells ({float(np.min(r_widths[:end_cell])):.4g} .. '
+                                      f'{float(np.max(r_widths[:end_cell])):.4g} m); keep the line in a uniform part '
+                                      'of the mesh'))
+        row = containing_cell(position, z_edges, z_first, z_last)
+        rows = np.arange(row - NORMAL_RANGE, row + NORMAL_RANGE + 1)
+        if rows[0] < z_first or rows[-1] > z_last:
+            messages.append(('error', f'lies within {NORMAL_RANGE} rows of the z window edge: the launch reads '
+                                      f'{NORMAL_RANGE} uniform rows on either side of the line; move it inside'))
+        elif not has_uniform_spacing(z_widths[rows]):
+            messages.append(('error', f'lies where the z cell heights change ({float(z_widths[rows].min()):.4g} .. '
+                                      f'{float(z_widths[rows].max()):.4g} m over the {NORMAL_RANGE} rows either '
+                                      'side); keep the line in a uniform part of the mesh'))
+        else:
+            neighbours = [0.5 * (z_edges[other] + z_edges[other + 1]) for other in rows if other != row]
+            band = (float(z_edges[rows[0]]), float(z_edges[rows[-1] + 1]))
+            messages += _focused_beam_row_messages(vctx, physics_spec, 'x', position, (start, end), neighbours, band)
+            messages += _line_medium_messages(vctx, position, (start, end), neighbours)
+    index = _line_medium_index(vctx, 'x', position, (start, end), physics_type)
+    aperture = values['numerical_aperture']
+    sign = 1.0 if values['direction'] == 'positive' else -1.0
+    if aperture is not None and math.isfinite(index):
+        try:
+            aperture_sine(aperture, index)
+        except ValueError:
+            messages.append(('error', f'has numerical_aperture {aperture:g}, not below the index {index:.4g} of the '
+                                      'medium at the line (NA = n sin(theta_max), theta_max < 90 deg); lower it'))
+            return messages
+        worst = 0.0
+        for wavelength in sorted({min(wavelengths), max(wavelengths)}) if wavelengths else ():
+            try:
+                level = line_end_level(2.0 * math.pi * float(C0) / wavelength, index, aperture, values['fill_factor'],
+                                       end, position - values['focus_z'], sign)
+            except ValueError as exc:   # a line far too long for its quadrature
+                messages.append(('error', str(exc)))
+                return messages
+            worst = max(worst, level) if math.isfinite(level) else worst
+        if worst > _BEAM_END_LEVEL:
+            messages.append(('warning', f'stops at r = {end:.4g} m where the beam is still {worst:.2g} of its peak on '
+                                        f'the line (above {_BEAM_END_LEVEL:g}; continuum beam at the solved '
+                                        'wavelengths), so the cut edge launches a diffracted wave and light leaks '
+                                        'upstream; lengthen the line, or lower fill_factor (softer pupil edge)'))
+    if sign * (values['focus_z'] - position) < 0.0:
+        messages.append(('info', f"has its focus upstream of the line (z = {values['focus_z']:.4g} m): the beam "
+                                 'diverges from a virtual focus'))
+    return messages
+
+
+def _validate_focused_beam(vctx, physics_spec, feature_spec, values):
+    """Line axis-aligned inside the domain; the physics settings it refuses (_focused_beam_physics_issues); per line
+    the placement, medium, aperture and line-end checks (_focused_beam_line_messages: errors first for what
+    bor_focused_beam_line / BORFocusedBeam refuse at run time); the eigen-solved warning."""
+    path = feature_path(physics_spec, feature_spec)
+    issues = (_line_issues(vctx, physics_spec, feature_spec)
+              + eigen_only_feature_issues(vctx, physics_spec, feature_spec)
+              + _focused_beam_physics_issues(vctx, physics_spec, path))
+    physics_type = vctx.registry.physics_type(physics_spec.type)
+    wavelengths = resolved_solved_wavelengths(vctx, physics_spec, physics_type)
+    return issues + _shape_issues(
+        vctx, physics_spec, feature_spec, 'line', lambda shape: _focused_beam_line_messages(
+            vctx, physics_spec, shape.values, values, physics_type, wavelengths), needs_mesh=False)
+
 
 _FEATURES = (
     FeatureType('point_source', 'Point source', 'source', 'point', params=_POINT_SOURCE_PARAMS,
@@ -420,6 +650,10 @@ _FEATURES = (
                         'each solved wavelength. Pair it with mode monitors for transmission and reflection.',
                 apply=_apply_mode_source, result=object_result(bor_mode_source_result),
                 validate=_validate_line_monitor(port=True)),
+    FeatureType(FOCUSED_BEAM_FEATURE, FOCUSED_BEAM_LABEL, 'source', 'line', params=_FOCUSED_BEAM_PARAMS,
+                object_kinds=('line',), max_entities=1, description=_FOCUSED_BEAM_DESCRIPTION,
+                summary=_FOCUSED_BEAM_SUMMARY, apply=apply_focused_beam, validate=_validate_focused_beam,
+                memory_estimate=bor_focused_beam_memory_estimate),
     FeatureType('flux_monitor', 'Flux monitor', 'monitor', 'line', object_kinds=('line',), max_entities=1,
                 result_kind='flux_spectrum', description=_FLUX_DESCRIPTION,
                 summary='Measures the power crossing a horizontal disc or annulus (upward positive) or a vertical '
@@ -544,7 +778,8 @@ def _solver_issues(vctx, physics_spec, path):
         issue = size_issue_for(int(vctx.mesh.nx), int(vctx.mesh.ny))
         if issue is not None:
             issues.append(Issue(issue[0], path, issue[1]))
-    return issues + missing_source_issues(vctx, physics_spec, path, ('point_source', 'mode_source'),
+    return issues + missing_source_issues(vctx, physics_spec, path, ('point_source', 'mode_source',
+                                                                     FOCUSED_BEAM_FEATURE),
                                           ('stationary', FREQUENCY_DOMAIN_STUDY))
 
 
@@ -720,16 +955,49 @@ def _time_estimate(settings_values, mesh, context):
     ports = _port_mode_estimate(mesh, context, assemblies, kind)
     if ports is not None:
         assembly = te.combine((assembly, ports))
+    # brillouin_scattering scan positions: one more solve each on the kept factor (solve_moved_beam, single order),
+    # once after the background stage; the focused beams' incident fields and the drive-field reads
+    scan = float(brillouin_scan_solves(context.spec, context.name))
+    assembly = te.combine((assembly, _focused_beam_time_estimate(settings_values, mesh, context, nnz, points + scan),
+                           brillouin_drive_time_items(context, unknowns, nnz, window_cell_count(mesh), 3, host=True)))
     if line_block:
         return te.combine((assembly, context.solver_work('shifted', unknowns=unknowns, nnz=nnz, value_bytes=16,
-                                                         solves=assemblies * n_orders, solves_kind=kind,
+                                                         solves=assemblies * n_orders + scan, solves_kind=kind,
                                                          rhs=solves_per_assembly / n_orders, block_size=block)))
     # a material change at the same omega: GMRES on the kept SuperLU factor (cuDSS refactorises on its kept plan)
     recycled = context.coupled and not listed and not linear_solver_cudss(context.solvers)
     return te.combine((assembly, context.solver_work(
-        'linear', unknowns=unknowns, nnz=nnz, value_bytes=16, solves=assemblies * solves_per_assembly,
+        'linear', unknowns=unknowns, nnz=nnz, value_bytes=16, solves=assemblies * solves_per_assembly + scan,
         solves_kind=kind, factorizations=points if recycled else assemblies * n_orders, factorizations_kind=kind,
         factor_scale=BOR_LU_SCALE, solve_scale=BOR_SOLVE_SCALE, backend='cpu')))   # host matrix on either backend
+
+
+def _focused_beam_time_estimate(settings_values, mesh, context, nnz, builds):
+    """Per enabled focused_beam: its unit slices `builds` times (one per solved wavelength and scan position;
+    bor_focused_beam BORFocusedBeam._unit_slices): the Debye quadrature over the 2 (3 n_line + 1) slice keys (n_line
+    <= the r cells; angular nodes theta_node_count of the phase span k0 NA (r + z extent), an upper bound of k (rho_max
+    s_m + |d|_max (1 - cos theta_max)) since n (1 - cos theta_max) <= NA) and the interface-power product, plus per
+    build one right-hand side (two operator products; host)."""
+    beams = [feature for feature in context.physics_spec.features
+             if feature.enabled and feature.type == FOCUSED_BEAM_FEATURE]
+    if not beams:
+        return te.TimeEstimate(())
+    k0 = 2.0 * math.pi / float(settings_values['wavelength'])
+    extent = float(mesh.x_edges[-1] - mesh.x_edges[0]) + float(mesh.y_edges[-1] - mesh.y_edges[0])
+    keys = 2.0 * (3.0 * float(mesh.nx) + 1.0)
+    values = 0.0
+    for feature in beams:
+        aperture = (feature.params or {}).get('numerical_aperture')
+        aperture = float(aperture) if isinstance(aperture, (int, float)) and aperture > 0.0 else 1.0
+        try:
+            nodes = theta_node_count(k0 * aperture * extent)
+        except ValueError:   # the run raises (validation reports it)
+            nodes = 0
+        values += keys * nodes
+    ops = (te.DenseFlops(QUADRATURE_FLOPS_PER_VALUE * values, host=True),
+           te.HostStream(3.0 * float(len(beams)) * _CSR_ENTRY_BYTES * float(nnz)), te.PythonCalls(80 * len(beams)))
+    return te.TimeEstimate((te.TimeItem('focused beam incident fields (Debye quadrature) and right-hand sides',
+                                        'solve', float(builds), 'exact', ops),))
 
 
 # ... of a triangles mesh: host bytes per stored entry of one fem_bor assembly (degree-6 quadrature-point coefficients

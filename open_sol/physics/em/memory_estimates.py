@@ -18,6 +18,7 @@ from ...solvers.cudss_factor import (CUDSS_SOLVE_PHASE, FactorFill, factor_devic
 from ...solvers.host_direct import (HOST_DIRECT_FACTORIZATIONS, factor_label, host_direct_precision, solver_host_bytes,
                                     superlu_bytes_scale)
 from ...solvers.sparse_direct import CUDSS_BACK_ENDS, HOST_FACTOR_BACK_ENDS
+from .bor_focused_beam import CHUNK_VALUES as _DEBYE_CHUNK_VALUES, QUADRATURE_BYTES_PER_VALUE
 from .definition_bloch import bloch_active_axes
 from .definition_common import (FREQUENCY_DOMAIN_STUDY, _q_accum_referenced, _study_wavelengths, brillouin_reads,
                                 brillouin_scan_solves, eigen_solved)
@@ -754,6 +755,23 @@ def focused_beam_memory_estimate(values, n_selected_cells, mesh):
                           3 * COMPLEX128_BYTES * int(mesh.n_cells)),))
 
 
+def bor_focused_beam_memory_estimate(values, n_selected_cells, mesh):
+    """FeatureType.memory_estimate of an em_fdfd_bor focused_beam (bor_focused_beam.BORFocusedBeam; n_selected_cells =
+    the line's r cells), all on the host (the BOR solves there): the kept unit slices (2 slices x (3 n + 1) keys of
+    complex128 values, the int64 codes / indices), one Debye quadrature block (bor_focused_beam.CHUNK_VALUES point x
+    angle values at QUADRATURE_BYTES_PER_VALUE: an upper bound, smaller lines use fewer) and the int64 inverse map
+    (full E vector) a key-position lookup builds; the right-hand side vectors themselves are the physics' items."""
+    n_line = max(int(n_selected_cells), 1)
+    keys = 3 * n_line + 1
+    full_vector = 3 * int(mesh.n_cells) + int(mesh.nx) + int(mesh.ny)   # (nr + 1) nz + nr nz + nr (nz + 1)
+    return MemoryEstimate.from_items(host_items=(
+        ('focused beam unit slices (2 x complex128 values per key, int64 codes and indices)',
+         2 * keys * (COMPLEX128_BYTES + _INT64_BYTES)),
+        ('focused beam Debye quadrature block (point x angle values, upper bound)',
+         _DEBYE_CHUNK_VALUES * QUADRATURE_BYTES_PER_VALUE),
+        ('focused beam key-position lookup (int64 inverse map of the full E vector)', _INT64_BYTES * full_vector)))
+
+
 def brillouin_drive_items(context, n_unknowns, window_cells, field_components, solve_vector_bytes=0, rhs_vectors=1,
                           drive_field_vectors=0, on_host=False):
     """(host items, transient items) of what brillouin_scattering features (definition_common.brillouin_reads /
@@ -920,6 +938,12 @@ def bor_memory_estimate(settings_values, mesh, context):
                    ('solution, rhs and centre phasors (complex128)', (4 * 3 + 6) * COMPLEX128_BYTES * n_cells),
                    ('kept materials (eps_rr, eps_phiphi, eps_zz, mu complex128, pec) and Yee fields of the driven solve',
                     (4 + 6) * COMPLEX128_BYTES * n_cells + n_cells)]
+    # brillouin_scattering reads / scan solves (fdfd_bor solve_moved_beam, all on the host): the rhs sum and a focused
+    # beam's TFSF temporaries (bor_ports.slice_tfsf_rhs: incident vector, two operator products, the masked product and
+    # the difference); drive_fields of a moved solution: its Yee fields and centre phasors (~4 unknown vectors)
+    drive_host, _ = brillouin_drive_items(context, unknowns, window_cell_count(mesh), 3, rhs_vectors=6,
+                                          drive_field_vectors=4, on_host=True)
+    host_items += drive_host
     n_listed = len(settings_values.get('azimuthal_orders') or ())
     order_sum = bool(n_listed) and study_type in ('stationary', FREQUENCY_DOMAIN_STUDY)   # the driven order sum
     n_orders = max(n_listed, 1) if eigen or order_sum else 1

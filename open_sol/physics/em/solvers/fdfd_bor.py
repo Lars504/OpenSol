@@ -20,8 +20,10 @@ from ..fdfd_line_block import MAX_BATCH_WAVELENGTHS
 from ....solvers.line_block import LineBlockFactorization, LineBlockSolver, RejectedLineBlockSolve
 from ....solvers.host_direct import HOST_DIRECT_BACK_ENDS
 from ....solvers.sparse_direct import CUDSS_BACK_ENDS
+from ..bor_focused_beam import BORFocusedBeam, bor_focused_beam_line
 from ..bor_ports import BORModeMonitor, BORModeSource
 from ..eigenfrequency import resonance_table_result
+from ..focused_beam import DriveFields
 from ..fdfd_monitors import _ascending_wavelength, probe_phasor_result
 from ..harmonic import cell_permeability, cell_permittivity, shown_phasor_fields
 from ..materials import register_em_arrays
@@ -85,8 +87,9 @@ def bor_far_field_box(domain, boundary_config, x0, y0, x1, y1):
 
 
 class BORPhysics(HostFDFDBase, PhysicsSolver):
-    """Frequency-domain EM of a body of revolution at azimuthal order m: driven solves (point currents, mode ports) at
-    omega and shift-invert resonances, on the host; the shown solution feeds the float32 centre fields."""
+    """Frequency-domain EM of a body of revolution at azimuthal order m: driven solves (point currents, mode ports,
+    focused beams) at omega and shift-invert resonances, on the host; the shown solution feeds the float32 centre
+    fields."""
     # FDFDPhysics attribute set (domain, polarization, boundary_config, sources, monitors, dispersive_regions,
     # pec_cells, finalize_warnings, permittivity_arrays, enable_q_accum, solved_omega, n_solves, eigen_solve,
     # selected_resonance, linear_solver, eigen_solver) plus axisymmetric = True (Session ring-weights field derived
@@ -106,6 +109,10 @@ class BORPhysics(HostFDFDBase, PhysicsSolver):
     # term_rhs); per listed m one factor of A(m) solves +m and -m (body_of_revolution.order_pair_fields), monitors
     # accumulate per order (record_order) and total (record); shown fields = the phi = 0 sum, q_abs = its phi mean; no
     # factor is kept (a re-solve factorises every order again), mode ports are refused.
+    # Focused beams (bor_focused_beam.BORFocusedBeam, azimuthal order 1, no order sum) and the drive contract of
+    # brillouin_scattering: drive_sources(), solve_moved_beam(source, offset) (one more solve of the kept system on
+    # its factor, solution / monitors / q_abs / n_solves untouched, extra_solves counted) and drive_fields(solution)
+    # (focused_beam.DriveFields of the standing-wave amplitudes {'r': E_r, 'phi': -j E_phi, 'z': E_z}).
     # 'linear' back_end cudss / cudss_mixed: an LDL^T of the complex symmetric operator (row scale (|diag K| + k0^2
     # |M|)^-1/2, as the eigen-solve) instead of SuperLU; not recyclable, so a replaced factor is kept as _cudss_previous
     # and the next factorisation (new omega, material, order, order-sum term) refactorises it in place: one cuDSS plan
@@ -132,7 +139,8 @@ class BORPhysics(HostFDFDBase, PhysicsSolver):
         self._azimuthal_order = int(azimuthal_order)
         self.azimuthal_orders = azimuthal_orders
         # omega, the linear / eigen solvers, the source / monitor / solve record and the float32 display fields
-        # (BOR_STATE_NAMES) of HostFDFDBase; sources: BORPointCurrent, bor_ports.BORModeSource; monitors:
+        # (BOR_STATE_NAMES) of HostFDFDBase; sources: BORPointCurrent, bor_ports.BORModeSource,
+        # bor_focused_beam.BORFocusedBeam; monitors:
         # CentrePhasorProbe, BORFluxMonitor, BORNearToFar, bor_ports.BORModeMonitor
         self._init_host_fdfd(domain, wavelength, linear_solver, eigen_solver)
         self.shifted_solver = shifted_solver   # the build's 'shifted' role (line_block: device factors), may be None
@@ -165,6 +173,7 @@ class BORPhysics(HostFDFDBase, PhysicsSolver):
         self._yee = None             # body_of_revolution.yee_fields of the last driven solve (monitors)
         self._assembly_dirty = True
         self.order_sum_info = None    # dict (orders, unknowns, linear texts) of the last driven order sum
+        self.n_extra_solves = 0       # solve_moved_beam solves (scan positions; solution / monitors untouched)
         self.driven_orders = driven_orders
 
     @property
@@ -274,6 +283,13 @@ class BORPhysics(HostFDFDBase, PhysicsSolver):
         if linear.back_end in CUDSS_BACK_ENDS:
             return self._cudss_summary(text)
         return text + self._host_factor_summary(linear.back_end in HOST_DIRECT_BACK_ENDS)
+
+    def work_counters(self):
+        """HostFDFDBase.work_counters plus, with a focused beam, extra_solves (the scan solves of solve_moved_beam)."""
+        counters = super().work_counters()
+        if self.drive_sources():
+            counters['extra_solves'] = self.n_extra_solves
+        return counters
 
     def yee(self):
         """body_of_revolution.yee_fields of the last driven solve (host, cached per solve; an order sum: the phi = 0
@@ -575,6 +591,107 @@ class BORPhysics(HostFDFDBase, PhysicsSolver):
         """Port monitor (bor_ports.BORModeMonitor) on the z = position line over r = span (from the axis, or annular)."""
         row, span_cells, label = port_cells(self.domain, 'x', position, span, 'Mode monitor')
         return self._add_monitor(BORModeMonitor(self, row, span_cells, mode_number, label))
+
+    # --- focused beams and their drive contract (brillouin_scattering: physics/mechanics) ---
+
+    def add_focused_beam(self, axis, position, span, power, numerical_aperture, focus, fill_factor=1.0,
+                         direction='positive', phase=0.0, name=''):
+        """One-sided focused beam (bor_focused_beam.BORFocusedBeam: the x-polarised Debye beam, the azimuthal order 1
+        standing wave) from a horizontal line (axis 'x' = along r at z = position [m]; span = (start, end) along r [m],
+        starting on the axis): `power` [W] of the linearly polarised beam toward +z ('positive') or -z (a flux_monitor
+        reads 2 x power: it counts the travelling exp(-j phi) wave), numerical_aperture < n of the line medium,
+        fill_factor = pupil Gaussian waist / pupil radius, focus = (z,) the drawing-frame z [m] of the focus on the
+        axis, phase [deg] of E_x at the focus; name keys drive_sources ('' = 'focused_beam_<k>'). ValueError for a
+        vertical line, one not starting on the axis, non-uniform cells along / across it, a pec / pmc z face or a
+        repeated name (bor_focused_beam.bor_focused_beam_line)."""
+        existing = self.drive_sources()
+        name = str(name) or f'focused_beam_{len(existing) + 1}'
+        if name in existing:
+            raise ValueError(f"focused beam name '{name}' is taken; names of this physics: {', '.join(existing)}")
+        focus = tuple(float(value) for value in focus)
+        if len(focus) != 1:
+            raise ValueError(f"Focused beam '{name}': focus must be (z,) [m], the focus on the axis, got {focus!r}")
+        label = f"Focused beam '{name}'"
+        line = bor_focused_beam_line(self.domain, self.boundary_config, axis, position, span, direction, label)
+        return self._add_source(BORFocusedBeam(line, power, numerical_aperture, focus[0], fill_factor, phase,
+                                               self.polarization, name))
+
+    def drive_sources(self) -> dict:
+        """{name: BORFocusedBeam} of the focused beams, in source order: the illuminations a solid's drive may name
+        (each has name, incident_power [W, the standing wave], focus (0, z) [m], direction, wavelength [m],
+        polarization)."""
+        return {source.name: source for source in self.sources if isinstance(source, BORFocusedBeam)}
+
+    def _require_driven_solution(self, method):
+        """ValueError unless solution is the single-order driven solve of the current system (no reassembly, order or
+        source change, no shown resonance, no order sum since)."""
+        if self.selected_resonance is not None:
+            raise ValueError(f'{method}: resonance {self.selected_resonance} is shown, not the driven solve; solve the '
+                             'driven problem first (step())')
+        if self._driven_orders:
+            raise ValueError(f'{method}: a driven order sum (azimuthal_orders) has no single solution; a focused beam '
+                             'needs azimuthal_order 1 alone')
+        if self.solution is None or self.system is None:
+            raise ValueError(f'{method}: not solved yet (the optics solves in the background stage of the study first)')
+        if self._assembly_dirty or self._system_dirty or self._solution_dirty:
+            raise ValueError(f'{method}: the materials, the order or a source of this physics changed since its last '
+                             'solve (a coupling or material update after the background solve?); solve it again first '
+                             '(step())')
+
+    def solve_moved_beam(self, source, offset):
+        """Host complex128 active solution vector of the current system with the focused beam `source` (one of
+        drive_sources()) moved by the drawing-frame offset (dr, dz) [m] (dr must be 0: the focus stays on the axis; no
+        snapping) and every other source unchanged, on the kept factor of the last solve (GMRES-recycled or line-block
+        as that solve was): one more solve, counted in extra_solves; solution, monitors, q_abs, n_solves and the solve
+        summary stay those of the last solve. Offset (0, 0) returns self.solution itself (do not write into it).
+        ValueError for a source of another physics, before a solve, after a change since it, while a resonance or an
+        order sum is shown, and for dr != 0."""
+        if not isinstance(source, BORFocusedBeam) or not any(item is source for item in self.sources):
+            raise ValueError(f"solve_moved_beam: {source!r} is not a focused beam of this physics (its focused beams: "
+                             f"{', '.join(self.drive_sources()) or 'none'})")
+        self._require_driven_solution('solve_moved_beam')
+        dr, dz = (float(value) for value in offset)
+        if dr == 0.0 and dz == 0.0:
+            return self.solution
+        moved = source.moved((dr, dz))
+        system = self.system
+        rhs = np.zeros(system.n_unknowns, dtype=np.complex128)
+        for item in self.sources:
+            rhs += (moved if item is source else item).rhs(self, system)
+        shown_texts = (self.last_recycled_iterations, self.last_linear_text)   # solve_summary keeps the last solve
+        solution = self._solve_linear(system, rhs)
+        self.last_recycled_iterations, self.last_linear_text = shown_texts
+        self.n_extra_solves += 1
+        return solution
+
+    def drive_fields(self, solution):
+        """focused_beam.DriveFields (host) of a driven solution of the current system (self.solution or a
+        solve_moved_beam result): fields = the m = 1 standing-wave amplitudes at the window cell centres (edge points
+        averaged, the axis E_r recovered), keyed {'r': E_r, 'phi': -j E_phi (= u, brillouin.azimuthal_parts' A_phi),
+        'z': E_z}; eps = the cell permittivity each component sees {'r': eps_rr, 'phi': eps_phiphi, 'z': eps_zz}
+        (complex: sigma_e and poles included; no subpixel smoothing in BOR); x = r from the axis, y = z (drawing frame)
+        of the window centres; the PEC cells or None; omega. ValueError as solve_moved_beam's state checks, or for
+        another shape."""
+        self._require_driven_solution('drive_fields')
+        system = self.system
+        if np.shape(solution) != (system.n_unknowns,):
+            raise ValueError(f'drive_fields: solution shape {np.shape(solution)} is not the ({system.n_unknowns},) '
+                             'active unknowns of the current system')
+        window = tuple(self._window)
+        if window[0].start != 0:
+            raise ValueError('drive_fields: the r window must start on the axis (x_lo is the axis r = 0)')
+        if solution is self.solution and self.centre_phasors is not None:
+            phasors = self.centre_phasors   # the shown solve's centre phasors (_show)
+        else:
+            phasors = centre_fields(system, np.asarray(solution, dtype=np.complex128))[0]
+        x, y = (np.array(np.asarray(centres, dtype=np.float64)[part])
+                for centres, part in zip(self.domain.cell_centers(), window))
+        fields = {'r': np.array(phasors['er'][window]), 'phi': -1j * phasors['ephi'][window],
+                  'z': np.array(phasors['ez'][window])}
+        eps = {name: np.array(system.cell_eps[name][window]) for name in BOR_SOURCE_COMPONENTS}
+        pec = None if self.pec_cells is None else np.array(to_host(self.pec_cells)[window], dtype=bool)
+        return DriveFields(omega=float(system.omega), x=x, y=y, fields=fields, eps=eps, pec=pec,
+                           polarization=self.polarization)
 
     def _add_monitor(self, monitor):
         """Append a monitor; record the shown driven solve at once when there is one (an order sum: at the next solve,

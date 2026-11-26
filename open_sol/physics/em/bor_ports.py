@@ -10,8 +10,11 @@ z = const line (from the axis or annular), the one-sided mode source, the mode m
 # (body_of_revolution.box_flux, exact); modes carry 1 W. Reciprocity form W(G, F) = G_s^T A_+ F_{s+1} - G_{s+1}^T A_-
 # F_s: independent of s for source-free solutions, 0 between modes unless partners, so a_+ = W(F_-, F) / W(F_-, F_+)
 # and a_- = W(F_+, F) / W(F_+, F_-) from the field on slices q, q+1. Source (one-sided TFSF as fdfd_ports): b = A (Q u)
-# - Q (A u), Q = slices >= q (positive) or <= q (negative), u = the incident mode on the two slices across the
-# interface. Port lines start on the axis or at an inner cell edge (annular: the strip cells below it are PEC, so the
+# - Q (A u), Q = slices >= q (positive) or <= q (negative), u = the incident field on the two slices across the
+# interface (slice_tfsf_rhs: the one TFSF writer of the BOR sources, mode_source_rhs and bor_focused_beam); its power
+# toward the launch direction is pi / (omega mu0) Im(u_up^H (A u_q)_up) (slice_interface_power: the X_s^H A_+ X_{s+1}
+# form toward +z, its transpose toward -z; exact while the coupling blocks are real: lossless mu, no PML stretch).
+# Port lines start on the axis or at an inner cell edge (annular: the strip cells below it are PEC, so the
 # start is a pec wall there and the line keys of those cells drop out); an end on the last window cell continues
 # through the r_hi cpml (or ends on its pec / pmc wall), an end inside the domain is a pec wall on that cell edge. A
 # metal end is exact when the model's cells beyond it are PEC too (e.g. the inner conductor of a coaxial guide).
@@ -97,6 +100,26 @@ def _inverse_index(system):
     return inverse
 
 
+def line_keys(n_line):
+    """(codes, indices) int64 slice keys of a line over the r cells [0, n_line) from the axis: E_r on the edges 0 ..
+    n_line (code 0), then u (code 1) and E_z (code 2) of the cells 0 .. n_line - 1."""
+    n_line = int(n_line)
+    codes = np.concatenate((np.zeros(n_line + 1, dtype=np.int64), np.ones(n_line, dtype=np.int64),
+                            np.full(n_line, 2, dtype=np.int64)))
+    indices = np.concatenate((np.arange(n_line + 1), np.arange(n_line), np.arange(n_line)))
+    return codes, indices
+
+
+def key_positions(system, codes, indices, slice_index):
+    """int (n_s,) active positions in `system` of slice keys (codes, indices) at slice `slice_index` (-1: inactive
+    there, e.g. the axis E_r at |m| >= 1 or a PEC point); ValueError for a slice or key outside the grid."""
+    if not 0 <= slice_index < system.shape[1]:
+        raise ValueError(f'slice {slice_index} is outside the {system.shape[1]} z rows')
+    if np.any(indices[codes == 0] > system.shape[0]) or np.any(indices[codes != 0] >= system.shape[0]):
+        raise ValueError(f'slice keys reach beyond the {system.shape[0]} r cells of the grid')
+    return _inverse_index(system)[_full_indices(system.shape, codes, indices, slice_index)]
+
+
 def slice_positions(system, port_modes, slice_index):
     """int (n_s,) active positions in `system` of the port's slice keys at slice `slice_index` (-1: inactive there)."""
     if not 0 <= slice_index < system.shape[1]:
@@ -159,9 +182,7 @@ def solve_port_modes(dr_cells, row_width, end_kind, boundary_config, pml_dx, lin
                                    eps_zz=rows(line_materials.eps_zz))
     strip = assemble_bor((dr_cells, np.full(_STRIP_ROWS, row_width)), strip_config, pml_dx, strip_materials, omega,
                          azimuthal_order, window=(slice(0, int(n_window)), slice(0, _STRIP_ROWS)))
-    codes = np.concatenate((np.zeros(n_line + 1, dtype=np.int64), np.ones(n_line, dtype=np.int64),
-                            np.full(n_line, 2, dtype=np.int64)))
-    indices = np.concatenate((np.arange(n_line + 1), np.arange(n_line), np.arange(n_line)))
+    codes, indices = line_keys(n_line)
     inverse = _inverse_index(strip)
     positions = [inverse[_full_indices(strip.shape, codes, indices, s)] for s in range(_STRIP_ROWS)]
     keep = positions[1] >= 0
@@ -253,17 +274,40 @@ def mode_source_rhs(system, port_modes, mode, row, direction, amplitude):
     positive = direction == 'positive'
     upstream = row - 1 if positive else row + 1
     vector = mode.vector if positive else mode.backward
-    inside_positions = slice_positions(system, port_modes, row)
-    upstream_positions = slice_positions(system, port_modes, upstream)
+    return slice_tfsf_rhs(system, row, direction, slice_positions(system, port_modes, row), amplitude * vector,
+                          slice_positions(system, port_modes, upstream),
+                          amplitude * vector / mode.psi)   # one slice upstream: 1 / psi
+
+
+def slice_tfsf_rhs(system, row, direction, line_positions, line_values, upstream_positions, upstream_values):
+    """Active rhs (complex128 (n,)) of a one-sided TFSF interface between z slices (module header): incident values on
+    the slice keys of slice `row` (the first total-field slice) and of its upstream neighbour (row - 1 'positive', row
+    + 1 'negative'), keys at position -1 (inactive) skipped; b = A (Q u) - Q (A u), Q = the slices >= row ('positive')
+    or <= row. Two operator products; nonzero on the two slices only (the operator is block tridiagonal in slices)."""
+    if direction not in _DIRECTIONS:
+        raise ValueError(f'TFSF direction must be one of {_DIRECTIONS}, got {direction!r}')
     incident = np.zeros(system.n_unknowns, dtype=np.complex128)
-    keep = inside_positions >= 0
-    incident[inside_positions[keep]] = amplitude * vector[keep]
+    keep = line_positions >= 0
+    incident[line_positions[keep]] = line_values[keep]
     inside_product = system.operator @ incident
     keep = upstream_positions >= 0
-    incident[upstream_positions[keep]] = amplitude * vector[keep] / mode.psi   # one slice upstream: 1 / psi
+    incident[upstream_positions[keep]] = upstream_values[keep]
     slices = unknown_slices(system)
-    total_field = slices >= row if positive else slices <= row
+    total_field = slices >= row if direction == 'positive' else slices <= row
     return inside_product - total_field * (system.operator @ incident)
+
+
+def slice_interface_power(system, line_positions, line_values, upstream_positions, upstream_values) -> float:
+    """Power [W] toward the launch direction of incident slice values (slice_tfsf_rhs arguments) through the interface
+    face between the upstream and the line slice, with the 2 pi ring weight of the travelling exp(-j m phi) wave (the
+    flux_monitor convention): pi / (omega mu0) Im(u_up^H (A u_line)_up) (module header; one operator product)."""
+    incident = np.zeros(system.n_unknowns, dtype=np.complex128)
+    keep = line_positions >= 0
+    incident[line_positions[keep]] = line_values[keep]
+    product = system.operator @ incident
+    keep = upstream_positions >= 0
+    return math.pi / (system.omega * MU0) * float(np.vdot(upstream_values[keep],
+                                                          product[upstream_positions[keep]]).imag)
 
 
 def mode_amplitudes(system, port_modes, mode, solution, row):

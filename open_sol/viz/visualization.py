@@ -732,9 +732,10 @@ class Visualizer:
         if not em_solvers:
             return set()
         from ..core.sources import PointSource, LineSource
+        from ..physics.em.bor_focused_beam import BORFocusedBeam
         from ..physics.em.fdfd_ports import ModeSourcePhasor
-        from ..physics.em.fdfd_sources import (ElectricDipolePhasor, MagneticCurrentPhasor, PlaneWavePhasor,
-                                               PointCurrentPhasor, SheetCurrentPhasor)
+        from ..physics.em.fdfd_sources import (ElectricDipolePhasor, FocusedBeamPhasor, MagneticCurrentPhasor,
+                                               PlaneWavePhasor, PointCurrentPhasor, SheetCurrentPhasor)
         from ..physics.em.mode_ports import ModeSource
         from ..physics.em.sources import TFSFSource, TFSFSourceHz
         color = _STYLE['source_color']
@@ -757,8 +758,9 @@ class Visualizer:
                 # Total-field E_z / H_z cells: [x0, x1) x [y0, y1) (half-open).
                 _draw_box(ax, frame.box(source.x0, source.x1, source.y0, source.y1), color, '-.')
                 kinds.add('tfsf')
-            elif isinstance(source, (ModeSource, ModeSourcePhasor)):
-                # Through the line-cell centres over its solve range (clipped to the window when PML-extended).
+            elif isinstance(source, (ModeSource, ModeSourcePhasor, FocusedBeamPhasor, BORFocusedBeam)):
+                # One-sided TFSF lines (mode sources, focused beams): through the line-cell centres over the span
+                # (axis / position / span; clipped to the window when PML-extended).
                 xs, ys = frame.segment(source.axis, source.position, source.span)
                 ax.plot(xs, ys, color=color, linewidth=3.0, linestyle='--', alpha=0.8, zorder=9)
                 kinds.add('mode_source')
