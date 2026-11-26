@@ -26,33 +26,45 @@ sampled at the solid's quadrature points, the complex drive columns, the per-fre
 #   at the solid's azimuthal order (0: (0, even); 2: (2, even) co- / (2, odd) cross-polarised), summed per position in
 #   record. The solid's form is a geometry object (_ElementGeometry: triangles; _CellGeometry: rectangular cells), the
 #   only place the two mesh kinds differ (points, samplers, interfaces, assembly, raster cells).
-# - Sampling (triangles): fields bilinear between the window cell centres at the DrivePoints (points of the half cell
-#   between the outermost centres and the window edge, i.e. within one centre spacing of the centres' hull, take the
-#   hull value; farther ones raise: brillouin.bilinear_weights), eps the staircase value of the containing
-#   (nearest-centre) cell; a drive point in a PEC cell raises. The clamped edge half cell is the even mirror rule on a
-#   mirror-plane edge (bilinear between a centre and its even image); em_fdfd_bor adds the axis rule on x_lo (r = 0):
-#   the order-1 E_z ~ r is scaled by r / r_0 below the first centre r_0 (E_r, A_phi stay finite there). An odd field
-#   component on a mirror plane keeps its edge value in that half cell (no mirror signs here: an O(half cell) error of
-#   the strip). Rectangular cells (the optics on the solid's own mesh: same window cells, checked): one point per
-#   selected cell at its centre with weight dA, the cell's own fields and eps (no interpolation).
+# - Optical fields: DriveFields components on their own grids (DriveFields.grids: em_fdfd_hz E_x / E_y on their Yee
+#   faces, em_fdfd_bor E_r / E_z on their edges, the rest at the cell centres), so nothing is averaged along the beam
+#   (a face mean along a plane wave is low by cos(k h / 2)); their cell-centre values (_Optical.centred) come from the
+#   edge grids by the phase-corrected half step brillouin.edges_to_centres (exact for a plane wave). Every field
+#   interpolation removes the local phase first (brillouin.phase_corrected_sample: plain bilinear interpolation lowers
+#   a 2 n k0 drive by sinc^4(q h / 4), 1 - (q h)^2 / 24 in amplitude).
+# - Sampling (triangles): each component phase-corrected bilinear on its own grid at the DrivePoints (points of the
+#   half cell between the outermost sample coordinates and the window edge, i.e. within one spacing of their hull,
+#   take the hull value; farther ones raise: brillouin.bilinear_weights). eps per point: the staircase eps of the
+#   nearest optical cell (largest bilinear weight among the 4 of the cell-centre stencil) whose centre lies in a solid
+#   element of the point's own material (equal solid members flag and material values: the conforming solid mesh knows
+#   the material, the centre-tested staircase may not); a point with no such cell among the 4 (a feature thinner than
+#   an optical cell, or material values varying in space) takes the containing cell's eps and is counted in a bind
+#   warning. A drive point whose cell is PEC raises. The clamped edge half cell is the even mirror rule on a
+#   mirror-plane edge (bilinear between a sample and its even image); em_fdfd_bor adds the axis rule on x_lo (r = 0):
+#   the order-1 E_z ~ r (on the r centres) is scaled by r / r_0 below the first centre r_0 (E_r starts on the axis
+#   edge, A_phi stays finite there). An odd field component on a mirror plane keeps its edge value in that half cell
+#   (no mirror signs here: an O(half cell) error of the strip).
+#   Rectangular cells (the optics on the solid's own mesh: same window cells, checked): one point per selected cell at
+#   its centre with weight dA, the cell's own (centre) fields and eps (no interpolation).
 # - Moving boundary (triangles): interior edges between two window elements, touching the drive selection, whose sides
 #   differ in a solid material value (the conforming solid mesh marks material interfaces exactly; an optical interface
 #   inside one solid material, or between two materials of equal mechanics, is not found) AND in the optical eps of
-#   the cells containing the points one local cell diagonal off the edge midpoint into each side (so the
-#   centre-tested staircase cell lies on that side of a locally straight interface); per Gauss point the eps of each
-#   side is read at such diagonal points, its fields at FIELD_SHIFT x the local centre spacing along the normal (the
-#   two straddling centres for an edge on an optical face, as the rectangular cells read them; a diagonal shift
-#   lowered E_c E_i of a normal-incidence beam by ~1 - cos(1.5 q dx), 40 % at 20 cells per wavelength), f = the
-#   Johnson value (isotropic eps per side: the mean of the component eps). Rectangular cells: the interior Yee faces
-#   between two window cells, touching the selection, one of them a solid member, differing in a solid material value
-#   and in the optical eps; the sides are the two cells (normal +x / +y out of the lo cell), f l_face per face
-#   (brillouin.face_drive).
+#   their materials; each side's eps per Gauss point is the eps of the nearest cell of that side's material (as the
+#   drive points'; none among the 4: the staircase cell one local centre diagonal off the point into that side, clamped
+#   to the window, counted in the warning), isotropic (the mean of the component eps). The fields are read at the Gauss
+#   point itself: E (cell-centre values) and D = eps_cell E of the in-plane components, interpolated with one
+#   phase-corrected stencil, so E_par and D_n (continuous across the interface) are interpolated as such and no sample
+#   reaches into the other material (brillouin.interface_traction). Rectangular cells: the interior Yee faces between
+#   two window cells, touching the selection, one of them a solid member, differing in a solid material value and in
+#   the optical eps; the sides are the two cells (normal +x / +y out of the lo cell), f l_face per face (the two-sided
+#   brillouin.moving_boundary_traction, brillouin.face_drive).
 # - record(frequency, readouts w^H u per column): psd per position (brillouin.fdt_psd x scale, parts summed; an active
 #   readout raises). result(): frequencies ascending, the references describe the photoelastic drive: local = per
 #   position and material group the DHO lines of the points, compressed in relative |q| bins of LINE_BIN with the
 #   weighted-mean q per bin (the line shape is smooth in q: a 1e-4 bin shifts no line by more than ~1e-8 of its
-#   width); homogeneous = the kappa sigma~ raster of the optical cells inside the drive selection (planar, no mirror
-#   planes: the FFT needs the unfolded drive, one uniform isotropic material, uniform cells over its box).
+#   width); homogeneous = the kappa sigma~ raster (cell-centre fields) of the optical cells inside the drive selection
+#   (planar, no mirror planes: the FFT needs the unfolded drive, one uniform isotropic material, uniform cells over its
+#   box; zero padding per axis from the phonon attenuation: brillouin.homogeneous_padding).
 import math
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
@@ -61,10 +73,11 @@ import numpy as np
 
 from ...fem.elastic_drives import assemble_edge_drive, assemble_stress_drive, drive_points, edge_drive_points
 from .brillouin import (AZIMUTHAL_PARTS, DETECTIONS, PLANAR_COMPONENTS, REFERENCES, BrillouinSpectra,
-                        amplitude_prefactor, azimuthal_moving_boundary, azimuthal_parts, bilinear_sample,
-                        bilinear_weights, brillouin_result, cell_stress_drive, face_drive, fdt_psd, field_products,
-                        homogeneous_reference, local_reference, local_wavenumbers, longitudinal_function,
-                        modulus_function, moving_boundary_traction, optical_stress, solid_rows)
+                        amplitude_prefactor, azimuthal_interface_traction, azimuthal_parts, bilinear_sample,
+                        bilinear_weights, brillouin_result, cell_stress_drive, edges_to_centres, face_drive, fdt_psd,
+                        field_products, homogeneous_reference, interface_traction, local_reference, local_wavenumbers,
+                        longitudinal_function, modulus_function, moving_boundary_traction, optical_stress,
+                        phase_corrected_sample, solid_rows)
 from .viscoelastic import parameter_groups
 
 TORSION_WARNING = 1e-3   # bind warns when the dropped m = 0 torsion share of a cross-polarised drive exceeds it
@@ -72,11 +85,12 @@ LINE_BIN = 1e-4          # relative |q| bin of the compressed local-reference li
 _EPS_RTOL = 1e-12        # two eps samples differ (an optical interface) above this share of the larger
 _OMEGA_RTOL = 1e-9       # incident and collection optics at one wavelength
 _SPACING_RTOL = 1e-9     # uniform optical cells over the homogeneous raster
-FIELD_SHIFT = 0.5        # triangles: moving-boundary field samples this x the local centre spacing along the normal
 # DriveFields components -> brillouin field names: planar optics by polarization; em_fdfd_bor gives the m = 1
 # standing-wave amplitudes (E_r, A_phi = u = -j E_phi, E_z) as 'r', 'phi', 'z' already (fdfd_bor.drive_fields)
 _PLANAR_FIELDS = {'ez': (('ez', 'z'),), 'hz': (('ex', 'x'), ('ey', 'y'))}
 _BOR_FIELDS = (('r', 'r'), ('phi', 'phi'), ('z', 'z'))
+# in-plane components (the moving boundary's D = eps E is read of these): planar (x, y), axisymmetric (r, z)
+_IN_PLANE = {True: ('x', 'y'), False: ('r', 'z')}
 # (aa, bb, ab) rows of the solid stress the longitudinal projection reads: planar (xx, yy, xy), axisymmetric
 # (rr, zz, rz)
 _PLANE_ROWS = {False: (0, 1, 2), True: (0, 1, 3)}
@@ -137,38 +151,67 @@ class CellDriveInputs:
 
 
 class _GridSamples:
-    """Bilinear samples of window cell arrays (n_x, n_y) at fixed points (brillouin.bilinear_weights, the edge half
-    cells clamped: module header) and the containing (largest-weight) cell of each point; axis=True (em_fdfd_bor): the
-    axis rule in the half cell 0 <= r < r_0 of the first centre, where the order-1 E_z (~ r) is scaled by r / r_0."""
+    """Bilinear stencils (brillouin.bilinear_weights) of fixed points on one grid of sample coordinates x (n_x,), y
+    (n_y,), points within one spacing outside the coordinates' hull clamped onto it (module header): plain samples
+    (smooth values: the local wavenumbers) and phase-corrected ones (optical fields:
+    brillouin.phase_corrected_sample)."""
 
-    def __init__(self, x, y, points, what, axis=False):
-        points = np.asarray(points, dtype=np.float64).reshape(-1, 2)
+    def __init__(self, x, y, points, what):
         try:
             self.index, self.weight = bilinear_weights(x, y, _clamped(x, y, points))
         except ValueError as exc:
             raise ValueError(f'{what}: {exc}') from exc
-        self.cell = self.index[np.arange(len(self.index)), np.argmax(self.weight, axis=1)]
-        self.axis_factor = None   # (n,) r / r_0 below the first centre (1 elsewhere), or None
-        if axis and (points[:, 0] < x[0]).any():
-            self.axis_factor = np.clip(points[:, 0] / x[0], 0.0, 1.0)
 
     def sample(self, values) -> np.ndarray:
         return bilinear_sample(values, self.index, self.weight)
 
-    def fields(self, components) -> dict:
-        """{name: samples} of brillouin field components (the axis rule on 'z' of a BOR sampler)."""
-        samples = {name: self.sample(values) for name, values in components.items()}
+    def phased(self, arrays, phase_count=None) -> list:
+        return phase_corrected_sample(arrays, self.index, self.weight, phase_count)
+
+
+def _axis_factor(x, points, axis):
+    """(n,) r / r_0 below the first r centre r_0 (1 elsewhere) of axisymmetric points (the order-1 E_z ~ r on the
+    axis), or None (planar, or no point below r_0)."""
+    if not axis or not (points[:, 0] < x[0]).any():
+        return None
+    return np.clip(points[:, 0] / x[0], 0.0, 1.0)
+
+
+class _FieldSamples:
+    """The optical fields at fixed points (triangles; module header): one _GridSamples per distinct component grid
+    (DriveFields.grids), each component phase-corrected on its own grid, the cell-centre grid's (`centre`) also for
+    plain samples of cell values (the local wavenumbers) and the own-material cells; axis=True (em_fdfd_bor): the
+    axis rule on 'z'."""
+
+    def __init__(self, x, y, grids, points, what, axis=False):
+        points = np.asarray(points, dtype=np.float64).reshape(-1, 2)
+        self.centre = _GridSamples(x, y, points, what)
+        made = [(x, y, self.centre)]
+        self.components = {}
+        for name, (grid_x, grid_y) in grids.items():
+            sampler = next((kept for kept_x, kept_y, kept in made
+                            if np.array_equal(kept_x, grid_x) and np.array_equal(kept_y, grid_y)), None)
+            if sampler is None:
+                sampler = _GridSamples(grid_x, grid_y, points, what)
+                made.append((grid_x, grid_y, sampler))
+            self.components[name] = sampler
+        self.n_grids = len(made)
+        self.axis_factor = _axis_factor(x, points, axis)
+
+    def sample(self, values) -> np.ndarray:
+        return self.centre.sample(values)
+
+    def fields(self, optical) -> dict:
+        """{name: (n,) samples} of an _Optical's components, each on its own grid (the axis rule on 'z')."""
+        samples = {name: self.components[name].phased([values])[0] for name, values in optical.values.items()}
         if self.axis_factor is not None and 'z' in samples:
             samples['z'] = samples['z'] * self.axis_factor
         return samples
 
-    def cells(self, values) -> np.ndarray:
-        return np.asarray(values).reshape(-1)[self.cell]
-
 
 class _CellSamples:
-    """_GridSamples' interface on the window cells themselves (a rectangular-cell solid on the optics' mesh): the value
-    of each listed flat cell, no interpolation."""
+    """_FieldSamples' interface on the window cells themselves (a rectangular-cell solid on the optics' mesh): the
+    cell-centre value of each listed flat cell, no interpolation."""
 
     def __init__(self, cells):
         self.cell = np.asarray(cells, dtype=np.int64)
@@ -176,14 +219,41 @@ class _CellSamples:
     def sample(self, values) -> np.ndarray:
         return np.asarray(values).reshape(-1)[self.cell]
 
-    def fields(self, components) -> dict:
-        return {name: self.sample(values) for name, values in components.items()}
+    def fields(self, optical) -> dict:
+        return {name: self.sample(values) for name, values in optical.centred.items()}
 
     cells = sample
 
 
+class _InterfaceSamples:
+    """Moving-boundary fields at the interface Gauss points themselves (triangles; module header): one cell-centre
+    stencil; E (the cell-centre values of every component) and D = eps_cell E of the in-plane ones phase-corrected
+    with E's shared step, so E_par and D_n are interpolated as the continuous quantities they are (projections
+    commute with the stencil); the axis rule on 'z' (E_z and D_z)."""
+
+    def __init__(self, x, y, points, what, planar):
+        points = np.asarray(points, dtype=np.float64).reshape(-1, 2)
+        self.grid = _GridSamples(x, y, points, what)
+        self.in_plane = _IN_PLANE[planar]
+        self.axis_factor = _axis_factor(x, points, not planar)
+
+    def fields(self, optical, eps, shape) -> tuple:
+        """({name: E samples}, {in-plane name: D samples}) of an _Optical, eps the in-plane cell eps {'xx': ...},
+        reshaped to shape."""
+        names = list(optical.centred)
+        d_names = [name for name in names if name in self.in_plane]
+        arrays = [optical.centred[name] for name in names] + [eps[name + name] * optical.centred[name]
+                                                              for name in d_names]
+        samples = self.grid.phased(arrays, phase_count=len(names))
+        if self.axis_factor is not None:
+            samples = [values * self.axis_factor if name == 'z' else values
+                       for name, values in zip(names + d_names, samples)]
+        values = [array.reshape(shape) for array in samples]
+        return dict(zip(names, values[:len(names)])), dict(zip(d_names, values[len(names):]))
+
+
 def _clamped(x, y, points) -> np.ndarray:
-    """(n, 2) copy of points with coordinates within one centre spacing outside the centres' hull moved onto it."""
+    """(n, 2) copy of points with coordinates within one spacing outside the hull of x, y moved onto it."""
     points = np.array(points, dtype=np.float64).reshape(-1, 2)
     for axis, centres in enumerate((x, y)):
         low, high = centres[0], centres[-1]
@@ -203,17 +273,17 @@ def _centre_spacings(x, y, points) -> list:
     return widths
 
 
-def _side_shift(x, y, points) -> np.ndarray:
-    """(n,) diagonal of the local cell-centre spacing at points (the eps side-sample distance off an interface)."""
-    return np.hypot(*_centre_spacings(x, y, points))
-
-
-def _field_shift(x, y, points, normals) -> np.ndarray:
-    """(n,) FIELD_SHIFT x the local centre spacing along the unit normals (|n_x| dx + |n_y| dy): the field side-sample
-    distance off an interface (the straddling centres of an axis-aligned edge on an optical face)."""
-    width_x, width_y = _centre_spacings(x, y, points)
-    normals = np.asarray(normals, dtype=np.float64).reshape(-1, 2)
-    return FIELD_SHIFT * (np.abs(normals[:, 0]) * width_x + np.abs(normals[:, 1]) * width_y)
+def _nearest_cells(x, y, points) -> np.ndarray:
+    """(n,) flat index of the cell whose centre is nearest along each axis (coordinates beyond the centres clamped:
+    never raises)."""
+    points = np.asarray(points, dtype=np.float64).reshape(-1, 2)
+    indices = []
+    for axis, centres in enumerate((x, y)):
+        values = points[:, axis]
+        index = np.clip(np.searchsorted(centres, values, side='right') - 1, 0, len(centres) - 2)
+        index += values - centres[index] > centres[index + 1] - values
+        indices.append(index)
+    return indices[0] * len(y) + indices[1]
 
 
 def _uniform_spacing(centres, what) -> float:
@@ -225,30 +295,68 @@ def _uniform_spacing(centres, what) -> float:
     return float(steps.mean())
 
 
+@dataclass(frozen=True, eq=False)
+class _Optical:
+    """One solved optical field of a position in brillouin component names: values on their own grids (DriveFields
+    .grids, (x, y) coordinates per component) and the cell-centre values (centred: the edge grids' phase-corrected half
+    steps, brillouin.edges_to_centres; a centre grid's own array)."""
+    values: dict
+    grids: dict
+    centred: dict
+
+
 def _optical_arrays(fields, planar, label) -> tuple:
-    """({brillouin component: complex (n_x, n_y)}, {'cc': complex eps (n_x, n_y)}) of DriveFields; ValueError when
-    its components do not fit the solid's form."""
+    """(_Optical, {'cc': complex eps (n_x, n_y)}) of DriveFields; ValueError when its components do not fit the
+    solid's form, or a component grid is neither the cell centres nor the cell edges along an axis (a bug)."""
     names = _PLANAR_FIELDS.get(fields.polarization) if planar else _BOR_FIELDS
     keys = None if names is None else {key for key, _ in names}
-    if keys is None or set(fields.fields) != keys or set(fields.eps) != keys:
+    if keys is None or set(fields.fields) != keys or set(fields.eps) != keys or set(fields.grids) != keys:
         wanted = ('a planar solid: em_fdfd_ez {ez} or em_fdfd_hz {ex, ey}' if planar
                   else 'an axisymmetric solid: em_fdfd_bor {r, phi, z}')
         raise ValueError(f"{label}: the optical drive fields ({fields.polarization}: "
                          f"{', '.join(sorted(fields.fields))}) do not fit {wanted}")
-    components = {name: np.asarray(fields.fields[key], dtype=np.complex128) for key, name in names}
+    x, y = np.asarray(fields.x, dtype=np.float64), np.asarray(fields.y, dtype=np.float64)
+    values, grids, centred = {}, {}, {}
+    for key, name in names:
+        array = np.asarray(fields.fields[key], dtype=np.complex128)
+        grid = tuple(np.asarray(coordinates, dtype=np.float64) for coordinates in fields.grids[key])
+        if array.shape != tuple(len(coordinates) for coordinates in grid):
+            raise ValueError(f'{label}: drive field {key} has shape {array.shape}, its grid '
+                             f'{tuple(len(coordinates) for coordinates in grid)} (a bug)')
+        centre = array
+        for axis, (coordinates, centres) in enumerate(zip(grid, (x, y))):
+            if np.array_equal(coordinates, centres):
+                continue
+            if not (len(coordinates) == len(centres) + 1 and (coordinates[:-1] < centres).all()
+                    and (centres < coordinates[1:]).all()):
+                raise ValueError(f'{label}: drive field {key} lies on neither the cell centres nor the cell edges '
+                                 f'along axis {axis} (a bug)')
+            centre = edges_to_centres(centre, axis)
+        values[name], grids[name], centred[name] = array, grid, centre
     eps = {name + name: np.asarray(fields.eps[key], dtype=np.complex128) for key, name in names}
-    return components, eps
+    if any(values.shape != (len(x), len(y)) for values in eps.values()):
+        raise ValueError(f'{label}: the drive eps arrays are not on the {len(x)} x {len(y)} window cells (a bug)')
+    return _Optical(values=values, grids=grids, centred=centred), eps
+
+
+def _same_grids(first, second) -> bool:
+    """True when two {component: (x, y)} grid dicts hold the same components on equal coordinates."""
+    return set(first) == set(second) and all(np.array_equal(a, b) for name in first
+                                             for a, b in zip(first[name], second[name]))
 
 
 @dataclass(frozen=True, eq=False)
 class _Interfaces:
-    """Moving-boundary samples: the EdgeDrivePoints (rectangular cells: _FacePoints), the two side samplers (side 0 =
-    -shift n, side 1 = +shift n) of their flattened Gauss points (rectangular cells: the lo / hi cell of each face),
-    the isotropic eps of each side and the sample shape ((k, q); rectangular cells (k,))."""
+    """Moving-boundary samples: the EdgeDrivePoints (rectangular cells: _FacePoints), the _InterfaceSamples of their
+    flattened Gauss points (rectangular cells: None) or the two side samplers (rectangular cells: the lo / hi cell of
+    each face; triangles: None), the isotropic eps of each side's material, the sample shape ((k, q); rectangular cells
+    (k,)) and the points whose side eps fell back to the staircase cell (module header)."""
     points: object
+    sampler: object
     sides: tuple
     eps_sides: tuple
     shape: tuple
+    fallbacks: int
 
 
 @dataclass(frozen=True, eq=False)
@@ -274,9 +382,12 @@ class _Context:
     x: np.ndarray
     y: np.ndarray
     omega: float
-    volume: _GridSamples
+    grids: dict               # brillouin component -> (x, y) sample coordinates (the first position's DriveFields)
+    volume: object            # _FieldSamples / _CellSamples of the drive points
     eps_points: dict
+    eps_in_plane: dict        # in-plane cell eps {'xx': ...} the triangle moving boundary's D reads ({} otherwise)
     interfaces: object        # _Interfaces or None
+    fallbacks: int            # drive points whose eps is not their own material's (module header)
     point_laws: object        # int64 (n_points,) law index per drive point (-1 none), or None (reference 'none')
     laws: tuple               # ((longitudinal law, shear law, density), ...)
     raster: object            # _Raster or None
@@ -327,10 +438,21 @@ class _FacePoints:
     y_faces: np.ndarray
 
 
+def _material_groups(solid, elements) -> np.ndarray:
+    """int64 material group per listed mesh element: equal solid members flag and equal material values (NaN = NaN,
+    -0 = 0; bit-exact otherwise), numbered within this call."""
+    columns = [np.asarray(solid.solid, dtype=np.float64)[elements]]
+    columns += [np.asarray(values, dtype=np.float64)[elements] for values in solid.materials.values()]
+    table = np.stack(columns, axis=1) + 0.0   # -0.0 -> 0.0
+    table[np.isnan(table)] = np.nan           # one NaN bit pattern
+    _, groups = np.unique(np.ascontiguousarray(table).view(np.int64), axis=0, return_inverse=True)
+    return np.asarray(groups, dtype=np.int64).reshape(-1)
+
+
 class _ElementGeometry:
-    """Triangle solids (SolidDriveInputs): the fem.elastic_drives DrivePoints of the selected elements, bilinear
-    samplers of the optical cell centres, the moving-boundary mesh edges, int B^T sigma / int N^T t assembly and the
-    raster cells located in the mesh (module header)."""
+    """Triangle solids (SolidDriveInputs): the fem.elastic_drives DrivePoints of the selected elements, the
+    phase-corrected samplers of the optical grids, the own-material optical cells, the moving-boundary mesh edges,
+    int B^T sigma / int N^T t assembly and the raster cells located in the mesh (module header)."""
 
     def __init__(self, solid, selection, label):
         self.solid, self.label = solid, label
@@ -341,8 +463,33 @@ class _ElementGeometry:
             raise ValueError(f'{label}: {exc}') from exc
         self.n_vector = self.points.components * solid.dofs.n_dofs
 
-    def sampler(self, x, y, what) -> _GridSamples:
-        return _GridSamples(x, y, self.points.points, what, axis=self.solid.axisymmetric)
+    def sampler(self, x, y, grids, what) -> _FieldSamples:
+        return _FieldSamples(x, y, grids, self.points.points, what, axis=self.solid.axisymmetric)
+
+    def own_cells(self, x, y, volume) -> tuple:
+        """(flat optical cell per drive point, bool matched) (module header: the own-material cell)."""
+        return self._own_cells(x, y, volume.centre, self.points.elements)
+
+    def _own_cells(self, x, y, stencil, elements) -> tuple:
+        """(flat cell, matched) per point of a cell-centre _GridSamples stencil whose solid elements are `elements`:
+        the largest-weight stencil cell whose centre lies in an element of the point's material group, else the
+        largest-weight cell (matched False)."""
+        order = np.argsort(-stencil.weight, axis=1, kind='stable')
+        candidates = np.take_along_axis(stencil.index, order, axis=1)
+        cells, inverse = np.unique(candidates, return_inverse=True)
+        n_y = len(y)
+        located = np.asarray(self.solid.locate(np.column_stack([x[cells // n_y], y[cells % n_y]])),
+                             dtype=np.int64).reshape(-1)
+        elements = np.asarray(elements, dtype=np.int64).reshape(-1)
+        inside = located >= 0
+        involved, position = np.unique(np.concatenate([elements, located[inside]]), return_inverse=True)
+        groups = _material_groups(self.solid, involved)[np.asarray(position).reshape(-1)]
+        cell_groups = np.full(cells.size, -1, dtype=np.int64)
+        cell_groups[inside] = groups[elements.size:]
+        same = cell_groups[np.asarray(inverse).reshape(candidates.shape)] == groups[:elements.size, None]
+        matched = same.any(axis=1)
+        chosen = candidates[np.arange(len(candidates)), np.where(matched, np.argmax(same, axis=1), 0)]
+        return chosen, matched
 
     def stress_drive(self, stress) -> np.ndarray:
         """(n_vector,) complex int B^T stress dV of a stress (rows, n_points)."""
@@ -353,10 +500,28 @@ class _ElementGeometry:
         traction = values[..., None] * interfaces.points.normals
         return assemble_edge_drive(self.solid.dofs, interfaces.points, traction)
 
-    def interfaces(self, selection, x, y, isotropic):
+    def _side_eps(self, edge_points, x, y, isotropic, what) -> tuple:
+        """((isotropic eps of side 0, of side 1) (k, q) of the side materials, fallback count) per Gauss point of
+        EdgeDrivePoints (module header)."""
+        shape = tuple(edge_points.weights.shape)
+        flat = edge_points.points.reshape(-1, 2)
+        normals = edge_points.normals.reshape(-1, 2)
+        stencil = _GridSamples(x, y, flat, what)
+        diagonal = np.hypot(*_centre_spacings(x, y, flat))
+        values, fallbacks = [], 0
+        for side, sign in ((0, -1.0), (1, 1.0)):   # normals out of side 0: side 0 lies at -n
+            cells, matched = self._own_cells(x, y, stencil, np.repeat(edge_points.sides[:, side], shape[1]))
+            missed = ~matched
+            if missed.any():
+                cells[missed] = _nearest_cells(x, y, flat[missed]
+                                               + sign * diagonal[missed, None] * normals[missed])
+                fallbacks += int(missed.sum())
+            values.append(isotropic.reshape(-1)[cells].reshape(shape))
+        return tuple(values), fallbacks
+
+    def interfaces(self, selection, x, y, eps):
         """_Interfaces of the moving boundary (module header), None when no interface touches the selection."""
         solid, label = self.solid, self.label
-        planar = not solid.axisymmetric
         dofs = solid.dofs
         mesh = dofs.mesh
         pairs = np.asarray(mesh.edge_elements, dtype=np.int64)
@@ -372,30 +537,26 @@ class _ElementGeometry:
         edges = interior[touching & differ]
         if not edges.size:
             return None
-        ends = np.asarray(mesh.points, dtype=np.float64)[np.asarray(mesh.edges)[edges]]   # (k, 2, 2)
-        middle = ends.mean(axis=1)
-        tangent = ends[:, 1] - ends[:, 0]
-        normal = np.stack([tangent[:, 1], -tangent[:, 0]], axis=1) / np.linalg.norm(tangent, axis=1)[:, None]
-        shift = _side_shift(x, y, middle)[:, None]
-        what = f'{label}: moving-boundary side samples'
-        eps_0 = _GridSamples(x, y, middle - shift * normal, what).cells(isotropic)
-        eps_1 = _GridSamples(x, y, middle + shift * normal, what).cells(isotropic)
-        optical = np.abs(eps_0 - eps_1) > _EPS_RTOL * np.maximum(np.abs(eps_0), np.abs(eps_1))
-        if not optical.any():
-            return None
-        edge_points = edge_drive_points(dofs, edges[optical], axisymmetric=solid.axisymmetric,
-                                        azimuthal_order=solid.azimuthal_order)
+        isotropic = sum(eps.values()) / len(eps)
+        what = f'{label}: moving-boundary points'
+
+        def points_of(chosen):
+            return edge_drive_points(dofs, chosen, axisymmetric=solid.axisymmetric,
+                                     azimuthal_order=solid.azimuthal_order)
+        edge_points = points_of(edges)
         if not len(edge_points.edges):
             return None
+        (eps_0, eps_1), fallbacks = self._side_eps(edge_points, x, y, isotropic, what)
+        optical = (np.abs(eps_0 - eps_1) > _EPS_RTOL * np.maximum(np.abs(eps_0), np.abs(eps_1))).any(axis=1)
+        if not optical.any():
+            return None
+        if not optical.all():   # edges of equal optical materials dropped
+            edge_points = points_of(edge_points.edges[optical])
+            (eps_0, eps_1), fallbacks = self._side_eps(edge_points, x, y, isotropic, what)
         shape = tuple(edge_points.weights.shape)
-        flat = edge_points.points.reshape(-1, 2)
-        normals = edge_points.normals.reshape(-1, 2)
-        shift = _side_shift(x, y, flat)[:, None]   # eps: the staircase cell of each side (diagonal)
-        eps_sides = tuple(_GridSamples(x, y, flat + sign * shift * normals, what).cells(isotropic).reshape(shape)
-                          for sign in (-1.0, 1.0))
-        shift = _field_shift(x, y, flat, normals)[:, None]   # fields: next to the interface (FIELD_SHIFT)
-        sides = tuple(_GridSamples(x, y, flat + sign * shift * normals, what, axis=not planar) for sign in (-1.0, 1.0))
-        return _Interfaces(points=edge_points, sides=sides, eps_sides=eps_sides, shape=shape)
+        sampler = _InterfaceSamples(x, y, edge_points.points.reshape(-1, 2), what, not solid.axisymmetric)
+        return _Interfaces(points=edge_points, sampler=sampler, sides=None, eps_sides=(eps_0, eps_1), shape=shape,
+                           fallbacks=fallbacks)
 
     def raster_cells(self, x, y, selection) -> tuple:
         """(flat optical cells whose centres lie in the selection, their mesh elements)."""
@@ -409,8 +570,8 @@ class _ElementGeometry:
 
 class _CellGeometry:
     """Rectangular-cell (Q1) solids (CellDriveInputs) on the optics' own mesh: one point per selected window cell, the
-    cells' own optical values, the moving-boundary Yee faces, brillouin.cell_stress_drive / face_drive and the
-    selected cells as the homogeneous raster (module header)."""
+    cells' own (cell-centre) optical values, the moving-boundary Yee faces, brillouin.cell_stress_drive / face_drive and
+    the selected cells as the homogeneous raster (module header)."""
 
     def __init__(self, solid, selection, label):
         self.solid, self.label = solid, label
@@ -425,13 +586,17 @@ class _CellGeometry:
         self.points = _CellPoints(elements=cells, weights=np.outer(solid.dx, solid.dy).reshape(-1)[cells])
         self.n_vector = 2 * (n_x + 1) * (n_y + 1)
 
-    def sampler(self, x, y, what) -> _CellSamples:
+    def sampler(self, x, y, grids, what) -> _CellSamples:
         solid = self.solid
         if not (np.array_equal(x, solid.x) and np.array_equal(y, solid.y)):
             raise ValueError(f'{what}: the optics run on other window cells ({len(x)} x {len(y)}) than the '
                              f'rectangular-cell solid ({self.shape[0]} x {self.shape[1]}): the drive reads the '
                              'optical cells as the solid cells, so both physics need one tensor mesh')
         return _CellSamples(self.points.elements)
+
+    def own_cells(self, x, y, volume) -> tuple:
+        """(the drive cells themselves, all matched): a solid cell is its optical cell."""
+        return volume.cell, np.ones(volume.cell.size, dtype=bool)
 
     def stress_drive(self, stress) -> np.ndarray:
         """(n_vector,) complex sum dA B_c^T stress of a stress (3, n_points) at the selected cells."""
@@ -453,13 +618,13 @@ class _CellGeometry:
         face_y[faces.y_faces] = loads[count:]
         return face_drive(face_x.reshape(n_x - 1, n_y), face_y.reshape(n_x, n_y - 1)).reshape(-1)
 
-    def interfaces(self, selection, x, y, isotropic):
+    def interfaces(self, selection, x, y, eps):
         """_Interfaces of the moving boundary on the interior Yee faces (module header), None when none."""
         solid = self.solid
         n_x, n_y = self.shape
         index = np.arange(n_x * n_y, dtype=np.int64).reshape(n_x, n_y)
         members = np.asarray(solid.solid, dtype=bool)
-        eps = np.asarray(isotropic, dtype=np.complex128).reshape(-1)
+        isotropic = (sum(eps.values()) / len(eps)).reshape(-1)
         found = []   # per axis (face indices, lo cells, hi cells)
         for axis in (0, 1):
             lo = (index[:-1, :] if axis == 0 else index[:, :-1]).reshape(-1)
@@ -470,7 +635,7 @@ class _CellGeometry:
             for values in solid.materials.values():
                 a, b = values[lo], values[hi]
                 differ |= ~((a == b) | (np.isnan(a) & np.isnan(b)))
-            eps_lo, eps_hi = eps[lo], eps[hi]
+            eps_lo, eps_hi = isotropic[lo], isotropic[hi]
             keep = differ & (np.abs(eps_lo - eps_hi) > _EPS_RTOL * np.maximum(np.abs(eps_lo), np.abs(eps_hi)))
             found.append((faces[keep], lo[keep], hi[keep]))
         (x_faces, x_lo, x_hi), (y_faces, y_lo, y_hi) = found
@@ -483,7 +648,8 @@ class _CellGeometry:
         normals[x_faces.size:, 1] = 1.0
         sides = (_CellSamples(np.concatenate([x_lo, y_lo])), _CellSamples(np.concatenate([x_hi, y_hi])))
         return _Interfaces(points=_FacePoints(normals=normals, lengths=lengths, x_faces=x_faces, y_faces=y_faces),
-                           sides=sides, eps_sides=tuple(side.cells(eps) for side in sides), shape=(len(lengths),))
+                           sampler=None, sides=sides, eps_sides=tuple(side.cells(isotropic) for side in sides),
+                           shape=(len(lengths),), fallbacks=0)
 
     def raster_cells(self, x, y, selection) -> tuple:
         """(flat optical cells of the selection, their material rows): the solid's own cells."""
@@ -619,7 +785,7 @@ class BrillouinDrive:
                 collection.solve_moved_beam(collected, (0.0, 0.0))))
             collection_grid, _ = _optical_arrays(fields, planar, label)
             collection_check = (float(fields.omega), np.asarray(fields.x, dtype=np.float64),
-                                np.asarray(fields.y, dtype=np.float64))
+                                np.asarray(fields.y, dtype=np.float64), collection_grid.grids)
             del fields
         n_parts = len(parts)
         columns = np.zeros((self.n_positions * n_parts, solid.n_unknowns), dtype=np.complex128)
@@ -629,18 +795,18 @@ class BrillouinDrive:
             offset = (float(offset[0]), float(offset[1]))
             fields = self._optical(self.optical_physics, lambda offset=offset: optics.drive_fields(
                 optics.solve_moved_beam(incident, offset)))
+            grid, eps = _optical_arrays(fields, planar, label)
             if context is None:
-                context = self._context(solid, geometry, selection, fields, planar, collection_check)
+                context = self._context(solid, geometry, selection, fields, grid, eps, planar, collection_check)
                 kappa = amplitude_prefactor(context.omega, incident.incident_power, collected.incident_power)
                 if not self.photoelastic and context.interfaces is None:
                     raise ValueError(f'{label}: photoelastic is off and no optical interface touches the drive '
                                      'selection: nothing drives the solid (turn photoelastic on or select the '
                                      'interfaces)')
             elif not (float(fields.omega) == context.omega and np.array_equal(fields.x, context.x)
-                      and np.array_equal(fields.y, context.y)):
+                      and np.array_equal(fields.y, context.y) and _same_grids(grid.grids, context.grids)):
                 raise ValueError(f'{label}: the optics changed their grid or wavelength between scan positions (a bug)')
-            grid, _ = _optical_arrays(fields, planar, label)
-            del fields   # the solution of this position: only its window samples are kept below
+            del fields, eps   # the solution of this position: only its window samples are kept below
             partner = grid if same_field else collection_grid
             incident_points = context.volume.fields(grid)
             collection_points = incident_points if same_field else context.volume.fields(partner)
@@ -652,7 +818,7 @@ class BrillouinDrive:
                                                p11, p12, p44, weights=points.weights / solid.ring_angle)
                 stresses = [split[key] for key in parts]
                 torsion = max(torsion, share)
-            boundary = self._boundary_values(context.interfaces, grid, partner, same_field, parts, planar)
+            boundary = self._boundary_values(context, grid, partner, same_field, parts, planar)
             squares = [0.0, 0.0]
             for index, stress in enumerate(stresses):
                 column = columns[position * n_parts + index, :n_vector]
@@ -690,6 +856,14 @@ class BrillouinDrive:
         if self.moving_boundary and interfaces is None:
             messages.append(('info', f'{label}: no optical interface touches the drive selection (no moving-boundary '
                                      'part)'))
+        fallbacks = context.fallbacks + (0 if interfaces is None else interfaces.fallbacks)
+        if fallbacks:
+            messages.append(('warning', f'{label}: {context.fallbacks:,} of {points.n_points:,} drive points and '
+                                        f'{0 if interfaces is None else interfaces.fallbacks:,} interface side samples '
+                                        'found no optical cell of their own material (equal solid material values) '
+                                        'among the four nearest cell centres: a solid region thinner than an optical '
+                                        'cell (refine the optical mesh there), or solid material values that vary in '
+                                        'space; they take the staircase permittivity of the nearest cell'))
         return columns, messages
 
     def _parts(self, solid) -> tuple:
@@ -782,59 +956,77 @@ class BrillouinDrive:
                              'material schema)')
         return values
 
-    def _context(self, solid, geometry, selection, fields, planar, collection_check) -> _Context:
-        """Sampling state of the optical grid of the first position: the volume sampler, eps at the points (PEC
-        refused), the interfaces, the reference laws per point and the homogeneous raster cells."""
+    def _context(self, solid, geometry, selection, fields, optical, eps, planar, collection_check) -> _Context:
+        """Sampling state of the optical grid of the first position: the volume sampler, own-material eps at the points
+        (PEC refused), the interfaces, the reference laws per point and the homogeneous raster cells."""
         label = self._label
         x, y = np.asarray(fields.x, dtype=np.float64), np.asarray(fields.y, dtype=np.float64)
         if len(x) < 2 or len(y) < 2:
             raise ValueError(f'{label}: the optical window has {len(x)} x {len(y)} cells (at least 2 x 2)')
         omega = float(fields.omega)
         if collection_check is not None:
-            collection_omega, collection_x, collection_y = collection_check
+            collection_omega, collection_x, collection_y, collection_grids = collection_check
             if abs(collection_omega - omega) > _OMEGA_RTOL * omega:
                 raise ValueError(f"{label}: collection_physics '{self.collection_physics}' solves omega "
                                  f'{collection_omega:.9g} rad/s, the optics {omega:.9g} rad/s: one wavelength')
-            if not (np.array_equal(collection_x, x) and np.array_equal(collection_y, y)):
+            if not (np.array_equal(collection_x, x) and np.array_equal(collection_y, y)
+                    and _same_grids(collection_grids, optical.grids)):
                 raise ValueError(f"{label}: collection_physics '{self.collection_physics}' runs on another optical "
                                  'grid: the drive multiplies both fields cell by cell (put both on one mesh)')
-        volume = geometry.sampler(x, y, f'{label}: drive points')
-        _, eps = _optical_arrays(fields, planar, label)
-        eps_points = {key: volume.cells(values) for key, values in eps.items()}
+        volume = geometry.sampler(x, y, optical.grids, f'{label}: drive points')
+        cells, matched = geometry.own_cells(x, y, volume)
+        eps_points = {key: values.reshape(-1)[cells] for key, values in eps.items()}
         if fields.pec is not None:
-            inside = np.asarray(fields.pec, dtype=bool).reshape(-1)[volume.cell]
+            inside = np.asarray(fields.pec, dtype=bool).reshape(-1)[cells]
             if inside.any():
-                first = int(volume.cell[int(np.argmax(inside))])
+                first = int(cells[int(np.argmax(inside))])
                 where = (x[first // len(y)], y[first % len(y)])
                 raise ValueError(f'{label}: {int(inside.sum())} drive points lie in PEC cells of the optics (first in '
                                  f'the cell at ({where[0]:.6g}, {where[1]:.6g}) m): keep the drive selection out of '
                                  'conductors')
-        isotropic = sum(eps.values()) / len(eps)
-        interfaces = geometry.interfaces(selection, x, y, isotropic) if self.moving_boundary else None
+        del cells
+        interfaces = geometry.interfaces(selection, x, y, eps) if self.moving_boundary else None
+        eps_in_plane = {}
+        if interfaces is not None and interfaces.sampler is not None:   # the triangle moving boundary's D = eps E
+            eps_in_plane = {name + name: eps[name + name] for name in interfaces.sampler.in_plane
+                            if name in optical.centred}
         point_laws, laws, raster = None, (), None
         if self.reference != 'none':
             element_laws, laws = self._reference_laws(solid, selection)
             point_laws = element_laws[geometry.points.elements]
             if self.reference == 'homogeneous':
                 raster = self._raster_cells(solid, geometry, selection, x, y, eps, element_laws)
-        return _Context(x=x, y=y, omega=omega, volume=volume, eps_points=eps_points, interfaces=interfaces,
+        return _Context(x=x, y=y, omega=omega, grids=optical.grids, volume=volume, eps_points=eps_points,
+                        eps_in_plane=eps_in_plane, interfaces=interfaces, fallbacks=int((~matched).sum()),
                         point_laws=point_laws, laws=laws, raster=raster)
 
-    def _boundary_values(self, interfaces, grid, partner, same_field, parts, planar):
-        """[Johnson value f (k, q) per part] of one position, None without interfaces."""
+    def _boundary_values(self, context, incident, partner, same_field, parts, planar):
+        """[Johnson value f (k, q) per part] of one position (incident / partner: _Optical), None without
+        interfaces."""
+        interfaces = context.interfaces
         if interfaces is None:
             return None
+        normals = interfaces.points.normals
+        if interfaces.sampler is not None:   # triangles: E_par and D_n at the interface points themselves
+            sampler = interfaces.sampler
+            fields_i, displacement_i = sampler.fields(incident, context.eps_in_plane, interfaces.shape)
+            fields_c, displacement_c = ((fields_i, displacement_i) if same_field else
+                                        sampler.fields(partner, context.eps_in_plane, interfaces.shape))
+            if planar:
+                return [interface_traction(normals, fields_i, fields_c, displacement_i, displacement_c,
+                                           interfaces.eps_sides, PLANAR_COMPONENTS)]
+            values = azimuthal_interface_traction(normals, fields_i, fields_c, displacement_i, displacement_c,
+                                                  interfaces.eps_sides, self.detection)
+            return [values[key] for key in parts]
+        if not planar:
+            raise ValueError(f'{self._label}: a two-sided (rectangular-cell) moving boundary is planar only (a bug)')
 
         def sides(values):
-            return tuple({name: array.reshape(interfaces.shape) for name, array in side.fields(values).items()}
-                         for side in interfaces.sides)
-        incident = sides(grid)
-        collection = incident if same_field else sides(partner)
-        normals = interfaces.points.normals
-        if planar:
-            return [moving_boundary_traction(normals, incident, collection, interfaces.eps_sides, PLANAR_COMPONENTS)]
-        values = azimuthal_moving_boundary(normals, incident, collection, interfaces.eps_sides, self.detection)
-        return [values[key] for key in parts]
+            return tuple(side.fields(values) for side in interfaces.sides)
+        incident_sides = sides(incident)
+        collection_sides = incident_sides if same_field else sides(partner)
+        return [moving_boundary_traction(normals, incident_sides, collection_sides, interfaces.eps_sides,
+                                         PLANAR_COMPONENTS)]
 
     def _reference_laws(self, solid, selection) -> tuple:
         """(int64 law index per mesh element (-1 outside the selection), ((longitudinal law, shear law, density),
@@ -868,8 +1060,9 @@ class BrillouinDrive:
 
     def _local_lines(self, context, points, grid, partner, stresses, kappa, planar) -> tuple:
         """(q_mean [1/m], ((law, q, weight), ...) compressed lines or ()) of one position: the local wavevector of P =
-        E_c . E_i, sigma_L = q^T sigma~ q / q^2 per point and part, weights |kappa sigma_L|^2 dV summed over parts."""
-        product = sum(partner[name] * values for name, values in grid.items())
+        E_c . E_i (cell-centre values), sigma_L = q^T sigma~ q / q^2 per point and part, weights |kappa sigma_L|^2 dV
+        summed over parts."""
+        product = sum(partner.centred[name] * values for name, values in grid.centred.items())
         q_x, q_y = (context.volume.sample(values) for values in local_wavenumbers(product, context.x, context.y))
         q_squared = q_x * q_x + q_y * q_y
         safe = np.where(q_squared > 0.0, q_squared, 1.0)
@@ -924,10 +1117,11 @@ class BrillouinDrive:
                        eps={key: values.reshape(-1)[cells] for key, values in eps.items()})
 
     def _raster_values(self, raster, grid, partner, same_field, kappa) -> np.ndarray:
-        """kappa sigma~ (3, n_x, n_y) rows (xx, yy, xy) of one position on the raster box (0 outside the region)."""
-        incident = {name: values.reshape(-1)[raster.cells] for name, values in grid.items()}
+        """kappa sigma~ (3, n_x, n_y) rows (xx, yy, xy) of one position on the raster box (0 outside the region), of the
+        cell-centre fields (the edge grids' phase-corrected half steps: no face mean)."""
+        incident = {name: values.reshape(-1)[raster.cells] for name, values in grid.centred.items()}
         collection = incident if same_field else {name: values.reshape(-1)[raster.cells]
-                                                  for name, values in partner.items()}
+                                                  for name, values in partner.centred.items()}
         stress = solid_rows(optical_stress(field_products(incident, collection, raster.eps), raster.p11, raster.p12,
                                            raster.p44))
         image = np.zeros((3,) + raster.shape, dtype=np.complex128)

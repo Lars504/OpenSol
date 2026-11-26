@@ -473,13 +473,14 @@ def fdfd_memory_estimate(polarization):
             run_items += line_block_items
         run_items += off_diagonal_run
         host_items += off_diagonal_host if superlu_host else []
-        # brillouin_scattering scan solves (solve_moved_beam: rhs = zeros + 3 TFSF temporaries; hz drive fields: 2 face
-        # arrays + 2 face-mean temporaries; ez: the subpixel deltas and their difference)
+        # brillouin_scattering scan solves (solve_moved_beam: rhs = zeros + 3 TFSF temporaries; hz drive fields: the 2
+        # face arrays of face_fields (their window copies with the lower edge face are the host item); ez: the subpixel
+        # deltas and their difference)
         drive_host, drive_transient = brillouin_drive_items(
             context, n_cells, window_cell_count(mesh), 1 if polarization == 'ez' else 2,
             solve_vector_bytes=(solve_peak_bytes(n_cells, COMPLEX128_BYTES, back_end == 'cudss_mixed')
                                 if back_end in CUDSS_BACK_ENDS else 0),
-            rhs_vectors=4, drive_field_vectors=2 if polarization == 'ez' else 4)
+            rhs_vectors=4, drive_field_vectors=2)
         host_items += drive_host
         transient_items += drive_transient
         transient_items.append((ASSEMBLY_PHASE, 'Helmholtz assembly (term plan build sort / term buffer)'
@@ -940,9 +941,10 @@ def bor_memory_estimate(settings_values, mesh, context):
                     (4 + 6) * COMPLEX128_BYTES * n_cells + n_cells)]
     # brillouin_scattering reads / scan solves (fdfd_bor solve_moved_beam, all on the host): the rhs sum and a focused
     # beam's TFSF temporaries (bor_ports.slice_tfsf_rhs: incident vector, two operator products, the masked product and
-    # the difference); drive_fields of a moved solution: its Yee fields and centre phasors (~4 unknown vectors)
+    # the difference); drive_fields of a moved solution: its E on the Yee points (yee_e_fields: the full E vector and
+    # the E_phi copy, ~2 unknown vectors)
     drive_host, _ = brillouin_drive_items(context, unknowns, window_cell_count(mesh), 3, rhs_vectors=6,
-                                          drive_field_vectors=4, on_host=True)
+                                          drive_field_vectors=2, on_host=True)
     host_items += drive_host
     n_listed = len(settings_values.get('azimuthal_orders') or ())
     order_sum = bool(n_listed) and study_type in ('stationary', FREQUENCY_DOMAIN_STUDY)   # the driven order sum

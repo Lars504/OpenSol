@@ -332,13 +332,17 @@ def continuum_end_levels(omega, index, waist, numerical_aperture, along_ends, li
 class DriveFields:
     """Host window samples of one solved optical field, read by a solid's drive (brillouin_scattering): omega [rad/s];
     x / y the window cell centres [m] in the drawing frame (window lower edge 0; BOR: r / z); fields component ->
-    complex128 (mx, my) phasors [V/m] at the cell centres (2D ez {'ez'}, hz {'ex', 'ey'}: face means; BOR its own
-    components); eps component -> complex128 (mx, my) relative permittivity that component sees (the staircase: no
-    subpixel deltas; loss and poles included); pec bool (mx, my) PEC cells or None; polarization of the physics."""
+    complex128 phasors [V/m] at that component's own Yee points, grids component -> (x coordinates, y coordinates) [m]
+    of them in the same frame (along each axis the window cell centres (mx / my) or the window cell edges (mx + 1 / my +
+    1, both window edges included): 2D ez {'ez'} at the centres; hz {'ex'} on the y faces (x centres, y edges), {'ey'}
+    on the x faces (x edges, y centres), never averaged along the beam; BOR its own components, see fdfd_bor); eps
+    component -> complex128 (mx, my) relative cell permittivity that component sees (the staircase: no subpixel deltas;
+    loss and poles included); pec bool (mx, my) PEC cells or None; polarization of the physics."""
     omega: float
     x: np.ndarray
     y: np.ndarray
     fields: dict
+    grids: dict
     eps: dict
     pec: np.ndarray | None
     polarization: str

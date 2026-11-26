@@ -1,8 +1,8 @@
 """Self-tests of the spontaneous Brillouin math (physics/mechanics/brillouin.py; CPU, specs() empty, check({})): field
 products and optical stress vs a 3D four-index contraction, the azimuthal m = 0 / 2 split vs a phi quadrature of the 3D
 work, the FDT readout vs a closed-form oscillator and the sum rule, the damped-oscillator fit, the homogeneous and local
-reference spectra, and the bilinear / phase-gradient sampling. error = number of failed sub-checks (tolerance 0);
-physics imports inside the checks."""
+reference spectra with their zero padding, and the bilinear / phase-corrected / phase-gradient sampling. error =
+number of failed sub-checks (tolerance 0); physics imports inside the checks."""
 import math
 
 import numpy as np
@@ -41,6 +41,14 @@ _ENVELOPE = (80.0, 20.0, 0.125, 2.0, 4.0)   # w_x, w_y [m], dx, dy, half extent 
 _ENVELOPE_RTOL = 2e-3       # L2 over the band: q spread (1 / (w_x Gamma / 2))^2 ~ 4e-4 + transverse shift ~3e-4
 _STATIC_RTOL = 1e-10
 _BAND = (0.6, 1.4, 21)      # Hz around f0 = 1 Hz
+# a short drive (2 x 2 m, 2 phonon wavelengths along x): the automatic padding against twice as much per axis; the
+# images' share is below brillouin.IMAGE_TOLERANCE = 1e-3 of the readout at the automatic padding (first estimate)
+_SHORT_GRID = (32, 4, 1.0 / 16.0, 0.5)
+_SHORT_PADDING_RTOL = 3e-3
+# ceil(1 + ln(1e3) / (delta L)), L = 2 m, delta = |Im k| at the band's lowest 0.6 Hz: Omega eta_L = 0.12, |Im k| =
+# Omega |Im sqrt(rho / M*)| = 0.2242 1/m (the shear law of viscosity 0.01 attenuates far faster)
+_SHORT_PADDING = (17, 17)
+_PHASE_RTOL = 1e-12         # phase-corrected sampling of a plane wave (round-off)
 _LAW_RTOL = 1e-14
 
 
@@ -94,7 +102,8 @@ def _engineering(strain) -> np.ndarray:
 
 
 def _check_field_products(_):
-    from .brillouin import PLANAR_COMPONENTS, field_products, moving_boundary_traction, optical_stress
+    from .brillouin import (PLANAR_COMPONENTS, field_products, interface_traction, moving_boundary_traction,
+                            optical_stress)
     from .optomechanics_fem import moving_boundary_weights
 
     checks = SubChecks()
@@ -142,6 +151,23 @@ def _check_field_products(_):
     expected = moving_boundary_weights(np.full(_POINTS, 0.5 / math.pi), np.ones(_POINTS), normals, cylindrical[0],
                                        cylindrical[1], eps_sides[0], eps_sides[1]) / EPS0
     checks.add_bound('moving_boundary_johnson', max_relative_error(value, expected), _ALGEBRA_RTOL)
+    # the one-point form from the continuous E_par and D_n equals the two-sided form of sides that share them (E_s =
+    # E_par + (D_n / eps_s) n per side), whatever tangential D the point carries
+    tangent = np.stack([-normals[:, 1], normals[:, 0]], axis=1)
+    fields = {}
+    for name in ('incident', 'collection'):
+        parallel, out_of_plane, normal_d = (_complex(rng, _POINTS) for _ in range(3))
+        sides_of = [{'x': parallel * tangent[:, 0] + normal_d / eps * normals[:, 0],
+                     'y': parallel * tangent[:, 1] + normal_d / eps * normals[:, 1], 'z': out_of_plane}
+                    for eps in eps_sides]
+        stray = _complex(rng, _POINTS)   # tangential D: not read
+        point_d = {'x': normal_d * normals[:, 0] + stray * tangent[:, 0],
+                   'y': normal_d * normals[:, 1] + stray * tangent[:, 1]}
+        fields[name] = (sides_of, sides_of[1], point_d)
+    two_sided = moving_boundary_traction(normals, fields['incident'][0], fields['collection'][0], eps_sides)
+    one_point = interface_traction(normals, fields['incident'][1], fields['collection'][1], fields['incident'][2],
+                                   fields['collection'][2], eps_sides)
+    checks.add_bound('interface_one_point_vs_two_sided', max_relative_error(one_point, two_sided), _ALGEBRA_RTOL)
     return checks.result()
 
 
@@ -166,8 +192,8 @@ def _strain_fields(normal, shear, phi, kind) -> np.ndarray:
 
 
 def _check_azimuthal_split(_):
-    from .brillouin import (AZIMUTHAL_PARTS, CYLINDRICAL_COMPONENTS, DETECTIONS, azimuthal_moving_boundary,
-                            azimuthal_parts, field_products, moving_boundary_traction, optical_stress)
+    from .brillouin import (AZIMUTHAL_PARTS, CYLINDRICAL_COMPONENTS, DETECTIONS, azimuthal_interface_traction,
+                            azimuthal_parts, field_products, interface_traction, optical_stress)
 
     checks = SubChecks()
     rng = np.random.default_rng(67)
@@ -181,8 +207,9 @@ def _check_azimuthal_split(_):
     solid_strain = np.concatenate([normal_strain, shear_strain])   # solid rows rr, zz, tt, g_rz, g_zt, g_rt
     normals = rng.standard_normal((_POINTS, 2))
     normals /= np.linalg.norm(normals, axis=1)[:, None]
-    side_amplitudes = [({name: _complex(rng, _POINTS) for name in names}, {name: _complex(rng, _POINTS)
-                                                                          for name in names}) for _ in range(2)]
+    # interface amplitudes: E and D (the D phi entry is not read) of the incident and collection fields
+    interface = {key: {name: _complex(rng, _POINTS) for name in names}
+                 for key in ('incident', 'collection', 'incident_d', 'collection_d')}
     eps_sides = (1.0 + rng.random(_POINTS), 2.0 + rng.random(_POINTS))
     step = 2.0 * math.pi / _PHI_POINTS
     for detection in DETECTIONS:
@@ -199,9 +226,11 @@ def _check_azimuthal_split(_):
             for kind in works:
                 works[kind] += step * np.sum(stress * _strain_fields(normal_strain, shear_strain, phi, kind), axis=0)
             torsion_rows += step / (2.0 * math.pi) * stress[[3, 4]]
-            value = moving_boundary_traction(
-                normals, [_standing_waves(sides[0], False, phi) for sides in side_amplitudes],
-                [_standing_waves(sides[1], cross, phi) for sides in side_amplitudes], eps_sides, components=names)
+            value = interface_traction(
+                normals, _standing_waves(interface['incident'], False, phi),
+                _standing_waves(interface['collection'], cross, phi),
+                _standing_waves(interface['incident_d'], False, phi),
+                _standing_waves(interface['collection_d'], cross, phi), eps_sides, components=names)
             boundary['constant'] = boundary['constant'] + step / (2.0 * math.pi) * value
             boundary['cos2'] = boundary['cos2'] + step / math.pi * math.cos(2.0 * phi) * value
             boundary['sin2'] = boundary['sin2'] + step / math.pi * math.sin(2.0 * phi) * value
@@ -225,9 +254,9 @@ def _check_azimuthal_split(_):
                          _ALGEBRA_RTOL)
         if not cross:
             checks.add_bound('co_polarized_torsion_zero', torsion_fraction, _ALGEBRA_RTOL)
-        boundary_parts = azimuthal_moving_boundary(
-            normals, [sides[0] for sides in side_amplitudes], [sides[1] for sides in side_amplitudes], eps_sides,
-            detection)
+        boundary_parts = azimuthal_interface_traction(
+            normals, interface['incident'], interface['collection'], interface['incident_d'],
+            interface['collection_d'], eps_sides, detection)
         harmonic_of = {(0, 'even'): 'constant', (2, 'even'): 'cos2', (2, 'odd'): 'sin2'}
         boundary_scale = max(float(np.max(np.abs(boundary[harmonic_of[key]]))) for key in expected_keys)
         for key, harmonic in harmonic_of.items():
@@ -340,8 +369,8 @@ def _dho_line(frequencies, weight_sum, viscosity):
 
 
 def _check_homogeneous_reference(_):
-    from .brillouin import (homogeneous_reference, homogeneous_static, local_reference, local_wavenumbers,
-                            longitudinal_function, modulus_function)
+    from .brillouin import (homogeneous_padding, homogeneous_reference, homogeneous_static, local_reference,
+                            local_wavenumbers, longitudinal_function, modulus_function)
     from .viscoelastic import ModulusLaw
 
     checks = SubChecks()
@@ -377,6 +406,24 @@ def _check_homogeneous_reference(_):
                                    1.0)
     checks.add_bound('envelope_dho', norm_relative_error(padded, _dho_line(frequencies, weight_sum, viscosity)),
                      _ENVELOPE_RTOL)
+    # (b') a short drive: the automatic padding from the attenuation (its expected factors) holds the periodic images
+    # below IMAGE_TOLERANCE, so twice the padding per axis changes the spectrum by about that; a nearly lossless medium
+    # would need a raster above MAX_REFERENCE_CELLS and raises
+    n_x, n_y, dx, dy = _SHORT_GRID
+    x = (np.arange(n_x) + 0.5) * dx
+    short = (0.4 + 0.3j) * np.exp(2j * math.pi * x)[:, None] * np.ones(n_y)[None, :]
+    grid = np.stack([short, short, np.zeros_like(short)])
+    automatic = homogeneous_padding(frequencies, (n_x, n_y), dx, dy, longitudinal, shear, _DENSITY)
+    checks.add('short_drive_padding', tuple(automatic) == _SHORT_PADDING, value=list(automatic))
+    reference = homogeneous_reference(frequencies, grid, dx, dy, longitudinal, shear, _DENSITY, _TEMPERATURE, 1.0)
+    finer = homogeneous_reference(frequencies, grid, dx, dy, longitudinal, shear, _DENSITY, _TEMPERATURE, 1.0,
+                                  padding=tuple(2 * value for value in automatic))
+    checks.add_bound('short_drive_images', norm_relative_error(reference, finer), _SHORT_PADDING_RTOL)
+
+    def nearly_lossless(omega):
+        return _MODULUS + 1j * np.asarray(omega) * viscosity * 1e-6
+    checks.add_raises('padding_above_limit_raises', lambda: homogeneous_padding(
+        frequencies, (n_x, n_y), dx, dy, nearly_lossless, shear, _DENSITY))
     # (c) static Parseval: k_B T / M int |c|^2 dA of a random dilation (liquid, no shear modulus); a shear drive
     # without shear modulus raises
     random = _complex(rng, (12, 10))
@@ -401,7 +448,8 @@ def _check_homogeneous_reference(_):
 
 
 def _check_bilinear(_):
-    from .brillouin import bilinear_sample, bilinear_weights, local_wavenumbers
+    from .brillouin import (bilinear_sample, bilinear_weights, edges_to_centres, local_wavenumbers,
+                            phase_corrected_sample)
 
     checks = SubChecks()
     rng = np.random.default_rng(79)
@@ -423,6 +471,30 @@ def _check_bilinear(_):
     q_x, q_y = local_wavenumbers(plane, x, y)
     checks.add_bound('phase_gradient_exact', max(max_relative_error(q_x, np.full(q_x.shape, q[0])),
                                                  max_relative_error(q_y, np.full(q_y.shape, q[1]))), 1e-12)
+    # phase-corrected sampling: exact for a plane wave of <= pi / 4 per cell (here |k| 0.5 on spacings <= 1.5), where
+    # plain bilinear loses ~sinc^2(k h / 2); linear in the arrays with a shared step; a real field (steps 0 or pi) is
+    # sampled as plain bilinear; edges_to_centres exact for a plane wave along its axis
+    k = (0.4, -0.3)
+    plane = (0.8 + 0.3j) * np.exp(1j * (k[0] * x[:, None] + k[1] * y[None, :]))
+    exact = (0.8 + 0.3j) * np.exp(1j * (k[0] * points[:, 0] + k[1] * points[:, 1]))
+    corrected, = phase_corrected_sample([plane], index, weight)
+    checks.add_bound('phase_corrected_plane_wave', max_relative_error(corrected, exact), _PHASE_RTOL,
+                     plain_bilinear_error=max_relative_error(bilinear_sample(plane, index, weight), exact))
+    other = (0.2 - 0.5j) * plane * (1.0 + 0.1 * x[:, None])
+    shared = phase_corrected_sample([plane, other, plane + 2.0 * other], index, weight, phase_count=1)
+    checks.add_bound('phase_corrected_linear', max_relative_error(shared[2], shared[0] + 2.0 * shared[1]),
+                     _ALGEBRA_RTOL)
+    real = np.cos(1.3 * x)[:, None] * np.cos(0.7 * y)[None, :]
+    checks.add_bound('phase_corrected_real_is_bilinear',
+                     max_relative_error(phase_corrected_sample([real], index, weight)[0],
+                                        bilinear_sample(real, index, weight)), _ALGEBRA_RTOL)
+    edges = np.concatenate([[x[0] - 0.7], 0.5 * (x[:-1] + x[1:]), [x[-1] + 0.6]])
+    centres = 0.5 * (edges[:-1] + edges[1:])
+    on_edges = np.exp(1j * k[0] * edges)[:, None] * np.exp(1j * k[1] * y)[None, :]
+    checks.add_bound('edges_to_centres_plane_wave',
+                     max_relative_error(edges_to_centres(on_edges, 0),
+                                        np.exp(1j * k[0] * centres)[:, None] * np.exp(1j * k[1] * y)[None, :]),
+                     _PHASE_RTOL)
     return checks.result()
 
 
@@ -463,12 +535,19 @@ BRILLOUIN_DRIVE_CASES = (
           'CPU check of brillouin.homogeneous_reference / local_reference in a dimensionless viscous medium (rho 1, '
           'M 1, Gamma = 0.2 Omega_0 at q0 = 2 pi): a dilation plane wave on one FFT bin (padding 1) gives the single-q '
           'DHO line (k_B T / M) int |c|^2 dA 2 Gamma Omega_0^2 / ((Omega_0^2 - Omega^2)^2 + Gamma^2 Omega^2) and so '
-          'does the local reference of its phase-gradient q (1e-10); a wide Gaussian envelope (80 x 20, padding 2) '
-          'the same line within 2e-3 (L2; the envelope q spread); the static sum equals k_B T / M int |c|^2 dA '
+          'does the local reference of its phase-gradient q (1e-10); a wide Gaussian envelope (80 x 20, automatic '
+          'padding 2) the same line within 2e-3 (L2; the envelope q spread); a short 2 x 2 m drive takes the automatic '
+          'padding 17 x 17 (ceil(1 + ln(1e3) / (delta L)), delta = |Im k| at the lowest band frequency) and differs '
+          'from twice that padding by < 3e-3 (L2: the periodic images below 1e-3), a nearly lossless medium raises '
+          '(padded raster above the limit); the static '
+          'sum equals k_B T / M int |c|^2 dA '
           '(Parseval, 1e-10), a shear drive without shear modulus raises; modulus_function equals '
           'viscoelastic.ModulusLaw.at (1e-14).', _check_homogeneous_reference),
-    _case('brillouin_bilinear', 'Brillouin: bilinear sampling and local wavenumbers',
+    _case('brillouin_bilinear', 'Brillouin: bilinear and phase-corrected sampling, local wavenumbers',
           'CPU check of brillouin.bilinear_weights / bilinear_sample on non-uniform centres: exact for a bilinear '
           'complex field at random and corner points (1e-13), weights sum to 1, a point outside the centres raises; '
-          'local_wavenumbers exact for a plane wave on the non-uniform grid (1e-12).', _check_bilinear),
+          'local_wavenumbers exact for a plane wave on the non-uniform grid (1e-12); phase_corrected_sample exact for '
+          'a plane wave of <= pi / 4 per cell (1e-12; plain bilinear loses ~sinc^2(k h / 2), recorded), linear in its '
+          'arrays with a shared phase step and equal to plain bilinear for a real field (1e-13); edges_to_centres '
+          'exact for a plane wave (1e-12).', _check_bilinear),
 )

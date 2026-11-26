@@ -33,7 +33,7 @@ from ..fdfd_sources import (ElectricDipolePhasor, FocusedBeamPhasor, MagneticCur
                             PointCurrentPhasor, SheetCurrentPhasor)
 from ..focused_beam import DriveFields, focused_beam_line
 from ..harmonic import (HarmonicSystem, absorbed_power_ez, absorbed_power_hz, cell_permeability, cell_permittivity,
-                        face_mean_at_centres, off_diagonal_entries)
+                        off_diagonal_entries)
 from ..index_reference import OFF_DIAGONAL_ARRAY
 from ..materials import (GYRATION_Z, DrudePole, LorentzPole, material_solution_state, register_em_arrays,
                          restore_material_solution, tfsf_outline_warnings)
@@ -50,6 +50,27 @@ from ..yee_grid import cell_row, cpml_grading_cell_size, face_average, face_pec,
 from .fdtd_2d_base import add_pec_cells, record_dispersive_region
 from .harmonic_shell import COMPONENT_UNITS, HarmonicEMShell
 from .host_fdfd import fell_back_to_superlu
+
+
+def _window_faces(faces, axis, window, periodic, wrap_factor, xp):
+    """New (mx + 1, my) / (mx, my + 1) array of the hi-face values `faces` (nx, ny) of the window cells along `axis`
+    with the window's lower edge face first (FDFDPhysics.drive_fields): the hi face of the cell below, on a periodic
+    axis the wrapped last face x wrap_factor, at an unpadded wall the first face repeated (yee_grid.lower_face_partner's
+    rule for that row)."""
+    part, other = window[axis], window[1 - axis]
+    start = part.start
+    if start > 0:
+        lower, factor = start - 1, 1.0
+    elif periodic:
+        lower, factor = faces.shape[axis] - 1, wrap_factor
+    else:
+        lower, factor = 0, 1.0
+    row = cell_row(faces, axis, lower)[other]
+    if factor != 1.0:
+        row = row * factor
+    inner = faces[window]
+    return xp.concatenate((xp.expand_dims(row, axis), inner), axis=axis)
+
 
 # Wall / mirror faces (boundaries.WALL_SIGNS, shared with the FDTD rows): outermost cell = sign x its inner neighbour
 # (sign 0: pinned to 0). Even faces (sign +1) also get face weight 0 on the inner face: zero flux, and a face current
@@ -1371,10 +1392,13 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
 
     def drive_fields(self, solution):
         """focused_beam.DriveFields (host) of a driven solution of the current system (self.solution or a
-        solve_moved_beam result): the window E at the cell centres (ez E_z; hz E_x / E_y as face means of Ampere's law,
-        the sources' face currents included), the staircase permittivity each component sees (ez eps_r of the system
-        without the subpixel-smoothing deltas; hz the eps_xx / eps_yy cells, which smoothing never changes), the
-        staircase PEC cells and omega. ValueError as solve_moved_beam's state checks, or for another shape."""
+        solve_moved_beam result): the window E on its Yee points (ez E_z at the cell centres; hz E_x on the y faces and
+        E_y on the x faces of Ampere's law, the sources' face currents included, from the window's lower edge face to
+        its upper one: the lower one is the hi face of the cell below, wrapped on a periodic axis (Bloch phase
+        included), the first face repeated at an unpadded wall as face_mean_at_centres does), their grids, the
+        staircase cell permittivity each component sees (ez eps_r of the system without the subpixel-smoothing deltas;
+        hz the eps_xx / eps_yy cells, which smoothing never changes), the staircase PEC cells and omega. ValueError as
+        solve_moved_beam's state checks, or for another shape."""
         self._require_driven_solution('drive_fields')
         if tuple(solution.shape) != self._field_re.shape:
             raise ValueError(f'drive_fields: solution shape {tuple(solution.shape)} is not the grid '
@@ -1392,19 +1416,23 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
                 cell_eps = cell_eps - deltas
                 del deltas
             fields = {'ez': host_copy(solution[window])}
+            grids = {'ez': (x, y)}
             eps = {'ez': host_copy(cell_eps[window])}
         else:
             ex_faces, ey_faces = self.face_fields(None if solution is self.solution else solution)
             wrap_x, wrap_y = self.lower_wrap_factors
             config = self.boundary_config
+            edges = tuple(np.array(np.asarray(axis_edges, dtype=np.float64)[part.start:part.stop + 1])
+                          for axis_edges, part in zip(self.domain.cell_edges(), window))
             fields = {}
             for name, faces, axis, periodic, wrap in (('ex', ex_faces, 1, config.periodic_y, wrap_y),
                                                       ('ey', ey_faces, 0, config.periodic_x, wrap_x)):
-                fields[name] = host_copy(face_mean_at_centres(faces, axis, periodic, xp=xp, wrap_factor=wrap)[window])
+                fields[name] = to_host(_window_faces(faces, axis, window, periodic, wrap, xp))
             del ex_faces, ey_faces
+            grids = {'ex': (x, edges[1]), 'ey': (edges[0], y)}
             eps = {'ex': host_copy(system.cell_eps_xx[window]), 'ey': host_copy(system.cell_eps_yy[window])}
         pec = None if self.pec_cells is None else np.array(to_host(self.pec_cells[window]), dtype=bool)
-        return DriveFields(omega=float(system.omega), x=x, y=y, fields=fields, eps=eps, pec=pec,
+        return DriveFields(omega=float(system.omega), x=x, y=y, fields=fields, grids=grids, eps=eps, pec=pec,
                            polarization=self.polarization)
 
     # --- monitors ---

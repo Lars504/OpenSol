@@ -387,7 +387,9 @@ type's vocabulary and refusals are in its help texts and validation.
   `drive_sources()`, `solve_moved_beam(source, offset)` (one more solve on the kept factor, every other source as it
   is; never touches solution, monitors, q_abs, n_solves or the face-field cache; refused while `_system_dirty` /
   `_solution_dirty` or a resonance is shown) and `drive_fields(solution)` (`focused_beam.DriveFields`, host window
-  values, staircase eps). A new driven path through `_solve` keeps `_zero_fixed_rows` / `_fill_wall_rows(solution=)`
+  values on each component's own Yee points with their `grids`: hz E_x / E_y on their faces, edge faces included, never
+  a face mean along the beam, which the Brillouin drive would read as a cos(k h / 2) amplitude loss; staircase cell
+  eps). A new driven path through `_solve` keeps `_zero_fixed_rows` / `_fill_wall_rows(solution=)`
   shared with it. Validation (`make_validate_focused_beam`) reports every runtime refusal first; estimators book the
   scan solves through `definition_common.brillouin_scan_solves` / `memory_estimates.brillouin_drive_items`. nlfd does
   not offer it (absent from its `_CHANNEL_FEATURE_NAMES`). Self-tests selftests_focused_beam, em_fdfd_cpu_gpu.
@@ -502,8 +504,9 @@ type's vocabulary and refusals are in its help texts and validation.
   normalising by it weights solid rings by `core.metric.ring_angle(m)`. Launch: Yee-exact in z (semi-discrete kappa),
   continuum Bessel in r, so the leakage is the radial O((k NA h)^2) (R6; a bor_ports discrete-mode expansion would make
   it exact). Drive contract as the 2D FDFD's (`drive_sources`, `solve_moved_beam(source, (0, dz))` on the kept factor,
-  host active vector; `drive_fields` with components {'r', 'phi' = -j E_phi, 'z'}, what brillouin.azimuthal_parts
-  reads). Self-tests em_bor_focused_beam_* (selftests_focused_beam).
+  host active vector; `drive_fields` with components {'r', 'phi' = -j E_phi, 'z'} on their Yee points (E_r on the r
+  edges from the axis, E_z on the z edges: `yee_e_fields`), what brillouin.azimuthal_parts reads). Self-tests
+  em_bor_focused_beam_* (selftests_focused_beam).
 - 2D fill is mild (SuperLU copes to ~1e6 unknowns): cuDSS (unmeasured) buys host relief at the largest many-order
   grids. Not yet: the 2.16 metric layer, a measured line-block vs SuperLU crossover, line-block port mode solves.
 - Self-tests: selftests_bor, selftests_bor_orders, selftests_bor_backend; examples em/analytic_bor_*. SuperLU-only

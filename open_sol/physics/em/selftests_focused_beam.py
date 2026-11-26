@@ -81,7 +81,7 @@ _BOR_MOVED_PML = 12
 _BOR_MOVED_LINE_ROW = 12
 _BOR_MOVED_FOCUS_ROW = 45
 _BOR_MOVED_OFFSET = (0.0, 0.0731e-6)   # m (dr, dz): 3.655 cells along z
-_BOR_AXIS_TOLERANCE = 5e-2         # drive_fields A_phi / A_r + 1 at the focal axis cell (O((k NA h)^2) off the axis)
+_BOR_AXIS_TOLERANCE = 1e-12        # drive_fields A_phi (axis cell) / A_r (axis edge) + 1: the recovered axis E_r
 
 
 # ---- specs ----
@@ -376,8 +376,9 @@ def _raises_value_error(call):
 
 def _check_bor_moved(_results_by_name):
     """solve_moved_beam(beam, (0, dz)) of a solved BORPhysics vs the solution of one built with the focus moved, its
-    drive_fields vs the rebuilt one's (relative max, round-off), drive_fields' A_phi / A_r = -1 at the focal axis cell
-    (the A_phi = -j E_phi convention brillouin.azimuthal_parts reads: A_phi -> -A_r on the axis), and the bookkeeping
+    drive_fields vs the rebuilt one's (relative max, round-off), drive_fields' A_phi of the focal axis cell / A_r on
+    the axis edge = -1 (the A_phi = -j E_phi convention brillouin.azimuthal_parts reads: the axis E_r is recovered as j
+    E_phi(r_0), so A_r(0) = -A_phi(r_0) to round-off), and the bookkeeping
     (shown solution and n_solves untouched, extra_solves 1, offset 0 = the solution itself, a radial offset and an
     order-sum term refused: 0 or inf)."""
     import numpy as np
@@ -457,7 +458,7 @@ FOCUSED_BEAM_SELFTEST_CASES = (
                     'and hz: solve_moved_beam(beam, offset) of a solved physics with offset '
                     f'({_MOVED_OFFSET[0] * 1e6:g}, {_MOVED_OFFSET[1] * 1e6:g}) um (non-integer cells) must equal '
                     'the solution of a physics built with the focus moved, and so must its drive_fields (hz: the face '
-                    f'means of a given solution); relative max {_MOVED_TOLERANCE:g} (the same operator and right-hand '
+                    f'values of a given solution); relative max {_MOVED_TOLERANCE:g} (the same operator and right-hand '
                     'side: round-off only). Also the discrete residual max |A u_inc| / max |c u_inc| of the incident '
                     'wave continued over the window rows (interior cells, c the cell term) must stay below it: the '
                     'waves solve the uniform rows exactly, so the launch is one-sided to round-off. Bookkeeping: the '
@@ -504,9 +505,10 @@ FOCUSED_BEAM_SELFTEST_CASES = (
                     f'physics with dz = {_BOR_MOVED_OFFSET[1] * 1e6:g} um (non-integer cells) must equal the solution '
                     'of a physics built with the focus moved, and so must its drive_fields (relative max '
                     f'{_MOVED_TOLERANCE:g}: the same operator and right-hand side, round-off only). drive_fields '
-                    'hands brillouin_scattering the standing-wave amplitudes {r: E_r, phi: -j E_phi, z: E_z}; on the '
-                    f'axis A_phi = -A_r, so A_phi / A_r + 1 at the focal axis cell must stay below '
-                    f'{_BOR_AXIS_TOLERANCE:g} (O((k NA h)^2) of the half-cell offset). Bookkeeping: the shown solution '
+                    'hands brillouin_scattering the standing-wave amplitudes {r: E_r on the r edges, phi: -j E_phi, z: '
+                    'E_z on the z edges}; the axis E_r is recovered as j E_phi(r_0), so A_phi of the focal axis cell / '
+                    f'A_r on the axis edge + 1 must stay below {_BOR_AXIS_TOLERANCE:g} (round-off: it pins the '
+                    'convention and the edge layout). Bookkeeping: the shown solution '
                     'and n_solves untouched, extra_solves 1, offset 0 returns the solution itself, a radial offset and '
                     'a driven-order-sum term raise. Not yet run.',
         specs=no_runs, check=_check_bor_moved),

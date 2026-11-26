@@ -15,11 +15,13 @@ them; no physics imports at module level (brillouin / optomechanics inside the c
 # the line ~6.5 GHz wide around f_B = 2 n v_L / lambda0 = 32.6 GHz and damps the phonon within ~0.3 um, so the walls of
 # the block (>= 0.3 um from the drive, the fixed floor 0.3 um below) return no echo above ~1e-2 of the readout.
 # Accuracy budget (tensor vs triangles, the same optical cells): the Q1 cells with their consistent mass raise the
-# shift by ~(q h)^2 / 24 = 0.5 % (q = 4 pi n / lambda0); the drives sample the optical cells differently (the cell
-# value with the centre strain against bilinear fields at the P2 quadrature points: both ~(q dx)^2 / 12 low in psd,
-# nearly cancelling); the moving-boundary sides read the cells straddling the face on both meshes (brillouin_drive
-# FIELD_SHIFT). First estimates (not yet run): shift, fwhm, peak, scattered_fraction, q_mean and the local reference's
-# shift 2e-2; psd above 10 % of its peak 5e-2 (L2, the 0.5 % shift on a line ~20 % of f_B wide).
+# shift by ~(q h)^2 / 24 = 0.5 % (q = 4 pi n / lambda0); the drives read the optical cells differently but both
+# exactly for a plane wave (the cell value with the centre strain against the phase-corrected interpolation at the P2
+# quadrature points: brillouin.phase_corrected_sample; the envelope ~(h / w0)^2 ~ 1e-3); the moving boundary of the
+# cells takes the mean of the two straddling cells' products, low by about cos(k h) ~ 1.5 % of that part's amplitude
+# at 10 nm in glass against the triangles' E_par / D_n at the surface itself (brillouin.interface_traction). First
+# estimates (not yet run): shift, fwhm, peak, scattered_fraction, q_mean and the local reference's shift 2e-2; psd
+# above 10 % of its peak 5e-2 (L2, the 0.5 % shift on a line ~20 % of f_B wide).
 import math
 
 import numpy as np

@@ -11,11 +11,16 @@ module level (brillouin / materials inside the checks)."""
 # drive edge lies ~1 um (>= 1.3 attenuation lengths L_att = 2 v / Gamma = 0.72 um of water at 7.4 GHz) from the solid's
 # walls: the phase-matched phonon leaves the drive along the beam, its wall echo returns non-phase-matched (sinc side
 # lobe ~1 / (q L) ~ 0.04) after a round trip exp(-2 d / L_att) ~ 0.06, so echoes stay ~3e-3 of the readout.
-# Accuracy budget of a psd against a reference sampled on the same optical cells (2D homogeneous): the drive samples the
-# optical fields bilinearly at the solid quadrature points, the reference rasters the cell values, so the FEM drive at
-# q = 2 n k0 is low by sinc^4(q dx / 4) per field pair, ~(q dx)^2 / 12 in psd (0.8 % at 10 nm, 1.3 % at 12.5 nm cells:
-# a uniform scale, invisible to shift and width); P2 / P1 Taylor-Hood dispersion ~(q h)^4 / 720 in frequency (~1e-4 ..
-# 1e-3 at h 25 .. 30 nm, ~0.3 .. 2 % of psd on the line flanks); the wall echoes above.
+# Accuracy budget of a psd against a reference sampled on the same optical cells (2D homogeneous): the drive reads the
+# optical fields on their own Yee points (em_fdfd_hz E_x / E_y on their faces: no mean along the beam, which was low by
+# cos^4(k h / 2) in psd) and interpolates them phase-corrected at the solid quadrature points
+# (brillouin.phase_corrected_sample), the reference rasters their phase-corrected cell-centre values: both exact for a
+# plane wave (plain bilinear sampling was low by sinc^4(q dx / 4) per field pair, (q dx)^2 / 12 in psd), the envelope
+# of the 0.4 um waist leaves ~(dx / w0)^2 ~ 1e-3; the reference's FFT images stay below brillouin.IMAGE_TOLERANCE =
+# 1e-3 of the readout by its automatic zero padding (about 11 x 8 for the 0.8 x 1.2 um drive at 5.9 GHz: with the old
+# fixed padding 2 the phase-matched copies along the beam held 12 - 15 % at the line centre); P2 / P1 Taylor-Hood
+# dispersion ~(q h)^4 / 720 in frequency (~1e-4 .. 1e-3 at h 25 .. 30 nm, ~0.3 .. 2 % of psd on the line flanks); the
+# wall echoes above.
 import math
 from dataclasses import dataclass
 
@@ -143,8 +148,8 @@ _WATER_2D_FREQUENCIES = _frequencies(5.9e9, 8.9e9, 13)
 _WATER_2D_HZ = _Planar(cell=12.5e-9, cells=(272, 256), focus=(1.7e-6, 1.6e-6), drive=(1.3e-6, 1.0e-6, 2.1e-6, 2.2e-6),
                        line_y=0.97e-6, waist=0.4e-6, fine=30e-9, coarse=80e-9)
 _WATER_2D_HZ_FREQUENCIES = _frequencies(5.9e9, 8.9e9, 7)
-_WATER_2D_TOLERANCE = {'psd': 3e-2, 'shift': 2e-3, 'fwhm': 1e-2, 'fraction': 3e-2, 'power': 1e-9}
-_WATER_2D_HZ_TOLERANCE = {'psd': 3e-2, 'shift': 3e-3, 'power': 1e-9}
+_WATER_2D_TOLERANCE = {'psd': 2e-2, 'shift': 2e-3, 'fwhm': 1e-2, 'fraction': 1e-2, 'power': 1e-9}
+_WATER_2D_HZ_TOLERANCE = {'psd': 2e-2, 'shift': 3e-3, 'power': 1e-9}
 
 # brillouin_scan_columns: 3.4 x 2.0 um of 20 nm cells, a polystyrene disc (r 0.25 um) at the focus in water, the drive
 # rectangle 0.8 x 0.8 um around it; the half model is x < 1.7 um with the mirror plane on x_hi (em symmetric, solid
@@ -381,13 +386,13 @@ class _Bor:
 _BOR_WATER = _Bor(cell=15e-9, cells=(150, 340), focus_z=2.55e-6, drive=(1.2e-6, 1.05e-6, 4.05e-6), line_z=1.0e-6,
                   aperture=0.6, fill=1.0, fine=30e-9, coarse=80e-9)
 _BOR_WATER_FREQUENCIES = _frequencies(5.6e9, 9.2e9, 13)
-_BOR_WATER_TOLERANCE = {'ratio': 5e-2, 'shift': 2.5e-2, 'area': 5e-2, 'torsion': 1e-12, 'power': 1e-9}
+_BOR_WATER_TOLERANCE = {'ratio': 5e-2, 'shift': 4e-2, 'area': 5e-2, 'torsion': 1e-12, 'power': 1e-9}
 # brillouin_bor_low_na: NA 0.3, fill 0.7 (a Gaussian focus of effective NA ~0.21, waist ~0.8 um, Rayleigh range ~5 um
 # >> the 3 um drive), drive r < 1.5 um, window radius 2.7 um
 _BOR_LOW_NA = _Bor(cell=15e-9, cells=(180, 340), focus_z=2.55e-6, drive=(1.5e-6, 1.05e-6, 4.05e-6), line_z=1.0e-6,
                    aperture=0.3, fill=0.7, fine=30e-9, coarse=80e-9)
 _BOR_LOW_NA_FREQUENCIES = _frequencies(6.0e9, 8.88e9, 13)
-_BOR_LOW_NA_TOLERANCE = {'shift law': 5e-3, 'fwhm': 3e-2, 'shift local': 5e-3, 'area': 5e-2, 'power': 1e-9}
+_BOR_LOW_NA_TOLERANCE = {'shift law': 5e-3, 'fwhm': 5e-2, 'shift local': 1.2e-2, 'area': 5e-2, 'power': 1e-9}
 # brillouin_bor_cross_polarized: a small light model, 1.28 x 2.24 um of 16 nm cells, NA 0.6 fill 0.7, drive r < 0.48 um,
 # 0.64 um along z; two order-2 solids (co and cross) on one mesh
 _BOR_CROSS = _Bor(cell=16e-9, cells=(80, 140), focus_z=1.12e-6, drive=(0.48e-6, 0.8e-6, 1.44e-6), line_z=0.75e-6,
@@ -558,17 +563,20 @@ BRILLOUIN_SPECTRUM_CASES = (
         description=(f'em_fdfd_ez and a water_532nm solid, {_PLANAR_LAYOUT_TEXT}: a 3.4 x 3.2 um window of 10 nm cells '
                      '(39.9 per lambda0 / n), waist 0.4 um, a 0.8 x 1.2 um drive rectangle with 25 nm elements (80 nm '
                      'elsewhere); brillouin_scattering with reference homogeneous at 13 frequencies 5.9 - 8.9 GHz, '
-                     'cpu. The homogeneous reference is the exact plane-wave sum of the same drive (the kappa sigma~ '
-                     'raster of the optical cells in the drive) in an unbounded medium, so it holds the finite drive '
+                     'cpu. The homogeneous reference is the plane-wave sum of the same drive (the kappa sigma~ '
+                     'raster of the optical cells in the drive; its FFT images below 1e-3 of the readout by the '
+                     'automatic zero padding, about 11 x 8 here) in an unbounded medium, so it holds the finite drive '
                      'length (a 1.2 um drive is 1.7 attenuation lengths: the line is about twice the q^2 law width '
                      '0.66 GHz) and the beam q content. Checks: psd against psd_reference in L2 over the samples above '
-                     f"{_PEAK_SHARE:g} of its peak ({_WATER_2D_TOLERANCE['psd']:g}: the drive samples the optical "
-                     'fields bilinearly at the quadrature points where the reference rasters the cell values, (q '
-                     'dx)^2 / 12 = 0.8 % low uniformly; P2 / P1 dispersion ~1e-4 in frequency, ~0.5 % on the flanks; '
-                     f"wall echoes ~3e-3), the fit shift against reference_shift ({_WATER_2D_TOLERANCE['shift']:g}: "
-                     'the dispersion), the fit fwhm against the DHO fit of psd_reference '
-                     f"({_WATER_2D_TOLERANCE['fwhm']:g}), scattered_fraction against 2 x the band integral of "
-                     f"psd_reference ({_WATER_2D_TOLERANCE['fraction']:g}: the uniform scale), incident_power = power "
+                     f"{_PEAK_SHARE:g} of its peak ({_WATER_2D_TOLERANCE['psd']:g}: the drive interpolates the "
+                     'optical fields with their phase removed at the quadrature points and the reference rasters the '
+                     'cell values, both exact for a plane wave, the beam envelope ~1e-3; the reference images < 1e-3; '
+                     'P2 / P1 dispersion ~1e-4 in frequency, ~0.5 % on the flanks; wall echoes ~3e-3), the fit shift '
+                     f"against reference_shift ({_WATER_2D_TOLERANCE['shift']:g}: the dispersion), the fit fwhm "
+                     f"against the DHO fit of psd_reference ({_WATER_2D_TOLERANCE['fwhm']:g}), scattered_fraction "
+                     f"against 2 x the band integral of psd_reference ({_WATER_2D_TOLERANCE['fraction']:g}: echoes, "
+                     'images and the envelope; the flank dispersion largely cancels in the area), incident_power = '
+                     'power '
                      f"({_WATER_2D_TOLERANCE['power']:g}). The q^2 linewidth law needs a drive longer than a few "
                      'attenuation lengths: brillouin_bor_low_na and examples/mechanics/brillouin_water_2d. Tolerances '
                      'are first estimates; measured = error = the worst deviation in tolerance units.'),
@@ -578,11 +586,14 @@ BRILLOUIN_SPECTRUM_CASES = (
         label='Solid mechanics: Brillouin spectrum of water, em_fdfd_hz focused beam vs the homogeneous reference',
         description=(f'em_fdfd_hz and a water_532nm solid, {_PLANAR_LAYOUT_TEXT}: the brillouin_water_2d_ez layout on '
                      '12.5 nm optical cells (31.9 per lambda0 / n) with 30 nm solid elements in the drive, 7 '
-                     'frequencies 5.9 - 8.9 GHz, cpu. The in-plane E (face means at the cell centres) gives G_xx, '
-                     'G_yy, G_xy; with p11 = p12 and p44 = 0 the drive is still a pure dilation p (E . E). Checks: psd '
+                     'frequencies 5.9 - 8.9 GHz, cpu. The in-plane E (E_x on the y faces, E_y on the x faces, each '
+                     'interpolated on its own faces with the phase removed; the reference from their phase-corrected '
+                     'cell-centre values) gives G_xx, G_yy, G_xy; with p11 = p12 and p44 = 0 the drive is still a pure '
+                     'dilation p (E . E). A face mean along the beam would lower both psd and reference by cos^4(k h '
+                     '/ 2) = 1.9 % (unseen here: they share it); brillouin_bilinear pins the sampling. Checks: psd '
                      f"against psd_reference (homogeneous) in L2 above {_PEAK_SHARE:g} of its peak "
-                     f"({_WATER_2D_HZ_TOLERANCE['psd']:g}: bilinear sampling (q dx)^2 / 12 = 1.3 % uniform, P2 / P1 "
-                     f"dispersion), the fit shift against reference_shift ({_WATER_2D_HZ_TOLERANCE['shift']:g}), "
+                     f"({_WATER_2D_HZ_TOLERANCE['psd']:g}: as brillouin_water_2d_ez, P2 / P1 dispersion at 30 nm), "
+                     f"the fit shift against reference_shift ({_WATER_2D_HZ_TOLERANCE['shift']:g}), "
                      f"incident_power = power ({_WATER_2D_HZ_TOLERANCE['power']:g}). Tolerances are first estimates; "
                      'measured = error = the worst deviation in tolerance units.'),
         specs=lambda: _water_2d_specs('hz'), check=_check_water_2d_hz),
@@ -633,9 +644,11 @@ BRILLOUIN_SPECTRUM_CASES = (
                      'brillouin_scattering on the same optics (the order-split exemption of definition_helpers), '
                      'reference local, 13 frequencies 5.6 - 9.2 GHz, cpu. Checks on the total psd_m0 + psd_m2 '
                      'against the summed local references: the DHO fit shifts within '
-                     f"{_BOR_WATER_TOLERANCE['shift']:g} (the local reference takes the phase-gradient |q| per point "
-                     'and misses the q content of the amplitude pattern, ~<theta^2> / 6 of the focusing cone: two '
-                     'waves at the 0.47 rad rim lift the mean |q| by 3.6 %, the filled pupil by about 1 %) and the DHO '
+                     f"{_BOR_WATER_TOLERANCE['shift']:g} (the local reference sits low: it takes the phase-gradient "
+                     '|q| per point and misses the q content of the amplitude pattern, ~<theta^2> / 6 of the focusing '
+                     'cone: two waves at the 0.47 rad rim lift the mean |q| by 3.6 %, the filled pupil by about 1 %, '
+                     'and reads the Gouy phase and the wavefront curvature near the focus as a lower q, ~0.5 %; the '
+                     'fit of the cut line adds ~0.5 %) and the DHO '
                      f"areas (pi / 2) peak gamma (1 - gamma^2 / (4 f0^2)) within {_BOR_WATER_TOLERANCE['area']:g} (the "
                      'sum rule: for a dilation drive c in one liquid both give 2 int psd df = (k_B T / K) int |kappa '
                      'c|^2 dV; the 3 um drive cut broadens the computed line, which the areas do not see; the fit of '
@@ -661,8 +674,11 @@ BRILLOUIN_SPECTRUM_CASES = (
                      'the Yee dispersion raises it by (k h)^2 / 24 = 2.3e-3, P2 / P1 ~ -5e-4), the fit fwhm against '
                      'the DHO fit of that boxcar line on the same frequencies centred at the computed shift '
                      f"({_BOR_LOW_NA_TOLERANCE['fwhm']:g}: the beam envelope tapers to ~0.92 of |c|^2 at the drive "
-                     'ends, ~-1.4 %; the Lorentzian-in-q kernel vs the DHO, (Gamma / Omega)^2 ~ 0.8 %), the shift '
-                     f"against reference_shift (local, {_BOR_LOW_NA_TOLERANCE['shift local']:g}), the DHO areas "
+                     'ends, ~-1.4 %; the Lorentzian-in-q kernel vs the DHO, (Gamma / Omega)^2 ~ 0.8 %; the boxcar '
+                     'line holds one |q| where the pupil spreads |q| over ~<theta^2> / 2, +1.5 .. 3 % in width), the '
+                     f"shift against reference_shift (local, {_BOR_LOW_NA_TOLERANCE['shift local']:g}: the local "
+                     'reference reads the Gouy phase and the wavefront curvature over the 3 um around the focus as a '
+                     'lower q, ~0.5 .. 0.6 %, beside the pupil terms above), the DHO areas '
                      f"against the local reference's (sum rule, {_BOR_LOW_NA_TOLERANCE['area']:g}), incident_power = "
                      'power. Tolerances are first estimates; measured = error = the worst deviation in tolerance '
                      'units.'),

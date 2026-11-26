@@ -27,8 +27,8 @@ from ...model.geometry import domain_object_boxes, domain_size, expand_entities,
 from ...model.schema import (FREQUENCY_RESPONSE_STUDY, FeatureType, Issue, Param, coupling_writes, feature_path,
                              resolve_values)
 from .brillouin import (_CHUNK_VALUES, ANTI_STOKES_SERIES, AZIMUTHAL_PARTS, DB_SERIES, DETECTIONS, FIT_EXTRAS,
-                        PSD_SERIES, REFERENCE_SERIES, REFERENCES, SCAN_COLUMNS, STOKES_SERIES, X_LABEL, Y_LABEL,
-                        scan_positions)
+                        IMAGE_TOLERANCE, MAX_REFERENCE_CELLS, MIN_PADDING, PSD_SERIES, REFERENCE_SERIES, REFERENCES,
+                        SCAN_COLUMNS, STOKES_SERIES, X_LABEL, Y_LABEL, homogeneous_padding, scan_positions)
 from .brillouin_drive import LINE_BIN, BrillouinDrive
 from .definition_common import ROLLER_FEATURES, merged_materials, plain_value
 from .definition_optomechanics import _crystal_regions, crystal_photoelastic_tensor
@@ -95,20 +95,26 @@ _PARAMS = (
           tip='Temperature of the sample, in kelvin: room temperature is about 293 K.'),
     Param('photoelastic', 'bool', True, label='Photoelastic drive',
           help='Include the photoelastic (strain-optic) part of the drive, from photoelastic_p11 / _p12 / _p44 of the '
-               'solid materials (planar: crystal entries too).',
+               'solid materials (planar: crystal entries too). The permittivity at a drive point is that of its own '
+               'solid material (the nearest optical cell of that material among the four around the point), so the '
+               'optical staircase does not lend a point the other material at an interface; a region thinner than an '
+               'optical cell has none and warns at the run.',
           tip='Include the change of refractive index with strain. This is the main part in liquids and bulk '
               'solids.'),
     Param('moving_boundary', 'bool', True, label='Moving-boundary drive',
           help='Include the moving-boundary part of the drive: solid element edges inside the drive selection where '
-               'the optical permittivity jumps (non-conjugated Johnson perturbation). At least one of photoelastic / '
-               'moving_boundary must be on; with photoelastic off an optical interface must touch the drive '
-               'selection.',
+               'the optical permittivity jumps (non-conjugated Johnson perturbation). Triangles: the tangential E and '
+               'the normal D (both continuous) are read at the edge itself, the permittivity of each side is that of '
+               'its own material (isotropic: the mean of its diagonal); rectangular cells: the two cells of each Yee '
+               'face. At least one of photoelastic / moving_boundary must be on; with photoelastic off an optical '
+               'interface must touch the drive selection.',
           tip='Include the light scattered by moving surfaces between materials of different refractive index.'),
     Param('axial_length', 'float', 1e-5, label='Beam length out of the plane', unit='m', min=0.0, min_exclusive=True,
           help='Planar solids only (unused when axisymmetric): the 2D fields are a sheet beam uniform over this '
                'length L along z, powers in W/m; the reported 3D spectrum is the 2D one / L, valid for q_z = 0 '
-               'phonons, i.e. L much longer than the acoustic attenuation length (about 1e-6 m in water at 7.4 GHz) '
-               'and the beam.',
+               'phonons, i.e. L much longer than the acoustic attenuation length (L_att = 2 v / Gamma, about 0.7e-6 m '
+               'in water at 7.4 GHz) and the beam. In the plane the drive selection plays this part: a selection only '
+               'a few L_att long along the beam widens the line (see the feature description).',
           tip='Length of the light sheet along the direction out of the drawing, for a planar model. The spectrum '
               'is divided by it.\n\nUnused for an axisymmetric solid.'),
     Param('scan_offsets_x', 'float_list', None, label='Scan offsets x', unit='m', optional=True,
@@ -128,13 +134,25 @@ _PARAMS = (
                          ('none', 'None')),
           help="Reference series psd_reference: 'local' (any medium) a damped-oscillator line per drive point at its "
                'local wavevector q (phase gradient of E_c . E_i) with the longitudinal modulus M* = K* + 4/3 G* of '
-               "its material; 'homogeneous' (planar, no model mirror planes, one uniform isotropic material over the "
-               'drive selection on uniform optical cells) the exact plane-wave sum of an unbounded medium; none. Both '
-               'need isotropic moduli with a finite bulk modulus in the drive selection (no c_ij route, no '
-               "incompressible material of formulation mixed): else reference 'none'.",
+               'its material. Its area obeys the same sum rule as psd at any numerical aperture, but its line sits '
+               'low: the phase gradient misses the q content of the amplitude pattern (the focusing cone, about '
+               '<theta^2> / 6 of the cone angles theta: about 1 % for a filled NA 0.6 pupil in water, up to 3.6 % '
+               'at its rim) and reads the Gouy phase and the wavefront curvature near the focus as a lower q (about '
+               '0.5 % at NA 0.3); its line also ignores the drive length (below). Compare shifts with it at low NA '
+               "(< 0.3) only. 'homogeneous' (planar, no model mirror planes, one uniform lossy isotropic material over "
+               'the drive selection on uniform optical cells) the plane-wave sum of an unbounded medium with the same '
+               'drive raster (its finite length and q content included), by an FFT whose periodic images are kept '
+               f'below {IMAGE_TOLERANCE:g} of the readout by a zero padding per axis from the phonon attenuation '
+               '(padding P >= 1 + ln(1 / tolerance) / (delta L), delta = Gamma / (2 v) the smallest over the study '
+               f'band, L the drive box; more than {MAX_REFERENCE_CELLS:,} padded cells is an error: a drive short '
+               'against the attenuation length); none. Both need isotropic moduli with a finite bulk modulus in the '
+               "drive selection (no c_ij route, no incompressible material of formulation mixed): else reference "
+               "'none'.",
           tip='Approximate spectrum shown beside the computed one for comparison.\n\n'
-              '- Local plane-wave estimate: works in any sample.\n'
-              '- Unbounded uniform medium: exact for one uniform material, planar models only.\n'
+              '- Local plane-wave estimate: works in any sample; for a strongly focused beam its peak sits a '
+              'little low.\n'
+              '- Unbounded uniform medium: the same drive in an endless sample of one uniform material, planar '
+              'models only.\n'
               '- None.'),
     Param('fit_peak', 'bool', True, label='Fit the peak',
           help='Fit a damped harmonic oscillator A / ((f0^2 - f^2)^2 + gamma^2 f^2) to psd (and to psd_reference): '
@@ -158,7 +176,10 @@ _DESCRIPTION = (
     'interpolation) and drive the solid with the generalised force w = kappa (int B^T sigma~ dV + moving-boundary '
     'edge tractions; rectangular cells: B at the cell centre and the Yee faces), sigma~ = p^T G the '
     'optical stress of the NON-conjugated field products G_I = -eps_ii eps_jj (E_c,i E_i,j + [i != j] E_c,j E_i,i), '
-    'kappa = omega eps0 / (4 sqrt(P_i P_c)) (beam powers incident_power). Per frequency f the solid solves K(Omega) u '
+    'kappa = omega eps0 / (4 sqrt(P_i P_c)) (beam powers incident_power). The optical fields are read on their own '
+    'Yee points (no mean along the beam) and interpolated with their local phase removed, exact for a plane wave '
+    '(a plain bilinear interpolation would lower the drive by (q h)^2 / 24, q = 4 pi n / lambda0). Per frequency f '
+    'the solid solves K(Omega) u '
     '= w (Omega = 2 pi f, the Brillouin shift) and psd(f) = (2 k_B T / Omega) (-Im(w^H u)) x mirror factor / L '
     '[1/Hz]: the classical power fraction per Hz scattered into the collected channel in ONE sideband (Stokes or '
     'anti-Stokes; the one-sided spectrum of both sidebands is 2 psd); sum rule 2 int_0^inf psd df = k_B T w^H K0^-1 w. '
@@ -176,7 +197,11 @@ _DESCRIPTION = (
     'per lambda0 / n in the drive region, solid element size h <= lambda0 / (12 n) quadratic (/ 24 linear) there '
     '(the drive oscillates on lambda0 / (2 n)). The selection is the drive / sensing region (domain objects or all; '
     'it must stay on the total-field side of the focused_beam line and at least half an optical cell from the window '
-    "edges other than mirror planes and the axis). Result 'xy' versus frequency [Hz] (x_label "
+    'edges other than mirror planes and the axis). It also cuts the phonons the spectrum sees: the phase-matched '
+    'phonon decays over L_att = 2 v / Gamma along the beam, so a selection only a few L_att long along the beam widens '
+    'the line by about L_att / L over the q^2 law (the boxcar cut: a 1.2e-6 m drive in water at 7.4 GHz, L_att 0.72e-6 '
+    'm, about doubles the width, 3e-6 m adds about 35 %); select a region much longer than L_att (and keep the '
+    "solid walls a few L_att away: their echoes) to measure a linewidth. Result 'xy' versus frequency [Hz] (x_label "
     f"'{X_LABEL}', y_label '{Y_LABEL}'): series {PSD_SERIES}, {STOKES_SERIES} and {ANTI_STOKES_SERIES} (x (n + 1) "
     'and x n, n the Bose occupation of hbar Omega), '
     f'{REFERENCE_SERIES} (reference not none) in 1/Hz, {DB_SERIES} = 10 log10 psd in dB/Hz; with several scan '
@@ -975,14 +1000,20 @@ def _homogeneous_issues(vctx, feature, path, optical, indices, data, settings_va
     mesh = None if mesh_spec is None else vctx.meshes.get(mesh_spec.name)
     box = _drive_box(vctx, feature)
     if mesh is not None and getattr(mesh, 'kind', '') == 'tensor' and box is not None:
-        uneven = [axis for axis, edges, (low, high) in (('x', mesh.x_edges, (box[0], box[2])),
-                                                         ('y', mesh.y_edges, (box[1], box[3])))
-                  if not has_uniform_spacing(_box_widths(edges, low, high))]
+        widths = {axis: _box_widths(edges, low, high) for axis, edges, (low, high) in
+                  (('x', mesh.x_edges, (box[0], box[2])), ('y', mesh.y_edges, (box[1], box[3])))}
+        uneven = [axis for axis, values in widths.items() if not has_uniform_spacing(values)]
         if uneven:
             issues.append(Issue('error', path, f"reference 'homogeneous' samples the drive stress on uniform optical "
                                                f"cells, but the cells of '{optical.name}' vary along "
                                                f"{' and '.join(uneven)} over the drive selection: make the mesh "
                                                "uniform there or use reference 'local'"))
+        elif len(data) == 1:   # the zero padding its periodic images need (BrillouinDrive.result raises the same)
+            drive_box = (widths['x'].size, float(widths['x'].mean()), widths['y'].size, float(widths['y'].mean()))
+            try:
+                _reference_padding(data[0][1], vctx.parameters, _validation_frequencies(vctx) or (), drive_box)
+            except ValueError as exc:
+                issues.append(Issue('error', path, f"reference 'homogeneous': {exc}"))
     return issues
 
 
@@ -1038,19 +1069,26 @@ def _resolution_issues(vctx, feature, path, optical, data, settings_values, wave
     return issues
 
 
+def _validation_frequencies(vctx):
+    """Study frequencies [Hz] of a frequency_response study (None for another study or settings that do not
+    resolve)."""
+    if vctx.study_type != FREQUENCY_RESPONSE_STUDY:
+        return None
+    try:
+        study_values = vctx.values(vctx.registry.study_type(FREQUENCY_RESPONSE_STUDY).params, vctx.spec.study.settings)
+    except KeyError:
+        return None
+    return None if study_values is None else study_frequencies(study_values)
+
+
 def _line_issues(vctx, path, data, wavelength) -> list:
     """Info per drive material whose estimated Brillouin line (f_B = 2 n v_L / lambda0, FWHM = q^2 (4/3 viscosity +
     bulk_viscosity) / (2 pi rho) + loss factor f_B, q = 4 pi n / lambda0) has no study frequency within _LINEWIDTHS
     FWHM."""
-    if vctx.study_type != FREQUENCY_RESPONSE_STUDY:
-        return []
-    try:
-        study_values = vctx.values(vctx.registry.study_type(FREQUENCY_RESPONSE_STUDY).params, vctx.spec.study.settings)
-    except KeyError:
-        return []
+    study_values = _validation_frequencies(vctx)
     if study_values is None:
         return []
-    frequencies = np.asarray(study_frequencies(study_values), dtype=np.float64)
+    frequencies = np.asarray(study_values, dtype=np.float64)
     issues = []
     for name, properties, _ in data:
         index = _refractive_index(properties, vctx.parameters)
@@ -1090,16 +1128,37 @@ _FLOAT32_BYTES = 4
 _INT64_BYTES = 8
 _BOOL_BYTES = 1
 # per drive point, held through a bind: DrivePoints points (2 float64), weights (float64), elements (int64); p11 / p12 /
-# p44 gathered per point (float64); the volume _GridSamples index (4 int64), weight (4 float64), cell (int64), with
-# em_fdfd_bor optics its axis factor (float64)
+# p44 gathered per point (float64); per distinct optical sample grid (_SAMPLE_GRIDS) a _GridSamples index (4 int64)
+# and weight (4 float64), with em_fdfd_bor optics the axis factor (float64)
 _POINT_BYTES = 2 * _FLOAT_BYTES + _FLOAT_BYTES + _INT64_BYTES
 _POINT_MATERIAL_BYTES = 3 * _FLOAT_BYTES
-_SAMPLER_BYTES = 4 * _INT64_BYTES + 4 * _FLOAT_BYTES + _INT64_BYTES
+_SAMPLER_BYTES = 4 * _INT64_BYTES + 4 * _FLOAT_BYTES
 _AXIS_FACTOR_BYTES = _FLOAT_BYTES
-# one-off per sampler build (first position): _clamped's copy (2 float64), bilinear_weights' i, j (int64), tx, ty
-# (float64), the index stack (4 int64) and its astype copy (4 int64), the weight stack (4 float64)
+# distinct sample grids of the drive points per optical type (DriveFields.grids: ez the centres; hz the centres, the
+# E_x y faces and the E_y x faces; em_fdfd_bor the centres (A_phi), the E_r r edges and the E_z z edges) and the
+# components on an edge grid, whose cell-centre copies brillouin.edges_to_centres makes per read
+_SAMPLE_GRIDS = {'em_fdfd_ez': 1, 'em_fdfd_hz': 3, 'em_fdfd_bor': 3}
+_STAGGERED = {'em_fdfd_ez': 0, 'em_fdfd_hz': 2, 'em_fdfd_bor': 2}
+_IN_PLANE = {'em_fdfd_ez': 0, 'em_fdfd_hz': 2, 'em_fdfd_bor': 2}   # moving-boundary D components (eps E in plane)
+# one-off per sampler build (first position, one build at a time): _clamped's copy (2 float64), bilinear_weights' i, j
+# (int64), tx, ty (float64), the index stack (4 int64) and its astype copy (4 int64), the weight stack (4 float64)
 _SAMPLER_SETUP_BYTES = 2 * _FLOAT_BYTES + 2 * _INT64_BYTES + 2 * _FLOAT_BYTES + 2 * 4 * _INT64_BYTES + 4 * _FLOAT_BYTES
-_GATHER_BYTES = 4 * _COMPLEX_BYTES    # bilinear_sample's flat[index] gather (n, 4) of one complex component
+# per point of one own-material cell search (_ElementGeometry._own_cells): the weight order and candidates (4 + 4
+# int64), np.unique's sorted copy, inverse and the unique cells (3 x 4 int64), their located elements (4 int64) and
+# centres (4 x 2 float64), the elements / located concatenation and its unique inverse (2 x 5 int64), the point groups
+# (int64), the (4,) group gather and comparison (4 int64, 4 bool), matched / argmax / chosen (bool, 2 int64); per
+# material-table row (an element of the points or of their candidate cells: _material_groups) the float64 table
+# (solid flag + MaterialGrid arrays), np.unique's contiguous void copy and its sort (3 copies)
+_OWN_CELL_POINT_BYTES = (8 + 12 + 4 + 10 + 1 + 4 + 2) * _INT64_BYTES + 8 * _FLOAT_BYTES + 5 * _BOOL_BYTES
+_OWN_CELL_TABLE_COPIES = 3
+_GATHER_BYTES = 4 * _COMPLEX_BYTES    # bilinear_sample's / phase_corrected_sample's flat[index] gather (n, 4) per array
+# per point of one brillouin.phase_corrected_sample call beside its gathers: the two summed step products and their
+# terms (4 complex), the tapered steps and t_x / t_y (4 float64), the corner phases (4 float64), exp(1j phase) and the
+# carried weights (2 x 4 complex)
+_PHASED_SAMPLE_BYTES = (4 + 8) * _COMPLEX_BYTES + 8 * _FLOAT_BYTES
+# per window cell and edge-grid component of brillouin.edges_to_centres: the product, the half-step phases, the two
+# shifted halves and their sum (5 complex; the tapered steps 2 float64)
+_CENTRE_STEP_BYTES = 5 * _COMPLEX_BYTES + 2 * _FLOAT_BYTES
 # complex values per point at the optical-stress peak of one position: planar field_products' 6 Voigt rows beside
 # optomechanics.inverse_permittivity_changes' 6 row expressions, their np.stack and its astype copy (4 x 6); an
 # axisymmetric solid (em_fdfd_bor): azimuthal_products' 3 harmonics x 6 rows held while optical_stress runs per
@@ -1118,11 +1177,13 @@ _LOCAL_WINDOW_BYTES = _COMPLEX_BYTES + _BOOL_BYTES + 2 * _FLOAT_BYTES + 2 * _COM
 # (bool), one property's two gathers (float64) and its three comparison masks (bool)
 _INTERFACE_SEARCH_BYTES = 3 * _INT64_BYTES + 2 * _BOOL_BYTES + 2 * _FLOAT_BYTES + 3 * _BOOL_BYTES
 # per moving-boundary Gauss point, held through a bind: EdgeDrivePoints points, normals (2 float64 each), weights
-# (float64); the two field side samplers (+ axis factor) and the isotropic eps of each side (complex, read by two
-# transient diagonal samplers: their set-up and arrays are the bind set-up's); per position the side samples (2
-# sides x components, complex, x 2 with a separate collection field) and the Johnson forms' temporaries and traction
-# (_EDGE_POSITION_VALUES complex)
-_EDGE_POINT_BYTES = 5 * _FLOAT_BYTES + 2 * (_SAMPLER_BYTES + _AXIS_FACTOR_BYTES) + 2 * _COMPLEX_BYTES
+# (float64); the _InterfaceSamples stencil (+ axis factor) and the isotropic eps of each side (2 complex); the side
+# search (bind set-up, both sides one after the other, twice when equal-eps edges are dropped): the stencil build, the
+# diagonal (float64), one own-cell search, the side eps values (2 complex); per position and read the E and D samples
+# (components + in-plane, complex) beside the phase-corrected call over all of them and the Johnson forms' temporaries
+# and traction (_EDGE_POSITION_VALUES complex)
+_EDGE_POINT_BYTES = 5 * _FLOAT_BYTES + _SAMPLER_BYTES + _AXIS_FACTOR_BYTES + 2 * _COMPLEX_BYTES
+_EDGE_SETUP_BYTES = _SAMPLER_SETUP_BYTES + _SAMPLER_BYTES + _FLOAT_BYTES + _OWN_CELL_POINT_BYTES + 2 * _COMPLEX_BYTES
 _EDGE_POSITION_VALUES = 14 + 2
 _EDGE_BYTES = 3 * _INT64_BYTES   # per interface edge: EdgeDrivePoints edges and sides (int64)
 # moving-boundary interface edges: a compact drive region of E elements has ~ this x sqrt(E) edges where the optical
@@ -1136,13 +1197,13 @@ _LINE_BYTES = 2 * _FLOAT_BYTES   # per kept bin: the weighted-mean q and the mas
 # host numpy calls of one position's bind (samples, products, stress, element chunks, edge drive) and of one fit
 _BIND_CALLS = 120
 _DHO_FIT_CALLS_GUESS = 2000   # scipy least_squares evaluations x numpy calls of dho_fit (uncalibrated)
-# homogeneous_reference: zero padding (padding=2 per axis); per padded cell in _projections the spectrum (3 complex),
-# q^2 and safe (float64), three complex temporaries and the two results (float64); in the frequency loop the spectrum
-# and the raveled longitudinal / transverse / q^2 (float64), per chunk value (frequency x wavevector) the total, real,
-# imaginary, the denominator, the numerator product, its np.where and the quotient (7 float64)
-_HOMOGENEOUS_PADDING = 4
+# homogeneous_reference: zero padding P_x x P_y (brillouin.homogeneous_padding: _homogeneous_padded_cells); per padded
+# cell in _projections the spectrum (3 complex), q^2 and safe (float64), three complex temporaries and the two results
+# (float64); in the frequency loop (the spectrum dropped) the raveled longitudinal / transverse / q^2 (float64), per
+# chunk value (frequency x wavevector) the total, real, imaginary, the denominator, the numerator product, its np.where
+# and the quotient (7 float64)
 _HOMOGENEOUS_SPECTRUM_BYTES = 3 * _COMPLEX_BYTES + 2 * _FLOAT_BYTES + 3 * _COMPLEX_BYTES + 2 * _FLOAT_BYTES
-_HOMOGENEOUS_LOOP_BYTES = 3 * _COMPLEX_BYTES + 3 * _FLOAT_BYTES
+_HOMOGENEOUS_LOOP_BYTES = 3 * _FLOAT_BYTES
 _HOMOGENEOUS_CHUNK_ARRAYS = 7
 # local_reference per chunk value (frequency x bin): the squared difference, the width term and their sum, then the
 # line (3 float64 at once)
@@ -1205,19 +1266,20 @@ def _drive_elements(spec, parameters, feature, mesh, shapes) -> int:
 
 
 def _optical_cells(spec, parameters, optical, feature, shapes):
-    """(window cells, drive-box cells) of the optical mesh at its base dx (refined by refinements of the drive
-    objects): exact on a uniform mesh, the base cells otherwise; (0, 0) when nothing resolves."""
+    """(window cells, drive-box cells, drive box (n_x, cell x, n_y, cell y) or None) of the optical mesh at its base dx
+    (refined by refinements of the drive objects): exact on a uniform mesh, the base cells otherwise; (0, 0, None) when
+    nothing resolves."""
     mesh_spec = spec.find_mesh(optical) if optical is not None else None
     if mesh_spec is None:
-        return 0, 0
+        return 0, 0, None
     base = plain_value(mesh_spec.dx, parameters)
     if base is None or not base > 0.0:
-        return 0, 0
+        return 0, 0, None
     try:
         size_x, size_y = domain_size(spec, parameters)
         expanded = expand_entities(spec, feature.selection)
     except (ValueError, KeyError, TypeError):
-        return 0, 0
+        return 0, 0, None
     sizes = {'x': base, 'y': base}
     for refinement in mesh_spec.refinements:
         if getattr(refinement, 'object', None) in expanded:
@@ -1231,11 +1293,90 @@ def _optical_cells(spec, parameters, optical, feature, shapes):
     else:
         boxes = [box for _, box in domain_object_boxes(spec, shapes, [feature.selection])]
         if not boxes:
-            return window, 0
+            return window, 0, None
         box = (min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes))
-    drive = (uniform_cell_count(max(box[2] - box[0], sizes['x']), sizes['x'])
-             * uniform_cell_count(max(box[3] - box[1], sizes['y']), sizes['y']))
-    return window, drive
+    n_x = uniform_cell_count(max(box[2] - box[0], sizes['x']), sizes['x'])
+    n_y = uniform_cell_count(max(box[3] - box[1], sizes['y']), sizes['y'])
+    return window, n_x * n_y, (n_x, sizes['x'], n_y, sizes['y'])
+
+
+def _plain_laws(properties, parameters):
+    """(longitudinal M*(omega), shear G*(omega) vectorised callables, rho) of plain material values: K and G (bulk /
+    shear_modulus, or the youngs_modulus / poisson_ratio pair) x (1 + j mechanical_loss_factor) + j omega (4/3
+    viscosity + bulk_viscosity) / j omega viscosity (relaxation branches not counted: less loss, so more padding than
+    the run); None when they do not resolve."""
+    if properties is None:
+        return None
+    rho = _plain(properties, 'rho', parameters)
+    if rho is None or rho <= 0.0:
+        return None
+    bulk, shear = _plain(properties, 'bulk_modulus', parameters), _plain(properties, 'shear_modulus', parameters)
+    youngs, poisson = _plain(properties, 'youngs_modulus', parameters), _plain(properties, 'poisson_ratio', parameters)
+    if bulk is not None:
+        shear = shear or 0.0
+    elif youngs is not None and poisson is not None and -1.0 < poisson < 0.5:
+        bulk, shear = youngs / (3.0 * (1.0 - 2.0 * poisson)), youngs / (2.0 * (1.0 + poisson))
+    else:
+        return None
+    loss = 1.0 + 1j * (_plain(properties, 'mechanical_loss_factor', parameters) or 0.0)
+    viscosity = _plain(properties, 'viscosity', parameters) or 0.0
+    bulk_viscosity = _plain(properties, 'bulk_viscosity', parameters) or 0.0
+
+    def longitudinal(omega):
+        return (bulk + 4.0 / 3.0 * shear) * loss + 1j * np.asarray(omega) * (bulk_viscosity + 4.0 / 3.0 * viscosity)
+
+    def shear_law(omega):
+        return shear * loss + 1j * np.asarray(omega) * viscosity
+    return longitudinal, shear_law, rho
+
+
+def _reference_padding(properties, parameters, frequencies, box):
+    """(P_x, P_y) of brillouin.homogeneous_padding for plain material values over the study frequencies [Hz] and a
+    drive box (n_x, dx, n_y, dy); None when the laws, the band or the box do not resolve; ValueError from
+    homogeneous_padding (a padded raster above MAX_REFERENCE_CELLS, a lossless medium) passes through."""
+    laws = _plain_laws(properties, parameters)
+    frequencies = [float(value) for value in frequencies if value is not None and value > 0.0]
+    if laws is None or box is None or not frequencies:
+        return None
+    n_x, d_x, n_y, d_y = box
+    longitudinal, shear, rho = laws
+    return homogeneous_padding(frequencies, (n_x, n_y), d_x, d_y, longitudinal, shear, rho)
+
+
+def _spec_materials(spec) -> list:
+    """[(material, merged properties or None)] of the spec materials (library and crystal data merged; the estimators'
+    copy of definition_common.merged_materials, whose cache needs a mutable context)."""
+    from ...materials import effective_material_data   # lazy: physics -> materials stays out of module import time
+    merged = []
+    for material in spec.materials:
+        try:
+            properties, _ = effective_material_data(material.library, material.properties, material.dispersion)
+        except (ValueError, TypeError):
+            properties = None
+        merged.append((material, properties))
+    return merged
+
+
+def _homogeneous_padded_cells(context, feature, drive_cells, box, frequencies) -> int:
+    """Padded raster cells P_x n_x P_y n_y of the homogeneous reference: the largest over the spec materials that may
+    fill the drive selection (selecting 'all' or one of its objects; every selected material for 'all') of
+    _reference_padding; MIN_PADDING^2 x the box cells when none resolves (validate reports the run's refusals)."""
+    try:
+        expanded = set(expand_entities(context.spec, feature.selection))
+    except (ValueError, KeyError, TypeError):
+        expanded = set()
+    largest = MIN_PADDING * MIN_PADDING
+    for material, properties in _spec_materials(context.spec):
+        names = set(material.selection or ())
+        if not names or not ('all' in expanded or 'all' in names or names & expanded):
+            continue
+        try:
+            padding = _reference_padding(properties, context.parameters, frequencies, box)
+        except ValueError:   # the run refuses (validate's error): book the smallest padding
+            padding = None
+        if padding is not None:
+            largest = max(largest, padding[0] * padding[1])
+    return int(largest * drive_cells)
 
 
 class _SolidForm:
@@ -1308,17 +1449,28 @@ def _tensor_drive_cells(spec, feature, mesh, shapes) -> int:
 class _DriveCounts:
     """Sizes of one enabled brillouin_scattering feature of the solid (brillouin_memory_items / _time_items): columns
     = positions x azimuthal parts, selected elements, drive points, interface edges and their Gauss points, optical
-    field components, reads (2 with a separate collection field), (window, drive-box) optical cells."""
+    field components (on edge grids: staggered; in-plane: the moving boundary's D), distinct sample grids, reads (2 with
+    a separate collection field), (window, drive-box) optical cells and the padded raster of a homogeneous reference."""
 
-    def __init__(self, feature, values, positions, parts, elements, points, edges, edge_points, field_components,
-                 reads, cells):
+    def __init__(self, feature, values, positions, parts, elements, points, edges, edge_points, optical_type, reads,
+                 cells, padded):
         self.feature, self.values, self.positions, self.parts = feature, values, positions, parts
         self.elements, self.points, self.edges, self.edge_points = elements, points, edges, edge_points
-        self.field_components, self.reads, self.cells = field_components, reads, cells
+        self.field_components = _FIELD_COMPONENTS.get(optical_type, 3)
+        self.staggered = _STAGGERED.get(optical_type, 2)
+        self.in_plane = _IN_PLANE.get(optical_type, 2)
+        self.grids = _SAMPLE_GRIDS.get(optical_type, 3)
+        self.reads, self.cells, self.padded = reads, cells, padded
 
     @property
     def columns(self) -> int:
         return self.positions * self.parts
+
+    @property
+    def field_copies(self) -> int:
+        """Complex window arrays of one read's _Optical: the components on their grids and the centre copies of the
+        staggered ones."""
+        return self.field_components + self.staggered
 
     def bins(self) -> int:
         """Kept local-reference bins per position (one material group: _LOCAL_Q_SPREAD_GUESS)."""
@@ -1344,6 +1496,8 @@ def _drive_counts(context, settings_values, mesh) -> list:
     if spec.study.type != FREQUENCY_RESPONSE_STUDY or not features or kind not in ('triangles', 'tensor'):
         return []
     shapes = resolve_geometry(spec, parameters, errors={})
+    study = _study_values(context)
+    frequencies = study_frequencies(study) if study else ()
     element_points, edge_rule_points = (1, 1) if kind == 'tensor' else _rule_points()
     counts = []
     for feature in features:
@@ -1359,10 +1513,12 @@ def _drive_counts(context, settings_values, mesh) -> list:
         edges = int(math.ceil(_INTERFACE_EDGES_GUESS * math.sqrt(elements))) if values['moving_boundary'] else 0
         collection = values['collection_physics']
         reads = 2 if collection and collection != optical.name else 1
+        window, drive_cells, box = _optical_cells(spec, parameters, optical, feature, shapes)
+        padded = (_homogeneous_padded_cells(context, feature, drive_cells, box, frequencies)
+                  if values['reference'] == 'homogeneous' else 0)
         counts.append(_DriveCounts(feature, values, len(_positions(values)), _drive_parts(values, settings_values),
-                                   elements, elements * element_points, edges, edges * edge_rule_points,
-                                   _FIELD_COMPONENTS.get(optical.type, 3), reads,
-                                   _optical_cells(spec, parameters, optical, feature, shapes)))
+                                   elements, elements * element_points, edges, edges * edge_rule_points, optical.type,
+                                   reads, (window, drive_cells), padded))
     return counts
 
 
@@ -1388,11 +1544,13 @@ def _bind_bytes(drive, form) -> int:
     """Host bytes of one drive's bind at its peak beside the kept W, in BrillouinDrive.bind's order. Held through every
     position: the SolidDriveInputs copies (float64 per element and MaterialGrid array; without kept viscoelastic moduli
     also the ElementModuli and its two E / nu reads), the selection, the drive points with their materials, eps,
-    samplers (and law per point) and the interface edge points. On top the largest of: the first position's set-up
-    (samplers, interface search, the isotropic eps window, the element laws, one property copy's temporaries) and one
-    position's steps (the new samples beside the previous ones; the optical-stress peak; the assembly with one element
-    chunk and the new and previous drive vectors; the local lines on the window; the next position's optics read
-    beside the previous field grid). A tensor solid: _cell_bind_bytes."""
+    samplers per sample grid (and law per point), the interface edge points with their in-plane eps windows (D = eps
+    E), and a separate collection field's _Optical. On top the largest of: the first position's set-up (one sampler
+    build, the own-material cell search with its material table, the interface search, the side searches, the isotropic
+    eps window, the element laws, one property copy's temporaries) and one position's steps (the centre steps of the
+    new optics; the new phase-corrected samples beside the previous ones; the optical-stress peak; the assembly with one
+    element chunk and the new and previous drive vectors; the local lines on the window; the next position's optics
+    read beside the previous one's _Optical). A tensor solid: _cell_bind_bytes."""
     if form.tensor:
         return _cell_bind_bytes(drive, form)
     points, edge_points = drive.points, drive.edge_points
@@ -1401,45 +1559,59 @@ def _bind_bytes(drive, form) -> int:
     vector = _COMPLEX_BYTES * form.vector_dofs
     axis = _AXIS_FACTOR_BYTES if form.axisymmetric else 0
     laws = _INT64_BYTES if drive.values['reference'] != 'none' else 0
+    interfaces = drive.values['moving_boundary'] and edge_points > 0
+    in_plane = drive.in_plane if interfaces else 0
+    copies = drive.field_copies * _COMPLEX_BYTES * window   # one read's _Optical (components and centre copies)
     held = (form.material_arrays * form.elements * _FLOAT_BYTES + _BOOL_BYTES * form.elements
             + _INT64_BYTES * drive.elements
-            + points * (_POINT_BYTES + _POINT_MATERIAL_BYTES + _SAMPLER_BYTES + axis + optical * _COMPLEX_BYTES + laws)
-            + edge_points * _EDGE_POINT_BYTES + drive.edges * _EDGE_BYTES)
+            + points * (_POINT_BYTES + _POINT_MATERIAL_BYTES + drive.grids * _SAMPLER_BYTES + axis
+                        + optical * _COMPLEX_BYTES + laws)
+            + edge_points * _EDGE_POINT_BYTES + drive.edges * _EDGE_BYTES + in_plane * _COMPLEX_BYTES * window
+            + (drive.reads - 1) * copies)
     if not form.moduli_kept:   # _drive_inputs: element_moduli of the E / nu values (and the two np.where reads)
         held += (_ELEMENT_MODULI_BYTES + 2 * _FLOAT_BYTES) * form.elements
-    setup = ((points + 4 * edge_points) * _SAMPLER_SETUP_BYTES + 2 * edge_points * _SAMPLER_BYTES
+    table = _OWN_CELL_TABLE_COPIES * (form.material_arrays + 1) * _FLOAT_BYTES
+    setup = (points * (_SAMPLER_SETUP_BYTES + _OWN_CELL_POINT_BYTES) + (drive.elements + drive.cells[1]) * table
              + (form.mesh_edges * _INTERFACE_SEARCH_BYTES if drive.values['moving_boundary'] else 0)
+             + edge_points * _EDGE_SETUP_BYTES
              + 2 * _COMPLEX_BYTES * window + _INT64_BYTES * form.elements
              + (_FLOAT_BYTES + _FLOAT32_BYTES) * form.elements)
     samples = drive.reads * optical * _COMPLEX_BYTES
     rows = form.rows * drive.parts * _COMPLEX_BYTES   # one position's stress rows (every part) per point
-    edge = edge_points * (2 * drive.reads * optical + _EDGE_POSITION_VALUES) * _COMPLEX_BYTES
+    arrays = optical + in_plane                        # one interface read: E and D through one phase-corrected call
+    edge = edge_points * (drive.reads * arrays * _COMPLEX_BYTES + _EDGE_POSITION_VALUES * _COMPLEX_BYTES
+                          + arrays * _GATHER_BYTES + _PHASED_SAMPLE_BYTES) + in_plane * _COMPLEX_BYTES * window
     element_points, _ = _rule_points()
     chunk = min(drive.elements, CHUNK_ELEMENTS) * element_points * _chunk_point_bytes(form)
-    steps = (points * (2 * samples + _GATHER_BYTES + rows) + vector,
+    # a new read: its DriveFields eps beside the previous position's _Optical (several positions) and the centre steps
+    read = (copies if drive.positions > 1 else 0) + optical * _COMPLEX_BYTES * window + (
+        _CENTRE_STEP_BYTES * window if drive.staggered else 0)
+    steps = (read + points * samples + vector,
+             points * (2 * samples + _GATHER_BYTES + _PHASED_SAMPLE_BYTES + rows) + vector,
              points * (samples + rows + _STRESS_PEAK_VALUES[form.axisymmetric] * _COMPLEX_BYTES) + vector,
              points * (samples + rows + form.rows * _COMPLEX_BYTES) + chunk + 2 * vector,
-             points * (samples + rows + _LINE_POINT_BYTES) + window * _LOCAL_WINDOW_BYTES + vector,
-             points * (samples + rows) + vector + (window * optical * _COMPLEX_BYTES if drive.positions > 1 else 0))
-    return int(held + max(setup, max(steps) + edge))
+             points * (samples + rows + _LINE_POINT_BYTES) + window * _LOCAL_WINDOW_BYTES + vector)
+    return int(held + copies + max(setup, max(steps) + edge))
 
 
 def _cell_bind_bytes(drive, form) -> int:
     """_bind_bytes of a tensor solid (BrillouinDrive._CellGeometry, SolidMechanicsPhysics._drive_inputs), in bind's
     order. Held through every position: the window copies of the solid's material arrays (float64), the solid and
     selection masks, the ElementModuli and its two E / nu reads (built per bind), the drive points (one per selected
-    cell) with their materials, eps and law, the moving-boundary faces. On top the largest of: the first position's
-    set-up (dA raster, face search over every interior face, the isotropic eps window, the cell laws, one property
-    copy's float32 / float64 temporaries) and one position's steps (as _bind_bytes, the stress assembly and the face
-    drive on the whole window: _CELL_DRIVE_VALUES / _CELL_FACE_DRIVE_VALUES complex per cell)."""
+    cell) with their materials, eps and law, the moving-boundary faces, one read's _Optical (two with a separate
+    collection field). On top the largest of: the first position's set-up (dA raster, face search over every interior
+    face, the isotropic eps window, the cell laws, one property copy's float32 / float64 temporaries) and one position's
+    steps (as _bind_bytes, the stress assembly and the face drive on the whole window: _CELL_DRIVE_VALUES /
+    _CELL_FACE_DRIVE_VALUES complex per cell)."""
     points, faces, cells = drive.points, drive.edge_points, form.elements
     optical = drive.field_components
     window = drive.cells[0]
     vector = _COMPLEX_BYTES * form.vector_dofs
     laws = _INT64_BYTES if drive.values['reference'] != 'none' else 0
+    copies = drive.field_copies * _COMPLEX_BYTES * window   # one read's _Optical (components and centre copies)
     held = ((form.material_arrays * _FLOAT_BYTES + 2 * _BOOL_BYTES + _ELEMENT_MODULI_BYTES + 2 * _FLOAT_BYTES) * cells
             + points * (_CELL_POINT_BYTES + _POINT_MATERIAL_BYTES + optical * _COMPLEX_BYTES + laws)
-            + faces * _CELL_FACE_BYTES)
+            + faces * _CELL_FACE_BYTES + (drive.reads - 1) * copies)
     setup = (_CELL_SETUP_BYTES * cells + (form.mesh_edges * _CELL_FACE_SEARCH_BYTES if drive.values['moving_boundary']
                                           else 0)
              + 2 * _COMPLEX_BYTES * window + _INT64_BYTES * cells + (_FLOAT_BYTES + _FLOAT32_BYTES) * cells)
@@ -1447,13 +1619,14 @@ def _cell_bind_bytes(drive, form) -> int:
     rows = form.rows * drive.parts * _COMPLEX_BYTES
     edge = (faces * (2 * drive.reads * optical + _EDGE_POSITION_VALUES) * _COMPLEX_BYTES
             + (_CELL_FACE_DRIVE_VALUES * _COMPLEX_BYTES * cells + vector if faces else 0))
-    steps = (points * (samples + rows) + vector,
+    read = (copies if drive.positions > 1 else 0) + optical * _COMPLEX_BYTES * window + (
+        _CENTRE_STEP_BYTES * window if drive.staggered else 0)
+    steps = (read + points * samples + vector,
              points * (samples + rows + _STRESS_PEAK_VALUES[False] * _COMPLEX_BYTES) + vector,
              points * (samples + rows + form.rows * _COMPLEX_BYTES) + _CELL_DRIVE_VALUES * _COMPLEX_BYTES * cells
              + 2 * vector,
-             points * (samples + rows + _LINE_POINT_BYTES) + window * _LOCAL_WINDOW_BYTES + vector,
-             points * (samples + rows) + vector + (window * optical * _COMPLEX_BYTES if drive.positions > 1 else 0))
-    return int(held + max(setup, max(steps) + edge))
+             points * (samples + rows + _LINE_POINT_BYTES) + window * _LOCAL_WINDOW_BYTES + vector)
+    return int(held + copies + max(setup, max(steps) + edge))
 
 
 def _reference_bytes(drive, n_frequencies) -> int:
@@ -1464,7 +1637,7 @@ def _reference_bytes(drive, n_frequencies) -> int:
         bins = drive.bins()
         return _LOCAL_CHUNK_ARRAYS * min(_CHUNK_VALUES, max(n_frequencies, 1) * bins) * _FLOAT_BYTES
     if reference == 'homogeneous':
-        padded = _HOMOGENEOUS_PADDING * drive.cells[1]
+        padded = drive.padded
         chunk = max(padded, min(_CHUNK_VALUES, max(n_frequencies, 1) * padded))
         return max(padded * _HOMOGENEOUS_SPECTRUM_BYTES,
                    padded * _HOMOGENEOUS_LOOP_BYTES + _HOMOGENEOUS_CHUNK_ARRAYS * chunk * _FLOAT_BYTES)
@@ -1547,8 +1720,9 @@ def brillouin_memory_items(context, settings_values, mesh, *, unknowns, vector_d
 
 
 # host bytes per drive point of the one-off point set-up: element geometry at the rule points (Jacobian, inverse,
-# determinant: 9 float64), the points / weights / elements and the sampler build
-_POINT_SETUP_BYTES = 9 * _FLOAT_BYTES + _POINT_BYTES + _SAMPLER_SETUP_BYTES + _SAMPLER_BYTES
+# determinant: 9 float64), the points / weights / elements, one sampler build and the own-material cell search
+_POINT_SETUP_BYTES = (9 * _FLOAT_BYTES + _POINT_BYTES + _SAMPLER_SETUP_BYTES + _SAMPLER_BYTES
+                      + _OWN_CELL_POINT_BYTES)
 
 
 def brillouin_time_items(context, settings_values, mesh, *, unknowns, vector_dofs, local, components) -> tuple:
@@ -1583,9 +1757,14 @@ def brillouin_time_items(context, settings_values, mesh, *, unknowns, vector_dof
                             + (2.0 * form.mesh_edges * _CELL_FACE_SEARCH_BYTES if drive.values['moving_boundary']
                                else 0.0))
             continue
-        # an edge point builds four side samplers (two eps diagonal ones, two field ones) beside its point set-up
+        # every sample grid builds its sampler; an edge point builds the side stencil and the field stencil and runs
+        # two own-material searches (twice when equal-eps edges are dropped: not counted) beside its point set-up; the
+        # material table of the elements and candidate cells
+        table = _OWN_CELL_TABLE_COPIES * (form.material_arrays + 1) * _FLOAT_BYTES
         setup_bytes += (2.0 * (drive.points + drive.edge_points) * _POINT_SETUP_BYTES
-                        + 2.0 * 3.0 * drive.edge_points * (_SAMPLER_SETUP_BYTES + _SAMPLER_BYTES)
+                        + 2.0 * (drive.grids - 1) * drive.points * (_SAMPLER_SETUP_BYTES + _SAMPLER_BYTES)
+                        + 2.0 * drive.edge_points * (_EDGE_SETUP_BYTES + _OWN_CELL_POINT_BYTES)
+                        + 2.0 * (drive.elements + drive.cells[1]) * table
                         + (2.0 * form.mesh_edges * _INTERFACE_SEARCH_BYTES if drive.values['moving_boundary'] else 0.0))
     items.append(te.TimeItem('Brillouin drives: solid inputs, drive points, samplers and interface search', 'setup',
                              1.0, 'exact', (te.HostStream(setup_bytes),
@@ -1610,23 +1789,33 @@ def brillouin_time_items(context, settings_values, mesh, *, unknowns, vector_dof
         positions = float(drive.positions)
         optical = drive.field_components
         stress = 2.0 * _STRESS_PEAK_VALUES[form.axisymmetric] * _COMPLEX_BYTES
+        # per read the edge-grid components' centre steps (brillouin.edges_to_centres) over the window
+        centre_steps = 2.0 * drive.reads * drive.staggered * drive.cells[0] * _CENTRE_STEP_BYTES
         if form.tensor:   # cell gathers, the window-sized stress raster / cell drive and face drive (elementwise)
             samples = 2.0 * drive.reads * optical * 2.0 * _COMPLEX_BYTES
+            edge_samples = samples
             assembly = 2.0 * drive.parts * 2.0 * form.rows * _COMPLEX_BYTES
             window_drive = 2.0 * drive.parts * form.elements * _COMPLEX_BYTES * (
                 _CELL_DRIVE_VALUES + (_CELL_FACE_DRIVE_VALUES if drive.edge_points else 0))
             ops = (te.PythonCalls(_BIND_CALLS),)
         else:
             chunks = max(math.ceil(drive.elements / CHUNK_ELEMENTS), 1)
-            samples = 2.0 * drive.reads * optical * (_GATHER_BYTES + _COMPLEX_BYTES)
-            assembly = 2.0 * drive.parts * (2.0 * form.rows * _COMPLEX_BYTES + _chunk_point_bytes(form))
+            # one phase-corrected call per component and read (gathers, phases, carried weights, the sample); an edge
+            # point one call over E and D per read, plus the D = eps E windows
+            samples = 2.0 * drive.reads * optical * (_GATHER_BYTES + _PHASED_SAMPLE_BYTES + _COMPLEX_BYTES)
+            edge_arrays = optical + drive.in_plane
+            edge_samples = 2.0 * drive.reads * (edge_arrays * (_GATHER_BYTES + _COMPLEX_BYTES) + _PHASED_SAMPLE_BYTES)
             window_drive = 0.0
+            if drive.edge_points:
+                window_drive += 2.0 * drive.reads * drive.in_plane * drive.cells[0] * 3.0 * _COMPLEX_BYTES
+            assembly = 2.0 * drive.parts * (2.0 * form.rows * _COMPLEX_BYTES + _chunk_point_bytes(form))
             # the complex x real einsum of the element chunks
             flops = 4.0 * drive.points * drive.parts * form.rows * form.components * form.local
             ops = (te.DenseFlops(flops, host=True), te.PythonCalls(_BIND_CALLS + 10 * chunks))
         position = (drive.points * (samples + stress + assembly + 2.0 * _LINE_POINT_BYTES)
-                    + drive.edge_points * (samples + 2.0 * _EDGE_POSITION_VALUES * _COMPLEX_BYTES)
-                    + 2.0 * drive.parts * drive_vector + 2.0 * drive.cells[0] * _LOCAL_WINDOW_BYTES + window_drive)
+                    + drive.edge_points * (edge_samples + 2.0 * _EDGE_POSITION_VALUES * _COMPLEX_BYTES)
+                    + 2.0 * drive.parts * drive_vector + 2.0 * drive.cells[0] * _LOCAL_WINDOW_BYTES + window_drive
+                    + centre_steps)
         items.append(te.TimeItem(label + 'drive assembly (samples, optical stress, B^T sigma, edge tractions, local q)',
                                  'position', positions, 'exact', (te.HostStream(position),) + ops))
         reference = drive.values['reference']
@@ -1635,7 +1824,7 @@ def brillouin_time_items(context, settings_values, mesh, *, unknowns, vector_dof
                                      (te.HostStream(2.0 * frequencies * drive.bins() * _LOCAL_CHUNK_ARRAYS
                                                     * _FLOAT_BYTES), te.PythonCalls(30))))
         elif reference == 'homogeneous':   # 3 padded FFTs, then per frequency the two terms over every wavevector
-            padded = float(_HOMOGENEOUS_PADDING * drive.cells[1])
+            padded = float(drive.padded)
             fft = 3.0 * padded * _COMPLEX_BYTES * 2.0 * max(math.log2(max(padded, 2.0)), 1.0)
             items.append(te.TimeItem(label + 'homogeneous reference spectra', 'position', positions, 'exact',
                                      (te.HostStream(fft + 2.0 * padded * _HOMOGENEOUS_SPECTRUM_BYTES

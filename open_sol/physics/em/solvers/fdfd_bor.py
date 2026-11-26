@@ -13,7 +13,8 @@ from ....core.solver_base import PhysicsSolver
 from ..body_of_revolution import (BOR_FIELD_COMPONENTS, BOR_SOURCE_COMPONENTS, BORAssembly, BORMaterials, axis_class,
                                   bor_row_scale, centre_fields, distinct_orders, far_field_power, far_field_samples,
                                   line_flux, merge_order_solves, order_pair_fields, order_sum_far_field,
-                                  point_current_rhs, size_issue_for, solve_bor_resonances, yee_centres, yee_fields)
+                                  point_current_rhs, size_issue_for, solve_bor_resonances, yee_centres, yee_e_fields,
+                                  yee_fields)
 from ..bor_line_block import bor_layout, driven_factorization, order_factorizations, wavelength_factorizations
 from ..boundaries import BCType, solver_boundary_config
 from ..fdfd_line_block import MAX_BATCH_WAVELENGTHS
@@ -666,12 +667,13 @@ class BORPhysics(HostFDFDBase, PhysicsSolver):
 
     def drive_fields(self, solution):
         """focused_beam.DriveFields (host) of a driven solution of the current system (self.solution or a
-        solve_moved_beam result): fields = the m = 1 standing-wave amplitudes at the window cell centres (edge points
-        averaged, the axis E_r recovered), keyed {'r': E_r, 'phi': -j E_phi (= u, brillouin.azimuthal_parts' A_phi),
-        'z': E_z}; eps = the cell permittivity each component sees {'r': eps_rr, 'phi': eps_phiphi, 'z': eps_zz}
-        (complex: sigma_e and poles included; no subpixel smoothing in BOR); x = r from the axis, y = z (drawing frame)
-        of the window centres; the PEC cells or None; omega. ValueError as solve_moved_beam's state checks, or for
-        another shape."""
+        solve_moved_beam result): fields = the m = 1 standing-wave amplitudes on their Yee points, keyed {'r': E_r on
+        the r edges from the axis (r = 0, the recovered axis value) to the window's outer edge at the z centres, 'phi':
+        -j E_phi (= u, brillouin.azimuthal_parts' A_phi) at the cell centres, 'z': E_z at the r centres on the z edges
+        from the window's lower to its upper edge} with their grids (no value averaged along the beam axis z); eps =
+        the cell permittivity each component sees {'r': eps_rr, 'phi': eps_phiphi, 'z': eps_zz} (complex: sigma_e and
+        poles included; no subpixel smoothing in BOR); x = r from the axis, y = z (drawing frame) of the window centres;
+        the PEC cells or None; omega. ValueError as solve_moved_beam's state checks, or for another shape."""
         self._require_driven_solution('drive_fields')
         system = self.system
         if np.shape(solution) != (system.n_unknowns,):
@@ -680,17 +682,19 @@ class BORPhysics(HostFDFDBase, PhysicsSolver):
         window = tuple(self._window)
         if window[0].start != 0:
             raise ValueError('drive_fields: the r window must start on the axis (x_lo is the axis r = 0)')
-        if solution is self.solution and self.centre_phasors is not None:
-            phasors = self.centre_phasors   # the shown solve's centre phasors (_show)
-        else:
-            phasors = centre_fields(system, np.asarray(solution, dtype=np.complex128))[0]
+        yee = self.yee() if solution is self.solution else yee_e_fields(system, solution)
         x, y = (np.array(np.asarray(centres, dtype=np.float64)[part])
                 for centres, part in zip(self.domain.cell_centers(), window))
-        fields = {'r': np.array(phasors['er'][window]), 'phi': -1j * phasors['ephi'][window],
-                  'z': np.array(phasors['ez'][window])}
+        r_edges, z_edges = (np.array(np.asarray(edges, dtype=np.float64)[part.start:part.stop + 1])
+                            for edges, part in zip(self.domain.cell_edges(), window))
+        r_part, z_part = window
+        edge_r, edge_z = slice(r_part.start, r_part.stop + 1), slice(z_part.start, z_part.stop + 1)
+        fields = {'r': np.array(yee['er'][edge_r, z_part]), 'phi': -1j * yee['ephi'][window],
+                  'z': np.array(yee['ez'][r_part, edge_z])}
+        grids = {'r': (r_edges, y), 'phi': (x, y), 'z': (x, z_edges)}
         eps = {name: np.array(system.cell_eps[name][window]) for name in BOR_SOURCE_COMPONENTS}
         pec = None if self.pec_cells is None else np.array(to_host(self.pec_cells)[window], dtype=bool)
-        return DriveFields(omega=float(system.omega), x=x, y=y, fields=fields, eps=eps, pec=pec,
+        return DriveFields(omega=float(system.omega), x=x, y=y, fields=fields, grids=grids, eps=eps, pec=pec,
                            polarization=self.polarization)
 
     def _add_monitor(self, monitor):

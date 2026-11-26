@@ -17,9 +17,13 @@ local and homogeneous reference spectra and the result dict."""
 # factor sits on S). FEM: w = kappa int B^T sigma~ dV (fem.elastic_drives), a = w^T u for every u; plane strain pairs the rows
 # (xx, yy, xy) only (planar_rows: S_zz = S_xz = S_yz = 0). em_fdfd_ez: G_zz = -eps^2 E_cz E_iz, a pure dilation drive.
 # Moving boundary (Johnson, non-conjugated): per interface point, unit normal n out of side 0, Delta = side 0 - side 1,
-# f = Delta eps (E_c,par . E_i,par) - Delta(1/eps) (eps E_c,n)(eps E_i,n), each product the mean of the two sides'
-# products (optomechanics_fem convention, |E|^2 -> E_c E_i); a_mb = kappa int (u . n) f ds, i.e. the normal traction
-# t = kappa n f (moving_boundary_traction). Total w = w_pe + w_mb.
+# f = Delta eps (E_c,par . E_i,par) - Delta(1/eps) D_c,n D_i,n with the continuous quantities E_par and D_n = (eps E)_n
+# (relative D / eps0) read at the interface point itself (interface_traction; triangles: both interpolated there from
+# the cell values E and eps_cell E with one stencil, so the projections commute with the interpolation; eps per side
+# the isotropic eps of that side's material); the rectangular-cell form reads two sides (the cells of a Yee face) and
+# takes the mean of the two sides' products f = Delta eps <E_c,par . E_i,par> - Delta(1/eps) <(eps E_c,n)(eps E_i,n)>
+# (moving_boundary_traction, the optomechanics_fem convention, |E|^2 -> E_c E_i). a_mb = kappa int (u . n) f ds, i.e.
+# the normal traction t = kappa n f. Total w = w_pe + w_mb.
 # Rectangular-cell (Q1) solids on the optics' own Yee grid (planar): sigma~ per window cell (the cell's own fields and
 # eps: no interpolation), w_pe = sum dA B_c^T sigma~ with B_c the centre strain of optomechanics.element_strains
 # (cell_stress_drive, its transpose) and w_mb = the transpose of the optomechanics face sum: per interior face between
@@ -55,10 +59,21 @@ local and homogeneous reference spectra and the result dict."""
 # local wavevector q = Im(P* grad P) / |P|^2, P = E_c . E_i (local_wavenumbers), and the DHO line psd_ref = sum (k_B T
 # / M_L) |kappa sigma_L|^2 dV 2 Gamma Omega_0^2 / ((Omega_0^2 - Omega^2)^2 + Gamma^2 Omega^2), M_L = Re M*(Omega_0),
 # M* = K* + 4/3 G*, Omega_0 = |q| sqrt(M_L / rho), Gamma = q^2 Im M*(Omega_0) / (rho Omega_0) (normalised: 2 int_0^inf
-# = (k_B T / M_L) sum |kappa sigma_L|^2 dV). Homogeneous (homogeneous_reference, planar, one uniform isotropic medium):
-# the exact plane-wave sum of an unbounded medium, S = (2 k_B T / Omega) int d^2q / (2 pi)^2 (-Im[q^2 |s_L|^2 / (M* q^2
-# - rho Omega^2) + q^2 |s_T|^2 / (G* q^2 - rho Omega^2)]), s_L = q^T sigma^(q) q / q^2, s_T = t^T sigma^(q) q / q, with
+# = (k_B T / M_L) sum |kappa sigma_L|^2 dV). Its area is the sum rule's, its line position an estimate: the phase
+# gradient misses the q content of the amplitude pattern (~<theta^2> / 6 of a focusing cone) and reads the Gouy phase
+# and wavefront curvature near a focus as a lower q (so it sits low at high NA), and one DHO per point ignores the
+# cut of a short drive region (its line is narrower than the computed one). Homogeneous (homogeneous_reference,
+# planar, one uniform isotropic medium): the plane-wave sum of an unbounded medium, S = (2 k_B T / Omega) int d^2q /
+# (2 pi)^2 (-Im[q^2 |s_L|^2 / (M* q^2 - rho Omega^2) + q^2 |s_T|^2 / (G* q^2 - rho Omega^2)]), s_L = q^T sigma^(q) q /
+# q^2, s_T = t^T sigma^(q) q / q, with
 # sigma^ = dx dy FFT of the zero-padded raster (complex: a full fft2 per row) and d^2q / (2 pi)^2 = 1 / (P_x P_y dx dy).
+# The discrete q sum is the spectrum of the drive repeated with periods P_x L_x, P_y L_y (L = the raster box): copies
+# along the beam are phase-matched and coherent, so the sum is the unbounded one only up to their share, which decays
+# as exp(-delta (P - 1) L) with delta = |Im k| = |Im(Omega sqrt(rho / M*))| the amplitude attenuation of the phonon
+# (Gamma / (2 v); the shear law's where Im G* > 0). reference_padding takes per axis P >= 1 + ln(1 / IMAGE_TOLERANCE) /
+# (delta_min L) (delta_min over the band, at least MIN_PADDING), so the images hold < IMAGE_TOLERANCE of the readout
+# (the sum is exact to that, not exactly); a drive short against 1 / delta needs many copies (a padded raster above
+# MAX_REFERENCE_CELLS raises).
 # Fit (dho_fit): S = A / ((f0^2 - f^2)^2 + gamma^2 f^2) by scipy least_squares from a peak / half-maximum start; shift =
 # f0, fwhm = the exact half-maximum width of the fitted curve; failures set fit_warning, never raise.
 import math
@@ -99,6 +114,15 @@ _RESONANCE_ITERATIONS = 100   # local_reference: fixed point Omega_0 = |q| sqrt(
 _RESONANCE_RTOL = 1e-13
 _CHUNK_VALUES = 1 << 21       # (frequency x point / wavevector) values per vectorised block of the references
 _HALF_MAXIMUM_MIN_POINTS = 5  # dho_fit: fewer frequencies are not fitted
+# phase-corrected sampling (phase_corrected_sample, edges_to_centres): a per-cell phase step |theta| up to the first
+# value is removed in full (>= 8 cells per wavelength of the field), beyond the second not at all (< 4 cells: an
+# unresolved wave, or the arg = pi of a standing-wave node), linearly between
+PHASE_CORRECTION = (0.25 * math.pi, 0.5 * math.pi)
+# homogeneous_reference zero padding (header): the periodic images' share of the readout, the smallest padding per axis
+# and the largest padded raster (a drive short against the attenuation length raises instead of allocating)
+IMAGE_TOLERANCE = 1e-3
+MIN_PADDING = 2
+MAX_REFERENCE_CELLS = 1 << 24
 # m = 1 standing-wave patterns (cos phi, sin phi) of the amplitudes A_r, A_phi, A_z (header)
 _INCIDENT_PATTERN = {'r': (1.0, 0.0), 'phi': (0.0, 1.0), 'z': (1.0, 0.0)}
 _COLLECTION_PATTERNS = {'co_polarized': _INCIDENT_PATTERN,
@@ -298,33 +322,62 @@ def _side_forms(normals, collection, incident, names, coefficient) -> tuple:
     return tangential + product(2, 2), normal
 
 
-def _johnson_value(normals, incident_sides, collection_sides, eps_sides, names, coefficient) -> np.ndarray:
-    normals = np.asarray(normals, dtype=np.float64)
-    if normals.shape[-1:] != (2,):
-        raise ValueError(f'moving boundary: normals must end in 2 in-plane components, got shape {normals.shape}')
+def _johnson_value(normals, parallel, displacement, eps_sides) -> np.ndarray:
+    """f = Delta eps parallel - Delta(1/eps) displacement (complex, broadcast to the normals' points)."""
     eps_0, eps_1 = (np.asarray(value, dtype=np.complex128) for value in eps_sides)
-    parallel_0, normal_0 = _side_forms(normals, collection_sides[0], incident_sides[0], names, coefficient)
-    parallel_1, normal_1 = _side_forms(normals, collection_sides[1], incident_sides[1], names, coefficient)
-    parallel = 0.5 * (parallel_0 + parallel_1)
-    displacement = 0.5 * (eps_0 * eps_0 * normal_0 + eps_1 * eps_1 * normal_1)
     value = (eps_0 - eps_1) * parallel - (1.0 / eps_0 - 1.0 / eps_1) * displacement
     return np.array(np.broadcast_to(value, np.broadcast_shapes(np.shape(value), normals.shape[:-1])),
                     dtype=np.complex128)
 
 
+def _checked_normals(normals) -> np.ndarray:
+    normals = np.asarray(normals, dtype=np.float64)
+    if normals.shape[-1:] != (2,):
+        raise ValueError(f'moving boundary: normals must end in 2 in-plane components, got shape {normals.shape}')
+    return normals
+
+
 def moving_boundary_traction(normals, incident_sides, collection_sides, eps_sides,
                              components=PLANAR_COMPONENTS) -> np.ndarray:
-    """Complex (...) Johnson value f = Delta eps (E_c,par . E_i,par) - Delta(1/eps)(eps E_c,n)(eps E_i,n) per
-    interface point (header; the drive's normal traction is kappa n f): unit normals (..., 2) out of side 0 on the
-    in-plane axes, incident / collection sides = (side 0 fields, side 1 fields) as {component: (...)} dicts,
-    eps_sides = (isotropic eps of side 0, of side 1)."""
-    return _johnson_value(normals, incident_sides, collection_sides, eps_sides, tuple(components), lambda i, j: 1.0)
+    """Complex (...) two-sided Johnson value f = Delta eps <E_c,par . E_i,par> - Delta(1/eps) <(eps E_c,n)(eps E_i,n)>
+    per interface point, < > the mean of the two sides' products (header: the rectangular-cell face form; the drive's
+    normal traction is kappa n f): unit normals (..., 2) out of side 0 on the in-plane axes, incident / collection sides
+    = (side 0 fields, side 1 fields) as {component: (...)} dicts, eps_sides = (isotropic eps of side 0, of side 1)."""
+    normals, names = _checked_normals(normals), tuple(components)
+    eps_0, eps_1 = (np.asarray(value, dtype=np.complex128) for value in eps_sides)
+
+    def unit(i, j):
+        return 1.0
+    parallel_0, normal_0 = _side_forms(normals, collection_sides[0], incident_sides[0], names, unit)
+    parallel_1, normal_1 = _side_forms(normals, collection_sides[1], incident_sides[1], names, unit)
+    return _johnson_value(normals, 0.5 * (parallel_0 + parallel_1),
+                          0.5 * (eps_0 * eps_0 * normal_0 + eps_1 * eps_1 * normal_1), (eps_0, eps_1))
 
 
-def azimuthal_moving_boundary(normals, incident_sides, collection_sides, eps_sides, detection) -> dict:
+def _interface_value(normals, incident, collection, incident_d, collection_d, eps_sides, names, coefficient):
+    normals = _checked_normals(normals)
+    parallel, _ = _side_forms(normals, collection, incident, names, coefficient)
+    _, displacement = _side_forms(normals, collection_d, incident_d, names, coefficient)
+    return _johnson_value(normals, parallel, displacement, eps_sides)
+
+
+def interface_traction(normals, incident, collection, incident_d, collection_d, eps_sides,
+                       components=PLANAR_COMPONENTS) -> np.ndarray:
+    """Complex (...) Johnson value f = Delta eps (E_c,par . E_i,par) - Delta(1/eps) D_c,n D_i,n per interface point
+    from the continuous quantities at the point itself (header): unit normals (..., 2) out of side 0 on the in-plane
+    axes, incident / collection E {component: (...)} (E_par = E - (E . n) n in plane + the out-of-plane component),
+    incident_d / collection_d the relative displacement eps E {in-plane component: (...)} (D_n = D . n; the out-of-plane
+    entry is not read), eps_sides = (isotropic eps of side 0's material, of side 1's)."""
+    return _interface_value(normals, incident, collection, incident_d, collection_d, eps_sides, tuple(components),
+                            lambda i, j: 1.0)
+
+
+def azimuthal_interface_traction(normals, incident, collection, incident_d, collection_d, eps_sides,
+                                 detection) -> dict:
     """{(m, parity): complex (...) Johnson value of that phi harmonic} (parts as azimuthal_parts: m = 0 even = the
     constant, m = 2 even = cos 2 phi, m = 2 odd = sin 2 phi; a normal traction has no torsion part) of two m = 1
-    standing waves sampled on both sides ({'r', 'phi', 'z'} dicts), normals (n_r, n_z) out of side 0."""
+    standing waves at the interface points (interface_traction's arguments as {'r', 'phi', 'z'} amplitudes, D of the
+    in-plane 'r', 'z'), normals (n_r, n_z) out of side 0."""
     names = CYLINDRICAL_COMPONENTS
     collection_pattern = _COLLECTION_PATTERNS[_checked_detection(detection)]
     harmonic_of = {(0, 'even'): 'constant', (2, 'even'): 'cos2', (2, 'odd'): 'sin2'}
@@ -334,7 +387,8 @@ def azimuthal_moving_boundary(normals, incident_sides, collection_sides, eps_sid
 
         def coefficient(i, j, harmonic=harmonic):
             return _harmonic_coefficient(collection_pattern[names[i]], _INCIDENT_PATTERN[names[j]], harmonic)
-        parts[key] = _johnson_value(normals, incident_sides, collection_sides, eps_sides, names, coefficient)
+        parts[key] = _interface_value(normals, incident, collection, incident_d, collection_d, eps_sides, names,
+                                      coefficient)
     return parts
 
 
@@ -421,6 +475,53 @@ def bilinear_sample(values, index, weight) -> np.ndarray:
     """(n,) samples of a cell array (n_x, n_y) (real or complex) by bilinear_weights' (index, weight)."""
     flat = np.asarray(values).reshape(-1)
     return np.einsum('nk,nk->n', flat[index], weight)
+
+
+def _tapered_steps(products) -> np.ndarray:
+    """Phase steps arg(products) (float64), tapered by PHASE_CORRECTION (full below its first value, 0 above its
+    second): the part of a per-cell phase step the sampling removes."""
+    steps = np.angle(products)
+    low, high = PHASE_CORRECTION
+    steps *= np.clip((high - np.abs(steps)) / (high - low), 0.0, 1.0)
+    return steps
+
+
+def phase_corrected_sample(arrays, index, weight, phase_count=None) -> list:
+    """[(n,) complex samples] of complex arrays (n_x, n_y) on one grid at bilinear_weights' (index, weight) with the
+    local phase removed: per point the phase steps of the stencil along x, arg sum (v_10 v_00* + v_11 v_01*), and along
+    y, arg sum (v_01 v_00* + v_11 v_10*) (amplitude weighted, summed over the first phase_count arrays: None = all;
+    tapered by PHASE_CORRECTION) carry every corner value to the point (v_c exp(j (theta_x (t_x - i_c) + theta_y (t_y -
+    j_c)))) before the bilinear blend. Exact for a plane wave of up to pi / 4 phase per cell (plain bilinear
+    interpolation of exp(j k x) has the amplitude sinc^2(k h / 2) on average: a product of two fields with the 2 n k0
+    phase of a Brillouin drive is low by sinc^4(q h / 4)); one shared step per point, so the samples are linear in the
+    arrays and a projection of components commutes with the sampling."""
+    index, weight = np.asarray(index), np.asarray(weight, dtype=np.float64)
+    gathered = [np.asarray(values, dtype=np.complex128).reshape(-1)[index] for values in arrays]
+    phase_from = gathered if phase_count is None else gathered[:int(phase_count)]
+    step_x = sum(values[:, 1] * np.conj(values[:, 0]) + values[:, 3] * np.conj(values[:, 2]) for values in phase_from)
+    step_y = sum(values[:, 2] * np.conj(values[:, 0]) + values[:, 3] * np.conj(values[:, 1]) for values in phase_from)
+    step_x, step_y = _tapered_steps(step_x), _tapered_steps(step_y)
+    t_x, t_y = weight[:, 1] + weight[:, 3], weight[:, 2] + weight[:, 3]
+    phase = np.empty(weight.shape)   # corners 00, 10, 01, 11 (bilinear_weights' order)
+    phase[:, 0] = step_x * t_x + step_y * t_y
+    phase[:, 1] = phase[:, 0] - step_x
+    phase[:, 2] = phase[:, 0] - step_y
+    phase[:, 3] = phase[:, 1] - step_y
+    carried = weight * np.exp(1j * phase)
+    return [np.einsum('nk,nk->n', values, carried) for values in gathered]
+
+
+def edges_to_centres(values, axis) -> np.ndarray:
+    """Complex values at the cell centres of complex values on the cell edges along `axis` (n + 1 there; the centre is
+    the midpoint of its two edges): the mean of the two edges with half the phase step arg(v_hi v_lo*) (tapered by
+    PHASE_CORRECTION) removed from each, exact for a plane wave along `axis` (the plain mean is low by cos(k h / 2))."""
+    moved = np.moveaxis(np.asarray(values, dtype=np.complex128), axis, 0)
+    if moved.shape[0] < 2:
+        raise ValueError(f'edges_to_centres: needs >= 2 edges along axis {axis}, got shape {np.shape(values)}')
+    lower, upper = moved[:-1], moved[1:]
+    half = np.exp(0.5j * _tapered_steps(upper * np.conj(lower)))
+    centred = 0.5 * (lower * half + upper * np.conj(half))
+    return np.moveaxis(centred, 0, axis)
 
 
 def _phase_gradient(product, centres, axis) -> np.ndarray:
@@ -597,17 +698,53 @@ def local_reference(frequencies, sigma_l_weights, q, longitudinal_law, density, 
     return result * scale
 
 
+def attenuation_rate(omega, modulus, density) -> np.ndarray:
+    """(n,) amplitude attenuation |Im k| [1/m] of the plane wave k = Omega sqrt(rho / X*) of complex moduli X* (n,)
+    [Pa] at the angular frequencies omega (n,) [rad/s]; inf where X* = 0 (no wave of that kind), 0 where X* is real."""
+    omega = np.asarray(omega, dtype=np.float64).reshape(-1)
+    modulus = np.asarray(modulus, dtype=np.complex128).reshape(-1)
+    if modulus.shape != omega.shape:
+        raise ValueError(f'attenuation_rate: {modulus.size} moduli for {omega.size} frequencies')
+    rate = np.full(omega.shape, np.inf)
+    present = modulus != 0.0
+    rate[present] = np.abs((omega[present] * np.sqrt(_density(density) / modulus[present])).imag)
+    return rate
+
+
+def reference_padding(lengths, rate, tolerance=IMAGE_TOLERANCE) -> tuple:
+    """(P_x, P_y) zero-padding factors of homogeneous_reference for a raster box of lengths (L_x, L_y) [m] and the
+    smallest attenuation rate delta [1/m] over the band (header): the least P >= MIN_PADDING with exp(-delta (P - 1) L)
+    <= tolerance; ValueError for delta <= 0 (a lossless medium: no finite padding)."""
+    rate, tolerance = float(rate), float(tolerance)
+    if not (rate > 0.0):
+        raise ValueError(f'homogeneous reference: the phonon attenuation rate must be > 0 1/m (a lossy medium), got '
+                         f'{rate!r}')
+    if not (0.0 < tolerance < 1.0):
+        raise ValueError(f'homogeneous reference: the image tolerance must lie in (0, 1), got {tolerance!r}')
+    if math.isinf(rate):
+        return MIN_PADDING, MIN_PADDING
+    reach = math.log(1.0 / tolerance) / rate
+    padding = []
+    for length in lengths:
+        length = float(length)
+        if not (length > 0.0 and math.isfinite(length)):
+            raise ValueError(f'homogeneous reference: raster lengths must be finite and > 0 m, got {lengths!r}')
+        padding.append(max(MIN_PADDING, int(math.ceil(1.0 + reach / length - 1e-12))))
+    return tuple(padding)
+
+
 def _stress_spectrum(stress_grid, dx, dy, padding) -> tuple:
-    """(sigma^ (3, P_x, P_y) = dx dy FFT of the zero-padded (xx, yy, xy) raster, q_x (P_x, 1), q_y (1, P_y), weight
-    d^2q / (2 pi)^2 = 1 / (P_x P_y dx dy))."""
+    """(sigma^ (3, P_x n_x, P_y n_y) = dx dy FFT of the zero-padded (xx, yy, xy) raster, q_x (., 1), q_y (1, .), weight
+    d^2q / (2 pi)^2 = 1 / (P_x n_x P_y n_y dx dy)) of padding P (one int for both axes, or (P_x, P_y))."""
     stress_grid = np.asarray(stress_grid, dtype=np.complex128)
     if stress_grid.ndim != 3 or stress_grid.shape[0] != 3:
         raise ValueError(f'homogeneous reference: stress_grid must be (3, n_x, n_y) rows (xx, yy, xy), got '
                          f'{stress_grid.shape}')
-    dx, dy, padding = float(dx), float(dy), int(padding)
-    if not (dx > 0.0 and dy > 0.0 and padding >= 1):
+    dx, dy = float(dx), float(dy)
+    padding_x, padding_y = (int(padding), int(padding)) if np.ndim(padding) == 0 else (int(value) for value in padding)
+    if not (dx > 0.0 and dy > 0.0 and padding_x >= 1 and padding_y >= 1):
         raise ValueError(f'homogeneous reference: dx, dy must be > 0 and padding >= 1, got {dx}, {dy}, {padding}')
-    size_x, size_y = padding * stress_grid.shape[1], padding * stress_grid.shape[2]
+    size_x, size_y = padding_x * stress_grid.shape[1], padding_y * stress_grid.shape[2]
     spectrum = dx * dy * np.fft.fft2(stress_grid, s=(size_x, size_y), axes=(1, 2))
     q_x = (2.0 * math.pi * np.fft.fftfreq(size_x, dx))[:, None]
     q_y = (2.0 * math.pi * np.fft.fftfreq(size_y, dy))[None, :]
@@ -629,21 +766,51 @@ def _projections(spectrum, q_x, q_y) -> tuple:
     return longitudinal, transverse, np.broadcast_to(q_squared, longitudinal.shape), origin
 
 
+def homogeneous_padding(frequencies, shape, dx, dy, longitudinal_law, shear_law, density,
+                        tolerance=IMAGE_TOLERANCE) -> tuple:
+    """(P_x, P_y) of homogeneous_reference over a raster of shape (n_x, n_y) on cells dx, dy [m] (reference_padding of
+    the smallest attenuation over the band [Hz] of the longitudinal law and of the shear law where Im G* > 0: a lossless
+    shear term adds nothing to the sum, so its images do not count); ValueError when the padded raster exceeds
+    MAX_REFERENCE_CELLS (a drive short against the attenuation length)."""
+    omega = 2.0 * math.pi * _frequencies(frequencies)
+    rate = float(np.min(attenuation_rate(omega, _law_values(longitudinal_law, omega), density)))
+    shear = _law_values(shear_law, omega)
+    lossy = shear.imag > 0.0
+    if lossy.any():
+        rate = min(rate, float(np.min(attenuation_rate(omega[lossy], shear[lossy], density))))
+    n_x, n_y = (int(value) for value in shape)
+    padding = reference_padding((n_x * float(dx), n_y * float(dy)), rate, tolerance)
+    cells = padding[0] * n_x * padding[1] * n_y
+    if cells > MAX_REFERENCE_CELLS:
+        raise ValueError(f'homogeneous reference: the drive box ({n_x * float(dx):.4g} x {n_y * float(dy):.4g} m) is '
+                         f'short against the phonon attenuation length 1 / delta = {1.0 / rate:.4g} m, so its periodic '
+                         f'FFT images need padding {padding[0]} x {padding[1]} ({cells:,} cells > '
+                         f'{MAX_REFERENCE_CELLS:,}) to stay below {tolerance:g} of the readout: use reference '
+                         "'local', or a drive selection longer than a few attenuation lengths")
+    return padding
+
+
 def homogeneous_reference(frequencies, stress_grid, dx, dy, longitudinal_law, shear_law, density, temperature, scale,
-                          padding=2) -> np.ndarray:
-    """(n_f,) exact unbounded-medium psd [1/Hz] (header) of the drive stress kappa sigma~ (3, n_x, n_y) in the plane
-    rows (xx, yy, xy) on uniform optical cells dx, dy [m] (zero outside the drive region; zero-padded to padding x),
-    one isotropic medium: longitudinal_law omega -> M* = K* + 4/3 G*, shear_law omega -> G* (lossy: Im M* > 0)."""
+                          padding=None) -> np.ndarray:
+    """(n_f,) unbounded-medium psd [1/Hz] (header) of the drive stress kappa sigma~ (3, n_x, n_y) in the plane rows (xx,
+    yy, xy) on uniform optical cells dx, dy [m] (zero outside the drive region), one isotropic medium: longitudinal_law
+    omega -> M* = K* + 4/3 G*, shear_law omega -> G* (lossy: Im M* > 0). Zero padding P per axis: None =
+    homogeneous_padding (the periodic images below IMAGE_TOLERANCE of the readout), else an int or (P_x, P_y) as given
+    (a periodic drive on whole FFT bins takes 1)."""
     frequencies = _frequencies(frequencies)
     temperature, density = _temperature(temperature), _density(density)
-    spectrum, q_x, q_y, weight = _stress_spectrum(stress_grid, dx, dy, padding)
-    longitudinal, transverse, q_squared, _ = _projections(spectrum, q_x, q_y)
-    longitudinal, transverse, q_squared = longitudinal.ravel(), transverse.ravel(), q_squared.ravel()
     omega = 2.0 * math.pi * frequencies
     bulk, shear = _law_values(longitudinal_law, omega), _law_values(shear_law, omega)
     if (bulk.imag <= 0.0).any() or (shear.imag < 0.0).any():
         raise ValueError('homogeneous reference: needs Im M* > 0 and Im G* >= 0 (a lossy, passive medium; a lossless '
                          'longitudinal modulus gives a delta line)')
+    if padding is None:
+        padding = homogeneous_padding(frequencies, np.shape(stress_grid)[1:], dx, dy, longitudinal_law, shear_law,
+                                      density)
+    spectrum, q_x, q_y, weight = _stress_spectrum(stress_grid, dx, dy, padding)
+    longitudinal, transverse, q_squared, _ = _projections(spectrum, q_x, q_y)
+    del spectrum
+    longitudinal, transverse, q_squared = longitudinal.ravel(), transverse.ravel(), q_squared.ravel()
     result = np.empty(len(frequencies))
     step = max(1, _CHUNK_VALUES // max(len(q_squared), 1))
     for start in range(0, len(frequencies), step):
