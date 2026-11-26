@@ -104,9 +104,9 @@ def _check_constant_loads(_):
                              _LOAD_RTOL)
             unit = np.einsum('kqc,kqc->kq', edge_points.normals, edge_points.normals)
             checks.add_bound(f'edge_normals_unit_p{element_order}_{name}', float(np.max(np.abs(unit - 1.0))), 1e-12)
-        checks.add_raises(f'form_mismatch_raises_p{element_order}',
-                          lambda dofs=dofs, points=points: assemble_stress_drive(
-                              dofs, points, np.zeros((points.rows, points.n_points)), axisymmetric=False))
+        checks.add_raises(f'other_map_raises_p{element_order}',
+                          lambda points=points, other=lagrange_dofs(mesh, 3 - element_order): assemble_stress_drive(
+                              other, points, np.zeros((points.rows, points.n_points))))
     return checks.result()
 
 
@@ -197,8 +197,8 @@ ELASTIC_DRIVES_SELFTEST_CASES = (
         description='CPU check on the disc mesh, P1 and P2, planar and axisymmetric: a real stress constant per '
                     'element (random) assembled as a point drive equals elasticity.assemble_stress_load (the same or '
                     'exact rules, 1e-13), and a constant traction on the window edges as an edge drive equals '
-                    'assemble_edge_traction (straight edges, exact rules, 1e-13); edge normals are unit; a drive form '
-                    'that differs from its points raises. error = number of failed sub-checks, tolerance 0.',
+                    'assemble_edge_traction (straight edges, exact rules, 1e-13); edge normals are unit; points of '
+                    'another dof map raise. error = number of failed sub-checks, tolerance 0.',
         specs=lambda: {},
         check=_check_constant_loads,
         max_wall_time=60.0),

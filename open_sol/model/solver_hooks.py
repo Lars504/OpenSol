@@ -74,6 +74,18 @@ class PhysicsDriveSolver(Protocol):
 
 
 @runtime_checkable
+class DriveOpticsSolver(Protocol):
+    """An optical physics a physics drive reads in bind_physics_drives (em_fdfd_ez / _hz, em_fdfd_bor for
+    brillouin_scattering): drive_sources() -> {name: enabled focused beam}, solve_moved_beam(source, offset) -> one
+    solve with that beam moved on the kept factor, drive_fields(solution) -> its host DriveFields (em
+    focused_beam.DriveFields), and its domain."""
+    domain: object
+    def drive_sources(self): ...
+    def solve_moved_beam(self, source, offset): ...
+    def drive_fields(self, solution): ...
+
+
+@runtime_checkable
 class PrestressSolver(Protocol):
     """Optional on an eigenfrequency / frequency_response / optomechanics solver (stress stiffening or geometric
     nonlinearity): while prestressed,

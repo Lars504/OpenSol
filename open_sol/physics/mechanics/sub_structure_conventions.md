@@ -225,18 +225,21 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   (om_forward_brillouin_gain uses sin(2 pi j / N)).
 
 ## Spontaneous Brillouin (feature brillouin_scattering; `brillouin.py`, `brillouin_drive.py`, `definition_brillouin.py`)
-- Math, conventions, references and fit: `brillouin.py` header; flow, sampling, interfaces and kept state:
-  `brillouin_drive.py` header; FEM loads: fem `elastic_drives.py` (fem sub file). The drive is the transpose of the
-  optomechanics overlap (non-conjugated E_c E_i, the same Nye / Johnson forms): change both together (Q1 cell / face
-  drives are the transposes of `element_strains` / `face_displacements`: brillouin_tensor_transpose).
+- Math, conventions, references and fit: `brillouin.py` header; constructor values, flow, sampling, eps per point,
+  interfaces and references of the runtime: `brillouin_drive.py` header; FEM loads: fem `elastic_drives.py` (fem sub
+  file). The drive is the transpose of the optomechanics overlap (non-conjugated E_c E_i, the same Nye / Johnson
+  forms): change both together (Q1 cell / face drives are the transposes of `element_strains` /
+  `face_displacements`: brillouin_tensor_transpose). Moduli laws are `viscoelastic.ModulusLaw.at` (the one formula),
+  evaluated per distinct frequency (`brillouin.modulus_values`).
 - Flow: the apply adds a BrillouinDrive (constructor = the frozen contract) in every study, inert outside
   frequency_response (validation warns); that study binds it through `solver_hooks.PhysicsDriveSolver` after the
   background stage and the static states, before `reset_frequency_response` (model sub file "Physics drives"), never
   at apply. Bind returns ONE read-only complex W (n_positions x n_parts, n_unknowns; mixed: pressure rows 0): row 0 is
   the harmonic load and every row a HarmonicSystem functional, so the spectrum is `last_functionals` /
-  `solve_columns` (section "Frequency response"). It reads the optics as the background left them and never re-solves
-  them (a changed optical system raises in `solve_moved_beam` / `drive_fields`). Each solid binds on its own: the
-  m = 0 + m = 2 pair repeats the optical scan solves.
+  `solve_columns` (section "Frequency response"). It reads the optics through `solver_hooks.DriveOpticsSolver` (em
+  `fdfd_2d` / `fdfd_bor`) as the background left them and never re-solves them (a changed optical system raises in
+  `solve_moved_beam` / `drive_fields`). Each solid binds on its own: the m = 0 + m = 2 pair repeats the optical scan
+  solves.
 - The drive must be the only load (the FDT reads -Im(w^H u) of the drive alone): validation (`_other_load_issues`:
   load features, holds != 0, couplings into body_force slots), bind and every driven solve (`refuse_drive_loads`)
   refuse the same; a temperature change stays a static prestate. Reduced sweeps take one column
@@ -255,26 +258,19 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   and no ledger sees it.
 - Mirror planes count x 2 (mirror_factor): each must be held by a solid Roller / Symmetry (the even mirror of u), no
   scan offset along its normal, none with em_fdfd_bor, none with reference 'homogeneous' (the FFT needs the unfolded
-  drive) (`_mirror_issues`). Samplers use the even mirror rule in the edge half cell; odd components keep the edge
-  value there (an O(half cell) strip error).
+  drive) (`_mirror_issues`).
 - Window rule: a sampler covers the hull of its sample coordinates plus one spacing (`brillouin.bilinear_weights`
   raises beyond), so validation keeps the drive box inside the first / last window cell centre on every face but the
   mirror planes and the BOR axis x_lo (`_window_issues`): change the clamp and the check together.
-- Optical fields: each DriveFields component on its own Yee points (`DriveFields.grids`, em sub file "Focused
-  beams") and every interpolation phase-corrected (`brillouin.phase_corrected_sample`, `edges_to_centres`). A face
-  mean along the beam (psd low by cos^4(k h / 2)) biases the values both references read, plain bilinear
-  interpolation (~(q h)^2 / 12) the local reference too, so a reference comparison misses such a bias: pin a new
-  sampling path against an analytic case (selftests_brillouin_spectrum water cases). eps per point and per interface
-  side is the solid element's own material (the conforming mesh knows it, the staircase may not; fallbacks counted in
-  a bind warning).
-- Moving boundary (triangles): one point per Gauss point with the continuous E_par and D_n interpolated by one stencil
-  (`brillouin.interface_traction`), never side samples (they reach across the staircase into the other material);
-  interfaces are found only where solid material values AND optical eps differ across an element edge. Q1: the
-  two-sided face mean (open: ~1.5 % low in the moving-boundary part at 10 nm glass).
-- Homogeneous reference: the FFT sum is the drive repeated periodically, and copies along the beam are coherent, so
-  the zero padding per axis follows the phonon attenuation (`brillouin.reference_padding`, IMAGE_TOLERANCE; a fixed
-  padding 2 would leave a ~12-15 % image share in the 2D water cases); MAX_REFERENCE_CELLS raises at run and in
-  validation.
+- Sampling bias: a face mean along the beam (psd low by cos^4(k h / 2)) biases the values both references read, plain
+  bilinear interpolation (~(q h)^2 / 12) the local reference too, so a reference comparison misses such a bias: pin a
+  new sampling path against an analytic case (selftests_brillouin_spectrum water cases).
+- Moving boundary (triangles): never side samples (they reach across the staircase into the other material), the
+  continuous E_par and D_n at the Gauss point itself (`brillouin_drive.py` header). Q1: the two-sided face mean (open:
+  ~1.5 % low in the moving-boundary part at 10 nm glass).
+- Homogeneous reference: the zero padding per axis follows the phonon attenuation (`brillouin.reference_padding`; a
+  fixed padding 2 would leave a ~12-15 % image share in the 2D water cases); MAX_REFERENCE_CELLS raises at run and in
+  validation (`homogeneous_padding` in both).
 - Axisymmetric: two order-1 optical fields drive the solid orders 0 and 2 only, so the full co-polarised spectrum is
   two solid physics on one triangle mesh, each with a brillouin_scattering on the same optics (the one azimuthal-order
   split: `definition_helpers.ORDER_SPLIT_READERS`, root "Physics definitions"); their psd add in a derived curve (no
@@ -283,7 +279,10 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
 - Elastic PML: drive points and reference cells on window elements only (`_drive_inputs`); the ring's absorbed power
   is part of -Im(w^H u).
 - Memory: n_positions x n_unknowns x 16 B of W (a 100-position map of a 5e5-dof solid: 0.8 GB host); a streaming
-  option (re-solving the optics per frequency) is open.
+  option (re-solving the optics per frequency) is open. A bind of more than one photoelastic column also keeps the
+  strain operator of every drive point until it returns (fem `DrivePoints.kept`, size in its comment), which the bind
+  estimate (`_bind_bytes`) counts with the held point arrays. `result()` is built once per bind and records and kept
+  (references and peak fits), handed out as a deep copy.
 - Not built: 3D (em_fdfd_3d has no driven solve or 3D focused source; a water focal volume is ~5e7 Yee unknowns and a
   P2 phonon side ~1e7 dofs, beyond a direct factor; brillouin.py already works on six Voigt components, so a
   `fem/elastic_drives3d.py` twin plus a solid_mechanics_3d registration would be additive, an analytic Debye

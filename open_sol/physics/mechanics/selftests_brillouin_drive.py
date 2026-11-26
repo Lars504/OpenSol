@@ -374,7 +374,7 @@ def _dho_line(frequencies, weight_sum, viscosity):
 
 def _check_homogeneous_reference(_):
     from .brillouin import (homogeneous_padding, homogeneous_reference, homogeneous_static, local_reference,
-                            local_wavenumbers, longitudinal_function, modulus_function)
+                            local_wavenumbers, longitudinal_function, modulus_values)
     from .viscoelastic import ModulusLaw
 
     checks = SubChecks()
@@ -438,16 +438,16 @@ def _check_homogeneous_reference(_):
     sheared = np.stack([random, -random, random])
     checks.add_raises('static_shear_without_modulus_raises',
                       lambda: homogeneous_static(sheared, 0.3, 0.2, 2.2e9, 0.0, _TEMPERATURE, 1.0))
-    # (d) the vectorised law equals viscoelastic.ModulusLaw.at (its formula is repeated in modulus_function)
+    # (d) a law evaluated per distinct omega (a repeat included) is K* + 4/3 G* of viscoelastic.ModulusLaw.at per
+    # omega; an incompressible law (ModulusLaw.at = inf) raises
     law = ModulusLaw(relaxed=2.0e9, loss_factor=0.01, viscosity=3e-3, branches=((5e8, 1e-10), (2e8, 3e-9)))
     shear_law = ModulusLaw(relaxed=1.0e9, loss_factor=0.02, viscosity=1e-3, branches=((1e8, 2e-10),))
-    omegas = np.array([0.0, 1e6, 4.7e10, 3e12])
-    vectorised = modulus_function(law)(omegas)
-    checks.add_bound('modulus_function_vs_law', max_relative_error(vectorised, np.array([law.at(w) for w in omegas])),
-                     _LAW_RTOL)
-    combined = longitudinal_function(modulus_function(law), shear_law.at)(omegas)   # a scalar law falls back
+    omegas = np.array([0.0, 1e6, 4.7e10, 3e12, 1e6])
+    combined = modulus_values(longitudinal_function(law.at, shear_law.at), omegas)
     expected = np.array([law.at(w) + 4.0 / 3.0 * shear_law.at(w) for w in omegas])
     checks.add_bound('longitudinal_function', max_relative_error(combined, expected), _LAW_RTOL)
+    incompressible = ModulusLaw(relaxed=math.inf, loss_factor=0.0, viscosity=0.0, branches=())
+    checks.add_raises('incompressible_law_raises', lambda: modulus_values(incompressible.at, omegas))
     return checks.result()
 
 
@@ -546,8 +546,9 @@ BRILLOUIN_DRIVE_CASES = (
           '1e-3), a nearly lossless medium raises '
           '(padded raster above the limit); the static '
           'sum equals k_B T / M int |c|^2 dA '
-          '(Parseval, 1e-10), a shear drive without shear modulus raises; modulus_function equals '
-          'viscoelastic.ModulusLaw.at (1e-14).', _check_homogeneous_reference),
+          '(Parseval, 1e-10), a shear drive without shear modulus raises; a law evaluated per distinct frequency '
+          'gives K* + 4/3 G* of viscoelastic.ModulusLaw.at (1e-14), an incompressible law raises.',
+          _check_homogeneous_reference),
     _case('brillouin_bilinear', 'Brillouin: bilinear and phase-corrected sampling, local wavenumbers',
           'CPU check of brillouin.bilinear_weights / bilinear_sample on non-uniform centres: exact for a bilinear '
           'complex field at random and corner points (1e-13), weights sum to 1, a point outside the centres raises; '

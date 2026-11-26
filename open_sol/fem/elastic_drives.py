@@ -14,26 +14,27 @@ numpy."""
 # U_r cos(m phi), u_z = U_z cos(m phi), u_phi = U_phi sin(m phi) when stress = (s_n, s_s). The odd parity (normal rows
 # ~ sin, shear rows ~ cos) is the even solve rotated by pi / (2 m): its drive is (s_n, -s_s) in these rows (u_r = U_r
 # sin, u_phi = -U_phi cos; self-test fem_elastic_drive_azimuthal_quadrature).
-# Points: every element chunk of assembly._element_groups at the rule `degree` (default DRIVE_DEGREE, the largest
-# Dunavant rule: the Brillouin integrand oscillates on lambda / (2 n); curved elements at max(degree, CURVED_DEGREE)),
-# flattened (group, element, point); the same chunks and points as elasticity.assemble_stress_load at the
-# axisymmetric degree. Edge points: indicators.edge_sides (side 0 = mesh.edge_elements[:, 0], unit normals out of it)
-# on the edges with a map element, the basis of assembly._edge_quadrature (same Gauss parameters and geometry order).
-from dataclasses import dataclass
+# Points: every element chunk of assembly._element_groups at DRIVE_DEGREE (the largest Dunavant rule: the Brillouin
+# integrand oscillates on lambda / (2 n); curved elements at CURVED_DEGREE if higher), flattened (group, element,
+# point); the same chunks and points as elasticity.assemble_stress_load at the axisymmetric degree. B per chunk:
+# elasticity._form_operator_at, the stiffness groups' own form; a drive assembled on the same points several times
+# (keep_operator: one per scan position) keeps it on the DrivePoints. Edge points: indicators.edge_sides (side 0 =
+# mesh.edge_elements[:, 0], unit normals out of it, points and weights) on the edges with a map element; the basis of
+# assembly._edge_quadrature at the same edges and degree evaluates at the same points (both take gauss_line(degree (+ 2
+# on geometry order 2)) and elements.edge_geometry of the map's geometry order).
+from dataclasses import dataclass, field
 
 import numpy as np
 
 from .assembly import _edge_quadrature, _edge_sides, _element_groups
 from .elasticity import (AZIMUTHAL_COMPONENTS, AZIMUTHAL_RING, AZIMUTHAL_ROWS, COMPONENTS, RING, _azimuthal_terms,
-                         _check_azimuthal_order, _operator_at, _weights, azimuthal_strain_operator, component_dofs,
-                         strain_rows)
+                         _check_azimuthal_order, _form_operator_at, _weights, component_dofs, strain_rows)
 from .elements import element_geometry
 from .fixed_pattern import scatter_add
 from .indicators import edge_sides
 from .quadrature import TRIANGLE_DEGREES
 
-DRIVE_DEGREE = TRIANGLE_DEGREES[-1]   # default element and edge rule degree of a drive (oscillating integrands)
-_EDGE_POINT_RTOL = 1e-12              # edge_sides and _edge_quadrature points must coincide (same t, same geometry)
+DRIVE_DEGREE = TRIANGLE_DEGREES[-1]   # element and edge rule degree of a drive (oscillating integrands)
 
 
 def _read_only(array) -> np.ndarray:
@@ -74,12 +75,16 @@ class DrivePoints:
     dofs: object
     axisymmetric: bool
     azimuthal_order: int
-    degree: int
     groups: tuple            # ((positions int64 (m,), TriangleRule), ...)
     offsets: np.ndarray      # int64 (n_groups + 1,): start of each group in the flat arrays
     points: np.ndarray       # (n, 2) [m]
     weights: np.ndarray      # (n,) [m^2] planar per unit depth, [m^3] axisymmetric (ring included)
     elements: np.ndarray     # int64 (n,) mesh element of each point
+    # kept by assemble_stress_drive(keep_operator=True) on first use, per group: (B float64 (m, q, rows, c n_local),
+    # vector dofs int64 (m, c n_local)), i.e. n_points x rows x components x n_local x 8 B + n_elements x components x
+    # n_local x 8 B (n_local 3 P1 / 6 P2; rows x components 3 x 2 planar, 4 x 2 m = 0, 6 x 3 m >= 1); dropped with the
+    # points
+    kept: list = field(default_factory=list, init=False, repr=False)
 
     @property
     def n_points(self) -> int:
@@ -104,7 +109,6 @@ class EdgeDrivePoints:
     dofs: object
     axisymmetric: bool
     azimuthal_order: int
-    degree: int
     edges: np.ndarray        # int64 (k,) mesh edges
     sides: np.ndarray        # int64 (k, 2) side 0 / side 1 mesh elements (-1: an outer edge)
     points: np.ndarray       # (k, q, 2) [m]
@@ -135,7 +139,8 @@ def _element_mask(dofs, elements):
 
 
 def _point_geometry(dofs, positions, rule, axisymmetric, order) -> tuple:
-    """(physical points (m, q, 2), weights (m, q)) of fem.elasticity's form at a rule."""
+    """(physical points (m, q, 2), weights (m, q)) of fem.elasticity's form at a rule (those of
+    elasticity._form_operator_at, without building B)."""
     if order:
         geometry, _, _, weights, _ = _azimuthal_terms(dofs, positions, rule, None, None)
         return geometry.points, weights
@@ -143,15 +148,14 @@ def _point_geometry(dofs, positions, rule, axisymmetric, order) -> tuple:
     return geometry.points, _weights(geometry, rule, axisymmetric)
 
 
-def drive_points(dofs, *, axisymmetric=False, azimuthal_order=0, elements=None, degree=None) -> DrivePoints:
+def drive_points(dofs, *, axisymmetric=False, azimuthal_order=0, elements=None) -> DrivePoints:
     """DrivePoints of the map's elements inside `elements` (bool per mesh element or mesh element indices; None =
-    every map element) at the rule of `degree` (None = DRIVE_DEGREE; curved elements >= CURVED_DEGREE). ValueError when
-    the selection holds no map element (a drive with no points is a wiring error)."""
+    every map element) at the rule of DRIVE_DEGREE (curved elements >= CURVED_DEGREE). ValueError when the selection
+    holds no map element (a drive with no points is a wiring error)."""
     axisymmetric, order = _form(axisymmetric, azimuthal_order)
-    degree = DRIVE_DEGREE if degree is None else int(degree)
     mask = _element_mask(dofs, elements)
     groups, points, weights, element_ids, offsets = [], [], [], [], [0]
-    for positions, rule in _element_groups(dofs, degree):
+    for positions, rule in _element_groups(dofs, DRIVE_DEGREE):
         if mask is not None:
             positions = positions[mask[dofs.elements[positions]]]
             if not positions.size:
@@ -164,38 +168,31 @@ def drive_points(dofs, *, axisymmetric=False, azimuthal_order=0, elements=None, 
         offsets.append(offsets[-1] + group_weights.size)
     if not groups:
         raise ValueError('drive_points: the drive selection holds no element of the solid dof map')
-    return DrivePoints(dofs=dofs, axisymmetric=axisymmetric, azimuthal_order=order, degree=degree,
-                       groups=tuple(groups), offsets=_read_only(np.asarray(offsets, dtype=np.int64)),
+    return DrivePoints(dofs=dofs, axisymmetric=axisymmetric, azimuthal_order=order, groups=tuple(groups),
+                       offsets=_read_only(np.asarray(offsets, dtype=np.int64)),
                        points=_read_only(np.concatenate(points)), weights=_read_only(np.concatenate(weights)),
                        elements=_read_only(np.concatenate(element_ids).astype(np.int64)))
 
 
-def _checked_form(dofs, points, axisymmetric, azimuthal_order) -> tuple:
-    """(axisymmetric, order) of points, ValueError when the map or a given form differs from theirs."""
+def _checked_map(dofs, points) -> None:
+    """ValueError when the (edge) drive points belong to another dof map."""
     if points.dofs is not dofs:
         raise ValueError('elastic drive: the points belong to another dof map (rebuild them after a re-assembly)')
-    if axisymmetric is not None and bool(axisymmetric) != points.axisymmetric:
-        raise ValueError(f'elastic drive: axisymmetric={bool(axisymmetric)} but the points were built with '
-                         f'axisymmetric={points.axisymmetric}')
-    if azimuthal_order is not None and int(azimuthal_order) != points.azimuthal_order:
-        raise ValueError(f'elastic drive: azimuthal_order {azimuthal_order} but the points were built for order '
-                         f'{points.azimuthal_order}')
-    return points.axisymmetric, points.azimuthal_order
 
 
-def _strain_operator(dofs, positions, rule, axisymmetric, order) -> np.ndarray:
-    """B (m, q, k, c n) of fem.elasticity's form at a rule."""
-    if order:
-        _, basis, gradients, _, radius = _azimuthal_terms(dofs, positions, rule, None, None)
-        return azimuthal_strain_operator(basis, gradients, radius, order)
-    return _operator_at(dofs, positions, rule, axisymmetric)[1]
+def _operators(dofs, points):
+    """(B (m, q, k, c n), vector dofs (m, c n)) per group of DrivePoints, one group at a time (module header)."""
+    for positions, rule in points.groups:
+        operator = _form_operator_at(dofs, positions, rule, points.axisymmetric, points.azimuthal_order)[1]
+        yield operator, component_dofs(dofs.element_dofs[positions], points.components)
 
 
-def assemble_stress_drive(dofs, points, stress, *, axisymmetric=None, azimuthal_order=None) -> np.ndarray:
+def assemble_stress_drive(dofs, points, stress, *, keep_operator=False) -> np.ndarray:
     """Complex128 (c n,) of int B^T sigma dV (c = points.components, the map's vector numbering c d + component) for
     a complex stress (points.rows, points.n_points) at the DrivePoints in their Voigt rows (module header);
-    axisymmetric / azimuthal_order (None = the points') must agree with the points."""
-    axisymmetric, order = _checked_form(dofs, points, axisymmetric, azimuthal_order)
+    keep_operator: build B of every group once and keep it on the points for the next drives (DrivePoints.kept;
+    else B is built per group and dropped). ValueError for points of another map."""
+    _checked_map(dofs, points)
     rows, components = points.rows, points.components
     stress = np.asarray(stress)
     if stress.shape != (rows, points.n_points):
@@ -203,43 +200,41 @@ def assemble_stress_drive(dofs, points, stress, *, axisymmetric=None, azimuthal_
                          f'{points.n_points}) (Voigt rows x drive points)')
     if not np.isfinite(stress).all():
         raise ValueError('assemble_stress_drive: the stress holds non-finite values')
+    if keep_operator and not points.kept:
+        built = list(_operators(dofs, points))   # whole, so an interrupted build keeps nothing
+        points.kept.extend(built)
+        del built
+    operators = points.kept or _operators(dofs, points)
     result = np.zeros(components * dofs.n_dofs, dtype=np.complex128)
-    for index, (positions, rule) in enumerate(points.groups):
+    for index, ((positions, rule), (operator, vector_dofs)) in enumerate(zip(points.groups, operators)):
         start, stop = int(points.offsets[index]), int(points.offsets[index + 1])
         count, n_rule = len(positions), len(rule.weights)
         weighted = (stress[:, start:stop] * points.weights[start:stop]).T.reshape(count, n_rule, rows)
-        operator = _strain_operator(dofs, positions, rule, axisymmetric, order)
         local = np.einsum('mqki,mqk->mi', operator, weighted)
-        scatter_add(result, component_dofs(dofs.element_dofs[positions], components), local)
+        scatter_add(result, vector_dofs, local)
     return result
 
 
-def edge_drive_points(dofs, edges, degree=None, *, axisymmetric=False, azimuthal_order=0) -> EdgeDrivePoints:
+def edge_drive_points(dofs, edges, *, axisymmetric=False, azimuthal_order=0) -> EdgeDrivePoints:
     """EdgeDrivePoints of mesh edges (int64; those without an element of the map dropped) at the Gauss rule of
-    `degree` (None = DRIVE_DEGREE; + 2 on geometry order 2): sides and normals by indicators.edge_sides with side 0 =
-    mesh.edge_elements[:, 0], the points of assembly._edge_quadrature."""
+    DRIVE_DEGREE (+ 2 on geometry order 2): sides, points, weights and normals by indicators.edge_sides with side 0 =
+    mesh.edge_elements[:, 0] (the points of assembly._edge_quadrature: module header)."""
     axisymmetric, order = _form(axisymmetric, azimuthal_order)
-    degree = DRIVE_DEGREE if degree is None else int(degree)
     kept = _edge_sides(dofs, np.asarray(edges, dtype=np.int64).ravel())[0]
     mesh = dofs.mesh
-    sides = edge_sides(mesh, kept, np.ones(mesh.n_elements, dtype=bool), dofs.geometry_order, degree)
-    quadrature_points = _edge_quadrature(dofs, kept, degree)[5]
-    scale = max(float(np.abs(mesh.points).max()), 1e-300)
-    if sides.points.shape != quadrature_points.shape or (
-            len(kept) and float(np.abs(sides.points - quadrature_points).max()) > _EDGE_POINT_RTOL * scale):
-        raise ValueError('edge_drive_points: edge_sides and the edge quadrature disagree on the sample points')
+    sides = edge_sides(mesh, kept, np.ones(mesh.n_elements, dtype=bool), dofs.geometry_order, DRIVE_DEGREE)
     weights = sides.weights * _ring_factor(axisymmetric, order, sides.points[..., 0])
-    return EdgeDrivePoints(dofs=dofs, axisymmetric=axisymmetric, azimuthal_order=order, degree=degree,
-                           edges=_read_only(kept), sides=_read_only(sides.elements),
-                           points=_read_only(sides.points), normals=_read_only(sides.normals),
-                           weights=_read_only(weights))
+    return EdgeDrivePoints(dofs=dofs, axisymmetric=axisymmetric, azimuthal_order=order, edges=_read_only(kept),
+                           sides=_read_only(sides.elements), points=_read_only(sides.points),
+                           normals=_read_only(sides.normals), weights=_read_only(weights))
 
 
-def assemble_edge_drive(dofs, edge_points, traction, *, axisymmetric=None, azimuthal_order=None) -> np.ndarray:
+def assemble_edge_drive(dofs, edge_points, traction) -> np.ndarray:
     """Complex128 (c n,) of int N t ds over the EdgeDrivePoints of a complex traction (k, q, d) [Pa] at their points:
     d = 2 in-plane (t_x, t_y) / (t_r, t_z) (at m >= 1 t_phi = 0), or d = 3 (t_r, t_z, t_phi) at m >= 1 (the cos /
-    cos / sin amplitudes of the order); axisymmetric / azimuthal_order (None = the points') must agree."""
-    axisymmetric, order = _checked_form(dofs, edge_points, axisymmetric, azimuthal_order)
+    cos / sin amplitudes of the order). ValueError for points of another map."""
+    _checked_map(dofs, edge_points)
+    order = edge_points.azimuthal_order
     components = edge_points.components
     traction = np.asarray(traction)
     shape = edge_points.weights.shape
@@ -251,7 +246,7 @@ def assemble_edge_drive(dofs, edge_points, traction, *, axisymmetric=None, azimu
     result = np.zeros(components * dofs.n_dofs, dtype=np.complex128)
     if not len(edge_points.edges):
         return result
-    _, element_dofs, values, _, _, _ = _edge_quadrature(dofs, edge_points.edges, edge_points.degree)
+    _, element_dofs, values, _, _, _ = _edge_quadrature(dofs, edge_points.edges, DRIVE_DEGREE)
     local = np.einsum('kqn,kqd,kq->knd', values, traction, edge_points.weights)
     if local.shape[2] != components:   # in-plane traction at m >= 1: no U_phi part
         padded = np.zeros(local.shape[:2] + (components,), dtype=local.dtype)

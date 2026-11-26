@@ -14,8 +14,9 @@ local and homogeneous reference spectra and the result dict."""
 # (field_products), so a = kappa int sigma~^T S dV with the optical stress sigma~ = p^T G (optical_stress: isotropic
 # rows p11 / p12 / p44, unset p44 = (p11 - p12) / 2; a crystal region applies its (6, 6) p TRANSPOSED: a Voigt p need
 # not be symmetric in (I, J), e.g. p14 != p41 in trigonal crystals). sigma~_I are tensor components (the engineering
-# factor sits on S). FEM: w = kappa int B^T sigma~ dV (fem.elastic_drives), a = w^T u for every u; plane strain pairs the rows
-# (xx, yy, xy) only (planar_rows: S_zz = S_xz = S_yz = 0). em_fdfd_ez: G_zz = -eps^2 E_cz E_iz, a pure dilation drive.
+# factor sits on S). FEM: w = kappa int B^T sigma~ dV (fem.elastic_drives), a = w^T u for every u; plane strain pairs
+# the rows (xx, yy, xy) only (PLANAR_ROWS, solid_rows: S_zz = S_xz = S_yz = 0). em_fdfd_ez: G_zz = -eps^2 E_cz E_iz, a
+# pure dilation drive.
 # Moving boundary (Johnson, non-conjugated): per interface point, unit normal n out of side 0, Delta = side 0 - side 1,
 # f = Delta eps (E_c,par . E_i,par) - Delta(1/eps) D_c,n D_i,n with the continuous quantities E_par and D_n = (eps E)_n
 # (relative D / eps0) read at the interface point itself (interface_traction; triangles: both interpolated there from
@@ -38,8 +39,9 @@ local and homogeneous reference spectra and the result dict."""
 # eta): -Im chi = k eta / |K|^2. Readouts with -Im(w^H u) < -ACTIVE_TOLERANCE |w^H u| raise (an active operator).
 # Sum rule: 2 int_0^inf psd df = k_B T w^H K0^-1 w (static compliance, loss independent; a constant loss factor has a
 # log-divergent 1 / Omega tail at low f, so finite bands carry a small eta ln share); an isotropic liquid with a
-# dilation drive c: (k_B T / K_S) int |c|^2 dV (Landau-Placzek). Quantum sidebands (sideband_factors): x = hbar Omega
-# / (k_B T), n = 1 / (e^x - 1), psd_stokes = psd x (n + 1), psd_anti_stokes = psd x n.
+# dilation drive c: (k_B T / K_S) int |c|^2 dV (Landau-Placzek). Quantum sidebands (sideband_factors): with s = hbar
+# Omega / (k_B T) and the Bose occupation n = 1 / (e^s - 1), psd_stokes = psd s (n + 1) and psd_anti_stokes = psd s n
+# (both weights -> 1 classically, s -> 0).
 # Axisymmetric (em_fdfd_bor m = 1 standing waves; azimuthal_parts): E = (A_r cos phi, A_phi sin phi, A_z cos phi), A_phi
 # = u = -j E_phi of the solve (x-polarised); the cross-polarised collection is the same field rotated by +90 deg,
 # (A_r sin phi, -A_phi cos phi, A_z sin phi). Each product of two components (a cos + b sin)(a' cos + b' sin) is
@@ -88,16 +90,15 @@ from .optomechanics import inverse_permittivity_changes, shear_photoelastic_coef
 
 DETECTIONS = ('co_polarized', 'cross_polarized')   # brillouin_scattering setting detection (cross: em_fdfd_bor only)
 REFERENCES = ('local', 'homogeneous', 'none')       # brillouin_scattering setting reference
-PARITIES = ('even', 'odd')
 AZIMUTHAL_PARTS = {'co_polarized': ((0, 'even'), (2, 'even')), 'cross_polarized': ((2, 'odd'),)}   # (m, parity)
 PLANAR_COMPONENTS = ('x', 'y', 'z')                # field component names of the planar optics (in-plane x, y)
 CYLINDRICAL_COMPONENTS = ('r', 'z', 'phi')         # BOR amplitudes on the optical Voigt axes x -> r, y -> z, z -> phi
 VOIGT_PAIRS = ((0, 0), (1, 1), (2, 2), (1, 2), (0, 2), (0, 1))   # Voigt I = xx, yy, zz, yz, xz, xy
-# optical Voigt rows of the solid's strain rows (fem.elasticity): planar (xx, yy, g); axisymmetric m = 0 (rr, zz, tt,
-# g_rz); m >= 1 (rr, zz, tt, g_rz, g_zt, g_rt) under x -> r, y -> z, z -> phi
-SOLID_VOIGT_ROWS = {'planar': (0, 1, 5), 'axisymmetric': (0, 1, 2, 5), 'azimuthal': (0, 1, 2, 5, 3, 4)}
-_NORMAL_ROWS = SOLID_VOIGT_ROWS['axisymmetric']    # rr, zz, phiphi, rz: cos(m phi) parts of the even solid
-_SHEAR_ROWS = (3, 4)                               # z-phi, r-phi: sin(m phi) parts (constant: the m = 0 torsion)
+# optical Voigt rows of the solid's strain rows (fem.elasticity): planar (xx, yy, g); axisymmetric under x -> r, y -> z,
+# z -> phi: m = 0 the normal rows (rr, zz, tt, g_rz), m >= 1 the normal then the shear rows (g_zt, g_rt)
+PLANAR_ROWS = (0, 1, 5)
+_NORMAL_ROWS = (0, 1, 2, 5)    # rr, zz, phiphi, rz: cos(m phi) parts of the even solid
+_SHEAR_ROWS = (3, 4)           # z-phi, r-phi: sin(m phi) parts (constant: the m = 0 torsion)
 ACTIVE_TOLERANCE = 1e-9    # fdt_psd: -Im(w^H u) below -this x |w^H u| raises (non-passive); above, negatives read 0
 # result names (brillouin_result): series per position (suffix _<k> with several positions), fit extras
 PSD_SERIES = 'psd'
@@ -175,8 +176,17 @@ def _diagonal_eps(eps, name):
     return np.asarray(eps[key])
 
 
-def _voigt_rows(product, eps, names, shape) -> np.ndarray:
-    """Complex (6, *shape) G_I = -eps_ii eps_jj (P_ij + [i != j] P_ji) of products product(i, j) (array or None = 0)."""
+def _voigt_rows(collection_values, incident_values, eps, names, shape, coefficient=None) -> np.ndarray:
+    """Complex (6, *shape) G_I = -eps_ii eps_jj (P_ij + [i != j] P_ji) of the products P_ij = c(i, j) E_c,i E_i,j of
+    component lists (None = 0): coefficient c(i, j) None = 1 (no factor), a zero coefficient drops the product."""
+    def product(i, j):
+        first, second = collection_values[i], incident_values[j]
+        if first is None or second is None:
+            return None
+        if coefficient is None:
+            return first * second
+        value = coefficient(i, j)
+        return None if value == 0.0 else value * first * second
     rows = np.zeros((6,) + tuple(shape), dtype=np.complex128)
     for row, (i, j) in enumerate(VOIGT_PAIRS):
         parts = [part for part in (product(i, j), product(j, i) if i != j else None) if part is not None]
@@ -199,12 +209,19 @@ def field_products(incident, collection, eps, components=PLANAR_COMPONENTS) -> n
     names = tuple(components)
     incident_values = _field_components(incident, names, 'field_products incident')
     collection_values = _field_components(collection, names, 'field_products collection')
-    shape = _shape(incident_values, collection_values)
+    return _voigt_rows(collection_values, incident_values, eps, names, _shape(incident_values, collection_values))
 
-    def product(i, j):
-        first, second = collection_values[i], incident_values[j]
-        return None if first is None or second is None else first * second
-    return _voigt_rows(product, eps, names, shape)
+
+def crystal_regions_checked(crystal_regions, shape=None) -> tuple:
+    """((bool mask, float64 (6, 6) Voigt p), ...) of crystal regions (arrays as given where the dtype fits); ValueError
+    for a p that is not (6, 6) or a mask that is not of `shape` (None: any 1D mask)."""
+    regions = tuple((np.asarray(mask, dtype=bool), np.asarray(tensor, dtype=np.float64))
+                    for mask, tensor in crystal_regions)
+    for mask, tensor in regions:
+        if tensor.shape != (6, 6) or (mask.ndim != 1 if shape is None else mask.shape != tuple(shape)):
+            wanted = 'a 1D mask' if shape is None else f'a mask of shape {tuple(shape)}'
+            raise ValueError(f'a crystal region needs {wanted} and a (6, 6) p, got {mask.shape} and {tensor.shape}')
+    return regions
 
 
 def optical_stress(products, p11, p12, p44=None, crystal_regions=()) -> np.ndarray:
@@ -214,31 +231,18 @@ def optical_stress(products, p11, p12, p44=None, crystal_regions=()) -> np.ndarr
     products = np.asarray(products)
     if products.shape[:1] != (6,):
         raise ValueError(f'optical_stress: products must have 6 Voigt rows, got shape {products.shape}')
-    transposed = tuple((np.asarray(mask, dtype=bool), np.asarray(tensor, dtype=np.float64).T)
-                       for mask, tensor in crystal_regions)
-    for mask, tensor in transposed:
-        if mask.shape != products.shape[1:] or tensor.shape != (6, 6):
-            raise ValueError(f'optical_stress: a crystal region needs a mask of shape {products.shape[1:]} and a '
-                             f'(6, 6) p, got {mask.shape} and {tensor.shape}')
+    try:
+        regions = crystal_regions_checked(crystal_regions, products.shape[1:])
+    except ValueError as exc:
+        raise ValueError(f'optical_stress: {exc}') from exc
     return inverse_permittivity_changes(tuple(products), p11, p12, shear_photoelastic_coefficient(p11, p12, p44),
-                                        transposed)
+                                        tuple((mask, tensor.T) for mask, tensor in regions))
 
 
-def solid_rows(stress, *, axisymmetric=False, azimuthal_order=0) -> np.ndarray:
-    """The rows (k, n) of an optical stress (6, n) that the solid's strain rows pair with (SOLID_VOIGT_ROWS: planar 3,
-    axisymmetric m = 0 4, m >= 1 6; an azimuthal stress of azimuthal_parts is already in the solid rows)."""
-    if azimuthal_order:
-        if not axisymmetric:
-            raise ValueError('solid_rows: an azimuthal order needs the axisymmetric form')
-        key = 'azimuthal'
-    else:
-        key = 'axisymmetric' if axisymmetric else 'planar'
-    return np.asarray(stress)[list(SOLID_VOIGT_ROWS[key])]
-
-
-def planar_rows(stress) -> np.ndarray:
-    """(3, n) plane-strain rows (xx, yy, xy) of an optical stress (6, n) (S_zz = S_xz = S_yz = 0)."""
-    return solid_rows(stress)
+def solid_rows(stress) -> np.ndarray:
+    """The (3, n) plane-strain rows (xx, yy, xy) of an optical stress (6, n) (PLANAR_ROWS; S_zz = S_xz = S_yz = 0; an
+    axisymmetric stress of azimuthal_parts is already in the solid rows)."""
+    return np.asarray(stress)[list(PLANAR_ROWS)]
 
 
 # ---- axisymmetric split of two m = 1 standing waves ----
@@ -270,13 +274,9 @@ def azimuthal_products(incident, collection, eps, detection) -> dict:
     shape = _shape(incident_values, collection_values)
     harmonics = {}
     for harmonic in _HARMONICS:
-        def product(i, j, harmonic=harmonic):
-            first, second = collection_values[i], incident_values[j]
-            if first is None or second is None:
-                return None
-            coefficient = _harmonic_coefficient(collection_pattern[names[i]], _INCIDENT_PATTERN[names[j]], harmonic)
-            return None if coefficient == 0.0 else coefficient * first * second
-        harmonics[harmonic] = _voigt_rows(product, eps, names, shape)
+        def coefficient(i, j, harmonic=harmonic):
+            return _harmonic_coefficient(collection_pattern[names[i]], _INCIDENT_PATTERN[names[j]], harmonic)
+        harmonics[harmonic] = _voigt_rows(collection_values, incident_values, eps, names, shape, coefficient)
     return harmonics
 
 
@@ -582,57 +582,38 @@ def fdt_psd(omega, readouts, temperature, scale) -> np.ndarray:
 
 
 def sideband_factors(frequencies, temperature) -> tuple:
-    """(Stokes x (n + 1), anti-Stokes x n) per frequency [Hz] > 0: the quantum weights of the classical per-sideband
-    psd, x = hbar 2 pi f / (k_B T), n = 1 / (e^x - 1) (both -> 1 classically)."""
+    """(Stokes weight s (n + 1), anti-Stokes weight s n) per frequency [Hz] > 0: the quantum weights of the classical
+    per-sideband psd, s = hbar 2 pi f / (k_B T), n = 1 / (e^s - 1) the Bose occupation (both weights -> 1
+    classically)."""
     temperature = _temperature(temperature)
     frequencies = np.asarray(frequencies, dtype=np.float64)
     if not (frequencies > 0.0).all():
         raise ValueError('sideband_factors: frequencies must be > 0 Hz')
-    x = HBAR * 2.0 * math.pi * frequencies / (K_B * temperature)
-    return x / -np.expm1(-x), x / np.expm1(x)
+    s = HBAR * 2.0 * math.pi * frequencies / (K_B * temperature)
+    return s / -np.expm1(-s), s / np.expm1(s)
 
 
 # ---- moduli laws ----
-def modulus_function(law):
-    """Vectorised omega (array) -> complex modulus of a viscoelastic.ModulusLaw-like law (relaxed, loss_factor,
-    viscosity, branches: the formula of ModulusLaw.at, pinned by brillouin_homogeneous_reference); ValueError for an
-    incompressible (infinite) law."""
-    relaxed, loss_factor, viscosity = float(law.relaxed), float(law.loss_factor), float(law.viscosity)
-    branches = tuple((float(modulus), float(time)) for modulus, time in law.branches)
-    if not math.isfinite(relaxed):
-        raise ValueError('modulus_function: an incompressible law has no finite modulus (use the bulk modulus)')
-
-    def value(omega):
-        jw = 1j * np.asarray(omega, dtype=np.float64)
-        result = relaxed * (1.0 + 1j * loss_factor) + jw * viscosity
-        for modulus, time in branches:
-            result = result + modulus * jw * time / (1.0 + jw * time)
-        return result
-    return value
-
-
+# A law is a callable of one angular frequency omega [rad/s] -> complex modulus [Pa] (viscoelastic.ModulusLaw.at, the
+# one formula of the generalized Maxwell / Kelvin-Voigt law); the reference spectra evaluate it per distinct omega.
 def longitudinal_function(bulk_law, shear_law):
-    """omega -> M*(omega) = K*(omega) + 4/3 G*(omega) of two modulus callables (modulus_function or scalar laws)."""
+    """Law omega -> M*(omega) = K*(omega) + 4/3 G*(omega) of a bulk and a shear law (e.g. ModulusLaw.at)."""
     def value(omega):
-        return _law_values(bulk_law, omega) + 4.0 / 3.0 * _law_values(shear_law, omega)
+        return complex(bulk_law(omega)) + 4.0 / 3.0 * complex(shear_law(omega))
     return value
 
 
-def _law_values(law, omega) -> np.ndarray:
-    """Complex law(omega) with omega's shape: a vectorised callable, a constant one, or (TypeError on arrays) a scalar
-    one evaluated per distinct omega."""
+def modulus_values(law, omega) -> np.ndarray:
+    """Complex law(omega) with omega's shape, the law called once per distinct omega [rad/s]; ValueError for a
+    non-finite modulus (an incompressible law, ModulusLaw.at = inf: a reference needs a finite bulk modulus)."""
     omega = np.asarray(omega, dtype=np.float64)
-    try:
-        values = np.asarray(law(omega), dtype=np.complex128)
-    except TypeError:
-        unique, inverse = np.unique(omega, return_inverse=True)
-        values = np.array([complex(law(float(item))) for item in unique], dtype=np.complex128)[inverse]
-        return values.reshape(omega.shape)
-    if values.ndim == 0:
-        return np.full(omega.shape, complex(values))
-    if values.shape != omega.shape:
-        raise ValueError(f'modulus law returned shape {values.shape} for omega of shape {omega.shape}')
-    return values
+    unique, inverse = np.unique(omega, return_inverse=True)
+    values = np.array([complex(law(float(item))) for item in unique], dtype=np.complex128)
+    if not np.isfinite(values).all():
+        first = int(np.argmin(np.isfinite(values)))
+        raise ValueError(f'modulus law: {values[first]} Pa at omega = {unique[first]:.6g} rad/s is not finite (an '
+                         'incompressible law has no finite modulus: give the material a bulk_modulus)')
+    return values[np.asarray(inverse).reshape(-1)].reshape(omega.shape)
 
 
 # ---- reference spectra ----
@@ -654,7 +635,7 @@ def _resonance(q, law, density) -> np.ndarray:
     """Omega_0 (n,) with Omega_0 = |q| sqrt(Re M*(Omega_0) / rho) by fixed point (from Re M*(0))."""
     omega0 = np.zeros_like(q)
     for _ in range(_RESONANCE_ITERATIONS):
-        stiffness = _law_values(law, omega0).real
+        stiffness = modulus_values(law, omega0).real
         if not (stiffness > 0.0).all():
             raise ValueError('local reference: the longitudinal storage modulus Re M* is <= 0 (no sound wave)')
         updated = q * np.sqrt(stiffness / density)
@@ -683,7 +664,7 @@ def local_reference(frequencies, sigma_l_weights, q, longitudinal_law, density, 
         return result
     weights, q = weights[keep], q[keep]
     omega0 = _resonance(q, longitudinal_law, density)
-    modulus = _law_values(longitudinal_law, omega0)
+    modulus = modulus_values(longitudinal_law, omega0)
     gamma = q ** 2 * modulus.imag / (density * omega0)
     if (gamma < 0.0).any():
         raise ValueError('local reference: Im M* < 0 (an active modulus)')
@@ -775,8 +756,8 @@ def homogeneous_padding(frequencies, shape, dx, dy, longitudinal_law, shear_law,
     shear term adds nothing to the sum, so its images do not count); ValueError when the padded raster exceeds
     MAX_REFERENCE_CELLS (a drive short against the attenuation length)."""
     omega = 2.0 * math.pi * _frequencies(frequencies)
-    rate = float(np.min(attenuation_rate(omega, _law_values(longitudinal_law, omega), density)))
-    shear = _law_values(shear_law, omega)
+    rate = float(np.min(attenuation_rate(omega, modulus_values(longitudinal_law, omega), density)))
+    shear = modulus_values(shear_law, omega)
     lossy = shear.imag > 0.0
     if lossy.any():
         rate = min(rate, float(np.min(attenuation_rate(omega[lossy], shear[lossy], density))))
@@ -802,7 +783,7 @@ def homogeneous_reference(frequencies, stress_grid, dx, dy, longitudinal_law, sh
     frequencies = _frequencies(frequencies)
     temperature, density = _temperature(temperature), _density(density)
     omega = 2.0 * math.pi * frequencies
-    bulk, shear = _law_values(longitudinal_law, omega), _law_values(shear_law, omega)
+    bulk, shear = modulus_values(longitudinal_law, omega), modulus_values(shear_law, omega)
     if (bulk.imag <= 0.0).any() or (shear.imag < 0.0).any():
         raise ValueError('homogeneous reference: needs Im M* > 0 and Im G* >= 0 (a lossy, passive medium; a lossless '
                          'longitudinal modulus gives a delta line)')

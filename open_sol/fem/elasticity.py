@@ -185,11 +185,7 @@ def assemble_elastic_stiffness_groups(dofs, coefficient_sets, groups, n_groups, 
             continue
         positions, member_groups = positions[keep], member_groups[keep]
         elements = dofs.elements[positions]
-        if azimuthal_order:
-            _, basis, gradients, weights, radius = _azimuthal_terms(dofs, positions, rule, stretch, radial_ratio)
-            operator = azimuthal_strain_operator(basis, gradients, radius, order)
-        else:
-            _, operator, weights = _operator_at(dofs, positions, rule, axisymmetric, stretch, radial_ratio)
+        _, operator, weights = _form_operator_at(dofs, positions, rule, axisymmetric, order, stretch, radial_ratio)
         present = np.unique(member_groups)
         selections = {int(group): member_groups == group for group in present}
         for index, coefficients in enumerate(coefficient_sets):
@@ -768,6 +764,16 @@ def _azimuthal_terms(dofs, positions, rule, stretch, radial_ratio):
     gradients, weights, points = _stretched(geometry, gradients, weights, dofs.elements[positions], stretch,
                                             radial_ratio, True)
     return geometry, basis, gradients, weights, points[..., 0]
+
+
+def _form_operator_at(dofs, positions, rule, axisymmetric, order, stretch=None, radial_ratio=None):
+    """(geometry, B (m, q, k, c n), weights (m, q)) of the solid's form at a rule: planar / axisymmetric m = 0
+    (_operator_at: w det J, x 2 pi r) or azimuthal order m >= 1 (_azimuthal_terms + azimuthal_strain_operator: x pi r);
+    a PML stretch: the stretched B and weights."""
+    if order:
+        geometry, basis, gradients, weights, radius = _azimuthal_terms(dofs, positions, rule, stretch, radial_ratio)
+        return geometry, azimuthal_strain_operator(basis, gradients, radius, order), weights
+    return _operator_at(dofs, positions, rule, axisymmetric, stretch, radial_ratio)
 
 
 def _append_component_blocks(rows, cols, values, dofs, positions, blocks, components) -> None:
