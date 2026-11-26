@@ -1483,9 +1483,9 @@ def _memory_estimate(settings_values, mesh, context):
     elif study == FREQUENCY_RESPONSE_STUDY:   # host stencils of K, loss, M and the complex factor per frequency
         host_items = (('frequency response host stencils', 3 * _GUIDED_ASSEMBLY_BYTES_PER_ENTRY * entries),
                       *frequency_response_host_items(dofs))
-        # brillouin_scattering drives (definition_brillouin): columns, bind / reference temporaries; the kept
-        # HarmonicSystem of the drives holds what one private solve_harmonic does (the items above), one factor at a
-        # time
+        # brillouin_scattering drives (definition_brillouin): columns, bind / reference temporaries. The items above
+        # are the peak of one factorisation of the kept HarmonicSystem (solver._kept_harmonic, with or without
+        # drives: its pencil arrays live between frequencies, the factor is dropped after each frequency's readouts)
         drive_host, _, _ = brillouin_memory_items(context, settings_values, mesh, unknowns=dofs, vector_dofs=dofs,
                                                   local=4, components=2, device=False, moduli_kept=False)
         host_items += tuple(drive_host)
@@ -1660,10 +1660,17 @@ def harmonic_pencil_items(dofs, entries, back_end, term_value_bytes) -> list:
             ('frequency response kept device solution (complex)', 16 * dofs)]
 
 
-# run-time estimate: host passes over the complex CSR entries of one frequency-response solve (complex cast, K -
-# omega^2 M, + j loss, free-row and free-column slicing, the CSC copy of factorize_host, the rhs and A x products;
-# calibrate against the study seconds left after the factorisations)
-_HARMONIC_HOST_PASSES = 8
+# run-time estimate of the tensor solid's kept frequency_response.HarmonicSystem (solver._kept_harmonic, private host
+# SuperLU, no column map, no frequency terms), counted from HarmonicSystem.__init__ / _factorize / solve. Once per
+# sweep (per assembly), passes over the real CSR entries (float64 + int32): the free-row and free-column slicing and
+# tocsr of K, loss and M (3 x 3), their zero copies (3) and the four pattern_sums (the union and one aligned sum per
+# term: index checks, the summed values, index copies; ~4 each); passes over the complex entries: the complex cast of
+# K and + j loss (2). Per factorisation, passes over the complex entries: K + j L - omega^2 M (the fixed values, the
+# scaled mass, the difference: 3) and the CSC copy of factorize_host (2); A x is never formed (no output rows)
+_HARMONIC_SETUP_REAL_PASSES = 3 * 3 + 3 + 4 * 4
+_HARMONIC_SETUP_COMPLEX_PASSES = 2
+_HARMONIC_FACTOR_PASSES = 3 + 2
+_HARMONIC_SETUP_CALLS_GUESS = 60   # numpy / scipy calls of that once-per-sweep set-up (uncalibrated)
 _ASSEMBLY_LAUNCHES = 40   # kernels / cupy calls of one ElasticSystem.assemble (stencil, gathers, CSR pair, blocks)
 
 
@@ -1719,20 +1726,25 @@ def _modal_time_estimate(settings_values, context, nodes, dofs, entries, assembl
 
 
 def _frequency_response_time_estimate(context, dofs, entries, assembly_ops, io_ops):
-    """frequency_response: the device assembly and the host K, loss, M stencils once, then per factorisation (the
-    study's harmonic_factorizations: one per frequency, or a reduced sweep's) the complex host operator, one complex
-    SuperLU + solve (frequency_response.HarmonicSystem, outside any solver role) and the load; the outputs per field
+    """frequency_response: the device assembly and the host K, loss, M stencils once, the kept HarmonicSystem's
+    free-dof pencil once per sweep (solver._kept_harmonic), then per factorisation (the study's
+    harmonic_factorizations: one per frequency, or a reduced sweep's) the complex host operator, one complex SuperLU +
+    solve (frequency_response.HarmonicSystem, outside any solver role) and the load; the outputs per field
     frequency."""
     sweep = frequency_sweep_counts(context)
     factorizations, kind = sweep['factorizations'], sweep['factorizations_kind']
     complex_bytes = 2 * FLOAT64_BYTES
-    per_factor = (te.HostStream(_HARMONIC_HOST_PASSES * (complex_bytes + INT32_BYTES) * entries),
+    per_factor = (te.HostStream(_HARMONIC_FACTOR_PASSES * (complex_bytes + INT32_BYTES) * entries),
                   te.HostSolve(dofs, 2, True), te.Transfer(2 * complex_bytes * dofs), te.PythonCalls(40))
+    pencil = (te.HostStream((_HARMONIC_SETUP_REAL_PASSES * (FLOAT64_BYTES + INT32_BYTES)
+                             + _HARMONIC_SETUP_COMPLEX_PASSES * (complex_bytes + INT32_BYTES)) * entries),
+              te.PythonCalls(_HARMONIC_SETUP_CALLS_GUESS))
     counter = ('solvers', context.name, 'counters', 'harmonic_factorizations')
     estimate = te.TimeEstimate((
         te.TimeItem('stiffness assembly', 'assembly', 1.0, 'exact', assembly_ops),
         te.TimeItem('harmonic host stencils', 'assembly', 1.0, 'exact',
                     (te.HostStream(3 * _GUIDED_ASSEMBLY_BYTES_PER_ENTRY * entries), te.PythonCalls(60))),
+        te.TimeItem('kept harmonic system: free-dof pencil on one pattern (once)', 'assembly', 1.0, 'exact', pencil),
         te.TimeItem('complex SuperLU factorisations', 'factorisation', factorizations, kind,
                     (te.HostLU(dofs, 2, True),), counter=counter),
         te.TimeItem('harmonic operator, solve and load', 'factorisation', factorizations, kind, per_factor,

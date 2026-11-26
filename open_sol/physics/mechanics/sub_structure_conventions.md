@@ -263,7 +263,10 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   Fixed as a holder: `brillouin_issues(reported_planes=)`).
 - Window rule: a sampler covers the hull of its sample coordinates plus one spacing (`brillouin.bilinear_weights`
   raises beyond), so validation keeps the drive box inside the first / last window cell centre on every face but the
-  mirror planes and the BOR axis x_lo (`_window_issues`): change the clamp and the check together.
+  mirror planes and the BOR axis x_lo (`_window_issues`): change the clamp and the check together. Along the beam the
+  drive box starts at the downstream edge of the line cell (em `focused_beam_lines` total_field_from, both solid kinds:
+  the line cell's samples and stencils reach the scattered-field side), and the beam's end-level warnings are re-run
+  at the corners of the scan box (`_scan_issues`, em `focused_beam_scan_messages`).
 - Sampling bias: a face mean along the beam (psd low by cos^4(k h / 2)) biases the values both references read, plain
   bilinear interpolation (~(q h)^2 / 12) the local reference too, so a reference comparison misses such a bias: pin a
   new sampling path against an analytic case (selftests_brillouin_spectrum water cases).
@@ -283,7 +286,10 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
 - Memory: n_positions x n_unknowns x 16 B of W (a 100-position map of a 5e5-dof solid: 0.8 GB host); a streaming
   option (re-solving the optics per frequency) is open. A bind of more than one photoelastic column also keeps the
   strain operator of every drive point until it returns (fem `DrivePoints.kept`, size in its comment), which the bind
-  estimate (`_bind_bytes`) counts with the held point arrays. `result()` is built once per bind and records and kept
+  estimate counts from the first stress drive on (`_kept_operator_bytes` in `_bind_peak`, not during the set-up) and
+  the time recipe as one build per bind. The drive's `_Optical` values alias the DriveFields arrays (complex128), which
+  the optics book (em `brillouin_drive_items`): the bind books only its centred copies (`_centred_copies`) and, with
+  several positions, the previous position's field arrays beside the next read. `result()` is built once per bind and records and kept
   (references and peak fits), handed out as a deep copy.
 - Not built: 3D (em_fdfd_3d has no driven solve or 3D focused source; a water focal volume is ~5e7 Yee unknowns and a
   P2 phonon side ~1e7 dofs, beyond a direct factor; brillouin.py already works on six Voigt components, so a
