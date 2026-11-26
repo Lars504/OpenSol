@@ -247,6 +247,14 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
 - solid_fem_kirsch sets h_min: the default dx / 100 floored the hole sizes (1 % low stresses).
 - An x / y body force is one centroid value per element (`ctx.eval_field`), so it caps P2 convergence at O(h^2)
   (sphere_breathing_viscoelastic_frequency_response); no load is normal to a curved boundary (tractions in model axes).
+- Elastic PML ring (`pml2d.py` header): eigenfrequency and frequency_response, one stretch at 2 pi target_frequency in
+  both (a sweep's reference: validation infos / warns on the reflection R^(f_min / target) below it). Every pencil
+  term of the ring is stretched through `ElasticFEMSystem.stretch_arguments` (K via `_pencil_stiffness`, K_sigma,
+  loss, mass, the viscoelastic groups, mixed D_g / B / M_p,g): a new harmonic term on the solid map takes them too, or
+  the ring reflects. FrequencyTerm X and the pencil's mass are then complex (DevicePencil term bytes (16, 16)). The
+  axis rule continues through the y rings (`_axis_ids`, PML only: the window-only `face_edges` would leave the ring's
+  axis free). Physics drives act on window elements only (`_drive_inputs`); modal reduced sweeps refused (complex
+  pencil), adaptive fine. Tetrahedra: still eigen only.
 
 ## Tetrahedron meshes (solid_mechanics_3d; `solver_fem3d.py`, `system_fem3d.py`, fem/elasticity3d.py)
 - `_create_solid_3d` builds SolidMechanicsFEMPhysics3D on 'tetrahedra' (every feature declares both grids); what runs
@@ -336,6 +344,9 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   the u-block fill times `fill_scale` ((dofs per node)^2: `scaled_fill` on a counted FactorFill, the SuperLU heuristic
   alike), and 3D `_tetrahedra_unknowns` / `_entries` include the pressure, so the size rule and the time recipe see it.
   Member shares (`_solid_fraction`, the pressure nodes) count the moduli route and, mixed, the liquids.
+- An elastic PML in the 2D frequency response makes those matrices complex: `viscoelastic_memory_items(stretched=)`
+  and the frequency-response branch of `_fem_memory_estimate` (complex loss / mass, the kept stretched K of the
+  displacement formulation, pencil term bytes) switch on it; a new stretched allocation follows the same flag.
 - Unverified against counters (no gpu run in selftest_out): the static 'linear' cuDSS items, the solid
   frequency-response HarmonicSystem (with its viscoelastic group terms and mixed u-p blocks), solid DevicePencils,
   device Newton tangents.

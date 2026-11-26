@@ -3,7 +3,7 @@ reduced pencil of (K + j L - omega^2 M) x = f with one complex symmetric factor 
 private host SuperLU, or a sparse_direct runtime's SuperLU / cuDSS LDL^T with plan reuse; or a fem.reduced_harmonic
 model with precomputed record rows), the per-frequency electrode record and the admittance result of an electrode (with
 its BVD fit and kappa_e); host numpy (scipy inside functions)."""
-# Per-frequency terms (FrequencyTerm: coefficient(omega) X with a fixed real X, e.g. a viscoelastic modulus group) join
+# Per-frequency terms (FrequencyTerm: coefficient(omega) X with a fixed X, e.g. a viscoelastic modulus group) join
 # the pencil at fixed slots of its summed pattern, mapped once (factorize_pencil(extra=) on a pencil, the summed values
 # on the host route), never as pencil terms of their own (no per-term device storage) and never re-assembled. Scale
 # terms (SchurScaleTerm: the coupling B of mixed pressure rows) only add their Schur proxy to the diagonal d of the
@@ -36,7 +36,8 @@ _WORK_UNITS = {'N': 'J', 'N/m': 'J/m'}
 
 @dataclass(frozen=True, eq=False)
 class FrequencyTerm:
-    """A real host CSR X over every dof (the operator's numbering, before the column map) entering A(omega) as
+    """A host CSR X over every dof (the operator's numbering, before the column map; real, or complex symmetric where an
+    elastic PML stretches it: the triangle solids' ring, like K and M then) entering A(omega) as
     coefficient(omega) X (complex): an omega-dependent modulus group (the excess G*_g - G0 (1 + j eta) on D_g, the
     displacement formulation; G*_g D_g in the mixed one) or a mixed pressure block (-1 / K*_g(omega) M_p,g)."""
     matrix: object

@@ -201,7 +201,9 @@ file ("Triangle meshes"). Error indicators: section "Error indicators" (users: g
   and tr eps from the stiffness's own strain operator rows, never fem.assembly's x r: B must match K's rules. The
   integrands are polynomial on isoparametric P2 elements at the stiffness's rule degrees (CURVED_DEGREE,
   AXISYMMETRIC_DEGREE; 3D affine), so the row sums B^T 1 are exact to round-off: the mechanics gauge detection and
-  volume check (tolerance 1e-9) rely on it; a lower rule there breaks them.
+  volume check (tolerance 1e-9) rely on it; a lower rule there breaks them. A PML stretch (`stretch=`, 2D) keeps it:
+  tr eps J is an exact divergence in the stretched coordinates and the planar rule gains + 2 as the stiffness's (the
+  axisymmetric corner integrand reaches degree 6).
 - Pressure maps per group take the displacement map's geometry order; a group's dofs are offsets[g] + its own
   numbering (nodes shared by groups carry one dof per group): node values go through `nodal_pressure[_3d]` (groups
   averaged) or `pressure_at[_3d]`, never a global-id lookup; regions across groups through `pressure_regions(space,

@@ -141,9 +141,15 @@ _TARGET_FREQUENCY_PARAM = Param(
     help='Eigenfrequency study: the modes nearest this frequency (shift-invert about (2 pi f)^2, moved 1e-4 above so a '
          'target on a resonance factors); 0 = the lowest (a strain-free motion then fails: check the supports). A '
          'target > 0 also allows a free body on triangles (no supports; axisymmetric: no held u_z) and a free periodic '
-         'cell with every bloch_k 0 (both meshes): their rigid-body modes (f < 1e-4 x target) are dropped.',
-    tip="Used only by an 'Eigenfrequency' study: the vibration modes closest to this frequency are found.\n\n"
-        '0 finds the lowest modes.')
+         'cell with every bloch_k 0 (both meshes): their rigid-body modes (f < 1e-4 x target) are dropped. With an '
+         'elastic PML (pml_*, triangles) it is also the reference frequency of the PML strength in both the '
+         'eigenfrequency and the frequency_response study (> 0 required): pml_reflection holds at the target and '
+         'becomes R^(f / target) at f (stronger absorption above, weaker below), so in a frequency response set it '
+         'at or just below the lowest swept frequency (the band centre of a narrow band, e.g. a Brillouin peak, is '
+         'fine); the frequency response reads it for nothing else.',
+    tip="Used by an 'Eigenfrequency' study: the vibration modes closest to this frequency are found.\n\n"
+        '0 finds the lowest modes.\n\nWith an absorbing layer it is also the frequency the layer is tuned for, in a '
+        'frequency response too: set it near the lowest frequency of the sweep.')
 _AXIAL_WAVENUMBER_PARAM = Param(
     'axial_wavenumber', 'float', None, label='Axial wavenumber', unit='rad/m', min=0.0, optional=True,
     help='Eigenfrequency study, tensor mesh. Empty: in-plane plane-strain modes (u_x, u_y). k_z: guided (2.5D) modes '
@@ -252,25 +258,34 @@ _BENDING_MOMENT_Y_PARAM = Param(
 
 
 def _pml_params():
-    """pml_<face> per outer face, pml_cells and pml_reflection (elastic PML ring: triangles, eigenfrequency)."""
+    """pml_<face> per outer face, pml_cells and pml_reflection (elastic PML ring: triangles, eigenfrequency and
+    frequency_response)."""
     faces = tuple(Param(
         f'pml_{face}', 'bool', False, label=f'PML on {face}',
-        help=('Triangle mesh, eigenfrequency study, target_frequency > 0: an elastic PML ring beyond this face, '
-              'pml_cells x the mesh dx thick, material continued from the window edge, stretch s = 1 - j beta (d / '
-              'w)^2 (d depth, w thickness; axisymmetric: the stretched radius beyond x_hi), beta from pml_reflection '
-              'at the target for the fastest wave sqrt(c_II / rho); outer side clamped. Modes become complex: '
-              'frequency_imag > 0, radiation Q = f / (2 frequency_imag) in the Resonance table, shapes shown as real '
-              'part and |u|; modes with over half their |u|^2 in the ring are dropped. beta is frequency independent, '
-              'so absorption weakens far below the target. stress_stiffening treats the ring as an unstretched elastic '
-              'continuation, clamped outside (its K_sigma stretched like K). Supports and loads stay off this face; '
-              'not on x_lo of an axisymmetric solid (the axis).'),
+        help=('Triangle mesh, eigenfrequency or frequency_response study, target_frequency > 0: an elastic PML ring '
+              'beyond this face, pml_cells x the mesh dx thick, material continued from the window edge, stretch s = 1 '
+              '- j beta (d / w)^2 (d depth, w thickness; axisymmetric: the stretched radius beyond x_hi), beta from '
+              'pml_reflection at target_frequency for the fastest wave sqrt(c_II / rho) (a liquid of formulation '
+              'mixed: its sound speed; incompressible liquids alone carry none: refused); outer side clamped. '
+              'Eigenfrequency: modes become complex: frequency_imag > 0, radiation Q = f / (2 frequency_imag) in the '
+              'Resonance table, shapes shown as real part and |u|; modes with over half their |u|^2 in the ring are '
+              'dropped. frequency_response (formulation displacement or mixed, planar or axisymmetric): waves leaving '
+              'the window are absorbed (an open solid: the radiated power shows in the reactions and a '
+              'brillouin_scattering spectrum, whose drive acts in the window only); every pencil term is stretched '
+              '(stiffness, loss, mass, viscoelastic terms, the mixed pressure blocks); sweep_method direct or adaptive '
+              '(not modal). beta is frequency independent, so absorption weakens below target_frequency (R^(f / '
+              'target) at f). Shown fields in the ring are not physical. stress_stiffening treats the ring as an '
+              'unstretched elastic continuation, clamped outside (its K_sigma stretched like K). Supports and loads '
+              'stay off this face; not on x_lo of an axisymmetric solid (the axis).'),
         tip=(f'Absorbs vibrations leaving through {face}, as if the solid continued forever there.\n\nGives each '
-             'resonance a radiation quality factor. Only for an eigenfrequency study on a triangle mesh.'))
+             'resonance a radiation quality factor, or lets a driven vibration radiate away without echo. Only for '
+             'an eigenfrequency or frequency response study on a triangle mesh.'))
         for face in FACES)
     cells = Param('pml_cells', 'int', DEFAULT_PML_CELLS, label='PML thickness (elements)', unit='1', min=1, max=100,
                   help='PML ring thickness in mesh dx (h_max) on every pml_<face> face (MeshSpec pml_layers sets the '
                        'element layers across it); the profile needs ~6-10 layers and the ring a fair part of the '
-                       'longest wavelength (c / f at the target).',
+                       'longest wavelength (c / f at target_frequency, the lowest swept frequency of a frequency '
+                       'response).',
                   tip='How thick the absorbing layer is, in element sizes.\n\n8 is typical.')
     reflection = Param('pml_reflection', 'float', DEFAULT_PML_REFLECTION, label='PML reflection', unit='1', min=0.0,
                        min_exclusive=True, max=1.0,
@@ -844,8 +859,9 @@ def _tensor_probe_issues(physics_spec):
 
 
 def _pml_issues(vctx, physics_spec, settings_values, path, triangles):
-    """Elastic PML faces: errors on a rectangular-cell mesh, outside the eigenfrequency study, at target_frequency 0, on
-    x_lo of an axisymmetric solid, and per support / load on a PML face."""
+    """Elastic PML faces: errors on a rectangular-cell mesh, outside the eigenfrequency / frequency_response studies, at
+    target_frequency 0, with sweep_method modal, on x_lo of an axisymmetric solid, and per support / load on a PML face;
+    frequency_response: the reflection at the lowest swept frequency below the target (_pml_sweep_issues)."""
     faces = _pml_faces(settings_values)
     if not faces:
         return []
@@ -854,12 +870,17 @@ def _pml_issues(vctx, physics_spec, settings_values, path, triangles):
         return [Issue('error', path, f"PML faces ({names}) need a triangle mesh (MeshSpec kind 'triangles'): the "
                                      'rectangular-cell solid has no elastic PML')]
     issues = []
-    if vctx.study_type != EIGENFREQUENCY_STUDY:
-        issues.append(Issue('error', path, f'an elastic PML ({names}) is solved by the {EIGENFREQUENCY_STUDY} study only; '
-                                           f'the {vctx.study_type} study is not available with it: turn pml_* off'))
+    if vctx.study_type not in (EIGENFREQUENCY_STUDY, FREQUENCY_RESPONSE_STUDY):
+        issues.append(Issue('error', path, f'an elastic PML ({names}) is solved by the {EIGENFREQUENCY_STUDY} and '
+                                           f'{FREQUENCY_RESPONSE_STUDY} studies only; the {vctx.study_type} study is '
+                                           'not available with it: turn pml_* off'))
     elif not settings_values.get('target_frequency'):
         issues.append(Issue('error', path, 'an elastic PML needs target_frequency > 0: its strength is set for the '
-                                           'waves at the target'))
+                                           'waves at that frequency' + (
+                                               ' (in a frequency response: set it at or just below the lowest swept '
+                                               'frequency)' if vctx.study_type == FREQUENCY_RESPONSE_STUDY else '')))
+    elif vctx.study_type == FREQUENCY_RESPONSE_STUDY:
+        issues.extend(_pml_sweep_issues(vctx, settings_values, path, names))
     if is_axisymmetric(settings_values) and 'x_lo' in faces:
         issues.append(Issue('error', path, 'pml_x_lo: an axisymmetric solid has its axis (r = 0) on x_lo, which takes no '
                                            'PML: turn pml_x_lo off'))
@@ -871,6 +892,42 @@ def _pml_issues(vctx, physics_spec, settings_values, path, triangles):
             issues.append(Issue('error', feature_path(physics_spec, feature),
                                 f"{feature.type} on the PML face(s) {', '.join(held)}: that face is the inner side of "
                                 'the absorbing ring, a hold or load there would reflect the waves; select other faces'))
+    return issues
+
+
+# lowest-frequency reflection R^(f_min / target) of an elastic PML in a frequency sweep above which validation warns
+_PML_SWEEP_REFLECTION_WARNING = 1e-2
+
+
+def _pml_sweep_issues(vctx, settings_values, path, names):
+    """frequency_response with an elastic PML (target_frequency > 0): an error for sweep_method modal (complex stretched
+    K, M), an info when the lowest swept frequency f lies below target_frequency f_t (the theoretical round-trip
+    reflection R^(f / f_t) there), a warning above _PML_SWEEP_REFLECTION_WARNING; nothing when the study settings do
+    not resolve (validate reports them)."""
+    from ...model.definition_helpers import study_frequencies
+    from ...model.schema import resolve_values
+    study = vctx.spec.study
+    settings = study.settings if isinstance(study.settings, dict) else {}
+    issues = []
+    if settings.get('sweep_method', 'direct') == 'modal':
+        issues.append(Issue('error', path, f"sweep_method 'modal' is not available with an elastic PML ({names}): the "
+                                           'stretched stiffness and mass are complex and their PML modes would fill '
+                                           "the modal basis; use sweep_method 'adaptive' or 'direct'"))
+    try:
+        values = resolve_values(vctx.registry.study_type(study.type).params, settings, vctx.parameters)
+        lowest = min(study_frequencies(values))
+        target = float(settings_values['target_frequency'])
+        reflection = float(settings_values.get('pml_reflection') or DEFAULT_PML_REFLECTION)
+    except (KeyError, ValueError, TypeError):
+        return issues
+    if 0.0 < lowest < target:
+        effective = reflection ** (lowest / target)
+        level = 'warning' if effective > _PML_SWEEP_REFLECTION_WARNING else 'info'
+        issues.append(Issue(level, path, f'the lowest swept frequency {lowest:.6g} Hz lies below target_frequency '
+                                         f'{target:.6g} Hz, where the elastic PML strength is set: its theoretical '
+                                         f'round-trip reflection rises from pml_reflection {reflection:g} to '
+                                         f'{effective:.3g} there (R^(f / target)); lower target_frequency toward the '
+                                         'lowest swept frequency, or thicken the PML (pml_cells)'))
     return issues
 
 
@@ -950,7 +1007,8 @@ def _validate_solid(vctx, physics_spec, settings_values):
     """Physics-level rules (in the study the solid takes: a background physics of StudySpec.solved_physics sees
     'stationary'): supports, CG iteration limit (tensor) or the triangle-mesh rules, materials, eigenfrequency
     densities, the guided axial_wavenumber (eigenfrequency study only, refused by optomechanics, which sets it for
-    backward scattering), prestress, the elastic PML and the azimuthal order (triangles, eigenfrequency), geometric
+    backward scattering), prestress, the elastic PML (triangles, eigenfrequency / frequency_response), the azimuthal
+    order (triangles, eigenfrequency), geometric
     nonlinearity (triangles), mirror planes (face features and normal segment loads on its own symmetry faces, model
     mirror planes no roller holds)."""
     vctx = background_context(vctx, physics_spec)
@@ -1253,9 +1311,17 @@ def _fem_memory_estimate(settings_values, mesh, context):
     elif study == FREQUENCY_RESPONSE_STUDY:   # K factor never built; the kept HarmonicSystem on the 'linear' runtime
         # mixed u-p: the pencil over [u; p] (counts.unknowns / entries: + n_p, + 2 nnz(B) + the pressure blocks)
         unknowns, pencil_entries = viscoelastic.unknowns, viscoelastic.entries
-        host_items.extend((('frequency response loss and mass CSR (float64)', 2 * csr_entry_bytes * entries),
+        # an elastic PML: loss and mass stretched (complex CSR) and, displacement formulation, the stretched K of the
+        # pencil (_pml_stiffness, kept beside the static K); mixed builds no stretched K (its saddle blocks are)
+        pml = bool(_pml_faces(settings_values))
+        pencil_csr_bytes = (16 + INT32_BYTES) if pml else csr_entry_bytes
+        values_kind = '(complex: elastic PML)' if pml else '(float64)'
+        host_items.extend((('frequency response loss and mass CSR ' + values_kind, 2 * pencil_csr_bytes * entries),
                            ('frequency response complex operator copies', 3 * (16 + INT32_BYTES) * pencil_entries),
                            ('frequency response solution vectors (complex)', 4 * 16 * unknowns)))
+        if pml and not viscoelastic.mixed:
+            host_items.append(('frequency response stretched PML stiffness (complex CSR)',
+                               (16 + INT32_BYTES) * entries))
         if context.material_sets(LOSS_ARRAYS[0]) or viscoelastic.active:   # _harmonic_moduli of the shown response
             host_items.append(_output_moduli_item(elements))
         if host_factor:   # the saddle point fills as (dofs per node)^2 over the u-only heuristic (fill_scale)
@@ -1265,7 +1331,8 @@ def _fem_memory_estimate(settings_values, mesh, context):
                                                 * viscoelastic.fill_scale, unknowns, pencil_entries,
                                                 complex_values=True))
         else:   # the kept HarmonicSystem: cuDSS LDL^T refreshed from the DevicePencil (K + j L, M) on the summed pattern
-            run_items += harmonic_pencil_items(unknowns, pencil_entries, linear_back_end, (16, FLOAT64_BYTES))
+            run_items += harmonic_pencil_items(unknowns, pencil_entries, linear_back_end,
+                                               (16, 16 if pml else FLOAT64_BYTES))   # a stretched mass is complex
             factors.append(('frequency response cuDSS factor', unknowns, pencil_entries, 16,
                             scaled_fill(fill, viscoelastic), linear_back_end == 'cudss_mixed'))
         host_items.extend(reduced_sweep_memory_items(context, unknowns, pencil_entries))
@@ -1308,7 +1375,8 @@ def _fem_memory_estimate(settings_values, mesh, context):
     extra_host, extra_run = viscoelastic_memory_items(
         viscoelastic, elements=elements, local=local, scalar_dofs=scalar_dofs, matrix_rows=vector_dofs,
         mass_entries=entries // components, back_end=linear_back_end,
-        loss=context.material_sets(LOSS_ARRAYS[0]), dimensions=2)
+        loss=context.material_sets(LOSS_ARRAYS[0]), dimensions=2,
+        stretched=study == FREQUENCY_RESPONSE_STUDY and bool(_pml_faces(settings_values)))
     host_items += extra_host
     run_items += extra_run
     return MemoryEstimate.from_items(((f'fields ({n_fields} x float32 per element)',
@@ -1807,7 +1875,10 @@ def _fem_time_estimate(settings_values, mesh, context):
         host_rhs = (te.HostStream(3 * (FLOAT64_BYTES + INT32_BYTES) * pencil_entries
                                   + 4 * 2 * FLOAT64_BYTES * pencil_unknowns), te.PythonCalls(20))
         linear = (context.solvers or {}).get('linear')
-        items = (te.TimeItem('stiffness assembly', 'assembly', 1.0, 'exact', assembly_ops),
+        # an elastic PML (displacement formulation): the stretched K of the pencil beside the static K (_pml_stiffness)
+        stretched_stiffness = bool(_pml_faces(settings_values)) and not viscoelastic.mixed
+        items = (te.TimeItem('stiffness assembly', 'assembly', 2.0 if stretched_stiffness else 1.0, 'exact',
+                             assembly_ops),
                  te.TimeItem('mass and loss assembly', 'assembly', extra_operators, 'exact', assembly_ops),
                  te.TimeItem('harmonic pencil terms on one pattern (once)', 'assembly', 1.0, 'exact',
                              (_pattern_sum_stream(int(extra_operators) + 1, 2 * FLOAT64_BYTES, pencil_entries),)),

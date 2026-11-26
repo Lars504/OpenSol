@@ -348,8 +348,9 @@ FORMULATION_PARAM = Param(
          'per region), frequency_response only, discretization quadratic, planar plane strain, axisymmetric (any '
          'azimuthal_order) or 3D, isotropic materials only; unset bulk_modulus = incompressible; liquids (viscosity, no '
          'modulus) join the solid. Outputs pressure / pressure_im (the pressure unknown, p > 0 in compression); '
-         'reactions include the pressure. Not with piezoelectric, plane_stress, stress_stiffening, '
-         'geometric_nonlinearity, pml_*, periodic axes or sweep_method modal; sweep_method adaptive is refused with a '
+         'reactions include the pressure; an elastic PML (pml_*, triangles) stretches the pressure blocks too. Not '
+         'with piezoelectric, plane_stress, stress_stiffening, geometric_nonlinearity, pml_* in 3D, periodic axes or '
+         'sweep_method modal; sweep_method adaptive is refused with a '
          'viscous or relaxing member (frequency-dependent moduli: every liquid) and, at azimuthal_order 1, with an '
          'incompressible one (direct only).',
     tip='How the deformation is computed. Displacement and pressure is needed for liquids such as water and for nearly '
