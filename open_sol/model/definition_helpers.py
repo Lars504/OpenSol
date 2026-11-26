@@ -1330,8 +1330,18 @@ AZIMUTHAL_ORDER_PARAM = Param(
           'and ring totals carry pi instead of 2 pi: held currents / charges, scalar outputs and field integrals are '
           'cos(m phi) moments, a point source P is the order-m part of P at phi = 0, a dissipation density (q_joule) '
           "is twice its phi mean (its integral = the total power). Needs geometry 'axisymmetric' on a Cartesian "
-          'domain; every physics with this setting shares one m; couplings of an order-m physics warn (products such '
-          'as Joule heating are no single order). solid_mechanics: U_r, U_z ~ cos(m phi), U_phi ~ sin(m phi).'))
+          'domain; every physics with this setting shares one m (field derived values weight the rings of a model by '
+          'one angle), except two physics that each read the same optical physics through a brillouin_scattering '
+          'feature and share no coupling (the solid_mechanics orders 0 and 2 of one em_fdfd_bor beam: one-way reads, '
+          'no field passes between the orders; a field derived value then reads the fields of one of them only); '
+          'couplings of an order-m physics warn (products such as Joule heating are no single order). '
+          'solid_mechanics: U_r, U_z ~ cos(m phi), U_phi ~ sin(m phi).'))
+
+# features through which a physics reads another physics' solved field one way at study time, feature type -> the param
+# naming that physics: two axisymmetric physics that each hold an enabled one reading the same physics and share no
+# coupling may differ in azimuthal_order (azimuthal_order_issues; brillouin_scattering: the solid orders 0 and 2 of one
+# em_fdfd_bor beam, no field passes between them)
+ORDER_SPLIT_READERS = {'brillouin_scattering': 'optical_physics'}
 
 
 def azimuthal_order_of(settings_values):
@@ -1341,7 +1351,8 @@ def azimuthal_order_of(settings_values):
 
 def azimuthal_order_issues(vctx, physics_spec, path, settings_values):
     """Rules of an azimuthal_order m != 0 (symmetry 2.14): geometry axisymmetric on a Cartesian domain (errors), one m
-    shared by every physics with the setting (error), a warning naming the coupled partners."""
+    shared by every physics with the setting (error; an info for a pair that reads one physics through
+    ORDER_SPLIT_READERS features and shares no coupling), a warning naming the coupled partners."""
     order = azimuthal_order_of(settings_values)
     if not order:
         return []
@@ -1352,23 +1363,49 @@ def azimuthal_order_issues(vctx, physics_spec, path, settings_values):
     if vctx.domain_map is not None and vctx.domain_map.mapped:
         issues.append(Issue('error', path, f'azimuthal_order {order} needs a Cartesian (r, z) domain, not the '
                                            f'{vctx.domain_map.grid_text} grid: set it to 0'))
+    partners = sorted(_coupled_partner_names(vctx, physics_spec))
     for other, other_type in known_physics(vctx.spec, vctx.registry):
         if other.name == physics_spec.name:
             continue
         if not any(param is AZIMUTHAL_ORDER_PARAM for param in other_type.settings):
             continue
         other_values = vctx.values(other_type.settings, other.settings)
-        if other_values is not None and is_axisymmetric(other_values) and azimuthal_order_of(other_values) != order:
-            issues.append(Issue('error', path, f"azimuthal_order {order} differs from that of '{other.name}' "
-                                               f'({azimuthal_order_of(other_values)}): field derived values weight the '
-                                               'rings of a model by one angle (pi at m != 0, 2 pi at m = 0)'))
-    partners = sorted(_coupled_partner_names(vctx, physics_spec))
+        if other_values is None or not is_axisymmetric(other_values) or azimuthal_order_of(other_values) == order:
+            continue
+        other_order = azimuthal_order_of(other_values)
+        shared = sorted(_order_split_reads(physics_spec) & _order_split_reads(other))
+        if shared and other.name not in partners:
+            issues.append(Issue('info', path, f"azimuthal_order {order} differs from that of '{other.name}' "
+                                              f"({other_order}): allowed, both read '{shared[0]}' through "
+                                              f"{' / '.join(sorted(ORDER_SPLIT_READERS))} and share no coupling (no "
+                                              'field passes between the orders); a field derived value must read the '
+                                              'fields of one of them (one reading both, or no field on their shared '
+                                              'mesh, weights the rings by pi)'))
+            continue
+        issues.append(Issue('error', path, f"azimuthal_order {order} differs from that of '{other.name}' "
+                                           f'({other_order}): field derived values weight the rings of a model by one '
+                                           'angle (pi at m != 0, 2 pi at m = 0); only two physics that each read the '
+                                           f"same optical physics through {' / '.join(sorted(ORDER_SPLIT_READERS))} "
+                                           'and share no coupling may differ'))
     if partners:
         issues.append(Issue('warning', path, f"azimuthal_order {order}: the coupling(s) to "
                                              f"{', '.join(repr(name) for name in partners)} exchange order-{order} "
                                              'amplitudes as they are; a product such as Joule heating or a '
                                              'temperature-dependent coefficient is no single azimuthal order'))
     return issues
+
+
+def _order_split_reads(physics_spec) -> set:
+    """Names of the physics an axisymmetric physics reads through its enabled ORDER_SPLIT_READERS features."""
+    names = set()
+    for feature in physics_spec.features:
+        param = ORDER_SPLIT_READERS.get(feature.type)
+        if param is None or not feature.enabled or not isinstance(feature.params, dict):
+            continue
+        name = feature.params.get(param)
+        if isinstance(name, str) and name:
+            names.add(name)
+    return names
 
 
 def _coupled_partner_names(vctx, physics_spec) -> set:

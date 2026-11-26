@@ -1271,8 +1271,8 @@ def _fem_memory_estimate(settings_values, mesh, context):
         host_items.extend(reduced_sweep_memory_items(context, unknowns, pencil_entries))
         # brillouin_scattering drives: columns, functional weights, bind / reference temporaries (definition_brillouin)
         drive_host, drive_run, drive_transient = brillouin_memory_items(
-            context, settings_values, mesh, unknowns=unknowns, local=local, components=components,
-            device=not host_factor)
+            context, settings_values, mesh, unknowns=unknowns, vector_dofs=vector_dofs, local=local,
+            components=components, device=not host_factor, moduli_kept=viscoelastic.moduli)
         host_items += drive_host
         run_items += drive_run
         transient_items += drive_transient
@@ -1826,7 +1826,8 @@ def _fem_time_estimate(settings_values, mesh, context):
         unknowns, entries = pencil_unknowns, pencil_entries   # the factorised saddle point (mixed)
         # brillouin_scattering drives: their bind, readouts, references and fits; the extra drive columns are more
         # solves on each frequency's factor (direct sweeps only: validate)
-        drives, column_solves = brillouin_time_items(context, settings_values, mesh, unknowns=unknowns, local=local,
+        drives, column_solves = brillouin_time_items(context, settings_values, mesh, unknowns=unknowns,
+                                                     vector_dofs=viscoelastic.displacement_unknowns, local=local,
                                                      components=components)
         work = context.solver_work('linear', unknowns=unknowns, nnz=entries, value_bytes=2 * FLOAT64_BYTES,
                                    dimensions=2, solves=sweep['solves'] + column_solves,
