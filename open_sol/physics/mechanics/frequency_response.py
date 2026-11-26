@@ -400,13 +400,9 @@ class HarmonicSystem:
     def _reduced_functionals(self, model, coordinates, fixed) -> np.ndarray:
         """W^H x of the reduced model at its coordinates: conj(W P) V y + W^H fixed with P the prolongation of the free
         dofs (the column map included), the (k, basis) block made once per model."""
-        import scipy.sparse
         block = self._functional_block
         if block is None or block[0] is not model:
-            selection = scipy.sparse.csr_matrix((np.ones(self.free_dofs.size), (self.free_dofs, np.arange(
-                self.free_dofs.size))), shape=(self._n_reduced(), self.free_dofs.size))
-            prolongation = selection if self.column_map is None else (self.column_map @ selection).tocsr()
-            projected = np.asarray(prolongation.T @ self._functionals.T)   # (n_free, k) = (W P)^T, P real
+            projected = np.asarray(self._free_prolongation().T @ self._functionals.T)   # (n_free, k) = (W P)^T, P real
             constant = (_adjoint_products(self._functionals, fixed) if fixed.any()
                         else np.zeros(len(self._functionals), dtype=np.complex128))
             block = self._functional_block = (model, np.conj(projected).T @ model.basis, constant)
@@ -554,7 +550,6 @@ class HarmonicSystem:
         """Rows (over every dof) where solve(fields=False) must give x and A x exactly (records: probes, supports,
         electrodes): after plan_reduced their L V blocks (fem.reduced_outputs.ReducedRows), else for the direct solves
         the operator / mass / loss rows on the columns they touch (no column map; with one, direct solves stay full)."""
-        import scipy.sparse
         from ...fem.reduced_outputs import ReducedRows
         if self._planned is None:
             if self.column_map is None:
@@ -566,14 +561,18 @@ class HarmonicSystem:
                                                           for block in blocks))
             return
         model, fixed, _, _ = self._planned
-        n_reduced = self._n_reduced()
-        selection = scipy.sparse.csr_matrix((np.ones(self.free_dofs.size), (self.free_dofs, np.arange(
-            self.free_dofs.size))), shape=(n_reduced, self.free_dofs.size))
-        prolongation = selection if self.column_map is None else (self.column_map @ selection).tocsr()
         terms = [(self.operator, lambda omega: 1.0), (self.mass, lambda omega: -omega * omega)]
         if self.loss is not None:
             terms.append((self.loss, lambda omega: 1j))
-        self._rows = ReducedRows(rows, prolongation, model.basis, fixed, terms)
+        self._rows = ReducedRows(rows, self._free_prolongation(), model.basis, fixed, terms)
+
+    def _free_prolongation(self):
+        """Host real CSR P (every dof, n_free) with x = P x_free + fixed: the selection of the free dofs into the
+        reduced unknowns, times the column map when there is one."""
+        import scipy.sparse
+        selection = scipy.sparse.csr_matrix((np.ones(self.free_dofs.size), (self.free_dofs, np.arange(
+            self.free_dofs.size))), shape=(self._n_reduced(), self.free_dofs.size))
+        return selection if self.column_map is None else (self.column_map @ selection).tocsr()
 
     def _reduced_solve(self, omega, fixed, load, extra_rhs, fields, product_at_rows=False):
         model, planned_fixed, planned_load, planned_extra = self._planned
@@ -630,15 +629,6 @@ def _pattern_positions(pattern, matrix) -> tuple:
     if not keys.size or not np.array_equal(keys[where], wanted):
         raise ValueError('a harmonic term has entries outside the summed pattern')
     return where.astype(np.int64), np.asarray(block.data)
-
-
-def solve_harmonic(operator, loss, mass, omega, free, fixed, load, column_map=None, extra_rhs=(), terms=(),
-                   scale_terms=()):
-    """(x, A x, factor host bytes) of one frequency by a private HarmonicSystem (one complex host SuperLU; arguments as
-    HarmonicSystem / its solve)."""
-    harmonic = HarmonicSystem(operator, loss, mass, free, column_map, terms=terms, scale_terms=scale_terms)
-    solution, product = harmonic.solve(omega, fixed, load, extra_rhs)
-    return solution, product, int(harmonic.factor.host_bytes or 0)
 
 
 def reaction_table(record, name) -> dict:

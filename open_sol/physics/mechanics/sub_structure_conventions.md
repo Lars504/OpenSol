@@ -55,7 +55,7 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   blocks, float32 copies of 'mixed', the factor deferred to the next `solve` so modal and piezo solves never factorise
   it): `ElasticSystem._bind_linear_solver`.
 - Reactions are K u - f of the last solve (`load_full` of the last `_build_rhs`): every load change sets
-  `_loads_dirty` (it also drops the frequency response's kept `_harmonic_drive`), so loads never change between a solve
+  `_loads_dirty` (it also drops the frequency response's kept `_harmonic_load`), so loads never change between a solve
   and a read. n_solves doubles as the couplings' revision counter.
 
 ## Mirror planes (feature symmetry, both types)
@@ -105,9 +105,10 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
 ## Frequency response (`frequency_response.py`, `bvd.py`; study frequency_response, model/study_frequency_response.py)
 - In Hz (the EM frequency_domain study stays wavelength-based); convention, losses and the factor routes:
   `frequency_response.py` header and `HarmonicSystem`. 2D tensor solids use a private SuperLU outside the roles
-  (counters harmonic_* / piezo_harmonic_*; the 'linear' pcg assembled, unused; with physics drives a kept
-  HarmonicSystem of runtime None on the same route: section "Spontaneous Brillouin"); triangles and tetrahedra their
-  'linear' sparse_direct runtime (3D operator class 'spd' is nominal there).
+  (counters harmonic_* / piezo_harmonic_*; the 'linear' pcg assembled, unused): elastic ones on one HarmonicSystem of
+  runtime None kept while the harmonic operators stay (`_kept_harmonic`, direct and reduced sweeps, with or without
+  physics drives: section "Spontaneous Brillouin"), piezoelectric ones on the PiezoSystem's; triangles and tetrahedra
+  their 'linear' sparse_direct runtime (3D operator class 'spd' is nominal there).
 - Shown fields are the real parts with dT = 0 and no sigma0 (`_write_outputs(thermal=False)` on every mesh kind;
   solid_frequency_response_bar's 'heated' run pins it on the tensor mesh). On the tensor mesh support reactions and
   electrode tables raise and probes record nothing (FEM meshes: section "Prestress, damped modes, complex records").
@@ -248,9 +249,10 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   name, type, beams, wavelength and grid itself (`_optical_issues`, `_collection_issues`, `_same_optical_grid`).
 - Tensor (Q1) solids: planar plane strain, mechanical_loss_factor only, the optics on the SAME mesh (`_tensor_issues`;
   bind compares the centres): the drive reads the optical cells as its own (no interpolation, no window hull rule).
-  Their drives run on a kept HarmonicSystem (runtime None, private SuperLU) for the functionals and column solves:
-  one factor alive (`factor = None` before each solve), dropped after the sweep (`_drop_drive_factor` in reset /
-  publish), since that host factor lives outside numpy and no ledger sees it.
+  Their drives use the solid's kept HarmonicSystem (runtime None, private SuperLU; section "Frequency response") for
+  the functionals and column solves: one factor alive (`factor = None` before each solve), dropped after each
+  frequency's readouts and in reset / publish (`_drop_harmonic_factor`), since that host factor lives outside numpy
+  and no ledger sees it.
 - Mirror planes count x 2 (mirror_factor): each must be held by a solid Roller / Symmetry (the even mirror of u), no
   scan offset along its normal, none with em_fdfd_bor, none with reference 'homogeneous' (the FFT needs the unfolded
   drive) (`_mirror_issues`). Samplers use the even mirror rule in the edge half cell; odd components keep the edge

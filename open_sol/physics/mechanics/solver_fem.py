@@ -47,8 +47,7 @@ from .nonlinear_start import NonlinearStart, solve_from_start
 from .pml2d import DEFAULT_PML_REFLECTION, check_ring, elastic_pml_ring, ring_wave_speed
 from .renderer import SolidRenderer
 from .solver import (GENERALIZED_PLANE_STRAIN, GEOMETRIES, OUT_OF_PLANE_CONDITIONS, PLANE_STRAIN, PLANE_STRESS,
-                     bind_drive_columns, checked_physics_drive, record_drive_columns, refuse_drive_loads,
-                     refuse_reduced_drive_columns)
+                     PhysicsDriveHooks, refuse_reduced_drive_columns)
 from .solver_common import (MATERIAL_STATE_ARRAYS, FEMSolidCommon, HarmonicOperators, _copy_or_none,
                             host_array as _host, mixed_harmonic_operators)
 from .stiffness import (HOOP_NAMES, OPERATOR_NAMES, ElementStiffness, check_positive_definite, element_stiffness,
@@ -91,7 +90,7 @@ def _restricted(stiffness, elements) -> ElementStiffness:
                             np.asarray(stiffness.solid)[elements][:, None], stiffness.anisotropic, stiffness.monoclinic)
 
 
-class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
+class SolidMechanicsFEMPhysics(PhysicsDriveHooks, FEMSolidCommon, MultiShiftModes, PhysicsSolver):
     """2D static elasticity on a fem.domain.TriangleDomain (window elements; the PML layer ring is void unless pml_faces
     make it an elastic PML: eigenfrequency and frequency response, stretched at target_frequency): host float64 solve,
     state() arrays per element (centroid values), display fields by fem_field (P1 / P2 nodal: displacement exact, strain
@@ -283,6 +282,7 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
         self._harmonic_operators = None              # HarmonicOperators of the frequency response
         # bound physics drives: (dof map, n_unknowns, ((drive, first column, count), ...), read-only W (k, n_unknowns)
         # complex: the columns, also the HarmonicSystem functionals) of bind_physics_drives, None while unbound
+        # (PhysicsDriveHooks)
         self._drive_columns = None
         self._unit_axial = None                      # generalized plane strain (terms, loads, solutions, matrix)
         self._axial_terms = np.zeros(3)              # its (e0, e1, e2) about the window centre
@@ -693,9 +693,7 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
         if self._newton is not None and self._newton.n_runs:   # load steps run, Newton iterations, tangent factors
             counters.update(self._newton.work_counters())
             counters.update(self._tangent_policy.counters())
-        if self._column_solves:   # physics drives: extra columns solved on the frequency factors (solve_columns)
-            counters['column_solves'] = self._column_solves
-        return counters
+        return self._add_drive_counters(counters)
 
     def solve_summary(self) -> str:
         summary = self.system.solve_summary()
@@ -947,9 +945,9 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
         self._shows_mode, self._shows_harmonic = True, False
         self.selected_resonance = number
 
-    def _stiffness_loss(self, stretched=True):
+    def _stiffness_loss(self):
         """Host CSR eta K of the solid elements (mechanical_loss_factor of the kept operator coefficients; an elastic
-        PML ring stretched as K unless stretched is False); None when every eta is 0."""
+        PML ring stretched as K); None when every eta is 0."""
         materials = self.domain.materials
         if LOSS_ARRAYS[0] not in set(materials.property_names()):
             return None
@@ -957,7 +955,7 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
         if not eta.any():
             return None
         scaled = {name: np.asarray(values, dtype=np.float64) * eta for name, values in self._coefficients.items()}
-        return self.system.stiffness(scaled, stretched=stretched and self.system.pml is not None)
+        return self.system.stiffness(scaled, stretched=self.system.pml is not None)
 
     # --- frequency_response study hooks -----------------------------------------
 
@@ -989,7 +987,7 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
         kept = self._harmonic_load
         if kept is None or kept[0] is not system.dofs or kept[1].size != operators.n_unknowns:
             if self.physics_drives:   # the drive is the only load (dead loads refused at bind and here)
-                load = self._drive_load(operators)
+                load = self._drive_load(system.dofs, operators.n_unknowns)
             else:
                 load = self._external_load()
                 if load.size < operators.n_unknowns:
@@ -1154,42 +1152,23 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
         displacement, pressure = self._split_harmonic(solution, operators)
         self._show_harmonic(displacement, omega=omega, pressure=pressure, space=operators.pressure)
 
-    # --- physics drives (solver_hooks.PhysicsDriveSolver: brillouin_scattering) ---
+    # --- physics drives (PhysicsDriveHooks: brillouin_scattering) ---
 
-    def add_physics_drive(self, drive) -> None:
-        """Add the BrillouinDrive of a brillouin_scattering feature (its apply, in every study): inert until the
-        frequency_response study binds it (bind_physics_drives); bound, its columns are the solid's only load and
-        every column is read out per frequency."""
-        self.physics_drives.append(checked_physics_drive(drive, self._label()))
-        self._drive_columns = None
-        self._harmonic_load = None
-
-    def bind_physics_drives(self, physics_by_name, progress=None) -> list:
-        """PhysicsDriveSolver hook (frequency_response, after the background stage and the static states): the
-        assembly and harmonic operators, then each drive's bind against the solved physics (progress(done, total) per
-        scan position; a cancel keeps the previous state); keeps the columns W (k, n_unknowns) complex (mixed: 0 on
-        the pressure rows) as the load (column 1) and the HarmonicSystem functionals -> [(log level, text)].
-        ValueError beside another load (tractions, body forces, a prescribed displacement != 0: the FDT readout takes
-        the drive as the only load) or with plane stress. An elastic PML: the drive acts on the window elements only
-        (_drive_inputs), the ring absorbs (its radiated power is part of -Im(w^H u): an open, passive system)."""
-        if not self.physics_drives:
-            return []
-        label = self._label()
+    def _drive_target(self) -> tuple:
+        """(dof map, unknown count, (HarmonicOperators,)) for bind_physics_drives after the assembly and harmonic
+        operators; ValueError with plane stress / generalized plane strain (the optical stress pairs the plane-strain
+        rows). An elastic PML: the drive acts on the window elements only (_drive_inputs), the ring absorbs (its
+        radiated power is part of -Im(w^H u): an open, passive system)."""
         if not self._axisymmetric and self.out_of_plane != PLANE_STRAIN:
-            raise ValueError(f'{label}: a physics drive (brillouin_scattering) needs out_of_plane plane_strain (its '
-                             f'optical stress pairs the plane-strain rows), got {self.out_of_plane}')
+            raise ValueError(f'{self._label()}: a physics drive (brillouin_scattering) needs out_of_plane plane_strain '
+                             f'(its optical stress pairs the plane-strain rows), got {self.out_of_plane}')
         operators = self._checked_harmonic_operators()
-        self._refuse_drive_loads()
-        bound, weights, messages = bind_drive_columns(self.physics_drives, self._drive_inputs(operators),
-                                                      physics_by_name, progress, operators.n_unknowns, label)
-        self._drive_columns = (self.system.dofs, operators.n_unknowns, bound, weights)
-        self._harmonic_load = None
-        return messages
+        return self.system.dofs, operators.n_unknowns, (operators,)
 
-    def _refuse_drive_loads(self) -> None:
-        """ValueError when a dead load or a non-zero held value sits beside the physics drives."""
+    def _drive_load_counts(self) -> tuple:
+        """(dofs with a dead load: tractions, applied or coupled body forces; dofs held at a value != 0)."""
         loaded = int(np.count_nonzero(self._external_load()))   # m >= 1: raises itself for cos(m phi) loads
-        refuse_drive_loads(self._label(), loaded, int(np.count_nonzero(self.system.fixed_values())))
+        return loaded, int(np.count_nonzero(self.system.fixed_values()))
 
     def _drive_inputs(self, operators) -> SolidDriveInputs:
         """brillouin_drive.SolidDriveInputs of the last assembly (host copies of every material property, the element
@@ -1210,27 +1189,6 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
                                 solid=np.asarray(self._solid, dtype=bool) & self._window_elements,
                                 window=np.asarray(self._window_elements, dtype=bool), materials=values,
                                 moduli=moduli, locate=self.domain.locate)
-
-    def _drive_load(self, operators) -> np.ndarray:
-        """The first bound drive column (the harmonic load); ValueError unbound, after a re-assembly that changed the
-        dof map or unknowns since bind, or with a dead load set since."""
-        label = self._label()
-        bound = self._drive_columns
-        if bound is None:
-            raise ValueError(f'{label}: its physics drives (brillouin_scattering) are not bound: the frequency_response '
-                             'study binds them after its background stage (another study has no drive)')
-        dofs, n_unknowns, _, weights = bound
-        if dofs is not self.system.dofs or n_unknowns != operators.n_unknowns:
-            raise ValueError(f'{label}: the solid was re-assembled with another dof map since its physics drives were '
-                             'bound (a material change of the solid set during the sweep?): bind them again')
-        self._refuse_drive_loads()
-        return weights[0]
-
-    def _record_drives(self, frequency, omega) -> None:
-        """Readouts w_s^H u_s of every bound column at omega: the first from the main solve's functionals, the others
-        by solve_columns on its factor (direct sweeps only); each drive records its slice."""
-        _, _, bound, weights = self._drive_columns
-        self._column_solves += record_drive_columns(self._harmonic[1], bound, weights, frequency, omega, self._label())
 
     # --- complex records of the frequency response (K4) ------------------------
 

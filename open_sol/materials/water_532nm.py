@@ -1,20 +1,21 @@
 """Library material WATER_532NM: liquid water at 532 nm and 20 C with the hypersonic (GHz) elastic, viscous and
 photoelastic data of Brillouin scattering."""
 from ._base import Material
+from .water import WATER
 
 
 WATER_532NM = Material(
     name='water_532nm',
     # n = 1.3350 at 532 nm, 20 C; the absorption (~4.5e-4 /cm) is left out: lossless
     optical=dict(eps_r=1.78223, sigma_e=0.0),
-    # as library water (alpha = 0: a liquid region follows its container)
-    thermal=dict(k=0.598, rho=998.2, cp_=4182.0, dndT=-9.0e-5, alpha=0.0),
+    # library water's (a copy, so the two entries cannot drift; alpha = 0: a liquid region follows its container)
+    thermal=dict(WATER.thermal),
     # a compressible viscous liquid: no storage shear; bulk_modulus = rho v^2 (adiabatic, v = 1482.3 m/s);
     # bulk_viscosity from the ultrasonic absorption; one strain-optic scalar p11 = p12, no shear part
     mechanical=dict(shear_modulus=0.0, bulk_modulus=2.1933e9, bulk_viscosity=2.8e-3, photoelastic_p11=0.31,
                     photoelastic_p12=0.31, photoelastic_p44=0.0),
-    # as library water
-    electrical=dict(sigma_dc=5.5e-6, eps_dc=80.1),
+    # library water's DC data (a copy)
+    electrical=dict(WATER.electrical),
     # dynamic viscosity at 20 C (IAPWS 2008); laminar_flow and the solid types read the same property
     fluid=dict(viscosity=1.0016e-3),
     description='Liquid water at 20 C and 0.1 MPa for spontaneous Brillouin scattering (GHz longitudinal phonons). '
