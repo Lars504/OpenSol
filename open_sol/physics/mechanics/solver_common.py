@@ -323,14 +323,256 @@ class FEMSolidCommon(HostInputCache):
         density = host_array(self.domain.materials.rho)
         massless = self._solid & ~(density > 0.0)
         if massless.any():
-            raise ValueError(f'{self._label()}: {int(massless.sum())} solid element(s) (youngs_modulus or c11 > 0) have '
-                             f'no density rho > 0: {study} needs the mass of every solid element')
+            raise ValueError(f'{self._label()}: {int(massless.sum())} solid element(s) (youngs_modulus, c11 or a shear '
+                             f'/ bulk modulus > 0; liquids in the mixed formulation) have no density rho > 0: {study} '
+                             'needs the mass of every solid element')
         return np.where(self._solid, density, 0.0)
 
     def _temperature_change(self):
         """Host dT [K] per element: coupled temperature_rise + applied temperature_rise_ext (cached, read-only)."""
         return self._host_input('temperature_change', lambda: host_array(self.fields.temperature_rise)
                                 + host_array(self.fields.temperature_rise_ext))
+
+
+@dataclass(frozen=True, eq=False)
+class HarmonicOperators:
+    """Host pieces of the frequency-response pencil of one assembly (the FEM solids' _build_harmonic_operators):
+    `operator` the constant real part beyond the system K (None = the solver's pencil stiffness _pencil_stiffness;
+    mixed: the saddle coupling + the constant groups' G0 D_g and pressure blocks, mixed_harmonic_operators), `loss` (or
+    None), `mass`, `terms` (frequency_response.FrequencyTerm), `scale_terms` (SchurScaleTerm), `n_unknowns` (rows of the
+    full vector: c n_u (+ n_p mixed, x = [u; p])), `pressure` (the mixed fem PressureSpace / PressureSpace3D, or None),
+    `free` (bool over the unknowns, or over the columns of column_map) and `column_map` (None, the m = 1 axis ties,
+    mixed: ties (+) the selection of the free pressure dofs), `groups` the viscoelastic.ViscoelasticGroup of the terms
+    (mixed: every member, the pressure zones), `pressure_gauges` the pressure dofs held at 0 as the gauge of an enclosed
+    incompressible region (touching incompressible groups are one region; int64, mixed) and `volume_checks` one
+    (description, held u dofs int64, weights float64) per gauge: the region's summed coupling row 1^T B on the held
+    displacements (check_held_volumes); mixed also `coupling` B (n_p, n_u), `pressure_masses` M_p,g and
+    `pressure_free` (bool (n_p,), axis and gauge dofs False) as assembled, for the projected drives of
+    drive_projection."""
+    operator: object
+    loss: object
+    mass: object
+    free: object
+    n_unknowns: int
+    column_map: object = None
+    terms: tuple = ()
+    scale_terms: tuple = ()
+    pressure: object = None
+    groups: tuple = ()
+    pressure_gauges: object = ()
+    volume_checks: tuple = ()
+    coupling: object = None
+    pressure_masses: tuple = ()
+    pressure_free: object = None
+
+    def drive_projection(self):
+        """fem.elastic_drives.PressureProjection of the mixed pieces (a physics drive's mean normal stress projected
+        onto the pressure space), None for the displacement formulation."""
+        if self.pressure is None:
+            return None
+        from ...fem.elastic_drives import PressureProjection
+        return PressureProjection(space=self.pressure, coupling=self.coupling, masses=tuple(self.pressure_masses),
+                                  free=self.pressure_free)
+
+    def check_held_volumes(self, fixed, label) -> None:
+        """ValueError when the held displacements `fixed` (over every unknown, [u; p]) change the volume of an enclosed
+        incompressible region: its pinned gauge drops the region's volume equation 1^T B u = 0, which the free
+        displacements cannot meet (B^T 1 vanishes on them), so the system is solvable only when 1^T B u_held = 0;
+        refused when |1^T B u_held| > HELD_VOLUME_TOLERANCE x sum |1^T B| |u_held| (per solve: the held entries
+        only)."""
+        for description, dofs, weights in self.volume_checks:
+            held = np.asarray(fixed)[dofs]
+            change = complex(weights @ held)
+            scale = float(np.abs(weights) @ np.abs(held))
+            if abs(change) > HELD_VOLUME_TOLERANCE * scale:
+                raise ValueError(f'{label()}: the prescribed displacements change the volume of {description} by '
+                                 f'{abs(change):.4g} (int div u dV, {abs(change) / scale:.3g} of the held motion '
+                                 f'across its boundary, tolerance {HELD_VOLUME_TOLERANCE:g}): a liquid without bulk '
+                                 'modulus enclosed by held displacements keeps its volume; prescribe a '
+                                 'volume-preserving motion, free a displacement on its boundary or give it a '
+                                 'bulk_modulus')
+
+    def summary(self) -> str:
+        """'' or '; mixed: N pressure dofs in K groups[ (G enclosed incompressible region(s): ...)]' and / or ';
+        viscoelastic: N group(s), M frequency term(s)'."""
+        text = ''
+        if self.pressure is not None:
+            text += f'; mixed: {self.pressure.n_dofs:,} pressure dofs in {self.pressure.n_groups} groups'
+            if len(self.pressure_gauges):
+                text += (f' ({len(self.pressure_gauges)} enclosed incompressible region(s), touching incompressible '
+                         'groups counted as one: the pressure level of a liquid enclosed by held displacements is '
+                         'free, p = 0 at one node of each)')
+        if self.terms:
+            text += f'; viscoelastic: {len(self.groups)} group(s), {len(self.terms)} frequency term(s)'
+        return text
+
+
+# |B^T 1| on the free displacements below this share of its largest value: the constant pressure of an incompressible
+# region is a null vector of the saddle point (a liquid enclosed by held displacements; round-off ~1e-15 there)
+_ENCLOSED_TOLERANCE = 1e-9
+# |1^T B u_held| of an enclosed incompressible region relative to sum |1^T B| |u_held| above which its held
+# displacements change its volume (HarmonicOperators.check_held_volumes); first estimate: the exact-quadrature row sums
+# leave round-off ~1e-15 for a volume-preserving motion (a rigid bead in a closed box)
+HELD_VOLUME_TOLERANCE = 1e-9
+
+
+def mixed_harmonic_operators(groups, deviatoric, coupling, pressure_masses, space, mass, displacement_free,
+                             pressure_free, prolongation, label) -> HarmonicOperators:
+    """HarmonicOperators of the mixed u-p frequency response (both FEM solids) in x = [u; p] (n = n_u + n_p) from the
+    viscoelastic.ViscoelasticGroup of every member (the pressure zones, in index order), their unit-shear stiffness D_g
+    (n_u, n_u), the coupling B (n_p, n_u) and pressure masses M_p,g (fem.mixed_elasticity), the space, the u mass,
+    the free u dofs (bool (n_u,)), the free pressure dofs (bool (n_p,): the axis ones False at m >= 1) and the m = 1
+    axis-tie prolongation (n_u, n_r) or None. A = [[sum_g G*_g D_g - w^2 M, -B^T], [-B, -sum_g M_p,g / K*_g]]
+    (fem.mixed_elasticity header): constant groups folded into operator (G0 D_g, -Re(1 / K*) M_p,g) and loss (eta G0
+    D_g, -Im(1 / K*) M_p,g), omega-dependent ones FrequencyTerms (G*_g D_g; -1 / K*_g M_p,g); an incompressible group's
+    pressure block is 0 but kept in the pattern (stored zeros without a column map, else a FrequencyTerm of coefficient
+    0: a congruence drops exact zeros); one SchurScaleTerm of B (the per-frequency Schur proxy sum_j B_pj^2 / d_j of
+    the pressure rows, frequency_response). Column map: None (free = u free + pressure free) or block_diag(P,
+    selection of the free pressure dofs) (free = every column). The gauges of enclosed incompressible regions
+    (_pressure_gauges: over the union of the incompressible groups) are held at 0. ValueError for an incompressible
+    region whose every coupled displacement is held."""
+    import scipy.sparse
+    from ...fem.assembly import pattern_sum
+    from ...fem.mixed_elasticity import embedded, saddle_coupling
+    from .frequency_response import FrequencyTerm, SchurScaleTerm
+    groups = tuple(groups)
+    n_p, n_u = coupling.shape
+    if space.n_dofs != n_p or space.n_groups != len(groups) or len(deviatoric) != len(groups) \
+            or len(pressure_masses) != len(groups) or any(group.index != index for index, group in enumerate(groups)):
+        raise ValueError(f'{label()}: the mixed pieces disagree ({len(groups)} groups, {space.n_groups} pressure '
+                         f'zones, {n_p} pressure dofs, B {coupling.shape})')
+    n_total = n_u + n_p
+    pressure_free = np.array(pressure_free, dtype=bool)
+    gauges, volume_checks = _pressure_gauges(coupling, space,
+                                             [group.index for group in groups if group.bulk.incompressible],
+                                             pressure_free, np.asarray(displacement_free, dtype=bool), prolongation,
+                                             label)
+    pressure_free[gauges] = False
+    if prolongation is None:
+        column_map = None
+        free = np.concatenate([np.asarray(displacement_free, dtype=bool), pressure_free])
+    else:
+        kept = np.flatnonzero(pressure_free)
+        selection = scipy.sparse.csr_matrix((np.ones(kept.size), (kept, np.arange(kept.size))), shape=(n_p, kept.size))
+        # the m = 1 column map (booked: definition_viscoelastic.viscoelastic_memory_items)
+        column_map = scipy.sparse.block_diag((prolongation, selection), format='csr')
+        free = np.ones(column_map.shape[1], dtype=bool)
+    # the embedded blocks, scaled constant copies and pattern sums (booked:
+    # definition_viscoelastic.viscoelastic_memory_items, 'mixed saddle-point blocks ...')
+    constant = [saddle_coupling(coupling, n_u)]
+    loss_parts, terms = [], []
+    for group, shear_matrix, pressure_mass in zip(groups, deviatoric, pressure_masses):
+        index, shear, bulk = group.index, group.shear, group.bulk
+        shear_block = embedded(shear_matrix, n_total)
+        if shear.frequency_dependent:
+            terms.append(FrequencyTerm(shear_block, shear.at, f'G* of group {index}'))
+        else:
+            constant.append(shear.relaxed * shear_block)
+            if shear.loss_factor:
+                loss_parts.append((shear.relaxed * shear.loss_factor) * shear_block)
+        pressure_block = embedded(pressure_mass, n_total, row_offset=n_u, column_offset=n_u)
+        if bulk.frequency_dependent:
+            terms.append(FrequencyTerm(pressure_block, _negative_compliance(bulk), f'-1 / K* of group {index}'))
+        elif bulk.incompressible:   # 1 / K* = 0: the pressure diagonal stays stored (PARDISO symmetric types need it)
+            if column_map is None:
+                constant.append(pressure_block * 0.0)
+            else:
+                terms.append(FrequencyTerm(pressure_block, _zero_coefficient, f'incompressible group {index}'))
+        else:
+            compliance = bulk.compliance(0.0)   # constant: (1 - j eta) / (K0 (1 + eta^2))
+            constant.append(-compliance.real * pressure_block)
+            if compliance.imag:
+                loss_parts.append(-compliance.imag * pressure_block)
+    # the pressure rows' row scale: B embedded at the pressure rows / u columns, its Schur proxy taken per frequency
+    # (frequency_response.SchurScaleTerm: a fixed modulus weight is (h / delta)^2 off in inertia-dominated cells;
+    # booked: definition_viscoelastic 'mixed Schur row scale')
+    scale_terms = (SchurScaleTerm(embedded(coupling, n_total, row_offset=n_u)),)
+    return HarmonicOperators(pattern_sum(constant), pattern_sum(loss_parts) if loss_parts else None,
+                             embedded(mass, n_total), free, n_total, column_map=column_map, terms=tuple(terms),
+                             scale_terms=scale_terms, pressure=space, groups=groups,
+                             pressure_gauges=np.asarray(gauges, dtype=np.int64), volume_checks=volume_checks,
+                             coupling=coupling.tocsr(), pressure_masses=tuple(mass.tocsr() for mass in pressure_masses),
+                             pressure_free=_read_only_mask(pressure_free))
+
+
+def _read_only_mask(mask) -> np.ndarray:
+    mask = np.array(mask, dtype=bool)
+    mask.flags.writeable = False
+    return mask
+
+
+def _negative_compliance(law):
+    """omega -> -1 / K*(omega) of a bulk ModulusLaw (the pressure block coefficient)."""
+    return lambda omega: -law.compliance(omega)
+
+
+def _zero_coefficient(omega) -> complex:
+    """The coefficient of an incompressible group's pressure block (kept for its pattern)."""
+    return 0j
+
+
+def _pressure_gauges(coupling, space, incompressible, pressure_free, displacement_free, prolongation,
+                     label) -> tuple:
+    """(int64 pressure dofs held at 0, volume checks): one gauge per connected region of the UNION of the
+    incompressible groups (fem.mixed_elasticity pressure_regions: groups touching at a mesh node are one region; its
+    free dofs) whose constant pressure q = 1 is a null vector of the saddle point: B^T q vanishes on the free
+    displacements (liquids enclosed by held displacements: int q div v dV is a boundary integral of v . n there, so the
+    pressure level is undetermined; on an interface between two incompressible groups the terms of both cancel, since v
+    is continuous there, so neither group alone is enclosed although the pair is; at an azimuthal order m >= 1 q is no
+    cos(m phi) null vector and no region is pinned). The gauge is the region's dof farthest from its centroid (a wall
+    far from the drive). Per gauge a volume check (description, held u dofs, B^T q there;
+    HarmonicOperators.check_held_volumes): the pin drops the equation q^T B u = 0, which only the held displacements
+    enter. ValueError for a region of one group whose every coupled displacement is held (no free displacement in an
+    incompressible zone: its whole pressure block is singular)."""
+    from ...fem.mixed_elasticity import pressure_regions
+    gauges, checks = [], []
+    if not incompressible:
+        return np.zeros(0, dtype=np.int64), ()
+    coupling = coupling.tocsr()
+    if prolongation is None:
+        free_rows = displacement_free
+
+        def restricted(vector):
+            return vector[displacement_free]
+    else:
+        prolongation = prolongation.tocsr()
+        free_rows = np.diff(prolongation.indptr) > 0   # u dofs that some reduced column moves (ties included)
+
+        def restricted(vector):
+            return prolongation.T @ vector
+    points = space.dof_points()
+
+    def describe(region):
+        groups = np.unique(np.searchsorted(space.offsets, region, side='right') - 1)
+        low, high = points[region].min(axis=0), points[region].max(axis=0)
+        where = ', '.join(f'{low[axis]:.4g} .. {high[axis]:.4g} m' for axis in range(low.size))
+        return (f"the incompressible region of viscoelastic parameter group{'s' if groups.size > 1 else ''} "
+                f"{', '.join(str(int(group)) for group in groups)} (no bulk modulus; {region.size} pressure dofs in "
+                f'{where})')
+
+    for group in incompressible:   # a pressure dof coupled to held displacements only is singular in any union
+        for region in pressure_regions(space, [group]):
+            region = region[pressure_free[region]]
+            if not region.size:
+                continue
+            rows = coupling[region]
+            if not free_rows[np.unique(rows.indices[np.abs(rows.data) > 0.0])].any():
+                raise ValueError(f'{label()}: {describe(region)} has every displacement held, so its pressure is '
+                                 'undetermined: give the held region a bulk_modulus or youngs_modulus, or leave a free '
+                                 'displacement in it')
+    for region in pressure_regions(space, incompressible):
+        region = region[pressure_free[region]]
+        if not region.size:
+            continue
+        force = np.asarray(coupling[region].sum(axis=0)).ravel()   # B^T q of q = 1 on the region
+        scale = float(np.abs(force).max())
+        residual = restricted(force)
+        if scale > 0.0 and (not residual.size or float(np.abs(residual).max()) <= _ENCLOSED_TOLERANCE * scale):
+            offsets = points[region] - points[region].mean(axis=0)
+            gauges.append(int(region[np.argmax(np.sum(offsets ** 2, axis=1))]))
+            held = np.flatnonzero(~free_rows & (force != 0.0))   # the region's boundary dofs (a few per node)
+            checks.append((describe(region), held, force[held]))
+    return np.asarray(gauges, dtype=np.int64), tuple(checks)
 
 
 @dataclass(frozen=True, eq=False)

@@ -16,6 +16,7 @@ from .selftests_eigenfrequency import _check_cavity, _cavity_specs
 from .selftests_fdfd import (_PHYSICS_NAME, _check_far_field_power, _check_mode_port_slab, _check_wall_reflection,
                              _drude_spec, _far_field_specs, _fresnel_specs, _graded_fresnel_specs, _slab_specs,
                              _wall_specs, fd_joule_heating_spec)
+from .selftests_focused_beam import focused_beam_power_specs
 from .selftests_symmetry import _mirror_spec
 
 _BACKENDS = ('cpu', 'gpu')
@@ -29,8 +30,9 @@ _FRESNEL_KEYS = ('ez_glass', 'hz_glass')
 # walls: one pin rule per kind (ez pec / antisymmetric, hz pmc / symmetric, the ez pec_domain block)
 _WALL_RUNS = (('ez', 'pec'), ('ez', 'antisymmetric'), ('hz', 'pmc'), ('hz', 'symmetric'), ('ez', 'pec_domain'))
 # features the analytic cases run on the cpu only (selftests_fdfd cpu_specs), one small model each: a graded Fresnel
-# strip, the rotated eps_xy slab, the conducting sheets (ez constant, hz graphene) and one mirror half
-_FINITE_ONLY_GROUPS = ('drude', _JOULE_RUN, 'fresnel', 'graded', 'eps_xy', 'sheet', 'mirror')
+# strip, the rotated eps_xy slab, the conducting sheets (ez constant, hz graphene), one mirror half and the focused
+# beams (em_fdfd_focused_beam_power: TFSF line rows, their operator-entry gathers on the device)
+_FINITE_ONLY_GROUPS = ('drude', _JOULE_RUN, 'fresnel', 'graded', 'eps_xy', 'sheet', 'mirror', 'focused_beam')
 # result-bearing feature types compared between the backends (mode_source tables hold text columns)
 _RESULT_FEATURE_TYPES = frozenset(('field_probe', 'flux_monitor', 'mode_monitor', 'far_field', 'resonance_table'))
 _TOLERANCE = 1e-5         # relative: both backends assemble in complex128; host SuperLU on the cpu, Automatic on the
@@ -55,6 +57,7 @@ def _groups():
         'eps_xy': {'x_rotated': _rotated_slab_spec('x', True)},
         'sheet': {f'{polarization}_device': _sheet_spec(polarization, 'device') for polarization in ('ez', 'hz')},
         'mirror': {'ez_odd_half': _mirror_spec('ez_odd', True)},
+        'focused_beam': focused_beam_power_specs(),
     }
 
 
@@ -218,8 +221,9 @@ FDFD_BACKEND_SELFTEST_CASES = (
                      'heat_em_thermo_optic stationary fixed point) and, since those analytic cases run on the cpu '
                      'only, one small model per feature they alone cover: the graded hz glass strip of '
                      'em_fdfd_fresnel_transmission_graded, the rotated eps_xy slab of em_fdfd_hz_rotated_slab, the two '
-                     'em_fdfd_conducting_sheet device strips and the ez odd half of em_fdfd_mirror_unfold (x_lo '
-                     'antisymmetric mirror). Not yet confirmed by a run with this set. Per model the largest '
+                     'em_fdfd_conducting_sheet device strips, the ez odd half of em_fdfd_mirror_unfold (x_lo '
+                     'antisymmetric mirror) and the two em_fdfd_focused_beam_power runs (focused_beam TFSF line, '
+                     'flux monitors). Not yet confirmed by a run with this set. Per model the largest '
                      'relative difference of the out-of-plane phasor fields (Re, Im), of every probe / flux / mode '
                      'monitor / far-field / resonance-table result entry (phases: wrapped difference / pi) and of '
                      f'the derived values, in units of {_TOLERANCE:g} ({_JOULE_TOLERANCE:g} for the Joule chain, '

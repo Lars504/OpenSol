@@ -8,7 +8,7 @@ import numpy as np
 
 from ...core.constants import C0
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import float_list, tolerance_units_result
+from ...model.selftest_helpers import float_list, raises, tolerance_units_result
 from ...model.spec import (DomainSpec, FeatureSpec, GeometrySpec, MeshSpec, ModelSpec, PhysicsSpec, StudySpec)
 from .selftests_fdfd import cpu_specs
 
@@ -83,15 +83,6 @@ def _compare(label, resonances, expected, errors, tolerances, details, omega_tol
                       'region_fraction': [None if math.isnan(value) else value for value in float_list(fractions)]}
 
 
-def _raises(call) -> float:
-    """0 when call() raises ValueError, inf otherwise."""
-    try:
-        call()
-    except ValueError:
-        return 0.0
-    return math.inf
-
-
 def _check_chains(results_by_name):
     """EM and neutral resonance solves of the chain pencil: filtered / listed / plain vs the closed form, fractions,
     table columns, the dropped count, the region-argument errors and element_region_rows."""
@@ -156,7 +147,7 @@ def _check_chains(results_by_name):
                         ('neutral fraction without region', lambda: neutral_solve(min_region_fraction=0.5)),
                         ('neutral fraction above 1',
                          lambda: neutral_solve(in_region=in_first_chain, min_region_fraction=1.5))):
-        errors[label] = _raises(call)
+        errors[label] = 0.0 if raises(call) else math.inf
         tolerances[label] = 0.5
     # element_region_rows: elements 0 / 2 in the map (element 1 outside), dofs (0, 1) / (1, 2), free dofs 0, 2, 3
     dofs = SimpleNamespace(element_position=np.array([0, -1, 1]), element_dofs=np.array([[0, 1], [1, 2]]), n_dofs=4)

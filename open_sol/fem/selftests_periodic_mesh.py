@@ -54,20 +54,13 @@ def _mesh(periodic_axes, **options):
     return triangulate(_spec(), {}, sizing=_sizing(periodic_axes, **options))
 
 
-def _raises(function) -> bool:
-    try:
-        function()
-    except ValueError:
-        return True
-    return False
-
-
-def _partner_checks(mesh, label, axes, add):
+def _partner_checks(mesh, label, axes, checks):
     """Per periodic axis: node partners displaced by exactly the period, P2 dof partners (nodes + side edges) displaced
     alike; a P1 map on the x > a / 2 elements only refused (its partners lie outside the subset)."""
     from .dofs import lagrange_dofs, periodic_dof_partners
     from .mesh import periodic_node_partners
 
+    add = checks.add
     add(f'{label}_periodic_axes', tuple(mesh.periodic_axes) == tuple(axes), list(mesh.periodic_axes))
     quadratic = lagrange_dofs(mesh, 2)
     dof_points = quadratic.dof_points()
@@ -90,8 +83,8 @@ def _partner_checks(mesh, label, axes, add):
             {'pairs': int(len(paired)), 'expected': int(2 * len(hi) - 1), 'offset': dof_offset})
     right_half = mesh.centroids()[:, 0] > 0.5 * _CELL
     if 'x' in axes:
-        add(f'{label}_subset_refused', _raises(lambda: periodic_dof_partners(
-            lagrange_dofs(mesh, 1, elements=right_half), periodic_node_partners(mesh, 0))))
+        checks.add_raises(f'{label}_subset_refused', lambda: periodic_dof_partners(
+            lagrange_dofs(mesh, 1, elements=right_half), periodic_node_partners(mesh, 0)))
 
 
 def _bloch_corner_checks(mesh, add):
@@ -127,18 +120,18 @@ def _check_periodic_mesh(results_by_name):
     add = checks.add
 
     plain = _mesh(())
-    add('unmatched_mesh_refused', _raises(lambda: periodic_node_partners(plain, 0)))
+    checks.add_raises('unmatched_mesh_refused', lambda: periodic_node_partners(plain, 0))
     both = _mesh(('x', 'y'))
-    _partner_checks(both, 'builtin_xy', ('x', 'y'), add)
+    _partner_checks(both, 'builtin_xy', ('x', 'y'), checks)
     _bloch_corner_checks(both, add)
-    _partner_checks(_mesh(('x',)), 'builtin_x', ('x',), add)
-    _partner_checks(_mesh(('x', 'y'), mirror_axes=('x',)), 'mirror_x_periodic_xy', ('x', 'y'), add)
-    add('ring_on_periodic_axis_refused', _raises(lambda: _mesh(('x',), ring=0.2 * _UM)))
+    _partner_checks(_mesh(('x',)), 'builtin_x', ('x',), checks)
+    _partner_checks(_mesh(('x', 'y'), mirror_axes=('x',)), 'mirror_x_periodic_xy', ('x', 'y'), checks)
+    checks.add_raises('ring_on_periodic_axis_refused', lambda: _mesh(('x',), ring=0.2 * _UM))
     notes = []
     if find_gmsh() is None:
         notes.append('gmsh not found: the gmsh variant is skipped')
     else:
-        _partner_checks(_mesh(('x', 'y'), mesher='gmsh'), 'gmsh_xy', ('x', 'y'), add)
+        _partner_checks(_mesh(('x', 'y'), mesher='gmsh'), 'gmsh_xy', ('x', 'y'), checks)
     return checks_result(checks, notes=notes, elements=int(both.n_elements))
 
 

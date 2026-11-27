@@ -34,29 +34,30 @@ from ...solvers.host_direct import (HOST_DIRECT_BACK_ENDS, double_of, factor_lab
                                     solver_host_bytes, superlu_bytes_scale)
 from ...solvers.pcg import workspace_bytes
 from ...solvers.sparse_direct import CUDSS_BACK_ENDS, SPLU_3D_LIMIT_UNKNOWNS, SPLU_3D_WARN_UNKNOWNS
-from .definition_common import (DENSITY_PARAM, EIGENFREQUENCY_STUDY, ELECTRODE_CONNECTION_HELP,
-                                ELECTRODE_VOLTAGE_HELP, GEOMETRIC_NONLINEARITY_PARAMS, INITIAL_STRESS_PROPERTIES_3D,
+from .definition_common import (DENSITY_PARAM, EIGENFREQUENCY_STUDY, ELECTRODE_CONNECTION_HELP, ELECTRODE_VOLTAGE_HELP,
+                                FORMULATION_PARAM, GEOMETRIC_NONLINEARITY_PARAMS, INITIAL_STRESS_PROPERTIES_3D,
                                 LOSS_PROPERTIES, MATERIAL_PROPERTIES, MODAL_STUDIES, PIEZO_MATERIAL_PROPERTIES_3D,
                                 ROLLER_FEATURES, STIFFNESS_TENSOR_PROPERTIES_3D, STRESS_STIFFENING_PARAM,
                                 SUPPORT_FEATURES, SYMMETRY_FEATURE, SYMMETRY_HELP, TED_MATERIAL_PROPERTIES,
-                                apply_body_force,
-                                apply_temperature_change, background_context, displacement_param, eigen_search_issues,
-                                electrode_result,
-                                follow_held_values, follow_load, following, free_body_allowed, frequency_probe_feature,
-                                material_issues, materials_setting, modal_kept_count, modal_resonance_count,
-                                modal_study_issues, model_mirror_issues,
-                                nonlinear_state_infos, outer_faces, piezo_material_issues, plain_value,
-                                pml_crossing_issues, prestress_issues,
+                                VISCOELASTIC_PROPERTIES, apply_body_force, apply_temperature_change, background_context,
+                                displacement_param, eigen_search_issues, electrode_result, follow_held_values,
+                                follow_load, following, free_body_allowed, frequency_probe_feature, material_issues,
+                                materials_setting, mixed_formulation, modal_kept_count, modal_resonance_count,
+                                modal_study_issues, model_mirror_issues, nonlinear_state_infos, outer_faces,
+                                piezo_material_issues, plain_value, pml_crossing_issues, prestress_issues,
                                 register_support, resonance_table_feature, solid_linear_solver, solid_study,
                                 stiffness_follows_state, support_holders, support_result, symmetry_issues,
                                 thermoelastic_damping_feature, union_masks)
 from .definition_frequency_response import ADMITTANCE_FEATURE, FREQUENCY_RESPONSE_STUDY, frequency_response_issues
 from .definition_optomechanics import OPTOMECHANICAL_COUPLING_FEATURE, OPTOMECHANICS_STUDY
+from .definition_viscoelastic import (scaled_fill, viscoelastic_counts, viscoelastic_issues, viscoelastic_memory_items,
+                                      viscoelastic_time_items)
 from .fields3d import (ELECTRIC_OUTPUT_ARRAYS_3D, ENERGY_OUTPUT_ARRAYS_3D, HARMONIC_IMAG_FIELDS_3D, INPUT_ARRAYS_3D,
-                       OUTPUT_ARRAYS_3D)
+                       OUTPUT_ARRAYS_3D, PRESSURE_FIELDS_3D)
 from .materials import (DENSITY_SCHEMA, LOSS_ARRAYS, MECHANICAL_SCHEMA, OPTIONAL_LOSS_SCHEMA, OPTIONAL_PIEZO_SCHEMA_3D,
                         OPTIONAL_PRESTRESS_SCHEMA_3D, OPTIONAL_STIFFNESS_SCHEMA_3D, OPTIONAL_TED_SCHEMA,
-                        PIEZO_DEFAULTS_3D, PIEZO_TENSOR_ARRAYS_3D, SOLVER_PRECISIONS, STIFFNESS_TENSOR_ARRAYS_3D)
+                        OPTIONAL_VISCOELASTIC_SCHEMA, PIEZO_DEFAULTS_3D, PIEZO_TENSOR_ARRAYS_3D, SOLVER_PRECISIONS,
+                        STIFFNESS_TENSOR_ARRAYS_3D)
 from .modal import EXTRA_EIGENVALUES, LANCZOS_TOLERANCE_PER_CG, modal_table_result
 from .multigrid3d import (CHEBYSHEV_DEGREE, POWER_ITERATIONS, block_cycle_bytes, coarsest_host_bytes,
                           hierarchy_bytes,
@@ -66,6 +67,7 @@ from .renderer3d import SolidRenderer3D
 from .squeeze_film import GAP_SIDES, VENT_CHOICES
 from .selftests_3d import HEATED_CHIP_STRESS_DESCRIPTION, HEATED_CHIP_STRESS_LABEL, heated_chip_stress_3d_spec
 from .selftests_bloch3d import BAND_DIAGRAM_3D_DESCRIPTION, BAND_DIAGRAM_3D_LABEL, solid_bloch_band_diagram_3d_spec
+from .viscoelastic import MIXED
 
 SOLID_3D_TYPE_NAME = 'solid_mechanics_3d'               # = selftests_3d.SOLID_3D_TYPE_NAME (not imported)
 THERMAL_STRAIN_COUPLING = 'heat_solid_thermal_strain'   # = selftests_3d.THERMAL_STRAIN_COUPLING
@@ -91,7 +93,12 @@ _TET_SOLVE_TIME_SCALE = {1: 1.5, 2: 3.0}
 # fill ~ s^2; the top levels cut x, y, z in turn): the first cut across a periodic axis must close its ring with two
 # planes, so p periodic axes double the separators of the first p levels (flops x 8, fill x 4 there)
 _PERIODIC_SEPARATOR_WIDTH = 2.0
-_TET_NODAL_OUTPUTS = 22
+# solver_fem3d output groups: host float64 nodal arrays u_x, u_y, u_z, u_abs, the mechanical point outputs (strains,
+# elastic strains, stresses, von Mises, pressure, pressure_im: computed in every study) and the two energy densities
+# (the Im u fields are read from the complex solution, no arrays); while the mechanical pass runs its (m, q) values at
+# the dof points of the solid elements and their stacked copy (the largest point group)
+_TET_NODAL_OUTPUTS = 24
+_TET_POINT_OUTPUTS = 18
 _TET_ELECTRIC_NODAL_OUTPUTS = 7
 # geometric nonlinearity: Newton iterations per load step (a priori: a linear predictor and quadratic convergence to
 # the default 1e-8 take ~4-6) and the host numpy bytes per COO entry of one tangent + internal-force assembly on the
@@ -245,7 +252,10 @@ _SUPPORT_RESULT_TEXT = (
     "Result 'table' of the latest solve, row [feature, F_x, F_y, F_z] (N), extras F_x, F_y, F_z: the force the support "
     'exerts on the solid, sum of K u - f over its held dofs (0 for unheld components; a dof held by two supports counts '
     'in both, the later value holds it). After a frequency_response on tetrahedra: the complex reaction per frequency '
-    'instead (columns frequency, F_x_re, F_x_im, F_y_re, F_y_im, F_z_re, F_z_im).')
+    'instead (columns frequency, F_x_re, F_x_im, F_y_re, F_y_im, F_z_re, F_z_im, W_re, W_im): W = sum R u_held over '
+    'the held dofs (J), the work of the support force on the prescribed displacement: tetrahedron holds are uniform '
+    '(a rigid translation X, no rotation can be prescribed), so W = F . X; omega Im(W) / 2 the mean '
+    'power the support delivers to the solid.')
 _SUPPORT_RESULT_REF = 'Result: the reaction table, as fixed.'
 _FACE_ONLY_TEXT = ('Outer faces and, on tetrahedra, domain objects (their interface and outer boundary faces; a tensor '
                    'mesh refuses objects: use Fixed (domain)); every node of the faces, edges and corners included.')
@@ -977,7 +987,7 @@ def _validate_solid_3d(vctx, physics_spec, settings_values):
     if not tetrahedra:
         issues.extend(Issue('error', path, f"stored field '{physics_spec.name}.{name}' exists on a tetrahedron mesh "
                                            'only (the rectangular-cell solid has no frequency response)')
-                      for name in HARMONIC_IMAG_FIELDS_3D
+                      for name in HARMONIC_IMAG_FIELDS_3D + PRESSURE_FIELDS_3D
                       if f'{physics_spec.name}.{name}' in (vctx.spec.study.stored_fields or []))
     return issues
 
@@ -1003,13 +1013,15 @@ def _validate_solid_3d_rules(vctx, physics_spec, settings_values, path, tetrahed
     else:
         issues.extend(_tensor_issues(vctx, physics_spec, settings_values, path))
         element_name = 'trilinear'
-    issues.extend(material_issues(vctx, physics_spec, path, SOLID_3D_TYPE_NAME, element_name, tensor=tetrahedra))
+    issues.extend(material_issues(vctx, physics_spec, path, SOLID_3D_TYPE_NAME, element_name, tensor=tetrahedra,
+                                  fluid=mixed_formulation(vctx, settings_values)))
     issues.extend(modal_study_issues(vctx, physics_spec, path, MODAL_STUDIES, THERMAL_STRAIN_COUPLING,
                                      tensor=tetrahedra,
                                      stress_stiffening=bool(settings_values.get('stress_stiffening')
                                                             or (tetrahedra
                                                                 and settings_values.get('geometric_nonlinearity')))))
     issues.extend(frequency_response_issues(vctx, physics_spec, settings_values, path, THERMAL_STRAIN_COUPLING))
+    issues.extend(viscoelastic_issues(vctx, physics_spec, settings_values, path, tetrahedra, 3))
     issues.extend(eigen_search_issues(vctx, path, bool(settings_values.get('piezoelectric')),
                                       tensor_mesh_3d=not tetrahedra))
     return issues
@@ -1039,7 +1051,8 @@ def _create_solid_3d(ctx, physics_spec, values):
                                           load_steps=values['load_steps'],
                                           nonlinear_tolerance=values['nonlinear_tolerance'],
                                           nonlinear_max_iterations=values['nonlinear_max_iterations'],
-                                          tangent_update=values['tangent_update'])
+                                          tangent_update=values['tangent_update'],
+                                          formulation=values['formulation'])
     from .solver3d import SolidMechanics3DPhysics   # lazy: the solver imports cupy
     return SolidMechanics3DPhysics(ctx.domain, linear_solver=solid_linear_solver(ctx, physics_spec),
                                    eigen_solver=ctx.solvers(physics_spec.name).get('eigen'))
@@ -1085,6 +1098,14 @@ def _lossy_response(settings_values, context) -> bool:
                 or (settings_values.get('piezoelectric') and context.material_sets(LOSS_ARRAYS[1])))
 
 
+def _complex_response_factor(settings_values, context, viscoelastic) -> bool:
+    """The factorised frequency-response pencil is complex (HarmonicSystem keeps a real one real: a real factor, the
+    complex rhs as two real solves): a loss (_lossy_response), a resistive_load electrode (j b / omega) or a
+    viscoelastic frequency term (ViscoelasticCounts.terms: complex coefficients added per frequency)."""
+    return (_lossy_response(settings_values, context)
+            or _resistive_load(settings_values, getattr(context, 'physics_spec', None)) or viscoelastic.terms > 0)
+
+
 def _resistive_load(settings_values, physics_spec) -> bool:
     """Piezoelectric with an enabled electrode feature on connection resistive_load: ModalPencil's 'loaded' pencil
     K + (j / omega_t) B - sigma M (three real terms, a complex factor)."""
@@ -1099,13 +1120,17 @@ def _tetrahedra_scalar_dofs(settings_values, mesh) -> int:
     return int(mesh.n_nodes) + (int(mesh.n_edges) if element_order(settings_values) == 2 else 0)
 
 
-def _solid_fraction(spec, mesh) -> float:
-    """Share of the estimated elements painted by a material with stiffness (youngs_modulus or c11 set): where the
+def _solid_fraction(spec, mesh, settings_values=None) -> float:
+    """Share of the estimated elements painted by a material with stiffness (youngs_modulus, c11, shear_modulus or
+    bulk_modulus set; formulation mixed in a frequency response also a viscosity: a liquid joins the solid): where the
     displacement dofs live (TetrahedronMeshEstimate.material_elements; 1 without them)."""
     from ...materials import effective_material_data   # materials imports physics.em
     painted = getattr(mesh, 'material_elements', None)
     if not painted or not int(mesh.n_elements):
         return 1.0
+    names = ('youngs_modulus', 'c11', 'shear_modulus', 'bulk_modulus')
+    if _mixed_response(settings_values, spec):
+        names += ('viscosity',)
     stiff = 0.0
     for material in spec.materials:
         try:
@@ -1114,28 +1139,47 @@ def _solid_fraction(spec, mesh) -> float:
             continue
         if any(properties.get(name) is not None and not (isinstance(properties.get(name), (int, float))
                                                           and properties.get(name) == 0)
-               for name in ('youngs_modulus', 'c11')):
+               for name in names):
             stiff += painted.get(material.name, 0.0)
     return min(stiff / int(mesh.n_elements), 1.0)
 
 
+def _mixed_response(settings_values, spec) -> bool:
+    """formulation mixed in a frequency_response study (spec bound to the solid's study: background_context)."""
+    return bool(settings_values) and settings_values.get('formulation') == MIXED \
+        and spec.study.type == FREQUENCY_RESPONSE_STUDY
+
+
 def _tetrahedra_vector_dofs(settings_values, mesh, spec) -> int:
     """Displacement unknowns: 3 x the scalar dofs of the solid share of the elements (_solid_fraction)."""
-    return 3 * int(round(_tetrahedra_scalar_dofs(settings_values, mesh) * _solid_fraction(spec, mesh)))
+    return 3 * int(round(_tetrahedra_scalar_dofs(settings_values, mesh) * _solid_fraction(spec, mesh, settings_values)))
+
+
+def _viscoelastic_counts(settings_values, mesh, spec, parameters=None):
+    """definition_viscoelastic.ViscoelasticCounts of the tetrahedra (u block: _tetrahedra_vector_dofs and 3 x the
+    scalar Lagrange entries per dof); parameters None: plain material numbers only (an expression counts as set)."""
+    order = element_order(settings_values)
+    vector_dofs = _tetrahedra_vector_dofs(settings_values, mesh, spec)
+    entries = int(round(3 * lagrange_entries_per_dof(mesh, order) * vector_dofs))
+    return viscoelastic_counts(spec, parameters, settings_values, mesh, 3, 10 if order == 2 else 4, 3, vector_dofs,
+                               entries)
 
 
 def _tetrahedra_unknowns(settings_values, mesh, spec) -> int:
     """Unknowns of the factorised operator: the displacement ones, + the potential (every scalar dof of the window: void
-    elements are dielectric) when piezoelectric."""
-    vector_dofs = _tetrahedra_vector_dofs(settings_values, mesh, spec)
-    return vector_dofs + (_tetrahedra_scalar_dofs(settings_values, mesh) if settings_values.get('piezoelectric') else 0)
+    elements are dielectric) when piezoelectric, + the P1 pressure (the member nodes) with formulation mixed."""
+    if settings_values.get('piezoelectric'):
+        return _tetrahedra_vector_dofs(settings_values, mesh, spec) + _tetrahedra_scalar_dofs(settings_values, mesh)
+    return _viscoelastic_counts(settings_values, mesh, spec).unknowns
 
 
 def _tetrahedra_entries(settings_values, mesh, spec) -> int:
     """Stored entries of the factorised CSR: per unknown, components x the scalar Lagrange entries per dof of the mesh
-    (fem.diffusion.lagrange_entries_per_dof; 3 for the vector stiffness, 4 for the coupled (u, phi) operator)."""
-    components = 4 if settings_values.get('piezoelectric') else 3
-    return int(round(components * lagrange_entries_per_dof(mesh, element_order(settings_values))
+    (fem.diffusion.lagrange_entries_per_dof; 3 for the vector stiffness, 4 for the coupled (u, phi) operator); mixed:
+    the vector stiffness + 2 nnz(B) + the pressure blocks (definition_viscoelastic.ViscoelasticCounts.entries)."""
+    if not settings_values.get('piezoelectric'):
+        return _viscoelastic_counts(settings_values, mesh, spec).entries
+    return int(round(4 * lagrange_entries_per_dof(mesh, element_order(settings_values))
                      * _tetrahedra_unknowns(settings_values, mesh, spec)))
 
 
@@ -1341,20 +1385,34 @@ def _tetrahedra_time_estimate(settings_values, mesh, context):
         return te.combine(parts + ([] if films is None else [films]))
     if context.study.type == FREQUENCY_RESPONSE_STUDY:   # the study's harmonic_factorizations (sweep_method)
         from ...model.definition_helpers import frequency_sweep_counts, reduced_sweep_time_items
+        from .definition import _FEM_ASSEMBLY_BYTES_PER_COO, _FEM_ASSEMBLY_CALLS, _pattern_sum_stream   # imports us
         sweep = frequency_sweep_counts(context)
-        # HarmonicSystem keeps a lossless pencil without a resistive load real: a real factor, the complex rhs as two
-        # real solves
-        complex_response = (_lossy_response(settings_values, context)
-                            or _resistive_load(settings_values, context.physics_spec))
+        # unknowns / nnz: the saddle point with formulation mixed (_tetrahedra_unknowns / _entries); the viscoelastic
+        # group terms and mixed blocks priced from the code (definition_viscoelastic; the host assembly price per COO
+        # entry of the triangle recipe, uncalibrated here)
+        linear = (context.solvers or {}).get('linear')
+        viscoelastic = _viscoelastic_counts(settings_values, mesh, context.spec, context.parameters)
+        extra = viscoelastic_time_items(
+            viscoelastic,
+            local=10 if order == 2 else 4, factorizations=sweep['factorizations'],
+            kind=sweep['factorizations_kind'], field_points=sweep['field_points'],
+            back_end=None if linear is None else linear.values.get('back_end'),
+            assembly_bytes_per_coo=_FEM_ASSEMBLY_BYTES_PER_COO, assembly_calls=_FEM_ASSEMBLY_CALLS,
+            pattern_sum_stream=_pattern_sum_stream, output_ops=(),
+            loss=bool(context.material_sets(LOSS_ARRAYS[0])))
+        # HarmonicSystem keeps a lossless pencil without a resistive load or a frequency term real: a real factor, the
+        # complex rhs as two real solves
+        complex_response = _complex_response_factor(settings_values, context, viscoelastic)
         work = context.solver_work('linear', unknowns=unknowns, solves=sweep['solves'],
                                    solves_kind=sweep['solves_kind'], rhs=1.0 if complex_response else 2.0,
                                    factorizations=sweep['factorizations'],
                                    factorizations_kind=sweep['factorizations_kind'],
                                    **(complex_scales if complex_response else scales))
-        if sweep['method'] == 'direct':
-            return work
         missing = ('modal basis shift-invert (private eigen solver)',) if sweep['eigenpairs'] else ()
-        return te.combine((work, te.TimeEstimate(reduced_sweep_time_items(sweep, unknowns), not_estimated=missing)))
+        parts = (*extra, *reduced_sweep_time_items(sweep, unknowns))
+        if not parts and not missing:
+            return work
+        return te.combine((work, te.TimeEstimate(parts, not_estimated=missing)))
     per_step = context.time_dependent and context.coupled
     solves, kind, _ = (1.0, 'exact', None) if per_step else context.static_solves()
     if nonlinear:   # every static solve is a Newton loop: a tangent factor per iteration
@@ -1510,6 +1568,9 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
         device_items.append((f'piezoelectric material arrays ({added} x float32)', added * FLOAT32_BYTES * elements))
     eigenfrequency = context.spec.study.type in MODAL_STUDIES
     factored = _tetrahedra_unknowns(settings_values, mesh, spec)
+    # viscoelastic group terms and the mixed u-p blocks (definition_viscoelastic; mixed: factored holds the pressure)
+    viscoelastic = _viscoelastic_counts(settings_values, mesh, spec, context.parameters)
+    displacement_factored = factored - viscoelastic.pressure_dofs
     run_items = [('output copies', 2 * FLOAT32_BYTES * elements)]
     frequency_response = context.spec.study.type == FREQUENCY_RESPONSE_STUDY
     # static / Newton solves by the 'linear' runtime: every study but frequency_response, an eigenfrequency study only
@@ -1528,7 +1589,8 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
     transient_items, factors = [], []
     # cuDSS fill of every factor of this operator: counted on the built mesh (a film of a few layers or a refined band
     # fills far less than a compact 3D mesh), else the 3D growth law
-    fill = factor_fill(mesh, order, factored, 4 if piezoelectric else 3, 3)
+    # (mixed u-p: the u block counted, scaled to the saddle point by ViscoelasticCounts.fill_scale)
+    fill = scaled_fill(factor_fill(mesh, order, displacement_factored, 4 if piezoelectric else 3, 3), viscoelastic)
     if static_solve:
         # system_fem3d plans the K_ff factor from the host CSR at the first solve (cuDSS: its lower triangle on the
         # device); in an eigenfrequency study solve_static_state releases that factor before the pencil's is planned
@@ -1537,13 +1599,15 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
         run_items += held
         transient_items += passing
     if frequency_response and linear_back_end in CUDSS_BACK_ENDS:   # the kept HarmonicSystem: K + j L, M (+ load)
-        # a lossless pencil without a resistive load keeps K real: real terms and a real factor
+        # a lossless pencil keeps K real: real terms, and without a resistive load or a viscoelastic frequency term
+        # (complex values added per frequency) a real factor
         lossy = _lossy_response(settings_values, context)
         run_items += harmonic_pencil_items(factored, factored_entries, linear_back_end,
                                            (_COMPLEX_BYTES if lossy else FLOAT64_BYTES, FLOAT64_BYTES)
                                            + ((FLOAT64_BYTES,) if loaded else ()))
         factors.append(('frequency response cuDSS factor', factored, factored_entries,
-                        _COMPLEX_BYTES if lossy or loaded else FLOAT64_BYTES, fill, linear_back_end == 'cudss_mixed'))
+                        _COMPLEX_BYTES if _complex_response_factor(settings_values, context, viscoelastic)
+                        else FLOAT64_BYTES, fill, linear_back_end == 'cudss_mixed'))
     coupled_csr = (FLOAT64_CSR_ENTRY_BYTES * factored_entries + INT32_BYTES * factored)
     # Newton tangents on the GPU: system_fem3d.device_tangent = gpu backend and a cuDSS 'linear' back end
     device_tangent = (bool(settings_values.get('geometric_nonlinearity')) and static_solve
@@ -1553,7 +1617,9 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
         run_items += held
         transient_items += passing
     coo_entries = elements * (3 * local) ** 2
-    factor_bytes = int(_TET_FILL_FACTOR[order] * host_real_lu_bytes(factored, dimensions=3))
+    factor_bytes = int(_TET_FILL_FACTOR[order] * host_real_lu_bytes(displacement_factored, dimensions=3)
+                       * viscoelastic.fill_scale)   # mixed: the saddle point fills as (dofs per node)^2
+    solid_elements = int(round(elements * _solid_fraction(spec, mesh, settings_values)))   # the output elements
     host_items = [('dof maps (P1 / P2, P0)', _INT64_BYTES * (local + 1) * elements),
                   ('element arrays, loads and holds',
                    12 * FLOAT64_BYTES * elements + 8 * FLOAT64_BYTES * 3 * scalar_dofs),
@@ -1568,14 +1634,28 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
                    max(min(elements * local ** 2, 20_000_000) * (2 * _INT64_BYTES + FLOAT32_BYTES),
                        3 * _INT64_BYTES * min(entries, EXPAND_ENTRIES))),
                   ('stiffness CSR and its free-dof copy', 2 * csr_bytes),
-                  (f'nodal outputs ({_TET_NODAL_OUTPUTS} x float64) and their element point values',
-                   _TET_NODAL_OUTPUTS * FLOAT64_BYTES * (scalar_dofs + local * elements)),
+                  (f'nodal outputs ({_TET_NODAL_OUTPUTS} x float64) and the mechanical point values',
+                   FLOAT64_BYTES * (_TET_NODAL_OUTPUTS * scalar_dofs
+                                    + 2 * _TET_POINT_OUTPUTS * local * solid_elements)),
                   # solver_fem3d._point_values: (values (m, q, 3), Voigt strains (m, q, 6)) float64 of the solid
                   # elements at the dof points and the centroid, kept until the last point group is written; a complex
                   # solution (frequency response, a complex modal pencil) adds its imaginary part
                   ('shared output point values (displacement and strains at the dof points and centroid)',
                    (2 if frequency_response or eigen_bytes == _COMPLEX_BYTES else 1) * 9 * FLOAT64_BYTES * (local + 1)
-                   * int(round(elements * _solid_fraction(spec, mesh))))]
+                   * solid_elements)]
+    # the element moduli (every study, once a modulus / viscoelastic array exists), the viscoelastic group terms and
+    # the mixed u-p blocks (definition_viscoelastic); the group matrices on the full map (3 x its scalar dofs)
+    extra_host, extra_run = viscoelastic_memory_items(
+        viscoelastic, elements=elements, local=local, scalar_dofs=scalar_dofs, matrix_rows=3 * scalar_dofs,
+        mass_entries=entries // 3, back_end=linear_back_end, loss=context.material_sets(LOSS_ARRAYS[0]),
+        dimensions=3)
+    host_items += extra_host
+    run_items += extra_run
+    if (frequency_response and (context.material_sets(LOSS_ARRAYS[0]) or viscoelastic.active)) or (
+            eigenfrequency and _lossy_pencil(settings_values, context)):
+        # stiffness3d.harmonic_matrix_pair_3d of a shown complex solution: C'' and (frequency dependent) C' copies
+        host_items.append(("harmonic output moduli C' and C'' of the shown solution (float64 (n, 6, 6))",
+                           2 * 36 * FLOAT64_BYTES * elements))
     if piezoelectric:
         host_items.extend([
             ('piezoelectric coupled operator, G^T A G and its free restriction (float64 CSR)', 3 * coupled_csr),
@@ -1665,8 +1745,8 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
                            ('frequency response summed pattern and its aligned complex / mass values', 2 * complex_csr),
                            ('frequency response solution, rhs and product vectors (complex)',
                             6 * _COMPLEX_BYTES * factored)])
-        if host_factor:   # real for a lossless pencil without a resistive load (HarmonicSystem keeps K real)
-            complex_factor = _lossy_response(settings_values, context) or loaded
+        if host_factor:   # real for a lossless pencil without a resistive load or frequency term (K kept real)
+            complex_factor = _complex_response_factor(settings_values, context, viscoelastic)
             host_items.extend(host_factor_items(linear_back_end,
                                                 ('complex' if complex_factor else 'real')
                                                 + ' SuperLU factor of the pencil (heuristic)',
@@ -2188,18 +2268,23 @@ SOLID_MECHANICS_3D = PhysicsType(
                 'mode labelled "resonance k: f = <Hz> Hz", shape scaled to a peak node |u| of 1 m (no thermal part, no '
                 'support reactions), listed by resonance_table; frequency_response: (K (1 + j eta) - omega^2 M) u = f '
                 'per frequency (loads, prescribed displacements and electrode voltages are phase-0 amplitudes; '
-                'thermal loads static), one snapshot per frequency (real parts, u_abs = |u|); optomechanics: '
+                'thermal loads static), one snapshot per frequency (real parts, u_abs = |u|; tetrahedra: the shown '
+                'stresses are Re(C*(omega) eps(u)), the loss part included, with pressure / pressure_im = -tr(sigma*) '
+                '/ 3 in Pa; tetrahedra also take the shear_modulus / bulk_modulus route, viscoelastic moduli '
+                '(viscosity, relaxation branches: see shear_relaxation_modulus_1; sweep_method direct only) and the '
+                'setting formulation); optomechanics: '
                 'em_fdfd_bor optics, optomechanical_coupling samples the modes on rings about the BOR axis '
                 '(piezoelectric and periodic axes off). The strain-optic and optical-force couplings are 2D only.',
-    settings=(DISCRETIZATION_PARAM, _TARGET_FREQUENCY_PARAM, STRESS_STIFFENING_PARAM, *GEOMETRIC_NONLINEARITY_PARAMS,
-              _PIEZOELECTRIC_PARAM, _ELECTRODE_EDGE_SIZE_PARAM, *_periodic_params(), *_pml_params()),
+    settings=(DISCRETIZATION_PARAM, FORMULATION_PARAM, _TARGET_FREQUENCY_PARAM, STRESS_STIFFENING_PARAM,
+              *GEOMETRIC_NONLINEARITY_PARAMS, _PIEZOELECTRIC_PARAM, _ELECTRODE_EDGE_SIZE_PARAM, *_periodic_params(),
+              *_pml_params()),
     features=_FEATURES,
     material_properties=(MATERIAL_PROPERTIES + (DENSITY_PARAM,) + STIFFNESS_TENSOR_PROPERTIES_3D
-                         + PIEZO_MATERIAL_PROPERTIES_3D + LOSS_PROPERTIES + INITIAL_STRESS_PROPERTIES_3D
-                         + TED_MATERIAL_PROPERTIES),
+                         + PIEZO_MATERIAL_PROPERTIES_3D + LOSS_PROPERTIES + VISCOELASTIC_PROPERTIES
+                         + INITIAL_STRESS_PROPERTIES_3D + TED_MATERIAL_PROPERTIES),
     material_schema={**MECHANICAL_SCHEMA, **DENSITY_SCHEMA},
     optional_material_schema={**OPTIONAL_STIFFNESS_SCHEMA_3D, **OPTIONAL_PIEZO_SCHEMA_3D, **OPTIONAL_LOSS_SCHEMA,
-                              **OPTIONAL_PRESTRESS_SCHEMA_3D, **OPTIONAL_TED_SCHEMA},
+                              **OPTIONAL_VISCOELASTIC_SCHEMA, **OPTIONAL_PRESTRESS_SCHEMA_3D, **OPTIONAL_TED_SCHEMA},
     state_fields=_STATE_FIELD_INFOS,
     output_fields=_FIELD_INFOS,
     source_slots=_SLOT_DOCS,

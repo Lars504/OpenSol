@@ -1,6 +1,7 @@
 """Full-grid float32 fields of the 3D solid (outputs in kernels3d order, coupled / applied inputs) on the domain's array
 module; no cupy import, so definition3d can import the names."""
 from ...core.constants import DTYPE
+from .fields import PRESSURE_FIELDS
 from .kernels3d import OUTPUT_ARRAYS_3D
 
 # Piezoelectric outputs (tetrahedra only, 0 without the setting piezoelectric; a tensor mesh renders them as 0 and keeps
@@ -15,6 +16,8 @@ INPUT_ARRAYS_3D = ('temperature_rise', 'temperature_rise_ext', 'body_force_x', '
 SOURCE_SLOTS_3D = ('temperature_rise', 'body_force_x', 'body_force_y', 'body_force_z')
 # frequency_response display fields (tetrahedra only, no state() arrays): Im of the complex displacement [m]
 HARMONIC_IMAG_FIELDS_3D = ('u_x_im', 'u_y_im', 'u_z_im')
+# frequency_response pressure display fields (tetrahedra only, nodal, no state() arrays): fields.PRESSURE_FIELDS
+PRESSURE_FIELDS_3D = PRESSURE_FIELDS
 
 
 class MechanicsFields3D:

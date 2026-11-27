@@ -1,6 +1,7 @@
 """Self-tests of the elastic PML ring of the 2D triangle solid and its energy-density outputs: the
 stretched operator identities (CPU, no model), the radiation Q of a leaky Fabry-Perot bar in plane strain against its
-closed form, and the static / modal energy densities; definition registers them."""
+closed form, a plane wave driven into the PML in the frequency response (reflection and radiated power) and the static
+/ modal energy densities; definition registers them."""
 import math
 
 import numpy as np
@@ -167,6 +168,114 @@ def _check_bar(results):
     return scaled_worst_result(errors, tolerances, measured_f_Q=measured, expected_f_Q=expected)
 
 
+# ---- solid_fem_pml_frequency_response: a plane longitudinal wave driven into the elastic PML (frequency_response) ----
+_WAVE_STEP = 0.05 * UM
+_WAVE_LENGTH = 2.0 * UM
+_WAVE_SIDE = 0.1 * UM          # strip width (planar, per m of depth: A = the width) or rod radius a (A = pi a^2)
+_WAVE_YOUNGS = 100e9           # with nu = 0 (lambda = 0): no lateral stress in the plane wave, free sides exact
+_WAVE_DENSITY = 2000.0
+_WAVE_TARGET_WAVELENGTH = 1.0 * UM   # 20 elements per wavelength at f_t
+_WAVE_PML_CELLS = 12           # 0.6 um; pml_reflection 1e-6 at f_t, R^(f / f_t) above it
+_WAVE_AMPLITUDE = 1e-10        # m, the prescribed displacement at s = 0
+_WAVE_FACTORS = (1.0, 1.5)     # x target_frequency
+_WAVE_PROBES = 10              # s = 0.1, 0.3, ..., 1.9 um at mid width
+_WAVE_RUNS = (('planar', False, 'displacement'), ('planar_mixed', False, 'mixed'),
+              ('axisymmetric', True, 'displacement'), ('axisymmetric_mixed', True, 'mixed'))
+# first estimates: beta above the P2 dispersion ~(k h)^4 / 2880; a reflected wave of r raises |W - W_0| / |W_0| to ~2 r
+_WAVE_TOLERANCES = {'reflection': 1e-2, 'wavenumber': 1e-3, 'forward amplitude': 1e-2, 'work': 2e-2}
+
+
+def _wave_speed():
+    return math.sqrt(_WAVE_YOUNGS / _WAVE_DENSITY)
+
+
+def _wave_target():
+    """target_frequency [Hz]: one wavelength of _WAVE_TARGET_WAVELENGTH."""
+    return _wave_speed() / _WAVE_TARGET_WAVELENGTH
+
+
+def _wave_positions():
+    """Probe positions s [m] along the strip."""
+    return [(0.1 + 0.2 * index) * UM for index in range(_WAVE_PROBES)]
+
+
+def _wave_spec(axisymmetric, formulation):
+    along = 'y' if axisymmetric else 'x'
+    settings = {'discretization': 'quadratic', 'formulation': formulation, 'target_frequency': _wave_target(),
+                f'pml_{along}_hi': True, 'pml_cells': _WAVE_PML_CELLS, 'pml_reflection': 1e-6}
+    if axisymmetric:
+        settings['geometry'] = 'axisymmetric'
+    drive = {'u_y': _WAVE_AMPLITUDE} if axisymmetric else {'u_x': _WAVE_AMPLITUDE}
+    features = [FeatureSpec('drive', 'displacement', [f'{along}_lo'], drive)]
+    if not axisymmetric:   # u_y = 0 is exact (nu = 0); the free ring sides match it
+        features.append(FeatureSpec('sides', 'roller', ['y_lo', 'y_hi']))
+    points = []
+    for index, position in enumerate(_wave_positions()):
+        x, y = (0.5 * _WAVE_SIDE, position) if axisymmetric else (position, 0.5 * _WAVE_SIDE)
+        points.append(GeometrySpec(f'p{index}', 'point', {'x': x, 'y': y}))
+        features.append(FeatureSpec(f'probe{index}', 'frequency_probe', [f'p{index}']))
+    size = (_WAVE_SIDE, _WAVE_LENGTH) if axisymmetric else (_WAVE_LENGTH, _WAVE_SIDE)
+    kind = 'axisymmetric' if axisymmetric else 'planar'
+    return ModelSpec(
+        title=f'Self-test: plane longitudinal wave into a 2D elastic PML ({kind}, {formulation} formulation, '
+              'frequency response)',
+        domain=DomainSpec(size_x=size[0], size_y=size[1]), geometry=points,
+        materials=[MaterialSpec('strip', properties=_elastic(_WAVE_YOUNGS, 0.0, _WAVE_DENSITY), selection=['all'])],
+        physics=[PhysicsSpec(_SOLID, _SOLID_TYPE, settings=settings, features=features)],
+        meshes=[MeshSpec(name='triangles', kind='triangles', mode='uniform', dx=_WAVE_STEP,
+                         pml_layers=_WAVE_PML_CELLS)],
+        solver_defaults=cpu_defaults(),
+        study=StudySpec(type='frequency_response',
+                        settings={'frequencies': [factor * _wave_target() for factor in _WAVE_FACTORS]}))
+
+
+def _wave_specs():
+    return {name: _wave_spec(axisymmetric, formulation) for name, axisymmetric, formulation in _WAVE_RUNS}
+
+
+def _check_wave(results_by_name):
+    """Per run and frequency: two_wave_fit of the probe phasors (reflection, beta / k, forward amplitude / U0) and the
+    drive's complex reaction work W against j omega rho c A U0^2."""
+    from ...model.analytic import two_wave_fit
+    speed = _wave_speed()
+    positions = np.array(_wave_positions())
+    errors, tolerances, details = {}, {}, {}
+    for name, axisymmetric, _ in _WAVE_RUNS:
+        results = results_by_name[name]
+        component = 'u_y' if axisymmetric else 'u_x'
+        area = math.pi * _WAVE_SIDE ** 2 if axisymmetric else _WAVE_SIDE
+        probes = [results.result(_SOLID, f'probe{index}') for index in range(_WAVE_PROBES)]
+        frequencies = np.asarray(probes[0]['x'], dtype=np.float64)
+        phasors = np.array([np.asarray(probe['series'][f'{component}_re'], dtype=np.float64)
+                            + 1j * np.asarray(probe['series'][f'{component}_im'], dtype=np.float64)
+                            for probe in probes])   # (probes, frequencies)
+        table = results.result(_SOLID, 'drive')
+        columns = table['columns']
+        work_frequencies = np.array([float(row[columns.index('frequency')]) for row in table['rows']])
+        work = np.array([float(row[columns.index('W_re')]) + 1j * float(row[columns.index('W_im')])
+                         for row in table['rows']])
+        if frequencies.size != len(_WAVE_FACTORS) or work.size != len(_WAVE_FACTORS):
+            errors[f'{name} frequency count'], tolerances[f'{name} frequency count'] = math.inf, 1.0
+            continue
+        for index, frequency in enumerate(frequencies):
+            omega = 2.0 * math.pi * frequency
+            fit = two_wave_fit(positions, phasors[:, index])
+            expected_work = 1j * omega * _WAVE_DENSITY * speed * area * _WAVE_AMPLITUDE ** 2
+            nearest = int(np.argmin(np.abs(work_frequencies - frequency)))
+            measured_work = (complex(work[nearest]) if abs(work_frequencies[nearest] / frequency - 1.0) < 1e-12
+                             else complex(math.nan))
+            label = f'{name} {frequency / _wave_target():.3g} f_t'
+            items = {'reflection': fit['reflection_abs'],
+                     'wavenumber': abs(fit['beta'] / (omega / speed) - 1.0),
+                     'forward amplitude': abs(fit['forward_abs'] / _WAVE_AMPLITUDE - 1.0),
+                     'work': abs(measured_work - expected_work) / abs(expected_work)}
+            for item, error in items.items():
+                errors[f'{label} {item}'], tolerances[f'{label} {item}'] = error, _WAVE_TOLERANCES[item]
+            details[label] = {'beta': fit['beta'], 'k': omega / speed, 'reflection_abs': fit['reflection_abs'],
+                              'W': [measured_work.real, measured_work.imag], 'W_expected': expected_work.imag}
+    return scaled_worst_result(errors, tolerances, **details)
+
+
 # ---- solid_fem_energy_density: the static and modal energy densities ----
 # 'static': a 10 x 1 mm plane-stress bar (P2, h 0.25 mm, E 100 GPa, nu 0.25), rollers x_lo / y_lo, traction T on x_hi:
 # uniaxial sigma_xx = T, so strain_energy_density = T^2 / (2 E) everywhere (exact in P2) and kinetic 0 (probes, 1e-5).
@@ -248,6 +357,22 @@ PML_2D_CASES = (
                      f'{_Q_TOLERANCE:g} (the 3D case solid_fem3d_pml_bar_radiation in 2D; first estimates, not yet '
                      'run). measured = error in tolerance units, tolerance 1.'),
         specs=lambda: {'bar': _bar_spec()}, check=lambda results_by_name: _check_bar(results_by_name['bar'])),
+    SelfTestCase(
+        name='solid_fem_pml_frequency_response',
+        label='Solid mechanics on triangles: elastic PML in the frequency response (plane wave, radiated power)',
+        description=('frequency_response study of solid_mechanics (P2 triangles of 50 nm, nu 0, E 100 GPa, rho 2000) '
+                     'on a 2 um strip (planar, 0.1 um wide, rollers on its sides, u_x = U0 on x_lo, the PML on x_hi) '
+                     'or rod (axisymmetric, radius 0.1 um, the axis on x_lo held through the ring, u_z = U0 on y_lo, '
+                     'the PML on y_hi) driven by a prescribed displacement U0 at one end into a 12-layer elastic PML at '
+                     'the other, target_frequency f_t = c / 1 um (c = sqrt(E / rho)), at f_t and 1.5 f_t, formulation '
+                     'displacement and mixed (stretched D_g, B, M_p): the outgoing wave u = U0 exp(-j k s), k = omega '
+                     '/ c. two_wave_fit of 10 frequency_probe phasors: reflection_abs '
+                     f"within {_WAVE_TOLERANCES['reflection']:g}, beta / k - 1 within "
+                     f"{_WAVE_TOLERANCES['wavenumber']:g}, forward amplitude / U0 - 1 within "
+                     f"{_WAVE_TOLERANCES['forward amplitude']:g}; the drive's reaction work W against j omega rho c A "
+                     f"U0^2 (the radiated power omega Im W / 2) within {_WAVE_TOLERANCES['work']:g} (relative). "
+                     'measured = error in tolerance units, tolerance 1 (first estimates, not yet run).'),
+        specs=_wave_specs, check=_check_wave),
     SelfTestCase(
         name='solid_fem_energy_density', label='Solid mechanics on triangles: strain and kinetic energy densities',
         description=('A plane-stress bar under a uniaxial traction T (P2): probes strain_energy_density = T^2 / (2 E) '

@@ -1,8 +1,6 @@
 """Model definition of the FDFD 'design_region' feature (em_fdfd_ez / em_fdfd_hz): the density-parametrised permittivity
 an optimization study (model.study_optimization) varies; design_density.py holds the map and its chain rule."""
-import numpy as np
-
-from ...model.geometry import domain_object_rasterizer, expand_entities, preview_pixel_centers
+from ...model.definition_helpers import preview_selection_mask
 from ...model.schema import FeatureType, Issue, Param, feature_path
 from .design_density import design_region_result
 from .definition_common import object_result
@@ -57,33 +55,6 @@ _SUMMARY = ('Marks an area whose material an optimization study may change cell 
             'to improve the optimisation objectives.')
 
 
-def _preview_selection_mask(vctx, selection):
-    """bool (mx, my) mask of a domain selection on the material-preview pixels (pixel centres inside); None when the
-    preview or the selection does not resolve."""
-    material_map = vctx.material_map()
-    if material_map is None:
-        return None
-    image, _, extent = material_map
-    try:
-        entities = expand_entities(vctx.spec, selection)
-    except (ValueError, KeyError, TypeError):
-        return None
-    if 'all' in entities:
-        return np.ones(image.shape, dtype=bool)
-    x_centres, y_centres = preview_pixel_centers(extent, image.shape)
-    object_mask = domain_object_rasterizer(vctx.shapes, x_centres, y_centres, np)
-    mask = np.zeros(image.shape, dtype=bool)
-    for entity in entities:
-        try:
-            window_mask = object_mask(entity)
-        except (ValueError, KeyError, TypeError):   # a failed part of a composite: reported at the geometry
-            continue
-        if window_mask is not None:
-            window, cropped = window_mask
-            mask[window] |= cropped
-    return mask
-
-
 def _line_in_mask(vctx, shape, mask, extent):
     """True when an axis-aligned line shape passes through a pixel of the preview mask (not axis-aligned: False)."""
     line_axes = _line_axes(shape.values, vctx.domain_size)
@@ -115,13 +86,13 @@ def _earlier_design_regions(vctx, physics_spec, feature_spec):
 def _optimization_overlap_issues(vctx, physics_spec, feature_spec, path):
     """Optimization study: errors for an earlier enabled design_region sharing preview pixels with this one, and
     warnings for source / port / objective lines of a physics of this type crossing it."""
-    mask = _preview_selection_mask(vctx, feature_spec.selection)
+    mask = preview_selection_mask(vctx, feature_spec.selection)
     if mask is None or not mask.any() or vctx.domain_size is None:
         return []
     extent = vctx.material_map()[2]
     issues = []
     for physics, feature in _earlier_design_regions(vctx, physics_spec, feature_spec):
-        other_mask = _preview_selection_mask(vctx, feature.selection)
+        other_mask = preview_selection_mask(vctx, feature.selection)
         if other_mask is None or not (mask & other_mask).any():
             continue
         if physics.name == physics_spec.name:

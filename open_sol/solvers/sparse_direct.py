@@ -28,7 +28,7 @@ import numpy as np
 from .cudss_factor import canonical_csr, csr_rows
 from .host_direct import (HOST_DIRECT_BACK_ENDS, HOST_DIRECT_MIXED_BACK_ENDS, factor_label, host_direct_available,
                           host_direct_factorization, host_direct_values_factorization, is_host_direct_factor,
-                          missing_text)
+                          missing_text, scaled_values)
 
 CUDSS_BACK_ENDS = ('cudss', 'cudss_mixed')
 BACK_ENDS = ('scipy_splu', 'cusolver_qr') + CUDSS_BACK_ENDS + HOST_DIRECT_BACK_ENDS
@@ -297,10 +297,13 @@ def resolve_back_end(choice, backend='gpu') -> str:
 class Factorization:
     """Factorised square operator of one back end; solve(rhs) maps a cupy complex128 (n,) right-hand side to the cupy
     complex128 (n,) solution, numpy to numpy when host_arrays (a host operator: the cpu backend); scipy_splu also
-    solve_host (numpy in, numpy out; float64 for a real factorize_host). host_bytes = SuperLU L + U size."""
+    solve_host (numpy in, numpy out; float64 for a real factorize_host). host_bytes = SuperLU L + U size. A SuperLU
+    factor of factorize_host(row_scale=) factors E = R A R and solves A (row_scale R, cudss_factor's convention; its
+    inertia is A's: a congruence by a positive diagonal)."""
 
     def __init__(self, back_end, n_unknowns, host_bytes, host_lu=None, device_operator=None,
-                 column_major_shape=None, host_arrays=False, value_dtype=np.complex128, ordering=None):
+                 column_major_shape=None, host_arrays=False, value_dtype=np.complex128, ordering=None,
+                 row_scale=None):
         self.back_end = back_end
         self.n_unknowns = n_unknowns
         self.host_bytes = host_bytes
@@ -308,16 +311,23 @@ class Factorization:
         self.host_arrays = bool(host_arrays)   # solve / solve_preconditioned take and return numpy (cpu backend)
         self._host_lu = host_lu
         self._ordering = ordering        # host_lu factors A[ordering][:, ordering] (factorize_host ordering), or None
+        self._row_scale = row_scale      # host_lu factors E = R A R (factorize_host row_scale, float64 (n,)), or None
         self._device_operator = device_operator
         self._column_major_shape = column_major_shape   # (nx, ny) when device_operator is on the j*nx + i index
 
     def _lu_solve(self, rhs, trans='N'):
-        """numpy x of A x = rhs (trans 'T': A^T) by the host SuperLU factor, through its symmetric pre-ordering."""
+        """numpy x of A x = rhs (trans 'T': A^T; rhs (n,) or (n, k)) by the host SuperLU factor, through its symmetric
+        pre-ordering and its equilibration (a factor of E = R A R: x = R E^-1 R rhs; A^T = R^-1 E^T R^-1 alike)."""
+        scale = self._row_scale
+        if scale is not None:
+            scale = scale if rhs.ndim == 1 else scale[:, None]
+            rhs = rhs * scale
         if self._ordering is None:
-            return self._host_lu.solve(rhs, trans=trans)
-        solution = np.empty_like(rhs)
-        solution[self._ordering] = self._host_lu.solve(rhs[self._ordering], trans=trans)
-        return solution
+            solution = self._host_lu.solve(rhs, trans=trans)
+        else:
+            solution = np.empty_like(rhs)
+            solution[self._ordering] = self._host_lu.solve(rhs[self._ordering], trans=trans)
+        return solution if scale is None else solution * scale
 
     def solve(self, rhs, transpose=False):
         """Solution x of A x = rhs (transpose: A^T x = rhs, unconjugated, the adjoint solve); scipy_splu moves rhs to
@@ -501,24 +511,47 @@ def _refreshed_on_device(previous, operator, back_end, symmetric, symmetrizer, d
     return True
 
 
-def factorize_host(host_operator, real=False, ordering=None, orderings=None) -> Factorization:
+def factorize_host(host_operator, real=False, ordering=None, orderings=None, row_scale=None) -> Factorization:
     """'scipy_splu' Factorization of a square scipy sparse operator already on the host (cast to complex128 CSC, float64
     with real: a real operator, e.g. a symmetric stiffness pencil), with the FDFD SuperLU options and host-byte count;
     solve it with solve_host. ordering: (n,) elimination order of the unknowns (grid_nested_dissection), None = MMD
-    (orderings: a SuperLUOrdering whose kept order of the same pattern replaces the MMD pass, kept otherwise)."""
+    (orderings: a SuperLUOrdering whose kept order of the same pattern replaces the MMD pass, kept otherwise).
+    row_scale: (n,) R > 0: SuperLU factors E = R A R entry by entry (the pattern of A, so a kept ordering still
+    matches) and every solve returns A's solution x = R E^-1 R b (cuDSS / host_direct's convention); None = A itself."""
     n_rows, n_columns = host_operator.shape
     if n_rows != n_columns:
         raise ValueError(f"factorize_host needs a square operator, got shape {host_operator.shape}")
     if real and np.iscomplexobj(host_operator.data):
         raise ValueError('factorize_host(real=True) needs a real operator')
     value_dtype = np.float64 if real else np.complex128
+    if row_scale is not None:
+        host_operator, row_scale = _equilibrated_host(host_operator, row_scale, value_dtype)
     if ordering is None:
-        return _ordered_superlu(host_operator, value_dtype, orderings)
-    ordering = np.asarray(ordering, dtype=np.int64)
-    if ordering.shape != (n_rows,) or not np.array_equal(np.bincount(ordering, minlength=n_rows), np.ones(n_rows)):
-        raise ValueError(f'factorize_host: ordering must be a permutation of the {n_rows} unknowns')
-    return _superlu_factorization(symmetric_permutation(host_operator, ordering).astype(value_dtype),
-                                  value_dtype=value_dtype, ordering=ordering)
+        factor = _ordered_superlu(host_operator, value_dtype, orderings)
+    else:
+        ordering = np.asarray(ordering, dtype=np.int64)
+        if ordering.shape != (n_rows,) or not np.array_equal(np.bincount(ordering, minlength=n_rows),
+                                                             np.ones(n_rows)):
+            raise ValueError(f'factorize_host: ordering must be a permutation of the {n_rows} unknowns')
+        factor = _superlu_factorization(symmetric_permutation(host_operator, ordering).astype(value_dtype),
+                                        value_dtype=value_dtype, ordering=ordering)
+    factor._row_scale = row_scale
+    return factor
+
+
+def _equilibrated_host(host_operator, row_scale, value_dtype):
+    """(CSR of E = R A R on the operator's own CSR index arrays (pattern unchanged, explicit zeros kept), R as float64
+    (n,)) of a host scipy operator; ValueError unless R is (n,), finite and > 0."""
+    import scipy.sparse
+    host_csr = host_operator.tocsr()
+    n_rows = int(host_csr.shape[0])
+    row_scale = np.asarray(row_scale, dtype=np.float64).reshape(-1)
+    if row_scale.shape != (n_rows,) or not (np.isfinite(row_scale).all() and (row_scale > 0.0).all()):
+        raise ValueError(f'factorize_host row_scale must be ({n_rows},), finite and > 0')
+    # one value copy (value_dtype) beside A's: booked by the callers' estimators (mechanics definition_viscoelastic)
+    values = scaled_values(host_csr.data, host_csr.indptr, host_csr.indices, row_scale, None, value_dtype)
+    return scipy.sparse.csr_matrix((values, host_csr.indices, host_csr.indptr), shape=host_csr.shape,
+                                   copy=False), row_scale
 
 
 class SuperLUOrdering:
@@ -1069,13 +1102,14 @@ class SparseDirectSolver:
         return self._counted(factor, start)
 
     def factorize_host(self, matrix, real=False, symmetric=False, positive_definite=False, symmetrizer=None,
-                       row_scale=None, previous=None, symmetric_known=False, defer_check=False):
+                       row_scale=None, previous=None, symmetric_known=False, defer_check=False, scale_superlu=False):
         """Factorization (solve_host; float64 with real) of a host scipy sparse matrix, counted: cuDSS on the cuDSS back
         ends (cudss_factorization options; a refusal of an 'auto' runtime: SuperLU, fall_back), MUMPS / PARDISO on the
         host direct back ends (host_direct_factorization, the same options; refusals raise), else host SuperLU whatever
-        the back end (the options ignored). symmetric_known: a canonical symmetric CSR whose index arrays are never
-        modified in place (no canonical copy or asymmetry check; cuDSS matches the planned pattern by identity).
-        defer_check (cuDSS only, K1): as factorize."""
+        the back end (the options ignored; scale_superlu: it factors R A R of row_scale too, factorize_host(row_scale=),
+        for operators whose rows carry different units, e.g. a saddle point). symmetric_known: a canonical symmetric
+        CSR whose index arrays are never modified in place (no canonical copy or asymmetry check; cuDSS matches the
+        planned pattern by identity). defer_check (cuDSS only, K1): as factorize."""
         from .cudss_factor import CUDSS_REFUSALS
         start = time.perf_counter()
         factor = None
@@ -1094,7 +1128,8 @@ class SparseDirectSolver:
                 if not self.fall_back(error, matrix.shape[0]):
                     raise
         if factor is None:
-            factor = factorize_host(matrix, real=real, orderings=self.orderings)
+            factor = factorize_host(matrix, real=real, orderings=self.orderings,
+                                    row_scale=row_scale if scale_superlu else None)
         return self._counted(factor, start)
 
     def fall_back(self, error, n_unknowns) -> bool:
@@ -1128,7 +1163,8 @@ class SparseDirectSolver:
             return HostPencil(indptr, indices, term_values, symmetric=symmetric, symmetric_known=symmetric_known)
         return self.device_pencil(indptr, indices, term_values, symmetric=symmetric, symmetric_known=symmetric_known)
 
-    def factorize_pencil(self, pencil, coefficients, row_scale=None, previous=None, extra=None, defer_check=True):
+    def factorize_pencil(self, pencil, coefficients, row_scale=None, previous=None, extra=None, defer_check=True,
+                         scale_superlu=False):
         """CudssFactorization of sum_k c_k X_k (+ extra) of a DevicePencil (symmetric request = pencil.symmetric),
         counted, all on the device (CudssFactorization.refactorize_device_values: values, equilibration, lower-triangle
         take, no host CSR or asymmetry check): a previous factor of the same options is refreshed (checked by its first
@@ -1136,7 +1172,8 @@ class SparseDirectSolver:
         read without a solve, e.g. inertia counts), else a new one is planned from the device values. A HostPencil:
         the HostDirectFactorization of the host values (_factorize_host_pencil, the same rules).
         extra: (pencil.slots positions, values) added to the combined values (E7-8: a port DtN block; symmetric with a
-        symmetric pencil, its lower entries only for a lower_stored one, as the caller vouches)."""
+        symmetric pencil, its lower entries only for a lower_stored one, as the caller vouches). After a fall_back the
+        host SuperLU of the combined values ignores row_scale unless scale_superlu (as factorize_host)."""
         if isinstance(pencil, HostPencil):
             return self._factorize_host_pencil(pencil, coefficients, row_scale, previous, extra, defer_check)
         import cupy as cp
@@ -1179,7 +1216,8 @@ class SparseDirectSolver:
         import scipy.sparse
         host = scipy.sparse.csr_matrix((cp.asnumpy(pencil.full_values(values)), pencil.indices, pencil.indptr),
                                        shape=(pencil.n_rows, pencil.n_rows))
-        return self._counted(factorize_host(host, real=real, orderings=self.orderings), start)
+        scale = None if not scale_superlu or row_scale is None else cp.asnumpy(row_scale)
+        return self._counted(factorize_host(host, real=real, orderings=self.orderings, row_scale=scale), start)
 
     def _factorize_host_pencil(self, pencil, coefficients, row_scale, previous, extra, defer_check):
         """HostDirectFactorization of sum_k c_k X_k (+ extra) of a HostPencil, counted: a previous factor of the same

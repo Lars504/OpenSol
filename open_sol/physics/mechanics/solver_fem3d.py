@@ -31,23 +31,27 @@ from ...fem.dofs import bloch_prolongation
 from ...fem.dofs3d import lagrange_dofs_3d
 from ...fem.elasticity import StressField
 from ...fem.elasticity3d import (CENTROID_3D, COMPONENTS, TangentAssembler3D, assemble_body_load_3d,
-                                 assemble_elastic_stiffness_3d, assemble_face_traction_3d,
+                                 assemble_elastic_stiffness_3d, assemble_elastic_stiffness_groups_3d,
+                                 assemble_face_traction_3d,
                                  assemble_geometric_stiffness_3d, assemble_stress_load_3d, element_gradients_3d,
                                  element_strains_3d, initial_stress_force_3d,
                                  local_dof_points_3d, nodal_average_3d)
 from ...fem.elements3d import lagrange_basis_3d
 from ...fem.mesh3d import POOR_RADIUS_RATIO
+from ...fem.mixed_elasticity3d import (assemble_pressure_terms_3d, nodal_pressure_3d, pressure_at_3d,
+                                       pressure_space_3d)
 from ...fem.reduced_outputs import field_policy, wants_fields
 from ...fem.renderer3d import LagrangeSampleRenderer
 from ...fem.sampling3d import centroid_values_3d, evaluate_lagrange_3d
 from ...solvers.arpack_shift_invert import ArpackShiftInvertSolver
 from .bloch3d import bloch_cell_3d
 from .fields3d import (ELECTRIC_OUTPUT_ARRAYS_3D, ENERGY_OUTPUT_ARRAYS_3D, HARMONIC_IMAG_FIELDS_3D, INPUT_ARRAYS_3D,
-                       OUTPUT_ARRAYS_3D, SOURCE_SLOTS_3D)
-from .frequency_response import FrequencyPoint, HarmonicSystem
-from .materials import (DENSITY_SCHEMA, ELECTROMECHANICAL_ARRAYS_3D, EXPANSION_ARRAYS, LOSS_ARRAYS, MECHANICAL_SCHEMA,
-                        PERMITTIVITY_TENSOR_ARRAYS_3D, PIEZO_DEFAULTS_3D, PIEZO_TENSOR_ARRAYS_3D, PRESTRESS_ARRAYS_3D,
-                        PRESTRESS_NAMES, STIFFNESS_ARRAYS, STIFFNESS_TENSOR_ARRAYS_3D, lame_coefficients)
+                       OUTPUT_ARRAYS_3D, PRESSURE_FIELDS_3D, SOURCE_SLOTS_3D)
+from .frequency_response import REACTION_WORK, FrequencyPoint, FrequencyTerm, HarmonicSystem
+from .materials import (DENSITY_SCHEMA, ELECTROMECHANICAL_ARRAYS_3D, EXPANSION_ARRAYS, ISOTROPIC_PATTERN_3D,
+                        LOSS_ARRAYS, MECHANICAL_SCHEMA, PERMITTIVITY_TENSOR_ARRAYS_3D, PIEZO_DEFAULTS_3D,
+                        PIEZO_TENSOR_ARRAYS_3D, PRESTRESS_ARRAYS_3D, PRESTRESS_NAMES, STIFFNESS_ARRAYS,
+                        STIFFNESS_TENSOR_ARRAYS_3D, VISCOELASTIC_ARRAYS, lame_coefficients, lame_from_moduli)
 from .modal import ModalPencil, MultiShiftModes
 from .nonlinear_start import NonlinearStart, solve_from_start
 from .piezo import ELECTRODE_CONNECTIONS, RESISTIVE_LOAD, Electrode, PiezoSystem
@@ -55,10 +59,14 @@ from .piezo_fem3d import (block_layout, check_permittivity_3d, coupled_mass_3d, 
                           permittivity_tensor_3d, piezo_tensor_3d, potential_active)
 from .pml3d import DEFAULT_PML_REFLECTION, elastic_pml_shell_3d, ring_wave_speed
 from .renderer3d import SolidRenderer3D
-from .solver_common import MATERIAL_STATE_ARRAYS, FEMSolidCommon, _copy_or_none, host_array as _host
-from .stiffness3d import check_positive_definite_3d, element_stiffness_3d, stress_3d, thermal_stress_3d
+from .solver_common import (MATERIAL_STATE_ARRAYS, FEMSolidCommon, HarmonicOperators, _copy_or_none,
+                            host_array as _host, mixed_harmonic_operators)
+from .stiffness3d import (check_positive_definite_3d, element_stiffness_3d, harmonic_matrix_pair_3d, stress_3d,
+                          thermal_stress_3d, unit_modulus_matrix_3d)
 from .system_fem3d import ElasticFEMSystem3D
 from .tangent_update import TangentPolicy, newton_proposer
+from .viscoelastic import (DISPLACEMENT, FORMULATIONS, MIXED, element_moduli, group_indices, harmonic_parts,
+                           member_mask, parameter_groups)
 
 _EXPANSION_NAMES = ('alpha_xx', 'alpha_yy', 'alpha_zz')
 # MaterialGrid arrays the kept static state (prestress) depends on; another changed array (optics) keeps it
@@ -69,7 +77,8 @@ _PRESTRESS_INPUTS = STIFFNESS_ARRAYS | EXPANSION_ARRAYS | PRESTRESS_NAMES
 _PRIMARY_OUTPUTS = ('u_x', 'u_y', 'u_z', 'u_abs', 'electric_potential')
 _ELECTRIC_POINT_OUTPUTS = tuple(name for name in ELECTRIC_OUTPUT_ARRAYS_3D if name not in _PRIMARY_OUTPUTS)
 _OUTPUT_GROUPS = {'primary': _PRIMARY_OUTPUTS,
-                  'mechanical': tuple(name for name in OUTPUT_ARRAYS_3D if name not in _PRIMARY_OUTPUTS),
+                  'mechanical': tuple(name for name in OUTPUT_ARRAYS_3D if name not in _PRIMARY_OUTPUTS)
+                  + PRESSURE_FIELDS_3D,   # pressure / pressure_im: nodal only (no state() arrays)
                   'electric': _ELECTRIC_POINT_OUTPUTS,
                   'energy': ENERGY_OUTPUT_ARRAYS_3D}
 # mode_surface_tensors columns (the mode_shapes result's stress / strain component order)
@@ -111,9 +120,22 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
                  piezoelectric: bool = False, periodic=(False, False, False), bloch_k=(0.0, 0.0, 0.0), pml_faces=(),
                  pml_reflection: float = DEFAULT_PML_REFLECTION, stress_stiffening: bool = False, free_body=None,
                  geometric_nonlinearity: bool = False, load_steps: int = 1, nonlinear_tolerance: float = 1e-8,
-                 nonlinear_max_iterations: int = 25, tangent_update: str = 'when_slow'):
+                 nonlinear_max_iterations: int = 25, tangent_update: str = 'when_slow',
+                 formulation: str = DISPLACEMENT):
         if order not in (1, 2):
             raise ValueError(f'order must be 1 (linear) or 2 (quadratic), got {order!r}')
+        # unknowns: the displacement, or (mixed, frequency_response only) displacement and pressure
+        if formulation not in FORMULATIONS:
+            raise ValueError(f"formulation must be one of {', '.join(FORMULATIONS)}, got {formulation!r}")
+        self.formulation = formulation
+        if formulation == MIXED:
+            refused = [text for text, flag in (
+                ('discretization linear', order != 2), ('piezoelectric', piezoelectric),
+                ('stress_stiffening', stress_stiffening), ('geometric_nonlinearity', geometric_nonlinearity),
+                ('an elastic PML', bool(tuple(pml_faces))), ('periodic axes', any(periodic))) if flag]
+            if refused:
+                raise ValueError(f"formulation mixed is not available with {', '.join(refused)} (quadratic, no "
+                                 'piezoelectric, prestress, PML or periodic axes)')
         if stress_stiffening and piezoelectric:
             raise ValueError('stress_stiffening is not available with piezoelectric on')
         if geometric_nonlinearity and piezoelectric:
@@ -220,7 +242,13 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
         self._shows_mode = False
         self._shows_harmonic = False                             # a frequency-response solution is shown
         self._shows_complex = False                              # the shown solution is complex (harmonic, Bloch)
-        self._harmonic_operators = None                          # host (mass, loss or None) of the frequency response
+        self._harmonic_operators = None                          # HarmonicOperators of the frequency response
+        self._moduli = None                                      # viscoelastic.ElementModuli of the last assembly
+        self._frequency_elements = None                          # bool members with omega-dependent moduli, or None
+        self._output_moduli = None                               # (C', C'') (n, 6, 6) of a shown complex solution
+        self._potential_im = None                                # Im phi of a shown piezoelectric response
+        self._pressure = None                                    # mixed: complex pressure unknowns of a shown one
+        self._pressure_space = None                              # mixed: its fem PressureSpace3D (shared, read-only)
         self._harmonic = None                                    # elastic frequency_response.HarmonicSystem
         self.reduced_sweep = None                                # info of plan_frequency_response, or None
         self._field_policy = None                                # fem.reduced_outputs field policy of that plan
@@ -316,6 +344,12 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
         if {*LOSS_ARRAYS, *DENSITY_SCHEMA} & names:
             self._harmonic_operators = None
             self._drop_harmonic()
+        if VISCOELASTIC_ARRAYS & names:   # the frequency terms follow (no re-assembly: a laminar_flow viscosity of T)
+            self._harmonic_operators = None
+            self._moduli = None
+            self._drop_harmonic()
+            if self.formulation == MIXED:   # membership follows the viscosity (liquids)
+                self.system.operator_dirty = True
         if names & _PRESTRESS_INPUTS or (self.piezoelectric and ELECTROMECHANICAL_ARRAYS_3D & names):
             self._drop_prestress()   # the static state and K_sigma (optics or other arrays leave them)
 
@@ -329,6 +363,11 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
             self._static_solve()
         if re_solve or dt is None or not math.isfinite(dt):
             self._record_probes(t)
+
+    def _refuse_mixed(self, what) -> None:
+        """ValueError for the mixed formulation outside a frequency response."""
+        if self.formulation == MIXED:
+            raise ValueError(f'{self._label()}: formulation mixed runs in the frequency_response study only, not {what}')
 
     def _static_refused(self) -> str:
         """Why the solid has no static solve ('' when it has one): periodic axes, an elastic PML or free rigid
@@ -348,6 +387,7 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
         if system.bloch is not None or self.pml_faces:
             what = 'periodic axes (Bloch cells)' if system.bloch is not None else 'an elastic PML'
             raise ValueError(f'{self._label()}: {what} is solved by the eigenfrequency study only, not by static solves')
+        self._refuse_mixed('a static solve')
         if system.operator_dirty:
             self._assemble()
         self._refuse_free_body('a static solve')
@@ -623,6 +663,8 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
             summary += f'; Bloch cell ({self.system.bloch.text()})'
         if self.system.pml is not None and summary:
             summary += f'; elastic PML ({self.system.pml.text()})'
+        if self._harmonic_operators is not None and summary:
+            summary += self._harmonic_operators.summary()
         return summary
 
     def renderer(self):
@@ -848,6 +890,7 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
         complex modes; loss / PML: the damped complex pencil); finish(ModalSolve) expands piezo modes and evaluates the
         squeeze films. lowest_target [Hz] (None: a band) <= 0 with free rigid motions raises."""
         system = self.system
+        self._refuse_mixed('vibration modes')
         if system.operator_dirty:
             self._assemble()
         if system.n_rigid_motions and lowest_target is not None and lowest_target <= 0.0:
@@ -915,7 +958,7 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
         mode = np.asarray(resonance.displacement)
         omega = float(resonance.omega)   # the time-averaged energy densities of the mode
         if np.iscomplexobj(mode):
-            self._write_complex_outputs(mode, omega=omega)
+            self._write_complex_outputs(mode, omega=omega, viscoelastic=False)   # modes: the relaxed moduli
         else:
             mode = mode.astype(np.float64, copy=False)
             n_vector = COMPONENTS * self.system.n_dofs
@@ -995,8 +1038,9 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
             self._piezo_system.clear_harmonic_plan()
 
     def _harmonic_inputs(self):
-        """(load, mass, loss) of a driven solve: the checks, assembly, harmonic operators, relaxed prestress and the
-        elastic HarmonicSystem (kept as _harmonic)."""
+        """(load, HarmonicOperators) of a driven solve: the checks, assembly, harmonic operators, relaxed prestress and
+        the elastic HarmonicSystem (kept as _harmonic; with the viscoelastic group terms; mixed: the u-p system); the
+        load over every unknown (mixed: [f; 0])."""
         system = self.system
         if system.bloch is not None or self.pml_faces:
             what = 'periodic axes (Bloch cells)' if system.bloch is not None else 'an elastic PML'
@@ -1004,35 +1048,55 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
                              'response')
         if system.operator_dirty:
             self._assemble()
-        # frequency independent: kept until a load input changes (_loads_dirty) or an assembly replaces the solid set;
-        # the dead loads only: the initial stress and thermal strain are static (the prestress), never a drive
+        if self._harmonic_operators is None:
+            self._harmonic_operators = self._build_harmonic_operators()
+        operators = self._harmonic_operators
+        # frequency independent: kept until a load input changes (_loads_dirty), an assembly replaces the solid set or
+        # the unknown count changes; the dead loads only: the initial stress and thermal strain are static (the
+        # prestress), never a drive; the mixed pressure rows carry no load
         key = (system.full, self._solid)
-        if self._harmonic_load is None or any(old is not new for old, new in zip(self._harmonic_load[0], key)):
+        kept = self._harmonic_load
+        n_load = operators.n_unknowns if operators.pressure is not None else COMPONENTS * system.n_dofs
+        if kept is None or any(old is not new for old, new in zip(kept[0], key)) or kept[1].size != n_load:
             load = self._external_load()
+            if load.size < n_load:
+                # booked (estimate): the padded mixed load, float64 (3 n_u + n_p,), host (kept per sweep)
+                load = np.concatenate([load, np.zeros(n_load - load.size)])
             load.flags.writeable = False
             self._harmonic_load = (key, load)
         load = self._harmonic_load[1]
-        if self._harmonic_operators is None:
-            self._harmonic_operators = self._build_harmonic_operators()
-        mass, loss = self._harmonic_operators
         if not self.piezoelectric:
             if self.prestressed and (self._prestress is None or self._prestress[0]):
                 self.solve_static_state(with_loads=False)   # drops _harmonic
             if self._harmonic is None:
-                self._harmonic = HarmonicSystem(self._pencil_stiffness(with_loads=False), loss, mass, system.free,
-                                                runtime=system.runtime)
-        return load, mass, loss
+                operator = (self._pencil_stiffness(with_loads=False) if operators.operator is None
+                            else operators.operator)
+                self._harmonic = HarmonicSystem(operator, operators.loss, operators.mass, operators.free,
+                                                column_map=operators.column_map, runtime=system.runtime,
+                                                terms=operators.terms, scale_terms=operators.scale_terms)
+        return load, operators
 
-    def _harmonic_solve(self, omega, load, mass, loss, fields=True):
+    def _harmonic_solve(self, omega, load, operators, fields=True):
         """(x, A x) over every dof at omega [rad/s] (elastic: A x exact only at the output rows); fields False: x too
         (the reduced model, or a direct solve whose solution the HarmonicSystem keeps for publish, R6)."""
         system = self.system
         if self.piezoelectric:
-            return self._piezo_system.solve_harmonic(omega, mass, loss, load, system.held_values, self._piezo_counters,
-                                                     fields=fields)
+            return self._piezo_system.solve_harmonic(omega, operators.mass, operators.loss, load, system.held_values,
+                                                     self._piezo_counters, fields=fields)
         if not self._harmonic.has_output_rows:   # also with fields: A x is read only at the record rows
             self._harmonic.set_output_rows(self._harmonic_output_rows())
-        return self._harmonic.solve(omega, system.fixed_values(), load, fields=fields, product_at_rows=True)
+        return self._harmonic.solve(omega, self._harmonic_fixed(operators), load, fields=fields, product_at_rows=True)
+
+    def _harmonic_fixed(self, operators) -> np.ndarray:
+        """Held values over every unknown of the elastic harmonic system: the system's u values (0 on free and inactive
+        dofs), mixed + 0 on every pressure dof (the gauges of enclosed incompressible regions are held at 0); ValueError
+        when they change the volume of an enclosed incompressible region (check_held_volumes)."""
+        fixed = self.system.fixed_values()
+        if operators.pressure is None:
+            return fixed
+        fixed = np.concatenate([fixed, np.zeros(operators.n_unknowns - fixed.size)])
+        operators.check_held_volumes(fixed, self._label)
+        return fixed
 
     def _harmonic_output_rows(self) -> np.ndarray:
         """Int64 rows (node x 3 + component) the frequency probes and support reactions read."""
@@ -1055,17 +1119,18 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
         frequencies = np.asarray(frequencies, dtype=np.float64).ravel()
         if not (frequencies.size and np.all(np.isfinite(frequencies)) and np.all(frequencies > 0.0)):
             raise ValueError(f'{self._label()}: a reduced frequency sweep needs frequencies > 0 Hz')
-        load, mass, loss = self._harmonic_inputs()
+        load, operators = self._harmonic_inputs()
         omegas = 2.0 * math.pi * frequencies
         reduced = dict(tolerance=options.get('tolerance', 1e-6), moments=options.get('moments', 4),
                        max_points=options.get('max_points', 40), modal_count=options.get('modal_count', 20),
                        eigen_solver=self.eigen_solver, label=self._label())
         rows = self._harmonic_output_rows()
         if self.piezoelectric:
-            info = self._piezo_system.plan_harmonic(omegas, method, mass, loss, load, self.system.held_values,
-                                                    self._piezo_counters, rows=rows, **reduced)
+            info = self._piezo_system.plan_harmonic(omegas, method, operators.mass, operators.loss, load,
+                                                    self.system.held_values, self._piezo_counters, rows=rows,
+                                                    **reduced)
         else:
-            info = self._harmonic.plan_reduced(omegas, method, self.system.fixed_values(), load, **reduced)
+            info = self._harmonic.plan_reduced(omegas, method, self._harmonic_fixed(operators), load, **reduced)
             self._harmonic.set_output_rows(rows)
         self._field_policy = field_policy(options, frequencies)
         self.reduced_sweep = info
@@ -1083,18 +1148,19 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
         if not (math.isfinite(frequency) and frequency > 0.0):
             raise ValueError(f'{self._label()}: a frequency response needs a frequency > 0 Hz, got {frequency!r}')
         system = self.system
-        load, mass, loss = self._harmonic_inputs()
+        load, operators = self._harmonic_inputs()
         omega = 2.0 * math.pi * frequency
         fields = wants_fields(self._field_policy, frequency)
         planned = self.reduced_sweep is not None
         # a skipped piezoelectric direct frequency still solves in full (its electrode charges read every phi row)
-        solution, product = self._harmonic_solve(omega, load, mass, loss,
+        solution, product = self._harmonic_solve(omega, load, operators,
                                                  fields or (not planned and self.piezoelectric))
         electrodes = self._piezo_system.electrode_values(solution, product) if self.piezoelectric else {}
         self.frequency_points.append(FrequencyPoint(frequency, electrodes))
         n_vector = COMPONENTS * system.n_dofs
+        # mixed (x = [u; p]): the reactions are the u rows of A x - f, which hold the coupling -B^T p
         self._record_harmonic(frequency, solution[:n_vector].reshape(-1, COMPONENTS),
-                              (product[:n_vector] - load).reshape(-1, COMPONENTS))
+                              (product[:n_vector] - load[:n_vector]).reshape(-1, COMPONENTS))
         if fields:
             self._show_frequency_response(solution, omega)
         self._unpublished_frequency = None if fields else frequency
@@ -1113,12 +1179,22 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
         if solution is None and self.reduced_sweep is None and self._harmonic is not None:
             solution = self._harmonic.last_solution()
         if solution is None:
-            load, mass, loss = self._harmonic_inputs()
-            solution, _ = self._harmonic_solve(omega, load, mass, loss)
+            load, operators = self._harmonic_inputs()
+            solution, _ = self._harmonic_solve(omega, load, operators)
         self._show_frequency_response(solution, omega)
 
     def _show_frequency_response(self, solution, omega):
-        self._write_complex_outputs(solution, omega=omega)
+        """Show a response over every unknown (mixed: x = [u; p], the pressure unknowns on the operators' space)."""
+        operators = self._harmonic_operators
+        if operators is not None and operators.pressure is not None:
+            if solution.size != operators.n_unknowns:
+                raise ValueError(f'{self._label()}: a mixed solution of {solution.size} values, the system has '
+                                 f'{operators.n_unknowns} unknowns')
+            n_vector = COMPONENTS * self.system.n_dofs
+            self._write_complex_outputs(solution, omega=omega, pressure=solution[n_vector:],
+                                        space=operators.pressure)
+        else:
+            self._write_complex_outputs(solution, omega=omega)
         self._shows_mode, self._shows_harmonic = False, True
         self.selected_resonance = None
 
@@ -1137,23 +1213,27 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
     def register_support(self, region):
         """Keep a support feature's region: its complex reaction is recorded per solved frequency."""
         self._supports.append(region)
-        self._harmonic_reactions[region.name] = HarmonicProbeRecord(('F_x', 'F_y', 'F_z'), unit='N',
+        self._harmonic_reactions[region.name] = HarmonicProbeRecord(('F_x', 'F_y', 'F_z', REACTION_WORK), unit='N',
                                                                     label=f'Reaction of {region.name}')
         return region
 
     def _record_harmonic(self, frequency, displacement, residual):
         """Record the frequency probes (complex nodal displacement (n_dofs, 3) at their points) and the support
-        reactions (sum of the complex A x - f (n_dofs, 3) over each support's held active dofs)."""
+        reactions (sum of the complex A x - f (n_dofs, 3) over each support's held active dofs) with their work W = sum
+        R u_held."""
         probes, supports = self._record_layout()
         for (record, _, _), (dofs, weights) in zip(self.frequency_probes, probes):
             values = weights @ displacement[dofs]   # (3,) complex: the basis at the point, 0 on inactive dofs
             record.record(frequency, {name: complex(values[component])
                                       for component, name in enumerate(record.components)})
+        held_values = self.system.held_values   # full-mesh rows, as the residual
         for region, rows in zip(self._supports, supports):
             totals = [complex(residual[component_rows, component].sum())
                       for component, component_rows in enumerate(rows)]
+            work = sum(complex(residual[component_rows, component] @ held_values[component_rows, component])
+                       for component, component_rows in enumerate(rows))
             self._harmonic_reactions[region.name].record(frequency, {'F_x': totals[0], 'F_y': totals[1],
-                                                                     'F_z': totals[2]})
+                                                                     'F_z': totals[2], REACTION_WORK: work})
 
     def _record_layout(self):
         """([(element dofs, basis weights at the point, 0 on inactive dofs)] per frequency probe, [(held active dof
@@ -1175,24 +1255,129 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
             kept = self._record_rows = (key, probes, supports)
         return kept[1], kept[2]
 
-    def _build_harmonic_operators(self):
-        """Host (mass, loss or None) of the last assembly: the consistent mass of the solid elements (piezoelectric: with
-        the massless potential block) and the loss operator eta K (mechanical_loss_factor of the solid elements;
-        piezoelectric: [[eta K, 0], [0, +tan delta K_phiphi]] with the dielectric_loss_tangent of the window elements)."""
+    def _build_harmonic_operators(self) -> HarmonicOperators:
+        """HarmonicOperators of the last assembly: the consistent mass of the solid elements (piezoelectric: with the
+        massless potential block), the loss operator eta K (mechanical_loss_factor of the solid elements, viscoelastic
+        ones included: eta multiplies their G0, K0; piezoelectric: [[eta K, 0], [0, +tan delta K_phiphi]] with the
+        dielectric_loss_tangent of the window elements), the system's free set and the viscoelastic group terms
+        (operator None: the pencil stiffness; piezoelectric: the PiezoSystem route, no terms); formulation mixed:
+        _mixed_operators."""
         import scipy.sparse
+        if self.formulation == MIXED:
+            return self._mixed_operators()
         system = self.system
         mass = system.mass(self._solid_density('a frequency response'))
         stiffness_loss = self._stiffness_loss(stretched=False)
+        n_unknowns = COMPONENTS * system.n_dofs
         if not self.piezoelectric:
-            return mass, stiffness_loss
+            terms, groups = self._viscoelastic_terms()
+            return HarmonicOperators(None, stiffness_loss, mass, system.free, n_unknowns, terms=terms, groups=groups)
+        self._viscoelastic_moduli()   # refreshes _frequency_elements
+        if self._frequency_elements is not None and self._frequency_elements.any():
+            raise ValueError(f'{self._label()}: frequency-dependent moduli (viscosity, relaxation branches) are not '
+                             'available with piezoelectric on')
         tan_delta = self._loss_values(LOSS_ARRAYS[1], self._window_elements)
         if stiffness_loss is None and not tan_delta.any():
-            return coupled_mass_3d(mass), None
+            return HarmonicOperators(None, None, coupled_mass_3d(mass), None, n_unknowns + system.n_dofs)
         if stiffness_loss is None:
             stiffness_loss = scipy.sparse.csr_matrix(system.operator.shape)
         loss = coupled_operator_3d(system.full, stiffness_loss, np.zeros_like(self._piezo_tensor),
                                    -tan_delta[:, None, None] * self._permittivity, self._solid, self._window_elements)
-        return coupled_mass_3d(mass), loss
+        return HarmonicOperators(None, loss, coupled_mass_3d(mass), None, n_unknowns + system.n_dofs)
+
+    def _mixed_operators(self) -> HarmonicOperators:
+        """HarmonicOperators of the mixed u-p frequency response (solver_common.mixed_harmonic_operators) on the full
+        P2 map of the last assembly: the parameter groups of every member (viscoelastic.parameter_groups: the pressure
+        zones, at most MAX_GROUPS), their unit-shear stiffness D_g (one gradient pass), the P1 pressure space and B /
+        M_p,g (fem.mixed_elasticity3d), the consistent mass; no column map (u free = the system's free set). ValueError
+        outside quadratic elements or with piezoelectric / a prestress (also refused by the constructor and
+        validation)."""
+        label = self._label
+        if self.order != 2 or self.piezoelectric or self.prestressed:
+            raise ValueError(f'{label()}: formulation mixed needs discretization quadratic, no piezoelectric and no '
+                             'stress_stiffening / geometric_nonlinearity')
+        moduli = self._viscoelastic_moduli()
+        if moduli is None:
+            raise ValueError(f'{label()}: formulation mixed needs the element moduli (a bug: they are required)')
+        system = self.system
+        mesh = self.domain.mesh
+        n_elements = self.domain.n_elements
+        groups = parameter_groups(moduli, self._solid, label)
+        indices = group_indices(groups, n_elements)
+        # booked (estimate): the unit-shear D_g CSR per group (float64, full numbering 3 n_u), transient until embedded
+        # (mixed_harmonic_operators)
+        deviatoric = [matrices[0] for matrices in assemble_elastic_stiffness_groups_3d(
+            system.full, [unit_modulus_matrix_3d('shear', n_elements)], indices, len(groups))]
+        space = pressure_space_3d(mesh, indices, len(groups))
+        coupling, pressure_masses = assemble_pressure_terms_3d(system.full, space)
+        return mixed_harmonic_operators(groups, deviatoric, coupling, pressure_masses, space,
+                                        system.mass(self._solid_density('a frequency response')), system.free,
+                                        np.ones(space.n_dofs, dtype=bool), None, label)
+
+    def _viscoelastic_terms(self) -> tuple:
+        """(FrequencyTerm tuple, ViscoelasticGroup tuple) of the omega-dependent members: per parameter group the excess
+        G*_g - G0 (1 + j eta) on the unit-shear stiffness D_g and K*_g - K0 (1 + j eta) on the unit-bulk V_g (only the
+        parts that depend on omega; the relaxed part is inside K + j L), one gradient pass for every group; (), ()
+        without frequency-dependent members. ValueError with a prestress (not linear in the moduli)."""
+        moduli = self._viscoelastic_moduli()   # refreshes _frequency_elements after a viscoelastic material change
+        elements = self._frequency_elements
+        if moduli is None or elements is None or not elements.any():
+            return (), ()
+        if self.prestressed:
+            raise ValueError(f'{self._label()}: frequency-dependent moduli are not available with stress_stiffening or '
+                             'geometric_nonlinearity')
+        groups = parameter_groups(moduli, elements, self._label)
+        parts = tuple(part for part in ('shear', 'bulk')
+                      if any(group.law(part).frequency_dependent for group in groups))
+        n_elements = self.domain.n_elements
+        # booked (estimate): the group CSRs (float64, full numbering) of every (group, part), kept with the operators
+        matrices = assemble_elastic_stiffness_groups_3d(
+            self.system.full, [unit_modulus_matrix_3d(part, n_elements) for part in parts],
+            group_indices(groups, n_elements), len(groups))
+        terms = []
+        for group, group_matrices in zip(groups, matrices):
+            for part, matrix in zip(parts, group_matrices):
+                law = group.law(part)
+                if law.frequency_dependent:
+                    terms.append(FrequencyTerm(matrix, law.excess, f'{part} modulus excess of group {group.index}'))
+        return tuple(terms), groups
+
+    def _viscoelastic_moduli(self):
+        """viscoelastic.ElementModuli of the current materials (kept until an assembly or a viscoelastic material
+        change; None without any modulus / viscoelastic array: _frequency_elements None since the last assembly, and
+        the arrays are allocated at the build)."""
+        if self._moduli is None and self._frequency_elements is not None:
+            materials = self.domain.materials
+            window = self._elastic_elements
+            youngs_modulus = np.where(window, _host(materials.youngs_modulus), 0.0)
+            poisson_ratio = np.where(window, _host(materials.poisson_ratio), 0.0)
+            self._moduli = element_moduli(materials, window, youngs_modulus, poisson_ratio, self._label,
+                                          required=self.formulation == MIXED)
+            if self._moduli is not None and self.formulation == DISPLACEMENT:   # a changed viscosity / branch
+                self._frequency_elements = self._solid & self._moduli.frequency_dependent
+        return self._moduli
+
+    def _harmonic_moduli(self, omega, viscoelastic):
+        """(C', C'') (n, 6, 6) of C*(omega) for the complex-correct outputs of a shown response / damped mode: eta C and
+        (viscoelastic: a frequency response) the group laws of the omega-dependent members; None when C* = C. Mixed:
+        the deviatoric pair 2 G* dev eps of every member (its group law, eta included; the pressure unknowns carry the
+        volumetric part)."""
+        if self.formulation == MIXED:
+            if not (viscoelastic and omega):
+                raise ValueError(f'{self._label()}: formulation mixed shows frequency responses only')
+            shear, bulk = harmonic_parts(self._viscoelastic_moduli(), self._solid, omega)
+            return harmonic_matrix_pair_3d(self._stiffness, shear, bulk, np.zeros(self.domain.n_elements), self._solid,
+                                           deviatoric=True)
+        moduli = self._viscoelastic_moduli() if viscoelastic and omega else None
+        frequency = None if moduli is None else self._frequency_elements
+        frequency = None if frequency is None or not frequency.any() else frequency
+        eta = self._host_input('loss_factor', lambda: self._loss_values(LOSS_ARRAYS[0], self._solid))
+        if not eta.any() and frequency is None:
+            return None
+        shear = bulk = None
+        if frequency is not None:
+            shear, bulk = harmonic_parts(moduli, frequency, omega)
+        return harmonic_matrix_pair_3d(self._stiffness, shear, bulk, eta, frequency)
 
     def _loss_values(self, name, elements):
         """Host float64 loss array `name` (LOSS_ARRAYS) on the bool element mask, 0 elsewhere (0 when no material set
@@ -1202,17 +1387,30 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
             return np.zeros(self.domain.n_elements)
         return np.where(elements, _host(getattr(materials, name)), 0.0)
 
-    def _write_complex_outputs(self, solution, omega=None):
+    def _write_complex_outputs(self, solution, omega=None, viscoelastic=True, pressure=None, space=None):
         """Write the real parts of a complex solution (a response, a Bloch mode) over every (coupled) dof into the
         outputs (no thermal part, no initial stress: both are static) and u_abs = |u| (nodal and at the centroids), the
-        energy densities as time averages at omega [rad/s]; electrode tables become unavailable."""
+        complex-correct stresses Re(C*(omega) eps(u)) (viscoelastic False: a damped mode, eta only) with the pressure
+        fields, the energy densities as time averages at omega [rad/s]; electrode tables become unavailable. pressure:
+        the mixed formulation's complex pressure unknowns (n_p,) on its PressureSpace3D `space` (sigma = 2 G* dev eps -
+        p I, the pressure fields from p), else None."""
+        if (pressure is None) != (self.formulation != MIXED) or (pressure is None) != (space is None):
+            raise ValueError(f'{self._label()}: a shown mixed response needs its pressure unknowns and space (and only '
+                             'the mixed formulation has them)')
         system = self.system
         n_vector = COMPONENTS * system.n_dofs
         displacement = solution[:n_vector].reshape(-1, COMPONENTS)
         system.unknown = np.ascontiguousarray(displacement.real)
         if self.piezoelectric:
             self._potential = np.ascontiguousarray(solution[n_vector:].real)
-        self._write_outputs(False, complex_displacement=np.array(displacement), prestress=False, omega=omega)
+        self._write_outputs(False, complex_displacement=np.array(displacement), prestress=False, omega=omega,
+                            moduli=self._harmonic_moduli(omega, viscoelastic))
+        if self.piezoelectric:   # after _write_outputs (which resets it): Im phi for pressure_im
+            self._potential_im = np.ascontiguousarray(solution[n_vector:].imag)
+        if pressure is not None:   # after _write_outputs (which resets them)
+            # booked (estimate): the shown pressure, complex128 (n_p,), host (one per snapshot solution state)
+            self._pressure = np.array(pressure, dtype=np.complex128)
+            self._pressure_space = space
         self._electrode_values = {}
         self._shows_complex = True
 
@@ -1223,14 +1421,21 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
         return {'unknown': np.array(self.system.unknown), 'potential': _copy_or_none(self._potential),
                 'complex': _copy_or_none(self._complex_displacement), 'thermal': self._output_thermal,
                 'prestress': self._output_prestress, 'omega': self._output_omega,
-                'green_lagrange': self._output_green_lagrange}
+                'green_lagrange': self._output_green_lagrange,
+                'moduli': self._output_moduli,   # read-only (C', C'') of that frequency: shared, never written
+                'potential_im': _copy_or_none(self._potential_im), 'pressure': _copy_or_none(self._pressure),
+                'pressure_space': self._pressure_space}   # read-only, shared (its operators may be rebuilt since)
 
     def _show_solution_state(self, shown) -> None:
         """Show a _shown_solution again: its outputs pending, computed on the next read."""
         self.system.unknown = shown['unknown'].copy()
         self._potential = _copy_or_none(shown['potential'])
         self._write_outputs(shown['thermal'], complex_displacement=_copy_or_none(shown['complex']),
-                            prestress=shown['prestress'], green_lagrange=shown['green_lagrange'], omega=shown['omega'])
+                            prestress=shown['prestress'], green_lagrange=shown['green_lagrange'], omega=shown['omega'],
+                            moduli=shown.get('moduli'))
+        self._potential_im = _copy_or_none(shown.get('potential_im'))
+        self._pressure = _copy_or_none(shown.get('pressure'))
+        self._pressure_space = shown.get('pressure_space')
 
     def _computed_outputs(self) -> dict:
         """Host copy of the complex solution the Im u fields read directly (lagrange_field), beside the computed
@@ -1253,7 +1458,7 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
     def lagrange_field(self, component) -> tuple:
         """(DofMap3D, host coefficients) of a renderer component: outputs on the full-mesh P1 / P2 map (0 off the
         solid), inputs and E / nu per element (P0)."""
-        if component in self.output_arrays:
+        if component in self.output_arrays or component in PRESSURE_FIELDS_3D:   # pressure: nodal, no state() array
             self._ensure_outputs((component,))
             values = self._nodal.get(component)
             return self.system.full, (np.zeros(self.system.n_dofs) if values is None else values)
@@ -1271,9 +1476,11 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
     # --- internals ----------------------------------------------------------------
 
     def _assemble(self):
-        """Element Voigt stiffness of the window elements (E / nu or the c_IJ entries; others void; ValueError for a
-        poisson_ratio outside (-1, 0.5) where youngs_modulus > 0 and a c_IJ set that is not positive definite), then the
-        system assembly (the factor follows lazily)."""
+        """Element Voigt stiffness of the window elements (E / nu, the shear_modulus / bulk_modulus route (relaxed G0,
+        K0; an unset K0 (mixed): deviatoric) or the c_IJ entries; others void; ValueError for a poisson_ratio outside
+        (-1, 0.5) where youngs_modulus > 0, a c_IJ set that is not positive definite or mixed with isotropic /
+        viscoelastic moduli in one element), the members of the formulation (viscoelastic.member_mask) and the
+        omega-dependent ones, then the system assembly (the factor follows lazily)."""
         self._ensure_outputs()   # pending outputs read the stiffness of their solve
         started = time.perf_counter()
         materials = self.domain.materials
@@ -1287,14 +1494,35 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
                              f"> 0; found values from {poisson_ratio[elastic].min():.6g} to "
                              f'{poisson_ratio[elastic].max():.6g}')
         lame_lambda, mu = lame_coefficients(youngs_modulus * elastic, poisson_ratio * elastic)
+        moduli = element_moduli(materials, window, youngs_modulus, poisson_ratio, self._label,
+                                required=self.formulation == MIXED)
+        if moduli is not None and moduli.moduli_route.any():   # G0 / K0 route (K0 unset: deviatoric, mixed only)
+            route = moduli.moduli_route
+            route_lambda, route_mu = lame_from_moduli(moduli.shear, np.where(np.isfinite(moduli.bulk), moduli.bulk,
+                                                                             0.0))
+            lame_lambda, mu = np.where(route, route_lambda, lame_lambda), np.where(route, route_mu, mu)
         names = set(materials.property_names())
         tensor = {name: np.where(window, _host(getattr(materials, name)), np.nan)
                   for name in STIFFNESS_TENSOR_ARRAYS_3D if name in names}
+        if moduli is not None and tensor:   # set entries: finite (NaN unset) / nonzero outside the isotropic pattern
+            tensor_set = np.any([np.isfinite(values) if name in ISOTROPIC_PATTERN_3D
+                                 else np.isfinite(values) & (values != 0.0) for name, values in tensor.items()], axis=0)
+            mixed_routes = tensor_set & (moduli.moduli_route | moduli.frequency_dependent)
+            if mixed_routes.any():
+                raise ValueError(f'{self._label()}: {int(mixed_routes.sum())} element(s) set c_ij entries together with '
+                                 'shear_modulus / bulk_modulus or viscoelastic moduli (viscosity, relaxation branches): '
+                                 'the viscoelastic law is isotropic')
         stiffness = element_stiffness_3d(lame_lambda, mu, tensor)
         check_positive_definite_3d(stiffness, self._label)
         self._drop_host_inputs()   # beta and the solid-masked inputs follow the new stiffness
         self._stiffness = stiffness.matrix
-        self._solid = stiffness.solid
+        self._moduli = moduli
+        if moduli is None:   # no modulus / viscoelastic array: the relaxed stiffness decides (displacement)
+            self._solid = stiffness.solid
+            self._frequency_elements = None
+        else:
+            self._solid = member_mask(moduli, window, self.formulation, self._label, stiffness.solid)
+            self._frequency_elements = self._solid & moduli.frequency_dependent
         self._point_cache = {}                    # its point values are per solid element
         self._harmonic_operators = self._prestress = None
         self._drop_harmonic()
@@ -1304,7 +1532,7 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
             self.system.pml = self._pml_shell()
         self._assembly_seconds = {'element stiffness': time.perf_counter() - started}
         # geometric nonlinearity: K at first use (a static Newton solve never reads it; pencils / piezo do)
-        self.system.assemble(stiffness.matrix, stiffness.solid,
+        self.system.assemble(stiffness.matrix, self._solid,
                              defer_operator=self.geometric_nonlinearity and not self.piezoelectric)
         self._assembly_seconds.update(self.system.assembly_seconds)
         if self.piezoelectric:
@@ -1412,15 +1640,43 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
                                       elements=self._solid)
         return load
 
-    def _point_outputs(self, elements, strains, thermal, field=None, prestress=False):
+    def _point_outputs(self, elements, strains, thermal, field=None, prestress=False, material=None,
+                       imaginary_strains=None, pressure=None, imaginary_field=None):
         """{output: (m, q)} strain / stress values at points of mesh elements from Voigt strains (m, q, 6): T = c S -
         beta dT (thermal False: dT = 0, a mode shape) - e^T E with the electric field (m, q, 3) at the points (None: no
-        potential) + the initial stress sigma0 (prestress: a static solve)."""
+        potential) + the initial stress sigma0 (prestress: a static solve); pressure = -tr(T) / 3. material (C', C'')
+        (n_elements, 6, 6) of a shown complex solution (_harmonic_moduli; thermal and prestress False): Re T* = C' S_r -
+        C'' S_i - e^T E_r (- Re p I with the mixed pressure unknowns p (m, q) complex), pressure / pressure_im = -tr(T*)
+        / 3 (imaginary_strains / imaginary_field the Im parts, None = 0); material None with imaginary parts (a shown
+        complex solution of a real C: a piezoelectric response with dielectric loss only, a resistive electrode):
+        Im T = C S_i - e^T E_i. pressure_im is 0 without imaginary parts."""
         alpha = self._expansion()[elements]
         beta = self._thermal_stress()[elements]
         temperature_change = self._temperature_change()[elements][:, None] if thermal else 0.0
         normal = [strains[..., axis] for axis in range(3)]
-        voigt = stress_3d(self._stiffness[elements], strains)
+        imaginary_voigt = None
+        complex_parts = imaginary_strains is not None or imaginary_field is not None or pressure is not None
+        if (material is not None or complex_parts) and (thermal or prestress):
+            raise ValueError(f'{self._label()}: complex outputs take no thermal part or initial stress')
+        if material is None:
+            stiffness = self._stiffness[elements]
+            voigt = stress_3d(stiffness, strains)
+            if complex_parts:   # lossless C: Im T = C S_i (- e^T E_i below)
+                imaginary_voigt = (np.zeros_like(voigt) if imaginary_strains is None
+                                   else stress_3d(stiffness, imaginary_strains))
+        else:
+            storage, loss = (part[elements] for part in material)
+            voigt = stress_3d(storage, strains)
+            imaginary_voigt = stress_3d(loss, strains)
+            if imaginary_strains is not None:
+                voigt = voigt - stress_3d(loss, imaginary_strains)
+                imaginary_voigt = imaginary_voigt + stress_3d(storage, imaginary_strains)
+        if imaginary_field is not None:
+            imaginary_voigt = imaginary_voigt - np.einsum('mkJ,mqk->mqJ', self._piezo_tensor[elements],
+                                                          imaginary_field)
+        if pressure is not None:
+            voigt[..., :3] -= pressure.real[..., None]
+            imaginary_voigt[..., :3] -= pressure.imag[..., None]
         if field is not None:
             voigt = voigt - np.einsum('mkJ,mqk->mqJ', self._piezo_tensor[elements], field)
         initial = self._initial_stress() if prestress else None
@@ -1438,16 +1694,22 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
             outputs[f'stress_{letter}{letter}'] = stresses[axis]
         outputs.update({'strain_xy': 0.5 * strains[..., 5], 'strain_xz': 0.5 * strains[..., 4],
                         'strain_yz': 0.5 * strains[..., 3], 'stress_xy': shear_xy, 'stress_xz': shear_xz,
-                        'stress_yz': shear_yz, 'von_mises': von_mises})
+                        'stress_yz': shear_yz, 'von_mises': von_mises,
+                        'pressure': -(stresses[0] + stresses[1] + stresses[2]) / 3.0,
+                        'pressure_im': (np.zeros_like(stresses[0]) if imaginary_voigt is None
+                                        else -(imaginary_voigt[..., 0] + imaginary_voigt[..., 1]
+                                               + imaginary_voigt[..., 2]) / 3.0)})
         return outputs
 
     def _write_outputs(self, thermal=True, complex_displacement=None, prestress=None, green_lagrange=False,
-                       omega=None):
+                       omega=None, moduli=None):
         """Mark the outputs of system.unknown / _potential pending (thermal False: no -beta dT, a mode shape;
         complex_displacement: u_abs = |u| of a complex solution; prestress None = thermal: the stress includes sigma0;
         green_lagrange: Green-Lagrange strains, a nonlinear static solve; omega [rad/s]: energy densities as time
-        averages of a mode / response, None static); each _OUTPUT_GROUPS group is computed on its first read
-        (_ensure_outputs)."""
+        averages of a mode / response, None static; moduli: the (C', C'') pair of a complex solution's complex-correct
+        stresses, None = C); each _OUTPUT_GROUPS group is computed on its first read (_ensure_outputs)."""
+        self._output_moduli = moduli
+        self._potential_im = self._pressure = self._pressure_space = None   # a shown complex solution sets them after
         self._nodal = {}
         self._output_thermal = thermal
         self._output_prestress = thermal if prestress is None else prestress
@@ -1502,18 +1764,46 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
         solid = np.flatnonzero(self._solid)
         thermal = self._output_thermal
         local_points = local_dof_points_3d(self.order)
-        local_strains = self._point_values(local_points)[1]
         prestress = self._output_prestress
-        local = self._point_outputs(solid, local_strains, thermal, self._electric_field(solid, local_points), prestress)
+        local = self._point_outputs(solid, self._point_values(local_points)[1], thermal,
+                                    self._electric_field(solid, local_points), prestress,
+                                    **self._complex_output_parts(solid, local_points))
         names = list(local)
         averaged = nodal_average_3d(full, np.stack([local[name] for name in names], axis=-1), elements=solid)
         self._nodal.update({name: averaged[:, column] for column, name in enumerate(names)})
-        centre_strains = self._point_values(CENTROID_3D)[1]
-        centre = self._point_outputs(solid, centre_strains, thermal, self._electric_field(solid, CENTROID_3D),
-                                     prestress)
+        if self._pressure is not None:   # mixed: the P1 pressure unknowns themselves (groups at a node averaged)
+            # booked (estimate): a complex128 (n_dofs,) temporary, then the two float64 nodal fields (replacing the
+            # averaged ones), host; pressure_at_3d's (m, q) complex128 per output pass is transient
+            nodal = nodal_pressure_3d(full, self._pressure_space, self._pressure)
+            self._nodal['pressure'], self._nodal['pressure_im'] = nodal.real.copy(), nodal.imag.copy()
+        centre = self._point_outputs(solid, self._point_values(CENTROID_3D)[1], thermal,
+                                     self._electric_field(solid, CENTROID_3D), prestress,
+                                     **self._complex_output_parts(solid, CENTROID_3D))
         for name in names:
-            self._write_element_field(name, solid, centre[name][:, 0])
+            if name not in PRESSURE_FIELDS_3D:   # nodal only (no state() array)
+                self._write_element_field(name, solid, centre[name][:, 0])
         self._release_point_values('mechanical')
+
+    def _complex_output_parts(self, solid, reference_points) -> dict:
+        """_point_outputs keywords of a shown complex solution: with a (C', C'') pair material and the mixed pressure
+        unknowns; the imaginary strains (shared _point_values) and Im E of a piezoelectric potential whenever they exist
+        (also without a pair: pressure_im = -tr(C S_i - e^T E_i) / 3, as the 2D solid); {} for a real solution."""
+        parts = {}
+        if self._output_moduli is not None:
+            parts.update(material=self._output_moduli, pressure=self._pressure_points(solid, reference_points))
+        if self._complex_displacement is not None:
+            parts['imaginary_strains'] = self._point_values(reference_points, imaginary=True)[1]
+        if self._potential_im is not None:
+            parts['imaginary_field'] = -element_gradients_3d(self.system.full, self._potential_im, reference_points,
+                                                             elements=solid)[1]
+        return parts
+
+    def _pressure_points(self, solid, reference_points):
+        """Complex (m, q) pressure unknowns of a shown mixed response at reference points of the solid elements `solid`
+        (sorted mesh indices; fem.mixed_elasticity3d.pressure_at_3d), None in the displacement formulation."""
+        if self._pressure is None:
+            return None
+        return pressure_at_3d(self._pressure_space, self._pressure, solid, reference_points)
 
     def _point_values(self, reference_points, imaginary=False):
         """Read-only (values (m, q, 3), Voigt strains (m, q, 6)) of the shown solution (imaginary: the imaginary part of
@@ -1545,8 +1835,10 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
         """(strain, kinetic) energy densities (m, q) [J/m^3] at reference points of the solid elements (elements =
         np.flatnonzero(_solid)): static 1/2 eps_el : C eps_el and 0 (eps_el = eps - alpha dT, Green-Lagrange after a
         nonlinear solve); a mode / response at omega the time averages 1/4 (eps_r : C eps_r + eps_i : C eps_i) and
-        1/4 rho omega^2 |u|^2 (u = u_r + j u_i)."""
-        stiffness = self._stiffness[elements]
+        1/4 rho omega^2 |u|^2 (u = u_r + j u_i); with a (C', C'') pair the storage C' (C itself without
+        frequency-dependent moduli; mixed: the deviatoric C' and - 1/4 Re(p conj(tr eps)) of the pressure unknowns p,
+        the volumetric storage part Re(K*) |tr eps|^2 / 4 of a compressible group)."""
+        stiffness = (self._stiffness if self._output_moduli is None else self._output_moduli[0])[elements]
         values, strains = self._point_values(reference_points)
         if self._output_thermal:
             change = self._temperature_change()[elements][:, None]
@@ -1558,11 +1850,18 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
         if omega is None:
             return strain_energy, np.zeros_like(strain_energy)
         squared = np.sum(values ** 2, axis=-1)
+        imaginary_strains = None
         if self._complex_displacement is not None:
             imaginary, imaginary_strains = self._point_values(reference_points, imaginary=True)
             strain_energy = strain_energy + 0.25 * np.einsum('mqi,mij,mqj->mq', imaginary_strains, stiffness,
                                                              imaginary_strains)
             squared = squared + np.sum(imaginary ** 2, axis=-1)
+        pressure = self._pressure_points(elements, reference_points)
+        if pressure is not None:   # mixed: - 1/4 Re(p conj(tr eps)) (= Re(K*) |tr eps|^2 / 4 where p = -K* tr eps)
+            work = pressure.real * np.sum(strains[..., :3], axis=-1)
+            if imaginary_strains is not None:
+                work = work + pressure.imag * np.sum(imaginary_strains[..., :3], axis=-1)
+            strain_energy = strain_energy - 0.25 * work
         density = self._host_input('density', lambda: _host(self.domain.materials.rho))[elements]
         return strain_energy, 0.25 * omega * omega * density[:, None] * squared
 

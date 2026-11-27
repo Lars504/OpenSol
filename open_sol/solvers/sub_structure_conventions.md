@@ -170,7 +170,16 @@ PARDISO: section "host_direct". Rules across files:
 - The runtime keeps no factor: consumers hold their own (one runtime serves the NLFD channels or the thermal noise
   operators) and pass the factor to replace as `previous=` (cuDSS plan / MUMPS-PARDISO analysis reused).
 - A host SuperLU factor made on an ordering (`factorize_host(ordering=)`, the runtime's SuperLUOrdering reuse) factors
-  A[p][:, p]: solve through `Factorization._lu_solve` / solve_host, never `_host_lu.solve`.
+  A[p][:, p], one made with `factorize_host(row_scale=)` E = R A R: solve through `Factorization._lu_solve` /
+  solve_host (both maps applied there), never `_host_lu.solve`.
+- SuperLU and row_scale: the runtime's SuperLU routes (`factorize_host`, the host branch of `factorize_pencil` after a
+  fall_back) ignore row_scale unless the caller passes `scale_superlu=True`, which only operators whose rows carry
+  different units do (the mechanics mixed u-p saddle point, `HarmonicSystem._factorize`): SuperLU's symmetric mode
+  keeps a diagonal pivot only while |a_jj| >= `_SPLU_PIVOT_THRESHOLD` x its column max, meaningless across units
+  (bead_drag_water_frequency_response unscaled: 8915 row swaps, fill 105x, 53 s, backward error 1.7e-7; scaled with the
+  same threshold and MMD_AT_PLUS_A: fill 5.2x, 0.37 s, 3.6e-16). Every other caller stays unscaled, bit-identical. R
+  means what it means on cuDSS / MUMPS / PARDISO (x = R E^-1 R b); the scaled CSR keeps A's index arrays, so a kept
+  SuperLUOrdering still matches.
 - Back-end groups are module constants (CUDSS_BACK_ENDS, SYMMETRIC_OPTION_BACK_ENDS, MIXED_BACK_ENDS,
   HOST_FACTOR_BACK_ENDS, host_direct.HOST_DIRECT_*), never a tuple spelled out; `host_size_back_end(name)` for
   size_issue.
@@ -197,7 +206,9 @@ PARDISO: section "host_direct". Rules across files:
   with a valid previous (refreshed from the device values). symmetric_known, pencils and factorize_values match the
   pattern by identity of indptr / indices: callers never modify those arrays in place, and pass symmetric_known only
   for a canonical symmetric CSR. Pencil users book `device_pencil_bytes` as a run item (fem.harmonic, mechanics
-  HarmonicSystem; a HostPencil's copied terms as a host item).
+  HarmonicSystem; a HostPencil's copied terms as a host item). Per-frequency terms that are not polynomial in omega
+  (port DtN blocks, the mechanics viscoelastic groups) go through `factorize_pencil(extra=)` at slots mapped once
+  (`pencil.slots`; lower entries only on a lower-stored pencil), never as extra pencil terms.
 - `DiffusionDirectSolver.release_factor()` before another large factorisation, or `detach_factor()` (the caller owns
   the factor: released, or passed as previous= to a factorisation of the same kind); `positive_definite = False`
   first makes factorize_host_operator ask for the LDL^T of a shifted pencil instead of the SPD kind (mechanics stress

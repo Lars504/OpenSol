@@ -9,6 +9,9 @@ Sub file of the root `structure_conventions.md` (read that first). Library mater
 - Library `optical` dicts hold 1.55 um values: a model at another wavelength overrides eps_r / sigma_e (or uses an
   `nk_fit` entry where the material has an `nk_table`). Library Drude poles are optical (near-IR) fits, never far-IR /
   DC ones (those underestimate the near-IR loss 2-3x; sigma_dc stays separate).
+- The one exception: an entry named for its wavelength (`water_532nm`) holds its optical data at that wavelength. Data
+  for another wavelength or regime (GHz moduli of water) goes into such a new entry, never into the plain one
+  (`water`): existing models and examples read the plain entry's values.
 - A library material carries data for every physics in one merged dict (`model_properties`; crystal and nk_fit
   entries expanded by `effective_material_data`, precedence library < crystal < user properties): the builder ignores
   names no physics of the model reads, and validation warns only for user-set ones, never library-merged or

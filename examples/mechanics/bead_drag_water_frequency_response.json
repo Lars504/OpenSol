@@ -1,0 +1,73 @@
+{
+  "title": "Bead oscillating in water: unsteady Stokes drag vs frequency (frequency response, mixed u-p, analytic)",
+  "description": "Optical-tweezer calibration geometry: a polystyrene bead of radius a = 1 um (E 3.5 GPa, nu 0.34, rho_b 1050 kg/m^3) held by prescribed_displacement_domain 'bead' and moved along the axis by X = 1 nm in library water (viscosity mu = 1.002e-3 Pa s, rho = 998.2 kg/m^3, no bulk modulus: an incompressible viscous liquid), axisymmetric (r, z) with the bead centre on the axis at z = 50 um, the container r < 50 um, 0 < z < 100 um with fixed walls (x_lo is the axis). solid_mechanics on quadratic triangles (h = 0.12 um inside the bead, growth 1.25, 2.5 um at most), formulation mixed (Taylor-Hood: P2 displacement, P1 pressure per material), frequency_response at 8 log-spaced frequencies from 10 kHz to 1 MHz: a / delta = sqrt(f / f_nu) from 0.18 to 1.8 (delta = sqrt(2 mu / (rho omega)) the viscous penetration depth, f_nu = mu / (pi rho a^2) = 319 kHz); the container is at least 8.8 delta away, so the wall corrections (exp(-(R - a) / delta) and (a / R)^3) stay below 1e-3.\nAnalytic (Stokes 1851, Landau-Lifshitz section 24; exp(+j omega t), U = j omega X, lam = sqrt(j omega rho / mu) = (1 + j) / delta): the force of the water on the bead F = -6 pi mu a U (1 + lam a + lam^2 a^2 / 9) = 6 pi mu a omega X (s + 2 s^2 / 9) - j 6 pi mu a omega X (1 + s), s = a / delta (the lam^2 term is the added mass of half the displaced water). The reaction table of 'bead' is the force the support exerts on the bead, which also accelerates the bead itself: F_y = -F - omega^2 m_b X, m_b = rho_b 4/3 pi a^3.\nCurves & tables tab: the bead reaction F_y_re (drag in quadrature with the motion plus the inertia of bead and added mass) and F_y_im (the dissipative drag 6 pi mu a omega X (1 + sqrt(f / f_nu))) versus frequency with their analytic curves; the derived curve drag_ratio_vs_stokes = Im F / (6 pi mu a omega X (1 + sqrt(f / f_nu))), the frequency-dependent drag correction a tweezer calibration applies to the Stokes gamma_0, over the analytic 1 (per row of the table, low to high frequency). Derived values tab: the drag ratio Im F / (6 pi mu a omega X) at 10 kHz and 1 MHz against 1 + sqrt(f / f_nu). Field tab: u_abs and the pressure (p > 0 in compression) of the last frequency. Expected agreement (measured, relative; P2 / P1 with ~4.7 elements per delta at 1 MHz): drag ratio 1.0e-4 at 10 kHz and 5.4e-5 at 1 MHz, curve errors F_y_re 2.6e-5 and F_y_im 5.4e-5, drag_ratio_vs_stokes 1.1e-4 (3.2 s); tolerances 4e-4, 2e-4, 1e-4, 2e-4 and 4e-4 (~3.7 x measured).",
+  "version": 2,
+  "solver_defaults": {"backend": "cpu"},
+  "parameters": [
+    {"name": "a_b", "expression": "1*um", "description": "bead radius"},
+    {"name": "X_b", "expression": 1e-9, "description": "prescribed axial displacement amplitude of the bead [m]"},
+    {"name": "mu_w", "expression": 1.002e-3, "description": "water viscosity [Pa s] (the library value)"},
+    {"name": "rho_w", "expression": 998.2, "description": "water density [kg/m^3] (the library value)"},
+    {"name": "E_b", "expression": 3.5e9, "description": "Young's modulus of the bead [Pa] (polystyrene)"},
+    {"name": "nu_b", "expression": 0.34, "description": "Poisson ratio of the bead"},
+    {"name": "rho_b", "expression": 1050.0, "description": "bead density [kg/m^3]"},
+    {"name": "R_c", "expression": "50*um", "description": "container radius and half height"},
+    {"name": "h_bead", "expression": "0.12*um", "description": "triangle size inside the bead (delta(1 MHz) / 4.7)"},
+    {"name": "h_max", "expression": "2.5*um", "description": "largest triangle size"},
+    {"name": "f_nu", "expression": "mu_w/(pi*rho_w*a_b**2)", "description": "frequency where delta = a [Hz] (a / delta = sqrt(f / f_nu))"},
+    {"name": "m_b", "expression": "rho_b*4/3*pi*a_b**3", "description": "bead mass [kg]"},
+    {"name": "f_lo", "expression": 1e4, "description": "lowest frequency [Hz]"},
+    {"name": "f_hi", "expression": 1e6, "description": "highest frequency [Hz]"}
+  ],
+  "domain": {"size_x": "R_c", "size_y": "2*R_c"},
+  "geometry": [
+    {"name": "bead", "kind": "circle", "params": {"cx": 0.0, "cy": "R_c", "r": "a_b"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "water", "library": "water", "properties": {"viscosity": "mu_w", "rho": "rho_w"},
+     "dispersion": null, "selection": ["all"]},
+    {"name": "polystyrene", "library": null,
+     "properties": {"youngs_modulus": "E_b", "poisson_ratio": "nu_b", "rho": "rho_b"},
+     "dispersion": null, "selection": ["bead"]}
+  ],
+  "physics": [
+    {
+      "name": "solid",
+      "type": "solid_mechanics",
+      "settings": {"geometry": "axisymmetric", "discretization": "quadratic", "formulation": "mixed"},
+      "features": [
+        {"name": "walls", "type": "fixed", "selection": ["x_hi", "y_lo", "y_hi"], "params": {}, "enabled": true},
+        {"name": "bead", "type": "prescribed_displacement_domain", "selection": ["bead"],
+         "params": {"u_x": 0.0, "u_y": "X_b"}, "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "meshes": [{"name": "triangles", "kind": "triangles", "mode": "nonuniform", "dx": "h_max", "max_ratio": 1.25,
+              "refinements": [{"object": "bead", "dx": "h_bead"}]}],
+  "study": {"type": "frequency_response",
+            "settings": {"frequency_start": 1e4, "frequency_stop": 1e6, "n_frequencies": 8, "log_spacing": true,
+                         "snapshots": "last"},
+            "stored_fields": ["solid.u_abs", "solid.pressure"], "sweep": null},
+  "derived_values": [
+    {"name": "drag_ratio_10kHz", "expression": "F_y_im/(6*pi*mu_w*a_b*2*pi*frequency*X_b)", "selection": [],
+     "operation": "at", "source": "solid.bead", "at": 0, "reference": "1 + sqrt(f_lo/f_nu)", "tolerance": 4e-4},
+    {"name": "drag_ratio_1MHz", "expression": "F_y_im/(6*pi*mu_w*a_b*2*pi*frequency*X_b)", "selection": [],
+     "operation": "at", "source": "solid.bead", "at": 7, "reference": "1 + sqrt(f_hi/f_nu)", "tolerance": 2e-4}
+  ],
+  "analytic_curves": [
+    {"name": "F_y_re_stokes", "target": "solid.bead", "series": "F_y_re", "x_column": "frequency",
+     "expression": "-6*pi*mu_w*a_b*2*pi*x*X_b*(sqrt(x/f_nu) + 2*x/(9*f_nu)) - (2*pi*x)**2*m_b*X_b",
+     "tolerance": 1e-4},
+    {"name": "F_y_im_stokes", "target": "solid.bead", "series": "F_y_im", "x_column": "frequency",
+     "expression": "6*pi*mu_w*a_b*2*pi*x*X_b*(1 + sqrt(x/f_nu))", "tolerance": 2e-4}
+  ],
+  "derived_curves": [
+    {"name": "drag_ratio_vs_stokes", "inputs": {"Fi": "solid.bead:F_y_im", "f": "solid.bead:frequency"},
+     "expression": "Fi/(6*pi*mu_w*a_b*2*pi*f*X_b)/(1 + sqrt(f/f_nu))", "plot": "",
+     "label": "Im F / (6 pi mu a omega X (1 + sqrt(f / f_nu))), per table row", "unit": "1",
+     "log_x": false, "log_y": false, "reference": 1.0, "tolerance": 4e-4}
+  ]
+}

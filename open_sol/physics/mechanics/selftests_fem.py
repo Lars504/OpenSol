@@ -172,6 +172,35 @@ def _free_expansion(mesh, add):
         add('system_rigid_mode_check', 'slide along y' in str(exc), str(exc))
 
 
+def _held_rotation(mesh, add):
+    """ElasticFEMSystem.hold with callables (the x, y path of prescribed_displacement_domain): a rigid rotation by
+    theta about (x0, y0) held on every P2 dof of the disc (curved edges: edge nodes on the arc) and no load is the
+    rigid rotation everywhere; its reaction and its work W = sum R u_held are 0."""
+    from .system_fem import ElasticFEMSystem
+
+    theta, centre = 1e-3, (0.7 * _UM, 1.2 * _UM)
+    youngs_modulus = 1.0e11
+    coefficients = _isotropic_coefficients(mesh.n_elements, youngs_modulus, 0.3)
+    system = ElasticFEMSystem(mesh, 2, False, lambda: 'patch system')
+    disc = mesh.region == mesh.region_names.index('disc')
+    held = system.hold(system.global_ids_of_elements(disc), u_x=lambda points: -theta * (points[:, 1] - centre[1]),
+                       u_y=lambda points: theta * (points[:, 0] - centre[0]))
+    system.assemble(coefficients, np.ones(mesh.n_elements, dtype=bool))
+    system.solve(np.zeros(2 * system.dofs.n_dofs))
+    points = system.dofs.dof_points()
+    exact = theta * np.column_stack([centre[1] - points[:, 1], points[:, 0] - centre[0]])
+    error = float(np.abs(system.unknown - exact).max() / np.abs(exact).max())
+    add('system_held_rotation', error <= _EXACT_RTOL, error)
+    force_scale = youngs_modulus * theta * _PATCH_SIZE   # N/m of a strain theta across the patch
+    reaction = max(abs(value) for value in system.reaction(held)) / force_scale
+    add('system_held_rotation_reaction', reaction <= _EXACT_RTOL, reaction)
+    residual = (system.operator @ system.unknown.reshape(-1)).reshape(-1, 2)   # no load
+    rows = (held & system.held)[system.dofs.global_ids]
+    work = float((residual * system.held_values[system.dofs.global_ids])[rows].sum())
+    work_error = abs(work) / (force_scale * theta * _PATCH_SIZE)
+    add('system_held_rotation_work', work_error <= _EXACT_RTOL, work_error)
+
+
 def _check_patch(results_by_name):
     from ...fem.dofs import lagrange_dofs
     from ...fem.elasticity import RING, assemble_elastic_mass, assemble_elastic_stiffness
@@ -191,6 +220,7 @@ def _check_patch(results_by_name):
         error = _axisymmetric_patch(mesh, order, geometry_order)
         add(name, error <= _EXACT_RTOL, error)
     _free_expansion(mesh, add)
+    _held_rotation(mesh, add)
 
     dofs = lagrange_dofs(mesh, 2)
     stiffness = assemble_elastic_stiffness(dofs, {name: np.full(mesh.n_elements, value)
@@ -709,7 +739,10 @@ FEM_CASES = (
                     'constant body force (P2 straight) and, axisymmetric (x = r from 0), u_r = a r, u_z = b z + c with '
                     'an orthotropic hoop C and the body force -(sigma_rr - sigma_tt) / r (P1, P2 curved), all to '
                     f'{_EXACT_RTOL:g}; physics.mechanics.system_fem: plane-strain free thermal expansion (alpha_zz != '
-                    'alpha) on rollers exact with zero reaction, a support set without u_y refused (rigid-mode check); '
+                    'alpha) on rollers exact with zero reaction, a support set without u_y refused (rigid-mode check), '
+                    'a rigid rotation held on the disc through hold callables of the P2 dof points (the x, y path of '
+                    'prescribed_displacement_domain; edge nodes on the arc) reproduced everywhere with zero reaction '
+                    'and zero work W = sum R u_held; '
                     f'K symmetric and annihilating both translations and the rotation ({_RIGID_RTOL:g}); the consistent '
                     f'mass totals rho x area and rho x ring volume ({_MASS_RTOL:g}). error = number of failed '
                     'sub-checks (tolerance 0), values in details.',

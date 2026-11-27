@@ -16,7 +16,9 @@ WATER = Material(
     description='Liquid water at 20 C, n = 1.3154, its absorption (extinction 1.49e-4, ~12 /cm) as sigma_e = 2 n '
                 'kappa omega eps0: an optical loss proxy valid near 1.55 um only, not a conductivity (sigma_dc is '
                 "pure water). alpha = 0: a liquid region follows its container (measured dndT includes the density "
-                'change).',
+                'change). viscosity also makes it an incompressible liquid of the solid types with formulation mixed '
+                '(frequency_response); set bulk_modulus for compressibility (no bulk modulus here: the displacement '
+                'formulation leaves it void).',
     summary='Liquid water at 1550 nm and 20 degrees Celsius: refractive index 1.315, with its absorption of about 12 '
             'per centimetre.\n\n'
             'The optical values hold only near 1550 nm.',

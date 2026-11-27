@@ -1,7 +1,8 @@
 """CPU vs GPU backend case of em_fdfd_bor: the BOR model runs (cavity eigenfrequency m = 1, the order
 list with and without a line_block node, the off-axis dipole order sum) and a pipe-port run (mode source / monitors,
-also on a line_block node) on solver_defaults.backend 'cpu' against 'gpu'; no physics imports. Without a usable GPU
-the gpu runs are skipped and the cpu runs are checked against their closed forms."""
+also on a line_block node) on solver_defaults.backend 'cpu' against 'gpu'; no physics imports. The focused-beam power
+run of selftests_focused_beam is one more model. Without a usable GPU the gpu runs are skipped and the cpu runs are
+checked against their closed forms."""
 import math
 
 import numpy as np
@@ -14,6 +15,7 @@ from .selftests_bor import _PHYSICS, _TYPE, _check_model_cavity, _model_cavity_s
 from .selftests_bor_orders import (_LINE_BLOCK_NODE, _check_model_offaxis, _check_model_order_list,
                                    _model_offaxis_specs, _model_order_list_specs)
 from .selftests_fdfd_backend import _finite_peak, _numeric_leaves, _role_backends, _scaled_difference
+from .selftests_focused_beam import _check_bor_power, bor_focused_beam_power_specs
 
 _BACKENDS = ('cpu', 'gpu')
 _TOLERANCE = 1e-6               # relative: both backends assemble and factorise on the host (SuperLU, ARPACK)
@@ -121,7 +123,8 @@ def _groups():
             'order_list_line_block': (order_list['line_block'], False, _LINE_BLOCK_TOLERANCE),
             'offaxis': (_offaxis_line_block_spec(), True, _LINE_BLOCK_TOLERANCE),
             'ports_superlu': (ports['superlu'], True, _TOLERANCE),
-            'ports_line_block': (ports['line_block'], True, _LINE_BLOCK_TOLERANCE)}
+            'ports_line_block': (ports['line_block'], True, _LINE_BLOCK_TOLERANCE),
+            'focused_beam': (bor_focused_beam_power_specs()['bor'], True, _TOLERANCE)}
 
 
 def _run_name(key, backend):
@@ -228,8 +231,8 @@ def _check_backends(results_by_name):
 
 
 def _check_cpu_only(results_by_name):
-    """The closed-form checks of the cpu runs (cavity, order list, off-axis order sum, ports), each normalised by its
-    own tolerance."""
+    """The closed-form checks of the cpu runs (cavity, order list, off-axis order sum, ports, focused-beam power), each
+    normalised by its own tolerance."""
     def cpu(key):
         return results_by_name[_run_name(key, 'cpu')]
 
@@ -237,7 +240,8 @@ def _check_cpu_only(results_by_name):
               'order_list': _check_model_order_list({'superlu': cpu('order_list_superlu'),
                                                      'line_block': cpu('order_list_line_block')}),
               'offaxis': _check_model_offaxis({'offaxis': cpu('offaxis')}),
-              'ports': _check_ports({'superlu': cpu('ports_superlu'), 'line_block': cpu('ports_line_block')})}
+              'ports': _check_ports({'superlu': cpu('ports_superlu'), 'line_block': cpu('ports_line_block')}),
+              'focused_beam': _check_bor_power({'bor': cpu('focused_beam')})}
     normalized = {name: check['error'] / check['tolerance'] for name, check in checks.items()}
     worst_name, worst = worst_item(normalized)
     return {'measured': worst, 'expected': 0.0, 'error': worst, 'tolerance': 1.0,
@@ -254,9 +258,11 @@ BOR_BACKEND_SELFTEST_CASES = (
                      'eigenfrequency model run (m = 1, 25 nm), the em_bor_order_list_model runs (azimuthal_orders [0, 1, 2], 40 nm, Automatic and a '
                      'line_block node), the em_bor_offaxis_dipole_model driven order sum (orders 0..4, 1.2 x 1.8 um; '
                      'flux lines, far field) on a line_block node (one batched factor of the order family; its host '
-                     'SuperLU factorisations are host code identical on both) and a '
+                     'SuperLU factorisations are host code identical on both), a '
                      'pipe TE11 port model (analytic_bor_pipe_te11_section at 2 wavelengths, Automatic and a line_block '
-                     'node: the driven single-order line-block path). Per model the largest difference of the shown '
+                     'node: the driven single-order line-block path) and the em_bor_focused_beam_power run (the '
+                     'focused_beam TFSF slice and its host active vector; flux monitors). Per model the largest '
+                     'difference of the shown '
                      'fields (driven runs: e_intensity and hphi relative to their peak, er and ez relative to the peak '
                      '|E|: E_z of the TE11 launch vanishes by symmetry and is roundoff) and of every probe / '
                      'flux / mode-monitor / far-field / resonance-table entry (relative to the peak of its scale '
@@ -266,7 +272,7 @@ BOR_BACKEND_SELFTEST_CASES = (
                      'tolerance 1. The check raises unless every cpu role solver records backend cpu. Without a usable '
                      'GPU the gpu runs are skipped and the cpu runs are checked against the closed forms of their own '
                      f'self-tests instead (ports: T within {_PORT_T_TOLERANCE:g}, R within '
-                     f'{2.0 * _PORT_T_TOLERANCE:g}, launched power within {_PORT_LAUNCH_TOLERANCE:g}). Not yet run '
-                     '(no record).'),
+                     f'{2.0 * _PORT_T_TOLERANCE:g}, launched power within {_PORT_LAUNCH_TOLERANCE:g}; focused '
+                     'beam: the em_bor_focused_beam_power check). Not yet run (no record).'),
         specs=_backend_runs, check=_check_backends, heavy=True),
 )

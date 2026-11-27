@@ -9,6 +9,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from ..core.gpu_memory import format_bytes
+from ..core.metric import ring_angle
 from ..materials import REGISTRY as MATERIAL_LIBRARY, crystal_entries
 from .analytic import (COMPLEX_FIT_OPERATIONS, CURVE_FUNCTION_ARITY, CURVE_RESULT_KINDS, CURVE_VARIABLES,
                        DERIVED_CURVE_VARIABLES, DERIVED_RESULT_KINDS, FFT_SERIES, FIT_QUANTITIES, RATIO_SERIES,
@@ -17,7 +18,8 @@ from .analytic import (COMPLEX_FIT_OPERATIONS, CURVE_FUNCTION_ARITY, CURVE_RESUL
 from .expressions import (COORDINATE_NAMES, RESERVED_NAMES, THREE_D_COORDINATE_NAMES, ExpressionError,
                           compile_expression, error_message, evaluate_parameters, evaluate_scalar, is_identifier,
                           is_reserved_name, referenced_names)
-from .definition_helpers import is_axisymmetric
+from .definition_helpers import (RING_WEIGHTED_OPERATIONS, azimuthal_order_of, holds_azimuthal_order,
+                                 is_axisymmetric, ring_angle_conflict)
 from .interface_sampling import interface_selection, partner_component
 from .geometry import (DOMAIN_COORDINATES, GEOMETRY_KINDS, array_overlap, boundary_entities, bounding_box,
                        box_window, composite_inputs,
@@ -654,7 +656,7 @@ class _Validator:
         if mesh is None:
             return None
         shapes = self.vctx.shapes
-        x_edges, y_edges = _window_edges(mesh)
+        x_edges, y_edges = mesh.window_edges('x'), mesh.window_edges('y')
         x_centres = 0.5 * (x_edges[:-1] + x_edges[1:])
         y_centres = 0.5 * (y_edges[:-1] + y_edges[1:])
         own_entities = expanded_selections[index]
@@ -754,7 +756,7 @@ class _Validator:
         centres of the mesh estimate), else None; None also above MAX_COVERAGE_TEST_CELLS rasterised cells."""
         if self.vctx.mesh.domain_map is not None:
             return self._empty_mapped_object_message(name)
-        x_edges, y_edges = _window_edges(self.vctx.mesh)
+        x_edges, y_edges = self.vctx.mesh.window_edges('x'), self.vctx.mesh.window_edges('y')
         size_x, size_y = float(x_edges[-1]), float(y_edges[-1])
         x0, y0, x1, y1 = bounding_box(name, self.vctx.shapes)
         if x1 < 0.0 or y1 < 0.0 or x0 > size_x or y0 > size_y:
@@ -1190,6 +1192,7 @@ class _Validator:
             return
         if mesh.note:   # meshing: why the grid differs from the requested mode
             self.info(path, mesh.note)
+        self._check_element_floor(path, mesh_spec, mesh)
         if (mesh.kind == 'tetrahedra' and mesh.sizing.mesher == 'builtin' and not mesh.sizing.sweep_axis
                 and mesh.sizing.edge_sizes):
             self.warning(path, f"mesher 'builtin' ignores the edge sizes the physics ask for along "
@@ -1212,6 +1215,31 @@ class _Validator:
             self.info(path, f'auto mesh without a wave physics on it: base size ~{base_dx:.4g} m (longest domain '
                             f'side / {PHYSICS_BASE_DIVISOR:g}), the objects its physics use refined to their smallest '
                             f'side / {PHYSICS_OBJECT_DIVISOR:g} (set wavelength_min for the wavelength rule)')
+
+    def _check_element_floor(self, path, mesh_spec, mesh):
+        """Warning when an object's element size (its refinements, automatic ones included in auto mode) is below
+        h_min: the triangle mesher, gmsh and the swept in-plane mesher floor sizes at h_min silently (builtin
+        tetrahedra do not use h_min)."""
+        if mesh.kind not in FREE_MESH_KINDS:
+            return
+        sizing = mesh.sizing
+        if mesh.kind == 'tetrahedra' and sizing.mesher == 'builtin' and not sizing.sweep_axis:
+            return
+        sizes = dict(sizing.object_sizes)
+        for name, size in sizing.surface_sizes.items():
+            sizes[name] = min(sizes.get(name, math.inf), size)
+        below = {name: size for name, size in sizes.items() if size < sizing.h_min * (1.0 - 1e-9)}
+        if not below:
+            return
+        base = 'the auto base size' if sizing.auto_dx is not None else 'dx'
+        rule = ('set' if mesh_spec.h_min is not None
+                else f'unset: the maximum element size ({base}, {sizing.h_max:.4g} m) / 100')
+        self.warning(path, f"element size of {', '.join(repr(name) for name in sorted(below))} "
+                           f"({min(below.values()):.4g} m, from {'its' if len(below) == 1 else 'their'} refinements"
+                           f"{', automatic ones included' if sizing.auto_rule else ''}) is below the minimum element "
+                           f'size h_min = {sizing.h_min:.4g} m ({rule}): the elements there stay at h_min and an '
+                           f'object smaller than it may get no element at all; set h_min to at most '
+                           f'{min(below.values()):.4g} m')
 
     def _check_triangle_mesh(self, path, mesh_spec):
         """Kind 'triangles': a 2D Cartesian model, no tensor-only options (axes error, outer grading warning), the
@@ -2109,6 +2137,7 @@ class _Validator:
             elif derived.source is None:
                 self._check_height_in_2d(path, 'expression', derived.expression)
                 self._check_derived_meshes(path, derived)
+                self._check_derived_ring_angle(path, derived)
             if global_value:
                 if derived.selection:
                     self.error(path, f"selection: operation '{GLOBAL_DERIVED_OPERATION}' reads no fields; clear the "
@@ -2150,6 +2179,25 @@ class _Validator:
                            if mesh is not None and mesh != meshes[first])
         self.info(path, f"evaluated on mesh '{meshes[first]}' of '{first}' (the first of its physics in model order); "
                         f'the fields of {others} are interpolated onto it')
+
+    def _check_derived_ring_angle(self, path, derived):
+        """Error at path for a ring-weighted field derived value (RING_WEIGHTED_OPERATIONS) whose axisymmetric physics
+        with the azimuthal_order setting weigh the (r, z) rings differently: those whose fields it reads, or with none
+        read those on the first used mesh (Session evaluates such an expression there); the rule and text of
+        Session._ring_angle (definition_helpers.ring_angle_conflict), possible only for an ORDER_SPLIT_READERS pair."""
+        if derived.operation not in RING_WEIGHTED_OPERATIONS or self.spec.dimensions == 3:
+            return
+        names = _referenced_or_empty(derived.expression)
+        read = {self.output_names[name][0] for name in names if name in self.output_names}
+        used = self.spec.used_meshes()
+        mesh_name = used[0].name if used else ''
+        weighed = read or {physics.name for physics in self.spec.physics_on(mesh_name)}
+        ordered = {physics.name: ring_angle(azimuthal_order_of(values))
+                   for physics, physics_type, values in self.physics_entries
+                   if physics.name in weighed and holds_azimuthal_order(physics_type) and is_axisymmetric(values)}
+        problem = ring_angle_conflict(ordered, bool(read), mesh_name)
+        if problem:
+            self.error(path, f'expression (operation {derived.operation!r}): {problem}')
 
     def _check_derived_references(self, path, derived, earlier_names, later_names, field_names):
         """Errors at path for derived values its expression names that are listed after it, or that it could not
@@ -2686,13 +2734,6 @@ def _mapped_window_centres(mesh):
     x_edges, y_edges = mesh.x_edges, mesh.y_edges
     return mesh.domain_map.to_physical(0.5 * (x_edges[:-1] + x_edges[1:])[:, None],
                                        0.5 * (y_edges[:-1] + y_edges[1:])[None, :])
-
-
-def _window_edges(mesh):
-    """(x edges, y edges) float64 [m] of the physical window cells of a MeshEstimate (PML cells dropped)."""
-    sides = mesh.npml_sides
-    return (mesh.x_edges[sides['x_lo']:mesh.nx - sides['x_hi'] + 1],
-            mesh.y_edges[sides['y_lo']:mesh.ny - sides['y_hi'] + 1])
 
 
 def _covered_by_winners(shape, own_objects, winner_objects, rasterize_object):

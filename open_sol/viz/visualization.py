@@ -54,6 +54,7 @@ _LEGEND_STYLES = {
                    label='Point source'),
     'line_source': dict(color=_STYLE['source_color'], linestyle='--', linewidth=1.5, label='Line source'),
     'mode_source': dict(color=_STYLE['source_color'], linestyle='--', linewidth=3.0, label='Mode source'),
+    'focused_beam': dict(color=_STYLE['source_color'], linestyle='--', linewidth=3.0, label='Focused beam'),
     'tfsf': dict(color=_STYLE['source_color'], linestyle='-.', linewidth=1.5, label='TFSF box'),
     'probe': dict(marker='o', color='w', markerfacecolor=_STYLE['probe_color'], markersize=6, label='Probe'),
     'flux': dict(color=_STYLE['flux_color'], linewidth=2.5, label='Flux monitor'),
@@ -732,9 +733,10 @@ class Visualizer:
         if not em_solvers:
             return set()
         from ..core.sources import PointSource, LineSource
+        from ..physics.em.bor_focused_beam import BORFocusedBeam
         from ..physics.em.fdfd_ports import ModeSourcePhasor
-        from ..physics.em.fdfd_sources import (ElectricDipolePhasor, MagneticCurrentPhasor, PlaneWavePhasor,
-                                               PointCurrentPhasor, SheetCurrentPhasor)
+        from ..physics.em.fdfd_sources import (ElectricDipolePhasor, FocusedBeamPhasor, MagneticCurrentPhasor,
+                                               PlaneWavePhasor, PointCurrentPhasor, SheetCurrentPhasor)
         from ..physics.em.mode_ports import ModeSource
         from ..physics.em.sources import TFSFSource, TFSFSourceHz
         color = _STYLE['source_color']
@@ -757,11 +759,12 @@ class Visualizer:
                 # Total-field E_z / H_z cells: [x0, x1) x [y0, y1) (half-open).
                 _draw_box(ax, frame.box(source.x0, source.x1, source.y0, source.y1), color, '-.')
                 kinds.add('tfsf')
-            elif isinstance(source, (ModeSource, ModeSourcePhasor)):
-                # Through the line-cell centres over its solve range (clipped to the window when PML-extended).
+            elif isinstance(source, (ModeSource, ModeSourcePhasor, FocusedBeamPhasor, BORFocusedBeam)):
+                # One-sided TFSF lines (mode sources, focused beams): through the line-cell centres over the span
+                # (axis / position / span; clipped to the window when PML-extended).
                 xs, ys = frame.segment(source.axis, source.position, source.span)
                 ax.plot(xs, ys, color=color, linewidth=3.0, linestyle='--', alpha=0.8, zorder=9)
-                kinds.add('mode_source')
+                kinds.add('focused_beam' if isinstance(source, (FocusedBeamPhasor, BORFocusedBeam)) else 'mode_source')
             else:
                 raise TypeError(f"cannot annotate EM source of type {type(source).__name__}")
         return kinds

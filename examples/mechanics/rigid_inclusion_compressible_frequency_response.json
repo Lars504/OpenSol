@@ -1,0 +1,123 @@
+{
+  "title": "Rigid sphere in a viscoelastic elastomer: stiffness vs bulk modulus, displacement vs mixed u-p (frequency response, analytic)",
+  "description": "Kelvin's rigid spherical inclusion in a compressible viscoelastic solid, and volumetric locking of the displacement formulation. A rigid sphere of radius a = 1 um is moved by X = 1 nm along the axis inside a concentric held sphere r = b = 5 a filled with an elastomer: G*(w) = G0 (1 + j eta) + G1 j w tau1 / (1 + j w tau1), K* = kappa G0 (1 + j eta) (shear_modulus G0 = 0.5 MPa, one shear Prony branch G1 = 1.5 MPa, tau1 = 1 ms (relaxation around 1 / (2 pi tau1) = 159 Hz), mechanical_loss_factor eta = 0.05 on G0 and K0, rho = 1000 kg/m^3), frequency_response at 6 log-spaced frequencies 10 Hz - 3 kHz, swept over kappa = K0 / G0 = 1, 10, ..., 1e5 (PDMS-like elastomers have kappa ~ 1e3 - 1e4). Axisymmetric (r, z), m = 0, P2 triangles (h = a/8 on the sphere, growth 1.25, a/2 at most: 1019 triangles). Half model: only z > 0 is drawn; a translation along z has u_z even and u_r odd in z, so the plane z = 0 (y_lo) holds u_r = 0 with u_z free (displacement feature 'plane', u_y empty; sigma_zz = 0 there is natural) and the drawn half carries half the force: the derived values double F_y. The sphere ('inclusion', prescribed_displacement_domain u_y = X) and everything outside r = b ('wall' = window minus the cavity, fixed_domain: every node of its elements, so the sphere r = b is clamped) have their own material 'held' (another parameter group, so in the mixed formulation the pressure is duplicated on r = a and r = b and the held regions, where div u = 0, do not drag the elastomer pressure there toward 0: with the elastomer's own values the mixed error at kappa = 1 rises from 1.2e-5 to 2.5e-3).\nOne model, both formulations: two solid_mechanics physics on the same mesh with the same features, 'disp' (formulation displacement, P2) and 'mixed' (Taylor-Hood P2 / P1 u-p); every run solves both.\nAnalytic (quasi-static elasticity with complex moduli by the correspondence principle; nu = (3 K - 2 G) / (2 (3 K + G)) complex): u = F(r) e_z + H(r) (e_z . r_hat) r_hat is a sum of the four l = 1 Navier solutions (F, H) = (1, 0) (translation), ((3 - 4 nu) / r, 1 / r) (Kelvin), (1 / r^3, -3 / r^3) (dipole) and (r^2, -2 (2 - 3 nu) r^2 / (3 - 2 nu)) (regular); u = X e_z at r = a and u = 0 at r = b give a 4 x 4 system. Only the Kelvin term carries a net force (P = 16 pi G (1 - nu) C_Kelvin; the others are force-free), so with t = a / b, S = 1 + t + t^2 + t^3 + t^4 and q = K* / G*(w) the force the support exerts on the sphere is F = 12 pi a X G* (3 q + 4) (3 q + 10) S / ((1 - t) (2 (3 q + 10) (6 q + 11) S - 5 t (1 + t)^2 (3 q + 1)^2)) (= minus the force of the elastomer on the sphere). b -> inf: Kelvin's 12 pi G a X (3 q + 4) / (6 q + 11) = 24 pi G a X (1 - nu) / (5 - 6 nu) (6 pi G a X incompressible); q -> inf: the Stokes sphere-in-a-sphere wall factor 4 S / ((1 - t)^3 (4 + 7 t + 4 t^2)) (Haberman-Sayre / Happel-Brenner; 1.756 at t = 0.2). The Kelvin far field decays like 1 / r, so a container changes the force at O(a / b) without screening: here by x1.27 - 1.30 (kappa = 1) to x1.74 - 1.76 (kappa >= 1e3), which is why the reference keeps the container exactly. Checked independently of the FEM: symbolic Navier residual of each basis field, the two limits above, and the traction integrals over r = a and r = b of the numerically assembled solution (complex G, K) equal to the closed form to 1e-8. Inertia is left out of the reference: (k_s b)^2 = rho w^2 b^2 / |G*| <= 4.4e-6 at 3 kHz, and runs with rho x 1e3, 1e4, 1e5 shift F at 3 kHz by -9.3e-5, -9.3e-4, -9.3e-3 (linear in rho): -9e-8 at rho = 1000; the sphere's own inertia rho a^2 w^2 / (9 |G*|) < 2e-8.\nCurves & tables tab: the support reaction of 'inclusion' of each physics (F_y_re, F_y_im of the drawn half) versus frequency with their analytic curves (per sweep value): the stiffening and the loss peak of the Prony branch. Sweep tab: mixed_stiffness_10Hz and disp_stiffness_10Hz = 2 Re F / (6 pi G0 a X) (the relaxed modulus, where K* / G* is largest) versus kappa against the dashed closed form (1.086 at kappa = 1 to 1.777 at 1e5). Derived values tab: the stiffness at 10 Hz and 3 kHz and the loss tangent Im F / Re F at 98 Hz (0.62 - 0.76), the mixed ones graded, the displacement ones reported only (their error is the locking). Derived curves tab: locking_ratio = Re F_disp / Re F_mixed per frequency at the last kappa (1e5). Field tab (kappa = 1e5, 3 kHz): mixed.u_y, mixed.pressure (the pressure unknown) and disp.pressure (-tr(sigma*) / 3, node-averaged).\nMeasured agreement (this mesh): mixed |F - F_ref| / |F_ref| = 1.1e-5 (kappa = 1) to 2.3e-5 (kappa >= 1e3) at every frequency, whatever kappa (the derived values 2.3e-5, the loss tangent 4.7e-6, the curves 3.1e-5 of their range); tolerances 1e-4. Displacement formulation at 10 Hz: 1.7e-5, 6.3e-5, 2.3e-4, 8.2e-4, 3.7e-3, 1.6e-2 for kappa = 1 ... 1e5 (7.8e-2 at 1e6, not swept): about kappa^0.65, too stiff, and smaller at 3 kHz (6.8e-3 at 1e5) where |G*| is 4x larger, so the locking parameter is K* / G*(w), not K0 / G0. Mesh study (h on the sphere a/4, a/8, a/16, a/32, largest triangle 4x that), |F - F_ref| / |F_ref| at kappa = 1e4, 10 Hz: mixed 1.7e-4, 2.3e-5, 3.2e-6, 5.4e-7 (~h^2.8, the same at 1e5), displacement 2.4e-2, 3.7e-3, 5.3e-4, 9.1e-5 (at 1e5, a/8 - a/32: 1.6e-2, 2.6e-3, 4.6e-4): P2 converges at the same rate but with an error constant that grows with kappa, roughly 160x (1e4) to 700x (1e5) the mixed one, so near-incompressible solids need the mixed formulation (or a mesh refined by a factor that grows with kappa). To see locking in another model: switch formulation from mixed to displacement and raise bulk_modulus.",
+  "version": 2,
+  "solver_defaults": {"backend": "cpu"},
+  "parameters": [
+    {"name": "a_s", "expression": "1*um", "description": "inclusion radius"},
+    {"name": "b_s", "expression": "5*a_s", "description": "radius of the held concentric container"},
+    {"name": "w_s", "expression": "0.2*a_s", "description": "held margin: the window is the square r, z < b + w"},
+    {"name": "X_s", "expression": 1e-9, "description": "prescribed axial displacement amplitude of the inclusion [m]"},
+    {"name": "G0", "expression": 5e5, "description": "relaxed shear modulus [Pa]"},
+    {"name": "G1", "expression": 1.5e6, "description": "modulus of the shear Prony branch [Pa]"},
+    {"name": "tau1", "expression": 1e-3, "description": "relaxation time of the shear Prony branch [s]"},
+    {"name": "eta_s", "expression": 0.05, "description": "loss factor of the relaxed G0 and K0"},
+    {"name": "kappa", "expression": 100.0, "description": "K0 / G0 (swept 1 to 1e5)"},
+    {"name": "rho_s", "expression": 1000.0, "description": "density [kg/m^3]"},
+    {"name": "h_in", "expression": "a_s/8", "description": "triangle size on the inclusion"},
+    {"name": "h_max", "expression": "a_s/2", "description": "largest triangle size"},
+    {"name": "t_ab", "expression": "a_s/b_s", "description": "t = a / b"},
+    {"name": "S_ab", "expression": "1 + t_ab + t_ab**2 + t_ab**3 + t_ab**4", "description": "S = (1 - t^5) / (1 - t)"},
+    {"name": "f_lo", "expression": 10.0, "description": "lowest frequency [Hz] (table row 0)"},
+    {"name": "f_hi", "expression": 3000.0, "description": "highest frequency [Hz] (table row 5)"},
+    {"name": "f_2", "expression": "f_lo*(f_hi/f_lo)**0.4", "description": "third frequency, 97.9 Hz (table row 2)"}
+  ],
+  "domain": {"size_x": "b_s + w_s", "size_y": "b_s + w_s"},
+  "geometry": [
+    {"name": "inclusion", "kind": "circle", "params": {"cx": 0.0, "cy": 0.0, "r": "a_s"}},
+    {"name": "box", "kind": "rectangle", "params": {"x0": 0.0, "y0": 0.0, "x1": "b_s + w_s", "y1": "b_s + w_s"}},
+    {"name": "cavity", "kind": "circle", "params": {"cx": 0.0, "cy": 0.0, "r": "b_s"}},
+    {"name": "wall", "kind": "difference", "params": {"base": "box", "subtract": ["cavity"]}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "elastomer", "library": null,
+     "properties": {"shear_modulus": "G0", "bulk_modulus": "kappa*G0", "mechanical_loss_factor": "eta_s",
+                    "shear_relaxation_modulus_1": "G1", "shear_relaxation_time_1": "tau1", "rho": "rho_s"},
+     "dispersion": null, "selection": ["all"]},
+    {"name": "held", "library": null,
+     "properties": {"shear_modulus": "10*G0", "bulk_modulus": "20*G0", "rho": "rho_s"},
+     "dispersion": null, "selection": ["inclusion", "wall"]}
+  ],
+  "physics": [
+    {
+      "name": "disp",
+      "type": "solid_mechanics",
+      "settings": {"geometry": "axisymmetric", "discretization": "quadratic", "formulation": "displacement"},
+      "features": [
+        {"name": "plane", "type": "displacement", "selection": ["y_lo"], "params": {"u_x": 0.0, "u_y": null},
+         "enabled": true},
+        {"name": "wall", "type": "fixed_domain", "selection": ["wall"], "params": {}, "enabled": true},
+        {"name": "inclusion", "type": "prescribed_displacement_domain", "selection": ["inclusion"],
+         "params": {"u_x": 0.0, "u_y": "X_s"}, "enabled": true}
+      ],
+      "every": 1
+    },
+    {
+      "name": "mixed",
+      "type": "solid_mechanics",
+      "settings": {"geometry": "axisymmetric", "discretization": "quadratic", "formulation": "mixed"},
+      "features": [
+        {"name": "plane", "type": "displacement", "selection": ["y_lo"], "params": {"u_x": 0.0, "u_y": null},
+         "enabled": true},
+        {"name": "wall", "type": "fixed_domain", "selection": ["wall"], "params": {}, "enabled": true},
+        {"name": "inclusion", "type": "prescribed_displacement_domain", "selection": ["inclusion"],
+         "params": {"u_x": 0.0, "u_y": "X_s"}, "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "meshes": [{"name": "triangles", "kind": "triangles", "mode": "nonuniform", "dx": "h_max", "max_ratio": 1.25,
+              "refinements": [{"object": "inclusion", "dx": "h_in"}]}],
+  "study": {"type": "frequency_response",
+            "settings": {"frequency_start": "f_lo", "frequency_stop": "f_hi", "n_frequencies": 6, "log_spacing": true,
+                         "snapshots": "last"},
+            "stored_fields": ["mixed.u_abs", "mixed.u_y", "mixed.pressure", "disp.pressure"],
+            "sweep": {"parameter": "kappa", "values": [1.0, 10.0, 100.0, 1000.0, 10000.0, 100000.0],
+                      "keep_fields": false}},
+  "derived_values": [
+    {"name": "mixed_stiffness_10Hz", "expression": "2*F_y_re/(6*pi*G0*a_s*X_s)", "selection": [], "operation": "at",
+     "source": "mixed.inclusion", "at": 0,
+     "reference": "re(12*pi*a_s*X_s*(G0*(1 + 1j*eta_s) + G1*1j*2*pi*f_lo*tau1/(1 + 1j*2*pi*f_lo*tau1))*(3*(kappa*G0*(1 + 1j*eta_s)/(G0*(1 + 1j*eta_s) + G1*1j*2*pi*f_lo*tau1/(1 + 1j*2*pi*f_lo*tau1))) + 4)*(3*(kappa*G0*(1 + 1j*eta_s)/(G0*(1 + 1j*eta_s) + G1*1j*2*pi*f_lo*tau1/(1 + 1j*2*pi*f_lo*tau1))) + 10)*S_ab/((1 - t_ab)*(2*(3*(kappa*G0*(1 + 1j*eta_s)/(G0*(1 + 1j*eta_s) + G1*1j*2*pi*f_lo*tau1/(1 + 1j*2*pi*f_lo*tau1))) + 10)*(6*(kappa*G0*(1 + 1j*eta_s)/(G0*(1 + 1j*eta_s) + G1*1j*2*pi*f_lo*tau1/(1 + 1j*2*pi*f_lo*tau1))) + 11)*S_ab - 5*t_ab*(1 + t_ab)**2*(3*(kappa*G0*(1 + 1j*eta_s)/(G0*(1 + 1j*eta_s) + G1*1j*2*pi*f_lo*tau1/(1 + 1j*2*pi*f_lo*tau1))) + 1)**2)))*2/(6*pi*G0*a_s*X_s)",
+     "tolerance": 1e-4},
+    {"name": "mixed_stiffness_3kHz", "expression": "2*F_y_re/(6*pi*G0*a_s*X_s)", "selection": [], "operation": "at",
+     "source": "mixed.inclusion", "at": 5,
+     "reference": "re(12*pi*a_s*X_s*(G0*(1 + 1j*eta_s) + G1*1j*2*pi*f_hi*tau1/(1 + 1j*2*pi*f_hi*tau1))*(3*(kappa*G0*(1 + 1j*eta_s)/(G0*(1 + 1j*eta_s) + G1*1j*2*pi*f_hi*tau1/(1 + 1j*2*pi*f_hi*tau1))) + 4)*(3*(kappa*G0*(1 + 1j*eta_s)/(G0*(1 + 1j*eta_s) + G1*1j*2*pi*f_hi*tau1/(1 + 1j*2*pi*f_hi*tau1))) + 10)*S_ab/((1 - t_ab)*(2*(3*(kappa*G0*(1 + 1j*eta_s)/(G0*(1 + 1j*eta_s) + G1*1j*2*pi*f_hi*tau1/(1 + 1j*2*pi*f_hi*tau1))) + 10)*(6*(kappa*G0*(1 + 1j*eta_s)/(G0*(1 + 1j*eta_s) + G1*1j*2*pi*f_hi*tau1/(1 + 1j*2*pi*f_hi*tau1))) + 11)*S_ab - 5*t_ab*(1 + t_ab)**2*(3*(kappa*G0*(1 + 1j*eta_s)/(G0*(1 + 1j*eta_s) + G1*1j*2*pi*f_hi*tau1/(1 + 1j*2*pi*f_hi*tau1))) + 1)**2)))*2/(6*pi*G0*a_s*X_s)",
+     "tolerance": 1e-4},
+    {"name": "mixed_loss_tangent_98Hz", "expression": "F_y_im/F_y_re", "selection": [], "operation": "at",
+     "source": "mixed.inclusion", "at": 2,
+     "reference": "tan(arg(12*pi*a_s*X_s*(G0*(1 + 1j*eta_s) + G1*1j*2*pi*f_2*tau1/(1 + 1j*2*pi*f_2*tau1))*(3*(kappa*G0*(1 + 1j*eta_s)/(G0*(1 + 1j*eta_s) + G1*1j*2*pi*f_2*tau1/(1 + 1j*2*pi*f_2*tau1))) + 4)*(3*(kappa*G0*(1 + 1j*eta_s)/(G0*(1 + 1j*eta_s) + G1*1j*2*pi*f_2*tau1/(1 + 1j*2*pi*f_2*tau1))) + 10)*S_ab/((1 - t_ab)*(2*(3*(kappa*G0*(1 + 1j*eta_s)/(G0*(1 + 1j*eta_s) + G1*1j*2*pi*f_2*tau1/(1 + 1j*2*pi*f_2*tau1))) + 10)*(6*(kappa*G0*(1 + 1j*eta_s)/(G0*(1 + 1j*eta_s) + G1*1j*2*pi*f_2*tau1/(1 + 1j*2*pi*f_2*tau1))) + 11)*S_ab - 5*t_ab*(1 + t_ab)**2*(3*(kappa*G0*(1 + 1j*eta_s)/(G0*(1 + 1j*eta_s) + G1*1j*2*pi*f_2*tau1/(1 + 1j*2*pi*f_2*tau1))) + 1)**2))))",
+     "tolerance": 1e-4},
+    {"name": "disp_stiffness_10Hz", "expression": "2*F_y_re/(6*pi*G0*a_s*X_s)", "selection": [], "operation": "at",
+     "source": "disp.inclusion", "at": 0,
+     "reference": "re(12*pi*a_s*X_s*(G0*(1 + 1j*eta_s) + G1*1j*2*pi*f_lo*tau1/(1 + 1j*2*pi*f_lo*tau1))*(3*(kappa*G0*(1 + 1j*eta_s)/(G0*(1 + 1j*eta_s) + G1*1j*2*pi*f_lo*tau1/(1 + 1j*2*pi*f_lo*tau1))) + 4)*(3*(kappa*G0*(1 + 1j*eta_s)/(G0*(1 + 1j*eta_s) + G1*1j*2*pi*f_lo*tau1/(1 + 1j*2*pi*f_lo*tau1))) + 10)*S_ab/((1 - t_ab)*(2*(3*(kappa*G0*(1 + 1j*eta_s)/(G0*(1 + 1j*eta_s) + G1*1j*2*pi*f_lo*tau1/(1 + 1j*2*pi*f_lo*tau1))) + 10)*(6*(kappa*G0*(1 + 1j*eta_s)/(G0*(1 + 1j*eta_s) + G1*1j*2*pi*f_lo*tau1/(1 + 1j*2*pi*f_lo*tau1))) + 11)*S_ab - 5*t_ab*(1 + t_ab)**2*(3*(kappa*G0*(1 + 1j*eta_s)/(G0*(1 + 1j*eta_s) + G1*1j*2*pi*f_lo*tau1/(1 + 1j*2*pi*f_lo*tau1))) + 1)**2)))*2/(6*pi*G0*a_s*X_s)",
+     "tolerance": null},
+    {"name": "disp_stiffness_3kHz", "expression": "2*F_y_re/(6*pi*G0*a_s*X_s)", "selection": [], "operation": "at",
+     "source": "disp.inclusion", "at": 5,
+     "reference": "re(12*pi*a_s*X_s*(G0*(1 + 1j*eta_s) + G1*1j*2*pi*f_hi*tau1/(1 + 1j*2*pi*f_hi*tau1))*(3*(kappa*G0*(1 + 1j*eta_s)/(G0*(1 + 1j*eta_s) + G1*1j*2*pi*f_hi*tau1/(1 + 1j*2*pi*f_hi*tau1))) + 4)*(3*(kappa*G0*(1 + 1j*eta_s)/(G0*(1 + 1j*eta_s) + G1*1j*2*pi*f_hi*tau1/(1 + 1j*2*pi*f_hi*tau1))) + 10)*S_ab/((1 - t_ab)*(2*(3*(kappa*G0*(1 + 1j*eta_s)/(G0*(1 + 1j*eta_s) + G1*1j*2*pi*f_hi*tau1/(1 + 1j*2*pi*f_hi*tau1))) + 10)*(6*(kappa*G0*(1 + 1j*eta_s)/(G0*(1 + 1j*eta_s) + G1*1j*2*pi*f_hi*tau1/(1 + 1j*2*pi*f_hi*tau1))) + 11)*S_ab - 5*t_ab*(1 + t_ab)**2*(3*(kappa*G0*(1 + 1j*eta_s)/(G0*(1 + 1j*eta_s) + G1*1j*2*pi*f_hi*tau1/(1 + 1j*2*pi*f_hi*tau1))) + 1)**2)))*2/(6*pi*G0*a_s*X_s)",
+     "tolerance": null}
+  ],
+  "analytic_curves": [
+    {"name": "F_y_re_mixed", "target": "mixed.inclusion", "series": "F_y_re", "x_column": "frequency",
+     "expression": "re(12*pi*a_s*X_s*(G0*(1 + 1j*eta_s) + G1*1j*2*pi*x*tau1/(1 + 1j*2*pi*x*tau1))*(3*(kappa*G0*(1 + 1j*eta_s)/(G0*(1 + 1j*eta_s) + G1*1j*2*pi*x*tau1/(1 + 1j*2*pi*x*tau1))) + 4)*(3*(kappa*G0*(1 + 1j*eta_s)/(G0*(1 + 1j*eta_s) + G1*1j*2*pi*x*tau1/(1 + 1j*2*pi*x*tau1))) + 10)*S_ab/((1 - t_ab)*(2*(3*(kappa*G0*(1 + 1j*eta_s)/(G0*(1 + 1j*eta_s) + G1*1j*2*pi*x*tau1/(1 + 1j*2*pi*x*tau1))) + 10)*(6*(kappa*G0*(1 + 1j*eta_s)/(G0*(1 + 1j*eta_s) + G1*1j*2*pi*x*tau1/(1 + 1j*2*pi*x*tau1))) + 11)*S_ab - 5*t_ab*(1 + t_ab)**2*(3*(kappa*G0*(1 + 1j*eta_s)/(G0*(1 + 1j*eta_s) + G1*1j*2*pi*x*tau1/(1 + 1j*2*pi*x*tau1))) + 1)**2)))",
+     "tolerance": 1e-4},
+    {"name": "F_y_im_mixed", "target": "mixed.inclusion", "series": "F_y_im", "x_column": "frequency",
+     "expression": "im(12*pi*a_s*X_s*(G0*(1 + 1j*eta_s) + G1*1j*2*pi*x*tau1/(1 + 1j*2*pi*x*tau1))*(3*(kappa*G0*(1 + 1j*eta_s)/(G0*(1 + 1j*eta_s) + G1*1j*2*pi*x*tau1/(1 + 1j*2*pi*x*tau1))) + 4)*(3*(kappa*G0*(1 + 1j*eta_s)/(G0*(1 + 1j*eta_s) + G1*1j*2*pi*x*tau1/(1 + 1j*2*pi*x*tau1))) + 10)*S_ab/((1 - t_ab)*(2*(3*(kappa*G0*(1 + 1j*eta_s)/(G0*(1 + 1j*eta_s) + G1*1j*2*pi*x*tau1/(1 + 1j*2*pi*x*tau1))) + 10)*(6*(kappa*G0*(1 + 1j*eta_s)/(G0*(1 + 1j*eta_s) + G1*1j*2*pi*x*tau1/(1 + 1j*2*pi*x*tau1))) + 11)*S_ab - 5*t_ab*(1 + t_ab)**2*(3*(kappa*G0*(1 + 1j*eta_s)/(G0*(1 + 1j*eta_s) + G1*1j*2*pi*x*tau1/(1 + 1j*2*pi*x*tau1))) + 1)**2)))",
+     "tolerance": 1e-4},
+    {"name": "F_y_re_disp", "target": "disp.inclusion", "series": "F_y_re", "x_column": "frequency",
+     "expression": "re(12*pi*a_s*X_s*(G0*(1 + 1j*eta_s) + G1*1j*2*pi*x*tau1/(1 + 1j*2*pi*x*tau1))*(3*(kappa*G0*(1 + 1j*eta_s)/(G0*(1 + 1j*eta_s) + G1*1j*2*pi*x*tau1/(1 + 1j*2*pi*x*tau1))) + 4)*(3*(kappa*G0*(1 + 1j*eta_s)/(G0*(1 + 1j*eta_s) + G1*1j*2*pi*x*tau1/(1 + 1j*2*pi*x*tau1))) + 10)*S_ab/((1 - t_ab)*(2*(3*(kappa*G0*(1 + 1j*eta_s)/(G0*(1 + 1j*eta_s) + G1*1j*2*pi*x*tau1/(1 + 1j*2*pi*x*tau1))) + 10)*(6*(kappa*G0*(1 + 1j*eta_s)/(G0*(1 + 1j*eta_s) + G1*1j*2*pi*x*tau1/(1 + 1j*2*pi*x*tau1))) + 11)*S_ab - 5*t_ab*(1 + t_ab)**2*(3*(kappa*G0*(1 + 1j*eta_s)/(G0*(1 + 1j*eta_s) + G1*1j*2*pi*x*tau1/(1 + 1j*2*pi*x*tau1))) + 1)**2)))",
+     "tolerance": null},
+    {"name": "stiffness_10Hz_mixed_vs_kappa", "target": "sweep", "series": "mixed_stiffness_10Hz",
+     "expression": "re(12*pi*a_s*X_s*(G0*(1 + 1j*eta_s) + G1*1j*2*pi*f_lo*tau1/(1 + 1j*2*pi*f_lo*tau1))*(3*(kappa*G0*(1 + 1j*eta_s)/(G0*(1 + 1j*eta_s) + G1*1j*2*pi*f_lo*tau1/(1 + 1j*2*pi*f_lo*tau1))) + 4)*(3*(kappa*G0*(1 + 1j*eta_s)/(G0*(1 + 1j*eta_s) + G1*1j*2*pi*f_lo*tau1/(1 + 1j*2*pi*f_lo*tau1))) + 10)*S_ab/((1 - t_ab)*(2*(3*(kappa*G0*(1 + 1j*eta_s)/(G0*(1 + 1j*eta_s) + G1*1j*2*pi*f_lo*tau1/(1 + 1j*2*pi*f_lo*tau1))) + 10)*(6*(kappa*G0*(1 + 1j*eta_s)/(G0*(1 + 1j*eta_s) + G1*1j*2*pi*f_lo*tau1/(1 + 1j*2*pi*f_lo*tau1))) + 11)*S_ab - 5*t_ab*(1 + t_ab)**2*(3*(kappa*G0*(1 + 1j*eta_s)/(G0*(1 + 1j*eta_s) + G1*1j*2*pi*f_lo*tau1/(1 + 1j*2*pi*f_lo*tau1))) + 1)**2)))*2/(6*pi*G0*a_s*X_s)",
+     "tolerance": 1e-4},
+    {"name": "stiffness_10Hz_disp_vs_kappa", "target": "sweep", "series": "disp_stiffness_10Hz",
+     "expression": "re(12*pi*a_s*X_s*(G0*(1 + 1j*eta_s) + G1*1j*2*pi*f_lo*tau1/(1 + 1j*2*pi*f_lo*tau1))*(3*(kappa*G0*(1 + 1j*eta_s)/(G0*(1 + 1j*eta_s) + G1*1j*2*pi*f_lo*tau1/(1 + 1j*2*pi*f_lo*tau1))) + 4)*(3*(kappa*G0*(1 + 1j*eta_s)/(G0*(1 + 1j*eta_s) + G1*1j*2*pi*f_lo*tau1/(1 + 1j*2*pi*f_lo*tau1))) + 10)*S_ab/((1 - t_ab)*(2*(3*(kappa*G0*(1 + 1j*eta_s)/(G0*(1 + 1j*eta_s) + G1*1j*2*pi*f_lo*tau1/(1 + 1j*2*pi*f_lo*tau1))) + 10)*(6*(kappa*G0*(1 + 1j*eta_s)/(G0*(1 + 1j*eta_s) + G1*1j*2*pi*f_lo*tau1/(1 + 1j*2*pi*f_lo*tau1))) + 11)*S_ab - 5*t_ab*(1 + t_ab)**2*(3*(kappa*G0*(1 + 1j*eta_s)/(G0*(1 + 1j*eta_s) + G1*1j*2*pi*f_lo*tau1/(1 + 1j*2*pi*f_lo*tau1))) + 1)**2)))*2/(6*pi*G0*a_s*X_s)",
+     "tolerance": null}
+  ],
+  "derived_curves": [
+    {"name": "locking_ratio", "inputs": {"Fd": "disp.inclusion:F_y_re", "Fm": "mixed.inclusion:F_y_re"},
+     "expression": "Fd/Fm", "plot": "", "label": "Re F displacement / Re F mixed (last sweep value)", "unit": "1",
+     "log_x": true, "log_y": false, "reference": 1.0, "tolerance": null}
+  ]
+}

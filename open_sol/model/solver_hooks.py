@@ -64,6 +64,28 @@ class ReducedSweepSolver(Protocol):
 
 
 @runtime_checkable
+class PhysicsDriveSolver(Protocol):
+    """Optional on a FrequencyResponseSolver: physics_drives (list; empty = none) are loads built from other physics'
+    solved fields (brillouin_scattering); with any, the study calls bind_physics_drives(physics_by_name, progress) ->
+    [(log level, text)] after the background stage and the static states, before reset_frequency_response
+    (progress(done, total) per bound column set; it may raise Cancelled)."""
+    physics_drives: list
+    def bind_physics_drives(self, physics_by_name, progress=None): ...
+
+
+@runtime_checkable
+class DriveOpticsSolver(Protocol):
+    """An optical physics a physics drive reads in bind_physics_drives (em_fdfd_ez / _hz, em_fdfd_bor for
+    brillouin_scattering): drive_sources() -> {name: enabled focused beam}, solve_moved_beam(source, offset) -> one
+    solve with that beam moved on the kept factor, drive_fields(solution) -> its host DriveFields (em
+    focused_beam.DriveFields), and its domain."""
+    domain: object
+    def drive_sources(self): ...
+    def solve_moved_beam(self, source, offset): ...
+    def drive_fields(self, solution): ...
+
+
+@runtime_checkable
 class PrestressSolver(Protocol):
     """Optional on an eigenfrequency / frequency_response / optomechanics solver (stress stiffening or geometric
     nonlinearity): while prestressed,

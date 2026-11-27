@@ -547,25 +547,33 @@ def point_current_rhs(system, ix, iz, component, current, order=None):
     return full[system.unknown_index]
 
 
+def yee_e_fields(system, solution):
+    """complex128 E phasors on their Yee points of an active solution vector (inactive points 0; at |m| = 1 the axis
+    E_r recovered from cell 0, module header): er (nr+1, nz), ephi (nr, nz), ez (nr, nz+1) (yee_fields' E part)."""
+    nr, nz = system.shape
+    n_er, n_u, _ = _full_offsets(system.shape)
+    full = np.zeros(system.full_size, dtype=np.complex128)
+    full[system.unknown_index] = np.asarray(solution, dtype=np.complex128)
+    fields = {'er': full[:n_er].reshape(nr + 1, nz), 'ephi': 1j * full[n_er:n_er + n_u].reshape(nr, nz),
+              'ez': full[n_er + n_u:].reshape(nr, nz + 1)}
+    if _regular_axis(system.azimuthal_order):
+        fields['er'][0] = 1j * fields['ephi'][0] / system.azimuthal_order
+    return fields
+
+
 def yee_fields(system, solution):
     """complex128 phasors on their Yee points of an active solution vector (inactive points 0; at |m| = 1 the axis E_r
     / H_phi recovered from cell 0, module header): er (nr+1, nz), ephi (nr, nz), ez (nr, nz+1), hr (nr, nz+1), hz
     (nr+1, nz), hphi (nr+1, nz+1)."""
     nr, nz = system.shape
-    n_er, n_u, _ = _full_offsets(system.shape)
     solution = np.asarray(solution, dtype=np.complex128)
-    full = np.zeros(system.full_size, dtype=np.complex128)
-    full[system.unknown_index] = solution
     h_points = (system.curl @ solution) * system.a_active / (system.omega * MU0 * system.a_mu)
     n_ar, n_az = nr * (nz + 1), (nr + 1) * nz
-    yee = {'er': full[:n_er].reshape(nr + 1, nz), 'ephi': 1j * full[n_er:n_er + n_u].reshape(nr, nz),
-           'ez': full[n_er + n_u:].reshape(nr, nz + 1), 'hr': h_points[:n_ar].reshape(nr, nz + 1),
-           'hz': -h_points[n_ar:n_ar + n_az].reshape(nr + 1, nz),
-           'hphi': 1j * h_points[n_ar + n_az:].reshape(nr + 1, nz + 1)}
+    yee = yee_e_fields(system, solution)
+    yee.update(hr=h_points[:n_ar].reshape(nr, nz + 1), hz=-h_points[n_ar:n_ar + n_az].reshape(nr + 1, nz),
+               hphi=1j * h_points[n_ar + n_az:].reshape(nr + 1, nz + 1))
     if _regular_axis(system.azimuthal_order):
-        order = system.azimuthal_order
-        yee['er'][0] = 1j * yee['ephi'][0] / order
-        yee['hphi'][0] = -1j * order * yee['hr'][0]
+        yee['hphi'][0] = -1j * system.azimuthal_order * yee['hr'][0]
     return yee
 
 

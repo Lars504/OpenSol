@@ -15,6 +15,12 @@ INPUT_ARRAYS = ('temperature_rise', 'temperature_rise_ext', 'body_force_x', 'bod
 SOURCE_SLOTS = ('temperature_rise', 'body_force_x', 'body_force_y')
 # frequency_response display fields (triangle meshes only, no state() arrays): Im of the complex displacement [m]
 HARMONIC_IMAG_FIELDS = ('u_x_im', 'u_y_im')
+# ... and Im of the U_phi amplitude (field u_z) at an azimuthal order m >= 1 (0 with two components)
+AZIMUTHAL_IMAG_FIELDS = ('u_z_im',)
+# frequency_response display fields (triangle / tetrahedron meshes, no state() arrays) [Pa], physical p > 0 in
+# compression: Re / Im of p = -tr(sigma*) / 3 (displacement formulation: node-averaged like the stresses; mixed: the
+# pressure unknown)
+PRESSURE_FIELDS = ('pressure', 'pressure_im')
 # energy density display fields [J/m^3] (triangle meshes only, no state() arrays): a static solve 1/2 sigma : eps_el
 # (no initial stress) and 0; a vibration mode or a frequency response the time averages 1/4 Re(sigma : eps_el*) and
 # 1/4 rho omega^2 |u|^2 (azimuthal order m >= 1: twice the phi mean, so ring integrals with weight pi give the totals)
