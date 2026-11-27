@@ -29,8 +29,9 @@ from ..em.definition_resonance import RESONANCE_SUMMARY, em_resonance_probe
 from ..em.memory_estimates import _harmonic_wavelength_count, _point_trace_items
 from .boundaries3d import AXES, FACE_TYPES_3D, BoundaryConfig3D, cpml_psi_bytes
 from .definition_sources3d import (SOURCE_FEATURES, SPECTRUM_BLOCK_ITEM, box_corners, box_edge_issues,
-                                   box_face_spectra_memory, domain_sizes, face_types, nearest_window_edge, plane_cells,
-                                   plane_edge_message, resolved_spectrum_precision, spectra_memory, window_axes)
+                                   box_face_spectra_memory, domain_sizes, face_types, flux_box_sharers,
+                                   nearest_window_edge, plane_cells, plane_edge_message, resolved_spectrum_precision,
+                                   spectra_memory, window_axes)
 from .engine3d import _INDEX_CHUNK_CELLS, COMPONENT_AXES, STEP_GRAPHS   # the chunk the estimate books
 from .harmonic3d import ENERGY_CHUNK_CELLS
 from .monitors3d import DFT_PLANE_QUANTITY, SPECTRUM_BLOCK_SAMPLES, dft_plane_result, flux_result
@@ -65,7 +66,7 @@ EM3D_STEPPER_ROLE = replace(HALF_STORAGE_STEPPER_ROLE, setting_choices={'spectru
 # mixed folds (monitors3d.SpectrumStore: per store every SPECTRUM_BLOCK_SAMPLES samples, at most every step): the
 # complex64 block to the host (Transfer of its bytes), the host add total += staging (8 B read + 16 B read and written
 # per value: 5 B of host traffic per block byte) and its calls (copy, event record, zero fill, event wait); spectrum
-# stores per feature: one per plane, a box six (a far field on a flux box's surface shares its box: as _step_launches)
+# stores per feature: one per plane, a box six (none for a feature sharing another's FluxBox3D: flux_box_sharers)
 _FOLD_HOST_BYTES_PER_BLOCK_BYTE = 5.0
 _FOLD_CALLS = 4
 _SPECTRUM_STORES = {'flux_plane': 1, 'mode_monitor': 1, 'flux_box': 6, 'far_field': 6}
@@ -662,7 +663,8 @@ def _step_launches(settings_values, context, n_sets):
     # gpu: field probes / resonance monitors (FieldProbes) are recorded inside the E graph (core.monitors.FieldProbeRows;
     # the eager re-sample after an active source, pole or mirror row is not booked)
     graphed = ('field_probe', 'resonance_monitor') if context.backend == 'gpu' and STEP_GRAPHS else ()
-    feature_launches = sum(0 if (feature.type == 'far_field' and 'flux_box' in kinds) or feature.type in graphed
+    shared = flux_box_sharers(context)   # flux boxes / far fields stepped by another feature's FluxBox3D
+    feature_launches = sum(0 if feature.name in shared or feature.type in graphed
                            else _FEATURE_LAUNCHES.get(feature.type, _DEFAULT_FEATURE_LAUNCHES) for feature in features)
     launches = (numba_launches + weight * n_sets * (1 if conformal else 0)
                 + (n_sets * _POLE_LAUNCHES if poles else 0) + feature_launches)
@@ -717,11 +719,10 @@ def _spectrum_fold_items(context) -> tuple:
     spectra or without a spectral feature."""
     if resolved_spectrum_precision(context.solvers) == 'double' or context.memory is None:
         return ()
-    features = [feature for feature in context.physics_spec.features if feature.enabled]
-    kinds = {feature.type for feature in features}
+    shared = flux_box_sharers(context)   # their FluxBox3D folds with the feature that owns it
     stores, block_bytes = 0, 0.0
-    for feature in features:
-        if feature.type not in _SPECTRUM_STORES or (feature.type == 'far_field' and 'flux_box' in kinds):
+    for feature in context.physics_spec.features:
+        if not feature.enabled or feature.type not in _SPECTRUM_STORES or feature.name in shared:
             continue
         owner = f"feature '{context.name}.{feature.name}': "
         stores += _SPECTRUM_STORES[feature.type]

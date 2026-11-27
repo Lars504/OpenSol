@@ -151,6 +151,11 @@ contracts"). em_fdtd_3d (B2) and the eigensolver em_fdfd_3d (tensor Yee and tetr
   `store.kernels` and calls `store.sampled()` once per sample; a new spectral monitor exposes `spectrum_stores` (work
   counter `spectrum_folds`), books its arrays through `definition_sources3d.spectra_memory`
   (`memory_estimate_context`) and joins `definition._SPECTRUM_STORES` (fold time item).
+- Flux boxes and far fields share one stepped FluxBox3D per (face cell edges, frequencies)
+  (`EMPhysics3D._shared_flux_box`). Its estimate twin is `definition_sources3d.flux_box_features` (same box object
+  and monitor wavelengths; the memory estimate, `_step_launches` and the fold item count a sharing feature as
+  nothing): change the two together, and a new feature on that path joins `FLUX_BOX_FEATURES`. A feature
+  estimator is not told which feature it books (`box_face_spectra_memory` matches by resolved params).
 - The mixed fold (async copy into pinned staging + zero fill on the current stream, event waited at the next fold or
   read) runs eagerly from `update`: spectral monitors stay outside the step graphs (it is a host-side decision per
   sample). The block length SPECTRUM_BLOCK_SAMPLES (64) follows from the error target at its constant; changing it

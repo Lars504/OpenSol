@@ -7,6 +7,7 @@ from ...core.domain import containing_cell
 from ...core.memory_estimate import COMPLEX64_BYTES, COMPLEX128_BYTES, FLOAT32_BYTES, MemoryEstimate, host_lu_bytes
 from ...core.mirror import MIRROR_SIGNS, plane_wave_mirror_issue
 from ...model.definition_helpers import wavelength_range_issues
+from ...model.geometry import expand_entities
 from ...model.schema import FeatureType, Issue, Param, feature_path, resolve_values, solver_backend
 from ..em.cross_section_modes import size_issue_for
 from ..em.definition_common import (_monitor_wavelengths, object_result, single_object, source_time_kwargs,
@@ -453,9 +454,46 @@ def _mode_monitor_memory(values, n_selected_cells, mesh, context):
         (f'followed modes ({n_wavelengths} x 8 complex128 planes)', n_wavelengths * 8 * COMPLEX128_BYTES * full)))
 
 
+FLUX_BOX_FEATURES = ('flux_box', 'far_field')   # feature types stepped through EMPhysics3D._shared_flux_box
+
+
+def flux_box_features(context) -> list:
+    """[(FeatureSpec, resolved params, shares)] of the physics' enabled FLUX_BOX_FEATURES in build order (context: a
+    MemoryContext / TimeContext). shares: an earlier one selects the same box object with the same monitor
+    wavelengths, so EMPhysics3D._shared_flux_box (keyed by the faces' cell edges and the frequencies) hands the
+    feature that one's FluxBox3D: no spectra, kernel launches or folds of its own. Two objects whose faces snap to the
+    same cell edges share too, which only the built grid shows: they count apart here (booked twice, never too
+    little). Left out (never sharing): a feature whose params are no dict or whose selection does not expand
+    (validate reports both)."""
+    feature_type = context.registry.physics_type(context.physics_spec.type).feature_type
+    found, keys = [], set()
+    for feature in context.physics_spec.features:
+        if feature.type not in FLUX_BOX_FEATURES or not feature.enabled or not isinstance(feature.params, dict):
+            continue
+        try:
+            box = tuple(expand_entities(context.spec, feature.selection))
+        except (ValueError, KeyError, TypeError):   # reported by validate
+            continue
+        values = resolve_values(feature_type(feature.type).params, feature.params, context.parameters)
+        key = (box, tuple(_monitor_wavelengths(values).tolist()))
+        found.append((feature, values, key in keys))
+        keys.add(key)
+    return found
+
+
+def flux_box_sharers(context) -> frozenset:
+    """Names of the features sharing an earlier feature's FluxBox3D (flux_box_features)."""
+    return frozenset(feature.name for feature, _, shares in flux_box_features(context) if shares)
+
+
 def box_face_spectra_memory(values, n_selected_cells, mesh, context):
     """Six faces of 4 spectra (flux box, far field; spectra_memory); the face cells of a cube with the selection's 3D
-    box cell count."""
+    box cell count. Nothing for a feature sharing an earlier one's FluxBox3D (flux_box_features: device spectra, host
+    totals and staging are held once). The estimator knows its feature only by the resolved params: several features
+    of one type with equal params book nothing only when all of them share."""
+    twins = [shares for _, feature_values, shares in flux_box_features(context) if feature_values == values]
+    if twins and all(twins):
+        return MemoryEstimate()
     n_wavelengths = int(values['n_wavelengths'])
     side = max(int(n_selected_cells), 1) ** (1.0 / 3.0)
     cells = 6 * side * side

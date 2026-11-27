@@ -202,7 +202,8 @@ class PlaneFlux3D:
         for index, pair in enumerate(self._pairs):
             pair['e_dft'], pair['h_dft'] = self.store.arrays[2 * index], self.store.arrays[2 * index + 1]
         self._omega_dev = xp.asarray(2.0 * np.pi * self.frequencies)
-        self._phases = xp.empty(self.frequencies.size, dtype=np.complex64)
+        self._phases = xp.empty(self.frequencies.size, dtype=np.complex64)   # rewritten in place per sample
+        self._plane_phases = self._phases[:, None, None]                     # the view the kernels broadcast
         self.field_scales = (1.0, 1.0)   # (E, H) per stored unit (engine3d field_scale; half_storage != 1)
         self._view_cache = {}            # id(field set) -> (field set, plane views): real and Bloch imaginary sets
 
@@ -211,12 +212,11 @@ class PlaneFlux3D:
 
     def update(self, fields, t, phases=None):
         """E (mean of the two layers across the plane) and H at the plane, both phased at the E time t (Bloch k != 0:
-        plus j times the imaginary set's); phases: the (n_f,) DFT phases of t when a FluxBox3D computed them once for
-        its six planes. The plane views are built once per field set (the Fields3D arrays are persistent)."""
+        plus j times the imaginary set's); phases: the (n_f, 1, 1) DFT phases of t when a FluxBox3D computed them once
+        for its six planes. The plane views are built once per field set (the Fields3D arrays are persistent)."""
         if phases is None:
             _dft_phase(self._omega_dev, t, self.dt * self.sample_interval, self._phases)
-            phases = self._phases
-        phases = phases[:, None, None]
+            phases = self._plane_phases
         for field_set, (accumulate, accumulate_pair) in _field_sets(fields, *self.store.kernels):
             for lower, upper, h_view, pair in self._views(field_set):
                 accumulate_pair(lower, upper, phases, pair['e_dft'])
@@ -289,7 +289,7 @@ class FluxBox3D:
         first = self.faces[0][1]
         _dft_phase(first._omega_dev, t, first.dt * first.sample_interval, first._phases)
         for _, plane in self.faces:
-            plane.update(fields, t, phases=first._phases)
+            plane.update(fields, t, phases=first._plane_phases)
 
     def flux(self):
         return sum(sign * plane.flux() for sign, plane in self.faces)
