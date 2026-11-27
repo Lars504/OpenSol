@@ -19,7 +19,7 @@ from .boundaries3d import AXES
 
 DFT_PLANE_QUANTITY = 'abs(E_x)^2 + abs(E_y)^2 + abs(E_z)^2'
 
-# Block length of 'mixed2' spectra (SpectrumStore). A block sums N samples x_i = ph_i f_i in complex64 (the product
+# Block length of 'mixed' spectra (SpectrumStore). A block sums N samples x_i = ph_i f_i in complex64 (the product
 # rounded, then N - 1 rounded adds), then joins a complex128 total and restarts from zero. Recursive float32
 # summation errs by at most gamma_N sum |x_i|, gamma_N = N u / (1 - N u), u = 2^-24 (Higham, Accuracy and Stability of
 # Numerical Algorithms, 2nd ed., eq. 4.4, per real component; Minkowski's inequality carries it to the complex
@@ -54,7 +54,7 @@ SPECTRUM_BLOCK_WORST_ERROR = (SPECTRUM_BLOCK_SAMPLES * _FLOAT32_ROUNDOFF
 
 class SpectrumStore:
     """Running-DFT spectra of one monitor (`shapes`, complex) by the stepper's spectrum_precision. 'double': one
-    complex128 array per spectrum on xp, the line kernels add every sample into it. 'mixed2': one contiguous complex64
+    complex128 array per spectrum on xp, the line kernels add every sample into it. 'mixed': one contiguous complex64
     block on xp (`arrays` are views of it, so the launch views stay valid), the block kernels (em.monitors
     _REAL_BLOCK_KERNELS / _IMAG_BLOCK_KERNELS: complex64 product and sum) add SPECTRUM_BLOCK_SAMPLES samples, then
     sampled() folds the block into a complex128 host total and zeroes it in place: gpu an asynchronous copy into a
@@ -89,7 +89,7 @@ class SpectrumStore:
             self._staging = np.frombuffer(memory, dtype=np.complex64, count=offsets[-1])
 
     def sampled(self) -> None:
-        """Count one sample (after its kernels were queued); a full 'mixed2' block folds (no host sync)."""
+        """Count one sample (after its kernels were queued); a full 'mixed' block folds (no host sync)."""
         if self.precision == 'double':
             return
         self._samples += 1
@@ -121,7 +121,7 @@ class SpectrumStore:
         np.add(self._total, self._staging, out=self._total)
 
     def host(self) -> tuple:
-        """Per spectrum the host complex128 total ('double': one transfer each, as the arrays are; 'mixed2': the host
+        """Per spectrum the host complex128 total ('double': one transfer each, as the arrays are; 'mixed': the host
         total plus the current device block, one transfer, the block left as it is). Arrays the caller must not
         write."""
         if self.precision == 'double':
@@ -161,7 +161,7 @@ class PlaneFlux3D:
     """Running DFT (complex128 totals) of the tangential E / H on a plane at cell edge `edge` along `normal_axis` (0 /
     1 / 2) over the edge ranges bounds[t] = (first, last) of the two tangential axes; flux() > 0 toward +normal. A
     periodic tangential axis (periodic[t]) spanning its whole grid wraps its face weights; spectra on array module xp
-    in a SpectrumStore of spectrum_precision ('double': complex128, 'mixed2': complex64 blocks + host totals)."""
+    in a SpectrumStore of spectrum_precision ('double': complex128, 'mixed': complex64 blocks + host totals)."""
 
     def __init__(self, normal_axis, edge, bounds, frequencies, dt, widths, shape, periodic=(False, False, False),
                  xp=None, spectrum_precision='double'):
@@ -241,7 +241,7 @@ class PlaneFlux3D:
 
     def host_pairs(self):
         """Per pair (pair dict, host E spectrum, host H spectrum re-timed to the E time), complex128 (n_f, ...) in grid
-        axis order of the two tangential axes (SpectrumStore.host: one transfer each, mixed2 one for the block)."""
+        axis order of the two tangential axes (SpectrumStore.host: one transfer each, mixed one for the block)."""
         e_scale, h_scale = self.field_scales
         retime = h_scale * np.exp(1j * np.pi * self.frequencies * self.dt)[:, None, None]
         spectra = self.store.host()

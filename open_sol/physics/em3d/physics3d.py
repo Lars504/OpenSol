@@ -209,7 +209,7 @@ class EMPhysics3D(EM3DSlots, PhysicsSolver):
 
     def work_counters(self) -> dict:
         """{'spectrum_folds': complex64 blocks folded into the host totals by every monitor SpectrumStore} with
-        spectrum_precision 'mixed2' (summary.json solvers counters); {} with 'double'."""
+        spectrum_precision 'mixed' (summary.json solvers counters); {} with 'double'."""
         if self.spectrum_precision == 'double':
             return {}
         return {'spectrum_folds': sum(store.folds for monitor in self.monitors

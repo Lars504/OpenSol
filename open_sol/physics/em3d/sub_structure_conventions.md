@@ -146,18 +146,18 @@ contracts"). em_fdtd_3d (B2) and the eigensolver em_fdfd_3d (tensor Yee and tetr
 - Monitor spectra (flux planes / boxes, far fields, mode monitors: every PlaneFlux3D) live in a
   `monitors3d.SpectrumStore` of the stepper's spectrum_precision (explicit_kernels opt-in setting, offered by
   `definition.EM3D_STEPPER_ROLE` only; EMPhysics3D passes it to every PlaneFlux3D / FluxBox3D / ModeMonitor3D). With
-  mixed2 the device arrays hold only the current complex64 block, the totals are on the host: a reader goes through
+  mixed the device arrays hold only the current complex64 block, the totals are on the host: a reader goes through
   `host_pairs` / `store.host()`, never `to_host(pair['e_dft'])`; a writer launches into `store.arrays` with
   `store.kernels` and calls `store.sampled()` once per sample; a new spectral monitor exposes `spectrum_stores` (work
   counter `spectrum_folds`), books its arrays through `definition_sources3d.spectra_memory`
   (`memory_estimate_context`) and joins `definition._SPECTRUM_STORES` (fold time item).
-- The mixed2 fold (async copy into pinned staging + zero fill on the current stream, event waited at the next fold or
+- The mixed fold (async copy into pinned staging + zero fill on the current stream, event waited at the next fold or
   read) runs eagerly from `update`: spectral monitors stay outside the step graphs (it is a host-side decision per
   sample). The block length SPECTRUM_BLOCK_SAMPLES (64) follows from the error target at its constant; changing it
-  changes the spectrum_precision help numbers (`solvers/definition.py`) and the em3d_spectra_mixed2_* tolerances.
+  changes the spectrum_precision help numbers (`solvers/definition.py`) and the em3d_spectra_mixed_* tolerances.
 - The complex64 box pair kernel `em.monitors._dft_accum_pair` (DFTPlane3D) averages in the field dtype F: float16
-  arithmetic under half_storage (core sub file "Half storage" ptxas hazard); the mixed2 block kernels convert to float
-  first. Open: no self-test of mixed2 on half_storage, on a Bloch k != 0 set, on the cpu backend or with a mode monitor
+  arithmetic under half_storage (core sub file "Half storage" ptxas hazard); the mixed block kernels convert to float
+  first. Open: no self-test of mixed on half_storage, on a Bloch k != 0 set, on the cpu backend or with a mode monitor
   (they share the PlaneFlux3D path the dipole / column cases test).
 - em_fdtd_3d self-tests reuse the helpers of `selftests.py` (courant, time step, dipole spec, flux errors). Durations
   sit just above the validation bound 2 t0 + diagonal x n_max / C0 (warning only); templates keep longer ones.

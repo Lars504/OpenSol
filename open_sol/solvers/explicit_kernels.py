@@ -3,12 +3,12 @@ the engine stays the loop. single = float32 fields; double = float64 fields and 
 (em_fdtd_ez / em_fdtd_hz); half_storage = fp16 fields in memory, float32 arithmetic in registers (em_fdtd_3d,
 elastic_waves, laminar_flow transient; core.half_storage). On the cpu backend the engines run the core.kernels twins of
 their kernels (single and double: backend_misfit). spectrum_precision (em_fdtd_3d only: the stepper roles that list it
-in setting_choices) is how its running-DFT monitors accumulate: double = complex128 spectra on the device; mixed2 =
+in setting_choices) is how its running-DFT monitors accumulate: double = complex128 spectra on the device; mixed =
 complex64 device blocks folded into complex128 host totals (physics.em3d.monitors3d SpectrumStore)."""
 from dataclasses import dataclass
 
 PRECISIONS = ('single', 'double', 'half_storage')   # the one list (SolverType precisions and the precision choices)
-SPECTRUM_PRECISIONS = ('double', 'mixed2')          # the one list of the spectrum_precision choices (default first)
+SPECTRUM_PRECISIONS = ('double', 'mixed')          # the one list of the spectrum_precision choices (default first)
 
 
 @dataclass(frozen=True)

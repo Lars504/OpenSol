@@ -305,6 +305,16 @@ rebuild one without a reason that answers these findings.
   slower, no memory saved (only ICNTL(35) / CNTL(7) set: MUMPS allocated for the full-rank factor). A retry needs the
   memory flags, a looser drop threshold and a case much larger than solid_mechanics_3d_tetrahedra_large.
 
+A fourth pcg precision, profiled on 2026-11-27 and dropped (code: commit 60545a7 and its self-tests a9583fb, de5535c,
+reverted by 7c725a2). pcg precisions stay double / single / mixed:
+- pcg 'mixed2' (float64 CG on a DiffusionSystem `SplitCsr`: float32 off-diagonal conductances rounded before the
+  float64 diagonal sums them; Jacobi and multigrid): correct at every size (iterations equal to double, errors within
+  ~1e-7 of double), but on an RTX 3050 at 201^3 cells the device peak did not move (4107 MB: set by the first
+  assembly's temporaries, the same at every precision), run memory fell 1.9 % (~8 B per cell) and the split product
+  gave no bandwidth gain (10.3 vs 10.0 ms per CG iteration: the float64 vectors dominate), while 'mixed' (float32 CG)
+  ran 33 % faster. A reduced-precision diffusion solve pays only with float32 vectors; less device memory comes from
+  the assembly temporaries, not the operator values.
+
 ## host_direct (`HostDirectFactorization`; MUMPS / MKL PARDISO back ends of sparse_direct and arpack_shift_invert)
 Factor and solve maps, probes and mixed refinement, the memory guard, refactorisation and kept analyses, the PARDISO
 thread rule, value refreshes, threads and the OpenBLAS clash: host_direct.py header; library API notes, PARDISO matrix

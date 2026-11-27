@@ -578,10 +578,10 @@ EXPLICIT_KERNELS_PARAMS = (
               'with about three correct digits; for large 3D light, elastic wave or transient flow models.'),
     Param('spectrum_precision', 'choice', 'double', label='Spectrum precision',
           choices=explicit_kernels.SPECTRUM_PRECISIONS,
-          choice_labels=(('double', 'Double precision'), ('mixed2', 'Mixed precision, half the graphics memory')),
+          choice_labels=(('double', 'Double precision'), ('mixed', 'Mixed precision, half the graphics memory')),
           help='How the running spectra (DFTs) of the em_fdtd_3d flux planes, flux boxes, far fields and mode '
                'monitors accumulate (other engines: double only; independent of precision). double: complex128 on '
-               'the device, 64 B per plane cell and wavelength, summed every sample. mixed2: each spectrum sums 64 '
+               'the device, 64 B per plane cell and wavelength, summed every sample. mixed: each spectrum sums 64 '
                'samples in complex64 on the device, then that block is added into a complex128 total on the host and '
                'restarts from zero (gpu: an asynchronous copy into pinned memory, no host sync in the step loop): 32 '
                'B per plane cell and wavelength on the device, plus 64 B (totals) and 32 B (pinned copy) in host RAM. '
@@ -617,7 +617,7 @@ EXPLICIT_KERNELS = SolverType(
     precisions=explicit_kernels.PRECISIONS, grids=('tensor',), create=_create_explicit_kernels,
     memory_estimate=_empty_memory_estimate, backend_misfit=explicit_kernels.backend_misfit,
     time_estimate=explicit_kernels.time_estimate,
-    # mixed2 spectra: offered only by the stepper roles listing spectrum_precision in setting_choices (em_fdtd_3d)
+    # mixed spectra: offered only by the stepper roles listing spectrum_precision in setting_choices (em_fdtd_3d)
     opt_in_settings={'spectrum_precision': explicit_kernels.SPECTRUM_PRECISIONS[1:]})
 
 SOLVER_TYPES = (PCG, LINE_BLOCK, SPARSE_DIRECT, BANDED, ARPACK_SHIFT_INVERT, BLOCK_EIGEN, EXPLICIT_KERNELS)

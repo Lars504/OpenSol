@@ -131,7 +131,7 @@ def _dft_accum_pair_block_imag_host(a, b, ph, acc):
                                                                  + np.asarray(b, dtype=np.float32)))
 
 
-# complex64 block spectra of em_fdtd_3d's spectrum_precision 'mixed2' (em3d.monitors3d.SpectrumStore): the face mean in
+# complex64 block spectra of em_fdtd_3d's spectrum_precision 'mixed' (em3d.monitors3d.SpectrumStore): the face mean in
 # float of the converted samples (never float16 arithmetic of half_storage fields: core sub file "Half storage"); the
 # single-sample accumulates are _dft_accum / _dft_accum_imag ((float)f).
 _dft_accum_pair_block = twin('em.dft_accumulate_pair_block', cp.ElementwiseKernel(

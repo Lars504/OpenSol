@@ -60,9 +60,9 @@ _NUMPY_CPML_PASSES = 40
 _NUMPY_PASSES_PER_LAUNCH = 4           # the cpu 'fused' profile call: 4 numpy passes over 5 float32 arrays
 _NUMPY_BYTES_PER_LAUNCH_CELL = 20
 # 'stepper' of em_fdtd_3d: single or fp16 field storage, plus the explicit_kernels opt-in setting spectrum_precision
-# (double / mixed2: monitors3d.SpectrumStore), offered by this role only
+# (double / mixed: monitors3d.SpectrumStore), offered by this role only
 EM3D_STEPPER_ROLE = replace(HALF_STORAGE_STEPPER_ROLE, setting_choices={'spectrum_precision': SPECTRUM_PRECISIONS})
-# mixed2 folds (monitors3d.SpectrumStore: per store every SPECTRUM_BLOCK_SAMPLES samples, at most every step): the
+# mixed folds (monitors3d.SpectrumStore: per store every SPECTRUM_BLOCK_SAMPLES samples, at most every step): the
 # complex64 block to the host (Transfer of its bytes), the host add total += staging (8 B read + 16 B read and written
 # per value: 5 B of host traffic per block byte) and its calls (copy, event record, zero fill, event wait); spectrum
 # stores per feature: one per plane, a box six (a far field on a flux box's surface shares its box: as _step_launches)
@@ -345,7 +345,7 @@ _FLUX_TEXT = ("Result 'flux_spectrum': power a.u. (dt-weighted spectra, Re(E x H
               'source shares one waveform (cw time-averaged power at unit source amplitude). half_storage stepper: '
               'fp16 field noise (~1e-3 of the peak field, ~-60 dB in power), so integrated powers keep ~1e-3 and deep '
               'spectral nulls are not resolved. Spectra: four complex128 per plane cell and wavelength (64 B); the '
-              "stepper's spectrum_precision mixed2 keeps 32 B of complex64 blocks on the device and the totals in "
+              "stepper's spectrum_precision mixed keeps 32 B of complex64 blocks on the device and the totals in "
               'host RAM (~1e-5 of the gross power through the surface).')
 
 
@@ -711,7 +711,7 @@ def _time_estimate(settings_values, mesh, context):
 
 
 def _spectrum_fold_items(context) -> tuple:
-    """spectrum_precision mixed2: the per-step TimeItem of the SpectrumStore folds, bounded by one fold per store and
+    """spectrum_precision mixed: the per-step TimeItem of the SpectrumStore folds, bounded by one fold per store and
     SPECTRUM_BLOCK_SAMPLES steps (a DFT sample interval of 1; counter 'spectrum_folds'), each its share of the block
     bytes of the spectral features' memory items (SPECTRUM_BLOCK_ITEM) copied and added on the host; () with double
     spectra or without a spectral feature."""
@@ -730,7 +730,7 @@ def _spectrum_fold_items(context) -> tuple:
     if not stores or block_bytes <= 0.0:
         return ()
     per_store = block_bytes / stores
-    return (TimeItem('spectrum folds (mixed2)', 'fold', stores / SPECTRUM_BLOCK_SAMPLES, 'bounded',
+    return (TimeItem('spectrum folds (mixed)', 'fold', stores / SPECTRUM_BLOCK_SAMPLES, 'bounded',
                      ops=(Transfer(per_store), HostStream(_FOLD_HOST_BYTES_PER_BLOCK_BYTE * per_store),
                           PythonCalls(_FOLD_CALLS)),
                      per_step=True, counter=('solvers', context.name, 'counters', 'spectrum_folds')),)

@@ -71,7 +71,7 @@ A new accepted sync joins this list.
   upload per subpixel refresh; elastic_waves with parked materials: the host coefficient rebuild (downloads, uploads)
   per rebuild (build, a new runner dt).
 - laminar_flow: the velocity check once per lattice check interval (>= 100 steps).
-- em_fdtd_3d spectrum_precision mixed2 (`em3d.monitors3d.SpectrumStore`): per fold (every SPECTRUM_BLOCK_SAMPLES
+- em_fdtd_3d spectrum_precision mixed (`em3d.monitors3d.SpectrumStore`): per fold (every SPECTRUM_BLOCK_SAMPLES
   samples of a store) one event wait on the async block copy queued a fold earlier (complete unless the host ran a
   whole block of samples ahead: it throttles the host, the device keeps its queue); per result read one event wait
   and one block transfer.
@@ -347,9 +347,11 @@ A new accepted sync joins this list.
   breaks its exact zero row sums: a spurious sink of ~eps a_ii per row, amplified by kappa in the low modes (the
   'single' failures: float32 CG floor ~1e-6, iron |B| errors of percents in magnetostatics). Rounding coefficients
   consistently (g to float32, then the diagonal as their float64 sum) perturbs only the physics by ~eps32 (the
-  material arrays are float32 already), with no kappa factor: the route to float32 operator storage beside a float64
-  CG, not yet built. pcg 'mixed' is no memory saving here (the float64 A_solve stays for the residual, plus its
-  float32 copy) and its CSR path is Jacobi only, so the gpu Automatic stays double multigrid (its hierarchy is float32).
+  material arrays are float32 already), with no kappa factor: float32 operator storage beside a float64 CG, built as
+  pcg 'mixed2' and dropped (correct, but no gain: solvers sub file "Tried and dropped"). The operator values are not
+  the memory lever: the device peak of a diffusion model is the first assembly's temporaries. pcg 'mixed' is no
+  memory saving here (the float64 A_solve stays for the residual, plus its float32 copy) and its CSR path is Jacobi
+  only, so the gpu Automatic stays double multigrid (its hierarchy is float32).
 - c_xy cross term (2D Cartesian only): never drop its diagonal part (row sums would act as a spurious exchange with
   u = 0 at window / region corners). Definite on graded cells only for c_xy^2 < c_xx c_yy x 4 r / (1 + r)^2 per axis
   (r = neighbour width ratio), stricter than the continuum bound. Whether c_xy is nonzero is decided (one sync) only
