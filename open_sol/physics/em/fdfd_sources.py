@@ -602,9 +602,7 @@ class FocusedBeamPhasor(FocusedBeamSource):
         line = self.line
         waves = discrete_waves(line.span[1] - line.span[0], line.along_spacing, line.normal_spacing, medium,
                                self.waist, self.numerical_aperture, self.label)
-        normal_centres = physics.domain.cell_centers()['xy'.index(line.normal)]
-        coordinates = np.asarray(normal_centres, dtype=np.float64)[np.asarray(normal_cells, dtype=np.int64)]
-        return self._scale(unit_power) * beam_rows(waves, line.along_centres, coordinates,
+        return self._scale(unit_power) * beam_rows(waves, line.along_centres, line.normal_coordinates(normal_cells),
                                                    line.along_focus(self.focus), line.normal_focus(self.focus),
                                                    line.sign)
 

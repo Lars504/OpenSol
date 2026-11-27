@@ -1,7 +1,8 @@
 """Self-tests of fem.elastic_drives (CPU, specs() empty, check({}) on the shared disc meshes): the stress drive is the
 transpose of the strain operator (planar, axisymmetric m = 0 / 2, P1 / P2), constant stresses and tractions equal the
-elasticity loads, and the order-2 drive equals a phi quadrature of the 3D work for both parities. error = number of
-failed sub-checks (tolerance 0)."""
+elasticity loads, the order-2 drive equals a phi quadrature of the 3D work for both parities, and the mixed u-p
+projection of the mean normal stress (identity on P1, blind to ker B, the mass solve). error = number of failed
+sub-checks (tolerance 0)."""
 import math
 
 import numpy as np
@@ -19,6 +20,11 @@ _FORMS = (('planar', False, 0), ('axisymmetric', True, 0), ('azimuthal_2', True,
 _SELECTION_X = 1.2 * _UM   # drive selection: elements with centroid x below this (part of the disc and the window)
 _STRESS_SCALE = 1e6        # Pa
 _DISPLACEMENT_SCALE = 1e-9   # m
+_PROJECTION_RTOL = 1e-10   # projected vs plain drive of a P1 mean stress (CG residual 1e-13 x condition 4: round-off)
+# |w^T u| / sum |w_i u_i| of the projected drive on u with B u = 0: round-off x cond(B B^T) of the kernel projection
+# (the ring weights near the axis raise it; first estimate)
+_KERNEL_RTOL = 1e-9
+_KERNEL_SEEN = 1e-6        # the plain drive's reading of that u must exceed this share (first estimate: ~1e-2)
 
 
 def _mesh():
@@ -174,6 +180,79 @@ def _check_azimuthal_quadrature(_):
     return checks.result()
 
 
+def _p1_at_points(dofs, points, nodal) -> np.ndarray:
+    """(n_points,) values of a continuous P1 nodal field (mesh nodes) at the DrivePoints (the pressure basis)."""
+    from .elements import lagrange_basis
+    values = []
+    for positions, rule in points.groups:
+        corners = dofs.mesh.triangles[dofs.elements[positions]]
+        values.append((nodal[corners] @ lagrange_basis(1, rule.points)[0].T).reshape(-1))
+    return np.concatenate(values)
+
+
+def _check_pressure_projection(_):
+    import scipy.sparse.linalg
+
+    from .dofs import lagrange_dofs
+    from .elastic_drives import (PROJECTION_TOLERANCE, PressureProjection, _pressure_mass_solve,
+                                 assemble_stress_drive, drive_points)
+    from .mixed_elasticity import assemble_pressure_terms, pressure_space
+
+    checks = SubChecks()
+    mesh = _mesh()
+    rng = np.random.default_rng(53)
+    dofs = lagrange_dofs(mesh, 2, geometry_order=1)   # straight elements: drive, B and M_p rules all exact
+    centroids_x = mesh.points[mesh.triangles].mean(axis=1)[:, 0]
+    two_groups = np.where(centroids_x < _SELECTION_X, 0, 1).astype(np.int64)   # disjoint pressure blocks
+    for name, axisymmetric, order in _FORMS:
+        space = pressure_space(dofs, two_groups, 2)
+        coupling, masses = assemble_pressure_terms(dofs, space, axisymmetric=axisymmetric, azimuthal_order=order)
+        projection = PressureProjection(space=space, coupling=coupling, masses=tuple(masses),
+                                        free=np.ones(space.n_dofs, dtype=bool))
+        points = drive_points(dofs, axisymmetric=axisymmetric, azimuthal_order=order)
+        normal = 3 if axisymmetric else 2
+        # a P1 mean normal stress is its own projection: the projected drive equals the plain one
+        stress = random_complex(rng, (points.rows, points.n_points), _STRESS_SCALE)
+        stress[:normal] -= stress[:normal].mean(axis=0)
+        stress[:normal] += _p1_at_points(dofs, points, random_complex(rng, (mesh.n_points,), _STRESS_SCALE))
+        plain = assemble_stress_drive(dofs, points, stress)
+        projected = assemble_stress_drive(dofs, points, stress, projection=projection)
+        checks.add_bound(f'p1_mean_identity_{name}',
+                         float(np.max(np.abs(projected - plain))) / float(np.max(np.abs(plain))), _PROJECTION_RTOL)
+        # a rough mean stress: the drive is B^T pi with M_p pi = int N_p s dV, so it reads nothing of a u with B u = 0
+        rough = np.zeros((points.rows, points.n_points), dtype=np.complex128)
+        rough[:normal] = random_complex(rng, (points.n_points,), _STRESS_SCALE)
+        displacement = _DISPLACEMENT_SCALE * rng.standard_normal(coupling.shape[1])
+        gram = (coupling @ coupling.T).tocsc()
+        kernel = displacement - coupling.T @ scipy.sparse.linalg.spsolve(gram, coupling @ displacement)
+        for label, drive in (('projected', assemble_stress_drive(dofs, points, rough, projection=projection)),
+                             ('plain', assemble_stress_drive(dofs, points, rough))):
+            reading = _relative_to_terms(complex(drive @ kernel), 0.0, drive * kernel)
+            if label == 'projected':
+                checks.add_bound(f'kernel_reading_{label}_{name}', reading, _KERNEL_RTOL)
+            else:   # the unprojected drive must see the bulk-free modes, else the check above proves nothing
+                checks.add_bound(f'kernel_reading_{label}_{name}_seen', _KERNEL_SEEN / max(reading, 1e-300), 1.0,
+                                 reading=reading)
+        # the mass solve on the free dofs (some held): M_p pi = load there, pi = 0 on the held ones
+        free = rng.random(space.n_dofs) > 0.1
+        held_projection = PressureProjection(space=space, coupling=coupling, masses=tuple(masses), free=free)
+        load = random_complex(rng, (space.n_dofs,), 1.0)
+        solved = _pressure_mass_solve(held_projection, load)
+        residual = (sum(mass @ solved for mass in masses) - load)[free]
+        checks.add_bound(f'mass_solve_residual_{name}', float(np.linalg.norm(residual))
+                         / float(np.linalg.norm(load[free])), 10.0 * PROJECTION_TOLERANCE)
+        checks.add_bound(f'mass_solve_held_zero_{name}', float(np.max(np.abs(solved[~free]), initial=0.0)), 0.0)
+    ungrouped = np.where(centroids_x < _SELECTION_X, -1, 0).astype(np.int64)
+    space = pressure_space(dofs, ungrouped, 1)
+    coupling, masses = assemble_pressure_terms(dofs, space)
+    projection = PressureProjection(space=space, coupling=coupling, masses=tuple(masses),
+                                    free=np.ones(space.n_dofs, dtype=bool))
+    points = drive_points(dofs)
+    checks.add_raises('drive_outside_pressure_groups_raises', lambda: assemble_stress_drive(
+        dofs, points, np.ones((points.rows, points.n_points)), projection=projection))
+    return checks.result()
+
+
 ELASTIC_DRIVES_SELFTEST_CASES = (
     SelfTestCase(
         name='fem_elastic_drive_transpose',
@@ -209,5 +288,19 @@ ELASTIC_DRIVES_SELFTEST_CASES = (
                     '(1e-12; the trapezoid in phi is exact). error = number of failed sub-checks, tolerance 0.',
         specs=no_runs,
         check=_check_azimuthal_quadrature,
+        max_wall_time=60.0),
+    SelfTestCase(
+        name='fem_elastic_drive_pressure_projection',
+        label='FEM: mixed u-p stress drive with its mean normal stress projected onto the pressure space',
+        description='CPU check of assemble_stress_drive(projection=) on the disc mesh, P2 on straight elements, two '
+                    'pressure groups (disjoint M_p blocks), planar, axisymmetric m = 0 and azimuthal order 2: a mean '
+                    'normal stress that is a P1 field (random deviatoric rows on top) gives the plain drive (1e-10: CG '
+                    'residual 1e-13 x condition 4); a rough mean stress reads nothing of a displacement with B u = 0 '
+                    '(the bulk-free modes of the mixed form; 1e-9 of sum |w_i u_i|) while the plain drive reads them '
+                    '(> 1e-6: the check bites); the Jacobi-CG mass solve meets M_p pi = load on the free dofs (10 x '
+                    'its 1e-13 tolerance) with pi = 0 on held ones; drive elements outside every pressure group '
+                    'raise. error = number of failed sub-checks, tolerance 0.',
+        specs=no_runs,
+        check=_check_pressure_projection,
         max_wall_time=60.0),
 )

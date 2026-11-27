@@ -407,7 +407,8 @@ _MODE_MONITOR_RESULT_TEXT = (
 
 # ---- focused beam (bor_focused_beam; the drive of brillouin_scattering) ----
 # beam |E| at the line's r end / its peak on the line above which validation warns: a hard pupil edge leaves a slowly
-# decaying side-lobe tail (unlike the 2D Gaussian's 1e-6), and the cut edge leaks ~ the square of this level
+# decaying side-lobe tail (unlike the 2D Gaussian's 1e-6), and the cut edge leaks ~ the square of this level in power
+# but biases the focal field linearly (~1.5x the level: em_bor_focused_beam_debye E_z 1.2 % at a level ~8e-3)
 _BEAM_END_LEVEL = 1e-2
 _BEAM_DIRECTION_LABELS = (('positive', 'Upward (+z)'), ('negative', 'Downward (-z)'))
 _FOCUSED_BEAM_PARAMS = (

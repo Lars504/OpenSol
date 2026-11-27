@@ -51,7 +51,10 @@ _BOR_FOCUS_ROW = 60                # z = 0.968 um, 0.64 um downstream
 _BOR_DOWNSTREAM_ROW, _BOR_UPSTREAM_ROW = 100, 8   # flux rows: z = 1.616 um (19 rows below the PML); scattered field
 _BOR_POWER = 1.0                   # W of the linearly polarised beam (the m = 1 standing wave)
 _BOR_POWER_BEAM = {'numerical_aperture': 0.8, 'fill_factor': 0.5}   # pupil edge at exp(-4) of its centre
-_BOR_DEBYE_BEAM = {'numerical_aperture': 0.9, 'fill_factor': 0.6}   # high NA: a strong E_z (pupil edge exp(-2.8))
+# high NA: a strong E_z; pupil edge exp(-4): the hard edge's side-lobe tail cut at the line end biases the focal E_z
+# linearly in its end level (fill 0.6, edge exp(-2.8): E_z / E_r 1.2 % low at 16 and 8 nm alike, 0.7 % with 1.5x the
+# radius)
+_BOR_DEBYE_BEAM = {'numerical_aperture': 0.9, 'fill_factor': 0.5}
 _BOR_EZ_PROBE_CELL = 10            # r cell of the focal-row E_z probe (k rho sin(theta_max) ~ 1.8: near the J1 peak)
 _BOR_POWER_TOLERANCE = 2e-3        # relative standing-wave power vs power (first estimate: the radial O((k NA h)^2))
 _BOR_LEAKAGE_TOLERANCE = 2e-3      # upstream flux / launched flux (first estimate, the same origin)
@@ -471,7 +474,9 @@ FOCUSED_BEAM_SELFTEST_CASES = (
         label='EM BOR focused beam: focal field vs the direct Debye integral',
         description=f'em_fdfd_bor at azimuthal_order 1, {_BOR_LAYOUT_TEXT}, numerical_aperture '
                     f'{_BOR_DEBYE_BEAM["numerical_aperture"]:g}, fill_factor {_BOR_DEBYE_BEAM["fill_factor"]:g} (a '
-                    'strong axial field); field probes in the focal row: E_r and E_phi of the axis cell, E_z of r '
+                    'strong axial field; the pupil edge at exp(-4) keeps the side-lobe tail the line end cuts small: '
+                    'it biases the focal E_z linearly in the end level, 1.2 % at fill_factor 0.6 on any mesh); field '
+                    'probes in the focal row: E_r and E_phi of the axis cell, E_z of r '
                     f'cell {_BOR_EZ_PROBE_CELL}. Reference: the Richards-Wolf / Debye integrals I00, I01, I02 '
                     '(Novotny-Hecht, exp(+j omega t)) by scipy quad, normalised by the angular-spectrum power and '
                     'averaged as the centre phasors average the Yee points. Checks (relative, '

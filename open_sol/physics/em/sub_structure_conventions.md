@@ -386,7 +386,10 @@ type's vocabulary and refusals are in its help texts and validation.
   incident field is a sum of discrete plane waves of the line medium, read per right-hand side from the assembled
   operator (face weights, cell term) on the rows line_cell +- `NORMAL_RANGE` (a non-uniform block raises), so the launch
   is exact and `power` is the discrete interface flux (unfolded over a mirror plane the line ends on, the focus on it).
-  Its interface face is a mode source's (`_total_field_regions` warns for both). The 2D and BOR beams share
+  Exact only on the operator's spacings: `FocusedBeamLine` takes `grid_cell_widths` (float32 grid.dx, ~1e-8 off
+  `Domain.cell_widths()`, which gave a 1.2e-8 launch residual) and steps its wave coordinates by them; incident values
+  off the TFSF rows go through `line.normal_coordinates`, never `cell_centers()`. (BOR assembles on
+  `Domain.cell_widths()`, as its beam.) Its interface face is a mode source's (`_total_field_regions` warns for both). The 2D and BOR beams share
   `fdfd_sources.FocusedBeamSource` (power, wavelength, offset check; `MEDIUM_RTOL` / `uniform_value` of the line
   medium), the 2D and BOR physics `focused_beam.FocusedBeamDrive` (names, drive_sources, the solve_moved_beam frame,
   extra_solves; solver-specific: `_require_driven_solution`, `_moved_beam_solution`). Drive contract of

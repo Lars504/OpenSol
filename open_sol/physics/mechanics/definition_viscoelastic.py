@@ -462,11 +462,12 @@ def viscoelastic_memory_items(counts, *, elements, local, scalar_dofs, matrix_ro
                       csr * counts.group_entries + index * (matrix_rows + 1) * counts.group_matrices)])
     if counts.mixed:
         groups, grouped = counts.groups, counts.grouped_elements
+        # + the kept free-pressure mask (bool per pressure dof: HarmonicOperators.pressure_free)
         if dimensions == 3:   # PressureSpace3D: the element table, per group its elements and nodes
-            space = _INT64_BYTES * (4 * elements + grouped + n_p)
+            space = _INT64_BYTES * (4 * elements + grouped + n_p) + n_p
             coo = _COO_BYTES_3D * min(counts.pressure_coo, (1 + groups) * COO_BATCH_ENTRIES)
         else:   # PressureSpace: the element table, per group a P1 DofMap (elements, element dofs, ids, positions)
-            space = _INT64_BYTES * (3 * elements + 4 * grouped + n_p + groups * elements)
+            space = _INT64_BYTES * (3 * elements + 4 * grouped + n_p + groups * elements) + n_p
             coo = (_COO_BYTES_2D + value - FLOAT64_BYTES) * counts.pressure_coo
         coupling, pressure_mass, deviatoric = counts.coupling_entries, counts.pressure_entries, counts.group_entries
         # mixed_harmonic_operators: -B and -B^T embedded and their sum (saddle_coupling), per group D_g and M_p,g
@@ -476,9 +477,9 @@ def viscoelastic_memory_items(counts, *, elements, local, scalar_dofs, matrix_ro
                   + mass_entries + ((deviatoric + pressure_mass) if loss else 0))
         matrices = 6 + 4 * groups
         host.extend([
-            ('mixed pressure space (element table, per-group P1 dof maps)', space),
+            ('mixed pressure space (element table, per-group P1 dof maps, free-pressure mask)', space),
             ('mixed coupling B and pressure mass assembly COO', coo),
-            (f'mixed coupling B and pressure masses M_p,g ({kind} CSR)',
+            (f'mixed coupling B and pressure masses M_p,g ({kind} CSR, kept on HarmonicOperators)',
              csr * (coupling + pressure_mass) + index * (n_p + 1) * (1 + groups)),
             (f'mixed saddle-point blocks in the [u; p] numbering ({kind} CSR: -B, -B^T, embedded D_g and M_p,g, scaled '
              'copies, the operator, loss and mass)', csr * blocks + index * (n_total + 1) * matrices),

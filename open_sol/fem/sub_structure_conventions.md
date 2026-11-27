@@ -66,6 +66,10 @@ file ("Triangle meshes"). Error indicators: section "Error indicators" (users: g
   map (a kept strain operator, `keep_operator`, dies with them). Edge drives take points, weights and normals from
   `indicators.edge_sides` and the basis from `assembly._edge_quadrature` unchecked: both must keep one Gauss rule and
   `edge_geometry` per degree (fem_elastic_drive_constant_stress compares the edge drive with assemble_edge_traction).
+  A stress drive on a mixed u-p solid takes `projection=` (`PressureProjection`: the solid's own B, M_p,g and free
+  pressure dofs, never a re-assembly on other rules): its mean normal stress goes in as B^T M_p^-1 int N_p s dV, since
+  the non-P1 part of tr eps carries no bulk stiffness and a plain point drive excites it (elastic_drives header). Its
+  normal rows must stay the rows `mixed_elasticity` sums into tr eps (fem_elastic_drive_pressure_projection).
 - Stable patterns: `_to_csr`, `blocks_csr`, `element_blocks_csr` and FixedPatternCsr keep explicit zeros, so every
   assembly over one dof map (same free / fixed split) has one CSR pattern whatever the coefficients: the precondition
   of cuDSS plan reuse. Never `eliminate_zeros` such an operator; sum terms per root "Solver contract"

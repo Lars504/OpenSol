@@ -38,6 +38,9 @@ sampled at the solid's quadrature points, the complex drive columns, the per-fre
 #   (no mirror signs here: an O(half cell) error of the strip).
 #   Rectangular cells (the optics on the solid's own mesh: same window cells, checked): one point per selected cell at
 #   its centre with weight dA, the cell's own (centre) fields and eps (no interpolation).
+# - Mixed u-p solids: the mean normal optical stress enters projected onto the solid's P1 pressure space
+#   (SolidDriveInputs.projection, fem.elastic_drives header): unprojected, its non-P1 part drives the modes only 4/3
+#   G* holds (water: viscosity), a broadband ~(q h)^4 / Omega^2 background over the Brillouin line.
 # - Moving boundary (triangles): interior edges between two window elements, touching the drive selection, whose sides
 #   differ in a solid material value (the conforming solid mesh marks material interfaces exactly; an optical interface
 #   inside one solid material, or between two materials of equal mechanics, is not found) AND in the optical eps of
@@ -95,8 +98,9 @@ class SolidDriveInputs:
     map of the last assembly, the form (axisymmetric, azimuthal order, ring angle), n_unknowns of the harmonic system
     (mixed: + the pressure dofs), host bool per mesh element `solid` (the members the frequency response solves) and
     `window` (window elements), every material property as host float64 per element, the viscoelastic.ElementModuli
-    of the members (required form: E / nu elements included) and locate (points (n, 2) [m] -> containing element,
-    -1 outside). Read-only."""
+    of the members (required form: E / nu elements included), locate (points (n, 2) [m] -> containing element, -1
+    outside) and projection (formulation mixed: the fem.elastic_drives.PressureProjection the stress drive's mean
+    normal stress goes through; None: displacement). Read-only."""
     label: str
     dofs: object
     axisymmetric: bool
@@ -108,6 +112,7 @@ class SolidDriveInputs:
     materials: dict
     moduli: object
     locate: object
+    projection: object = None
 
 
 @dataclass(frozen=True, eq=False)
@@ -494,8 +499,10 @@ class _ElementGeometry:
         return chosen, matched
 
     def stress_drive(self, stress) -> np.ndarray:
-        """(n_vector,) complex int B^T stress dV of a stress (rows, n_points)."""
-        return assemble_stress_drive(self.solid.dofs, self.points, stress, keep_operator=self.repeated)
+        """(n_vector,) complex int B^T stress dV of a stress (rows, n_points); a mixed solid: its mean normal stress
+        projected onto the pressure space (fem.elastic_drives header)."""
+        return assemble_stress_drive(self.solid.dofs, self.points, stress, keep_operator=self.repeated,
+                                     projection=self.solid.projection)
 
     def traction_drive(self, interfaces, values) -> np.ndarray:
         """(n_vector,) complex int N^T n f ds of a normal traction value f (k, q) on the interface edges."""

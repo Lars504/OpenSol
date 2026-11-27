@@ -346,7 +346,9 @@ class HarmonicOperators:
     (mixed: every member, the pressure zones), `pressure_gauges` the pressure dofs held at 0 as the gauge of an enclosed
     incompressible region (touching incompressible groups are one region; int64, mixed) and `volume_checks` one
     (description, held u dofs int64, weights float64) per gauge: the region's summed coupling row 1^T B on the held
-    displacements (check_held_volumes)."""
+    displacements (check_held_volumes); mixed also `coupling` B (n_p, n_u), `pressure_masses` M_p,g and
+    `pressure_free` (bool (n_p,), axis and gauge dofs False) as assembled, for the projected drives of
+    drive_projection."""
     operator: object
     loss: object
     mass: object
@@ -359,6 +361,18 @@ class HarmonicOperators:
     groups: tuple = ()
     pressure_gauges: object = ()
     volume_checks: tuple = ()
+    coupling: object = None
+    pressure_masses: tuple = ()
+    pressure_free: object = None
+
+    def drive_projection(self):
+        """fem.elastic_drives.PressureProjection of the mixed pieces (a physics drive's mean normal stress projected
+        onto the pressure space), None for the displacement formulation."""
+        if self.pressure is None:
+            return None
+        from ...fem.elastic_drives import PressureProjection
+        return PressureProjection(space=self.pressure, coupling=self.coupling, masses=tuple(self.pressure_masses),
+                                  free=self.pressure_free)
 
     def check_held_volumes(self, fixed, label) -> None:
         """ValueError when the held displacements `fixed` (over every unknown, [u; p]) change the volume of an enclosed
@@ -476,7 +490,15 @@ def mixed_harmonic_operators(groups, deviatoric, coupling, pressure_masses, spac
     return HarmonicOperators(pattern_sum(constant), pattern_sum(loss_parts) if loss_parts else None,
                              embedded(mass, n_total), free, n_total, column_map=column_map, terms=tuple(terms),
                              scale_terms=scale_terms, pressure=space, groups=groups,
-                             pressure_gauges=np.asarray(gauges, dtype=np.int64), volume_checks=volume_checks)
+                             pressure_gauges=np.asarray(gauges, dtype=np.int64), volume_checks=volume_checks,
+                             coupling=coupling.tocsr(), pressure_masses=tuple(mass.tocsr() for mass in pressure_masses),
+                             pressure_free=_read_only_mask(pressure_free))
+
+
+def _read_only_mask(mask) -> np.ndarray:
+    mask = np.array(mask, dtype=bool)
+    mask.flags.writeable = False
+    return mask
 
 
 def _negative_compliance(law):

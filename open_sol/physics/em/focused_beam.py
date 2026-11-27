@@ -12,7 +12,9 @@ host numpy."""
 #     w_t (2 / h_t)^2 sin^2(kappa h_t / 2) + w_s (2 / h_s)^2 sin^2(k h_s / 2) = c,
 # kappa = (2 / h_t) asin(h_t sqrt(q) / 2), q = (c - w_s (2 / h_s)^2 sin^2(k h_s / 2)) / w_t (principal root: Re >= 0,
 # Im <= 0, so a lossy wave decays along its direction). Waves with Re q <= 0 (evanescent) are dropped: back-propagated
-# from the focus to the line they would grow.
+# from the focus to the line they would grow. h_s / h_t are the operator's widths (yee_grid.grid_cell_widths: the
+# float32 grid.dx on a uniform grid, ~1e-8 off the requested Domain.cell_widths), and the wave coordinates step by them
+# from the physical centres of the first span cell / the line row, so the waves solve the assembled rows to round-off.
 #
 # Beam. u_inc(s, t) = sum_k A(k) exp(-j (k (s - s_f) + sigma kappa(k) (t - t_f))), A = exp(-(k w0 / 2)^2) (a Gaussian
 # focus of 1/e field radius w0, all waves in phase at the focus (s_f, t_f), so |u| peaks there in a uniform medium),
@@ -38,6 +40,7 @@ from ...core.constants import C0, EPS0, MU0
 from ...core.mesh import has_uniform_spacing
 from ...core.mirror import MIRROR_SIGNS, plane_wave_mirror_issue
 from .placement import port_cells
+from .yee_grid import grid_cell_widths
 
 DIRECTIONS = ('positive', 'negative')
 SPECTRAL_PERIOD_LINES = 4.0   # period of the transverse wavenumber grid in line lengths (images >= 3 lengths away)
@@ -51,9 +54,10 @@ FOCUS_TOLERANCE = 1e-6        # x the along spacing: largest distance of a focus
 @dataclass(frozen=True, eq=False)
 class FocusedBeamLine:
     """Cells of a focused-beam line on the full Yee grid (axis 'x' = along x at row line_cell of y): the two TFSF rows
-    (line_cell = first total-field row, upstream_cell = its scattered-field neighbour), the uniform spacings, the
-    drawing-frame coordinates (window lower edges 0) of the span centres and the two rows, the grid shape and the even
-    mirror planes the span ends on (focus there; mirror_factor = 2 per plane)."""
+    (line_cell = first total-field row, upstream_cell = its scattered-field neighbour), the operator's uniform spacings,
+    the drawing-frame wave coordinates (window lower edges 0; stepped by those spacings, module comment) of the span
+    centres and the two rows, the grid shape and the even mirror planes the span ends on (focus there; mirror_factor = 2
+    per plane)."""
     axis: str                  # along the line, 'x' | 'y'
     normal: str                # the beam axis, the other one
     direction: str             # 'positive' (toward +normal) | 'negative'
@@ -83,6 +87,10 @@ class FocusedBeamLine:
         """Normal coordinate [m] of a drawing-frame focus (x, y)."""
         return float(focus[1 if self.axis == 'x' else 0])
 
+    def normal_coordinates(self, normal_cells) -> np.ndarray:
+        """float64 wave coordinates [m] of full-grid normal cells: the line row's centre stepped by normal_spacing."""
+        return self.line_coordinate + self.normal_spacing * (np.asarray(normal_cells, dtype=np.float64) - self.line_cell)
+
 
 def focused_beam_line(domain, boundary_config, polarization, axis, position, span, direction, label):
     """FocusedBeamLine of a line (axis 'x' = along x at y = position, span = (start, end) along it [m]); ValueError for a
@@ -102,7 +110,8 @@ def focused_beam_line(domain, boundary_config, polarization, axis, position, spa
         raise ValueError(f"{label}: the line covers {span_cells[1] - span_cells[0]} cell(s) along {axis}; a beam needs "
                          f'at least {MIN_SPAN_CELLS} (and should span it to 1e-6 of its peak)')
     along_axis, normal_axis = 'xy'.index(axis), 'xy'.index(normal)
-    widths, centres, edges = domain.cell_widths(), domain.cell_centers(), domain.cell_edges()
+    widths = grid_cell_widths(domain.grid)   # the operator's, not Domain.cell_widths() (module comment)
+    centres, edges = domain.cell_centers(), domain.cell_edges()
     window = domain.physical_window()
     along_widths = np.asarray(widths[along_axis][slice(*span_cells)], dtype=np.float64)
     if not has_uniform_spacing(along_widths):
@@ -142,14 +151,15 @@ def focused_beam_line(domain, boundary_config, polarization, axis, position, spa
         planes.append(float(edges[along_axis][index]))
     upstream_cell = line_cell - 1 if direction == 'positive' else line_cell + 1
     shape = (int(domain.grid.nx), int(domain.grid.ny))
-    along = slice(*span_cells)
+    along_spacing, normal_spacing = float(along_widths[0]), float(normal_widths[NORMAL_RANGE])
+    line_coordinate = float(centres[normal_axis][line_cell])
     return FocusedBeamLine(
         axis=axis, normal=normal, direction=direction, line_cell=int(line_cell), upstream_cell=int(upstream_cell),
         span=(int(span_cells[0]), int(span_cells[1])),
-        along_centres=np.array(centres[along_axis][along], dtype=np.float64),
-        along_spacing=float(along_widths[0]), normal_spacing=float(normal_widths[NORMAL_RANGE]),
-        line_coordinate=float(centres[normal_axis][line_cell]),
-        upstream_coordinate=float(centres[normal_axis][upstream_cell]),
+        along_centres=(float(centres[along_axis][span_cells[0]])
+                       + along_spacing * np.arange(span_cells[1] - span_cells[0], dtype=np.float64)),
+        along_spacing=along_spacing, normal_spacing=normal_spacing, line_coordinate=line_coordinate,
+        upstream_coordinate=line_coordinate + normal_spacing * (upstream_cell - line_cell),
         shape=shape, mirror_planes=tuple(planes), mirror_factor=float(2 ** len(planes)), label=label)
 
 

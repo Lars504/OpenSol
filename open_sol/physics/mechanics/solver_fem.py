@@ -1188,7 +1188,7 @@ class SolidMechanicsFEMPhysics(PhysicsDriveHooks, FEMSolidCommon, MultiShiftMode
                                 n_unknowns=int(operators.n_unknowns),
                                 solid=np.asarray(self._solid, dtype=bool) & self._window_elements,
                                 window=np.asarray(self._window_elements, dtype=bool), materials=values,
-                                moduli=moduli, locate=self.domain.locate)
+                                moduli=moduli, locate=self.domain.locate, projection=operators.drive_projection())
 
     # --- complex records of the frequency response (K4) ------------------------
 
@@ -1983,10 +1983,7 @@ class SolidMechanicsFEMPhysics(PhysicsDriveHooks, FEMSolidCommon, MultiShiftMode
 class SolidFEMRenderer(SolidRenderer):
     """SolidRenderer of a SolidMechanicsFEMPhysics: fem_field (Session on triangle meshes) and per-window-element
     device_field values. No om_integrand (the BOR coupling table has none), so default snapshots do not store it."""
-
-    def __init__(self, physics):
-        super().__init__(physics)
-        self.field_infos = {name: info for name, info in self.field_infos.items() if name != 'om_integrand'}
+    absent_fields = ('om_integrand',)
 
     def device_field(self, component: str):
         self.field_info(component)

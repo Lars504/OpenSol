@@ -22,6 +22,15 @@ numpy."""
 # mesh.edge_elements[:, 0], unit normals out of it, points and weights) on the edges with a map element; the basis of
 # assembly._edge_quadrature at the same edges and degree evaluates at the same points (both take gauss_line(degree (+ 2
 # on geometry order 2)) and elements.edge_geometry of the map's geometry order).
+# Mixed u-p solids (fem.mixed_elasticity; assemble_stress_drive(projection=PressureProjection)): the bulk stiffness
+# acts on the P1 projection of tr eps only (the volume row -int q (tr eps + p / K*) = 0), so the rest of tr eps(u) is
+# held by 4/3 G* and inertia alone (a liquid: viscosity only). A drive int s tr eps(v) dV of a mean normal stress s
+# that is not P1 drives those modes: a spurious broadband readout ~(q h)^4 / Omega^2 (2D water at 30 nm: ~1.5 % of the
+# Brillouin peak, +25 % on its low flank). The dilation part therefore goes in as B^T pi with pi = M_p^-1 int N_p s dV
+# on the free pressure dofs (the L2 projection of s, the B-bar form): any B^T pi pairs only with B u = -M_p p / K*, the
+# readout int s Pi(tr eps(u)) dV, equal to the continuum one up to (q h)^4 / 720 (Galerkin orthogonality); the
+# deviatoric rows (s_n - s) stay point drives. Normal rows: planar xx, yy (s = their mean); axisymmetric / order m rr,
+# zz, tt (s = their mean): the rows mixed_elasticity sums into tr eps.
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -29,12 +38,19 @@ import numpy as np
 from .assembly import _edge_quadrature, _edge_sides, _element_groups
 from .elasticity import (AZIMUTHAL_COMPONENTS, AZIMUTHAL_RING, AZIMUTHAL_ROWS, COMPONENTS, RING, _azimuthal_terms,
                          _check_azimuthal_order, _form_operator_at, _weights, component_dofs, strain_rows)
-from .elements import element_geometry
+from .elements import element_geometry, lagrange_basis
 from .fixed_pattern import scatter_add
 from .indicators import edge_sides
 from .quadrature import TRIANGLE_DEGREES
 
 DRIVE_DEGREE = TRIANGLE_DEGREES[-1]   # element and edge rule degree of a drive (oscillating integrands)
+# pressure-mass solve of a PressureProjection: Jacobi-preconditioned CG to this relative residual per column; the
+# Jacobi-scaled P1 triangle mass has its eigenvalues in [1/2, 2] (Wathen 1987: condition 4, independent of the mesh
+# grading), so CG needs at most ln(2 / tol) / ln((sqrt 4 + 1) / (sqrt 4 - 1)) = 28 iterations at 1e-13 (straight
+# elements; curved P2 geometry and stretched PML masses stray from the bound: PROJECTION_ITERATION_CAP x that raises)
+PROJECTION_TOLERANCE = 1e-13
+PROJECTION_CONDITION = 4.0
+PROJECTION_ITERATION_CAP = 4
 
 
 def _read_only(array) -> np.ndarray:
@@ -120,6 +136,95 @@ class EdgeDrivePoints:
         return _components(self.azimuthal_order)
 
 
+@dataclass(frozen=True, eq=False)
+class PressureProjection:
+    """The mixed u-p pieces (fem.mixed_elasticity) a stress drive projects its mean normal stress onto (module
+    header): the PressureSpace, the coupling B (n_p, c n_u) CSR, the pressure masses M_p,g (n_p, n_p) CSR per group
+    (disjoint blocks) and the free pressure dofs (bool (n_p,): a held one carries no volume equation). Read-only."""
+    space: object
+    coupling: object
+    masses: tuple
+    free: np.ndarray
+
+
+def projection_iterations(tolerance=PROJECTION_TOLERANCE) -> int:
+    """A priori CG iterations of the pressure-mass solve to a relative residual `tolerance` (PROJECTION_CONDITION:
+    the Jacobi-scaled P1 mass)."""
+    root = PROJECTION_CONDITION ** 0.5
+    return int(np.ceil(np.log(2.0 / float(tolerance)) / np.log((root + 1.0) / (root - 1.0))))
+
+
+def _normal_rows(points) -> int:
+    """Normal Voigt rows of a drive's stress (the rows mixed_elasticity sums into tr eps): 2 planar, 3 with rings."""
+    return 3 if points.axisymmetric else 2
+
+
+def _pressure_mass_solve(projection, load) -> np.ndarray:
+    """(n_p,) complex pi with M_p pi = load on the free pressure dofs (0 on the held ones): Jacobi-preconditioned CG
+    per column, unconjugated dots (real masses: the real and imaginary parts as two real columns; stretched complex
+    symmetric masses: COCG on the complex column); ValueError beyond the iteration cap (fail loudly)."""
+    free = np.asarray(projection.free, dtype=bool)
+    masses = tuple(projection.masses)
+    complex_mass = any(np.iscomplexobj(mass.data) for mass in masses)
+    load = np.where(free, np.asarray(load, dtype=np.complex128), 0.0)
+    columns = load[:, None] if complex_mass else np.stack([load.real, load.imag], axis=1)
+    diagonal = sum(mass.diagonal() for mass in masses)
+    if np.any(diagonal[free] == 0.0):
+        raise ValueError('pressure projection: a free pressure dof has a zero mass diagonal (a bug in the space)')
+    inverse = np.where(free, 1.0 / np.where(free, diagonal, 1.0), 0.0)[:, None]
+
+    def apply(vectors):
+        product = sum(mass @ vectors for mass in masses)
+        product[~free] = 0.0
+        return product
+
+    solution = np.zeros_like(columns)
+    residual = columns.copy()
+    scale = np.linalg.norm(columns, axis=0)
+    if not scale.any():
+        return np.zeros(len(free), dtype=np.complex128)
+    preconditioned = inverse * residual
+    direction = preconditioned.copy()
+    rho = np.sum(residual * preconditioned, axis=0)
+    limit = PROJECTION_ITERATION_CAP * projection_iterations()
+    for _ in range(limit):
+        product = apply(direction)
+        curvature = np.sum(direction * product, axis=0)
+        step = np.divide(rho, curvature, out=np.zeros_like(rho), where=curvature != 0.0)
+        solution += step * direction
+        residual -= step * product
+        if np.all(np.linalg.norm(residual, axis=0) <= PROJECTION_TOLERANCE * scale):
+            break
+        preconditioned = inverse * residual
+        updated = np.sum(residual * preconditioned, axis=0)
+        direction = preconditioned + np.divide(updated, rho, out=np.zeros_like(rho), where=rho != 0.0) * direction
+        rho = updated
+    else:
+        worst = float(np.max(np.linalg.norm(residual, axis=0) / np.where(scale > 0.0, scale, 1.0)))
+        raise ValueError(f'pressure projection: the pressure-mass CG stopped at relative residual {worst:.3g} after '
+                         f'{limit} iterations (tolerance {PROJECTION_TOLERANCE:g}; the Jacobi-scaled P1 mass needs '
+                         f'{projection_iterations()}): a degenerate or non-passive pressure mass')
+    return solution[:, 0] if complex_mass else solution[:, 0] + 1j * solution[:, 1]
+
+
+def _projected_dilation(dofs, points, mean, projection) -> np.ndarray:
+    """(c n_u,) complex B^T pi of a mean normal stress `mean` (n_points,) at the DrivePoints: pi = M_p^-1 int N_p mean
+    dV (the P1 basis at the rule points of every drive element, the drive weights) on the free pressure dofs (module
+    header); ValueError for a drive element in no pressure group."""
+    space = projection.space
+    load = np.zeros(space.n_dofs, dtype=np.complex128)
+    for index, (positions, rule) in enumerate(points.groups):
+        start, stop = int(points.offsets[index]), int(points.offsets[index + 1])
+        table = space.element_table[dofs.elements[positions]]   # (m, 3) global pressure dofs, -1 outside the groups
+        if (table < 0).any():
+            raise ValueError(f'assemble_stress_drive: {int((table < 0).any(axis=1).sum())} drive element(s) lie in no '
+                             'pressure group of the mixed solid (the projection needs their pressure dofs)')
+        basis = lagrange_basis(1, rule.points)[0]                # (q, 3): the corners in mesh.triangles order
+        weighted = (mean[start:stop] * points.weights[start:stop]).reshape(len(positions), len(rule.weights))
+        scatter_add(load, table, weighted @ basis)
+    return np.asarray(projection.coupling.T @ _pressure_mass_solve(projection, load), dtype=np.complex128)
+
+
 def _element_mask(dofs, elements):
     """Bool per mesh element of a drive selection (None = every map element): a bool mask or mesh element indices."""
     if elements is None:
@@ -187,11 +292,12 @@ def _operators(dofs, points):
         yield operator, component_dofs(dofs.element_dofs[positions], points.components)
 
 
-def assemble_stress_drive(dofs, points, stress, *, keep_operator=False) -> np.ndarray:
+def assemble_stress_drive(dofs, points, stress, *, keep_operator=False, projection=None) -> np.ndarray:
     """Complex128 (c n,) of int B^T sigma dV (c = points.components, the map's vector numbering c d + component) for
     a complex stress (points.rows, points.n_points) at the DrivePoints in their Voigt rows (module header);
     keep_operator: build B of every group once and keep it on the points for the next drives (DrivePoints.kept;
-    else B is built per group and dropped). ValueError for points of another map."""
+    else B is built per group and dropped); projection (a PressureProjection of a mixed u-p solid): the mean normal
+    stress enters projected onto its pressure space (module header). ValueError for points of another map."""
     _checked_map(dofs, points)
     rows, components = points.rows, points.components
     stress = np.asarray(stress)
@@ -200,6 +306,13 @@ def assemble_stress_drive(dofs, points, stress, *, keep_operator=False) -> np.nd
                          f'{points.n_points}) (Voigt rows x drive points)')
     if not np.isfinite(stress).all():
         raise ValueError('assemble_stress_drive: the stress holds non-finite values')
+    dilation = None
+    if projection is not None:   # the deviatoric rows as point drives, the mean normal stress projected
+        normal = _normal_rows(points)
+        mean = stress[:normal].mean(axis=0)
+        stress = np.array(stress, dtype=np.complex128)
+        stress[:normal] -= mean
+        dilation = _projected_dilation(dofs, points, mean, projection)
     if keep_operator and not points.kept:
         built = list(_operators(dofs, points))   # whole, so an interrupted build keeps nothing
         points.kept.extend(built)
@@ -212,6 +325,11 @@ def assemble_stress_drive(dofs, points, stress, *, keep_operator=False) -> np.nd
         weighted = (stress[:, start:stop] * points.weights[start:stop]).T.reshape(count, n_rule, rows)
         local = np.einsum('mqki,mqk->mi', operator, weighted)
         scatter_add(result, vector_dofs, local)
+    if dilation is not None:
+        if dilation.shape != result.shape:
+            raise ValueError(f'assemble_stress_drive: the projection coupling has {dilation.size} displacement '
+                             f'columns, the map {result.size} (B of another map)')
+        result += dilation
     return result
 
 

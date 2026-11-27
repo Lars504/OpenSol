@@ -546,10 +546,12 @@ BRILLOUIN_SPECTRUM_CASES = (
                      'the sampling. Checks: psd '
                      f"against psd_reference (homogeneous) in L2 above {_PEAK_SHARE:g} of its peak "
                      f"({_WATER_2D_HZ_TOLERANCE['psd']:g}: the brillouin_water_2d_ez budget with the P2 / P1 "
-                     'dispersion at 30 nm, up to ~2 % on the flanks, + echoes ~3e-3, images < 1e-3, envelope ~1e-3), '
+                     'dispersion at 30 nm, up to ~2 % on the flanks, + echoes ~3e-3, images < 1e-3, envelope ~1e-3; '
+                     'the mixed solid takes the dilation through its P1 pressure space, which an unprojected drive '
+                     'misses by a broadband ~(q h)^4 / Omega^2 background: 4.0e-2 here), '
                      f"the fit shift against reference_shift ({_WATER_2D_HZ_TOLERANCE['shift']:g}). Tolerances are "
                      'first estimates; measured = error = the worst deviation in tolerance units.'),
-        specs=lambda: _water_2d_specs('hz'), check=_check_water_2d_hz),
+        specs=lambda: _water_2d_specs('hz'), check=_check_water_2d_hz, heavy=True),
     SelfTestCase(
         name='brillouin_scan_columns',
         label='Solid mechanics: Brillouin scan columns on one factor, and a mirror plane',

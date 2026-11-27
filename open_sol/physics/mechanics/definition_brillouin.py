@@ -18,7 +18,7 @@ from ...core.grid import uniform_cell_count
 from ...core.mesh import has_uniform_spacing
 from ...core.mirror import mirror_faces
 from ...fem.assembly import CHUNK_ELEMENTS
-from ...fem.elastic_drives import DRIVE_DEGREE
+from ...fem.elastic_drives import DRIVE_DEGREE, projection_iterations
 from ...fem.quadrature import gauss_line, triangle_rule
 from ...model.definition_helpers import (ORDER_SPLIT_READERS, azimuthal_order_of, element_order, evaluates_to,
                                          frequency_response_values, frequency_sweep_counts, is_axisymmetric,
@@ -1291,6 +1291,15 @@ _CELL_FACE_BYTES = 3 * _FLOAT_BYTES + 3 * _INT64_BYTES + 2 * _COMPLEX_BYTES
 # (traction_drive / face_drive): the x and y face loads (about 2 per cell) and a half-load temporary
 _CELL_DRIVE_VALUES = 3 + 4 + 2
 _CELL_FACE_DRIVE_VALUES = 2 + 1
+# formulation mixed (fem.elastic_drives.PressureProjection, per stress drive): per drive point the deviatoric stress
+# copy and the mean normal stress (rows + 1 complex); per pressure dof of the mass solve the load and its masked copy,
+# the columns (two real or one complex), diagonal, inverse, solution, residual, preconditioned, direction, product and
+# one group product (11 complex-sized values); per CG iteration and pressure dof 6 column passes (update, residual,
+# preconditioning, two dots, direction) beside the M_p stream
+_PROJECTION_PRESSURE_BYTES = 11 * _COMPLEX_BYTES
+_PROJECTION_PASS_BYTES = 6 * _COMPLEX_BYTES
+_PROJECTION_CALLS_PER_ITERATION_GUESS = 12
+_CSR_ENTRY_BYTES = _FLOAT_BYTES + 4   # float64 value + int32 index (M_p, B; complex values with a PML: not counted)
 
 
 def _rule_points() -> tuple:
@@ -1416,7 +1425,8 @@ class _SolidForm:
     (em_fdfd_bor optics), the azimuthal order, mesh elements and edges (a tensor solid: its window cells and interior
     Yee faces), the drive vector (u rows: c x dofs) and the harmonic unknowns (mixed: + the pressure dofs), local dofs
     and components per element, the MaterialGrid arrays _drive_inputs copies and whether the viscoelastic
-    ElementModuli are kept (else the bind builds them)."""
+    ElementModuli are kept (else the bind builds them); formulation mixed (triangles): the pressure dofs and the
+    stored entries of M_p and B the projected drive streams (definition_viscoelastic's counts at the whole mesh)."""
 
     def __init__(self, context, settings_values, mesh, *, unknowns, vector_dofs, local, components, moduli_kept=True):
         self.tensor = getattr(mesh, 'kind', '') == 'tensor'
@@ -1433,6 +1443,12 @@ class _SolidForm:
         self.vector_dofs, self.unknowns = float(vector_dofs), float(unknowns)
         self.local, self.components = int(local), int(components)
         self.moduli_kept = bool(moduli_kept)
+        mixed = not self.tensor and (settings_values or {}).get('formulation') == MIXED
+        self.pressure_dofs = max(self.unknowns - self.vector_dofs, 0.0) if mixed else 0.0
+        nodes = float(getattr(mesh, 'n_nodes', 0) or 0) if mixed else 0.0
+        self.pressure_entries = nodes + 2.0 * self.mesh_edges if mixed else 0.0
+        self.coupling_entries = (self.components * (nodes + 4.0 * self.mesh_edges + 3.0 * self.elements) if mixed
+                                 else 0.0)
 
 
 def _copied_array_count(context, tensor) -> int:
@@ -1607,7 +1623,18 @@ def _bind_bytes(drive, form) -> int:
     kept = _kept_operator_bytes(drive, form)
     chunk = min(drive.elements, CHUNK_ELEMENTS) * element_points * _chunk_point_bytes(form, kept=bool(kept))
     return _bind_peak(drive, form, held, setup, edge, assembly=chunk, kept=kept,
-                      stress_peak=_STRESS_PEAK_VALUES[form.axisymmetric], phase_corrected=True)
+                      stress_peak=_STRESS_PEAK_VALUES[form.axisymmetric], phase_corrected=True,
+                      projection=_projection_bytes(drive, form))
+
+
+def _projection_bytes(drive, form) -> tuple:
+    """(bytes held through the assembly, bytes of the pressure-mass solve) of one stress drive's projected dilation
+    on a mixed solid (fem.elastic_drives.PressureProjection: the deviatoric copy and the mean per point, the B^T pi
+    vector; the CG vectors per pressure dof); (0, 0) otherwise."""
+    if not form.pressure_dofs:
+        return 0, 0
+    held = drive.points * (form.rows + 1) * _COMPLEX_BYTES + _COMPLEX_BYTES * form.vector_dofs
+    return int(held), int(_PROJECTION_PRESSURE_BYTES * form.pressure_dofs)
 
 
 def _cell_bind_bytes(drive, form) -> int:
@@ -1645,7 +1672,8 @@ def _centred_copies(drive):
     return drive.staggered * _COMPLEX_BYTES * drive.cells[0]
 
 
-def _bind_peak(drive, form, held, setup, edge, *, assembly, kept, stress_peak, phase_corrected) -> int:
+def _bind_peak(drive, form, held, setup, edge, *, assembly, kept, stress_peak, phase_corrected,
+               projection=(0, 0)) -> int:
     """Bind peak of _bind_bytes / _cell_bind_bytes: held + the current read's centred copies + the larger of the
     set-up and the largest position step plus the kept strain operator (from the first stress drive on: never during
     the set-up) and the edge / face drive (geometry-specific: held, setup, edge, kept, the assembly temporaries and
@@ -1653,7 +1681,8 @@ def _bind_peak(drive, form, held, setup, edge, *, assembly, kept, stress_peak, p
     values, alive through its _Optical beside the new DriveFields that the optics book; a complex128 copy of the new
     eps where it is not complex128; the centre steps), the phase-corrected samples beside the previous ones (element
     points only), the optical-stress peak, the assembly with the new and previous drive vectors, the local lines on
-    the window."""
+    the window; a mixed solid (projection: _projection_bytes) also the pressure-mass solve before the assembly and its
+    held copies through it."""
     points, window = drive.points, drive.cells[0]
     optical = drive.field_components
     vector = _COMPLEX_BYTES * form.vector_dofs
@@ -1662,10 +1691,13 @@ def _bind_peak(drive, form, held, setup, edge, *, assembly, kept, stress_peak, p
     rows = form.rows * _COMPLEX_BYTES   # one position's stress rows per point (one drive part)
     read = (optical * _COMPLEX_BYTES * window if drive.positions > 1 else 0) + optical * _COMPLEX_BYTES * window + (
         _CENTRE_STEP_BYTES * window if drive.staggered else 0)
+    projected, solve = projection
     steps = [read + points * samples + vector,
              points * (samples + rows + stress_peak * _COMPLEX_BYTES) + vector,
-             points * (samples + rows + form.rows * _COMPLEX_BYTES) + assembly + 2 * vector,
+             points * (samples + rows + form.rows * _COMPLEX_BYTES) + assembly + 2 * vector + projected,
              points * (samples + rows + _LINE_POINT_BYTES) + window * _LOCAL_WINDOW_BYTES + vector]
+    if solve:
+        steps.append(points * (samples + rows) + projected + solve + vector)
     if phase_corrected:
         steps.append(points * (2 * samples + _GATHER_BYTES + _PHASED_SAMPLE_BYTES + rows) + vector)
     return int(held + copies + max(setup, max(steps) + kept + edge))
@@ -1869,6 +1901,15 @@ def brillouin_time_items(context, settings_values, mesh, *, unknowns, vector_dof
                     + centre_steps)
         items.append(te.TimeItem(label + 'drive assembly (samples, optical stress, B^T sigma, edge tractions, local q)',
                                  'position', positions, 'exact', (te.HostStream(position),) + ops))
+        if form.pressure_dofs:   # mixed: the projected dilation per stress drive (fem.elastic_drives), a priori CG count
+            iterations = float(projection_iterations())
+            solve = iterations * (form.pressure_entries * _CSR_ENTRY_BYTES
+                                  + form.pressure_dofs * _PROJECTION_PASS_BYTES)
+            projected = (solve + form.coupling_entries * _CSR_ENTRY_BYTES + drive_vector
+                         + 2.0 * drive.points * (form.rows + 1) * _COMPLEX_BYTES)
+            items.append(te.TimeItem(label + 'projected dilation (pressure-mass CG, B^T pi)', 'position', positions,
+                                     'exact', (te.HostStream(projected),
+                                               te.PythonCalls(iterations * _PROJECTION_CALLS_PER_ITERATION_GUESS))))
         reference = drive.values['reference']
         if reference == 'local':   # per position and frequency the line of every kept bin
             items.append(te.TimeItem(label + 'local reference spectra', 'position', positions, 'exact',

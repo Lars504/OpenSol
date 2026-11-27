@@ -83,15 +83,23 @@ class SolidRenderer(PhysicsRenderer):
                                   signed=True, cmap='RdBu_r', requires_study=OPTOMECHANICS_STUDY, parity='even'),
     }
 
+    absent_fields = _TRIANGLE_HARMONIC_FIELDS   # class fields this mesh kind has no values of (not listed: Session)
+
     def __init__(self, physics):
         self.physics = physics
+        infos = {name: info for name, info in type(self).field_infos.items() if name not in self.absent_fields}
         if getattr(physics, 'axisymmetric', False):   # (r, z): x = r, y = z, the out-of-plane zz is the hoop
-            self.field_infos = {**type(self).field_infos, **_AXISYMMETRIC_LABELS}
+            infos.update(_AXISYMMETRIC_LABELS)
             if getattr(physics, 'azimuthal_order', 0):   # order m >= 1: u_z holds the azimuthal amplitude U_phi
-                self.field_infos['u_z'] = _AZIMUTHAL_U_PHI
-                self.field_infos['u_z_im'] = _AZIMUTHAL_U_PHI_IM
+                infos['u_z'] = _AZIMUTHAL_U_PHI
+                if 'u_z_im' in infos:
+                    infos['u_z_im'] = _AZIMUTHAL_U_PHI_IM
+        self.field_infos = infos
 
     def device_field(self, component: str):
+        if component in self.absent_fields:
+            raise ValueError(f"field '{component}' exists on a triangle mesh only (the rectangular-cell solid shows the "
+                             'real parts and u_abs of a frequency response)')
         self.field_info(component)
         physics = self.physics
         window = physics.window
@@ -99,9 +107,6 @@ class SolidRenderer(PhysicsRenderer):
             return physics.domain.xp.asarray(shown_integrand(physics))
         if component in ENERGY_DENSITY_FIELDS:   # triangle meshes only: zeros here (as the 3D tensor renderer)
             return physics.domain.xp.zeros_like(physics.fields.u_x[window])
-        if component in _TRIANGLE_HARMONIC_FIELDS:
-            raise ValueError(f"field '{component}' exists on a triangle mesh only (the rectangular-cell solid shows the "
-                             'real parts and u_abs of a frequency response)')
         if component in ('youngs_modulus', 'poisson_ratio'):
             return getattr(physics.domain.materials, component)[window]
         return getattr(physics.fields, component)[window]

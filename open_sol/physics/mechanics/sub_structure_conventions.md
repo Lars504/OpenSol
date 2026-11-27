@@ -270,6 +270,12 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
 - Sampling bias: a face mean along the beam (psd low by cos^4(k h / 2)) biases the values both references read, plain
   bilinear interpolation (~(q h)^2 / 12) the local reference too, so a reference comparison misses such a bias: pin a
   new sampling path against an analytic case (selftests_brillouin_spectrum water cases).
+- formulation mixed (triangles): the stress drive projects its mean normal stress onto the solid's P1 pressure space
+  (`HarmonicOperators.drive_projection` -> `SolidDriveInputs.projection`, fem elastic_drives header). Unprojected,
+  its non-P1 part drove the modes that only 4/3 G* and inertia hold (water: viscosity alone), a broadband background
+  ~(q h)^4 / Omega^2 (brillouin_water_2d_hz at 30 nm: psd +1.6 % at the peak, +25 % at 5.9 GHz). The mixed
+  HarmonicOperators therefore keep B, M_p,g and the free-pressure mask; the tensor (Q1) and displacement solids
+  have no such modes.
 - Moving boundary (triangles): never side samples (they reach across the staircase into the other material), the
   continuous E_par and D_n at the Gauss point itself (`brillouin_drive.py` header). Q1: the two-sided face mean (open:
   ~1.5 % low in the moving-boundary part at 10 nm glass).
@@ -316,6 +322,9 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
 - solid_mechanics dispatches on the mesh kind (`_create_solid` -> SolidMechanicsFEMPhysics); shared with tetrahedra:
   `solver_common.FEMSolidCommon` / `HostInputCache` (a new mutation of alpha / dT / sigma0 / beta / rho calls
   `_drop_host_inputs`). What runs and what is refused: the type help and `_triangle_issues`.
+- One field table (`SolidRenderer.field_infos`, class level: definitions, validation) for both mesh kinds; each
+  renderer instance drops its `absent_fields` (tensor: the triangle-only Im / pressure fields; triangles:
+  om_integrand), since a study without stored_fields stores every field the instance lists.
 - Why the gaps stay open: piezo needs phi on every window element + G on a DofMap (~a piezo_fem.py, would unlock
   admittance); guided modes need a 3-component guided stiffness; the planar optomechanics overlap is written on Yee
   faces (needs em_modes on triangles); solid_em_strain_optic has no mesh_transfer (the optical force reaches a
