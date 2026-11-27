@@ -28,7 +28,8 @@ from ...model.definition_helpers import (AXISYMMETRIC_SPACE_SETTINGS, AZIMUTHAL_
                                          on_triangles, own_mirror_face_conflicts, point_cells,
                                          reduced_sweep_memory_items,
                                          reduced_sweep_time_items, validate_points_inside)
-from ...model.geometry import expand_entities, line_orientation
+from ...model.expressions import Expression, ExpressionError
+from ...model.geometry import bounding_box, expand_entities, line_orientation, rasterize
 from ...model.schema import (STATIONARY_STUDY, TIME_DEPENDENT_STUDY, CouplingType, DomainRequirements, FeatureType,
                              Issue, Param, PhysicsType, SolverRole, feature_path, solver_backend)
 from ...solvers.arpack_shift_invert import CUDSS_FACTORIZATIONS, LANCZOS_APPLICATIONS_PER_BASIS, arnoldi_basis_size
@@ -37,32 +38,36 @@ from ...solvers.pcg import workspace_bytes
 from . import definition3d
 from .definition3d import eigen_host_direct, host_factor_items
 from .coupling import make_temperature_rise_transform
+from .definition_brillouin import (BRILLOUIN_SCATTERING_FEATURE, brillouin_issues, brillouin_memory_items,
+                                   brillouin_time_items)
 from .definition_bloch2d import (BAND_TEMPLATE_2D, bloch_issues_2d, complex_bloch_pencil_2d, periodic_axes_2d,
                                 periodic_params_2d, solver_periodic_arguments, static_periodic_cell,
                                 trivial_bloch_phase_2d)
-from .definition_common import (DENSITY_PARAM, EIGENFREQUENCY_STUDY, ELECTRODE_CONNECTION_HELP,
-                                ELECTRODE_VOLTAGE_HELP, GEOMETRIC_NONLINEARITY_PARAMS, INITIAL_STRESS_PROPERTIES,
+from .definition_common import (DENSITY_PARAM, EIGENFREQUENCY_STUDY, ELECTRODE_CONNECTION_HELP, ELECTRODE_VOLTAGE_HELP,
+                                FORMULATION_PARAM, GEOMETRIC_NONLINEARITY_PARAMS, INITIAL_STRESS_PROPERTIES,
                                 LOSS_PROPERTIES, MATERIAL_PROPERTIES, MODAL_STUDIES, PHOTOELASTIC_P44_PARAM,
                                 PIEZO_MATERIAL_PROPERTIES, ROLLER_FEATURES, STIFFNESS_TENSOR_PROPERTIES,
                                 STRESS_STIFFENING_PARAM, SUPPORT_FEATURES, SYMMETRY_FEATURE, SYMMETRY_HELP,
-                                TED_MATERIAL_PROPERTIES, apply_body_force,
-                                apply_temperature_change,
-                                background_context, displacement_param, eigen_search_issues, electrode_result,
-                                follow_held_values, follow_load, following, free_body_allowed, frequency_probe_feature,
-                                initial_stress_materials, material_issues, materials_setting, modal_kept_count,
-                                modal_resonance_count, modal_study_issues, model_mirror_issues, nonlinear_state_infos,
-                                outer_faces, piezo_material_issues, pml_crossing_issues, prestress_issues,
-                                register_support, resonance_table_feature, solid_linear_solver, solid_study,
-                                stiffness_follows_state, support_holders, support_result, symmetry_issues,
-                                thermoelastic_damping_feature, union_masks)
+                                TED_MATERIAL_PROPERTIES, VISCOELASTIC_PROPERTIES, apply_body_force,
+                                apply_temperature_change, background_context, displacement_param, eigen_search_issues,
+                                electrode_result, follow_held_values, follow_load, following, free_body_allowed,
+                                frequency_probe_feature, initial_stress_materials, material_issues, materials_setting,
+                                mixed_formulation, modal_kept_count, modal_resonance_count, modal_study_issues,
+                                model_mirror_issues, nonlinear_state_infos, outer_faces, piezo_material_issues,
+                                pml_crossing_issues, prestress_issues, register_support, resonance_table_feature,
+                                solid_linear_solver, solid_study, stiffness_follows_state, support_holders,
+                                support_result, symmetry_issues, thermoelastic_damping_feature, union_masks)
 from .definition_frequency_response import (ADMITTANCE_FEATURE, FREQUENCY_RESPONSE_STUDY, anisotropy_issues,
                                             frequency_response_host_items, frequency_response_issues)
-from .fields import ENERGY_DENSITY_FIELDS, HARMONIC_IMAG_FIELDS, INPUT_ARRAYS, OUTPUT_ARRAYS
+from .definition_viscoelastic import (scaled_fill, viscoelastic_counts, viscoelastic_issues, viscoelastic_memory_items,
+                                      viscoelastic_time_items)
+from .fields import (AZIMUTHAL_IMAG_FIELDS, ENERGY_DENSITY_FIELDS, HARMONIC_IMAG_FIELDS, INPUT_ARRAYS, OUTPUT_ARRAYS,
+                     PRESSURE_FIELDS)
 from .generalized_plane_strain import BENDING_CHOICES, BENDING_TERMS
 from .materials import (DENSITY_SCHEMA, LOSS_ARRAYS, MECHANICAL_SCHEMA, OPTIONAL_LOSS_SCHEMA, OPTIONAL_PIEZO_SCHEMA,
-                        OPTIONAL_PRESTRESS_SCHEMA, OPTIONAL_STIFFNESS_SCHEMA, OPTIONAL_TED_SCHEMA, PIEZO_ARRAYS,
-                        PIEZO_DEFAULTS,
-                        PRESTRESS_ARRAYS, SHEAR_PHOTOELASTIC_SCHEMA, SOLVER_PRECISIONS, STIFFNESS_TENSOR_ARRAYS)
+                        OPTIONAL_PRESTRESS_SCHEMA, OPTIONAL_STIFFNESS_SCHEMA, OPTIONAL_TED_SCHEMA,
+                        OPTIONAL_VISCOELASTIC_SCHEMA, PIEZO_ARRAYS, PIEZO_DEFAULTS, PRESTRESS_ARRAYS,
+                        SHEAR_PHOTOELASTIC_SCHEMA, SOLVER_PRECISIONS, STIFFNESS_TENSOR_ARRAYS)
 from .piezo import ELECTRODE_CONNECTIONS, PIEZO_COMPONENTS
 from .pml2d import DEFAULT_PML_CELLS, DEFAULT_PML_REFLECTION, pml_padding
 from .definition_optomechanics import (OPTICAL_TYPES, OPTOMECHANICAL_COUPLING_FEATURE, OPTOMECHANICS_STUDY,
@@ -88,8 +93,11 @@ HEAT_TYPE_NAME = 'heat'
 _FDFD_EZ_TYPE_NAME = 'em_fdfd_ez'        # source of the optical force (E_z phasor)
 _CROSS_SECTION_EM_TYPE = 'em_modes'      # the EM type whose xy plane is a cross-section like the solid's
 _COMPONENT_NAMES = ('x', 'y')
+_HELD_COMPONENT_NAMES = ('x', 'y', 'z')   # held components of the displacement features (z: U_phi, m >= 1)
 _TRIANGLES = 'triangles'
-_PLANE_DISPLACEMENTS = ('u_x', 'u_y')   # load / held value names (follow_load / follow_held_values)
+# held value names (follow_held_values): u_z = U_phi of an azimuthal order (the displacement features' u_z)
+_HELD_DISPLACEMENTS = ('u_x', 'u_y', 'u_z')
+_AZIMUTHAL_LOAD_FEATURES = ('boundary_load', 'segment_load', 'body_force')   # refused in a frequency response at m >= 1
 _PLANE_TRACTIONS = ('t_x', 't_y')
 _PLANE_BODY_FORCES = ('f_x', 'f_y')
 _BOTH_GRIDS = ('tensor', _TRIANGLES)   # features the triangle solid (solver_fem) runs too
@@ -133,9 +141,15 @@ _TARGET_FREQUENCY_PARAM = Param(
     help='Eigenfrequency study: the modes nearest this frequency (shift-invert about (2 pi f)^2, moved 1e-4 above so a '
          'target on a resonance factors); 0 = the lowest (a strain-free motion then fails: check the supports). A '
          'target > 0 also allows a free body on triangles (no supports; axisymmetric: no held u_z) and a free periodic '
-         'cell with every bloch_k 0 (both meshes): their rigid-body modes (f < 1e-4 x target) are dropped.',
-    tip="Used only by an 'Eigenfrequency' study: the vibration modes closest to this frequency are found.\n\n"
-        '0 finds the lowest modes.')
+         'cell with every bloch_k 0 (both meshes): their rigid-body modes (f < 1e-4 x target) are dropped. With an '
+         'elastic PML (pml_*, triangles) it is also the reference frequency of the PML strength in both the '
+         'eigenfrequency and the frequency_response study (> 0 required): pml_reflection holds at the target and '
+         'becomes R^(f / target) at f (stronger absorption above, weaker below), so in a frequency response set it '
+         'at or just below the lowest swept frequency (the band centre of a narrow band, e.g. a Brillouin peak, is '
+         'fine); the frequency response reads it for nothing else.',
+    tip="Used by an 'Eigenfrequency' study: the vibration modes closest to this frequency are found.\n\n"
+        '0 finds the lowest modes.\n\nWith an absorbing layer it is also the frequency the layer is tuned for, in a '
+        'frequency response too: set it near the lowest frequency of the sweep.')
 _AXIAL_WAVENUMBER_PARAM = Param(
     'axial_wavenumber', 'float', None, label='Axial wavenumber', unit='rad/m', min=0.0, optional=True,
     help='Eigenfrequency study, tensor mesh. Empty: in-plane plane-strain modes (u_x, u_y). k_z: guided (2.5D) modes '
@@ -244,25 +258,34 @@ _BENDING_MOMENT_Y_PARAM = Param(
 
 
 def _pml_params():
-    """pml_<face> per outer face, pml_cells and pml_reflection (elastic PML ring: triangles, eigenfrequency)."""
+    """pml_<face> per outer face, pml_cells and pml_reflection (elastic PML ring: triangles, eigenfrequency and
+    frequency_response)."""
     faces = tuple(Param(
         f'pml_{face}', 'bool', False, label=f'PML on {face}',
-        help=('Triangle mesh, eigenfrequency study, target_frequency > 0: an elastic PML ring beyond this face, '
-              'pml_cells x the mesh dx thick, material continued from the window edge, stretch s = 1 - j beta (d / '
-              'w)^2 (d depth, w thickness; axisymmetric: the stretched radius beyond x_hi), beta from pml_reflection '
-              'at the target for the fastest wave sqrt(c_II / rho); outer side clamped. Modes become complex: '
-              'frequency_imag > 0, radiation Q = f / (2 frequency_imag) in the Resonance table, shapes shown as real '
-              'part and |u|; modes with over half their |u|^2 in the ring are dropped. beta is frequency independent, '
-              'so absorption weakens far below the target. stress_stiffening treats the ring as an unstretched elastic '
-              'continuation, clamped outside (its K_sigma stretched like K). Supports and loads stay off this face; '
-              'not on x_lo of an axisymmetric solid (the axis).'),
+        help=('Triangle mesh, eigenfrequency or frequency_response study, target_frequency > 0: an elastic PML ring '
+              'beyond this face, pml_cells x the mesh dx thick, material continued from the window edge, stretch s = 1 '
+              '- j beta (d / w)^2 (d depth, w thickness; axisymmetric: the stretched radius beyond x_hi), beta from '
+              'pml_reflection at target_frequency for the fastest wave sqrt(c_II / rho) (a liquid of formulation '
+              'mixed: its sound speed; incompressible liquids alone carry none: refused); outer side clamped. '
+              'Eigenfrequency: modes become complex: frequency_imag > 0, radiation Q = f / (2 frequency_imag) in the '
+              'Resonance table, shapes shown as real part and |u|; modes with over half their |u|^2 in the ring are '
+              'dropped. frequency_response (formulation displacement or mixed, planar or axisymmetric): waves leaving '
+              'the window are absorbed (an open solid: the radiated power shows in the reactions and a '
+              'brillouin_scattering spectrum, whose drive acts in the window only); every pencil term is stretched '
+              '(stiffness, loss, mass, viscoelastic terms, the mixed pressure blocks); sweep_method direct or adaptive '
+              '(not modal). beta is frequency independent, so absorption weakens below target_frequency (R^(f / '
+              'target) at f). Shown fields in the ring are not physical. stress_stiffening treats the ring as an '
+              'unstretched elastic continuation, clamped outside (its K_sigma stretched like K). Supports and loads '
+              'stay off this face; not on x_lo of an axisymmetric solid (the axis).'),
         tip=(f'Absorbs vibrations leaving through {face}, as if the solid continued forever there.\n\nGives each '
-             'resonance a radiation quality factor. Only for an eigenfrequency study on a triangle mesh.'))
+             'resonance a radiation quality factor, or lets a driven vibration radiate away without echo. Only for '
+             'an eigenfrequency or frequency response study on a triangle mesh.'))
         for face in FACES)
     cells = Param('pml_cells', 'int', DEFAULT_PML_CELLS, label='PML thickness (elements)', unit='1', min=1, max=100,
                   help='PML ring thickness in mesh dx (h_max) on every pml_<face> face (MeshSpec pml_layers sets the '
                        'element layers across it); the profile needs ~6-10 layers and the ring a fair part of the '
-                       'longest wavelength (c / f at the target).',
+                       'longest wavelength (c / f at target_frequency, the lowest swept frequency of a frequency '
+                       'response).',
                   tip='How thick the absorbing layer is, in element sizes.\n\n8 is typical.')
     reflection = Param('pml_reflection', 'float', DEFAULT_PML_REFLECTION, label='PML reflection', unit='1', min=0.0,
                        min_exclusive=True, max=1.0,
@@ -300,8 +323,21 @@ _SUPPORT_RESULT_TEXT = (
     'solid, sum of K u - f over its held dofs (0 for unheld components; a dof held by two supports counts in both, the '
     'later value holds it); N/m per m of depth, N with the thickness setting or axisymmetric (whole ring). After a '
     'frequency_response on triangles: the complex reaction per frequency instead (columns frequency, F_x_re, F_x_im, '
-    'F_y_re, F_y_im).')
+    'F_y_re, F_y_im, W_re, W_im); at azimuthal_order 1 F_x = sum R_r - sum R_phi is the net force along x (phi = 0) of '
+    'the cos phi / sin phi tractions and F_y = 0, at m >= 2 both 0 (no net force). W = sum R u_held over the held dofs '
+    '(J, J/m per m of depth; the u_z = U_phi component included): the work of the support force on the prescribed '
+    'displacement. W / X is the force of a rigid translation by X; W / theta is the torque of a rigid rotation by '
+    'theta where one can be prescribed (x, y expressions of prescribed_displacement_domain): in a planar model (u_x '
+    '= -theta y, u_y = theta x), or axisymmetric a tilt about the transverse axis y at azimuthal_order 1 (the torque '
+    'about +y; a rotation about the symmetry axis would need u_phi at m = 0, which is refused); omega Im(W) / 2 is '
+    'the mean power the support delivers to the solid.')
 _SUPPORT_RESULT_REF = 'Result: the reaction table, as fixed.'
+# the displacement features' U_phi of an azimuthal order (triangles; validation refuses it at m = 0)
+_U_PHI_PARAM = replace(
+    displacement_param('u_z', 'phi'),
+    help='azimuthal_order m >= 1 only: the amplitude U_phi of u_phi = U_phi sin(m phi) (field u_z); a rigid sideways '
+         'translation by X along x (phi = 0) is u_x = X, u_z = -X at m = 1. Empty leaves it free.',
+    tip='Only with an azimuthal order of 1 or more: the displacement around the axis. Empty leaves it free.')
 _FACE_ONLY_TEXT = 'Outer faces only (on an object boundary use Fixed (domain)); every node of the face, corners included.'
 
 
@@ -325,10 +361,11 @@ def _apply_roller(ctx, solver, feature_spec, values, selection):
 
 
 def _apply_displacement(ctx, solver, feature_spec, values, selection):
-    """Prescribed u_x and / or u_y (None = free) on the selected outer faces; the held values follow a reused sweep
-    build (triangle meshes)."""
-    held = union_masks([solver.hold_face(face, values['u_x'], values['u_y']) for face in selection.outer_faces])
-    follow_held_values(ctx, solver, feature_spec, values, _PLANE_DISPLACEMENTS, held)
+    """Prescribed u_x and / or u_y (None = free; u_z = U_phi of an azimuthal order m >= 1, validated) on the selected
+    outer faces; the held values follow a reused sweep build (triangle meshes)."""
+    held = union_masks([solver.hold_face(face, values['u_x'], values['u_y'], u_z=values['u_z'])
+                        for face in selection.outer_faces])
+    follow_held_values(ctx, solver, feature_spec, values, _HELD_DISPLACEMENTS, held)
     return _support(solver, feature_spec, held)
 
 
@@ -338,11 +375,25 @@ def _apply_fixed_domain(ctx, solver, feature_spec, values, selection):
 
 
 def _apply_prescribed_displacement_domain(ctx, solver, feature_spec, values, selection):
-    """Prescribed u_x / u_y (None = free) on every dof of the selected elements (triangle meshes; u_phi of an azimuthal
-    order stays free); the held values follow a reused sweep build."""
-    held = solver.hold_cells(ctx.domain_mask(selection.entities), u_x=values['u_x'], u_y=values['u_y'], u_z=None)
-    follow_held_values(ctx, solver, feature_spec, values, _PLANE_DISPLACEMENTS, held)
+    """Prescribed u_x / u_y (None = free) on every dof of the selected elements (triangle meshes; u_z = U_phi of an
+    azimuthal order m >= 1, None = free); an x, y expression is evaluated at every held dof's point (P2 edge nodes
+    included); uniform held values follow a reused sweep build (x, y ones never do: sweep_reuse refuses a live
+    parameter in them)."""
+    held = solver.hold_cells(ctx.domain_mask(selection.entities),
+                             **{name: _held_value(ctx.parameters, values[name]) for name in _HELD_DISPLACEMENTS})
+    follow_held_values(ctx, solver, feature_spec, values, _HELD_DISPLACEMENTS, held)
     return _support(solver, feature_spec, held)
+
+
+def _held_value(parameters, value):
+    """A prescribed displacement for hold_cells: a number or None as it is, an x, y Expression the callable of the
+    held dofs' (n, 2) drawing-plane points [m] (x = r, y = z axisymmetric)."""
+    if not isinstance(value, Expression):
+        return value
+
+    def at_points(points):
+        return value.evaluate({**parameters, 'x': points[:, 0], 'y': points[:, 1]})
+    return at_points
 
 
 def _apply_boundary_load(ctx, solver, feature_spec, values, selection):
@@ -461,11 +512,65 @@ def _support_result(session, solver, region, feature_spec, options):
 
 # ---- validation helpers (CPU only) ----
 def _validate_displacement(vctx, physics_spec, feature_spec, values):
-    if values.get('u_x') is None and values.get('u_y') is None:
-        return [Issue('error', feature_path(physics_spec, feature_spec),
-                      'sets neither u_x nor u_y, so it holds nothing: set at least one (empty leaves a direction '
-                      'free)')]
-    return []
+    """Errors for no held component and for u_z (U_phi) outside an azimuthal order m >= 1; at m = 1 a warning for a
+    domain touching the axis (r = 0) that prescribes u_x without u_z = -u_x (the axis tie keeps U_phi = -U_r there)."""
+    path = feature_path(physics_spec, feature_spec)
+    if all(values.get(name) is None for name in _HELD_DISPLACEMENTS):
+        return [Issue('error', path, 'sets none of u_x, u_y (u_z), so it holds nothing: set at least one (empty leaves '
+                                     'a direction free)')]
+    settings = vctx.values(SOLID_MECHANICS.settings, physics_spec.settings) or {}
+    order = _azimuthal_order(settings) if on_triangles(vctx, physics_spec) else 0
+    issues = []
+    if values.get('u_z') is not None and not order:
+        issues.append(Issue('error', path, 'u_z is the U_phi amplitude of an azimuthal_order m >= 1 (geometry '
+                                           'axisymmetric, triangle mesh): leave it empty here'))
+    u_x, u_z = values.get('u_x'), values.get('u_z')
+    if order == 1 and feature_spec.type == 'prescribed_displacement_domain' and u_x is not None:
+        tolerance = 1e-9 * max(vctx.domain_size or (1.0,))
+        heights = []   # sampled heights where the objects touch the axis
+        for name in vctx.objects(feature_spec.selection):
+            try:
+                x_low, y_low, _, y_high = bounding_box(name, vctx.shapes)
+                if x_low > tolerance:
+                    continue
+                samples = np.linspace(y_low, y_high, _AXIS_TIE_SAMPLES)   # odd: a tangent circle's height included
+                touching = rasterize(name, vctx.shapes, np.full_like(samples, tolerance), samples, np)
+            except (KeyError, ValueError, TypeError):   # an unresolved object: reported elsewhere
+                continue
+            heights.append(samples[touching])
+        radial = _axis_values(u_x, vctx.parameters, heights)
+        azimuthal = None if u_z is None else _axis_values(u_z, vctx.parameters, heights)
+        if radial is not None and (u_z is None or azimuthal is not None):
+            scale = float(np.abs(radial).max())
+            tied = azimuthal is not None and float(np.abs(azimuthal + radial).max()) <= 1e-9 * scale
+            if scale > 0.0 and not tied:
+                issues.append(Issue('warning', path, 'azimuthal_order 1: this domain touches the axis (r = 0), where '
+                                                     'U_phi = -U_r is tied (an unheld U_phi of an axis node is held '
+                                                     'at 0); a rigid sideways translation X along x is u_x = X with '
+                                                     'u_z = -X, a rigid tilt by theta about y through the height z0 '
+                                                     'u_x = theta (y - z0), u_y = -theta x, u_z = -theta (y - z0)'))
+    return issues
+
+
+# heights over the box of an axis-touching object; the tie u_z = -u_x of x, y values is checked at those inside it on
+# the axis (x = the touch tolerance, so the half-open rectangle and polygon tests count an edge on x = 0)
+_AXIS_TIE_SAMPLES = 33
+
+
+def _axis_values(value, parameters, heights):
+    """Float64 values of a prescribed displacement (number or x, y Expression) on the axis x = 0 at the concatenated
+    heights [m] (a list of arrays); None without heights or when it does not evaluate (reported elsewhere)."""
+    heights = np.concatenate(heights) if heights else np.zeros(0)
+    if not heights.size:
+        return None
+    try:
+        if isinstance(value, Expression):
+            result = value.evaluate({**parameters, 'x': np.zeros_like(heights), 'y': heights})
+        else:
+            result = float(value)
+        return np.broadcast_to(np.asarray(result, dtype=np.float64), heights.shape)
+    except (ExpressionError, ArithmeticError, ValueError, TypeError):
+        return None
 
 
 _FACE_FEATURES = ('fixed', 'roller', 'displacement', 'boundary_load', 'electrode')   # act on selected outer faces
@@ -540,7 +645,7 @@ def _held_components(vctx, feature):
         return [('domain', 'x'), ('domain', 'y')]
     if feature.type == 'prescribed_displacement_domain':
         values = vctx.values(SOLID_MECHANICS.feature_type(feature.type).params, feature.params)
-        return [] if values is None else [('domain', component) for component in _COMPONENT_NAMES
+        return [] if values is None else [('domain', component) for component in _HELD_COMPONENT_NAMES
                                           if values[f'u_{component}'] is not None]
     try:
         faces = [entity for entity in expand_entities(vctx.spec, feature.selection) if entity in FACES]
@@ -555,7 +660,7 @@ def _held_components(vctx, feature):
     values = vctx.values(SOLID_MECHANICS.feature_type('displacement').params, feature.params)
     if values is None:
         return []
-    return [(face, component) for face in faces for component in _COMPONENT_NAMES
+    return [(face, component) for face in faces for component in _HELD_COMPONENT_NAMES
             if values[f'u_{component}'] is not None]
 
 
@@ -570,6 +675,8 @@ def _support_issues(vctx, physics_spec, path, axial_wavenumber=None, guided_by_s
     held_directions = {component for _, component in holders}
     if axisymmetric:
         held_directions.add('x')   # u_r = 0 on the axis; a radial translation strains the hoop, so it is no rigid mode
+    # the in-plane directions no support holds (a held z = U_phi of an azimuthal order stops no in-plane translation)
+    unheld = [component for component in _COMPONENT_NAMES if component not in held_directions]
     issues = []
     if axial_wavenumber == 0.0 and not held_elsewhere and not any(feature.enabled and feature.type in
                                                                   ('fixed', 'fixed_domain')
@@ -581,21 +688,21 @@ def _support_issues(vctx, physics_spec, path, axial_wavenumber=None, guided_by_s
     # guided k_z > 0 (backward Brillouin: 2 Re beta > 0): no rigid motion
     supports_optional = (guided_by_study or (axial_wavenumber is not None and axial_wavenumber > 0.0)
                          or held_elsewhere)
-    if free_body and held_directions != set(_COMPONENT_NAMES) and not held_elsewhere:
-        free = [component for component in _COMPONENT_NAMES if component not in held_directions]
+    if free_body and unheld and not held_elsewhere:
+        free = unheld
         consequence = ('regular at every frequency > 0 (its rigid motion follows the drive as a mass)'
                        if vctx.study_type == FREQUENCY_RESPONSE_STUDY else
                        'its rigid-body modes (0 Hz, below 1e-4 x target_frequency) are dropped')
         issues.append(Issue('info', path, f"no support holds u_{', u_'.join(free)}: a free body, {consequence}"))
         supports_optional = True
-    if not held_directions and not supports_optional:
+    if len(unheld) == len(_COMPONENT_NAMES) and not supports_optional:
         issues.append(Issue('error', path,
                             'a static or modal solve needs supports: add Fixed, Roller or Displacement on outer faces or '
                             'a Fixed '
                             '(domain) region (otherwise the solid can move as a rigid body and the system is '
                             'singular)'))
-    elif held_directions != set(_COMPONENT_NAMES) and not supports_optional:
-        free = next(component for component in _COMPONENT_NAMES if component not in held_directions)
+    elif unheld and not supports_optional:
+        free = unheld[0]
         issues.append(Issue('error', path,
                             f'no support holds u_{free}, so the solid can slide along {free}: add a Roller on a '
                             f"{free}_lo / {free}_hi face, a Fixed face or a Displacement with u_{free} set"))
@@ -752,8 +859,9 @@ def _tensor_probe_issues(physics_spec):
 
 
 def _pml_issues(vctx, physics_spec, settings_values, path, triangles):
-    """Elastic PML faces: errors on a rectangular-cell mesh, outside the eigenfrequency study, at target_frequency 0, on
-    x_lo of an axisymmetric solid, and per support / load on a PML face."""
+    """Elastic PML faces: errors on a rectangular-cell mesh, outside the eigenfrequency / frequency_response studies, at
+    target_frequency 0, with sweep_method modal, on x_lo of an axisymmetric solid, and per support / load on a PML face;
+    frequency_response: the reflection at the lowest swept frequency below the target (_pml_sweep_issues)."""
     faces = _pml_faces(settings_values)
     if not faces:
         return []
@@ -762,12 +870,17 @@ def _pml_issues(vctx, physics_spec, settings_values, path, triangles):
         return [Issue('error', path, f"PML faces ({names}) need a triangle mesh (MeshSpec kind 'triangles'): the "
                                      'rectangular-cell solid has no elastic PML')]
     issues = []
-    if vctx.study_type != EIGENFREQUENCY_STUDY:
-        issues.append(Issue('error', path, f'an elastic PML ({names}) is solved by the {EIGENFREQUENCY_STUDY} study only; '
-                                           f'the {vctx.study_type} study is not available with it: turn pml_* off'))
+    if vctx.study_type not in (EIGENFREQUENCY_STUDY, FREQUENCY_RESPONSE_STUDY):
+        issues.append(Issue('error', path, f'an elastic PML ({names}) is solved by the {EIGENFREQUENCY_STUDY} and '
+                                           f'{FREQUENCY_RESPONSE_STUDY} studies only; the {vctx.study_type} study is '
+                                           'not available with it: turn pml_* off'))
     elif not settings_values.get('target_frequency'):
         issues.append(Issue('error', path, 'an elastic PML needs target_frequency > 0: its strength is set for the '
-                                           'waves at the target'))
+                                           'waves at that frequency' + (
+                                               ' (in a frequency response: set it at or just below the lowest swept '
+                                               'frequency)' if vctx.study_type == FREQUENCY_RESPONSE_STUDY else '')))
+    elif vctx.study_type == FREQUENCY_RESPONSE_STUDY:
+        issues.extend(_pml_sweep_issues(vctx, settings_values, path, names))
     if is_axisymmetric(settings_values) and 'x_lo' in faces:
         issues.append(Issue('error', path, 'pml_x_lo: an axisymmetric solid has its axis (r = 0) on x_lo, which takes no '
                                            'PML: turn pml_x_lo off'))
@@ -782,6 +895,43 @@ def _pml_issues(vctx, physics_spec, settings_values, path, triangles):
     return issues
 
 
+# lowest-frequency reflection R^(f_min / target) of an elastic PML in a frequency sweep above which validation warns
+_PML_SWEEP_REFLECTION_WARNING = 1e-2
+
+
+def _pml_sweep_issues(vctx, settings_values, path, names):
+    """frequency_response with an elastic PML (target_frequency > 0): an error for sweep_method modal (complex stretched
+    K, M), an info when the lowest swept frequency f lies below target_frequency f_t (the theoretical round-trip
+    reflection R^(f / f_t) there), a warning above _PML_SWEEP_REFLECTION_WARNING; nothing when the study settings do
+    not resolve (validate reports them)."""
+    from ...model.definition_helpers import study_frequency_band
+    study = vctx.spec.study
+    settings = study.settings if isinstance(study.settings, dict) else {}
+    issues = []
+    if settings.get('sweep_method', 'direct') == 'modal':
+        issues.append(Issue('error', path, f"sweep_method 'modal' is not available with an elastic PML ({names}): the "
+                                           'stretched stiffness and mass are complex and their PML modes would fill '
+                                           "the modal basis; use sweep_method 'adaptive' or 'direct'"))
+    band = study_frequency_band(vctx.spec, vctx.registry, vctx.parameters)
+    if band is None:
+        return issues
+    lowest = band[0]
+    try:
+        target = float(settings_values['target_frequency'])
+        reflection = float(settings_values.get('pml_reflection') or DEFAULT_PML_REFLECTION)
+    except (KeyError, ValueError, TypeError):
+        return issues
+    if 0.0 < lowest < target:
+        effective = reflection ** (lowest / target)
+        level = 'warning' if effective > _PML_SWEEP_REFLECTION_WARNING else 'info'
+        issues.append(Issue(level, path, f'the lowest swept frequency {lowest:.6g} Hz lies below target_frequency '
+                                         f'{target:.6g} Hz, where the elastic PML strength is set: its theoretical '
+                                         f'round-trip reflection rises from pml_reflection {reflection:g} to '
+                                         f'{effective:.3g} there (R^(f / target)); lower target_frequency toward the '
+                                         'lowest swept frequency, or thicken the PML (pml_cells)'))
+    return issues
+
+
 def _anisotropic_materials(vctx) -> list:
     """Names of the selected materials that set a c_ij entry (or a crystal entry expanding to them)."""
     return materials_setting(vctx, STIFFNESS_TENSOR_ARRAYS)
@@ -789,7 +939,9 @@ def _anisotropic_materials(vctx) -> list:
 
 def _azimuthal_issues(vctx, physics_spec, settings_values, path, triangles):
     """azimuthal_order m >= 1: the shared rules (azimuthal_order_issues), then errors on a rectangular-cell mesh,
-    outside the eigenfrequency / optomechanics studies and per material with c_ij entries (isotropic only)."""
+    outside the eigenfrequency / optomechanics / frequency_response studies, per material with c_ij entries (isotropic
+    only) and, in a frequency response, per enabled load feature and coupling into the solid (cos(m phi) loads are not
+    modelled: prescribed displacements drive)."""
     issues = azimuthal_order_issues(vctx, physics_spec, path, settings_values)
     order = _azimuthal_order(settings_values)
     if not order:
@@ -798,10 +950,21 @@ def _azimuthal_issues(vctx, physics_spec, settings_values, path, triangles):
         issues.append(Issue('error', path, f"azimuthal_order {order} needs a triangle mesh (MeshSpec kind 'triangles'): "
                                            'the rectangular-cell solid solves m = 0 only'))
         return issues
-    if vctx.study_type not in MODAL_STUDIES:
-        issues.append(Issue('error', path, f"azimuthal_order {order} is solved by the {' / '.join(MODAL_STUDIES)} "
+    allowed = MODAL_STUDIES + (FREQUENCY_RESPONSE_STUDY,)
+    if vctx.study_type not in allowed:
+        issues.append(Issue('error', path, f"azimuthal_order {order} is solved by the {' / '.join(allowed)} "
                                            f'studies only (the {vctx.study_type} study would need cos(m phi) loads): '
                                            'set it to 0'))
+    if vctx.study_type == FREQUENCY_RESPONSE_STUDY:
+        loads = f'azimuthal_order {order}: cos(m phi) loads are not modelled, drive by prescribed displacements'
+        issues.extend(Issue('error', feature_path(physics_spec, feature), f'{loads} ({feature.type})')
+                      for feature in physics_spec.features
+                      if feature.enabled and feature.type in _AZIMUTHAL_LOAD_FEATURES)
+        issues.extend(Issue('error', ('coupling', coupling.name), f'{loads} (a coupled body force from '
+                                                                  f"'{coupling.source}')")
+                      for coupling in vctx.spec.couplings
+                      if coupling.enabled and coupling.target == physics_spec.name
+                      and coupling.type != THERMAL_STRAIN_COUPLING)
     issues.extend(Issue('error', ('material', name),
                         f"material '{name}' sets c_ij entries (or a crystal entry): azimuthal_order {order} takes "
                         'isotropic youngs_modulus / poisson_ratio only (the r-phi and z-phi shear moduli are not part of '
@@ -845,7 +1008,8 @@ def _validate_solid(vctx, physics_spec, settings_values):
     """Physics-level rules (in the study the solid takes: a background physics of StudySpec.solved_physics sees
     'stationary'): supports, CG iteration limit (tensor) or the triangle-mesh rules, materials, eigenfrequency
     densities, the guided axial_wavenumber (eigenfrequency study only, refused by optomechanics, which sets it for
-    backward scattering), prestress, the elastic PML and the azimuthal order (triangles, eigenfrequency), geometric
+    backward scattering), prestress, the elastic PML (triangles, eigenfrequency / frequency_response), the azimuthal
+    order (triangles, eigenfrequency), geometric
     nonlinearity (triangles), mirror planes (face features and normal segment loads on its own symmetry faces, model
     mirror planes no roller holds)."""
     vctx = background_context(vctx, physics_spec)
@@ -883,7 +1047,7 @@ def _validate_solid(vctx, physics_spec, settings_values):
     if not triangles:
         issues.extend(Issue('error', path, f"stored field '{physics_spec.name}.{name}' exists on a triangle mesh only "
                                            '(the rectangular-cell solid stores the real parts and u_abs)')
-                      for name in HARMONIC_IMAG_FIELDS
+                      for name in HARMONIC_IMAG_FIELDS + AZIMUTHAL_IMAG_FIELDS + PRESSURE_FIELDS
                       if f'{physics_spec.name}.{name}' in (vctx.spec.study.stored_fields or []))
     if axial_wavenumber is not None and vctx.study_type != EIGENFREQUENCY_STUDY:
         if vctx.study_type == OPTOMECHANICS_STUDY:
@@ -904,7 +1068,11 @@ def _validate_solid(vctx, physics_spec, settings_values):
     own_mirrors = feature_mirror_faces(vctx.spec, physics_spec)   # its symmetry faces (model mirror planes)
     issues.extend(own_mirror_face_conflicts(vctx, physics_spec, _FACE_FEATURES, own_mirrors))
     issues.extend(_segment_plane_issues(vctx, physics_spec, own_mirrors))
-    issues.extend(model_mirror_issues(vctx, physics_spec, path, FACES, axis_held=is_axisymmetric(settings_values)))
+    # a brillouin_scattering drive reports its unheld mirror planes itself (an error): those take no warning here
+    drive_planes = set()
+    drive_issues = brillouin_issues(vctx, physics_spec, settings_values, drive_planes)
+    issues.extend(model_mirror_issues(vctx, physics_spec, path, FACES, axis_held=is_axisymmetric(settings_values),
+                                      reported=drive_planes))
     if triangles:
         issues.extend(_triangle_issues(vctx, physics_spec, settings_values, path))
         element_name = f"{settings_values.get('discretization', 'quadratic')} triangle"
@@ -912,7 +1080,9 @@ def _validate_solid(vctx, physics_spec, settings_values):
         issues.extend(cg_solver_issues(vctx, physics_spec, path))
         issues.extend(_tensor_probe_issues(physics_spec))
         element_name = 'bilinear'
-    issues.extend(material_issues(vctx, physics_spec, path, SOLID_TYPE_NAME, element_name, tensor=True))
+    issues.extend(drive_issues)
+    issues.extend(material_issues(vctx, physics_spec, path, SOLID_TYPE_NAME, element_name, tensor=True,
+                                  fluid=mixed_formulation(vctx, settings_values)))
     issues.extend(modal_study_issues(vctx, physics_spec, path, MODAL_STUDIES, THERMAL_STRAIN_COUPLING, tensor=True,
                                      stress_stiffening=bool(settings_values.get('stress_stiffening')
                                                             or (triangles
@@ -922,6 +1092,7 @@ def _validate_solid(vctx, physics_spec, settings_values):
     issues.extend(anisotropy_issues(vctx, physics_spec, settings_values, path,
                                     guided=axial_wavenumber is not None or guided_by_study))
     issues.extend(frequency_response_issues(vctx, physics_spec, settings_values, path, THERMAL_STRAIN_COUPLING))
+    issues.extend(viscoelastic_issues(vctx, physics_spec, settings_values, path, triangles, 2))
     return issues
 
 
@@ -949,7 +1120,7 @@ def _create_solid(ctx, physics_spec, values):
                                         load_steps=values['load_steps'],
                                         nonlinear_tolerance=values['nonlinear_tolerance'],
                                         nonlinear_max_iterations=values['nonlinear_max_iterations'],
-                                        tangent_update=values['tangent_update'],
+                                        tangent_update=values['tangent_update'], formulation=values['formulation'],
                                         **solver_periodic_arguments(values))
     study = solid_study(ctx.spec, physics_spec.name)   # a background solid of solved_physics: 'stationary'
     guided = values['axial_wavenumber'] if study == EIGENFREQUENCY_STUDY else None
@@ -981,7 +1152,31 @@ _GUIDED_ASSEMBLY_BYTES_PER_ENTRY = 1 + 2 * _INT64_BYTES + 2 * INT32_BYTES + 3 * 
 _FEM_LOCAL_DOFS = {'linear': 3, 'quadratic': 6}
 _FEM_COO_PER_CSR_ENTRY = 2.0
 _FEM_FILL_FACTOR = 3.0
-_FEM_NODAL_OUTPUTS = 18   # host float64 nodal display arrays (solver_fem._nodal, energy densities and u_z included)
+# solver_fem output pass (_write_derived_outputs): the derived outputs of _output_values (_point_outputs' strains,
+# elastic strains, stresses, von Mises, strain energy, pressure, pressure_im, + kinetic_energy_density), each a host
+# float64 nodal array (n_global) and, while the pass runs, an (m, q) array at the dof points plus its stacked copy; the
+# primary nodal arrays u_x, u_y (u_z at an azimuthal order), u_abs and, of a shown complex solution, u_x_im, u_y_im
+# (u_z_im); per element float64 the derived centroid fields (energy densities, pressure, pressure_im) and the Im u
+# centroids of a complex one
+_FEM_DERIVED_OUTPUTS = 15
+_FEM_CENTROID_OUTPUTS = 4
+
+
+def _fem_output_items(components, complex_shown, scalar_dofs, local, elements):
+    """Host item of the solver_fem nodal display arrays, their element point values and the centroid fields (comment
+    above; components 2, or 3 at an azimuthal order; complex_shown: a complex response / damped mode can be shown)."""
+    imaginary = components if complex_shown else 0
+    nodal = _FEM_DERIVED_OUTPUTS + components + 1 + imaginary
+    return (f'nodal outputs ({nodal} x float64), their element point values and centroid fields',
+            FLOAT64_BYTES * (nodal * scalar_dofs + 2 * _FEM_DERIVED_OUTPUTS * local * elements
+                             + (_FEM_CENTROID_OUTPUTS + imaginary) * elements))
+
+
+def _output_moduli_item(elements):
+    """Host item of stiffness.harmonic_stiffness_pair (solver_fem._harmonic_moduli) of a shown complex solution: C''
+    always and C' where an element is frequency dependent, one float64 array per c_ij name each (an upper bound)."""
+    return ("harmonic output moduli C' and C'' of the shown solution (float64 per element)",
+            2 * len(STIFFNESS_TENSOR_ARRAYS) * FLOAT64_BYTES * elements)
 
 
 def _prestress_solved(settings_values, context, with_loads) -> bool:
@@ -1080,13 +1275,19 @@ def _fem_memory_estimate(settings_values, mesh, context):
         one_at_a_time = not static   # released before the pencil's factor is planned
         if not static and study == EIGENFREQUENCY_STUDY:   # its phase, never live with the pencil phases
             factor_phases = {factor[0]: LINEAR_STATIC_STATE_PHASE for factor in factors}
+    # viscoelastic group terms and the mixed u-p blocks (definition_viscoelastic; inactive outside frequency_response)
+    viscoelastic = viscoelastic_counts(context.spec, context.parameters, settings_values, mesh, components, local, 2,
+                                       vector_dofs, entries)
+    # a shown complex solution (the Im u display fields): every frequency response, a mode of a complex pencil
+    complex_shown = study == FREQUENCY_RESPONSE_STUDY or (study == EIGENFREQUENCY_STUDY and bool(
+        context.material_sets(LOSS_ARRAYS[0]) or _pml_faces(settings_values)
+        or complex_bloch_pencil_2d(settings_values)))
     host_items = [('dof maps (full and solid)', 2 * (_INT64_BYTES * local * elements + 2 * _INT64_BYTES * scalar_dofs)),
                   ('element stiffness / body force / held arrays', 20 * FLOAT64_BYTES * elements
                    + 3 * FLOAT64_BYTES * vector_dofs),
                   ('COO assembly (rows, columns, values)', (2 * _INT64_BYTES + FLOAT64_BYTES) * coo_entries),
                   ('stiffness CSR and its free-dof copy', 2 * csr_entry_bytes * entries),
-                  (f'nodal outputs ({_FEM_NODAL_OUTPUTS} x float64) and their element values',
-                   _FEM_NODAL_OUTPUTS * FLOAT64_BYTES * (scalar_dofs + local * elements))]
+                  _fem_output_items(components, complex_shown, scalar_dofs, local, elements)]
     if study == EIGENFREQUENCY_STUDY:
         host_items.append(('consistent mass CSR', csr_entry_bytes * entries))
         pml = bool(_pml_faces(settings_values))
@@ -1112,27 +1313,53 @@ def _fem_memory_estimate(settings_values, mesh, context):
         host_items.extend(eigen_host_items)
         if pml:
             host_items.append(('stretched PML stiffness and mass (complex CSR)', 2 * (16 + INT32_BYTES) * entries))
+        if context.material_sets(LOSS_ARRAYS[0]):   # a shown damped mode's Re(C* eps): _harmonic_moduli
+            host_items.append(_output_moduli_item(elements))
         if settings_values.get('stress_stiffening'):
             host_items.append(('geometric stiffness K_sigma and K + K_sigma (float64 CSR)',
                                2 * csr_entry_bytes * entries))
     elif study == FREQUENCY_RESPONSE_STUDY:   # K factor never built; the kept HarmonicSystem on the 'linear' runtime
-        host_items.extend((('frequency response loss and mass CSR (float64)', 2 * csr_entry_bytes * entries),
-                           ('frequency response complex operator copies', 3 * (16 + INT32_BYTES) * entries),
-                           ('frequency response solution vectors (complex)', 4 * 16 * vector_dofs)))
-        # HarmonicSystem keeps K real without a loss: a lossless pencil has real terms and a real factor
-        lossy = bool(context.material_sets(LOSS_ARRAYS[0]))
-        kind = 'complex' if lossy else 'real'
-        if host_factor:
+        # mixed u-p: the pencil over [u; p] (counts.unknowns / entries: + n_p, + 2 nnz(B) + the pressure blocks)
+        unknowns, pencil_entries = viscoelastic.unknowns, viscoelastic.entries
+        # an elastic PML: loss and mass stretched (complex CSR) and, displacement formulation, the stretched K of the
+        # pencil (_pml_stiffness, kept beside the static K); mixed builds no stretched K (its saddle blocks are)
+        pml = bool(_pml_faces(settings_values))
+        pencil_csr_bytes = (16 + INT32_BYTES) if pml else csr_entry_bytes
+        values_kind = '(complex: elastic PML)' if pml else '(float64)'
+        host_items.extend((('frequency response loss and mass CSR ' + values_kind, 2 * pencil_csr_bytes * entries),
+                           ('frequency response complex operator copies', 3 * (16 + INT32_BYTES) * pencil_entries),
+                           ('frequency response solution vectors (complex)', 4 * 16 * unknowns)))
+        if pml and not viscoelastic.mixed:
+            host_items.append(('frequency response stretched PML stiffness (complex CSR)',
+                               (16 + INT32_BYTES) * entries))
+        if context.material_sets(LOSS_ARRAYS[0]) or viscoelastic.active:   # _harmonic_moduli of the shown response
+            host_items.append(_output_moduli_item(elements))
+        # HarmonicSystem keeps K real without a loss (real stays real): the K term of the pencil is complex only with
+        # a loss factor or a PML stretch, the factor also with a frequency term (complex coefficients, added per
+        # frequency); a lossless pencil without them has real terms and a real factor
+        lossy, complex_factor = _harmonic_complexity(settings_values, context, viscoelastic)
+        kind = 'complex' if complex_factor else 'real'
+        if host_factor:   # the saddle point fills as (dofs per node)^2 over the u-only heuristic (fill_scale)
             host_items.extend(host_factor_items(linear_back_end,
                                                 f'frequency response {kind} SuperLU L + U (heuristic)',
-                                                (2 if lossy else 1) * _FEM_FILL_FACTOR * host_real_lu_bytes(vector_dofs),
-                                                vector_dofs, entries, complex_values=lossy))
-        else:   # the kept HarmonicSystem: cuDSS LDL^T refreshed from the DevicePencil (K + j L, M)
-            run_items += harmonic_pencil_items(vector_dofs, entries, linear_back_end,
-                                               (16 if lossy else FLOAT64_BYTES, FLOAT64_BYTES))
-            factors.append(('frequency response cuDSS factor', vector_dofs, entries, 16 if lossy else FLOAT64_BYTES, 2,
+                                                (2 if complex_factor else 1) * _FEM_FILL_FACTOR
+                                                * host_real_lu_bytes(vector_dofs) * viscoelastic.fill_scale,
+                                                unknowns, pencil_entries, complex_values=complex_factor))
+        else:   # the kept HarmonicSystem: cuDSS LDL^T refreshed from the DevicePencil (K + j L, M) on the summed pattern
+            run_items += harmonic_pencil_items(unknowns, pencil_entries, linear_back_end,
+                                               (16 if lossy or pml else FLOAT64_BYTES,
+                                                16 if pml else FLOAT64_BYTES))   # a stretched mass is complex
+            factors.append(('frequency response cuDSS factor', unknowns, pencil_entries,
+                            16 if complex_factor else FLOAT64_BYTES, scaled_fill(fill, viscoelastic),
                             linear_back_end == 'cudss_mixed'))
-        host_items.extend(reduced_sweep_memory_items(context, vector_dofs, entries))
+        host_items.extend(reduced_sweep_memory_items(context, unknowns, pencil_entries))
+        # brillouin_scattering drives: columns, functional weights, bind / reference temporaries (definition_brillouin)
+        drive_host, drive_run, drive_transient = brillouin_memory_items(
+            context, settings_values, mesh, unknowns=unknowns, vector_dofs=vector_dofs, local=local,
+            components=components, device=not host_factor, moduli_kept=viscoelastic.moduli)
+        host_items += drive_host
+        run_items += drive_run
+        transient_items += drive_transient
     else:
         if host_factor:
             host_items.extend(host_factor_items(linear_back_end, 'SuperLU L + U factors (float64, heuristic)',
@@ -1166,6 +1393,14 @@ def _fem_memory_estimate(settings_values, mesh, context):
                                                 'SuperLU L + U factors of the Newton tangent (float64, heuristic)',
                                                 _FEM_FILL_FACTOR * host_real_lu_bytes(vector_dofs), vector_dofs,
                                                 entries))
+    # the element moduli (every study, once any modulus / viscoelastic array exists) and the group / mixed items
+    extra_host, extra_run = viscoelastic_memory_items(
+        viscoelastic, elements=elements, local=local, scalar_dofs=scalar_dofs, matrix_rows=vector_dofs,
+        mass_entries=entries // components, back_end=linear_back_end,
+        loss=context.material_sets(LOSS_ARRAYS[0]), dimensions=2,
+        stretched=study == FREQUENCY_RESPONSE_STUDY and bool(_pml_faces(settings_values)))
+    host_items += extra_host
+    run_items += extra_run
     return MemoryEstimate.from_items(((f'fields ({n_fields} x float32 per element)',
                                        n_fields * FLOAT32_BYTES * elements),
                                       ('window element mask', BOOL_BYTES * elements)),
@@ -1284,6 +1519,13 @@ def _memory_estimate(settings_values, mesh, context):
     elif study == FREQUENCY_RESPONSE_STUDY:   # host stencils of K, loss, M and the complex factor per frequency
         host_items = (('frequency response host stencils', 3 * _GUIDED_ASSEMBLY_BYTES_PER_ENTRY * entries),
                       *frequency_response_host_items(dofs, complex_factor=bool(context.material_sets(LOSS_ARRAYS[0]))))
+        # brillouin_scattering drives (definition_brillouin): columns, bind / reference temporaries. The items above
+        # are the peak of one factorisation of the kept HarmonicSystem (solver._kept_harmonic, with or without
+        # drives: its pencil arrays live between frequencies, the factor, real without a loss factor, is dropped after
+        # each frequency's readouts)
+        drive_host, _, _ = brillouin_memory_items(context, settings_values, mesh, unknowns=dofs, vector_dofs=dofs,
+                                                  local=4, components=2, device=False, moduli_kept=False)
+        host_items += tuple(drive_host)
     elif host_back_end:   # the static solid's host factor of A_solve (gpu backend: of a downloaded copy)
         host_items = (('A_solve CSR copy for the host factor (float64)', (FLOAT64_BYTES + INT32_BYTES) * entries),
                       *host_factor_items(host_back_end, 'SuperLU L + U factors of A_solve (float64, heuristic)',
@@ -1473,10 +1715,28 @@ def harmonic_pencil_items(dofs, entries, back_end, term_value_bytes) -> list:
             ('frequency response kept device solution (complex)', 16 * dofs)]
 
 
-# run-time estimate: host passes over the complex CSR entries of one frequency-response solve (complex cast, K -
-# omega^2 M, + j loss, free-row and free-column slicing, the CSC copy of factorize_host, the rhs and A x products;
-# calibrate against the study seconds left after the factorisations)
-_HARMONIC_HOST_PASSES = 8
+def _harmonic_complexity(settings_values, context, viscoelastic) -> tuple:
+    """(lossy, complex_factor) of a triangle solid's frequency_response.HarmonicSystem as its estimators book it:
+    lossy = a mechanical loss factor (the j L part of the K term), complex_factor = the factorised pencil is complex:
+    lossy, an elastic PML (stretched, complex K and M) or a frequency term (viscoelastic_counts terms: complex
+    coefficients added per frequency); else every term and the factor are real (real stays real: half the factor,
+    the complex rhs as two real solves)."""
+    lossy = bool(context.material_sets(LOSS_ARRAYS[0]))
+    return lossy, lossy or bool(_pml_faces(settings_values)) or viscoelastic.terms > 0
+
+
+# run-time estimate of the tensor solid's kept frequency_response.HarmonicSystem (solver._kept_harmonic, private host
+# SuperLU, no column map, no frequency terms), counted from HarmonicSystem.__init__ / _factorize / solve. Once per
+# sweep (per assembly), passes over the real CSR entries (float64 + int32): the free-row and free-column slicing and
+# tocsr of K, loss and M (3 x 3), their zero copies (3) and the four pattern_sums (the union and one aligned sum per
+# term: index checks, the summed values, index copies; ~4 each); with a loss factor, passes over the complex entries:
+# the complex cast of K and + j loss (2; a lossless pencil keeps the real K values). Per factorisation, passes over
+# the pencil entries (complex with a loss factor, else float64): K + j L - omega^2 M (the fixed values, the scaled
+# mass, the difference: 3) and the CSC copy of factorize_host (2); A x is never formed (no output rows)
+_HARMONIC_SETUP_REAL_PASSES = 3 * 3 + 3 + 4 * 4
+_HARMONIC_SETUP_COMPLEX_PASSES = 2
+_HARMONIC_FACTOR_PASSES = 3 + 2
+_HARMONIC_SETUP_CALLS_GUESS = 60   # numpy / scipy calls of that once-per-sweep set-up (uncalibrated)
 _ASSEMBLY_LAUNCHES = 40   # kernels / cupy calls of one ElasticSystem.assemble (stencil, gathers, CSR pair, blocks)
 
 
@@ -1532,23 +1792,31 @@ def _modal_time_estimate(settings_values, context, nodes, dofs, entries, assembl
 
 
 def _frequency_response_time_estimate(context, dofs, entries, assembly_ops, io_ops):
-    """frequency_response: the device assembly and the host K, loss, M stencils once, then per factorisation (the
-    study's harmonic_factorizations: one per frequency, or a reduced sweep's) the complex host operator, one complex
-    SuperLU + solve (frequency_response.HarmonicSystem, outside any solver role) and the load; the outputs per field
-    frequency."""
+    """frequency_response: the device assembly and the host K, loss, M stencils once, the kept HarmonicSystem's
+    free-dof pencil once per sweep (solver._kept_harmonic), then per factorisation (the study's
+    harmonic_factorizations: one per frequency, or a reduced sweep's) the host operator, one SuperLU + solve (complex
+    with a loss factor, else real; frequency_response.HarmonicSystem, outside any solver role) and the load; the
+    outputs per field frequency."""
     sweep = frequency_sweep_counts(context)
     factorizations, kind = sweep['factorizations'], sweep['factorizations_kind']
     complex_bytes = 2 * FLOAT64_BYTES
-    # a lossless pencil keeps K real (HarmonicSystem): a real SuperLU, the complex rhs as its two real columns
+    # a lossless pencil keeps K real (HarmonicSystem): real values per frequency, a real SuperLU, the complex rhs as
+    # its two real columns
     lossy = bool(context.material_sets(LOSS_ARRAYS[0]))
-    solve = te.HostSolve(dofs, 2, True) if lossy else te.HostSolve(dofs, 2, False, rhs=2)
-    per_factor = (te.HostStream(_HARMONIC_HOST_PASSES * (complex_bytes + INT32_BYTES) * entries),
+    pencil_bytes = complex_bytes if lossy else FLOAT64_BYTES
+    solve = _harmonic_host_solve(dofs, lossy)
+    per_factor = (te.HostStream(_HARMONIC_FACTOR_PASSES * (pencil_bytes + INT32_BYTES) * entries),
                   solve, te.Transfer(2 * complex_bytes * dofs), te.PythonCalls(40))
+    pencil = (te.HostStream((_HARMONIC_SETUP_REAL_PASSES * (FLOAT64_BYTES + INT32_BYTES)
+                             + (_HARMONIC_SETUP_COMPLEX_PASSES * (complex_bytes + INT32_BYTES) if lossy else 0))
+                            * entries),
+              te.PythonCalls(_HARMONIC_SETUP_CALLS_GUESS))
     counter = ('solvers', context.name, 'counters', 'harmonic_factorizations')
     estimate = te.TimeEstimate((
         te.TimeItem('stiffness assembly', 'assembly', 1.0, 'exact', assembly_ops),
         te.TimeItem('harmonic host stencils', 'assembly', 1.0, 'exact',
                     (te.HostStream(3 * _GUIDED_ASSEMBLY_BYTES_PER_ENTRY * entries), te.PythonCalls(60))),
+        te.TimeItem('kept harmonic system: free-dof pencil on one pattern (once)', 'assembly', 1.0, 'exact', pencil),
         te.TimeItem(f"{'complex' if lossy else 'real'} SuperLU factorisations", 'factorisation', factorizations, kind,
                     (te.HostLU(dofs, 2, lossy),), counter=counter),
         te.TimeItem('harmonic operator, solve and load', 'factorisation', factorizations, kind, per_factor,
@@ -1556,6 +1824,14 @@ def _frequency_response_time_estimate(context, dofs, entries, assembly_ops, io_o
         te.TimeItem('outputs', 'frequency', sweep['field_points'], 'exact', io_ops),
         *reduced_sweep_time_items(sweep, dofs)))
     return te.combine((estimate, *_reduced_sweep_extra_time(sweep, (solve,))))
+
+
+def _harmonic_host_solve(dofs, complex_factor, scale=1.0):
+    """HostSolve of one complex right-hand side on a host HarmonicSystem factor: a complex factor solves it once, a
+    real one (a lossless pencil: real stays real) as its two real columns."""
+    if complex_factor:
+        return te.HostSolve(dofs, 2, True, scale=scale)
+    return te.HostSolve(dofs, 2, False, rhs=2, scale=scale)
 
 
 def _reduced_sweep_extra_time(sweep, host_solve_ops) -> tuple:
@@ -1694,27 +1970,54 @@ def _fem_time_estimate(settings_values, mesh, context):
         # host rhs (K + j L - omega^2 M) applied to the held values and the reduction of the pencil terms once
         sweep = frequency_sweep_counts(context)
         extra_operators = 1.0 + float(context.material_sets(LOSS_ARRAYS[0]))   # mass (+ loss eta K)
-        host_rhs = (te.HostStream(3 * (FLOAT64_BYTES + INT32_BYTES) * entries + 4 * 2 * FLOAT64_BYTES * unknowns),
-                    te.PythonCalls(20))
-        items = (te.TimeItem('stiffness assembly', 'assembly', 1.0, 'exact', assembly_ops),
+        # viscoelastic group terms and the mixed u-p blocks: the pencil over [u; p] (+ n_p unknowns, + 2 nnz(B) + the
+        # pressure blocks), their assemblies, positions and per-frequency values (definition_viscoelastic)
+        viscoelastic = viscoelastic_counts(context.spec, context.parameters, settings_values, mesh, components, local,
+                                           2, int(unknowns), int(entries))
+        pencil_unknowns, pencil_entries = float(viscoelastic.unknowns), float(viscoelastic.entries)
+        host_rhs = (te.HostStream(3 * (FLOAT64_BYTES + INT32_BYTES) * pencil_entries
+                                  + 4 * 2 * FLOAT64_BYTES * pencil_unknowns), te.PythonCalls(20))
+        linear = (context.solvers or {}).get('linear')
+        # an elastic PML (displacement formulation): the stretched K of the pencil beside the static K (_pml_stiffness)
+        stretched_stiffness = bool(_pml_faces(settings_values)) and not viscoelastic.mixed
+        items = (te.TimeItem('stiffness assembly', 'assembly', 2.0 if stretched_stiffness else 1.0, 'exact',
+                             assembly_ops),
                  te.TimeItem('mass and loss assembly', 'assembly', extra_operators, 'exact', assembly_ops),
                  te.TimeItem('harmonic pencil terms on one pattern (once)', 'assembly', 1.0, 'exact',
-                             (_pattern_sum_stream(int(extra_operators) + 1, 2 * FLOAT64_BYTES, entries),)),
+                             (_pattern_sum_stream(int(extra_operators) + 1, 2 * FLOAT64_BYTES, pencil_entries),)),
                  te.TimeItem('harmonic rhs of the held values', 'factorisation', sweep['factorizations'],
                              sweep['factorizations_kind'], host_rhs),
                  te.TimeItem('outputs (full solution products)', 'frequency', sweep['field_points'], 'exact',
                              io_ops + host_rhs),
-                 *reduced_sweep_time_items(sweep, unknowns))
-        # a lossless pencil keeps K real (HarmonicSystem): a real factor, the complex rhs as two real solves
-        lossy = bool(context.material_sets(LOSS_ARRAYS[0]))
+                 *viscoelastic_time_items(
+                     viscoelastic, local=local, factorizations=sweep['factorizations'],
+                     kind=sweep['factorizations_kind'], field_points=sweep['field_points'],
+                     back_end=None if linear is None else linear.values.get('back_end'),
+                     assembly_bytes_per_coo=_FEM_ASSEMBLY_BYTES_PER_COO, assembly_calls=_FEM_ASSEMBLY_CALLS,
+                     pattern_sum_stream=_pattern_sum_stream, output_ops=io_ops,
+                     loss=bool(context.material_sets(LOSS_ARRAYS[0]))),
+                 *reduced_sweep_time_items(sweep, pencil_unknowns))
+        unknowns, entries = pencil_unknowns, pencil_entries   # the factorised saddle point (mixed)
+        # brillouin_scattering drives: their bind, readouts, references and fits; the extra drive columns are more
+        # solves on each frequency's factor (direct sweeps only: validate)
+        from ...solvers.sparse_direct import CUDSS_BACK_ENDS   # numpy only at module level
+        drives, column_solves = brillouin_time_items(context, settings_values, mesh, unknowns=unknowns,
+                                                     vector_dofs=viscoelastic.displacement_unknowns, local=local,
+                                                     components=components,
+                                                     device=(linear is not None
+                                                             and linear.values.get('back_end') in CUDSS_BACK_ENDS))
+        # a lossless pencil without a frequency term or a PML stretch keeps K real (HarmonicSystem): a real factor,
+        # every complex rhs (the load, the drive columns) as two real solves
+        _, complex_factor = _harmonic_complexity(settings_values, context, viscoelastic)
         work = context.solver_work('linear', unknowns=unknowns, nnz=entries,
-                                   value_bytes=(2 if lossy else 1) * FLOAT64_BYTES,
-                                   dimensions=2, solves=sweep['solves'], rhs=1.0 if lossy else 2.0,
-                                   solves_kind=sweep['solves_kind'],
+                                   value_bytes=(2 if complex_factor else 1) * FLOAT64_BYTES,
+                                   dimensions=2, solves=sweep['solves'] + column_solves,
+                                   rhs=1.0 if complex_factor else 2.0, solves_kind=sweep['solves_kind'],
                                    factorizations=sweep['factorizations'],
                                    factorizations_kind=sweep['factorizations_kind'], device_values=True, **scales)
-        return te.combine((te.TimeEstimate(items), work, *prestress(with_loads=False), *_reduced_sweep_extra_time(
-            sweep, (te.HostSolve(unknowns, 2, lossy, rhs=1 if lossy else 2, scale=_FEM_FILL_FACTOR),))))
+        return te.combine((te.TimeEstimate(items), drives, work, *prestress(with_loads=False),
+                           *_reduced_sweep_extra_time(sweep, (_harmonic_host_solve(unknowns, complex_factor,
+                                                                                   scale=_FEM_FILL_FACTOR),))))
     per_step, follows, outer_solves, kind, assemblies, assemblies_kind, solves = _static_counts(settings_values, context)
     items = (te.TimeItem('stiffness assembly', 'assembly', assemblies, assemblies_kind, assembly_ops,
                          per_step=per_step and follows),
@@ -1837,7 +2140,15 @@ def _time_estimate(settings_values, mesh, context):
         return _modal_time_estimate(settings_values, context, nodes, dofs, entries, assembly_ops, value_bytes)
     io_ops = _solve_io_ops(elements, dofs, value_bytes)
     if context.study.type == FREQUENCY_RESPONSE_STUDY:
-        return _frequency_response_time_estimate(context, dofs, entries, assembly_ops, io_ops)
+        # brillouin_scattering drives: bind, readouts, references, fits and the extra columns on each private factor
+        drives, column_solves = brillouin_time_items(context, settings_values, mesh, unknowns=dofs, vector_dofs=dofs,
+                                                     local=4, components=2, device=False)
+        # on the kept system's factor: complex with a loss factor, else real (each complex column as two real ones)
+        column_solve = _harmonic_host_solve(dofs, bool(context.material_sets(LOSS_ARRAYS[0])))
+        columns = (te.TimeEstimate((te.TimeItem('Brillouin drive column back substitutions', 'solve', column_solves,
+                                                'exact', (column_solve,)),)) if column_solves else None)
+        return te.combine((_frequency_response_time_estimate(context, dofs, entries, assembly_ops, io_ops), drives,
+                           *(() if columns is None else (columns,))))
     per_step, follows, outer_solves, kind, assemblies, assemblies_kind, solves = _static_counts(settings_values, context)
     items = (te.TimeItem('stiffness assembly', 'assembly', assemblies, assemblies_kind, assembly_ops,
                          per_step=per_step and follows),
@@ -1884,6 +2195,9 @@ _ELECTRODE_TEXT = (
     'Piezoelectric only (else ignored, validation warning): one equipotential, connection voltage or floating. Two '
     'electrodes must not share a node (adjacent faces share a corner: build error; select both in one feature). Its '
     'nodes keep their supports and loads (a thin film without stiffness).')
+_FREQUENCY_PROBE_BASE = frequency_probe_feature(_apply_frequency_probe, ('u_x', 'u_y'), (_TRIANGLES,))
+_FREQUENCY_PROBE_2D = replace(_FREQUENCY_PROBE_BASE, description=_FREQUENCY_PROBE_BASE.description
+                              + ' azimuthal_order m >= 1: also u_z (the U_phi amplitude), same series.')
 
 
 # ---- type ----
@@ -1925,12 +2239,13 @@ _FEATURES = (
                             + f' {_SUPPORT_RESULT_TEXT}',
                 apply=_apply_roller, result=_support_result, validate=_validate_symmetry, grids=_BOTH_GRIDS),
     FeatureType('displacement', 'Displacement', 'boundary_condition', 'boundary', allow_interior=False,
-                params=following((displacement_param('u_x', 'x'), displacement_param('u_y', 'y'))),
+                params=following((displacement_param('u_x', 'x'), displacement_param('u_y', 'y'), _U_PHI_PARAM)),
                 result_kind='table',
                 summary='Moves the selected domain edges by a given displacement, for example to stretch a sample.',
-                description='Prescribed u_x and / or u_y; an empty component stays free (both empty: validation '
-                            'error; u_z of guided modes free). A later support on the same component sets its value '
-                            f'(warning). {_FACE_ONLY_TEXT} {_SUPPORT_RESULT_REF}',
+                description='Prescribed u_x and / or u_y (and u_z = U_phi of an azimuthal_order m >= 1); an empty '
+                            'component stays free (all empty: validation error; u_z of guided modes free). A later '
+                            f'support on the same component sets its value (warning). {_FACE_ONLY_TEXT} '
+                            f'{_SUPPORT_RESULT_REF}',
                 apply=_apply_displacement, result=_support_result, validate=_validate_displacement,
                 grids=_BOTH_GRIDS),
     FeatureType('fixed_domain', 'Fixed (domain)', 'domain_condition', 'domain', result_kind='table',
@@ -1940,18 +2255,26 @@ _FEATURES = (
                             f'around it, whatever its own stiffness. {_SUPPORT_RESULT_REF}',
                 apply=_apply_fixed_domain, result=_support_result, grids=_BOTH_GRIDS),
     FeatureType('prescribed_displacement_domain', 'Prescribed displacement (domain)', 'domain_condition', 'domain',
-                params=following(tuple(replace(displacement_param(f'u_{axis}', axis),
-                                               tip=f'Displacement along {axis} the selected domains are held at; empty '
-                                                   'leaves this direction free.')
-                                       for axis in _COMPONENT_NAMES)),
+                params=following(tuple(replace(displacement_param(f'u_{axis}', axis), field_dependent=True,
+                                               tip=f'Displacement along {axis} the selected domains are held at (it may '
+                                                   'vary with the position); empty leaves this direction free.')
+                                       for axis in _COMPONENT_NAMES) + (replace(_U_PHI_PARAM, field_dependent=True),)),
                 result_kind='table',
                 summary='Holds chosen displacement components of the selected domains, for example the axial motion '
-                        'of a strip while it may still deflect.',
-                description='Prescribed u_x and / or u_y on every node of the selected elements; an empty component '
-                            'stays free (both empty: validation error), e.g. u_x = 0, u_y free on a strip that may '
+                        'of a strip while it may still deflect, or a rigid rotation of a bead.',
+                description='Prescribed u_x and / or u_y (and u_z = U_phi of an azimuthal_order m >= 1) on every node '
+                            'of the selected elements; an empty component stays free (all empty: validation error), '
+                            'e.g. u_x = 0, u_y free on a strip that may '
                             'deflect but not slide (with geometric nonlinearity a no-slip string). Holding u_x across a '
-                            'member locks the rotation of its cross-sections (bending becomes shear). A later support '
-                            f'on the same component sets its value. {_SUPPORT_RESULT_REF}',
+                            'member locks the rotation of its cross-sections (bending becomes shear). Values may use '
+                            'x, y (x = r, y = z axisymmetric), evaluated at every held node (P2 edge nodes included, '
+                            'on the curve of a curved edge), so a linear field is held exactly: a rigid planar '
+                            'rotation by theta about (x0, y0) is u_x = -theta (y - y0), u_y = theta (x - x0); at '
+                            'azimuthal_order 1 a rigid tilt by theta about the transverse axis y through the height '
+                            'z0 is u_x = theta (y - z0), u_y = -theta x, u_z = -theta (y - z0) (then the reaction '
+                            'table W / theta is the torque about +y, below); a reused sweep build follows uniform '
+                            'values only (it refuses a swept parameter in an x, y value). A later support on the same '
+                            f'component sets its value. {_SUPPORT_RESULT_REF}',
                 apply=_apply_prescribed_displacement_domain, result=_support_result, validate=_validate_displacement,
                 grids=(_TRIANGLES,)),
     FeatureType('boundary_load', 'Boundary load', 'boundary_condition', 'boundary', allow_interior=False,
@@ -2020,10 +2343,11 @@ _FEATURES = (
                             'flush (t = 0 in a stationary study): the containing cell on a tensor mesh, the node there '
                             'on triangles (strain / stress node-averaged).',
                 apply=_apply_probe, result=_probe_result, validate=validate_points_inside, grids=_BOTH_GRIDS),
-    frequency_probe_feature(_apply_frequency_probe, ('u_x', 'u_y'), (_TRIANGLES,)),
+    _FREQUENCY_PROBE_2D,
     replace(resonance_table_feature('nearest target_frequency first'), grids=_BOTH_GRIDS),
     thermoelastic_damping_feature(_BOTH_GRIDS, 'plane strain, plane stress or axisymmetric'),
     OPTOMECHANICAL_COUPLING_FEATURE,
+    BRILLOUIN_SCATTERING_FEATURE,
     FeatureType('electrode', 'Electrode', 'boundary_condition', 'boundary', allow_interior=False,
                 params=_ELECTRODE_PARAMS, result_kind='table',
                 summary='Puts an electrode on the selected domain edges of a piezoelectric solid: a fixed voltage, '
@@ -2083,7 +2407,11 @@ SOLID_MECHANICS = PhysicsType(
                 'unless an elastic PML. Only there: initial_stress_*, stress_stiffening, geometric_nonlinearity, '
                 'Prescribed displacement (domain), damped modes (mechanical_loss_factor), free bodies at '
                 'target_frequency > 0 and in frequency responses, frequency_probe, complex support reactions, '
-                'pml_<face>, azimuthal_order, the energy densities; not there: piezoelectric (and admittance), guided '
+                'pml_<face>, azimuthal_order, the energy densities, the shear_modulus / bulk_modulus route, '
+                'viscoelastic moduli (viscosity, relaxation branches: see shear_relaxation_modulus_1), the setting '
+                'formulation, the pressure outputs, axisymmetric brillouin_scattering (spontaneous Brillouin spectra '
+                "driven by focused-beam optics on a tensor mesh; planar on both meshes, a tensor solid on the optics' "
+                'own mesh with mechanical_loss_factor only); not there: piezoelectric (and admittance), guided '
                 f'modes, {STRAIN_OPTIC_COUPLING}, optomechanics except axisymmetric with em_fdfd_bor optics. Studies: '
                 'stationary (after the physics it reads); time_dependent quasi-static (re-solves when a material, '
                 'support, load or coupled input changed; no inertia); eigenfrequency: undamped modes K u = omega^2 M u '
@@ -2096,11 +2424,17 @@ SOLID_MECHANICS = PhysicsType(
                 'mechanical_loss_factor) - omega^2 M) u = f per frequency (loads, prescribed displacements and '
                 'electrode voltages are phase-0 amplitudes; a temperature change or coupled temperature is static, '
                 'never a drive, with stress_stiffening part of the prestress), one snapshot per frequency (real parts, '
-                'u_abs = |u|). azimuthal_order m >= 1 (triangles, axisymmetric, isotropic, eigenfrequency): u_r = U_r '
+                'u_abs = |u|; triangles: the shown stresses are Re(C*(omega) eps(u)), the loss part included, with '
+                'pressure / pressure_im = -tr(sigma*) / 3 in Pa; triangles with viscoelastic moduli: G*(omega), '
+                'K*(omega) per material, sweep_method direct only). azimuthal_order m >= 1 (triangles, axisymmetric, '
+                'isotropic; eigenfrequency, optomechanics and frequency_response): u_r = U_r '
                 'cos(m phi), u_z = U_z cos(m phi), u_phi = U_phi sin(m phi), field u_z = U_phi, strain / stress the '
                 'cos parts at phi = 0; the axis holds u_z = 0 and ties u_phi = -u_r at m = 1, holds all three at m >= '
                 '2; m = 1 keeps the sideways translation and tilt as rigid motions, m >= 2 none (supports optional); '
-                'stress_stiffening takes the initial stress alone. strain_energy_density / kinetic_energy_density '
+                'stress_stiffening takes the initial stress alone; a frequency response is driven by prescribed '
+                'displacements (u_z of the displacement features is U_phi; loads are a validation error) or a '
+                'brillouin_scattering drive (orders 0 and 2) only, its '
+                'reactions F_x = sum R_r - sum R_phi at m = 1. strain_energy_density / kinetic_energy_density '
                 '(triangles, J/m^3, not in state()): a static solve 1/2 sigma : eps_el (no initial stress) and 0, a '
                 'shown mode or response the time averages 1/4 Re(sigma : eps_el*) and 1/4 rho omega^2 |u|^2 (azimuthal '
                 'order: twice the phi mean, so ring integrals give totals); not physical in a PML ring. Bloch band '
@@ -2110,14 +2444,14 @@ SOLID_MECHANICS = PhysicsType(
     settings=(_GEOMETRY_PARAM, AZIMUTHAL_ORDER_PARAM, _OUT_OF_PLANE_PARAM, _THICKNESS_PARAM, _AXIAL_FORCE_PARAM,
               _BENDING_PARAM, _BENDING_MOMENT_X_PARAM, _BENDING_MOMENT_Y_PARAM, _TARGET_FREQUENCY_PARAM,
               STRESS_STIFFENING_PARAM, *GEOMETRIC_NONLINEARITY_PARAMS, _AXIAL_WAVENUMBER_PARAM, _PIEZOELECTRIC_PARAM,
-              _DISCRETIZATION_PARAM, *_pml_params(), *periodic_params_2d()),
+              _DISCRETIZATION_PARAM, FORMULATION_PARAM, *_pml_params(), *periodic_params_2d()),
     features=_FEATURES,
     material_properties=(MATERIAL_PROPERTIES + (DENSITY_PARAM, PHOTOELASTIC_P44_PARAM) + PIEZO_MATERIAL_PROPERTIES
-                         + STIFFNESS_TENSOR_PROPERTIES + LOSS_PROPERTIES + INITIAL_STRESS_PROPERTIES
-                         + TED_MATERIAL_PROPERTIES),
+                         + STIFFNESS_TENSOR_PROPERTIES + LOSS_PROPERTIES + VISCOELASTIC_PROPERTIES
+                         + INITIAL_STRESS_PROPERTIES + TED_MATERIAL_PROPERTIES),
     material_schema={**MECHANICAL_SCHEMA, **DENSITY_SCHEMA, **SHEAR_PHOTOELASTIC_SCHEMA},
     optional_material_schema={**OPTIONAL_PIEZO_SCHEMA, **OPTIONAL_STIFFNESS_SCHEMA, **OPTIONAL_LOSS_SCHEMA,
-                              **OPTIONAL_PRESTRESS_SCHEMA, **OPTIONAL_TED_SCHEMA},
+                              **OPTIONAL_VISCOELASTIC_SCHEMA, **OPTIONAL_PRESTRESS_SCHEMA, **OPTIONAL_TED_SCHEMA},
     state_fields=_STATE_FIELD_INFOS,
     output_fields=_FIELD_INFOS,
     source_slots=_SLOT_DOCS,
@@ -2335,10 +2669,16 @@ def _selftest_cases(em_types):
     from .selftests_reduced_sweep import REDUCED_SWEEP_CASES
     from .selftests_segment_load import SEGMENT_LOAD_CASES
     from .selftests_thermoelastic import THERMOELASTIC_CASES
+    from .selftests_viscoelastic import VISCOELASTIC_CASES
+    from .selftests_brillouin_drive import BRILLOUIN_DRIVE_CASES
+    from .selftests_brillouin_spectrum import BRILLOUIN_SPECTRUM_CASES
+    from .selftests_brillouin_tensor import BRILLOUIN_TENSOR_CASES
     return (SELFTEST_CASES + SEGMENT_LOAD_CASES + FORMULATION_CASES + EIGENFREQUENCY_CASES + EIGEN_SEARCH_CASES
             + GUIDED_MODES_CASES + PIEZO_CASES + ANISOTROPY_CASES + FREQUENCY_RESPONSE_CASES + FEM_CASES + PRESTRESS_CASES
             + PRESTRESS_STRING_CASES + PML_2D_CASES + AZIMUTHAL_CASES + NONLINEAR_CASES + REDUCED_SWEEP_CASES
-            + THERMOELASTIC_CASES + BLOCH_2D_CASES + optomechanics_cases(em_types) + backend_cases(em_types))
+            + THERMOELASTIC_CASES + BLOCH_2D_CASES + VISCOELASTIC_CASES + BRILLOUIN_DRIVE_CASES
+            + BRILLOUIN_SPECTRUM_CASES + BRILLOUIN_TENSOR_CASES + optomechanics_cases(em_types)
+            + backend_cases(em_types))
 
 
 def register(registry):

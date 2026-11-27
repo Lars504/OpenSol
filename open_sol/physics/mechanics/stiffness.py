@@ -1,6 +1,8 @@
 """Element stiffness of the 2D solid: the isotropic Lame pair or the anisotropic c_ij
 material arrays (per component, NaN = the isotropic value), reduced to the operator coefficients of each out-of-plane
-condition, the thermal stress per kelvin and the stress of a strain; elementwise on the solve backend (numpy / cupy)."""
+condition, the thermal stress per kelvin and the stress of a strain, the unit-modulus (G = 1 deviatoric, K = 1
+volumetric) coefficients of the viscoelastic group terms and the storage / loss pair C', C'' of a harmonic output;
+elementwise on the solve backend (numpy / cupy)."""
 # Voigt order of the model axes (1 xx, 2 yy, 3 zz, 6 xy; engineering shear g = 2 strain_xy): T_I = c_IJ S_J - beta_I dT
 # (I, J in 1, 2, 3, 6), beta_I = c_IJ alpha_J (J = 1, 2, 3: diagonal expansion). Plane strain S_3 = 0 (stress_zz =
 # T_3); plane stress T_3 = 0 condensed (c'_IJ = c_IJ - c_I3 c_3J / c_33, beta'_I = beta_I - c_I3 beta_3 / c_33); generalized
@@ -15,6 +17,12 @@ from .materials import SHEAR_COUPLING_ARRAYS, STIFFNESS_TENSOR_ARRAYS
 
 _INDICES = {'1': 0, '2': 1, '3': 2, '6': 3}   # Voigt index -> row of the 4 x 4 (1, 2, 3, 6) block
 _DEFINITE_TOLERANCE = 1e-9                     # smallest eigenvalue / largest |eigenvalue| of a positive definite block
+# fem.elasticity coefficient names of the in-plane operator and (axisymmetric) its hoop entries
+OPERATOR_NAMES = ('c11', 'c12', 'c22', 'c66', 'c16', 'c26')
+HOOP_NAMES = ('c13', 'c23', 'c33')
+# (lambda, mu) of the unit moduli: G = 1 deviatoric (2 dev eps, lambda = -2/3) and K = 1 volumetric (tr eps I), so an
+# isotropic C = G C_shear + K C_bulk exactly (the viscoelastic group terms G*_g D_g + K*_g V_g)
+UNIT_MODULI = {'shear': (-2.0 / 3.0, 1.0), 'bulk': (1.0, 0.0)}
 
 
 @dataclass(frozen=True, eq=False)
@@ -39,9 +47,7 @@ def element_stiffness(lame_lambda, mu, tensor, dtype):
     """ElementStiffness from the window Lame pair (0 in cells without youngs_modulus) and tensor {c_ij: window array or
     None (not allocated)}: a finite entry wins its component, else the isotropic value (c16 / c26 / c36: 0)."""
     xp = array_module_of(mu)
-    longitudinal = lame_lambda + 2.0 * mu
-    isotropic = {'c11': longitudinal, 'c22': longitudinal, 'c33': longitudinal, 'c12': lame_lambda,
-                 'c13': lame_lambda, 'c23': lame_lambda, 'c66': mu}
+    isotropic = _isotropic_entries(lame_lambda, mu)
     values, set_masks = {}, []
     for name in STIFFNESS_TENSOR_ARRAYS:
         fallback = isotropic.get(name, 0.0)
@@ -60,6 +66,55 @@ def element_stiffness(lame_lambda, mu, tensor, dtype):
     anisotropic = any(bool((mask & solid).any()) for mask in set_masks)
     monoclinic = any(bool((values[name] != 0).any()) for name in SHEAR_COUPLING_ARRAYS)
     return ElementStiffness(values, solid, anisotropic or monoclinic, monoclinic)
+
+
+def _isotropic_entries(lame_lambda, mu) -> dict:
+    """{c11 .. c66} of an isotropic Lame pair (the shear couplings left out: 0)."""
+    longitudinal = lame_lambda + 2.0 * mu
+    return {'c11': longitudinal, 'c22': longitudinal, 'c33': longitudinal, 'c12': lame_lambda, 'c13': lame_lambda,
+            'c23': lame_lambda, 'c66': mu}
+
+
+def unit_modulus_stiffness(part, n_elements, dtype=np.float64) -> ElementStiffness:
+    """Host ElementStiffness of a unit modulus on every element: part 'shear' (G = 1: 2 dev eps) or 'bulk' (K = 1: tr eps
+    I); c11 = 4/3 resp. 1 > 0, so `solid` is all True."""
+    if part not in UNIT_MODULI:
+        raise ValueError(f"unit modulus part must be one of {', '.join(UNIT_MODULI)}, got {part!r}")
+    lame_lambda, mu = UNIT_MODULI[part]
+    return element_stiffness(np.full(int(n_elements), lame_lambda), np.full(int(n_elements), mu), {}, dtype)
+
+
+def unit_operator_coefficients(part, n_elements, axisymmetric) -> dict:
+    """fem.elasticity coefficients {c11, c12, c22, c66, c16, c26 (+ c13, c23, c33 axisymmetric)} of a unit modulus
+    (unit_modulus_stiffness; plane strain: the out-of-plane condition of an omega-dependent modulus, plane stress being
+    refused), the construction SolidMechanicsFEMPhysics._assemble uses."""
+    stiffness = unit_modulus_stiffness(part, n_elements)
+    coefficients = dict(zip(OPERATOR_NAMES, operator_coefficients(stiffness, False)))
+    if axisymmetric:
+        coefficients.update({name: stiffness[name] for name in HOOP_NAMES})
+    return coefficients
+
+
+def harmonic_stiffness_pair(stiffness, shear, bulk, loss, frequency_elements, deviatoric=False) -> tuple:
+    """(storage C', loss C'') ElementStiffness of C*(omega) = C' + j C'' at one frequency (the complex-correct harmonic
+    outputs): elements outside frequency_elements C and eta C (loss = eta per element, 0 = lossless); the
+    frequency_elements (bool per element, None = none) the isotropic pair of (Re K* - 2/3 Re G*, Re G*) and of the
+    imaginary parts (shear / bulk: complex G*, K* per element at that omega; deviatoric (mixed): lambda = -2/3 G, the
+    pressure carries the volumetric part). Host float64; the storage values are stiffness's own arrays where no
+    element is frequency dependent."""
+    loss = np.asarray(loss, dtype=np.float64)
+    storage_values = dict(stiffness.values)
+    loss_values = {name: np.asarray(values, dtype=np.float64) * loss for name, values in stiffness.values.items()}
+    if frequency_elements is not None and np.any(frequency_elements):
+        selected = np.asarray(frequency_elements, dtype=bool)
+        shear = np.asarray(shear, dtype=np.complex128)
+        volumetric = (-2.0 / 3.0) * shear if deviatoric else np.asarray(bulk, dtype=np.complex128) - (2.0 / 3.0) * shear
+        for values, part in ((storage_values, np.real), (loss_values, np.imag)):
+            isotropic = _isotropic_entries(np.where(selected, part(volumetric), 0.0), np.where(selected, part(shear), 0.0))
+            for name in STIFFNESS_TENSOR_ARRAYS:
+                values[name] = np.where(selected, isotropic.get(name, 0.0), np.asarray(values[name], dtype=np.float64))
+    flags = (stiffness.solid, stiffness.anisotropic, stiffness.monoclinic)
+    return ElementStiffness(storage_values, *flags), ElementStiffness(loss_values, *flags)
 
 
 def check_positive_definite(stiffness, rows, label, what):

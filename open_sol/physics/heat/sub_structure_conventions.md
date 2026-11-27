@@ -34,6 +34,11 @@ on tetrahedra"). What each feature, setting and validation rule does: their help
 - A 'line_block' shifted solver in mixed precision rejects very ill-conditioned shifts (low f on an insulated region:
   the static null mode); rejected shifts go through `spectral_densities` on a private SparseDirectSolver and are
   counted as rejected_shifts.
+- The elastic counterpart is the solid feature brillouin_scattering (mechanics sub file "Spontaneous Brillouin"): the
+  same FDT route (the readout weight as the drive, one solve per frequency), but its psd is per sideband (two-sided;
+  2 psd = the one-sided spectrum), thermal_noise's one-sided. They run in different studies on different physics and
+  nothing combines them: no model gives a Rayleigh-Brillouin spectrum (the central entropy peak and the doublet
+  together).
 
 ## Self-tests
 - Heat cases are discrete FV identities: source-free 1D conduction is exact on any widths, a uniformly heated slab or

@@ -1,6 +1,7 @@
 """Linear elasticity on tetrahedron meshes (the fem/elasticity.py analogue): vector Lagrange P1 /
 P2 with interleaved dofs (3 d + component) on a full-mesh scalar DofMap3D, Voigt rows (xx, yy, zz, yz, xz, xy;
-engineering shear), stiffness of a per-element 6 x 6 Voigt matrix (isotropic or anisotropic c_ij), the piezoelectric
+engineering shear), stiffness of a per-element 6 x 6 Voigt matrix (isotropic or anisotropic c_ij; also per element
+group for several matrices on one gradient pass), the piezoelectric
 coupling block to a scalar potential on the same map, consistent mass, stress / body / face-traction loads, element
 strains / scalar gradients and their nodal average over an element subset, the strain source int phi beta . eps
 (thermoelastic damping). Prestress pieces: the
@@ -220,6 +221,38 @@ def assemble_elastic_stiffness_3d(dofs, material, elements=None, degree=None, st
         # chunk rows of the element dofs the kept pattern was built from (its digest): no slot check needed
         pattern.add_elements(data, dofs.element_dofs[chunk], blocks, check=False)
     return pattern.full(data, copy_pattern=True)
+
+
+def assemble_elastic_stiffness_groups_3d(dofs, materials, groups, n_groups, degree=None):
+    """[[CSR (3 n, 3 n) of int B^T C_s B dV over the elements of group g for each material C_s (n_elements, 6, 6)] for
+    each group g]; groups: int64 per mesh element (-1 = none). The rule and gradients once per chunk
+    (element_chunks_3d, piola_vectors_3d), _symmetric_operator_blocks per set, a CsrAccumulator per (group, set):
+    never kept_pattern (group patterns would evict K's kept block pattern). Rule as assemble_elastic_stiffness_3d (the
+    viscoelastic group terms of the mechanics frequency response)."""
+    _require_vector(dofs, 'assemble_elastic_stiffness_groups_3d')
+    mesh = dofs.mesh
+    materials = [_material_3d(material, mesh.n_elements) for material in materials]
+    groups = np.asarray(groups, dtype=np.int64)
+    if groups.shape != (mesh.n_elements,):
+        raise ValueError(f'groups has shape {groups.shape}, expected ({mesh.n_elements},)')
+    n_vector = COMPONENTS * dofs.n_dofs
+    # booked (estimate): one CsrAccumulator per (group, set): COO batches up to COO_BATCH_ENTRIES each, then the CSRs
+    accumulators = [[CsrAccumulator((n_vector, n_vector)) for _ in materials] for _ in range(int(n_groups))]
+    elements = np.flatnonzero(groups >= 0).astype(np.int64)
+    rule = tetrahedron_rule(_rule_degree(2 * dofs.order - 2, degree))
+    _, reference_gradients = lagrange_basis_3d(dofs.order, rule.points)
+    for chunk, geometry in element_chunks_3d(mesh, elements):
+        gradients = piola_vectors_3d(reference_gradients, geometry)
+        weights = _volume_weights(geometry, rule)
+        operator = strain_operator_3d(gradients)                                       # (m, q, 6, 3 n)
+        chunk_groups = groups[chunk]
+        selections = [(int(group), chunk_groups == group) for group in np.unique(chunk_groups)]
+        local_dofs = vector_dofs_3d(dofs.element_dofs[chunk])
+        for index, material in enumerate(materials):
+            blocks = _symmetric_operator_blocks(operator, np.matmul(material[chunk][:, None], operator), weights)
+            for group, selection in selections:
+                accumulators[group][index].add(local_dofs[selection], blocks[selection])
+    return [[accumulator.result() for accumulator in group_accumulators] for group_accumulators in accumulators]
 
 
 def assemble_piezo_coupling_3d(dofs, piezo, elements=None, degree=None, stretch=None):

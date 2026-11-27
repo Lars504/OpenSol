@@ -120,6 +120,15 @@ class TimeContext:
         return meshing.MemoryContext(self.spec, self.physics_spec, self.parameters, self.registry,
                                      ()).material_sets(property_name)
 
+    def mesh_material_arrays(self) -> list:
+        """As meshing.MemoryContext.mesh_material_arrays (the MaterialGrid arrays of the physics' own mesh)."""
+        return meshing.MemoryContext(self.spec, self.physics_spec, self.parameters, self.registry,
+                                     ()).mesh_material_arrays()
+
+    def selection_cells(self, entities, shapes) -> int:
+        """As meshing.MemoryContext.selection_cells (meshing.selection_cells on the physics' own mesh)."""
+        return meshing.selection_cells(self.spec, entities, shapes, self.mesh)
+
     def solver_work(self, role, **work) -> TimeEstimate:
         """The resolved `role` solver's recipe for SolverWork(**work) (physics and role filled in, backend = the run
         backend unless given: host-only solves pass 'cpu'; ordering_kept on a later run of one mesh unless given);

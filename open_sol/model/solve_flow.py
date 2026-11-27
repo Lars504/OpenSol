@@ -24,6 +24,7 @@ from dataclasses import dataclass, fields, replace
 
 from ..core.memory_estimate import solver_job_of
 from ..solvers.roles import BACKENDS, PRECISIONS, SOLVER_ROLES, resolved_precision
+from .definition_helpers import PHYSICS_DRIVE_FEATURES
 from .schema import (EIGENFREQUENCY_STUDY, FREQUENCY_DOMAIN_STUDY, FREQUENCY_RESPONSE_STUDY, OPTOMECHANICS_STUDY,
                      STATIONARY_STUDY, TIME_DEPENDENT_STUDY, known_physics, resolved_solvers, solver_backend,
                      solver_grid)
@@ -763,6 +764,11 @@ def _mesh_facts(estimate):
 _BACKGROUND = ('Background stage', 'stationary solve of the physics the study does not solve itself',
                'Physics the study does not solve itself run as stationary background physics: solve_stationary over '
                'them, then every background coupling applies once (study._background_stage).', [])
+_PHYSICS_DRIVES = ('Optical drives', 'drives built from the solved optics, one per scan position',
+                   'After the background stage and the static states: bind_physics_drives of every solved physics '
+                   'with drives (brillouin_scattering: per scan position one more optical solve on the kept factor, '
+                   'the fields sampled at the solid quadrature points and the drive columns assembled); the solid '
+                   'run-time and memory items of the drives sit at their physics, the scan solves at the optics.', [])
 
 
 def _study_steps(spec, study_type, counts, run_time, registry):
@@ -811,7 +817,8 @@ def _study_steps(spec, study_type, counts, run_time, registry):
                                         "..., Q = ...'); resonance 1 stays live.", [])]
     if name == FREQUENCY_RESPONSE_STUDY:
         points = values.get('harmonic_points')
-        return background + [('Frequency loop', f'{points} frequencies' if points else '',
+        drives = [_PHYSICS_DRIVES] if _has_physics_drives(spec) else []
+        return background + drives + [('Frequency loop', f'{points} frequencies' if points else '',
                               'One driven solve per frequency (reduced / modal sweeps where chosen) and one snapshot '
                               'per frequency.', [])]
     if name == 'optimization':
@@ -832,6 +839,13 @@ def _study_steps(spec, study_type, counts, run_time, registry):
                                                       'residual tolerance.', [])]
     return background + [(study_type.label, '', (study_type.summary or study_type.description)
                           + ' (The solve flow has no detailed step list for this study type.)', [])]
+
+
+def _has_physics_drives(spec):
+    """True when a physics has an enabled feature whose drive the frequency_response study binds after its background
+    stage (solver_hooks.PhysicsDriveSolver: definition_helpers.PHYSICS_DRIVE_FEATURES)."""
+    return any(feature.enabled and feature.type in PHYSICS_DRIVE_FEATURES
+               for physics_spec in spec.physics for feature in physics_spec.features)
 
 
 def _has_background(spec, registry, study_name):

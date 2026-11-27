@@ -1,0 +1,78 @@
+{
+  "title": "Bead approaching a wall: Brenner drag correction vs gap (frequency response, mixed u-p, analytic)",
+  "description": "Optical-tweezer bead approaching a coverslip: a polystyrene bead of radius a = 1 um (E 3.5 GPa, nu 0.34, rho_b 1050 kg/m^3) held by prescribed_displacement_domain 'bead' and moved normal to the wall by X = 1 nm at f = 1 Hz in library water (viscosity mu = 1.002e-3 Pa s, rho = 998.2 kg/m^3, no bulk modulus: an incompressible viscous liquid), axisymmetric (r, z): the wall (coverslip, no slip) is y_lo, the bead centre on the axis at height h, the closed container r < R = 50 um, 0 < z < R with fixed walls x_hi / y_hi (x_lo is the axis). Parameter sweep of h_a = h / a over 1.1, 1.25, 1.5, 2, 3, 5 (gap (h - a) / a from 0.1 to 4), one build per value (geometry, mesh and every parameter depending on h_a follow it). solid_mechanics on quadratic triangles, formulation mixed (Taylor-Hood: P2 displacement, P1 pressure), frequency_response at f = 1 Hz alone; mesh 0.15 um inside the bead, a refinement line at mid-gap from the axis to r = 2 sqrt(a g) at g / 4 (g = h - a, at most 0.15 um: graded into the lubrication zone ~ sqrt(2 a g)), growth 1.2, 4 um at most, h_min 10 nm (below the smallest gap size, 25 nm at h / a = 1.1, which the default h_min = 4 um / 100 = 40 nm would floor to ~2.5 elements across the gap) (2.4k - 3.6k triangles per value).\nQuasi-static: the viscous depth delta = sqrt(2 mu / (rho omega)) = 0.56 mm is 11 x the container, so liquid inertia enters the real part at O((R / delta)^2) and the dissipative imaginary part only at second order: rho = 1e-3 kg/m^3 instead of 998.2 changes beta by < 1e-9 (h / a = 5, R = 50 and 200 um). (In an unbounded liquid the Basset term would still add sqrt(f / f_nu) = 1.8e-3 at 1 Hz; see bead_drag_water_frequency_response.)\nAnalytic (Brenner 1961; Happel & Brenner section 7-4; steady Stokes, exp(+j omega t), U = j omega X): the force of the liquid on the bead F = -6 pi mu a U beta, beta = (4/3) sinh(alpha) sum_{n >= 1} n (n + 1) / ((2n - 1)(2n + 3)) [(2 sinh((2n + 1) alpha) + (2n + 1) sinh(2 alpha)) / (4 sinh^2((n + 1/2) alpha) - (2n + 1)^2 sinh^2(alpha)) - 1], cosh(alpha) = h / a (alpha the bipolar coordinate of the bead surface). With q = exp(-alpha) = h / a - sqrt((h / a)^2 - 1) (= exp(-log(h / a + sqrt((h / a)^2 - 1)))), S = sinh^2(alpha) = (h / a)^2 - 1, sinh(2 alpha) = 2 (h / a) sqrt(S) and k = 2n + 1 the bracket is (2 - 2 q^k + k sinh(2 alpha) + k^2 S) / (q^-k + q^k - 2 - k^2 S) (4 sinh^2(k alpha / 2) = q^-k + q^k - 2), so no log or acosh is needed; parameters B_1 (n = 1..10) and B_2 (n = 11..20) hold the 20-term sum, beta_brenner = (4/3) sqrt(S) (B_1 + B_2). Truncation error 5.5e-8 at h / a = 1.1 (terms fall like n exp(-2 n alpha)), below 1e-10 from h / a = 1.2. Checked in a scratch script against the full series: alpha = 0.5, 1, 1.5, 2, 2.5, 3 give 9.2518, 3.0361, 1.8375, 1.4129, 1.2220, 1.1252 (Brenner's table); small gaps approach the Cox-Brenner lubrication expansion 1 / eps + (1/5) ln(1 / eps) + 0.971 (eps = (h - a) / a; 11.432 vs 11.459 at eps = 0.1), large ones the reflections 1 + (9/8)(a / h) + (9/8)^2 (a / h)^2 (1.1252 vs 1.1262 at h / a = 10). The reaction table of 'bead' is the support force on the bead, F_y = -F - omega^2 m_b X, so F_y_im = 6 pi mu a omega X beta (the bead inertia enters only F_y_re).\nSweep tab: beta_fem = F_y_im / (6 pi mu a omega X) versus h_a over beta_brenner (curve beta_vs_gap_brenner) and the lubrication limit a / (h - a) for context (beta_vs_gap_lubrication, not graded: 10 vs 11.459 at h / a = 1.1, 13 % low, the missing log and constant terms above; useless beyond h / a ~ 1.2). Derived values tab: beta_fem per sweep value against beta_brenner. Field tab: u_abs and the pressure (p > 0 in compression) of the last value (h / a = 5). F_y_re is not graded: in the liquid it is the round-off of the stiff held bead rows (~1e-16 E / (omega mu) ~ 1e-4 of F_y_im at 1 Hz), above the physical inertia (5e-7 .. 1e-5 of F_y_im; seen with a soft bead).\nExpected agreement (measured, relative): 5.0e-5, 6.5e-5, 7.4e-5, 4.6e-5, 4.0e-5, 9.2e-5 at h / a = 1.1 .. 5 (3.1 s). Mesh study (scratch, before h_min was set, so its h / a = 1.1 gap sizes of the default and the fine level were floored at 40 nm; every size halved / doubled: n_gap 8 / 2, growth 1.12 / 1.3): coarse 2.0e-4 .. 5.5e-4, fine 6e-6 .. 1.4e-5 (about third order), so the default's 4e-5 .. 7e-5 is discretisation. Container study (R = 25, 50, 100, 150, 200 um): h / a = 5: 1.65e-3, 9.2e-5, 2.9e-5, 2.6e-5, 2.7e-5; h / a = 3: 3.2e-4, 4.0e-5, 2.9e-5, 3.0e-5, 2.8e-5: a force normal to a no-slip wall has a far field decaying like r^-3 (Blake 1971), faster than a free Stokeslet, and the outer-wall correction falls ~R^-4.6, adding 6.6e-5 at h / a = 5 and ~1e-5 at h / a = 3 at R = 50 um (smaller gaps: within the ~1e-5 change of the remeshed container). Tolerance 3e-4 (3 x the largest). Correspondence: an incompressible linear viscoelastic medium G*(omega) gives F = -6 pi a G* X beta in the quasi-static limit (mu -> G* / (j omega)); checked once by adding shear_modulus 10 Pa to the water (a Kelvin-Voigt gel): F_y_re / (6 pi a G0 X) = beta to the same 4e-5 .. 9e-5.",
+  "version": 2,
+  "solver_defaults": {"backend": "cpu"},
+  "parameters": [
+    {"name": "a_b", "expression": "1*um", "description": "bead radius"},
+    {"name": "h_a", "expression": 1.5, "description": "bead centre height above the wall over the radius, h / a (swept)"},
+    {"name": "h_c", "expression": "h_a*a_b", "description": "bead centre height above the wall [m]"},
+    {"name": "g_b", "expression": "h_c - a_b", "description": "gap between the bead and the wall on the axis [m]"},
+    {"name": "X_b", "expression": 1e-9, "description": "prescribed displacement amplitude of the bead, normal to the wall [m]"},
+    {"name": "f_0", "expression": 1.0, "description": "drive frequency [Hz] (quasi-static: the viscous depth sqrt(2 mu / (rho omega)) = 0.56 mm is 11 x the container)"},
+    {"name": "mu_w", "expression": 1.002e-3, "description": "water viscosity [Pa s] (the library value)"},
+    {"name": "rho_w", "expression": 998.2, "description": "water density [kg/m^3] (the library value)"},
+    {"name": "E_b", "expression": 3.5e9, "description": "Young's modulus of the bead [Pa] (polystyrene)"},
+    {"name": "nu_b", "expression": 0.34, "description": "Poisson ratio of the bead"},
+    {"name": "rho_b", "expression": 1050.0, "description": "bead density [kg/m^3]"},
+    {"name": "R_c", "expression": "50*um", "description": "container radius and height"},
+    {"name": "h_bead", "expression": "0.15*um", "description": "triangle size inside the bead"},
+    {"name": "n_gap", "expression": 4, "description": "triangles across the gap on the axis"},
+    {"name": "h_gap", "expression": "min(g_b/n_gap, h_bead)", "description": "triangle size along the gap line"},
+    {"name": "growth", "expression": 1.2, "description": "triangle size growth rate"},
+    {"name": "r_gap", "expression": "2*sqrt(a_b*g_b)", "description": "radial length of the gap line (the lubrication zone ~ sqrt(2 a g))"},
+    {"name": "h_max", "expression": "4*um", "description": "largest triangle size"},
+    {"name": "h_floor", "expression": "10*nm", "description": "smallest triangle size (mesh h_min), below the smallest h_gap (25 nm at h / a = 1.1; the default h_max / 100 = 40 nm would floor it)"},
+    {"name": "S_b", "expression": "h_a**2 - 1", "description": "sinh(alpha)^2, cosh(alpha) = h / a (bipolar coordinate of the bead surface)"},
+    {"name": "q_b", "expression": "h_a - sqrt(S_b)", "description": "exp(-alpha) = h / a - sqrt((h / a)^2 - 1)"},
+    {"name": "S2_b", "expression": "2*h_a*sqrt(S_b)", "description": "sinh(2 alpha)"},
+    {"name": "B_1", "expression": "2/5*(2 - 2*q_b**3 + 3*S2_b + 9*S_b)/(q_b**-3 + q_b**3 - 2 - 9*S_b) + 2/7*(2 - 2*q_b**5 + 5*S2_b + 25*S_b)/(q_b**-5 + q_b**5 - 2 - 25*S_b) + 4/15*(2 - 2*q_b**7 + 7*S2_b + 49*S_b)/(q_b**-7 + q_b**7 - 2 - 49*S_b) + 20/77*(2 - 2*q_b**9 + 9*S2_b + 81*S_b)/(q_b**-9 + q_b**9 - 2 - 81*S_b) + 10/39*(2 - 2*q_b**11 + 11*S2_b + 121*S_b)/(q_b**-11 + q_b**11 - 2 - 121*S_b) + 14/55*(2 - 2*q_b**13 + 13*S2_b + 169*S_b)/(q_b**-13 + q_b**13 - 2 - 169*S_b) + 56/221*(2 - 2*q_b**15 + 15*S2_b + 225*S_b)/(q_b**-15 + q_b**15 - 2 - 225*S_b) + 24/95*(2 - 2*q_b**17 + 17*S2_b + 289*S_b)/(q_b**-17 + q_b**17 - 2 - 289*S_b) + 30/119*(2 - 2*q_b**19 + 19*S2_b + 361*S_b)/(q_b**-19 + q_b**19 - 2 - 361*S_b) + 110/437*(2 - 2*q_b**21 + 21*S2_b + 441*S_b)/(q_b**-21 + q_b**21 - 2 - 441*S_b)", "description": "Brenner series terms n = 1..10"},
+    {"name": "B_2", "expression": "44/175*(2 - 2*q_b**23 + 23*S2_b + 529*S_b)/(q_b**-23 + q_b**23 - 2 - 529*S_b) + 52/207*(2 - 2*q_b**25 + 25*S2_b + 625*S_b)/(q_b**-25 + q_b**25 - 2 - 625*S_b) + 182/725*(2 - 2*q_b**27 + 27*S2_b + 729*S_b)/(q_b**-27 + q_b**27 - 2 - 729*S_b) + 70/279*(2 - 2*q_b**29 + 29*S2_b + 841*S_b)/(q_b**-29 + q_b**29 - 2 - 841*S_b) + 80/319*(2 - 2*q_b**31 + 31*S2_b + 961*S_b)/(q_b**-31 + q_b**31 - 2 - 961*S_b) + 272/1085*(2 - 2*q_b**33 + 33*S2_b + 1089*S_b)/(q_b**-33 + q_b**33 - 2 - 1089*S_b) + 102/407*(2 - 2*q_b**35 + 35*S2_b + 1225*S_b)/(q_b**-35 + q_b**35 - 2 - 1225*S_b) + 114/455*(2 - 2*q_b**37 + 37*S2_b + 1369*S_b)/(q_b**-37 + q_b**37 - 2 - 1369*S_b) + 380/1517*(2 - 2*q_b**39 + 39*S2_b + 1521*S_b)/(q_b**-39 + q_b**39 - 2 - 1521*S_b) + 140/559*(2 - 2*q_b**41 + 41*S2_b + 1681*S_b)/(q_b**-41 + q_b**41 - 2 - 1681*S_b)", "description": "Brenner series terms n = 11..20"},
+    {"name": "beta_brenner", "expression": "4/3*sqrt(S_b)*(B_1 + B_2)", "description": "Brenner (1961) drag correction F / (6 pi mu a U), 20 terms"},
+    {"name": "beta_lub", "expression": "1/(h_a - 1)", "description": "lubrication limit a / (h - a) of the drag correction"}
+  ],
+  "domain": {"size_x": "R_c", "size_y": "R_c"},
+  "geometry": [
+    {"name": "bead", "kind": "circle", "params": {"cx": 0.0, "cy": "h_c", "r": "a_b"}},
+    {"name": "gap_line", "kind": "line", "params": {"x0": 0.0, "y0": "g_b/2", "x1": "r_gap", "y1": "g_b/2"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "water", "library": "water", "properties": {"viscosity": "mu_w", "rho": "rho_w"},
+     "dispersion": null, "selection": ["all"]},
+    {"name": "polystyrene", "library": null,
+     "properties": {"youngs_modulus": "E_b", "poisson_ratio": "nu_b", "rho": "rho_b"},
+     "dispersion": null, "selection": ["bead"]}
+  ],
+  "physics": [
+    {
+      "name": "solid",
+      "type": "solid_mechanics",
+      "settings": {"geometry": "axisymmetric", "discretization": "quadratic", "formulation": "mixed"},
+      "features": [
+        {"name": "walls", "type": "fixed", "selection": ["x_hi", "y_lo", "y_hi"], "params": {}, "enabled": true},
+        {"name": "bead", "type": "prescribed_displacement_domain", "selection": ["bead"],
+         "params": {"u_x": 0.0, "u_y": "X_b"}, "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "meshes": [{"name": "triangles", "kind": "triangles", "mode": "nonuniform", "dx": "h_max", "max_ratio": "growth",
+              "h_min": "h_floor", "refinements": [{"object": "bead", "dx": "h_bead"}, {"object": "gap_line", "dx": "h_gap"}]}],
+  "study": {"type": "frequency_response",
+            "settings": {"frequency_start": "f_0", "frequency_stop": "f_0", "n_frequencies": 1, "snapshots": "last"},
+            "stored_fields": ["solid.u_abs", "solid.pressure"],
+            "sweep": {"parameter": "h_a", "values": [1.1, 1.25, 1.5, 2.0, 3.0, 5.0]}},
+  "derived_values": [
+    {"name": "beta_fem", "expression": "F_y_im/(6*pi*mu_w*a_b*2*pi*frequency*X_b)", "selection": [],
+     "operation": "at", "source": "solid.bead", "at": 0, "reference": "beta_brenner", "tolerance": 3e-4}
+  ],
+  "analytic_curves": [
+    {"name": "beta_vs_gap_brenner", "target": "sweep", "series": "beta_fem", "expression": "beta_brenner",
+     "tolerance": 3e-4},
+    {"name": "beta_vs_gap_lubrication", "target": "sweep", "series": "beta_fem", "expression": "beta_lub",
+     "tolerance": null}
+  ],
+  "derived_curves": []
+}

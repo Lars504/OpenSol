@@ -3068,7 +3068,7 @@ def _variant_record(case, variant, out_dir, available_backends, registry):
               'expected': None, 'error': None, 'tolerance': variant.tolerance, 'details': {}, 'message': '',
               'wall_time': 0.0, 'runs': {}}
     try:
-        specs = {run_name: _variant_spec(spec, variant, registry) for run_name, spec in case.specs().items()}
+        specs = _variant_specs(case, variant, registry)
         if not specs:
             raise ValueError(f"variant '{variant.name}' of '{case.name}': the case has no runs to repeat")
         if not {_selftest_run_backend(spec) for spec in specs.values()} & set(available_backends):
@@ -3080,6 +3080,18 @@ def _variant_record(case, variant, out_dir, available_backends, registry):
         _set_error(record, exc)
     record['wall_time'] = time.perf_counter() - start
     return record
+
+
+def _variant_specs(case, variant, registry):
+    """{run name: spec moved by _variant_spec} of the case's runs a variant repeats (variant.runs, () = all, in specs()
+    order); ValueError naming a variant run specs() lacks."""
+    specs = case.specs()
+    unknown = [name for name in variant.runs if name not in specs]
+    if unknown:
+        raise ValueError(f"variant '{variant.name}' of '{case.name}' names runs {unknown} the case does not have "
+                         f"(has: {', '.join(specs)})")
+    return {run_name: _variant_spec(spec, variant, registry) for run_name, spec in specs.items()
+            if not variant.runs or run_name in variant.runs}
 
 
 def _variant_spec(spec, variant, registry):
@@ -3243,7 +3255,7 @@ def _case_estimate_specs(case, available_backends, registry):
     [] when its specs() raises (the run reports that)."""
     try:
         specs = list(case.specs().values())
-        specs += [_variant_spec(spec, variant, registry) for variant in case.variants for spec in list(specs)]
+        specs += [spec for variant in case.variants for spec in _variant_specs(case, variant, registry).values()]
     except Exception:   # the case run raises it again as the case's 'error'
         return []
     return [spec for spec in specs if _selftest_run_backend(spec) in available_backends]

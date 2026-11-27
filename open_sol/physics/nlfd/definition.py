@@ -62,8 +62,9 @@ _ADJOINT_BUFFERS = 5   # store-size vectors of adjoint.depleted_cotangents besid
 #                        the scaled product copy, its pack and the difference
 _SHEET_FEATURE = 'conducting_sheet'   # acts on every channel, like pec_domain (a sheet exists at every frequency)
 _FDFD_TYPES = {'ez': EM_FDFD_EZ, 'hz': EM_FDFD_HZ}
-# em_fdfd_ez / _hz features copied per channel (resonance_table / effective_index / phase change are not offered: an
-# unknown-feature error; design_region acts on the shared arrays, not per channel)
+# em_fdfd_ez / _hz features copied per channel (resonance_table / effective_index / phase change / focused_beam are not
+# offered: an unknown-feature error; focused_beam is the brillouin_scattering illumination, whose drive contract reads
+# one FDFDPhysics; design_region acts on the shared arrays, not per channel)
 _CHANNEL_FEATURE_NAMES = ('point_source', 'line_source', 'gaussian_beam', 'plane_wave_tfsf', 'mode_source',
                           'field_probe', 'flux_monitor', 'mode_monitor', 'far_field', 'adjoint_objective')
 # channel source params that follow a reused sweep build (Param.follows_parameters): the FDFD source re-set in place by

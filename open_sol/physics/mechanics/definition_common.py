@@ -16,16 +16,18 @@ from ...model.schema import (EIGENFREQUENCY_STUDY, FREE_MESH_KINDS, FREQUENCY_RE
 from ...solvers.pcg import resolve_max_iterations
 from .material_params import (PHOTOELASTIC_P11_PARAM, PHOTOELASTIC_P12_PARAM, POISSON_RATIO_PARAM,
                               YOUNGS_MODULUS_PARAM)
-from .materials import (MECHANICAL_PROPERTY_ARRAYS, PERMITTIVITY_TENSOR_ARRAYS_3D, PIEZO_TENSOR_ARRAYS_3D,
-                        PRESTRESS_ARRAYS_3D, STIFFNESS_ARRAYS, STIFFNESS_TENSOR_ARRAYS_3D)
+from .materials import (MECHANICAL_PROPERTY_ARRAYS, MODULUS_ARRAYS, PERMITTIVITY_TENSOR_ARRAYS_3D,
+                        PIEZO_TENSOR_ARRAYS_3D, PRESTRESS_ARRAYS_3D, STIFFNESS_ARRAYS, STIFFNESS_TENSOR_ARRAYS_3D)
 from .modal import DAMPED_TABLE_COLUMNS, MODAL_TABLE_COLUMNS, ModalTable, modal_table_result
 from .tangent_update import SLOW_RESIDUAL_RATIO, TANGENT_UPDATES
+from .viscoelastic import DISPLACEMENT, FORMULATIONS, MIXED
 
 LOCKING_POISSON_RATIO = 0.45   # bilinear / trilinear elements grow too stiff (volumetric locking) above about this
 # core.mirror.MIRROR_FEATURES of both solid types: a Roller (the even mirror of the displacement) whose outer faces are
 # model mirror planes (unfolded fields, integrals x 2, max / min over the images); a support like the Roller
 SYMMETRY_FEATURE = 'symmetry'
 ROLLER_FEATURES = ('roller', SYMMETRY_FEATURE)   # hold the normal displacement of their outer faces (the Roller apply)
+MIRROR_HOLDERS = (*ROLLER_FEATURES, 'fixed')     # hold a model mirror plane (the even mirror of u: normal u 0)
 SUPPORT_FEATURES = frozenset({'fixed', 'roller', SYMMETRY_FEATURE, 'displacement', 'fixed_domain',
                               'prescribed_displacement_domain'})
 LOAD_FEATURES = frozenset({'boundary_load', 'body_force', 'temperature_change'})
@@ -98,10 +100,11 @@ MATERIAL_PROPERTIES = (   # isotropic entries before their components (component
 DENSITY_PARAM = _material_property(
     'rho', 'Density', 'kg/m^3', 0.0,
     help_text='Mass density (consistent mass), read by the solid types only in the eigenfrequency, optomechanics and '
-              'frequency_response studies, where every solid cell (youngs_modulus or c11 > 0) needs rho > 0. Typical: '
-              'silica 2200, silicon 2329, gold 19300.',
-    tip="Mass density. Solid mechanics uses it only in an 'Eigenfrequency' study.\n\nTypical: silica 2200, silicon "
-        '2329, gold 19300.')
+              'frequency_response studies, where every solid or fluid cell of the solid (youngs_modulus, c11, '
+              'shear_modulus or bulk_modulus > 0; with formulation mixed also a liquid with a viscosity) needs rho > 0. '
+              'Typical: silica 2200, silicon 2329, gold 19300.',
+    tip='Mass density. Solid mechanics uses it only in eigenfrequency, optomechanics and frequency response '
+        'studies.\n\nTypical: silica 2200, silicon 2329, gold 19300.')
 # 2D solid_mechanics only: read by the optomechanical_coupling overlap alone (the strain-optic couplings are diagonal).
 PHOTOELASTIC_P44_PARAM = _material_property(
     'photoelastic_p44', 'Photoelastic coefficient p44', '1',
@@ -250,7 +253,11 @@ LOSS_PROPERTIES = (
                                  'tetrahedra) and by the eigenfrequency study on triangle / tetrahedron meshes (damped '
                                  'complex modes, Q in the resonance table; not with piezoelectric). The '
                                  'stress_stiffening geometric stiffness stays lossless (dissipation dilution: Q above '
-                                 '1 / eta). Unset = 0; typical 1e-4 (quartz, LN) to 1e-2 (metals; polymers higher).',
+                                 '1 / eta). With viscoelastic moduli (viscosity, relaxation branches; see '
+                                 'shear_relaxation_modulus_1) it multiplies only the relaxed G0 and K0. Triangle / '
+                                 'tetrahedron meshes: the shown stresses of a response or damped mode are Re(C* eps), '
+                                 'the loss part included. Unset = 0; typical 1e-4 (quartz, LN) to 1e-2 (metals; '
+                                 'polymers higher).',
                        tip='Damping of the vibration as a fraction of the stiffness; the quality factor of a resonance '
                            'is about 1 divided by it. Used by the frequency response study and, on triangle or '
                            'tetrahedron meshes, by the eigenfrequency study.'),
@@ -263,6 +270,93 @@ LOSS_PROPERTIES = (
                        tip='Electric loss of the material as the loss tangent. Used only by the frequency response '
                            'study with Piezoelectric on.'),
 )
+# Isotropic relaxed moduli and frequency-dependent (viscoelastic) moduli of the FEM solids (both types; physics/mechanics
+# viscoelastic.py, rules definition_viscoelastic.py). viscosity is laminar_flow's property too (same unit, bounds and
+# flags: the registry rule).
+_VISCOELASTIC_LAW = ('Full law (exp(+j omega t)): G*(omega) = G0 (1 + j eta) + j omega mu_s + sum_i G_i j omega tau_i / '
+                     '(1 + j omega tau_i), K* alike with bulk_viscosity and the bulk branches (eta = '
+                     'mechanical_loss_factor).')
+_SHEAR_BRANCH_TEXT = 'Branch 2 (3); rules: shear_relaxation_modulus_1.'
+_SHEAR_TIME_TEXT = ('Relaxation time tau_i of shear branch i (> 0 when its modulus is set); rules: '
+                    'shear_relaxation_modulus_1.')
+_BULK_BRANCH_TEXT = 'Bulk branch 2 (3); rules: bulk_relaxation_modulus_1.'
+_BULK_TIME_TEXT = ('Relaxation time tau_i of bulk branch i (> 0 when its modulus is set); rules: '
+                   'bulk_relaxation_modulus_1.')
+_BRANCH_MODULUS_TIP = 'Stiffness that a soft material gains at frequencies above one over its relaxation time.'
+_BULK_BRANCH_TIP = 'Compression stiffness that a material gains at frequencies above one over its relaxation time.'
+_BRANCH_TIME_TIP = 'Time over which that stiffness relaxes.'
+VISCOELASTIC_PROPERTIES = (
+    _material_property('shear_modulus', 'Shear modulus (relaxed)', 'Pa', 0.0,
+                       help_text='Relaxed (long-time) shear modulus G0; with bulk_modulus the alternative to '
+                                 'youngs_modulus / poisson_ratio (both routes on one material: error; not with c_ij '
+                                 'entries). Triangle / tetrahedron meshes only. G0 = 0 (or unset) with a viscosity is a '
+                                 'liquid (formulation mixed, frequency_response). Every study uses the relaxed G0, K0. '
+                                 'Typical: PDMS 2e5-1e6, agarose gel 1e3-1e4, natural rubber 4e5.',
+                       tip="Resistance to shearing at long times. An alternative to Young's modulus and Poisson "
+                           'ratio.'),
+    _material_property('bulk_modulus', 'Bulk modulus (relaxed)', 'Pa', 0.0,
+                       help_text='Relaxed bulk modulus K0 (> 0). Unset with formulation mixed = incompressible (1 / K* '
+                                 '= 0); the displacement formulation needs it (or youngs_modulus). Triangle / '
+                                 'tetrahedron meshes only. Typical: water 2.2e9, silicone oil 1e9, rubber 2e9.',
+                       tip='Resistance to compression. Leave empty for an incompressible material when the '
+                           'Formulation is Displacement and pressure.'),
+    _material_property('viscosity', 'Dynamic viscosity', 'Pa s', 0.0,
+                       help_text='Shear viscosity mu_s: G* += j omega mu_s (Kelvin-Voigt dashpot, exp(+j omega t)); a '
+                                 'Newtonian liquid has G0 = 0: G* = j omega mu, the linearised unsteady Stokes '
+                                 'equations in displacement form. Read by the solid types on triangle / tetrahedron '
+                                 'meshes in the frequency_response study only (other studies: ignored, relaxed moduli). '
+                                 'A cell with viscosity and no modulus joins the solid only with formulation mixed '
+                                 "(otherwise void). The same property as laminar_flow's, where viscosity > 0 makes a "
+                                 'cell fluid. Typical: water 1.0e-3 (library), glycerol 1.4, silicone oil 1e-2 to 1e3.',
+                       tip='Viscosity of a liquid, or the damping of a soft solid that grows with frequency. Solid '
+                           'mechanics uses it only in a frequency response study.'),
+    _material_property('bulk_viscosity', 'Bulk viscosity', 'Pa s', 0.0,
+                       help_text='Bulk viscosity mu_b: K* += j omega mu_b; needs a finite bulk modulus (bulk_modulus or '
+                                 'youngs_modulus). Triangle / tetrahedron meshes, frequency_response only. Typical: '
+                                 'water 2.4e-3.',
+                       tip='Damping of compression that grows with frequency. Usually empty.'),
+    _material_property('shear_relaxation_modulus_1', 'Shear relaxation modulus 1', 'Pa', 0.0,
+                       help_text='Generalized Maxwell (Prony) branch i of the shear modulus: G* += G_i j omega tau_i / '
+                                 '(1 + j omega tau_i); G_i > 0 needs shear_relaxation_time_i > 0 (and a time needs its '
+                                 'modulus); the unrelaxed (instantaneous) modulus is G0 + sum G_i; up to 3 branches. '
+                                 'Triangle / tetrahedron meshes, frequency_response only (other studies: the relaxed '
+                                 f'G0). {_VISCOELASTIC_LAW}',
+                       tip=_BRANCH_MODULUS_TIP),
+    *(_material_property(f'shear_relaxation_modulus_{index}', f'Shear relaxation modulus {index}', 'Pa', 0.0,
+                         help_text=_SHEAR_BRANCH_TEXT, tip=_BRANCH_MODULUS_TIP) for index in (2, 3)),
+    *(_material_property(f'shear_relaxation_time_{index}', f'Shear relaxation time {index}', 's', 0.0,
+                         help_text=_SHEAR_TIME_TEXT, tip=_BRANCH_TIME_TIP) for index in (1, 2, 3)),
+    _material_property('bulk_relaxation_modulus_1', 'Bulk relaxation modulus 1', 'Pa', 0.0,
+                       help_text='Generalized Maxwell branch i of the bulk modulus: K* += K_i j omega tau_i / (1 + j '
+                                 'omega tau_i); needs a finite bulk modulus (bulk_modulus or youngs_modulus); K_i > 0 '
+                                 'needs bulk_relaxation_time_i > 0; up to 3 branches; rules otherwise as '
+                                 'shear_relaxation_modulus_1.',
+                       tip=_BULK_BRANCH_TIP),
+    *(_material_property(f'bulk_relaxation_modulus_{index}', f'Bulk relaxation modulus {index}', 'Pa', 0.0,
+                         help_text=_BULK_BRANCH_TEXT, tip=_BULK_BRANCH_TIP) for index in (2, 3)),
+    *(_material_property(f'bulk_relaxation_time_{index}', f'Bulk relaxation time {index}', 's', 0.0,
+                         help_text=_BULK_TIME_TEXT, tip=_BRANCH_TIME_TIP) for index in (1, 2, 3)),
+)
+# Setting formulation of both solid types (after discretization): the unknowns of the FEM solids
+FORMULATION_PARAM = Param(
+    'formulation', 'choice', DISPLACEMENT, label='Formulation', choices=FORMULATIONS,
+    choice_labels=((DISPLACEMENT, 'Displacement'), (MIXED, 'Displacement and pressure (incompressible)')),
+    help='Triangle / tetrahedron meshes. displacement: P1 / P2 displacement only (locks toward poisson_ratio 0.5; every '
+         'member cell needs G0 > 0 and a finite K0; a viscosity-only cell is void); the frequency_response outputs '
+         'pressure / pressure_im are -tr(sigma*) / 3, node-averaged like the stresses. mixed: Taylor-Hood u-p (P2 '
+         'displacement, P1 pressure continuous inside each parameter group, duplicated where groups meet: the pressure '
+         'jumps there; a group is one distinct set of material values, at most 32: keep the moduli piecewise constant '
+         'per region), frequency_response only, discretization quadratic, planar plane strain, axisymmetric (any '
+         'azimuthal_order) or 3D, isotropic materials only; unset bulk_modulus = incompressible; liquids (viscosity, no '
+         'modulus) join the solid. Outputs pressure / pressure_im (the pressure unknown, p > 0 in compression); '
+         'reactions include the pressure; an elastic PML (pml_*, triangles) stretches the pressure blocks too. Not '
+         'with piezoelectric, plane_stress, stress_stiffening, geometric_nonlinearity, pml_* in 3D, periodic axes or '
+         'sweep_method modal; sweep_method adaptive is refused with a '
+         'viscous or relaxing member (frequency-dependent moduli: every liquid) and, at azimuthal_order 1, with an '
+         'incompressible one (direct only).',
+    tip='How the deformation is computed. Displacement and pressure is needed for liquids such as water and for nearly '
+        'incompressible materials such as rubber; it runs only in a frequency response study on a triangle or '
+        'tetrahedron mesh with quadratic elements.')
 
 
 # Thermoelastic damping (feature thermoelastic_damping): heat's conductivity and specific heat (the same names, units
@@ -538,16 +632,24 @@ def symmetry_issues(vctx, physics_spec, feature_spec, settings_params, faces_all
     return issues
 
 
-def model_mirror_issues(vctx, physics_spec, path, faces_all, axis_held=False) -> list:
+def held_faces(vctx, physics_spec, faces_all, holders=MIRROR_HOLDERS) -> set:
+    """Faces of faces_all that an enabled feature of the solid of the `holders` types selects (MIRROR_HOLDERS: the
+    even mirror of the displacement)."""
+    faces = set()
+    for _, entities in enabled_feature_entities(vctx, physics_spec, holders):
+        faces.update(entity for entity in entities if entity in faces_all)
+    return faces
+
+
+def model_mirror_issues(vctx, physics_spec, path, faces_all, axis_held=False, reported=()) -> list:
     """Warning per model mirror plane (core.mirror.mirror_faces: an EM mirror face, another physics' symmetry face) on
     one of faces_all that no Roller, Symmetry or Fixed of the solid holds (axis_held: x_lo of geometry axisymmetric,
-    held by the axis rule): the solid fields unfold there as the even mirror the face does not solve."""
-    planes = [face for face in mirror_faces(vctx.spec) if face in faces_all]
+    held by the axis rule): the solid fields unfold there as the even mirror the face does not solve. Planes in
+    `reported` are left out (a check of the caller reports them: the brillouin_scattering error)."""
+    planes = [face for face in mirror_faces(vctx.spec) if face in faces_all and face not in reported]
     if not planes:
         return []
-    held = {'x_lo'} if axis_held else set()
-    for _, entities in enabled_feature_entities(vctx, physics_spec, (*ROLLER_FEATURES, 'fixed')):
-        held.update(entity for entity in entities if entity in faces_all)
+    held = held_faces(vctx, physics_spec, faces_all) | ({'x_lo'} if axis_held else set())
     return [Issue('warning', path, f"{face} is a mirror plane of the model (an EM mirror face or another physics' "
                                    f"symmetry face), where the fields of '{physics_spec.name}' unfold as the even "
                                    'mirror (normal displacement 0), but no Roller, Symmetry or Fixed of it holds that '
@@ -619,10 +721,21 @@ def piezo_material_issues(vctx, physics_spec, path, piezo_arrays, void_text, mer
     return issues
 
 
-def _stiff(properties, parameters, tensor):
-    """True when a merged material evaluates to a youngs_modulus > 0 (tensor: or a c11 > 0, the 2D c_ij entries)."""
+def _stiff(properties, parameters, tensor, fluid=False):
+    """True when a merged material evaluates to a youngs_modulus > 0 (tensor: or a c11 > 0, the c_ij entries, or a
+    shear_modulus / bulk_modulus set: the FEM meshes' moduli route); fluid (the mixed formulation of a frequency
+    response): a viscosity > 0 counts too (a liquid joins the solid)."""
     return (evaluates_to(properties.get('youngs_modulus'), parameters, lambda value: value > 0.0)
-            or (tensor and evaluates_to(properties.get('c11'), parameters, lambda value: value > 0.0)))
+            or (tensor and (evaluates_to(properties.get('c11'), parameters, lambda value: value > 0.0)
+                            or any(properties.get(name) is not None for name in MODULUS_ARRAYS)))
+            or (fluid and evaluates_to(properties.get('viscosity'), parameters, lambda value: value > 0.0)))
+
+
+def mixed_formulation(vctx, settings_values) -> bool:
+    """The solid runs the mixed u-p formulation: setting formulation mixed in a frequency_response study (elsewhere
+    validation refuses it)."""
+    return (vctx.study_type == FREQUENCY_RESPONSE_STUDY and bool(settings_values)
+            and settings_values.get('formulation', DISPLACEMENT) == MIXED)
 
 
 def merged_materials(vctx) -> list:
@@ -631,17 +744,22 @@ def merged_materials(vctx) -> list:
     merge once per validation."""
     kept = getattr(vctx, '_merged_mechanics_materials', None)
     if kept is None or kept[0] is not vctx.spec.materials:
-        from ...materials import effective_material_data   # lazy: physics -> materials stays out of module import time
-        merged = []
-        for material in vctx.spec.materials:
-            try:
-                properties, _ = effective_material_data(material.library, material.properties, material.dispersion)
-            except (ValueError, TypeError):
-                properties = None
-            merged.append((material, properties))
-        kept = (vctx.spec.materials, merged)
+        kept = (vctx.spec.materials, spec_merged_materials(vctx.spec))
         vctx._merged_mechanics_materials = kept   # a plain attribute of this context (not a dataclass field)
     return kept[1]
+
+
+def spec_merged_materials(spec) -> list:
+    """merged_materials of a spec without the context cache (the estimators: a frozen TimeContext keeps none)."""
+    from ...materials import effective_material_data   # lazy: physics -> materials stays out of module import time
+    merged = []
+    for material in spec.materials:
+        try:
+            properties, _ = effective_material_data(material.library, material.properties, material.dispersion)
+        except (ValueError, TypeError):
+            properties = None
+        merged.append((material, properties))
+    return merged
 
 
 def materials_setting(vctx, names) -> list:
@@ -651,10 +769,10 @@ def materials_setting(vctx, names) -> list:
             and any(properties.get(name) is not None for name in names)]
 
 
-def material_issues(vctx, physics_spec, path, type_name, element_name, tensor=False):
+def material_issues(vctx, physics_spec, path, type_name, element_name, tensor=False, fluid=False):
     """Stiffness checks over the spec materials, reported by the first physics of type_name: no youngs_modulus (tensor:
-    or c11) anywhere (error), poisson_ratio unset (info) or above the locking limit (warning naming element_name, e.g.
-    'bilinear')."""
+    or c11, shear_modulus / bulk_modulus; fluid, the mixed formulation: or a viscosity) anywhere (error), poisson_ratio
+    unset (info) or above the locking limit (warning naming element_name, e.g. 'bilinear')."""
     if not reports_model_checks(vctx, physics_spec, type_name):
         return []
     parameters = vctx.parameters
@@ -665,7 +783,7 @@ def material_issues(vctx, physics_spec, path, type_name, element_name, tensor=Fa
             stiff.append(True)
             selected_stiff = selected_stiff or bool(material.selection)
             continue
-        has_stiffness = _stiff(properties, parameters, tensor)
+        has_stiffness = _stiff(properties, parameters, tensor, fluid)
         stiff.append(has_stiffness)
         if not (material.selection and has_stiffness):
             continue
@@ -683,23 +801,28 @@ def material_issues(vctx, physics_spec, path, type_name, element_name, tensor=Fa
                                 f'{LOCKING_POISSON_RATIO:g}: {element_name} elements lock (grow too stiff) toward 0.5, '
                                 'so displacements come out too small'))
     if conducting_fraction(vctx, stiff) == 0.0 and not selected_stiff:
-        stiffness_text = 'a youngs_modulus or c11 > 0' if tensor else 'a youngs_modulus'
+        stiffness_text = ('a youngs_modulus, c11, shear_modulus or bulk_modulus > 0' if tensor else 'a youngs_modulus')
+        if fluid:
+            stiffness_text += ' or a viscosity > 0 (a liquid of the mixed formulation)'
         issues.append(Issue('error', path, f'no physical cell has {stiffness_text}: assign a material with stiffness '
                                            '(e.g. a library solid such as silica) to the solid'))
     return issues
 
 
 def modal_study_issues(vctx, physics_spec, path, modal_studies, thermal_strain_coupling, tensor=False,
-                       prestress_info=True, stress_stiffening=False):
-    """In modal_studies only: error per selected stiff material (tensor: c11 counts) without a density rho > 0 (plain
-    numbers; the solve checks every cell), info (prestress_info, stress_stiffening off) when loads, initial stresses or
-    a thermal strain coupling are present (no prestress)."""
+                       prestress_info=True, stress_stiffening=False, fluid=False):
+    """In modal_studies only: error per selected stiff material (tensor: c11, shear_modulus / bulk_modulus count; fluid,
+    the mixed formulation: a viscosity too) without a density rho > 0 (plain numbers; the solve checks every cell),
+    info (prestress_info, stress_stiffening off) when loads, initial stresses or a thermal strain coupling are present
+    (no prestress)."""
     if vctx.study_type not in modal_studies:
         return []
     issues = []
-    stiffness_names = 'youngs_modulus or c11' if tensor else 'youngs_modulus'
+    stiffness_names = 'youngs_modulus, c11, shear_modulus or bulk_modulus' if tensor else 'youngs_modulus'
+    if fluid:
+        stiffness_names += ', or a viscosity'
     for material, properties in merged_materials(vctx):
-        if properties is None or not (material.selection and _stiff(properties, vctx.parameters, tensor)):
+        if properties is None or not (material.selection and _stiff(properties, vctx.parameters, tensor, fluid)):
             continue
         density = properties.get('rho')
         plain_density = plain_value(density, vctx.parameters)   # None when unset or field / state dependent

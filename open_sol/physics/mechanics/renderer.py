@@ -4,8 +4,10 @@ from dataclasses import replace
 
 from ...core.renderer import FieldInfo, PhysicsRenderer
 from ...model.schema import FREQUENCY_RESPONSE_STUDY, OPTOMECHANICS_STUDY
-from .fields import ENERGY_DENSITY_FIELDS, HARMONIC_IMAG_FIELDS
+from .fields import AZIMUTHAL_IMAG_FIELDS, ENERGY_DENSITY_FIELDS, HARMONIC_IMAG_FIELDS, PRESSURE_FIELDS
 from .optomechanics import shown_integrand
+
+_TRIANGLE_HARMONIC_FIELDS = HARMONIC_IMAG_FIELDS + AZIMUTHAL_IMAG_FIELDS + PRESSURE_FIELDS   # no tensor-mesh values
 
 
 class SolidRenderer(PhysicsRenderer):
@@ -25,6 +27,14 @@ class SolidRenderer(PhysicsRenderer):
                             parity='polar_x', requires_study=FREQUENCY_RESPONSE_STUDY),
         'u_y_im': FieldInfo('u_y_im', 'Displacement y, imaginary part', unit='m', signed=True, cmap='RdBu_r',
                             parity='polar_y', requires_study=FREQUENCY_RESPONSE_STUDY),
+        # ... and Im of the U_phi amplitude (field u_z) of an azimuthal order m >= 1 (0 otherwise)
+        'u_z_im': FieldInfo('u_z_im', 'Displacement z, imaginary part', unit='m', signed=True, cmap='RdBu_r',
+                            parity='polar_z', requires_study=FREQUENCY_RESPONSE_STUDY),
+        # frequency_response on a triangle mesh: Re / Im of p = -tr(sigma*) / 3 (fields.PRESSURE_FIELDS)
+        'pressure': FieldInfo('pressure', 'Pressure', unit='Pa', signed=True, cmap='RdBu_r', parity='even',
+                              requires_study=FREQUENCY_RESPONSE_STUDY),
+        'pressure_im': FieldInfo('pressure_im', 'Pressure, imaginary part', unit='Pa', signed=True, cmap='RdBu_r',
+                                 parity='even', requires_study=FREQUENCY_RESPONSE_STUDY),
         # guided (2.5D) vibration modes only: amplitude of u_z = u_z sin(k_z z - omega t); 0 in plane strain
         'u_z': FieldInfo('u_z', 'Displacement z (guided modes)', unit='m', signed=True, cmap='RdBu_r',
                          parity='polar_z'),
@@ -73,14 +83,23 @@ class SolidRenderer(PhysicsRenderer):
                                   signed=True, cmap='RdBu_r', requires_study=OPTOMECHANICS_STUDY, parity='even'),
     }
 
+    absent_fields = _TRIANGLE_HARMONIC_FIELDS   # class fields this mesh kind has no values of (not listed: Session)
+
     def __init__(self, physics):
         self.physics = physics
+        infos = {name: info for name, info in type(self).field_infos.items() if name not in self.absent_fields}
         if getattr(physics, 'axisymmetric', False):   # (r, z): x = r, y = z, the out-of-plane zz is the hoop
-            self.field_infos = {**type(self).field_infos, **_AXISYMMETRIC_LABELS}
+            infos.update(_AXISYMMETRIC_LABELS)
             if getattr(physics, 'azimuthal_order', 0):   # order m >= 1: u_z holds the azimuthal amplitude U_phi
-                self.field_infos['u_z'] = _AZIMUTHAL_U_PHI
+                infos['u_z'] = _AZIMUTHAL_U_PHI
+                if 'u_z_im' in infos:
+                    infos['u_z_im'] = _AZIMUTHAL_U_PHI_IM
+        self.field_infos = infos
 
     def device_field(self, component: str):
+        if component in self.absent_fields:
+            raise ValueError(f"field '{component}' exists on a triangle mesh only (the rectangular-cell solid shows the "
+                             'real parts and u_abs of a frequency response)')
         self.field_info(component)
         physics = self.physics
         window = physics.window
@@ -88,9 +107,6 @@ class SolidRenderer(PhysicsRenderer):
             return physics.domain.xp.asarray(shown_integrand(physics))
         if component in ENERGY_DENSITY_FIELDS:   # triangle meshes only: zeros here (as the 3D tensor renderer)
             return physics.domain.xp.zeros_like(physics.fields.u_x[window])
-        if component in HARMONIC_IMAG_FIELDS:
-            raise ValueError(f"field '{component}' exists on a triangle mesh only (the rectangular-cell solid shows the "
-                             'real parts and u_abs of a frequency response)')
         if component in ('youngs_modulus', 'poisson_ratio'):
             return getattr(physics.domain.materials, component)[window]
         return getattr(physics.fields, component)[window]
@@ -107,3 +123,4 @@ _AXISYMMETRIC_LABELS = {
 }
 # azimuthal order m >= 1: field u_z is the amplitude of u_phi = U_phi sin(m phi)
 _AZIMUTHAL_U_PHI = replace(SolidRenderer.field_infos['u_z'], label='Displacement phi (amplitude of sin(m phi))')
+_AZIMUTHAL_U_PHI_IM = replace(SolidRenderer.field_infos['u_z_im'], label='Displacement phi, imaginary part')

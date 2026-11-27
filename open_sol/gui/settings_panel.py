@@ -1535,7 +1535,9 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
         expression_hint.setToolTip(rich_tooltip(
             'Constants and units:\n' + '\n'.join(f'- {name}: {meaning}'
                                                  for name, meaning in CONSTANT_DESCRIPTIONS.items()),
-            'Functions:\n' + '\n'.join(f'- {FUNCTION_DESCRIPTIONS[name]}' for name in sorted(FUNCTION_DESCRIPTIONS))))
+            'Functions:\n' + '\n'.join(f'- {FUNCTION_DESCRIPTIONS[name]}' for name in sorted(FUNCTION_DESCRIPTIONS)),
+            'Complex numbers: write the imaginary unit as 1j (for example 2 + 3j). Steps inside an expression may be '
+            'complex, but the value itself must be real: take re(...), im(...), abs(...) or arg(...) of it.'))
         layout.addWidget(expression_hint)
         return True
 

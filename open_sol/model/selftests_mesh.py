@@ -212,6 +212,14 @@ def _check_per_physics_spec(results_by_name):
                                          refinements=[RefinementSpec('dot', _TRIANGLE_H / 4)])], geometry=[dot])
     refined_count = estimate_mesh(refined, {}, registry).n_elements
     add('triangle_count_refined', refined_count > 1.2 * estimate.n_elements, [refined_count, estimate.n_elements])
+    floored = _meshes_spec([PhysicsSpec('heat', 'heat')], [
+        MeshSpec(kind='triangles', mode='nonuniform', dx=_TRIANGLE_H,
+                 refinements=[RefinementSpec('dot', _TRIANGLE_H / 200)])], geometry=[dot])
+    floor_warnings = _messages(validate(floored, registry), 'warning', ('mesh', 'mesh'), 'below the minimum element')
+    add('h_min_floor_warning', len(floor_warnings) == 1 and "'dot'" in floor_warnings[0], floor_warnings)
+    floored.meshes[0].h_min = _TRIANGLE_H / 400
+    floor_warnings = _messages(validate(floored, registry), 'warning', ('mesh', 'mesh'), 'below the minimum element')
+    add('h_min_set_silent', not floor_warnings, floor_warnings)
 
     report = api.check(split)
     add('check_json_meshes', [record['name'] for record in report['meshes']] == ['fine', 'coarse']
@@ -311,7 +319,8 @@ MESH_SELFTEST_CASES = (
                     '(solver_grid triangles); '
                     'an unused mesh warning; the triangle element estimate of a physics-free model (TRIANGLE_FILL 2.3 '
                     'x 4 / sqrt(3) x area / h^2 within 1e-3), h_min = h / 100, growth 1.3, and more elements with a '
-                    'refined circle; api.check meshes records; an AdaptationSpec round trip, unknown target error and '
+                    'refined circle; the h_min floor warning for a circle refined to h / 200 (below the default '
+                    'h_min), silent with h_min = h / 400 set; api.check meshes records; an AdaptationSpec round trip, unknown target error and '
                     'target rename (also of a \'sweep\' analytic-curve series). error = number of failed sub-checks, '
                     'tolerance 0. The series rename check not yet confirmed by a run.',
         specs=lambda: {},

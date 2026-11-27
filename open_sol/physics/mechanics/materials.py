@@ -1,5 +1,5 @@
 """Material vocabulary of the solid (2D plane strain and 3D): Young's modulus, Poisson ratio, the anisotropic c_ij
-(2D ten, 3D 21), the piezoelectric e and clamped permittivity (2D in-plane, 3D full), the thermal expansion arrays (the alpha_xx / alpha_yy arrays are shared with heat, whose thermo-optic coupling reads them too). Imports only solvers.pcg (numpy, no cupy)."""
+(2D ten, 3D 21), the piezoelectric e and clamped permittivity (2D in-plane, 3D full), the thermal expansion arrays (the alpha_xx / alpha_yy arrays are shared with heat, whose thermo-optic coupling reads them too), the relaxed shear / bulk moduli and the frequency-dependent (viscoelastic) arrays of the FEM solids. Imports only solvers.pcg (numpy, no cupy)."""
 # Solve dtype name (estimators, script constructors) -> solvers.pcg.PCGSolver precision name.
 from ...solvers.pcg import DTYPE_PRECISIONS as SOLVER_PRECISIONS
 
@@ -9,6 +9,25 @@ MECHANICAL_SCHEMA = {
     'alpha_xx': 0.0, 'alpha_yy': 0.0, 'alpha_zz': 0.0,
     'photoelastic_p11': 0.0, 'photoelastic_p12': 0.0,
 }
+
+# Isotropic moduli and frequency-dependent moduli of the FEM solids (triangle / tetrahedron meshes; physics/mechanics
+# viscoelastic.py): the relaxed (long-time) shear / bulk moduli G0, K0 [Pa] (the alternative route to youngs_modulus /
+# poisson_ratio; NaN = unset: bulk unset = incompressible in the mixed formulation), the dashpot viscosities [Pa s] and
+# up to VISCOELASTIC_BRANCHES generalized Maxwell (Prony) branches (modulus [Pa], relaxation time [s]) per part; each
+# array allocated when a material sets it. viscosity is laminar_flow's array too (> 0 there makes a cell fluid).
+VISCOELASTIC_BRANCHES = 3
+MODULUS_ARRAYS = ('shear_modulus', 'bulk_modulus')
+VISCOSITY_ARRAYS = ('viscosity', 'bulk_viscosity')
+SHEAR_BRANCH_ARRAYS = tuple((f'shear_relaxation_modulus_{index}', f'shear_relaxation_time_{index}')
+                            for index in range(1, VISCOELASTIC_BRANCHES + 1))
+BULK_BRANCH_ARRAYS = tuple((f'bulk_relaxation_modulus_{index}', f'bulk_relaxation_time_{index}')
+                           for index in range(1, VISCOELASTIC_BRANCHES + 1))
+_BRANCH_NAMES = tuple(name for pair in SHEAR_BRANCH_ARRAYS + BULK_BRANCH_ARRAYS for name in pair)
+# the omega-dependent part only (read by the frequency_response study; every other study uses G0, K0)
+VISCOELASTIC_ARRAYS = frozenset(VISCOSITY_ARRAYS + _BRANCH_NAMES)
+VISCOELASTIC_PROPERTY_NAMES = MODULUS_ARRAYS + VISCOSITY_ARRAYS + _BRANCH_NAMES   # declared order (Params)
+OPTIONAL_VISCOELASTIC_SCHEMA = {name: (float('nan') if name in MODULUS_ARRAYS else 0.0, (name,))
+                                for name in VISCOELASTIC_PROPERTY_NAMES}
 
 # Mechanical property -> MaterialGrid arrays it writes; isotropic alpha expands to all three expansion arrays.
 MECHANICAL_PROPERTY_ARRAYS = {
@@ -34,6 +53,7 @@ MECHANICAL_PROPERTY_ARRAYS = {
     'mechanical_loss_factor': ('mechanical_loss_factor',), 'dielectric_loss_tangent': ('dielectric_loss_tangent',),
     **{f'initial_stress_{pair}': (f'initial_stress_{pair}',) for pair in ('xx', 'yy', 'zz', 'yz', 'xz', 'xy')},
     'k': ('k_xx', 'k_yy', 'k_zz'), 'k_xx': ('k_xx',), 'k_yy': ('k_yy',), 'k_zz': ('k_zz',), 'cp': ('cp',),
+    **{name: (name,) for name in VISCOELASTIC_PROPERTY_NAMES},
 }
 # Piezoelectric plane strain (2D, setting piezoelectric): the reduced in-plane e block (the elastic_waves names and
 # order), the out-of-plane column e_k3 (stress_zz only) and the clamped static permittivity (the electrostatics names),
@@ -82,8 +102,9 @@ ISOTROPIC_PATTERN_3D = ('c11', 'c12', 'c13', 'c22', 'c23', 'c33', 'c44', 'c55', 
 OPTIONAL_STIFFNESS_SCHEMA_3D = {
     name: (float('nan') if name in ISOTROPIC_PATTERN_3D else 0.0, STIFFNESS_TENSOR_ARRAYS_3D)
     for name in STIFFNESS_TENSOR_ARRAYS_3D}
-# Losses of the frequency_response study (2D only): c -> c (1 + j eta), eps -> eps (1 - j tan delta); optional arrays
-# (each allocated when a material sets it), default 0.
+# Losses (both FEM solids: the frequency_response study and the damped modes; the 2D tensor solid in frequency_response
+# only): c -> c (1 + j eta), eps -> eps (1 - j tan delta); with viscoelastic moduli eta multiplies G0 and K0 only;
+# optional arrays (each allocated when a material sets it), default 0.
 LOSS_ARRAYS = ('mechanical_loss_factor', 'dielectric_loss_tangent')
 OPTIONAL_LOSS_SCHEMA = {name: (0.0, (name,)) for name in LOSS_ARRAYS}
 # Initial (residual) stress sigma0 [Pa] per cell (triangle / tetrahedron meshes only): total stress
@@ -103,7 +124,10 @@ SHEAR_PHOTOELASTIC_SCHEMA = {'photoelastic_p44': float('nan')}
 
 # Arrays the assembled stiffness depends on, arrays only the thermal load reads, arrays only the strain-optic coupling
 # reads (a change re-solves anyway, so the coupling sees a new revision).
-STIFFNESS_ARRAYS = frozenset({'youngs_modulus', 'poisson_ratio', *STIFFNESS_TENSOR_ARRAYS, *STIFFNESS_TENSOR_ARRAYS_3D})
+# (the relaxed moduli re-assemble; the viscoelastic arrays do not: a T-dependent laminar_flow viscosity must not
+# re-assemble the solid, they rebuild only the frequency-response terms)
+STIFFNESS_ARRAYS = frozenset({'youngs_modulus', 'poisson_ratio', *STIFFNESS_TENSOR_ARRAYS, *STIFFNESS_TENSOR_ARRAYS_3D,
+                              *MODULUS_ARRAYS})
 EXPANSION_ARRAYS = frozenset({'alpha_xx', 'alpha_yy', 'alpha_zz'})
 PHOTOELASTIC_ARRAYS = frozenset({'photoelastic_p11', 'photoelastic_p12'})
 
@@ -113,6 +137,14 @@ def lame_coefficients(youngs_modulus, poisson_ratio):
     mu = youngs_modulus / (2.0 * (1.0 + poisson_ratio))
     lame_lambda = youngs_modulus * poisson_ratio / ((1.0 + poisson_ratio) * (1.0 - 2.0 * poisson_ratio))
     return lame_lambda, mu
+
+
+def lame_from_moduli(shear, bulk):
+    """(lambda, mu) [Pa] of an isotropic solid from the shear modulus G and bulk modulus K (arrays or scalars):
+    (K - 2/3 G, G)."""
+    return bulk - (2.0 / 3.0) * shear, shear
+
+
 # Thermoelastic damping (feature thermoelastic_damping, physics/mechanics/thermoelastic.py): heat's conductivity and
 # specific heat arrays (the names and default 0 of physics/heat THERMAL_SCHEMA; with rho the heat capacity rho cp),
 # optional: allocated only when the solid has an enabled thermoelastic_damping feature and a material sets k / k_xx /

@@ -6,7 +6,19 @@ templates, describe. Current state, no changelog.
 ## Model layer
 - Expressions: `evaluate` is silent on invalid / divide on both backends, so consumers of its values check finiteness
   themselves (evaluate_scalar, builder `_check_range`, curves drop non-finite samples). An uncalled function name is a
-  free name that only a namespace entry supplies (an FDFD probe xy series 'abs').
+  free name that only a namespace entry supplies (an FDFD probe xy series 'abs'; the admittance series 're' / 'im'
+  of frequency_response likewise, so `re(re)` is refused as name-and-function).
+- Complex intermediates: `evaluate` refuses a complex final value, so consumers (parameters, materials, features,
+  derived values, references, curves) stay real and never see complex dtypes; complex parameters are impossible. Only
+  an expression with a 1j literal or a `COMPLEX_FUNCTION_NAMES` call (`Expression.complex_values`) takes the complex
+  function table, where real-only functions and every comparison (AST-wrapped in `real_operand__`) refuse complex
+  values; others run the unchanged real table, so real arrays are never cast to complex. Every `**` compiles to a call
+  of the table's pow (`power__`, `expressions._power`): numpy semantics for real operands of any scalar type (Python's
+  float ** float would be complex), the operator itself on arrays (dtype, fast ** 2 / ** 0.5). The complex Bessel
+  functions (besselj ... spherical_yn) are scipy only: a cupy argument raises (no host round trip); references,
+  analytic and derived curves always evaluate on numpy, field expressions only on cpu runs. A new function goes in
+  one of the tables with its arity and FUNCTION_DESCRIPTIONS entry (describe checks the keys); a real-only one also
+  joins `_REAL_ONLY_FUNCTIONS`. Self-test: `expressions_complex` (selftests_analytic).
 - Names: `<physics>_<field>` always, plain `<field>` when one physics alone provides it (parameters may not use it).
   Settings / feature params / material properties see parameters + x, y (field_dependent) + state names and t
   (state_dependent) / t alone (time_dependent: no x, y with t, `schema._number`); coupling 'expression': value + x, y +
@@ -81,7 +93,8 @@ templates, describe. Current state, no changelog.
 - `SelfTestCase.backends`: without a usable GPU the check gets the cpu runs only (a cpu-vs-gpu check must cope); with
   none left the variants still judge the case (record `variants_only`, report warning). A check({}) case using cupy
   declares ('gpu',); one comparing both backends itself declares ('cpu', 'gpu') and skips its gpu half by
-  `gpu_available()`.
+  `gpu_available()`. A variant repeats only `SelfTestVariant.runs` when set (a cpu variant leaving out a 3D direct
+  solve): code repeating a variant's runs takes them from api `_variant_specs`, never `case.specs()` directly.
 - Timing: a study of several runs (sweep values, refinement levels, parity sectors, estimation points) sums ticks /
   study_seconds and merges time_check through `study.summed_runs` (a new multi-run loop uses it too; `solvers` stays
   the last run's), and `run_study` sums builds into `build_seconds_total`, else the selftest split counts only the
@@ -148,7 +161,9 @@ templates, describe. Current state, no changelog.
   span meshes live on the parent (`_window_transfers`, freed by close). Warm starts compare every mesh
   (`study._mesh_key`).
 - Triangle meshes (MeshSpec kind 'triangles'): `meshing.triangle_sizing` is the one size rule of estimate and mesher;
-  every size is floored at h_min (default h_max / 100), so a finer refinement needs an explicit h_min. The raster
+  every size is floored at h_min (default h_max / 100), so a finer refinement needs an explicit h_min (validate
+  `_check_element_floor` warns for the base parameter values only, gmsh / swept tetrahedra too: a swept parameter
+  that shrinks a refinement is not seen, so such a model sets h_min below its smallest value). The raster
   estimate (`_triangle_estimate`) sets memory, run time and MAX_MESH_CELLS: recalibrate TRIANGLE_FILL /
   TRIANGLE_EDGE_FILL against selftest mesh_triangle_estimate when the mesher's refinement rule changes. Element meshes
   (triangles and tetrahedra) go through `meshing.element_mesh`, reused per mesh name while `element_mesh_key` matches.
@@ -264,6 +279,13 @@ templates, describe. Current state, no changelog.
   within ~2 %, rectangles exact; the raw staircase is +27 % on circles).
 - Session reads: Session checks arguments, picks the mesh view and delegates to `session.access` (root "Meshes per
   physics"); a cross-mesh read asks the SOURCE view's access (`values_on_window(target, ...)`, `values_at(points)`).
+- Ring angle of a derived value (`Session._ring_angle`; mean / integral / mode_volume, `RING_WEIGHTED_OPERATIONS`): the
+  ring_angle of the axisymmetric physics whose fields the expression reads (no field read: every one on the mesh).
+  Orders differ only for an `ORDER_SPLIT_READERS` pair (`azimuthal_order_issues`: an info, both read one physics
+  through such a feature and share no coupling); a value whose angle is then ambiguous is judged by
+  `definition_helpers.ring_angle_conflict`, the one rule of Session (raises: NaN + warning) and validate (error at the
+  derived value). A new feature that lets orders differ joins ORDER_SPLIT_READERS only if no field passes between the
+  orders (one-way reads).
 - 3D field access: every 3D read (cuts, `segment_profile`, `volume`, snapshot cuts) slices planes from
   `TensorAccess._plane_source` (the renderer's `device_plane`, else ONE `device_field` volume per read, shared inside
   `Session.shared_plane_reads`), never a device_field per plane; host volumes come one z plane at a time. A closed /
@@ -332,6 +354,13 @@ templates, describe. Current state, no changelog.
 - Stress stiffening (`solver_hooks.PrestressSolver`): a study eigen- or harmonic-solving solids calls
   `study._solve_static_states(runner, solved, with_loads, emit)` right after its background stage (with_loads False
   only in frequency_response: its loads are the drive).
+- Physics drives (`solver_hooks.PhysicsDriveSolver`, frequency_response; brillouin_scattering): after the background
+  stage and the static states, before `reset_frequency_response`, stage 'Optical drives' (only when a solved physics
+  has drives) calls `bind_physics_drives(runner.physics, progress)`: the hook through which a feature of a solved
+  physics reads a background physics' solution (root "Physics definitions"). The hook must leave the background
+  physics' state as it is (extra solves through `solve_moved_beam`, which touches no solution, monitor or counter),
+  since snapshots and results read it afterwards. The solve flow lists the step for the features in
+  `definition_helpers.PHYSICS_DRIVE_FEATURES`: a new drive feature joins it.
 - Background studies (`StudyType.background_study` 'stationary'): validate accepts a physics supporting the study or
   its background_study, needs >= 1 supporting the study itself and refuses an enabled coupling / material property
   reading a solved physics (`_check_background_study`, remedy `StudyType.feedback_alternative`; exceptions

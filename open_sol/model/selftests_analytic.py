@@ -1,6 +1,7 @@
 """Self-tests of the post-processing calculus of model.analytic on synthetic 1D results (CPU, no model run): derived-curve
 gradient / cumtrapz and references, windowed reductions, fits (two-term, Richardson), far field, harmonic probe record;
-plus derived values of operation 'expression' over earlier ones (a 1D heat slab sweep on the CPU)."""
+plus derived values of operation 'expression' over earlier ones (a 1D heat slab sweep on the CPU). Also the complex
+intermediates and complex Bessel functions of model.expressions (expressions_complex)."""
 import copy
 import math
 
@@ -275,6 +276,114 @@ def _check_probe_rows_parking(results_by_name):
     return checks.result()
 
 
+_COMPLEX_RTOL = 1e-12   # complex intermediates against Python / scipy on the same numbers: round-off only
+# a viscoelastic sphere drag reference (complex shear modulus G, complex wave number lam; SI values of order one)
+_VISCO_PARAMETERS = {'a': 0.7, 'G0': 2.0, 'eta': 0.3, 'w': 1.5, 'mu': 0.4, 'rho': 1.2, 'X': 0.9}
+_VISCO_SHEAR = '(G0*(1 + 1j*eta) + 1j*w*mu)'
+_VISCO_LAM = f'(1j*w*sqrt(rho/{_VISCO_SHEAR}))'   # principal root
+_VISCO_DRAG = f're(-6*pi*a*{_VISCO_SHEAR}*X*(1 + {_VISCO_LAM}*a + {_VISCO_LAM}**2*a**2/9))'
+
+
+def _check_expressions_complex(results_by_name):
+    """Every sub-check pass / fail; error = number of failed sub-checks, tolerance 0."""
+    import cmath
+
+    from scipy import special
+
+    from .expressions import compile_expression, evaluate_parameters, evaluate_scalar
+
+    checks = SubChecks()
+    add, add_raises = checks.add_relative, checks.add_raises
+
+    def value(text, namespace=None):
+        return compile_expression(text).evaluate(dict(namespace or {}))
+
+    add('literal_product_re', value('re(2.5j * 2j)'), -5.0, 0.0)
+    add('product_re', value('re((1 + 2j)*(3 - 1j))'), 5.0, _COMPLEX_RTOL)
+    add('product_im', value('im((1 + 2j)*(3 - 1j))'), 5.0, _COMPLEX_RTOL)
+    add('conj_im', value('im(conj(1 + 2j))'), -2.0, 0.0)
+    add('arg_negative_real', value('arg(-1 + 0j)'), math.pi, _COMPLEX_RTOL)
+    add('principal_sqrt_negative_axis', value('im(sqrt(-4 + 0j))'), 2.0, _COMPLEX_RTOL)
+    add('principal_sqrt_re', value('re(sqrt(-3 - 4j))'), 1.0, _COMPLEX_RTOL)
+    add('principal_sqrt_im', value('im(sqrt(-3 - 4j))'), -2.0, _COMPLEX_RTOL)
+    add('abs_modulus', value('abs(3 + 4j)'), 5.0, _COMPLEX_RTOL)
+    add('exp_euler', value('re(exp(1j*pi/3))'), 0.5, _COMPLEX_RTOL)
+    checks.add('sqrt_negative_real_nan', math.isnan(value('sqrt(a)', {'a': -4.0})), value('sqrt(a)', {'a': -4.0}))
+    checks.add('log_negative_real_nan', math.isnan(value('log(-1)')))
+    checks.add('real_expression_real_table', not compile_expression('sqrt(x) + j0(x) * (x > 0)').complex_values)
+    checks.add('literal_complex_table', compile_expression('re(1j * x)').complex_values)
+    # ** = pow, numpy power semantics for real operands of any scalar type; the principal power needs a complex one
+    checks.add('power_real_table', not compile_expression('x**(1/3) > 0').complex_values)
+    for label, base in (('python_float', -8.0), ('numpy_scalar', np.float64(-8.0))):
+        for spelling, text in (('operator', 'a**(1/3)'), ('pow', 'pow(a, 1/3)')):
+            result = value(text, {'a': base})
+            checks.add(f'fractional_power_negative_nan_{label}_{spelling}', math.isnan(result), repr(result))
+    checks.add('fractional_power_negative_literal_nan', math.isnan(value('(-8)**(1/3)')))
+    principal = cmath.exp(cmath.log(-8.0) / 3.0)
+    add('principal_power_re', value('re((-8 + 0j)**(1/3))'), principal.real, _COMPLEX_RTOL)
+    add('principal_power_im', value('im((-8 + 0j)**(1/3))'), principal.imag, _COMPLEX_RTOL)
+    checks.add('pow_equals_operator_complex', value('re(pow(-8 + 0j, 1/3)) - re((-8 + 0j)**(1/3))') == 0.0
+               and value('im(pow(-8 + 0j, 1/3)) - im((-8 + 0j)**(1/3))') == 0.0)
+    add('integer_power_negative_square', value('(-2)**2'), 4.0, 0.0)
+    add('integer_power_negative_cube', value('a**3', {'a': -2.0}), -8.0, 0.0)
+    add('pow_equals_operator_real', value('pow(a, 2.5)', {'a': 3.0}), value('a**2.5', {'a': 3.0}), 0.0)
+
+    # the viscoelastic reference, G and lam inlined (lam also as a parameter), against cmath
+    visco = _VISCO_PARAMETERS
+    shear = visco['G0'] * (1.0 + 1j * visco['eta']) + 1j * visco['w'] * visco['mu']
+    lam = 1j * visco['w'] * cmath.sqrt(visco['rho'] / shear)
+    expected = (-6.0 * math.pi * visco['a'] * shear * visco['X']
+                * (1.0 + lam * visco['a'] + lam ** 2 * visco['a'] ** 2 / 9.0)).real
+    add('visco_reference_inlined', value(_VISCO_DRAG, visco), expected, _COMPLEX_RTOL)
+    add('visco_lam_im', value(f'im{_VISCO_LAM}', visco), lam.imag, _COMPLEX_RTOL)
+    add_raises('complex_parameter_refused', lambda: evaluate_parameters([('w', '2'), ('lam', '1j*w')]))
+    add_raises('complex_scalar_refused', lambda: evaluate_scalar('sqrt(-4 + 0j)', {}))
+    try:
+        value('1j * w', visco)
+        checks.add('complex_result_message', False, 'nothing raised')
+    except ValueError as exc:
+        checks.add('complex_result_message', 're(...)' in str(exc) and 'gives complex values' in str(exc), str(exc))
+
+    # complex Bessel functions against scipy.special on the same complex numbers
+    z = 1.3 + 0.8j
+    add('besselj_re', value('re(besselj(0, z0))', {'z0': z}), special.jv(0, z).real, _COMPLEX_RTOL)
+    add('bessely_im', value('im(bessely(1, z0))', {'z0': z}), special.yv(1, z).imag, _COMPLEX_RTOL)
+    add('besseli_re', value('re(besseli(2, 1.3 + 0.8j))'), special.iv(2, z).real, _COMPLEX_RTOL)
+    add('besselk_im', value('im(besselk(1, 1.3 + 0.8j))'), special.kv(1, z).imag, _COMPLEX_RTOL)
+    add('spherical_jn_re', value('re(spherical_jn(1, 1.3 + 0.8j))'), special.spherical_jn(1, z).real,
+        _COMPLEX_RTOL)
+    add('spherical_yn_derivative_im', value('im(spherical_yn(2, 1.3 + 0.8j, 1))'),
+        special.spherical_yn(2, z, derivative=True).imag, _COMPLEX_RTOL)
+    add('besselj_real_argument', value('besselj(1, 2.5)'), special.j1(2.5), _COMPLEX_RTOL)
+    add_raises('spherical_fractional_order_refused', lambda: value('re(spherical_jn(1.5, 1j))'))
+    add_raises('real_bessel_complex_refused', lambda: value('re(j0(1j))'))
+    add_raises('floor_complex_refused', lambda: value('floor(re(1j) + 2j)'))
+    add_raises('max_complex_refused', lambda: value('re(max(1j, 2))'))
+    add_raises('comparison_complex_refused', lambda: value('(1j*w > 0)', visco))
+    add_raises('complex_power_comparison_refused', lambda: value('(a - 1 + 0j)**(1/3) > 0', {'a': 0.0}))
+
+    # arrays (numpy): a Womersley-type profile with J0 of a complex argument, real results, real arrays stay real
+    radius = np.linspace(0.0, 1.0, 11)
+    profile = value('re(1 - besselj(0, alpha*1j**1.5*r) / besselj(0, alpha*1j**1.5))', {'alpha': 3.0, 'r': radius})
+    womersley = (1.0 - special.jv(0, 3.0 * 1j ** 1.5 * radius) / special.jv(0, 3.0 * 1j ** 1.5)).real
+    checks.add_error('womersley_profile', float(np.max(np.abs(profile - womersley))), 1e-12)
+    checks.add('womersley_real_dtype', profile.dtype == np.float64, str(profile.dtype))
+    euler = value('re(exp(1j*x)) - cos(x) + abs(exp(1j*x))', {'x': radius})
+    checks.add_error('array_euler', float(np.max(np.abs(euler - 1.0))), 1e-14)
+    field = np.linspace(-1.0, 1.0, 9, dtype=np.float32)
+    real_field = value('sqrt(T) * 2 + T', {'T': field})
+    checks.add('real_array_stays_float32', real_field.dtype == np.float32, str(real_field.dtype))
+    checks.add('real_array_sqrt_negative_nan', bool(np.isnan(real_field[0]) and not np.isnan(real_field[-1])))
+    power_field = value('T**0.5 + T**2', {'T': field})
+    checks.add('real_array_power_float32', power_field.dtype == np.float32, str(power_field.dtype))
+    checks.add('real_array_power_negative_nan', bool(np.isnan(power_field[0]) and not np.isnan(power_field[-1])))
+    principal = value('im(sqrt(T + 0j))', {'T': field})
+    checks.add_error('array_principal_sqrt', float(np.max(np.abs(principal - np.sqrt(np.maximum(-field, 0.0))))),
+                     1e-6)
+    add_raises('array_complex_result_refused', lambda: value('T * 1j', {'T': field}))
+    return checks.result()
+
+
 # operation 'expression': a 1D slab (100 cells) with a uniform heat source Q_in, swept; N_int / rho_int = Q_in exactly
 _GLOBAL_RUN = 'global_expression'
 _SLAB_LENGTH, _SLAB_CELL = 1e-3, 1e-5          # m
@@ -426,6 +535,25 @@ ANALYTIC_SELFTEST_CASES = (
                     'parked by default. error = number of failed sub-checks, tolerance 0.',
         specs=lambda: {},
         check=_check_probe_rows_parking,
+        max_wall_time=10.0),
+    SelfTestCase(
+        name='expressions_complex',
+        label='Expressions: complex intermediates, complex Bessel functions, real final values',
+        description='CPU checks of model.expressions (no model run): imaginary literals, re / im / conj / arg / abs '
+                    'of complex products, principal sqrt (sqrt(-4 + 0j) = 2j, sqrt(-3 - 4j) = 1 - 2j) while sqrt / '
+                    'log of a negative real stay nan, a viscoelastic drag reference re(-6 pi a G X (1 + lam a + '
+                    'lam^2 a^2 / 9)) with G = G0 (1 + 1j eta) + 1j w mu and lam = 1j w sqrt(rho / G) inlined vs '
+                    'cmath, besselj / bessely / besseli / besselk / spherical_jn / spherical_yn (with derivative) of '
+                    'a complex argument vs scipy.special (round-off), a Womersley profile re(1 - J0(alpha 1j^1.5 r) '
+                    '/ J0(alpha 1j^1.5)) on a numpy array (float64 result), a float32 real array staying float32 '
+                    '(real function table; also under ** 0.5 and ** 2), ** = pow with numpy semantics for real '
+                    'operands ((-8)**(1/3) nan for a Python float and a numpy scalar, (-2)**2 = 4 exact, ** keeping '
+                    'the real table) and the principal power of a complex base ((-8 + 0j)**(1/3) vs cmath, pow == '
+                    '**), and the refusals: a complex final value (scalar, array, parameter; the message names '
+                    're()), complex arguments of comparisons, floor, max and j0, a fractional spherical order, a '
+                    'complex power compared. error = number of failed sub-checks, tolerance 0.',
+        specs=lambda: {},
+        check=_check_expressions_complex,
         max_wall_time=10.0),
     SelfTestCase(
         name='derived_global_expression',
