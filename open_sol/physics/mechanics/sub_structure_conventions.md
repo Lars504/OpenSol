@@ -55,7 +55,7 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   blocks, float32 copies of 'mixed', the factor deferred to the next `solve` so modal and piezo solves never factorise
   it): `ElasticSystem._bind_linear_solver`.
 - Reactions are K u - f of the last solve (`load_full` of the last `_build_rhs`): every load change sets
-  `_loads_dirty` (it also drops the frequency response's kept `_harmonic_drive`), so loads never change between a solve
+  `_loads_dirty` (it also drops the frequency response's kept `_harmonic_load`), so loads never change between a solve
   and a read. n_solves doubles as the couplings' revision counter.
 
 ## Mirror planes (feature symmetry, both types)
@@ -68,9 +68,10 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   side on the plane. Physics level: `own_mirror_face_conflicts`, `model_mirror_issues` (warning per model mirror plane
   no Roller / Symmetry / Fixed holds).
 - Results the solid reports itself stay those of the drawn part (support / harmonic reaction tables, squeeze-film c /
-  k); the optomechanics m_eff is the unfolded body's (a solid symmetry face forces the optics to mirror it; em_fdfd_bor
-  optics: `OptomechanicalCoupling.mirror_factor` from `mirror_faces(ctx.spec)`). Parity sectors raise (no odd solid
-  feature). A vented squeeze-film rim on a plane raises in `_vent_edges`.
+  k); the optomechanics m_eff and the brillouin_scattering psd are the unfolded body's (a solid symmetry face forces
+  the optics to mirror it; em_fdfd_bor optics: `OptomechanicalCoupling.mirror_factor` from `mirror_faces(ctx.spec)`;
+  BrillouinDrive's mirror_factor likewise). Parity sectors raise (no odd solid feature). A vented squeeze-film rim on
+  a plane raises in `_vent_edges`.
 - Axis: `AXIS_UNFOLD_TYPES['solid_mechanics']` +1 is right for every renderer field at azimuthal_order 0.
 
 ## Anisotropic stiffness (`stiffness.py`, c_ij entries)
@@ -104,18 +105,22 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
 ## Frequency response (`frequency_response.py`, `bvd.py`; study frequency_response, model/study_frequency_response.py)
 - In Hz (the EM frequency_domain study stays wavelength-based); convention, losses and the factor routes:
   `frequency_response.py` header and `HarmonicSystem`. 2D tensor solids use a private SuperLU outside the roles
-  (counters harmonic_* / piezo_harmonic_*; the 'linear' pcg assembled, unused); triangles and tetrahedra their
-  'linear' sparse_direct runtime (3D operator class 'spd' is nominal there).
+  (counters harmonic_* / piezo_harmonic_*; the 'linear' pcg assembled, unused): elastic ones on one HarmonicSystem of
+  runtime None kept while the harmonic operators stay (`_kept_harmonic`, direct and reduced sweeps, with or without
+  physics drives: section "Spontaneous Brillouin"), piezoelectric ones on the PiezoSystem's; triangles and tetrahedra
+  their 'linear' sparse_direct runtime (3D operator class 'spd' is nominal there).
 - Shown fields are the real parts with dT = 0 and no sigma0 (`_write_outputs(thermal=False)` on every mesh kind;
   solid_frequency_response_bar's 'heated' run pins it on the tensor mesh). On the tensor mesh support reactions and
   electrode tables raise and probes record nothing (FEM meshes: section "Prestress, damped modes, complex records").
 - Reduced sweeps (fem sub file "Reduced sweeps") and rows-only direct solves: after `HarmonicSystem.set_output_rows`
   `solve(fields=False)` is exact ONLY at the registered rows, so a solver's records read only rows it registered
   (supports, probes, `PiezoSystem.electrode_rows`). Fields only at `wants_fields` frequencies; a skipped last one is
-  shown by `publish_frequency_response`.
-- azimuthal_order m >= 1 (triangles) is driven by prescribed displacements only (cos(m phi) loads are refused); a
-  support's F_x is sum R_r - sum R_phi at m = 1 (the net force along phi = 0), both components 0 at m >= 2; its W =
-  sum R u_held takes every component. Triangles: record rows and the residual are solid-map rows, `held` /
+  shown by `publish_frequency_response`. Readouts of a whole-field weight (physics drives) are HarmonicSystem
+  functionals instead (`set_functionals`: `last_functionals` = W^H x on every solve route, reduced models included;
+  `solve_columns` for more right-hand sides on the last direct factor), never rows of x.
+- azimuthal_order m >= 1 (triangles) is driven by prescribed displacements or a physics drive only (cos(m phi) loads
+  are refused); a support's F_x is sum R_r - sum R_phi at m = 1 (the net force along phi = 0), both components 0 at
+  m >= 2; its W = sum R u_held takes every component. Triangles: record rows and the residual are solid-map rows, `held` /
   `held_values` full-mesh ids (index them by `dofs.global_ids[rows]`); tetrahedra: both full-mesh.
 - A reaction of a fully held stiff domain in a soft / viscous medium carries its own K rows' round-off (a rigid
   translation cancels in K X only to ~1e-16 E per entry): a polystyrene bead in water at 1 Hz has Re F ~1e-4 of the
@@ -132,7 +137,7 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   diagonal: A, its products, residual rows and every solution handed out (solve, `_rows_solve`, last_solution) stay
   unscaled.
 - `terms=()` / `scale_terms=()` stay bit-identical to the plain pencil (solid_harmonic_terms compares the bits): every
-  new branch of HarmonicSystem is guarded by `self._terms` / `self._scale_terms`.
+  new branch of HarmonicSystem is guarded by `self._terms` / `self._scale_terms` (functionals: `self._functionals`).
 - Every study but frequency_response reads the relaxed G0, K0 alone (V16 warns for user-set values). Shown harmonic
   stresses on FEM meshes (responses and damped modes) are Re(C*(omega) eps) with the loss part (`_harmonic_moduli`);
   energies stay the storage part; tensor meshes unchanged.
@@ -219,6 +224,86 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
 - Case gotcha: a sin(pi j / N) roller mode is even about the centre, its S_yy odd: zero overlap with TE0
   (om_forward_brillouin_gain uses sin(2 pi j / N)).
 
+## Spontaneous Brillouin (feature brillouin_scattering; `brillouin.py`, `brillouin_drive.py`, `definition_brillouin.py`)
+- Math, conventions, references and fit: `brillouin.py` header; constructor values, flow, sampling, eps per point,
+  interfaces and references of the runtime: `brillouin_drive.py` header; FEM loads: fem `elastic_drives.py` (fem sub
+  file). The drive is the transpose of the optomechanics overlap (non-conjugated E_c E_i, the same Nye / Johnson
+  forms): change both together (Q1 cell / face drives are the transposes of `element_strains` /
+  `face_displacements`: brillouin_tensor_transpose). Moduli laws are `viscoelastic.ModulusLaw.at` (the one formula),
+  called once per omega array (`brillouin.modulus_values`; the scalar path of `at` / `excess` stays the Python-number
+  one the harmonic terms use).
+- Flow: the apply adds a BrillouinDrive (constructor = the frozen contract) in every study, inert outside
+  frequency_response (validation warns); that study binds it through `solver_hooks.PhysicsDriveSolver` after the
+  background stage and the static states, before `reset_frequency_response` (model sub file "Physics drives"), never
+  at apply. Bind returns ONE read-only complex W (n_positions x n_parts, n_unknowns; mixed: pressure rows 0): row 0 is
+  the harmonic load and every row a HarmonicSystem functional, so the spectrum is `last_functionals` /
+  `solve_columns` (section "Frequency response"). It reads the optics through `solver_hooks.DriveOpticsSolver` (em
+  `fdfd_2d` / `fdfd_bor`) as the background left them and never re-solves them (a changed optical system raises in
+  `solve_moved_beam` / `drive_fields`). Each solid binds on its own: the m = 0 + m = 2 pair repeats the optical scan
+  solves.
+- The drive must be the only load (the FDT reads -Im(w^H u) of the drive alone): validation (`_other_load_issues`:
+  load features, holds != 0, couplings into body_force slots), bind and every driven solve (`refuse_drive_loads`)
+  refuse the same; a temperature change stays a static prestate. Reduced sweeps take one column
+  (`refuse_reduced_drive_columns`, validation `_sweep_issues`).
+- Both solid solvers call the module functions of `solver.py` (`checked_physics_drive`, `refuse_drive_loads`,
+  `bind_drive_columns`, `refuse_reduced_drive_columns`, `record_drive_columns`); inside the drive the mesh kinds differ
+  only in its geometry object (`_ElementGeometry` / `_CellGeometry`).
+- optical_physics / collection_physics are kind 'str', not 'ref': a 'ref' physics Param must share the feature's mesh
+  (`validate._check_physics_refs`) and the optics run on their own tensor mesh, so `definition_brillouin` checks
+  name, type, beams, wavelength and grid itself (`_optical_issues`, `_collection_issues`, `_same_optical_grid`).
+- Tensor (Q1) solids: planar plane strain, mechanical_loss_factor only, the optics on the SAME mesh (`_tensor_issues`;
+  bind compares the centres): the drive reads the optical cells as its own (no interpolation, no window hull rule).
+  Their drives use the solid's kept HarmonicSystem (runtime None, private SuperLU; section "Frequency response") for
+  the functionals and column solves: one factor alive (`factor = None` before each solve), dropped after each
+  frequency's readouts and in reset / publish (`_drop_harmonic_factor`), since that host factor lives outside numpy
+  and no ledger sees it.
+- Mirror planes count x 2 (mirror_factor): each must be held by a solid Roller / Symmetry (the even mirror of u), no
+  scan offset along its normal, none with em_fdfd_bor, none with reference 'homogeneous' (the FFT needs the unfolded
+  drive) (`_mirror_issues`, errors; the planes it reports skip the generic `model_mirror_issues` warning, which counts
+  Fixed as a holder: `brillouin_issues(reported_planes=)`).
+- Window rule: a sampler covers the hull of its sample coordinates plus one spacing (`brillouin.bilinear_weights`
+  raises beyond), so validation keeps the drive box inside the first / last window cell centre on every face but the
+  mirror planes and the BOR axis x_lo (`_window_issues`): change the clamp and the check together. Along the beam the
+  drive box starts at the downstream edge of the line cell (em `focused_beam_lines` total_field_from, both solid kinds:
+  the line cell's samples and stencils reach the scattered-field side), and the beam's end-level warnings are re-run
+  at the corners of the scan box (`_scan_issues`, em `focused_beam_scan_messages`).
+- Sampling bias: a face mean along the beam (psd low by cos^4(k h / 2)) biases the values both references read, plain
+  bilinear interpolation (~(q h)^2 / 12) the local reference too, so a reference comparison misses such a bias: pin a
+  new sampling path against an analytic case (selftests_brillouin_spectrum water cases).
+- formulation mixed (triangles): the stress drive projects its mean normal stress onto the solid's P1 pressure space
+  (`HarmonicOperators.drive_projection` -> `SolidDriveInputs.projection`, fem elastic_drives header). Unprojected,
+  its non-P1 part drove the modes that only 4/3 G* and inertia hold (water: viscosity alone), a broadband background
+  ~(q h)^4 / Omega^2 (brillouin_water_2d_hz at 30 nm: psd +1.6 % at the peak, +25 % at 5.9 GHz). The mixed
+  HarmonicOperators therefore keep B, M_p,g and the free-pressure mask; the tensor (Q1) and displacement solids
+  have no such modes.
+- Moving boundary (triangles): never side samples (they reach across the staircase into the other material), the
+  continuous E_par and D_n at the Gauss point itself (`brillouin_drive.py` header). Q1: the two-sided face mean (open:
+  ~1.5 % low in the moving-boundary part at 10 nm glass).
+- Homogeneous reference: the zero padding per axis follows the phonon attenuation (`brillouin.reference_padding`; a
+  fixed padding 2 would leave a ~12-15 % image share in the 2D water cases); MAX_REFERENCE_CELLS raises at run and in
+  validation (`homogeneous_padding` in both).
+- Axisymmetric: two order-1 optical fields drive the solid orders 0 and 2 only, so the full co-polarised spectrum is
+  two solid physics on one triangle mesh, each with a brillouin_scattering on the same optics (the one azimuthal-order
+  split: `definition_helpers.ORDER_SPLIT_READERS`, root "Physics definitions"); their psd add in a derived curve (no
+  combined result). Odd parity is the even solve rotated by pi / (2 m); the m = 0 torsion is dropped (its share warned
+  above TORSION_WARNING). Ring weights ring_angle(m) against the BOR standing-wave power (em sub file).
+- Elastic PML: drive points and reference cells on window elements only (`_drive_inputs`); the ring's absorbed power
+  is part of -Im(w^H u).
+- Memory: n_positions x n_unknowns x 16 B of W (a 100-position map of a 5e5-dof solid: 0.8 GB host); a streaming
+  option (re-solving the optics per frequency) is open. A bind of more than one photoelastic column also keeps the
+  strain operator of every drive point until it returns (fem `DrivePoints.kept`, size in its comment), which the bind
+  estimate counts from the first stress drive on (`_kept_operator_bytes` in `_bind_peak`, not during the set-up) and
+  the time recipe as one build per bind. The drive's `_Optical` values alias the DriveFields arrays (complex128), which
+  the optics book (em `brillouin_drive_items`): the bind books only its centred copies (`_centred_copies`) and, with
+  several positions, the previous position's field arrays beside the next read. `result()` is built once per bind and
+  records and kept (references and peak fits), handed out as a deep copy.
+- Not built: 3D (em_fdfd_3d has no driven solve or 3D focused source; a water focal volume is ~5e7 Yee unknowns and a
+  P2 phonon side ~1e7 dofs, beyond a direct factor; brillouin.py already works on six Voigt components, so a
+  `fem/elastic_drives3d.py` twin plus a solid_mechanics_3d registration would be additive, an analytic Debye
+  illumination without an optical solve first); a co-moving collection beam (scans move the illumination only); an
+  m = 0 torsion solid (cross-polarised shear peaks of solids); reduced sweeps of several columns (block moment
+  matching); anisotropic interface eps (sides isotropic); spatially varying materials (staircase eps fallback).
+
 ## Squeeze film (`squeeze_film.py` = the tet runtime; the film itself is `fem/squeeze_film.py`, fem sub file)
 - Films are evaluated in the `_modal_pencil` finish (on the merged list after a search), so every modal path of the
   tetrahedra keeps that finish; they are not coupled into frequency_response (validation warning).
@@ -237,6 +322,9 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
 - solid_mechanics dispatches on the mesh kind (`_create_solid` -> SolidMechanicsFEMPhysics); shared with tetrahedra:
   `solver_common.FEMSolidCommon` / `HostInputCache` (a new mutation of alpha / dT / sigma0 / beta / rho calls
   `_drop_host_inputs`). What runs and what is refused: the type help and `_triangle_issues`.
+- One field table (`SolidRenderer.field_infos`, class level: definitions, validation) for both mesh kinds; each
+  renderer instance drops its `absent_fields` (tensor: the triangle-only Im / pressure fields; triangles:
+  om_integrand), since a study without stored_fields stores every field the instance lists.
 - Why the gaps stay open: piezo needs phi on every window element + G on a DofMap (~a piezo_fem.py, would unlock
   admittance); guided modes need a 3-component guided stiffness; the planar optomechanics overlap is written on Yee
   faces (needs em_modes on triangles); solid_em_strain_optic has no mesh_transfer (the optical force reaches a
@@ -247,6 +335,14 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
 - solid_fem_kirsch sets h_min: the default dx / 100 floored the hole sizes (1 % low stresses).
 - An x / y body force is one centroid value per element (`ctx.eval_field`), so it caps P2 convergence at O(h^2)
   (sphere_breathing_viscoelastic_frequency_response); no load is normal to a curved boundary (tractions in model axes).
+- Elastic PML ring (`pml2d.py` header): eigenfrequency and frequency_response, one stretch at 2 pi target_frequency in
+  both (a sweep's reference: validation infos / warns on the reflection R^(f_min / target) below it). Every pencil
+  term of the ring is stretched through `ElasticFEMSystem.stretch_arguments` (K via `_pencil_stiffness`, K_sigma,
+  loss, mass, the viscoelastic groups, mixed D_g / B / M_p,g): a new harmonic term on the solid map takes them too, or
+  the ring reflects. FrequencyTerm X and the pencil's mass are then complex (DevicePencil term bytes (16, 16)). The
+  axis rule continues through the y rings (`_axis_ids`, PML only: the window-only `face_edges` would leave the ring's
+  axis free). Physics drives act on window elements only (`_drive_inputs`); modal reduced sweeps refused (complex
+  pencil), adaptive fine. Tetrahedra: still eigen only.
 
 ## Tetrahedron meshes (solid_mechanics_3d; `solver_fem3d.py`, `system_fem3d.py`, fem/elasticity3d.py)
 - `_create_solid_3d` builds SolidMechanicsFEMPhysics3D on 'tetrahedra' (every feature declares both grids); what runs
@@ -336,9 +432,20 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   the u-block fill times `fill_scale` ((dofs per node)^2: `scaled_fill` on a counted FactorFill, the SuperLU heuristic
   alike), and 3D `_tetrahedra_unknowns` / `_entries` include the pressure, so the size rule and the time recipe see it.
   Member shares (`_solid_fraction`, the pressure nodes) count the moduli route and, mixed, the liquids.
+- An elastic PML in the 2D frequency response makes those matrices complex: `viscoelastic_memory_items(stretched=)`
+  and the frequency-response branch of `_fem_memory_estimate` (complex loss / mass, the kept stretched K of the
+  displacement formulation, pencil term bytes) switch on it; a new stretched allocation follows the same flag.
+- brillouin_scattering items: `definition_brillouin.brillouin_memory_items` / `brillouin_time_items`, called by both
+  2D estimator branches (triangles, tensor), mirror bind / record / result and the HarmonicSystem column path (one W,
+  bind transients, local-reference bins, cuDSS device weights only on cuDSS: the caller passes `device`, False on the
+  tensor solid's private SuperLU); a new allocation there updates them. The MaterialGrid arrays the bind copies come
+  from `context.mesh_material_arrays()` (meshing.material_array_names, optional arrays included), the triangle drive
+  elements from `context.selection_cells`, a tensor solid's optical cells from its own MeshEstimate (a triangle
+  solid's context has no estimate of the optics' mesh: base-dx approximation). Their `*_GUESS` constants are
+  uncalibrated.
 - Unverified against counters (no gpu run in selftest_out): the static 'linear' cuDSS items, the solid
   frequency-response HarmonicSystem (with its viscoelastic group terms and mixed u-p blocks), solid DevicePencils,
-  device Newton tangents.
+  device Newton tangents, the brillouin_scattering items.
 
 ## Self-tests (`selftests.py`)
 - Shared case helpers live in selftests.py, selftests_3d.py, selftests_fem3d.py, selftests_eigenfrequency.py,

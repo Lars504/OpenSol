@@ -10,7 +10,7 @@ from ...core.memory_estimate import (BOOL_BYTES, COMPLEX64_BYTES, COMPLEX128_BYT
 from ...model.definition_helpers import (eigen_factorization, eigen_subspace_size, host_direct_back_end,
                                          linear_solver_cudss, resolved_back_end, resolved_stepper_precision)
 from ...model.definition_resonance import point_trace_items
-from ...model.schema import EIGENFREQUENCY_STUDY, resolve_values, solver_backend
+from ...model.schema import resolve_values, solver_backend
 from ...solvers.arpack_shift_invert import (CUDSS_FACTORIZATIONS, MIXED_EIGEN_MIN_UNKNOWNS, arnoldi_basis_bytes,
                                             arnoldi_basis_size, device_arnoldi_fits)
 from ...solvers.cudss_factor import (CUDSS_SOLVE_PHASE, FactorFill, factor_device_bytes, index_map_bytes,
@@ -18,9 +18,12 @@ from ...solvers.cudss_factor import (CUDSS_SOLVE_PHASE, FactorFill, factor_devic
 from ...solvers.host_direct import (HOST_DIRECT_FACTORIZATIONS, factor_label, host_direct_precision, solver_host_bytes,
                                     superlu_bytes_scale)
 from ...solvers.sparse_direct import CUDSS_BACK_ENDS, HOST_FACTOR_BACK_ENDS
+from .bor_focused_beam import CHUNK_VALUES as _DEBYE_CHUNK_VALUES, QUADRATURE_BYTES_PER_VALUE
 from .definition_bloch import bloch_active_axes
-from .definition_common import FREQUENCY_DOMAIN_STUDY, _q_accum_referenced, _study_wavelengths, eigen_solved
+from .definition_common import (FREQUENCY_DOMAIN_STUDY, _q_accum_referenced, _study_wavelengths, brillouin_reads,
+                                brillouin_scan_solves, eigen_solved)
 from .eigenfrequency import FILTER_BLOCK_COLUMNS
+from .focused_beam import wave_count
 from .materials import GYRATION_Z
 
 # FDFD kept Helmholtz term plan (operators._HelmholtzPlan): per cell 9 terms (4 per x / y product + the cell term) into
@@ -44,6 +47,8 @@ REFACTOR_PHASE = 'cuDSS refactorisation'    # refactorize on the planned pattern
 FDTD_FIELDS_ITEM, FDTD_COEFFICIENTS_ITEM, FDTD_BLOCH_ITEM = 'fields', 'update coefficients', 'Bloch imaginary field set'
 FDTD_NUMBA_STREAMED_ITEMS = (FDTD_FIELDS_ITEM, FDTD_COEFFICIENTS_ITEM, FDTD_BLOCH_ITEM)
 ADJOINT_PHASE = 'adjoint solve'             # one eps_sensitivity: transposed-solve temporaries and the gradients
+FOCUSED_BEAM_RHS_PHASE = 'focused beam right-hand side'   # one TFSF rhs of a focused beam (FocusedBeamPhasor)
+BRILLOUIN_SCAN_PHASE = 'Brillouin scan solve'   # one scan position of brillouin_scattering: moved-beam solve + fields
 # _ResonanceFilter.measures: device column blocks alive at once (columns, conjugate, A v, B v and one product
 # temporary; + D v with a row scale)
 _FILTER_BLOCKS = 5
@@ -468,6 +473,16 @@ def fdfd_memory_estimate(polarization):
             run_items += line_block_items
         run_items += off_diagonal_run
         host_items += off_diagonal_host if superlu_host else []
+        # brillouin_scattering scan solves (solve_moved_beam: rhs = zeros + 3 TFSF temporaries; hz drive fields: the 2
+        # face arrays of face_fields (their window copies with the lower edge face are the host item); ez: the subpixel
+        # deltas and their difference)
+        drive_host, drive_transient = brillouin_drive_items(
+            context, n_cells, window_cell_count(mesh), 1 if polarization == 'ez' else 2,
+            solve_vector_bytes=(solve_peak_bytes(n_cells, COMPLEX128_BYTES, back_end == 'cudss_mixed')
+                                if back_end in CUDSS_BACK_ENDS else 0),
+            rhs_vectors=4, drive_field_vectors=2)
+        host_items += drive_host
+        transient_items += drive_transient
         transient_items.append((ASSEMBLY_PHASE, 'Helmholtz assembly (term plan build sort / term buffer)'
                                 + (' before the solution and factor exist' if single_solve else ''),
                                 phase_before_items(assembly_bytes, later_bytes if single_solve else 0)))
@@ -724,6 +739,66 @@ def design_region_memory_estimate(values, n_selected_cells, mesh):
                                      build_extra=BOOL_BYTES * int(mesh.n_cells) + FLOAT32_BYTES * box_cells)
 
 
+def focused_beam_memory_estimate(values, n_selected_cells, mesh):
+    """FeatureType.memory_estimate of an FDFD focused_beam (fdfd_sources.FocusedBeamPhasor; n_selected_cells = the
+    line's cells): its two incident rows (complex128) kept on the run backend, the host wave table of each right-hand
+    side (focused_beam.wave_count: an upper bound, the NA and medium cuts unknown here) and the right-hand side's
+    full-grid temporaries (fdfd_sources.one_sided_tfsf_rhs: incident vector and two operator products, complex128)."""
+    n_along = max(int(n_selected_cells), 1)
+    spacing = float(max(max(mesh.dx_cells), max(mesh.dy_cells)))   # the widest cell: the most waves
+    n_waves = min(wave_count(n_along, spacing, float(values.get('waist') or spacing)), 4 * n_along + 1)
+    return MemoryEstimate.from_items(
+        host_items=(('focused beam wave table (along-line phases x waves, complex128, per right-hand side)',
+                     COMPLEX128_BYTES * (n_along + 8) * n_waves),),
+        run_items=(('focused beam incident rows (2 x complex128)', 2 * COMPLEX128_BYTES * n_along),),
+        transient_items=((FOCUSED_BEAM_RHS_PHASE, 'incident vector and two operator products (3 x complex128)',
+                          3 * COMPLEX128_BYTES * int(mesh.n_cells)),))
+
+
+def bor_focused_beam_memory_estimate(values, n_selected_cells, mesh):
+    """FeatureType.memory_estimate of an em_fdfd_bor focused_beam (bor_focused_beam.BORFocusedBeam; n_selected_cells =
+    the line's r cells), all on the host (the BOR solves there): the kept unit slices (2 slices x (3 n + 1) keys of
+    complex128 values, the int64 codes / indices) and their int64 active positions in the system, one Debye quadrature
+    block (bor_focused_beam.CHUNK_VALUES point x angle values at QUADRATURE_BYTES_PER_VALUE: an upper bound, smaller
+    lines use fewer) and the int64 inverse map (full E vector) a key-position lookup builds once per system; the
+    right-hand side vectors themselves are the physics' items."""
+    n_line = max(int(n_selected_cells), 1)
+    keys = 3 * n_line + 1
+    full_vector = 3 * int(mesh.n_cells) + int(mesh.nx) + int(mesh.ny)   # (nr + 1) nz + nr nz + nr (nz + 1)
+    return MemoryEstimate.from_items(host_items=(
+        ('focused beam unit slices (2 x complex128 values per key, int64 codes, indices and 2 positions)',
+         2 * keys * (COMPLEX128_BYTES + 2 * _INT64_BYTES)),
+        ('focused beam Debye quadrature block (point x angle values, upper bound)',
+         _DEBYE_CHUNK_VALUES * QUADRATURE_BYTES_PER_VALUE),
+        ('focused beam key-position lookup (int64 inverse map of the full E vector)', _INT64_BYTES * full_vector)))
+
+
+def brillouin_drive_items(context, n_unknowns, window_cells, field_components, solve_vector_bytes=0, rhs_vectors=1,
+                          drive_field_vectors=0, on_host=False):
+    """(host items, transient items) of what brillouin_scattering features (definition_common.brillouin_reads /
+    brillouin_scan_solves) ask of this optical physics: the host DriveFields of one position (field_components window
+    phasors and permittivities, complex128, + the PEC mask); with scan solves one position at a time (phase
+    BRILLOUIN_SCAN_PHASE; on_host: a host item, for the host-solved types) the largest of its right-hand side build
+    (rhs_vectors unknown-sized complex128 vectors), its solve (solution + rhs + solve_vector_bytes of the factor) and
+    its drive fields (solution + drive_field_vectors temporaries). ([], []) when nothing reads the physics."""
+    if not brillouin_reads(context.spec, context.physics_spec.name):
+        return [], []
+    window_cells = int(window_cells)
+    host_items = [('Brillouin drive fields of one position (host window phasors and permittivities, complex128)',
+                   2 * int(field_components) * COMPLEX128_BYTES * window_cells + BOOL_BYTES * window_cells)]
+    scan = brillouin_scan_solves(context.spec, context.physics_spec.name)
+    if not scan:
+        return host_items, []
+    vector = COMPLEX128_BYTES * int(n_unknowns)
+    peak = max(int(rhs_vectors) * vector, 2 * vector + int(solve_vector_bytes),
+               (1 + int(drive_field_vectors)) * vector)
+    label = (f'moved-beam right-hand side, solution and drive-field temporaries ({scan} scan solve(s), one position at '
+             'a time)')
+    if on_host:
+        return host_items + [(label, peak)], []
+    return host_items, [(BRILLOUIN_SCAN_PHASE, label, peak)]
+
+
 def pec_memory_estimate(keep_arrays):
     """FeatureType.memory_estimate of a pec_domain: `keep_arrays` float32 full-grid keep masks of the engine (FDTD ez
     1, hz 2, FDFD / em_modes 0) plus the bool union PEC mask; counted per feature, allocated by the first only."""
@@ -843,8 +918,7 @@ def bor_memory_estimate(settings_values, mesh, context):
         return _bor_fem_memory_estimate(settings_values, mesh, context)
     n_cells = int(mesh.n_cells)
     unknowns = 3 * n_cells
-    study_type = context.spec.study.type
-    eigen = study_type == EIGENFREQUENCY_STUDY
+    eigen = eigen_solved(context.spec, context.physics_spec.name)   # the create's test (definition_bor._create)
     shifted = (context.solvers or {}).get('shifted')
     line_block = shifted is not None and shifted.solver_type.name == 'line_block'
     factorization = host_factorization(context.solvers, eigen)
@@ -864,8 +938,15 @@ def bor_memory_estimate(settings_values, mesh, context):
                    ('solution, rhs and centre phasors (complex128)', (4 * 3 + 6) * COMPLEX128_BYTES * n_cells),
                    ('kept materials (eps_rr, eps_phiphi, eps_zz, mu complex128, pec) and Yee fields of the driven solve',
                     (4 + 6) * COMPLEX128_BYTES * n_cells + n_cells)]
+    # brillouin_scattering reads / scan solves (fdfd_bor solve_moved_beam, all on the host): the rhs sum and a focused
+    # beam's TFSF temporaries (bor_ports.slice_tfsf_rhs: incident vector, two operator products, the masked product and
+    # the difference); drive_fields of a moved solution: its E on the Yee points (yee_e_fields: the full E vector and
+    # the E_phi copy, ~2 unknown vectors)
+    drive_host, _ = brillouin_drive_items(context, unknowns, window_cell_count(mesh), 3, rhs_vectors=6,
+                                          drive_field_vectors=2, on_host=True)
+    host_items += drive_host
     n_listed = len(settings_values.get('azimuthal_orders') or ())
-    order_sum = bool(n_listed) and study_type in ('stationary', FREQUENCY_DOMAIN_STUDY)   # the driven order sum
+    order_sum = bool(n_listed) and not eigen   # the driven order sum (also as a background physics)
     n_orders = max(n_listed, 1) if eigen or order_sum else 1
     if order_sum:   # solvers/fdfd_bor._solve_order_sum: one order's factor at a time (the item above)
         host_items.append(('driven order sum: Yee fields of the +m / -m terms and their phi = 0 sum (complex128), '

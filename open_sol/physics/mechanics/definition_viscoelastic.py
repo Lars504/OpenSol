@@ -162,14 +162,15 @@ def _physics_issues(vctx, settings_values, path, fem, dimensions, materials, res
         issues.append(Issue('error', path, f'{len(tuples)} distinct viscoelastic material parameter sets exceed '
                                            f'{MAX_GROUPS} (each is a fixed term of the frequency response): merge '
                                            'materials of equal values'))
-    if mixed:   # V22
+    if mixed:   # V22 (2D triangles: the elastic PML stretches the mixed blocks too, solver_fem._mixed_operators)
         pml = sorted(key for key, value in settings_values.items()
-                     if key.startswith('pml_') and key not in ('pml_cells', 'pml_reflection') and value)
+                     if key.startswith('pml_') and key not in ('pml_cells', 'pml_reflection') and value
+                     and dimensions == 3)
         periodic = sorted(key for key in ('periodic_x', 'periodic_y', 'periodic_z') if settings_values.get(key))
         if pml or periodic:
             issues.append(Issue('error', path, f"formulation mixed is not available with {', '.join(pml + periodic)} "
-                                               '(an elastic PML runs in the eigenfrequency study only; the harmonic '
-                                               'output rows assume no periodic map)'))
+                                               '(an elastic PML of a 3D solid runs in the eigenfrequency study only; '
+                                               'the harmonic output rows assume no periodic map)'))
     return issues
 
 
@@ -427,13 +428,15 @@ def scaled_fill(fill, counts):
 
 
 def viscoelastic_memory_items(counts, *, elements, local, scalar_dofs, matrix_rows, mass_entries, back_end, loss,
-                              dimensions) -> tuple:
+                              dimensions, stretched=False) -> tuple:
     """(host items, run items) of the viscoelastic group terms and the mixed blocks of counts (viscoelastic_counts) on
     top of the caller's frequency-response items (whose unknowns / entries take counts.unknowns / counts.entries):
     elements / local / scalar_dofs of the mesh (scalar_dofs: the full-mesh nodal display map), matrix_rows the u rows
     of the group matrices (2D: c x the solid map's dofs; 3D: 3 x the full map's), mass_entries the u mass's stored
     entries, back_end the resolved 'linear' back end (cuDSS: the device slots; MUMPS / PARDISO: a HostPencil), loss
-    (a loss factor: the loss sum). Every item labelled from the code that allocates it."""
+    (a loss factor: the loss sum), stretched (an elastic PML of the 2D frequency response: the group matrices, B,
+    M_p,g, the saddle blocks and the term values complex128, ElasticFEMSystem.stretch_arguments). Every item labelled
+    from the code that allocates it."""
     from ...solvers.host_direct import HOST_DIRECT_BACK_ENDS
     from ...solvers.sparse_direct import CUDSS_BACK_ENDS, LOWER_STORED_FRACTION
     host, run = [], []
@@ -442,24 +445,30 @@ def viscoelastic_memory_items(counts, *, elements, local, scalar_dofs, matrix_ro
                      _ELEMENT_MODULI_BYTES * elements))
     if not counts.active:
         return host, run
-    csr, index = FLOAT64_CSR_ENTRY_BYTES, INT32_BYTES
+    index = INT32_BYTES
+    value = COMPLEX128_BYTES if stretched else FLOAT64_BYTES   # matrix values (stretched: complex symmetric)
+    csr = value + index
+    kind = 'complex128' if stretched else 'float64'
+    pattern_sum_bytes = _PATTERN_SUM_BYTES + 2 * (value - FLOAT64_BYTES)
     n_p = counts.pressure_dofs
     n_total = matrix_rows + n_p
     n_free = counts.unknowns
     if counts.group_matrices:
-        coo = (_COO_BYTES_3D * min(counts.group_coo, counts.group_matrices * COO_BATCH_ENTRIES) if dimensions == 3
-               else _COO_BYTES_2D * counts.group_coo)
+        coo_value = value - FLOAT64_BYTES   # the extra value bytes of a stretched (complex) COO entry
+        coo = ((_COO_BYTES_3D + coo_value) * min(counts.group_coo, counts.group_matrices * COO_BATCH_ENTRIES)
+               if dimensions == 3 else (_COO_BYTES_2D + coo_value) * counts.group_coo)
         host.extend([('viscoelastic group assembly COO (every group and part until its CSR)', coo),
-                     ('viscoelastic group matrices (float64 CSR per group and part)',
+                     (f'viscoelastic group matrices ({kind} CSR per group and part)',
                       csr * counts.group_entries + index * (matrix_rows + 1) * counts.group_matrices)])
     if counts.mixed:
         groups, grouped = counts.groups, counts.grouped_elements
+        # + the kept free-pressure mask (bool per pressure dof: HarmonicOperators.pressure_free)
         if dimensions == 3:   # PressureSpace3D: the element table, per group its elements and nodes
-            space = _INT64_BYTES * (4 * elements + grouped + n_p)
+            space = _INT64_BYTES * (4 * elements + grouped + n_p) + n_p
             coo = _COO_BYTES_3D * min(counts.pressure_coo, (1 + groups) * COO_BATCH_ENTRIES)
         else:   # PressureSpace: the element table, per group a P1 DofMap (elements, element dofs, ids, positions)
-            space = _INT64_BYTES * (3 * elements + 4 * grouped + n_p + groups * elements)
-            coo = _COO_BYTES_2D * counts.pressure_coo
+            space = _INT64_BYTES * (3 * elements + 4 * grouped + n_p + groups * elements) + n_p
+            coo = (_COO_BYTES_2D + value - FLOAT64_BYTES) * counts.pressure_coo
         coupling, pressure_mass, deviatoric = counts.coupling_entries, counts.pressure_entries, counts.group_entries
         # mixed_harmonic_operators: -B and -B^T embedded and their sum (saddle_coupling), per group D_g and M_p,g
         # embedded (index shifts: copies) and the scaled constant copies, the constant operator sum (saddle + D_g + M_p),
@@ -468,17 +477,17 @@ def viscoelastic_memory_items(counts, *, elements, local, scalar_dofs, matrix_ro
                   + mass_entries + ((deviatoric + pressure_mass) if loss else 0))
         matrices = 6 + 4 * groups
         host.extend([
-            ('mixed pressure space (element table, per-group P1 dof maps)', space),
+            ('mixed pressure space (element table, per-group P1 dof maps, free-pressure mask)', space),
             ('mixed coupling B and pressure mass assembly COO', coo),
-            ('mixed coupling B and pressure masses M_p,g (float64 CSR)',
+            (f'mixed coupling B and pressure masses M_p,g ({kind} CSR, kept on HarmonicOperators)',
              csr * (coupling + pressure_mass) + index * (n_p + 1) * (1 + groups)),
-            ('mixed saddle-point blocks in the [u; p] numbering (float64 CSR: -B, -B^T, embedded D_g and M_p,g, scaled '
+            (f'mixed saddle-point blocks in the [u; p] numbering ({kind} CSR: -B, -B^T, embedded D_g and M_p,g, scaled '
              'copies, the operator, loss and mass)', csr * blocks + index * (n_total + 1) * matrices),
             ('mixed pattern sums of the saddle-point operator (COO of every part)',
-             _PATTERN_SUM_BYTES * (2 * coupling + deviatoric + pressure_mass)),
+             pattern_sum_bytes * (2 * coupling + deviatoric + pressure_mass)),
             ('mixed Schur row scale (B embedded over every unknown and its squared free-dof reduction, float64 CSR; '
              'the per-frequency inverse diagonal and proxy)',
-             csr * 2 * coupling + index * (n_total + n_free + 2) + 2 * FLOAT64_BYTES * n_free),
+             (csr + FLOAT64_CSR_ENTRY_BYTES) * coupling + index * (n_total + n_free + 2) + 2 * FLOAT64_BYTES * n_free),
             ('mixed shown pressure (complex), its nodal display fields and point values',
              COMPLEX128_BYTES * (n_p + elements * (local + 1)) + (COMPLEX128_BYTES + 2 * FLOAT64_BYTES) * scalar_dofs),
             ('mixed padded load and held values (float64)', 2 * FLOAT64_BYTES * n_total)])
@@ -494,19 +503,19 @@ def viscoelastic_memory_items(counts, *, elements, local, scalar_dofs, matrix_ro
         terms, term_entries, entries = counts.terms, counts.term_entries, counts.entries
         reduced = (2 if counts.column_map else 1) * term_entries   # a congruence (m = 1) holds its product too
         host.extend([
-            ('frequency response reduced frequency terms (free-dof float64 CSR per term)',
+            (f'frequency response reduced frequency terms (free-dof {kind} CSR per term)',
              csr * reduced + index * (n_free + 1) * terms),
-            ('frequency response term positions and values on the summed pattern (int64 + float64)',
-             (_INT64_BYTES + FLOAT64_BYTES) * term_entries),
+            (f'frequency response term positions and values on the summed pattern (int64 + {kind})',
+             (_INT64_BYTES + value) * term_entries),
             ('frequency response summed pattern with the term zeros and the position search (int64 keys)',
-             csr * term_entries + _PATTERN_SUM_BYTES * term_entries + _POSITION_KEY_BYTES * (entries + term_entries)),
+             csr * term_entries + pattern_sum_bytes * term_entries + _POSITION_KEY_BYTES * (entries + term_entries)),
             ('frequency response term diagonals and held-value products (float64 and complex per term)',
              (FLOAT64_BYTES + COMPLEX128_BYTES) * n_total * terms)])
         if back_end in CUDSS_BACK_ENDS or back_end in HOST_DIRECT_BACK_ENDS:   # the pencil route: slots mapped once
             union = int(math.ceil(term_entries * (LOWER_STORED_FRACTION if back_end in CUDSS_BACK_ENDS else 1.0)))
             host.append(('frequency response term slots on the pencil (union slots, per-term index and values, one '
                          "frequency's values; the pattern's int64 rows / columns while mapping)",
-                         (_INT64_BYTES + _INT64_BYTES + FLOAT64_BYTES + COMPLEX128_BYTES) * union
+                         (_INT64_BYTES + _INT64_BYTES + value + COMPLEX128_BYTES) * union
                          + 2 * _INT64_BYTES * entries))
             if back_end in CUDSS_BACK_ENDS:   # factorize_pencil(extra=) uploads both per factorisation
                 run.append(('frequency response per-frequency term values and slots (device)',

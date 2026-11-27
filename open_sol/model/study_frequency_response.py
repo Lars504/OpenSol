@@ -7,13 +7,15 @@ import time
 
 from .definition_helpers import study_frequencies
 from .schema import FREQUENCY_RESPONSE_STUDY, Issue, Param, StudyType
-from .solver_hooks import FrequencyResponseSolver, ReducedSweepSolver
-from .study import (_PARITY_SECTORS_PARAM, LogEvent, _background_fixed_point_params, _background_stage,
-                    _count_progress, _frequency_range_issues, _scipy_issues, _selected_physics,
+from .solver_hooks import FrequencyResponseSolver, PhysicsDriveSolver, ReducedSweepSolver
+from .study import (_PARITY_SECTORS_PARAM, Cancelled, LogEvent, _background_fixed_point_params, _background_stage,
+                    _count_progress, _frequency_range_issues, _physics_text, _scipy_issues, _selected_physics,
                     _solve_static_states, _solver_roles, _study_solved_types, _with_parity_sectors)
 
 STUDY_NAME = FREQUENCY_RESPONSE_STUDY
 _FREQUENCY_STAGE = 'Frequency solves'
+_DRIVE_STAGE = 'Optical drives'   # bind_physics_drives of the solved PhysicsDriveSolvers (only when one has drives)
+_DRIVE_TICK_UNIT = 'drive column set'
 _SOLVED_TYPES_TEXT = 'solid_mechanics, solid_mechanics_3d, membrane or pressure_acoustics'   # the frequency-response types (missing-physics remedy)
 SNAPSHOT_CHOICES = ('all', 'last', 'none')   # setting snapshots: frequencies that keep a snapshot
 SWEEP_METHOD_CHOICES = ('direct', 'adaptive', 'modal')   # setting sweep_method (fem.reduced_harmonic for the others)
@@ -26,22 +28,30 @@ def frequency_label(frequency):
 
 
 def _run_frequency_response(session, values, emit, control, service):
-    """Background stationary solve, background -> solved couplings once, then per frequency solve_frequency_response
-    of every solved physics and a snapshot labelled 'f = <Hz> Hz' as the snapshots setting selects."""
+    """Background stationary solve, background -> solved couplings once, the static states, the physics drives of the
+    solved PhysicsDriveSolvers (bind_physics_drives, stage 'Optical drives' only when one has drives), then per
+    frequency solve_frequency_response of every solved physics and a snapshot labelled 'f = <Hz> Hz' as the snapshots
+    setting selects."""
     runner = session.runner
     frequencies = study_frequencies(values)
     snapshots = values['snapshots']
     solved, background = _solver_roles(runner.physics, FrequencyResponseSolver, 'frequency response',
                                        f'add a {_SOLVED_TYPES_TEXT} physics', selected=_selected_physics(session))
+    drivers = [name for name in solved
+               if isinstance(runner.physics[name], PhysicsDriveSolver) and runner.physics[name].physics_drives]
     stage = _background_stage(
         session, background, solved, values, emit, control, service,
         ('frequency response', 'a frequency response study feeds no harmonic solution back into other physics'),
         f"Frequency response study: {len(frequencies)} frequencies, {min(frequencies):.6g}-{max(frequencies):.6g} Hz; "
         f"solved physics {', '.join(solved)}; background physics {', '.join(background) or 'none'}",
-        [_FREQUENCY_STAGE])
+        [_DRIVE_STAGE] * bool(drivers) + [_FREQUENCY_STAGE])
     status, n_solved, frequency_sweep = stage.status, 0, None
     if status == 'completed':
         _solve_static_states(runner, solved, False, emit)   # loads are the drive: the initial stress alone
+        if drivers:   # after the optics' background solve and the static states, before the records are reset
+            status = _bind_physics_drives(session, drivers, stage.stages.stage_emit(_DRIVE_STAGE), emit, control,
+                                          service)
+    if status == 'completed':
         solvers = {name: runner.physics[name] for name in solved}
         for solver in solvers.values():
             solver.reset_frequency_response()
@@ -80,6 +90,37 @@ def _run_frequency_response(session, values, emit, control, service):
     return {'status': status, 'ticks': n_solved, 'tick_unit': 'frequency', 't_end': runner.t,
             'fixed_point': stage.fixed_point, 'response_frequencies': frequencies[:n_solved],
             'frequency_sweep': frequency_sweep}
+
+
+def _bind_physics_drives(session, drivers, emit_stage, emit, control, service) -> str:
+    """bind_physics_drives of every solved PhysicsDriveSolver with drives (each an equal share of the stage, its
+    progress(done, total) per bound column set: one optical solve each), its log lines emitted; cancel checks between
+    physics and inside progress -> 'completed' / 'cancelled' (a cancelled bind keeps the previous bound state)."""
+    runner = session.runner
+    wall_start = time.perf_counter()
+    done = [0]
+    for index, name in enumerate(drivers):
+        if control.checkpoint_cancelled(service):
+            return 'cancelled'
+        text = _physics_text(session, name)
+
+        def progress(count, total, index=index, text=text):
+            done[0] += 1
+            emit_stage(_count_progress(runner, min((index + count / max(total, 1)) / len(drivers), 1.0), done[0],
+                                       wall_start, f'{text}: optical drive {count} of {total}', _DRIVE_TICK_UNIT))
+            control.checkpoint(service)   # raises Cancelled
+        emit_stage(_count_progress(runner, index / len(drivers), done[0], wall_start,
+                                   f'{text}: binding the optical drives ({index + 1}/{len(drivers)})',
+                                   _DRIVE_TICK_UNIT))
+        try:
+            lines = runner.physics[name].bind_physics_drives(runner.physics, progress)
+        except Cancelled:
+            return 'cancelled'
+        for level, line in lines:
+            emit(LogEvent(level, f'{name}: {line}'))
+    emit_stage(_count_progress(runner, 1.0, done[0], wall_start, f'{done[0]} optical drive column sets bound',
+                               _DRIVE_TICK_UNIT))
+    return 'completed'
 
 
 def _plan_reduced_sweeps(solvers, frequencies, values, emit, emit_stage, runner):
@@ -226,8 +267,9 @@ _DESCRIPTION = (
     'triangles / tetrahedra: frequency-dependent moduli G*(omega), K*(omega) per material (viscosity, relaxation '
     'branches; sweep_method direct) and the setting formulation mixed (the u-p saddle point, liquids included); '
     'every load, prescribed displacement, electrode voltage and floating charge is a complex drive amplitude (phase '
-    '0); one complex symmetric factor per frequency (2D: host SuperLU outside the solver roles, counters in the '
-    "summary; solid_mechanics_3d: its 'linear' sparse_direct solver, SuperLU or cuDSS LDL^T with the plan reused). "
+    '0); one complex symmetric factor per frequency (2D tensor meshes: host SuperLU outside the solver roles, '
+    "counters in the summary; triangles and solid_mechanics_3d: the 'linear' sparse_direct solver, SuperLU or cuDSS "
+    'LDL^T with the plan reused). '
     'With stress_stiffening the initial_stress is first relaxed by a static solve (loads stay the drive) and its '
     'K_sigma joins K (real, no loss). A free body is allowed (regular at f > 0). membrane: the pressure_load / '
     "line_force / point_force phasors, one complex factor per frequency on its 'linear' sparse_direct solver. Results: "
@@ -242,7 +284,11 @@ _DESCRIPTION = (
     'planar model, or a tilt about a transverse axis at azimuthal_order 1; tetrahedra hold uniform values, so '
     'translations only), omega Im(W) / 2 the mean power into the solid); '
     'solid_probe samples and electrode tables stay empty; membrane: field_probe, port and mode_projection records '
-    'per frequency. Background physics run first (their couplings into the solved physics apply once); couplings '
+    'per frequency. Physics drives (solid_mechanics on triangles and on planar tensor meshes: brillouin_scattering) '
+    'are built after the background stage from the solved optics (stage Optical drives), one optical solve on its '
+    'kept factor and one drive column per scan position, every column solved on the same solid factor per '
+    'frequency; the drive is then the only load. Background physics run first (their couplings into the '
+    'solved physics apply once); couplings '
     'reading a solved physics: validation error; StudySpec.solved_physics restricts the solved physics. ticks = '
     'frequencies; summary response_frequencies (+ frequency_sweep with a reduced sweep). parity_sectors: membrane '
     'symmetry / antisymmetry faces are mirror planes too.')

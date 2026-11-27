@@ -182,7 +182,8 @@ class ElasticFEMSystem(DirectElasticSystem):
     (bool over the vector dofs), `prolongation` (m = 1 axis ties u_phi = -u_r: CSR x = P x_r over the free dofs, else
     None), `unknown` (host (n_dofs, c) of the last solve or shown mode). K_ff is factorised by the first solve after an
     assembly (an eigenfrequency or frequency-response study never factorises K alone). `pml` (fem.pml.PMLStretch, set
-    by the caller) stretches the pencil operators (stiffness(stretched=True), mass, geometric_stiffness). `periodic`
+    by the caller) stretches the pencil operators (stiffness(stretched=True), mass, geometric_stiffness; the caller's
+    viscoelastic group and mixed u-p terms through stretch_arguments). `periodic`
     ((periodic_x, periodic_y), (k_x, k_y)) set by the caller makes every assembly build `bloch` (bloch2d BlochCell3D of
     the solid map) and the rigid-mode check periodic."""
 
@@ -311,7 +312,7 @@ class ElasticFEMSystem(DirectElasticSystem):
     def stiffness(self, coefficients, stretched=False):
         """Host CSR K of the solid map from per-element coefficients (fem.elasticity); stretched: the PML ring's
         complex form (pml set), else the real unstretched one."""
-        stretch = self._stretch_arguments() if stretched else {}
+        stretch = self.stretch_arguments() if stretched else {}
         if self.azimuthal_order:
             return assemble_azimuthal_stiffness(self.dofs, coefficients, self.azimuthal_order, **stretch)
         return assemble_elastic_stiffness(self.dofs, coefficients, axisymmetric=self.axisymmetric, **stretch)
@@ -396,7 +397,7 @@ class ElasticFEMSystem(DirectElasticSystem):
     def mass(self, density):
         """Host CSR consistent mass of the solid dofs (density per mesh element [kg/m^3]); with `pml` the ring's part
         weighted by the stretch Jacobian (complex)."""
-        stretch = self._stretch_arguments()
+        stretch = self.stretch_arguments()
         if self.azimuthal_order:
             return assemble_azimuthal_mass(self.dofs, density, **stretch)
         return assemble_elastic_mass(self.dofs, density, axisymmetric=self.axisymmetric, **stretch)
@@ -404,7 +405,7 @@ class ElasticFEMSystem(DirectElasticSystem):
     def geometric_stiffness(self, stress):
         """Host CSR K_sigma of a fem.elasticity.StressField on the solid map (with `pml` the ring stretched as K; an
         azimuthal order: the order-m form of a prescribed axisymmetric stress)."""
-        stretch = self._stretch_arguments()
+        stretch = self.stretch_arguments()
         if self.azimuthal_order:
             return assemble_azimuthal_geometric_stiffness(self.dofs, stress, self.azimuthal_order, **stretch).tocsr()
         return assemble_geometric_stiffness(self.dofs, stress, axisymmetric=self.axisymmetric, **stretch).tocsr()
@@ -426,13 +427,14 @@ class ElasticFEMSystem(DirectElasticSystem):
         return (f"P{self.order} elasticity on {len(self.dofs.elements):,} triangles{order}{ring}: "
                 f'{int(self.free.sum()):,} free dofs, {factor}')
 
-    # ---- internals ----
-    def _stretch_arguments(self) -> dict:
-        """stretch= / radial_ratio= of the fem.elasticity assemblers ({} without a PML ring)."""
+    def stretch_arguments(self) -> dict:
+        """stretch= / radial_ratio= of the fem.elasticity / fem.mixed_elasticity assemblers ({} without a PML ring):
+        every pencil term of the ring takes them (K, mass, K_sigma, loss, viscoelastic groups, mixed blocks)."""
         if self.pml is None:
             return {}
         return {'stretch': self.pml.stretches, 'radial_ratio': self.pml.radial_ratio if self.axisymmetric else None}
 
+    # ---- internals ----
     def _tie_prolongation(self):
         """Azimuthal order 1: CSR P (c n_dofs, n_reduced) over the free dofs with u_phi = -u_r on the tied axis nodes
         (their u_phi taken out of `free`; a held u_r holds u_phi at 0 too); None without ties on the solid map."""

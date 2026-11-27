@@ -14,93 +14,116 @@ Topics (describe(topic) or python -m open_sol describe <topic>): spec, expressio
 
 Line ranges in api_reference.md (Read with offset / limit; Grep '^## ' lists the same headings). Sections over 400 lines also list their subsections. "Help: shared `<key>`" (a line, or the end of a param line) stands for the text under "#### `<key>`" in Shared help texts (Grep it); every occurrence of a repeated long text points there.
 
-- lines 105-455: Model spec
-- lines 457-586: Expressions
-- lines 588-854: Geometry
-- lines 856-1012: Materials
-- lines 1014-1060: Mesh
-- lines 1062-1200: Solvers
-- lines 1202-1920: Shared help texts
-- lines 1922-2052: Physics type `drift_diffusion` - Semiconductor (drift-diffusion, 2D)
-- lines 2054-2248: Physics type `elastic_waves` - Elastic and Acoustic Waves, time domain (2D, in-plane)
-- lines 2250-2353: Physics type `electric_currents` - Electric Currents
-- lines 2355-2510: Physics type `electrostatics` - Electrostatics
-- lines 2512-2692: Physics type `em_eme` - Electromagnetic Waves, eigenmode expansion (2D)
-- lines 2694-2849: Physics type `em_eme_3d` - Electromagnetic Waves, eigenmode expansion (3D)
-- lines 2851-2938: Physics type `em_fdfd_3d` - Electromagnetic Waves, frequency domain (3D)
-- lines 2940-3099: Physics type `em_fdfd_bor` - Electromagnetic Waves, frequency domain (axisymmetric, azimuthal order m)
-- lines 3101-3238: Physics type `em_fdfd_conical` - Electromagnetic Waves, frequency domain (out-of-plane wave number k_z)
-- lines 3240-3491: Physics type `em_fdfd_ez` - Electromagnetic Waves, frequency domain (2D, electric field out of plane)
-- lines 3493-3764: Physics type `em_fdfd_hz` - Electromagnetic Waves, frequency domain (2D, magnetic field out of plane)
-- lines 3766-4155: Physics type `em_fdfd_nonlinear` - Nonlinear optics, frequency domain (2D, harmonic channels)
-- lines 4157-4261: Physics type `em_fdfd_sphere` - Electromagnetic Waves, frequency domain (spherically symmetric, multipole orders)
-- lines 4263-4508: Physics type `em_fdtd_3d` - Electromagnetic Waves, time domain (3D)
-- lines 4510-4698: Physics type `em_fdtd_bor` - Electromagnetic Waves, time domain (axisymmetric, azimuthal order m)
-- lines 4700-5000: Physics type `em_fdtd_ez` - Electromagnetic Waves, time domain (2D, electric field out of plane)
-- lines 5002-5310: Physics type `em_fdtd_hz` - Electromagnetic Waves, time domain (2D, magnetic field out of plane)
-- lines 5312-5454: Physics type `em_modes` - Electromagnetic Waves, cross-section modes
-- lines 5456-5703: Physics type `heat` - Heat Transfer in Solids
-- lines 5705-5838: Physics type `laminar_flow` - Laminar Flow (2D)
-- lines 5840-5979: Physics type `magnetic_fields_ac` - Magnetic Fields, AC (2D)
-- lines 5981-6100: Physics type `magnetostatics` - Magnetostatics (2D)
-- lines 6102-6216: Physics type `magnetostatics_3d` - Magnetostatics (3D)
-- lines 6218-6457: Physics type `membrane` - Membrane
-- lines 6459-6652: Physics type `pressure_acoustics` - Pressure Acoustics, frequency domain
-- lines 6654-7031: Physics type `solid_mechanics` - Solid Mechanics (2D)
-- lines 7033-7474: Physics type `solid_mechanics_3d` - Solid Mechanics (3D)
-  - lines 7041-7067: Settings (PhysicsSpec.settings)
-  - lines 7069-7193: Material properties (MaterialSpec.properties)
-  - lines 7195-7238: Fields
-  - lines 7240-7245: Source slots
-  - lines 7247-7253: Feature `solid_mechanics_3d.fixed` - Fixed
-  - lines 7255-7261: Feature `solid_mechanics_3d.roller` - Roller
-  - lines 7263-7269: Feature `solid_mechanics_3d.symmetry` - Symmetry
-  - lines 7271-7279: Feature `solid_mechanics_3d.displacement` - Displacement
-  - lines 7281-7287: Feature `solid_mechanics_3d.fixed_domain` - Fixed (domain)
-  - lines 7289-7297: Feature `solid_mechanics_3d.prescribed_displacement_domain` - Prescribed displacement (domain)
-  - lines 7299-7311: Feature `solid_mechanics_3d.boundary_load` - Boundary load
-  - lines 7313-7325: Feature `solid_mechanics_3d.body_force` - Body force
-  - lines 7327-7335: Feature `solid_mechanics_3d.temperature_change` - Temperature change
-  - lines 7337-7345: Feature `solid_mechanics_3d.solid_probe` - Solid probe
-  - lines 7347-7353: Feature `solid_mechanics_3d.frequency_probe` - Frequency probe
-  - lines 7355-7361: Feature `solid_mechanics_3d.resonance_table` - Resonance table
-  - lines 7363-7371: Feature `solid_mechanics_3d.mode_shapes` - Mode shapes
-  - lines 7373-7392: Feature `solid_mechanics_3d.squeeze_film_damping` - Squeeze-film damping
-  - lines 7394-7402: Feature `solid_mechanics_3d.thermoelastic_damping` - Thermoelastic damping
-  - lines 7404-7417: Feature `solid_mechanics_3d.electrode` - Electrode
-  - lines 7419-7432: Feature `solid_mechanics_3d.electrode_domain` - Electrode (domain)
-  - lines 7434-7448: Feature `solid_mechanics_3d.admittance` - Admittance
-  - lines 7450-7474: Feature `solid_mechanics_3d.optomechanical_coupling` - Optomechanical coupling
-- lines 7476-7482: Coupling type `acoustics_em_acousto_optic` - Acousto-optic effect (elastic waves -> electromagnetic waves)
-- lines 7484-7490: Coupling type `currents_heat_joule` - Joule heating (electric currents -> heat)
-- lines 7492-7500: Coupling type `electrostatics_acoustics_piezo` - Piezoelectric coupling (electrostatics <-> elastic waves)
-- lines 7502-7510: Coupling type `electrostatics_em_pockels` - Pockels effect (electrostatics -> electromagnetic waves)
-- lines 7512-7518: Coupling type `em_acoustics_photoacoustic` - Photoacoustic heating (electromagnetic waves -> elastic waves)
-- lines 7520-7526: Coupling type `em_heat_joule` - Joule heating (electromagnetic waves -> heat)
-- lines 7528-7538: Coupling type `em_semiconductor_generation` - Photogeneration (electromagnetic waves -> semiconductor)
-- lines 7540-7546: Coupling type `em_solid_optical_force` - Optical force (electromagnetic waves -> solid mechanics)
-- lines 7548-7560: Coupling type `field_transfer` - Field transfer
-- lines 7562-7568: Coupling type `fluid_heat_convection` - Convective heat transport (laminar flow -> heat)
-- lines 7570-7576: Coupling type `heat_em_phase_change` - Phase change (heat -> electromagnetic waves)
-- lines 7578-7584: Coupling type `heat_em_thermo_optic` - Thermo-optic effect (heat -> electromagnetic waves)
-- lines 7586-7592: Coupling type `heat_solid_thermal_strain` - Thermal expansion (heat -> solid mechanics)
-- lines 7594-7600: Coupling type `magnetic_heat_induction` - Induction heating (magnetic fields AC -> heat)
-- lines 7602-7608: Coupling type `magnetic_solid_lorentz_force` - Lorentz force (magnetic fields -> solid mechanics)
-- lines 7610-7622: Coupling type `semiconductor_em_plasma_dispersion` - Free-carrier plasma dispersion (semiconductor -> electromagnetic waves)
-- lines 7624-7632: Coupling type `solid_em_strain_optic` - Strain-optic effect (solid mechanics -> electromagnetic waves)
-- lines 7634-7642: Coupling type `solid_membrane_tension` - Film prestress (solid mechanics -> membrane)
-- lines 7644-7670: Study type `eigenfrequency` - Eigenfrequency
-- lines 7672-7698: Study type `frequency_domain` - Frequency domain
-- lines 7700-7736: Study type `frequency_response` - Frequency response
-- lines 7738-7752: Study type `mode_analysis` - Mode analysis
-- lines 7754-7769: Study type `nonlinear_frequency_domain` - Nonlinear frequency domain
-- lines 7771-7787: Study type `optimization` - Optimization
-- lines 7789-7806: Study type `optomechanics` - Optomechanics
-- lines 7808-7825: Study type `stationary` - Stationary
-- lines 7827-7850: Study type `thermal_noise` - Thermal noise
-- lines 7852-7867: Study type `time_dependent` - Time dependent
-- lines 7869-7937: Templates
-- lines 7939-8194: Results, reports and files
+- lines 128-478: Model spec
+- lines 480-609: Expressions
+- lines 611-877: Geometry
+- lines 879-1041: Materials
+- lines 1043-1089: Mesh
+- lines 1091-1229: Solvers
+- lines 1231-1973: Shared help texts
+- lines 1975-2105: Physics type `drift_diffusion` - Semiconductor (drift-diffusion, 2D)
+- lines 2107-2301: Physics type `elastic_waves` - Elastic and Acoustic Waves, time domain (2D, in-plane)
+- lines 2303-2406: Physics type `electric_currents` - Electric Currents
+- lines 2408-2563: Physics type `electrostatics` - Electrostatics
+- lines 2565-2745: Physics type `em_eme` - Electromagnetic Waves, eigenmode expansion (2D)
+- lines 2747-2902: Physics type `em_eme_3d` - Electromagnetic Waves, eigenmode expansion (3D)
+- lines 2904-2991: Physics type `em_fdfd_3d` - Electromagnetic Waves, frequency domain (3D)
+- lines 2993-3172: Physics type `em_fdfd_bor` - Electromagnetic Waves, frequency domain (axisymmetric, azimuthal order m)
+- lines 3174-3311: Physics type `em_fdfd_conical` - Electromagnetic Waves, frequency domain (out-of-plane wave number k_z)
+- lines 3313-3580: Physics type `em_fdfd_ez` - Electromagnetic Waves, frequency domain (2D, electric field out of plane)
+- lines 3582-3869: Physics type `em_fdfd_hz` - Electromagnetic Waves, frequency domain (2D, magnetic field out of plane)
+- lines 3871-4260: Physics type `em_fdfd_nonlinear` - Nonlinear optics, frequency domain (2D, harmonic channels)
+- lines 4262-4366: Physics type `em_fdfd_sphere` - Electromagnetic Waves, frequency domain (spherically symmetric, multipole orders)
+- lines 4368-4613: Physics type `em_fdtd_3d` - Electromagnetic Waves, time domain (3D)
+- lines 4615-4803: Physics type `em_fdtd_bor` - Electromagnetic Waves, time domain (axisymmetric, azimuthal order m)
+- lines 4805-5105: Physics type `em_fdtd_ez` - Electromagnetic Waves, time domain (2D, electric field out of plane)
+- lines 5107-5415: Physics type `em_fdtd_hz` - Electromagnetic Waves, time domain (2D, magnetic field out of plane)
+- lines 5417-5559: Physics type `em_modes` - Electromagnetic Waves, cross-section modes
+- lines 5561-5808: Physics type `heat` - Heat Transfer in Solids
+- lines 5810-5943: Physics type `laminar_flow` - Laminar Flow (2D)
+- lines 5945-6084: Physics type `magnetic_fields_ac` - Magnetic Fields, AC (2D)
+- lines 6086-6205: Physics type `magnetostatics` - Magnetostatics (2D)
+- lines 6207-6321: Physics type `magnetostatics_3d` - Magnetostatics (3D)
+- lines 6323-6562: Physics type `membrane` - Membrane
+- lines 6564-6757: Physics type `pressure_acoustics` - Pressure Acoustics, frequency domain
+- lines 6759-7170: Physics type `solid_mechanics` - Solid Mechanics (2D)
+  - lines 6767-6808: Settings (PhysicsSpec.settings)
+  - lines 6810-6890: Material properties (MaterialSpec.properties)
+  - lines 6892-6926: Fields
+  - lines 6928-6932: Source slots
+  - lines 6934-6940: Feature `solid_mechanics.fixed` - Fixed
+  - lines 6942-6948: Feature `solid_mechanics.roller` - Roller
+  - lines 6950-6956: Feature `solid_mechanics.symmetry` - Symmetry
+  - lines 6958-6967: Feature `solid_mechanics.displacement` - Displacement
+  - lines 6969-6975: Feature `solid_mechanics.fixed_domain` - Fixed (domain)
+  - lines 6977-6986: Feature `solid_mechanics.prescribed_displacement_domain` - Prescribed displacement (domain)
+  - lines 6988-6998: Feature `solid_mechanics.boundary_load` - Boundary load
+  - lines 7000-7010: Feature `solid_mechanics.segment_load` - Boundary load (segment)
+  - lines 7012-7022: Feature `solid_mechanics.body_force` - Body force
+  - lines 7024-7032: Feature `solid_mechanics.temperature_change` - Temperature change
+  - lines 7034-7042: Feature `solid_mechanics.solid_probe` - Solid probe
+  - lines 7044-7050: Feature `solid_mechanics.frequency_probe` - Frequency probe
+  - lines 7052-7058: Feature `solid_mechanics.resonance_table` - Resonance table
+  - lines 7060-7068: Feature `solid_mechanics.thermoelastic_damping` - Thermoelastic damping
+  - lines 7070-7094: Feature `solid_mechanics.optomechanical_coupling` - Optomechanical coupling
+  - lines 7096-7128: Feature `solid_mechanics.brillouin_scattering` - Brillouin scattering spectrum
+  - lines 7130-7141: Feature `solid_mechanics.electrode` - Electrode
+  - lines 7143-7154: Feature `solid_mechanics.electrode_domain` - Electrode (domain)
+  - lines 7156-7170: Feature `solid_mechanics.admittance` - Admittance
+- lines 7172-7613: Physics type `solid_mechanics_3d` - Solid Mechanics (3D)
+  - lines 7180-7206: Settings (PhysicsSpec.settings)
+  - lines 7208-7332: Material properties (MaterialSpec.properties)
+  - lines 7334-7377: Fields
+  - lines 7379-7384: Source slots
+  - lines 7386-7392: Feature `solid_mechanics_3d.fixed` - Fixed
+  - lines 7394-7400: Feature `solid_mechanics_3d.roller` - Roller
+  - lines 7402-7408: Feature `solid_mechanics_3d.symmetry` - Symmetry
+  - lines 7410-7418: Feature `solid_mechanics_3d.displacement` - Displacement
+  - lines 7420-7426: Feature `solid_mechanics_3d.fixed_domain` - Fixed (domain)
+  - lines 7428-7436: Feature `solid_mechanics_3d.prescribed_displacement_domain` - Prescribed displacement (domain)
+  - lines 7438-7450: Feature `solid_mechanics_3d.boundary_load` - Boundary load
+  - lines 7452-7464: Feature `solid_mechanics_3d.body_force` - Body force
+  - lines 7466-7474: Feature `solid_mechanics_3d.temperature_change` - Temperature change
+  - lines 7476-7484: Feature `solid_mechanics_3d.solid_probe` - Solid probe
+  - lines 7486-7492: Feature `solid_mechanics_3d.frequency_probe` - Frequency probe
+  - lines 7494-7500: Feature `solid_mechanics_3d.resonance_table` - Resonance table
+  - lines 7502-7510: Feature `solid_mechanics_3d.mode_shapes` - Mode shapes
+  - lines 7512-7531: Feature `solid_mechanics_3d.squeeze_film_damping` - Squeeze-film damping
+  - lines 7533-7541: Feature `solid_mechanics_3d.thermoelastic_damping` - Thermoelastic damping
+  - lines 7543-7556: Feature `solid_mechanics_3d.electrode` - Electrode
+  - lines 7558-7571: Feature `solid_mechanics_3d.electrode_domain` - Electrode (domain)
+  - lines 7573-7587: Feature `solid_mechanics_3d.admittance` - Admittance
+  - lines 7589-7613: Feature `solid_mechanics_3d.optomechanical_coupling` - Optomechanical coupling
+- lines 7615-7621: Coupling type `acoustics_em_acousto_optic` - Acousto-optic effect (elastic waves -> electromagnetic waves)
+- lines 7623-7629: Coupling type `currents_heat_joule` - Joule heating (electric currents -> heat)
+- lines 7631-7639: Coupling type `electrostatics_acoustics_piezo` - Piezoelectric coupling (electrostatics <-> elastic waves)
+- lines 7641-7649: Coupling type `electrostatics_em_pockels` - Pockels effect (electrostatics -> electromagnetic waves)
+- lines 7651-7657: Coupling type `em_acoustics_photoacoustic` - Photoacoustic heating (electromagnetic waves -> elastic waves)
+- lines 7659-7665: Coupling type `em_heat_joule` - Joule heating (electromagnetic waves -> heat)
+- lines 7667-7677: Coupling type `em_semiconductor_generation` - Photogeneration (electromagnetic waves -> semiconductor)
+- lines 7679-7685: Coupling type `em_solid_optical_force` - Optical force (electromagnetic waves -> solid mechanics)
+- lines 7687-7699: Coupling type `field_transfer` - Field transfer
+- lines 7701-7707: Coupling type `fluid_heat_convection` - Convective heat transport (laminar flow -> heat)
+- lines 7709-7715: Coupling type `heat_em_phase_change` - Phase change (heat -> electromagnetic waves)
+- lines 7717-7723: Coupling type `heat_em_thermo_optic` - Thermo-optic effect (heat -> electromagnetic waves)
+- lines 7725-7731: Coupling type `heat_solid_thermal_strain` - Thermal expansion (heat -> solid mechanics)
+- lines 7733-7739: Coupling type `magnetic_heat_induction` - Induction heating (magnetic fields AC -> heat)
+- lines 7741-7747: Coupling type `magnetic_solid_lorentz_force` - Lorentz force (magnetic fields -> solid mechanics)
+- lines 7749-7761: Coupling type `semiconductor_em_plasma_dispersion` - Free-carrier plasma dispersion (semiconductor -> electromagnetic waves)
+- lines 7763-7771: Coupling type `solid_em_strain_optic` - Strain-optic effect (solid mechanics -> electromagnetic waves)
+- lines 7773-7781: Coupling type `solid_membrane_tension` - Film prestress (solid mechanics -> membrane)
+- lines 7783-7809: Study type `eigenfrequency` - Eigenfrequency
+- lines 7811-7837: Study type `frequency_domain` - Frequency domain
+- lines 7839-7875: Study type `frequency_response` - Frequency response
+- lines 7877-7891: Study type `mode_analysis` - Mode analysis
+- lines 7893-7908: Study type `nonlinear_frequency_domain` - Nonlinear frequency domain
+- lines 7910-7926: Study type `optimization` - Optimization
+- lines 7928-7945: Study type `optomechanics` - Optomechanics
+- lines 7947-7964: Study type `stationary` - Stationary
+- lines 7966-7989: Study type `thermal_noise` - Thermal noise
+- lines 7991-8006: Study type `time_dependent` - Time dependent
+- lines 8008-8076: Templates
+- lines 8078-8333: Results, reports and files
 
 ## Model spec
 
@@ -952,6 +975,12 @@ Liquid water at 20 C, n = 1.3154, its absorption (extinction 1.49e-4, ~12 /cm) a
 
 - Properties: {"eps_r": 1.73, "sigma_e": 4.22, "k": 0.598, "rho": 998.2, "cp": 4182, "dndT": -9e-05, "alpha": 0, "sigma_dc": 5.5e-06, "eps_dc": 80.1, "viscosity": 0.001002}; dispersion poles: none
 
+#### Library material `water_532nm`
+
+Liquid water at 20 C and 0.1 MPa for spontaneous Brillouin scattering (GHz longitudinal phonons). Its optical data hold near 532 nm only (library water is the 1.55 um entry). Optics: n = 1.3350 +- 2e-4 at 20 C (IAPWS refractive-index formulation, Harvey et al., J. Phys. Chem. Ref. Data 27, 761 (1998); Daimon and Masumura, Appl. Opt. 46, 3811 (2007)); the absorption (about 4.5e-4 /cm, Pope and Fry, Appl. Opt. 36, 8710 (1997)) is left out, so the medium is lossless (probe heating is not modelled). Density as library water (IAPWS-95). bulk_modulus is the adiabatic K_S = rho v^2 of the ultrasonic sound speed v = 1482.3 m/s (Del Grosso and Mader, J. Acoust. Soc. Am. 52, 1442 (1972); Marczak, J. Acoust. Soc. Am. 102, 2776 (1997)); the isothermal static modulus is about 0.7 % lower. The hypersonic (GHz) sound speed is 0.3-0.8 % higher (reported Brillouin shifts of 7.46-7.50 GHz at 532 nm imply 1487-1494 m/s): UNVERIFIED, a model of the measured shift sets bulk_modulus itself. viscosity: IAPWS 2008 formulation (Huber et al., J. Phys. Chem. Ref. Data 38, 101 (2009)). bulk_viscosity from the classical ultrasonic absorption alpha / f^2 (about 25e-15 s^2/m at 20 C; Pinkerton, Proc. Phys. Soc. B 62, 129 (1949); Fisher and Simmons, J. Acoust. Soc. Am. 62, 558 (1977)) by 4/3 viscosity + bulk_viscosity = (alpha / f^2) rho v^3 / (2 pi^2); literature values span 2.4e-3 to 3.0e-3 Pa s (Dukhin and Goetz, J. Chem. Phys. 130, 124519 (2009); Holmes, Parker and Povey, J. Phys. Conf. Ser. 269, 012011 (2011)): UNVERIFIED digits. Structural relaxation lowers it at GHz: reported Brillouin linewidths of water at 532 nm (0.55-0.60 GHz FWHM) sit 10-15 % below the linewidth this ultrasonic value predicts. Photoelastic: a liquid has one strain-optic scalar (p11 = p12, no shear part p44); Dixon, J. Appl. Phys. 38, 5149 (1967) (633 nm, from the figure of merit M2), equal to the Lorentz-Lorenz value (eps - 1)(eps + 2) / (3 eps^2) within 1 %; +- 5 %, its dispersion from 633 to 532 nm neglected. Thermal and DC data as library water (dndT matches the visible 20 C value too). Solid mechanics (triangle / tetrahedron meshes): with shear_modulus 0 it is a compressible viscous liquid of formulation mixed in the frequency_response study only (G* = j omega viscosity, K* = bulk_modulus + j omega bulk_viscosity); the displacement formulation and every other study refuse a cell without shear stiffness. The model holds no entropy (thermal diffusion) mode: the Rayleigh central peak is absent, only the Brillouin doublet is modelled. Validity near 532 nm and 20 C.
+
+- Properties: {"eps_r": 1.78223, "sigma_e": 0, "k": 0.598, "rho": 998.2, "cp": 4182, "dndT": -9e-05, "alpha": 0, "shear_modulus": 0, "bulk_modulus": 2.1933e+09, "bulk_viscosity": 0.0028, "photoelastic_p11": 0.31, "photoelastic_p12": 0.31, "photoelastic_p44": 0, "sigma_dc": 5.5e-06, "eps_dc": 80.1, "viscosity": 0.0010016}; dispersion poles: none
+
 ### Material property names by physics type (arrays written, when not the own name)
 
 - `drift_diffusion`: eps_dc (eps_dc_xx, eps_dc_yy), eps_dc_xx, eps_dc_yy, n_intrinsic, mobility_n, mobility_p, lifetime (lifetime_n, lifetime_p), lifetime_n, lifetime_p, radiative_recombination
@@ -1237,7 +1266,7 @@ Centre (gaussian, cw) or peak (ricker) frequency. Mesh: >= 10 (better 20) cells 
 
 #### `electric_currents.azimuthal_order`
 
-Azimuthal order m of an axisymmetric (r, z) solve. 0: rotationally symmetric. m >= 1: the order-m part u_m(r, z) cos(m phi) of a load (m = 1: a uniform transverse field, V = -E0 r cos(phi)); the operator gains c_xx m^2 / r_c^2 per cell volume, so u_m vanishes on the axis. Every field, source density, boundary, held and initial value is then a cos(m phi) amplitude (heat: of T - T0), field components the r / z amplitudes, and ring totals carry pi instead of 2 pi: held currents / charges, scalar outputs and field integrals are cos(m phi) moments, a point source P is the order-m part of P at phi = 0, a dissipation density (q_joule) is twice its phi mean (its integral = the total power). Needs geometry 'axisymmetric' on a Cartesian domain; every physics with this setting shares one m; couplings of an order-m physics warn (products such as Joule heating are no single order). solid_mechanics: U_r, U_z ~ cos(m phi), U_phi ~ sin(m phi).
+Azimuthal order m of an axisymmetric (r, z) solve. 0: rotationally symmetric. m >= 1: the order-m part u_m(r, z) cos(m phi) of a load (m = 1: a uniform transverse field, V = -E0 r cos(phi)); the operator gains c_xx m^2 / r_c^2 per cell volume, so u_m vanishes on the axis. Every field, source density, boundary, held and initial value is then a cos(m phi) amplitude (heat: of T - T0), field components the r / z amplitudes, and ring totals carry pi instead of 2 pi: held currents / charges, scalar outputs and field integrals are cos(m phi) moments, a point source P is the order-m part of P at phi = 0, a dissipation density (q_joule) is twice its phi mean (its integral = the total power). Needs geometry 'axisymmetric' on a Cartesian domain; every physics with this setting shares one m (field derived values weight the rings of a model by one angle), except two physics that each read the same optical physics through a brillouin_scattering feature and share no coupling (the solid_mechanics orders 0 and 2 of one em_fdfd_bor beam: one-way reads, no field passes between the orders; a field derived value then reads the fields of one of them only); couplings of an order-m physics warn (products such as Joule heating are no single order). solid_mechanics: U_r, U_z ~ cos(m phi), U_phi ~ sin(m phi).
 
 #### `electric_currents.discretization`
 
@@ -1406,6 +1435,30 @@ positive: toward +x from a vertical line (x = const), toward +y from a horizonta
 #### `em_fdfd_ez.mode_source.power`
 
 Time-averaged power of the launched mode per unit z length, 1/2 Re of the integral of (E x H*).n over the line; mode amplitude sqrt(power) e^{j phase}. Fields scale with sqrt(power); 1 W/m is usual (peak |E| ~1e4 V/m in a 0.3 um silicon slab).
+
+#### `em_fdfd_ez.focused_beam`
+
+One-sided focused beam launched from an axis-aligned line (total-field / scattered-field line, as mode_source): a Gaussian angular spectrum exp(-(k_t waist / 2)^2) of the discrete plane waves of the uniform line medium (transverse wavenumbers k_t on the cells of the line, |k_t| <= k0 numerical_aperture, propagating waves only, the normal wavenumber from the FDFD dispersion), all in phase at (focus_x, focus_y); the out-of-plane field is E_z (em_fdfd_ez) or H_z with the in-plane E across the beam (em_fdfd_hz), phase = its phase at the focus. The incident field solves the discrete equations of the line medium exactly, so the launch is one-sided to round-off: what comes back upstream is scattered or reflected light only. power is defined, not calibrated (see power). The interface is the lo face of the line cells for positive, their hi face for negative: keep flux / mode monitors, probes and far-field boxes off it (validation warns). The line needs uniform cells along it, uniform cells across it (two on either side, inside the domain), one homogeneous medium on those five rows (no PEC, interface, eps_xy, gyration_z or conducting sheet there; poles and loss allowed) and no periodic axis; it must hold the beam (above 1e-6 of its peak at an end: warning) unless it ends on a mirror plane through the focus (ez: symmetric, hz: antisymmetric; mirror faces normal to the beam axis are refused). Every solved wavelength launches the same power. A brillouin_scattering feature of a solid_mechanics physics (frequency_response study) reads it as its illumination: each scan position moves the focus analytically (no remeshing, no snapping to cells) and costs one more solve on the same factor. Tensor meshes only. The line covers cells [cell(start), cell(end) + 1) (an end exactly on a cell edge adds a cell).
+
+#### `em_fdfd_ez.focused_beam.power`
+
+Time-averaged power of the incident beam toward its direction, in the unfolded structure (a line ending on a mirror plane launches the drawn part of it). It is the exact discrete Poynting flux (per unit z length) of the injected incident field through the interface face, the value a flux_monitor reads there, so a flux_monitor downstream in a uniform lossless medium reads it to round-off (minus what the structure or the PML send back). Power-defined, not current-calibrated: fields scale with sqrt(power), the same power at every solved wavelength; a brillouin_scattering drive divides by it, so 1 is usual.
+
+#### `em_fdfd_ez.focused_beam.waist`
+
+1/e radius w0 of the field at the focus: the angular spectrum is exp(-(k_t w0 / 2)^2) over the transverse wavenumbers k_t, so the far-field half-angle is ~ lambda0 / (pi n w0) and the Rayleigh range pi n w0^2 / lambda0. Below ~ lambda0 / (2 n) the propagating waves of the medium or numerical_aperture cut the spectrum and set the spot instead. Typical 0.3e-6 to 2e-6 m. The line must hold the beam where it crosses it (validation warns when the beam is above 1e-6 of its peak at an end).
+
+#### `em_fdfd_ez.focused_beam.numerical_aperture`
+
+Optional cap of the angular spectrum, NA = n sin(theta_max) of the focusing optics, at most the index n of the medium at the line (validation error above): only plane waves with |k_t| <= k0 NA (k0 = 2 pi / lambda0). Empty = no cap besides the Gaussian and the propagating waves. A cut well inside the Gaussian adds slowly decaying side lobes along the line (lengthen it).
+
+#### `em_fdfd_ez.focused_beam.focus_x`
+
+x coordinate [m] of the focus in the drawing frame (domain lower-left corner at 0): every plane wave of the beam is in phase at (focus_x, focus_y), so |E| peaks there in a uniform medium. It may lie on either side of the line (upstream: a beam diverging from a virtual focus) and outside the domain; when the line ends on a mirror plane the focus must lie on that plane. A brillouin_scattering scan moves it by its offsets.
+
+#### `em_fdfd_ez.focused_beam.focus_y`
+
+y coordinate [m] of the focus in the drawing frame (domain lower-left corner at 0): every plane wave of the beam is in phase at (focus_x, focus_y), so |E| peaks there in a uniform medium. It may lie on either side of the line (upstream: a beam diverging from a virtual focus) and outside the domain; when the line ends on a mirror plane the focus must lie on that plane. A brillouin_scattering scan moves it by its offsets.
 
 #### `em_fdfd_ez.conducting_sheet`
 
@@ -1757,7 +1810,7 @@ Geometric nonlinearity: when K_T is refactorised. every_iteration: full Newton (
 
 #### `solid_mechanics.formulation`
 
-Triangle / tetrahedron meshes. displacement: P1 / P2 displacement only (locks toward poisson_ratio 0.5; every member cell needs G0 > 0 and a finite K0; a viscosity-only cell is void); the frequency_response outputs pressure / pressure_im are -tr(sigma*) / 3, node-averaged like the stresses. mixed: Taylor-Hood u-p (P2 displacement, P1 pressure continuous inside each parameter group, duplicated where groups meet: the pressure jumps there; a group is one distinct set of material values, at most 32: keep the moduli piecewise constant per region), frequency_response only, discretization quadratic, planar plane strain, axisymmetric (any azimuthal_order) or 3D, isotropic materials only; unset bulk_modulus = incompressible; liquids (viscosity, no modulus) join the solid. Outputs pressure / pressure_im (the pressure unknown, p > 0 in compression); reactions include the pressure. Not with piezoelectric, plane_stress, stress_stiffening, geometric_nonlinearity, pml_*, periodic axes or sweep_method modal; sweep_method adaptive is refused with a viscous or relaxing member (frequency-dependent moduli: every liquid) and, at azimuthal_order 1, with an incompressible one (direct only).
+Triangle / tetrahedron meshes. displacement: P1 / P2 displacement only (locks toward poisson_ratio 0.5; every member cell needs G0 > 0 and a finite K0; a viscosity-only cell is void); the frequency_response outputs pressure / pressure_im are -tr(sigma*) / 3, node-averaged like the stresses. mixed: Taylor-Hood u-p (P2 displacement, P1 pressure continuous inside each parameter group, duplicated where groups meet: the pressure jumps there; a group is one distinct set of material values, at most 32: keep the moduli piecewise constant per region), frequency_response only, discretization quadratic, planar plane strain, axisymmetric (any azimuthal_order) or 3D, isotropic materials only; unset bulk_modulus = incompressible; liquids (viscosity, no modulus) join the solid. Outputs pressure / pressure_im (the pressure unknown, p > 0 in compression); reactions include the pressure; an elastic PML (pml_*, triangles) stretches the pressure blocks too. Not with piezoelectric, plane_stress, stress_stiffening, geometric_nonlinearity, pml_* in 3D, periodic axes or sweep_method modal; sweep_method adaptive is refused with a viscous or relaxing member (frequency-dependent moduli: every liquid) and, at azimuthal_order 1, with an incompressible one (direct only).
 
 #### `solid_mechanics.pml_reflection`
 
@@ -2943,7 +2996,7 @@ Body-of-revolution (BOR) FDFD: the drawing is the (r, z) half plane of a structu
 
 - Default instance name `em`; studies eigenfrequency, stationary, frequency_domain, optomechanics (default {"type": "eigenfrequency"})
 - Backends gpu, cpu; mesh kinds tensor, triangles; refinement indicator fields e_intensity; dispersion poles used
-- Features: point_source, field_probe, pec_domain, mode_source, flux_monitor, mode_monitor, far_field, resonance_table
+- Features: point_source, field_probe, pec_domain, mode_source, focused_beam, flux_monitor, mode_monitor, far_field, resonance_table
 
 ### Settings (PhysicsSpec.settings)
 
@@ -2962,7 +3015,7 @@ Body-of-revolution (BOR) FDFD: the drawing is the (r, z) half plane of a structu
 - `azimuthal_order` (int; default 0; [0, 10000]) - Azimuthal order
   m, fields ~ exp(-j m phi); +m and -m are degenerate (same resonances and |fields|). m = 0: rotationally symmetric, TE-like E_phi, H_r, H_z and TM-like E_r, E_z, H_phi decouple (on-axis dipoles, radial modes); m = 1: on-axis focused / plane waves, fundamental fibre and vertical-cavity modes (E_r, E_phi, H_phi non-zero on the axis); larger m: whispering-gallery modes, m ~ 2 pi R n_eff / lambda. Several orders (free spectral range, the m of a resonance, an off-axis point source): azimuthal_orders.
 - `azimuthal_orders` [1] (float_list; [0, 10000]; nullable) - Azimuthal order list
-  Distinct integer orders m >= 0 in one run (one material read, one assembly A(m) = K0 + m K1 + m^2 K2 - k0^2 M); a non-empty list replaces azimuthal_order, null or [] = azimuthal_order alone. Eigenfrequency: n_resonances per order near the wavelength setting, numbered order by order in list order; snapshot labels 'resonance k: m = <m>, lambda = ...'; resonance_table column azimuthal_order (lambda versus m: the free spectral range). Stationary / frequency_domain: the driven order sum, every point_source a 3D point current at phi = 0 (see point_source) expanded in exp(-j m phi), each m > 0 solved with -m (one factor: A(-m) is the phi mirror) and summed. Fields and field_probe show the phi = 0 half plane of the 3D field (their ring-weighted integrals are not 3D integrals); absorbed_power (q_abs, handed to heat) is its phi average; flux_monitor and far_field add the orders exactly and report each. List every order 0..M: far field and powers converge once M exceeds k rho_s by a few (rho_s = source radius, k = n omega / c), near fields need more. mode_source / mode_monitor need a single order (validation error). Cost: one factorisation per order and wavelength; a line_block shifted solver factorises the orders of one axis class (|m| >= 1) in one batch.
+  Distinct integer orders m >= 0 in one run (one material read, one assembly A(m) = K0 + m K1 + m^2 K2 - k0^2 M); a non-empty list replaces azimuthal_order, null or [] = azimuthal_order alone. Eigenfrequency: n_resonances per order near the wavelength setting, numbered order by order in list order; snapshot labels 'resonance k: m = <m>, lambda = ...'; resonance_table column azimuthal_order (lambda versus m: the free spectral range). Every study that does not eigen-solve the physics (stationary, frequency_domain, and as a background physics of e.g. frequency_response or optomechanics): the driven order sum, every point_source a 3D point current at phi = 0 (see point_source) expanded in exp(-j m phi), each m > 0 solved with -m (one factor: A(-m) is the phi mirror) and summed. Fields and field_probe show the phi = 0 half plane of the 3D field (their ring-weighted integrals are not 3D integrals); absorbed_power (q_abs, handed to heat) is its phi average; flux_monitor and far_field add the orders exactly and report each. List every order 0..M: far field and powers converge once M exceeds k rho_s by a few (rho_s = source radius, k = n omega / c), near fields need more. mode_source / mode_monitor / focused_beam need a single order (validation error). Cost: one factorisation per order and wavelength; a line_block shifted solver factorises the orders of one axis class (|m| >= 1) in one batch.
 - `discretization` (default "quadratic"; quadratic | linear) - Discretization
   Element order on a triangles mesh (tensor meshes use the Yee cell). Resonance studies only: mixed axisymmetric elements (Nedelec for E_r, E_z, Lagrange for r E_phi, same degree: no spurious modes); quadratic maps curved edges isoparametrically, so disks, toroids and spheres follow the outline. linear (Whitney / P1): cheaper, error ~h^2 instead of ~h^4 in k^2, the axis element layer stiff for m = 0 / |m| = 1. ~7 (quadratic) or 2 (linear) unknowns per element; shift-invert by the eigen solver (host SuperLU; factorization cudss: GPU LDL^T; mumps / mumps_mixed / pardiso / pardiso_mixed: host MUMPS / PARDISO LDL^T, _mixed = complex64 + float64 Rayleigh quotients). Materials one value per element; a cpml face gets mesh pml_layers element layers (pml_* stretch) and a pec outer side; pec_domain removes its elements (tangential E = 0 on their outline). On triangles stationary / frequency_domain and every source / monitor feature are validation errors; resonance_table and pec_domain work.
 
@@ -3061,6 +3114,26 @@ Params:
   'positive': toward +z (total field on the line row and above, only what comes back below); 'negative': toward -z (total field on the row and below).
 - `phase` [deg] (default 0) - Phase
   Mode amplitude sqrt(P) e^{j phase} on the line row (each mode phased with its largest field sample real and positive).
+
+### Feature `em_fdfd_bor.focused_beam` - Focused beam
+
+One-sided focused beam on the axis launched from a horizontal line (z = const) that starts on the axis: the Debye (Richards-Wolf) field of an aplanatic lens focusing an x-polarised Gaussian pupil (numerical_aperture, fill_factor) to (r = 0, focus_z), in the homogeneous isotropic medium of the line. An x-polarised beam on the axis is exactly the azimuthal order 1 standing wave (E_r, E_z ~ cos(phi), E_phi ~ sin(phi)), so the physics needs azimuthal_order 1 and no azimuthal_orders list (validation error); shown fields and probes are the travelling-wave phasors of this type: E_r, E_z the beam at phi = 0, E_phi = j x its sin(phi) amplitude. Its incident field is written on the two z rows across the interface (one-sided TFSF as mode_source; the interface is the lo face of the line row for positive, its hi face for negative): the z dependence of each angular component is the Yee-exact one, so what leaks upstream comes only from the radial discretisation of the continuum Bessel profiles (second order, ~(k0 NA h)^2: largest at high NA; >= 25 cells per wavelength in the medium recommended). power is defined, not calibrated (see power; a flux_monitor reads 2 x power). The line needs uniform r cells along it and uniform z rows across it (two on either side, inside the domain), one homogeneous isotropic medium on those rows (no PEC there; loss allowed, warning: the beam then decays and power is that at the line) and cpml on both z faces (a pec / pmc z face would mirror the beam onto itself: error); it should hold the beam (above 0.01 of its peak at its r end: warning). A brillouin_scattering feature of a solid_mechanics physics (frequency_response study) reads it as its illumination: each scan position moves the focus analytically (no remeshing, no snapping to cells) and costs one more solve on the same factor. Tensor meshes only. The line covers cells [cell(start), cell(end) + 1) (an end exactly on a cell edge adds a cell).
+
+- Category source; selection line entities, object kinds line, exactly 1; result none
+
+Params:
+- `power` [W] (default 1; > 0) - Beam power
+  Time-averaged power of the incident beam toward its direction, in the unfolded structure (a line ending on a mirror plane launches the drawn part of it). Here the power of the linearly (x-) polarised beam, the azimuthal order 1 standing wave E_r, E_z ~ cos(phi), E_phi ~ sin(phi) that the solve represents: the exact discrete Poynting flux of the injected incident field through the interface face with the cos^2 / sin^2 ring weight pi. flux_monitor weights the travelling exp(-j phi) wave with 2 pi, so downstream in a uniform lossless medium it reads 2 x power (minus what the structure or the PML send back and the launch error). Power-defined, not current-calibrated: fields scale with sqrt(power), the same power at every solved wavelength; a brillouin_scattering drive divides by it, so 1 is usual.
+- `phase` [deg] (default 0) - Phase
+  Phase of E_x (= E_r at phi = 0) at the focus: all angular components of the beam are in phase there.
+- `numerical_aperture` [1] (required; > 0) - Numerical aperture
+  NA = n sin(theta_max) of the focusing optics, at most the index n of the medium at the line (validation error above); here strictly below n (theta_max < 90 deg): the cone half-angle of the focused light, sin(theta_max) = NA / n. Typical 0.3 to 1.2 in water (n 1.33). With a fully filled pupil the focus is an Airy spot of FWHM ~ 0.5 lambda0 / NA whose side lobes decay slowly along the line (validation warns when the beam keeps 0.01 of its peak at the line end; a smaller fill_factor softens the edge).
+- `fill_factor` [1] (default 1; > 0) - Pupil fill factor
+  f0 = Gaussian waist of the beam entering the objective / pupil radius: pupil field l(theta) = exp(-(sin(theta) / (f0 sin(theta_max)))^2) with the aplanatic sqrt(cos(theta)) (Richards-Wolf, Novotny-Hecht eq. 3.52); the aperture edge keeps exp(-1 / f0^2) of the centre field (1: 0.37). Large f0: a filled pupil, the smallest focus; small f0: an underfilled pupil, a Gaussian focus of effective NA ~ f0 NA with weak side lobes. Typical 0.5 to 2.
+- `focus_z` [m] (required) - Focus z
+  z coordinate [m] of the focus on the axis in the drawing frame (domain bottom edge at 0): every angular component of the beam is in phase there, so |E| peaks there in a uniform medium. It may lie on either side of the line (upstream: a beam diverging from a virtual focus) and outside the domain. A brillouin_scattering scan moves it along z by scan_offsets_y (x offsets would leave the axis: refused).
+- `direction` (default "positive"; positive | negative) - Direction
+  'positive': toward +z (total field on the line row and above, only what comes back below); 'negative': toward -z (total field on the row and below). Nothing is launched the other way.
 
 ### Feature `em_fdfd_bor.flux_monitor` - Flux monitor
 
@@ -3243,7 +3316,7 @@ Params: none
 
 - Default instance name `em`; studies stationary, frequency_domain, eigenfrequency, optimization, time_dependent, optomechanics (default {"type": "stationary"})
 - Backends gpu, cpu; mesh kinds tensor, triangles; refinement indicator fields ez_re; dispersion poles used
-- Features: point_source, line_source, gaussian_beam, plane_wave_tfsf, mode_source, pec_domain, conducting_sheet, effective_index, phase_change_medium, field_probe, flux_monitor, mode_monitor, far_field, adjoint_objective, design_region, resonance_table
+- Features: point_source, line_source, gaussian_beam, plane_wave_tfsf, mode_source, focused_beam, pec_domain, conducting_sheet, effective_index, phase_change_medium, field_probe, flux_monitor, mode_monitor, far_field, adjoint_objective, design_region, resonance_table
 
 ### Settings (PhysicsSpec.settings)
 
@@ -3353,6 +3426,22 @@ Params:
 - `direction` (default "positive"; positive | negative) - Direction. Help: shared `em_fdfd_ez.mode_source.direction`
 - `power` [W/m] (default 1; > 0) - Mode power. Help: shared `em_fdfd_ez.mode_source.power`
 - `phase` [deg] (default 0) - Phase. Help: shared `em_fdfd_ez.point_source.phase`
+
+### Feature `em_fdfd_ez.focused_beam` - Focused beam
+
+Help: shared `em_fdfd_ez.focused_beam`
+
+- Category source; selection line entities, object kinds line, exactly 1; result none
+
+Params:
+- `power` [W/m] (default 1; > 0) - Beam power. Help: shared `em_fdfd_ez.focused_beam.power`
+- `phase` [deg] (default 0) - Phase. Help: shared `em_fdfd_ez.point_source.phase`
+- `waist` [m] (default 1e-06; > 0) - Focal waist radius. Help: shared `em_fdfd_ez.focused_beam.waist`
+- `numerical_aperture` [1] (> 0; nullable) - Numerical aperture. Help: shared `em_fdfd_ez.focused_beam.numerical_aperture`
+- `focus_x` [m] (required) - Focus x. Help: shared `em_fdfd_ez.focused_beam.focus_x`
+- `focus_y` [m] (required) - Focus y. Help: shared `em_fdfd_ez.focused_beam.focus_y`
+- `direction` (default "positive"; positive | negative) - Direction
+  positive: toward +x from a vertical line (x = const), toward +y from a horizontal one; negative: toward -x / -y. Nothing is launched the other way.
 
 ### Feature `em_fdfd_ez.pec_domain` - Perfect electric conductor
 
@@ -3496,7 +3585,7 @@ Params:
 
 - Default instance name `em`; studies stationary, frequency_domain, eigenfrequency, optimization, time_dependent, optomechanics (default {"type": "stationary"})
 - Backends gpu, cpu; mesh kinds tensor, triangles; refinement indicator fields hz_re; dispersion poles used
-- Features: point_source, line_source, gaussian_beam, plane_wave_tfsf, mode_source, pec_domain, conducting_sheet, effective_index, phase_change_medium, field_probe, flux_monitor, mode_monitor, far_field, adjoint_objective, design_region, resonance_table
+- Features: point_source, line_source, gaussian_beam, plane_wave_tfsf, mode_source, focused_beam, pec_domain, conducting_sheet, effective_index, phase_change_medium, field_probe, flux_monitor, mode_monitor, far_field, adjoint_objective, design_region, resonance_table
 
 ### Settings (PhysicsSpec.settings)
 
@@ -3626,6 +3715,22 @@ Params:
 - `direction` (default "positive"; positive | negative) - Direction. Help: shared `em_fdfd_ez.mode_source.direction`
 - `power` [W/m] (default 1; > 0) - Mode power. Help: shared `em_fdfd_ez.mode_source.power`
 - `phase` [deg] (default 0) - Phase. Help: shared `em_fdfd_ez.point_source.phase`
+
+### Feature `em_fdfd_hz.focused_beam` - Focused beam
+
+Help: shared `em_fdfd_ez.focused_beam`
+
+- Category source; selection line entities, object kinds line, exactly 1; result none
+
+Params:
+- `power` [W/m] (default 1; > 0) - Beam power. Help: shared `em_fdfd_ez.focused_beam.power`
+- `phase` [deg] (default 0) - Phase. Help: shared `em_fdfd_ez.point_source.phase`
+- `waist` [m] (default 1e-06; > 0) - Focal waist radius. Help: shared `em_fdfd_ez.focused_beam.waist`
+- `numerical_aperture` [1] (> 0; nullable) - Numerical aperture. Help: shared `em_fdfd_ez.focused_beam.numerical_aperture`
+- `focus_x` [m] (required) - Focus x. Help: shared `em_fdfd_ez.focused_beam.focus_x`
+- `focus_y` [m] (required) - Focus y. Help: shared `em_fdfd_ez.focused_beam.focus_y`
+- `direction` (default "positive"; positive | negative) - Direction
+  positive: toward +x from a vertical line (x = const), toward +y from a horizontal one; negative: toward -x / -y. Nothing is launched the other way.
 
 ### Feature `em_fdfd_hz.pec_domain` - Perfect electric conductor
 
@@ -6653,11 +6758,11 @@ Params:
 
 ## Physics type `solid_mechanics` - Solid Mechanics (2D)
 
-2D static linear elasticity, small strain: sigma = C (eps - alpha dT), C isotropic (youngs_modulus, poisson_ratio) or the c_ij entries (see c11), alpha per axis (alpha_xx / _yy / _zz), dT = temperature_rise (coupled, heat_solid_thermal_strain) + temperature_rise_ext (temperature_change features). Setting geometry: planar (setting out_of_plane: plane strain, plane stress, generalized plane strain) or axisymmetric (r, z); texts are written for plane strain. Forces and reactions per m of depth (N/m; see thickness). u_x, u_y (u_z) are the displacement [m], u_abs its magnitude; strain_xy the tensor shear strain (half the engineering strain); elastic_strain_* = strain - alpha dT (elastic_strain_zz = -alpha_zz dT); stress_zz the out-of-plane stress plane strain implies (nu (sigma_xx + sigma_yy) - E alpha_zz dT, in von_mises). Void cells (no youngs_modulus or c11 > 0) are not solved and output 0. Faces without a support or load are traction free; every solid region (cells joined through edges or corners) needs supports holding u_x, u_y and rotation, e.g. rollers on one x and one y face (validation checks the directions, the build each region). Tensor mesh: bilinear elements on the window cells, nodal displacement, outputs at the cell centres (u = mean of the 4 corners), edge-extended into an EM PML ring. Triangle mesh: Lagrange elements (setting discretization) on the elements with stiffness, sparse_direct; state() and coupled slots one value per element (centroid), displayed fields nodal (strain / stress node-averaged), the PML ring void unless an elastic PML. Only there: initial_stress_*, stress_stiffening, geometric_nonlinearity, Prescribed displacement (domain), damped modes (mechanical_loss_factor), free bodies at target_frequency > 0 and in frequency responses, frequency_probe, complex support reactions, pml_<face>, azimuthal_order, the energy densities, the shear_modulus / bulk_modulus route, viscoelastic moduli (viscosity, relaxation branches: see shear_relaxation_modulus_1), the setting formulation and the pressure outputs; not there: piezoelectric (and admittance), guided modes, solid_em_strain_optic, optomechanics except axisymmetric with em_fdfd_bor optics. Studies: stationary (after the physics it reads); time_dependent quasi-static (re-solves when a material, support, load or coupled input changed; no inertia); eigenfrequency: undamped modes K u = omega^2 M u nearest target_frequency (consistent mass of rho, needed in every solid cell; supports held at 0, loads and thermal strain ignored without stress_stiffening), one snapshot per mode labelled "resonance k: f = <Hz> Hz", shape scaled to a peak node |u| of 1 m (no thermal part, no support reactions), listed by resonance_table; axial_wavenumber gives guided (2.5D) modes (dispersion branches of a waveguide); optomechanics: the same modes after an optical mode (em_modes, em_fdfd_ez, em_fdfd_hz, em_fdfd_bor) for optomechanical_coupling; frequency_response: (K (1 + j mechanical_loss_factor) - omega^2 M) u = f per frequency (loads, prescribed displacements and electrode voltages are phase-0 amplitudes; a temperature change or coupled temperature is static, never a drive, with stress_stiffening part of the prestress), one snapshot per frequency (real parts, u_abs = |u|; triangles: the shown stresses are Re(C*(omega) eps(u)), the loss part included, with pressure / pressure_im = -tr(sigma*) / 3 in Pa; triangles with viscoelastic moduli: G*(omega), K*(omega) per material, sweep_method direct only). azimuthal_order m >= 1 (triangles, axisymmetric, isotropic; eigenfrequency, optomechanics and frequency_response): u_r = U_r cos(m phi), u_z = U_z cos(m phi), u_phi = U_phi sin(m phi), field u_z = U_phi, strain / stress the cos parts at phi = 0; the axis holds u_z = 0 and ties u_phi = -u_r at m = 1, holds all three at m >= 2; m = 1 keeps the sideways translation and tilt as rigid motions, m >= 2 none (supports optional); stress_stiffening takes the initial stress alone; a frequency response is driven by prescribed displacements only (u_z of the displacement features is U_phi; loads are a validation error), its reactions F_x = sum R_r - sum R_phi at m = 1. strain_energy_density / kinetic_energy_density (triangles, J/m^3, not in state()): a static solve 1/2 sigma : eps_el (no initial stress) and 0, a shown mode or response the time averages 1/4 Re(sigma : eps_el*) and 1/4 rho omega^2 |u|^2 (azimuthal order: twice the phi mean, so ring integrals give totals); not physical in a PML ring. Bloch band diagrams: periodic_x / _y, template solid_bloch_band_diagram; on the tensor mesh also piezoelectric (an electrode grating of one IDT period gives the SAW stopband edges at the zone edge). A 3D model (size_z set) uses solid_mechanics_3d.
+2D static linear elasticity, small strain: sigma = C (eps - alpha dT), C isotropic (youngs_modulus, poisson_ratio) or the c_ij entries (see c11), alpha per axis (alpha_xx / _yy / _zz), dT = temperature_rise (coupled, heat_solid_thermal_strain) + temperature_rise_ext (temperature_change features). Setting geometry: planar (setting out_of_plane: plane strain, plane stress, generalized plane strain) or axisymmetric (r, z); texts are written for plane strain. Forces and reactions per m of depth (N/m; see thickness). u_x, u_y (u_z) are the displacement [m], u_abs its magnitude; strain_xy the tensor shear strain (half the engineering strain); elastic_strain_* = strain - alpha dT (elastic_strain_zz = -alpha_zz dT); stress_zz the out-of-plane stress plane strain implies (nu (sigma_xx + sigma_yy) - E alpha_zz dT, in von_mises). Void cells (no youngs_modulus or c11 > 0) are not solved and output 0. Faces without a support or load are traction free; every solid region (cells joined through edges or corners) needs supports holding u_x, u_y and rotation, e.g. rollers on one x and one y face (validation checks the directions, the build each region). Tensor mesh: bilinear elements on the window cells, nodal displacement, outputs at the cell centres (u = mean of the 4 corners), edge-extended into an EM PML ring. Triangle mesh: Lagrange elements (setting discretization) on the elements with stiffness, sparse_direct; state() and coupled slots one value per element (centroid), displayed fields nodal (strain / stress node-averaged), the PML ring void unless an elastic PML. Only there: initial_stress_*, stress_stiffening, geometric_nonlinearity, Prescribed displacement (domain), damped modes (mechanical_loss_factor), free bodies at target_frequency > 0 and in frequency responses, frequency_probe, complex support reactions, pml_<face>, azimuthal_order, the energy densities, the shear_modulus / bulk_modulus route, viscoelastic moduli (viscosity, relaxation branches: see shear_relaxation_modulus_1), the setting formulation, the pressure outputs, axisymmetric brillouin_scattering (spontaneous Brillouin spectra driven by focused-beam optics on a tensor mesh; planar on both meshes, a tensor solid on the optics' own mesh with mechanical_loss_factor only); not there: piezoelectric (and admittance), guided modes, solid_em_strain_optic, optomechanics except axisymmetric with em_fdfd_bor optics. Studies: stationary (after the physics it reads); time_dependent quasi-static (re-solves when a material, support, load or coupled input changed; no inertia); eigenfrequency: undamped modes K u = omega^2 M u nearest target_frequency (consistent mass of rho, needed in every solid cell; supports held at 0, loads and thermal strain ignored without stress_stiffening), one snapshot per mode labelled "resonance k: f = <Hz> Hz", shape scaled to a peak node |u| of 1 m (no thermal part, no support reactions), listed by resonance_table; axial_wavenumber gives guided (2.5D) modes (dispersion branches of a waveguide); optomechanics: the same modes after an optical mode (em_modes, em_fdfd_ez, em_fdfd_hz, em_fdfd_bor) for optomechanical_coupling; frequency_response: (K (1 + j mechanical_loss_factor) - omega^2 M) u = f per frequency (loads, prescribed displacements and electrode voltages are phase-0 amplitudes; a temperature change or coupled temperature is static, never a drive, with stress_stiffening part of the prestress), one snapshot per frequency (real parts, u_abs = |u|; triangles: the shown stresses are Re(C*(omega) eps(u)), the loss part included, with pressure / pressure_im = -tr(sigma*) / 3 in Pa; triangles with viscoelastic moduli: G*(omega), K*(omega) per material, sweep_method direct only). azimuthal_order m >= 1 (triangles, axisymmetric, isotropic; eigenfrequency, optomechanics and frequency_response): u_r = U_r cos(m phi), u_z = U_z cos(m phi), u_phi = U_phi sin(m phi), field u_z = U_phi, strain / stress the cos parts at phi = 0; the axis holds u_z = 0 and ties u_phi = -u_r at m = 1, holds all three at m >= 2; m = 1 keeps the sideways translation and tilt as rigid motions, m >= 2 none (supports optional); stress_stiffening takes the initial stress alone; a frequency response is driven by prescribed displacements (u_z of the displacement features is U_phi; loads are a validation error) or a brillouin_scattering drive (orders 0 and 2) only, its reactions F_x = sum R_r - sum R_phi at m = 1. strain_energy_density / kinetic_energy_density (triangles, J/m^3, not in state()): a static solve 1/2 sigma : eps_el (no initial stress) and 0, a shown mode or response the time averages 1/4 Re(sigma : eps_el*) and 1/4 rho omega^2 |u|^2 (azimuthal order: twice the phi mean, so ring integrals give totals); not physical in a PML ring. Bloch band diagrams: periodic_x / _y, template solid_bloch_band_diagram; on the tensor mesh also piezoelectric (an electrode grating of one IDT period gives the SAW stopband edges at the zone edge). A 3D model (size_z set) uses solid_mechanics_3d.
 
 - Default instance name `solid`; studies stationary, time_dependent, eigenfrequency, optomechanics, frequency_response (default {"type": "stationary"})
 - Backends gpu, cpu; mesh kinds tensor, triangles; refinement indicator fields u_abs; dispersion poles not used
-- Features: fixed, roller, symmetry, displacement, fixed_domain, prescribed_displacement_domain, boundary_load, segment_load, body_force, temperature_change, solid_probe, frequency_probe, resonance_table, thermoelastic_damping, optomechanical_coupling, electrode, electrode_domain, admittance
+- Features: fixed, roller, symmetry, displacement, fixed_domain, prescribed_displacement_domain, boundary_load, segment_load, body_force, temperature_change, solid_probe, frequency_probe, resonance_table, thermoelastic_damping, optomechanical_coupling, brillouin_scattering, electrode, electrode_domain, admittance
 
 ### Settings (PhysicsSpec.settings)
 
@@ -6677,7 +6782,7 @@ Params:
 - `bending_moment_y` [N m] (default 0; visible when out_of_plane in (generalized_plane_strain)) - Bending moment about y
   Generalized plane strain, bending xy or x: M_y = -(integral of x stress_zz dA) over the drawn solid cells, about the drawing origin (right-hand rule: a force F through (x_F, y_F) gives M_y = -x_F F).
 - `target_frequency` [Hz] (default 0; >= 0) - Eigenfrequency target
-  Eigenfrequency study: the modes nearest this frequency (shift-invert about (2 pi f)^2, moved 1e-4 above so a target on a resonance factors); 0 = the lowest (a strain-free motion then fails: check the supports). A target > 0 also allows a free body on triangles (no supports; axisymmetric: no held u_z) and a free periodic cell with every bloch_k 0 (both meshes): their rigid-body modes (f < 1e-4 x target) are dropped.
+  Eigenfrequency study: the modes nearest this frequency (shift-invert about (2 pi f)^2, moved 1e-4 above so a target on a resonance factors); 0 = the lowest (a strain-free motion then fails: check the supports). A target > 0 also allows a free body on triangles (no supports; axisymmetric: no held u_z) and a free periodic cell with every bloch_k 0 (both meshes): their rigid-body modes (f < 1e-4 x target) are dropped. With an elastic PML (pml_*, triangles) it is also the reference frequency of the PML strength in both the eigenfrequency and the frequency_response study (> 0 required): pml_reflection holds at the target and becomes R^(f / target) at f (stronger absorption above, weaker below), so in a frequency response set it at or just below the lowest swept frequency (the band centre of a narrow band, e.g. a Brillouin peak, is fine); the frequency response reads it for nothing else.
 - `stress_stiffening` (bool; default false) - Stress stiffening. Help: shared `solid_mechanics.stress_stiffening`
 - `geometric_nonlinearity` (bool; default false) - Geometric nonlinearity. Help: shared `solid_mechanics.geometric_nonlinearity`
 - `load_steps` (int; default 1; >= 1; visible when geometric_nonlinearity in (true)) - Load steps. Help: shared `solid_mechanics.load_steps`
@@ -6693,9 +6798,9 @@ Params:
   Triangle meshes only (a tensor mesh ignores it: bilinear cells). quadratic: P2, isoparametric on curved boundaries, linear strain per element; linear: P1, constant strain (stiff in bending, locks toward poisson_ratio 0.5). ~2 (quadratic) or ~0.5 (linear) unknowns per element and component. Displayed strain / stress are node averages over the solid elements (an interface smears over one element; displacements and state() element values do not).
 - `formulation` (default "displacement"; displacement | mixed) - Formulation. Help: shared `solid_mechanics.formulation`
 - `pml_x_lo`, `pml_x_hi`, `pml_y_lo`, `pml_y_hi` (bool; default false) - PML on x_lo / PML on x_hi / PML on y_lo / PML on y_hi
-  Triangle mesh, eigenfrequency study, target_frequency > 0: an elastic PML ring beyond this face, pml_cells x the mesh dx thick, material continued from the window edge, stretch s = 1 - j beta (d / w)^2 (d depth, w thickness; axisymmetric: the stretched radius beyond x_hi), beta from pml_reflection at the target for the fastest wave sqrt(c_II / rho); outer side clamped. Modes become complex: frequency_imag > 0, radiation Q = f / (2 frequency_imag) in the Resonance table, shapes shown as real part and |u|; modes with over half their |u|^2 in the ring are dropped. beta is frequency independent, so absorption weakens far below the target. stress_stiffening treats the ring as an unstretched elastic continuation, clamped outside (its K_sigma stretched like K). Supports and loads stay off this face; not on x_lo of an axisymmetric solid (the axis).
+  Triangle mesh, eigenfrequency or frequency_response study, target_frequency > 0: an elastic PML ring beyond this face, pml_cells x the mesh dx thick, material continued from the window edge, stretch s = 1 - j beta (d / w)^2 (d depth, w thickness; axisymmetric: the stretched radius beyond x_hi), beta from pml_reflection at target_frequency for the fastest wave sqrt(c_II / rho) (a liquid of formulation mixed: its sound speed; incompressible liquids alone carry none: refused); outer side clamped. Eigenfrequency: modes become complex: frequency_imag > 0, radiation Q = f / (2 frequency_imag) in the Resonance table, shapes shown as real part and |u|; modes with over half their |u|^2 in the ring are dropped. frequency_response (formulation displacement or mixed, planar or axisymmetric): waves leaving the window are absorbed (an open solid: the radiated power shows in the reactions and a brillouin_scattering spectrum, whose drive acts in the window only); every pencil term is stretched (stiffness, loss, mass, viscoelastic terms, the mixed pressure blocks); sweep_method direct or adaptive (not modal). beta is frequency independent, so absorption weakens below target_frequency (R^(f / target) at f). Shown fields in the ring are not physical. stress_stiffening treats the ring as an unstretched elastic continuation, clamped outside (its K_sigma stretched like K). Supports and loads stay off this face; not on x_lo of an axisymmetric solid (the axis).
 - `pml_cells` [1] (int; default 8; [1, 100]) - PML thickness (elements)
-  PML ring thickness in mesh dx (h_max) on every pml_<face> face (MeshSpec pml_layers sets the element layers across it); the profile needs ~6-10 layers and the ring a fair part of the longest wavelength (c / f at the target).
+  PML ring thickness in mesh dx (h_max) on every pml_<face> face (MeshSpec pml_layers sets the element layers across it); the profile needs ~6-10 layers and the ring a fair part of the longest wavelength (c / f at target_frequency, the lowest swept frequency of a frequency response).
 - `pml_reflection` [1] (default 1e-06; (0, 1]) - PML reflection. Help: shared `solid_mechanics.pml_reflection`
 - `periodic_x`, `periodic_y` (bool; default false) - Periodic x / Periodic y
   Eigenfrequency study (a plain periodic cell, every bloch_k 0, on triangles also stationary / time_dependent): the lo and hi faces of this axis are one Bloch-periodic pair, u (with phi when piezoelectric, the u_z amplitude with axial_wavenumber) on hi = on lo times exp(-j k L) (k its bloch_k, L the window size along it, exp(+j omega t)). Tensor mesh: corner nodes paired by index (plane strain or plane stress, also piezoelectric or axial_wavenumber); triangles: matching side nodes (planar; no PML ring on these faces, an elastic PML on the other axis makes a surface-wave cell). Modes of P^H K P, P^H M P (complex Hermitian; real when every k L is a multiple of pi), shown as real part (phase 0) and u_abs = |u|. Supports and electrodes stay off these faces (one on the other axis may reach their corners); floating electrodes must not touch them. Every bloch_k 0: a cell without supports keeps its rigid translations: set target_frequency > 0 (drops them) or hold it; piezoelectric then needs a ground electrode (k != 0: none). A static triangle cell solves K_r = P^T K P (zero mean strain along the axis: one cell of an infinite array; hold it, e.g. Fixed on the other axis). Not with axisymmetric, generalized plane strain, stress_stiffening, geometric_nonlinearity or frequency_response.
@@ -6987,6 +7092,40 @@ Params:
 - `axis_x` [m] (default 0) - Axis x (3D solid). Help: shared `solid_mechanics.optomechanical_coupling.axis_x`
 - `axis_y` [m] (default 0) - Axis y (3D solid)
   y of the BOR axis point (see axis_x).
+
+### Feature `solid_mechanics.brillouin_scattering` - Brillouin scattering spectrum
+
+Spontaneous Brillouin scattering spectrum by the fluctuation-dissipation theorem (frequency_response study only; triangle meshes, or the rectangular cells of the optics' own tensor mesh; convention exp(+j omega t), conventions and formulas in physics/mechanics/brillouin.py). After the background stage the incident and collection fields of the optics (optical_physics, its focused_beam; collection_physics) are sampled at the quadrature points of the selected solid elements (rectangular cells: each cell's own optical values, no interpolation) and drive the solid with the generalised force w = kappa (int B^T sigma~ dV + moving-boundary edge tractions; rectangular cells: B at the cell centre and the Yee faces), sigma~ = p^T G the optical stress of the NON-conjugated field products G_I = -eps_ii eps_jj (E_c,i E_i,j + [i != j] E_c,j E_i,i), kappa = omega eps0 / (4 sqrt(P_i P_c)) (beam powers incident_power). The optical fields are read on their own Yee points (no mean along the beam) and interpolated with their local phase removed, exact for a plane wave (a plain bilinear interpolation would lower the drive by (q h)^2 / 24, q = 4 pi n / lambda0). Per frequency f the solid solves K(Omega) u = w (Omega = 2 pi f, the Brillouin shift) and psd(f) = (2 k_B T / Omega) (-Im(w^H u)) x mirror factor / L [1/Hz]: the classical power fraction per Hz scattered into the collected channel in ONE sideband (Stokes or anti-Stokes; the one-sided spectrum of both sidebands is 2 psd); sum rule 2 int_0^inf psd df = k_B T w^H K0^-1 w. L = axial_length planar (fields per m of depth, 2D powers in W/m), 1 axisymmetric; the mirror factor is 2 per model mirror plane (the solid must hold each by Symmetry or Roller). Rectangular cells (tensor mesh): the optical and collection physics on the solid's own mesh, planar plane_strain, no piezoelectric, mechanical_loss_factor as the only loss (no viscoelastic moduli), Q1 cells <= lambda0 / (24 n) in the drive region (bilinear cells with their consistent mass raise the shift by about (q h)^2 / 24: 1.1 % at that size). The drive must be the only load of the solid (no boundary / segment loads, body forces, coupled forces or nonzero prescribed displacements); the solid needs loss (mechanical_loss_factor, viscosity, viscoelastic branches): a lossless solid has psd 0 between delta lines. Axisymmetric (em_fdfd_bor, m = 1 fields): co_polarized drives the solid orders 0 and 2 (one solid physics each, azimuthal_order 0 / 2; their psd add), cross_polarized the odd order 2 only. Planar: plane_strain only; em_fdfd_ez drives pure dilation (E_z only), em_fdfd_hz also shear. Mesh: optics >= 15 cells per lambda0 / n in the drive region, solid element size h <= lambda0 / (12 n) quadratic (/ 24 linear) there (the drive oscillates on lambda0 / (2 n)). The selection is the drive / sensing region (domain objects or all; it must start at or beyond the downstream edge of the optical cell that holds the focused_beam line, inside the total field (one optical cell past the line is always enough), and stay at least half an optical cell from the window edges other than mirror planes and the axis). It also cuts the phonons the spectrum sees: the phase-matched phonon decays over L_att = 2 v / Gamma along the beam, so a selection only a few L_att long along the beam widens the line by about L_att / L over the q^2 law (the boxcar cut: a 1.2e-6 m drive in water at 7.4 GHz, L_att 0.72e-6 m, about doubles the width, 3e-6 m adds about 35 %); select a region much longer than L_att (and keep the solid walls a few L_att away: their echoes) to measure a linewidth. Result 'xy' versus frequency [Hz] (x_label 'Frequency', y_label 'Scattered spectral density'): series psd, psd_stokes and psd_anti_stokes (psd s (n + 1) and psd s n with s = hbar Omega / (k_B T) and the Bose occupation n = 1 / (exp(s) - 1); both weights -> 1 classically), psd_reference (reference not none) in 1/Hz, psd_db = 10 log10 psd in dB/Hz; with several scan positions every series and per-position extra ends in _<k> (k = 1-based position). Extras: shift, fwhm, gamma, peak, r_squared, fit_warning and reference_shift (fit_peak), scattered_fraction (2 x the band integral of psd), q_mean [1/m], incident_power and collection_power [W, planar W/m], wavelength [m], temperature [K], mirror_factor, azimuthal_order, axial_length, torsion_drive_fraction, drive_norms {photoelastic, moving_boundary}, scan {'columns': [position, offset_x, offset_y, shift, fwhm, peak, scattered_fraction], 'units', 'rows'}. Several scan positions need sweep_method direct; one position also runs adaptive / modal sweeps (load = the drive).
+
+- Category monitor; selection domain entities, at least 1; mesh kinds tensor, triangles; result kind `xy`
+
+Params:
+- `optical_physics` (str; default "") - Optical physics
+  Name of the em_fdfd_ez / em_fdfd_hz (planar solid) or em_fdfd_bor (axisymmetric solid) physics on a tensor (rectangular-cell) mesh whose focused_beam illuminates the sample; it is solved first as a background physics (stationary) of the frequency_response study. It must hold exactly one enabled source feature, a focused_beam (its solution is the sum of every enabled source).
+- `incident_source` (str; default "") - Illumination beam
+  focused_beam feature of optical_physics that illuminates (its incident_power normalises the drive); '' = its only enabled focused_beam.
+- `collection_physics` (str; default "") - Collection physics
+  '' = optical_physics itself: confocal epi detection with the collection field E_c = E_i (one optical solve per scan position). Another physics of the same type, wavelength, boundaries and optical grid (window cells) holds the reciprocal collection beam (launched from the detector toward the sample, e.g. transmission detection); it is solved once and does not move with the scan.
+- `collection_source` (str; default "") - Collection beam
+  focused_beam feature of collection_physics ('' = its only enabled one); with collection_physics '' it must be empty or the incident_source.
+- `detection` (default "co_polarized"; co_polarized | cross_polarized) - Detected polarization
+  co_polarized: the collected field has the polarization of the incident one. cross_polarized (em_fdfd_bor only): the collection field is the incident m = 1 field rotated by 90 degrees about the axis (no second optical solve); it drives the odd m = 2 part only (azimuthal_order 2), the m = 0 torsion part is not modelled (its share is the extra torsion_drive_fraction, a run warning above 1e-3).
+- `temperature` [K] (default 293.15; > 0) - Temperature
+  Temperature T of the thermal phonons: the classical spectrum scales with T; the quantum sideband weights (psd_stokes, psd_anti_stokes) use it too.
+- `photoelastic` (bool; default true) - Photoelastic drive
+  Include the photoelastic (strain-optic) part of the drive, from photoelastic_p11 / _p12 / _p44 of the solid materials (planar: crystal entries too). The permittivity at a drive point is that of its own solid material (the nearest optical cell of that material among the four around the point), so the optical staircase does not lend a point the other material at an interface; a region thinner than an optical cell has none and warns at the run.
+- `moving_boundary` (bool; default true) - Moving-boundary drive
+  Include the moving-boundary part of the drive: solid element edges inside the drive selection where the optical permittivity jumps (non-conjugated Johnson perturbation). Triangles: the tangential E and the normal D (both continuous) are read at the edge itself, the permittivity of each side is that of its own material (isotropic: the mean of its diagonal); rectangular cells: the two cells of each Yee face. At least one of photoelastic / moving_boundary must be on; with photoelastic off an optical interface must touch the drive selection.
+- `axial_length` [m] (default 1e-05; > 0) - Beam length out of the plane
+  Planar solids only (unused when axisymmetric): the 2D fields are a sheet beam uniform over this length L along z, powers in W/m; the reported 3D spectrum is the 2D one / L, valid for q_z = 0 phonons, i.e. L much longer than the acoustic attenuation length (L_att = 2 v / Gamma, about 0.7e-6 m in water at 7.4 GHz) and the beam. In the plane the drive selection plays this part: a selection only a few L_att long along the beam widens the line (see the feature description).
+- `scan_offsets_x` [m] (float_list; nullable) - Scan offsets x
+  Focus offsets along x [m] of a scan (planar optics only; em_fdfd_bor refuses x offsets): scan positions are every (x, y) pair of the two lists (x outer, y inner, an empty list = [0]); position 1 = (first x, first y) is the shown solution. The illumination focus moves analytically (one more optical solve on the same factor and one more solid solve per frequency each); a collection_physics keeps its focus. An offset must keep every model mirror plane (offsets along its normal: 0).
+- `scan_offsets_y` [m] (float_list; nullable) - Scan offsets y
+  Focus offsets along y [m] of a scan (em_fdfd_bor: along the axis z); positions as scan_offsets_x.
+- `reference` (default "local"; local | homogeneous | none) - Reference spectrum
+  Reference series psd_reference: 'local' (any medium) a damped-oscillator line per drive point at its local wavevector q (phase gradient of E_c . E_i) with the longitudinal modulus M* = K* + 4/3 G* of its material. Its area obeys the same sum rule as psd at any numerical aperture, but its line sits low: the phase gradient misses the q content of the amplitude pattern (the focusing cone, about <theta^2> / 6 of the cone angles theta: about 1 % for a filled NA 0.6 pupil in water, up to 3.6 % at its rim) and reads the Gouy phase and the wavefront curvature near the focus as a lower q (about 0.5 % at NA 0.3); its line also ignores the drive length (below). Compare shifts with it at low NA (< 0.3) only. 'homogeneous' (planar, no model mirror planes, one uniform lossy isotropic material over the drive selection on uniform optical cells) the plane-wave sum of an unbounded medium with the same drive raster (its finite length and q content included), by an FFT whose periodic images are kept below 0.001 of the readout by a zero padding per axis from the phonon attenuation (padding P >= 1 + ln(2 / tolerance) / (delta L): the two nearest images of an axis together below the tolerance, delta = Gamma / (2 v) the smallest over the study band, L the drive box; more than 16,777,216 padded cells is an error: a drive short against the attenuation length); none. Both need isotropic moduli with a finite bulk modulus in the drive selection (no c_ij route, no incompressible material of formulation mixed): else reference 'none'.
+- `fit_peak` (bool; default true) - Fit the peak
+  Fit a damped harmonic oscillator A / ((f0^2 - f^2)^2 + gamma^2 f^2) to psd (and to psd_reference): extras shift = f0, fwhm, gamma, peak, r_squared, reference_shift; a failed fit sets fit_warning and NaN values (never an error).
 
 ### Feature `solid_mechanics.electrode` - Electrode
 
@@ -7699,7 +7838,7 @@ Params (StudySpec.settings):
 
 ## Study type `frequency_response` - Frequency response
 
-Driven time-harmonic response (exp(+j omega t), omega = 2 pi f) at a list of frequencies (the EM frequency_domain study takes wavelengths) of every frequency-response physics (solid_mechanics, solid_mechanics_3d, membrane or pressure_acoustics; solid_mechanics 2D: planar plane strain / plane stress or axisymmetric, not generalized plane strain or guided modes; solid_mechanics_3d on tetrahedra; pressure_acoustics: -div(grad p / rho) - omega^2 p / (rho c^2) = j omega q on triangles / tetrahedra). Solids: (K (1 + j eta) - omega^2 M) u = f, consistent mass of rho (every solid cell needs rho > 0), eta = mechanical_loss_factor, piezoelectric: the coupled potential with eps (1 - j dielectric_loss_tangent); triangles / tetrahedra: frequency-dependent moduli G*(omega), K*(omega) per material (viscosity, relaxation branches; sweep_method direct) and the setting formulation mixed (the u-p saddle point, liquids included); every load, prescribed displacement, electrode voltage and floating charge is a complex drive amplitude (phase 0); one complex symmetric factor per frequency (2D: host SuperLU outside the solver roles, counters in the summary; solid_mechanics_3d: its 'linear' sparse_direct solver, SuperLU or cuDSS LDL^T with the plan reused). With stress_stiffening the initial_stress is first relaxed by a static solve (loads stay the drive) and its K_sigma joins K (real, no loss). A free body is allowed (regular at f > 0). membrane: the pressure_load / line_force / point_force phasors, one complex factor per frequency on its 'linear' sparse_direct solver. Results: the admittance feature (Y = I / V of an electrode versus f, Butterworth-Van Dyke fit); snapshots labelled "f = <Hz> Hz" holding the real parts (phase 0), u_abs = |u|, u_x_im / u_y_im (/ u_z_im) the imaginary parts, pressure / pressure_im (triangles / tetrahedra; store them through stored_fields); the last frequency stays live. Triangles / tetrahedra: frequency_probe records the complex displacement per frequency (u_x_re, u_x_im, u_x_abs, u_x_phase, ...), every support result becomes a table of its complex reaction per frequency (F_x_re, F_x_im, ..., and W_re, W_im: the work sum R u_held of the support on its prescribed displacement; W / X the force of a rigid translation by X, W / theta the torque of a rigid rotation by theta where one can be prescribed (triangles: a planar model, or a tilt about a transverse axis at azimuthal_order 1; tetrahedra hold uniform values, so translations only), omega Im(W) / 2 the mean power into the solid); solid_probe samples and electrode tables stay empty; membrane: field_probe, port and mode_projection records per frequency. Background physics run first (their couplings into the solved physics apply once); couplings reading a solved physics: validation error; StudySpec.solved_physics restricts the solved physics. ticks = frequencies; summary response_frequencies (+ frequency_sweep with a reduced sweep). parity_sectors: membrane symmetry / antisymmetry faces are mirror planes too.
+Driven time-harmonic response (exp(+j omega t), omega = 2 pi f) at a list of frequencies (the EM frequency_domain study takes wavelengths) of every frequency-response physics (solid_mechanics, solid_mechanics_3d, membrane or pressure_acoustics; solid_mechanics 2D: planar plane strain / plane stress or axisymmetric, not generalized plane strain or guided modes; solid_mechanics_3d on tetrahedra; pressure_acoustics: -div(grad p / rho) - omega^2 p / (rho c^2) = j omega q on triangles / tetrahedra). Solids: (K (1 + j eta) - omega^2 M) u = f, consistent mass of rho (every solid cell needs rho > 0), eta = mechanical_loss_factor, piezoelectric: the coupled potential with eps (1 - j dielectric_loss_tangent); triangles / tetrahedra: frequency-dependent moduli G*(omega), K*(omega) per material (viscosity, relaxation branches; sweep_method direct) and the setting formulation mixed (the u-p saddle point, liquids included); every load, prescribed displacement, electrode voltage and floating charge is a complex drive amplitude (phase 0); one complex symmetric factor per frequency (2D tensor meshes: host SuperLU outside the solver roles, counters in the summary; triangles and solid_mechanics_3d: the 'linear' sparse_direct solver, SuperLU or cuDSS LDL^T with the plan reused). With stress_stiffening the initial_stress is first relaxed by a static solve (loads stay the drive) and its K_sigma joins K (real, no loss). A free body is allowed (regular at f > 0). membrane: the pressure_load / line_force / point_force phasors, one complex factor per frequency on its 'linear' sparse_direct solver. Results: the admittance feature (Y = I / V of an electrode versus f, Butterworth-Van Dyke fit); snapshots labelled "f = <Hz> Hz" holding the real parts (phase 0), u_abs = |u|, u_x_im / u_y_im (/ u_z_im) the imaginary parts, pressure / pressure_im (triangles / tetrahedra; store them through stored_fields); the last frequency stays live. Triangles / tetrahedra: frequency_probe records the complex displacement per frequency (u_x_re, u_x_im, u_x_abs, u_x_phase, ...), every support result becomes a table of its complex reaction per frequency (F_x_re, F_x_im, ..., and W_re, W_im: the work sum R u_held of the support on its prescribed displacement; W / X the force of a rigid translation by X, W / theta the torque of a rigid rotation by theta where one can be prescribed (triangles: a planar model, or a tilt about a transverse axis at azimuthal_order 1; tetrahedra hold uniform values, so translations only), omega Im(W) / 2 the mean power into the solid); solid_probe samples and electrode tables stay empty; membrane: field_probe, port and mode_projection records per frequency. Physics drives (solid_mechanics on triangles and on planar tensor meshes: brillouin_scattering) are built after the background stage from the solved optics (stage Optical drives), one optical solve on its kept factor and one drive column per scan position, every column solved on the same solid factor per frequency; the drive is then the only load. Background physics run first (their couplings into the solved physics apply once); couplings reading a solved physics: validation error; StudySpec.solved_physics restricts the solved physics. ticks = frequencies; summary response_frequencies (+ frequency_sweep with a reduced sweep). parity_sectors: membrane symmetry / antisymmetry faces are mirror planes too.
 
 - Needs a physics that steps in time: no; background study stationary
 
@@ -8149,7 +8288,7 @@ Produced by: em_fdfd_bor.far_field, em_fdfd_ez.far_field, em_fdfd_hz.far_field, 
 
 #### Result kind `xy`
 
-Produced by: em_eme.eme_length_sweep, em_eme.adjoint_objective, em_eme.design_region, em_eme_3d.eme_length_sweep, em_eme_3d.adjoint_objective, em_fdfd_bor.field_probe, em_fdfd_bor.mode_monitor, em_fdfd_conical.field_probe, em_fdfd_ez.field_probe, em_fdfd_ez.mode_monitor, em_fdfd_ez.adjoint_objective, em_fdfd_ez.design_region, em_fdfd_hz.field_probe, em_fdfd_hz.mode_monitor, em_fdfd_hz.adjoint_objective, em_fdfd_hz.design_region, em_fdfd_nonlinear.design_region, em_fdfd_nonlinear.field_probe, em_fdfd_nonlinear.mode_monitor, em_fdfd_nonlinear.adjoint_objective, em_fdfd_sphere.plane_wave, em_fdfd_sphere.dipole_source, em_fdfd_sphere.field_probe, em_fdtd_3d.mode_monitor, em_fdtd_bor.mode_monitor, em_fdtd_ez.mode_monitor, em_fdtd_hz.mode_monitor, em_modes.mode_dispersion, em_modes.shg_overlap, heat.thermorefractive_noise, heat.particle_noise, membrane.field_probe, membrane.port, membrane.mode_projection, pressure_acoustics.frequency_probe, pressure_acoustics.surface_pressure, solid_mechanics.frequency_probe, solid_mechanics.admittance, solid_mechanics_3d.frequency_probe, solid_mechanics_3d.admittance
+Produced by: em_eme.eme_length_sweep, em_eme.adjoint_objective, em_eme.design_region, em_eme_3d.eme_length_sweep, em_eme_3d.adjoint_objective, em_fdfd_bor.field_probe, em_fdfd_bor.mode_monitor, em_fdfd_conical.field_probe, em_fdfd_ez.field_probe, em_fdfd_ez.mode_monitor, em_fdfd_ez.adjoint_objective, em_fdfd_ez.design_region, em_fdfd_hz.field_probe, em_fdfd_hz.mode_monitor, em_fdfd_hz.adjoint_objective, em_fdfd_hz.design_region, em_fdfd_nonlinear.design_region, em_fdfd_nonlinear.field_probe, em_fdfd_nonlinear.mode_monitor, em_fdfd_nonlinear.adjoint_objective, em_fdfd_sphere.plane_wave, em_fdfd_sphere.dipole_source, em_fdfd_sphere.field_probe, em_fdtd_3d.mode_monitor, em_fdtd_bor.mode_monitor, em_fdtd_ez.mode_monitor, em_fdtd_hz.mode_monitor, em_modes.mode_dispersion, em_modes.shg_overlap, heat.thermorefractive_noise, heat.particle_noise, membrane.field_probe, membrane.port, membrane.mode_projection, pressure_acoustics.frequency_probe, pressure_acoustics.surface_pressure, solid_mechanics.frequency_probe, solid_mechanics.brillouin_scattering, solid_mechanics.admittance, solid_mechanics_3d.frequency_probe, solid_mechanics_3d.admittance
 
 - `kind`: 'xy', str; the producing feature may add further keys, listed in its description
 - `x`: abscissa shared by every series, float64 (n,), in x_unit

@@ -58,6 +58,18 @@ file ("Triangle meshes"). Error indicators: section "Error indicators" (users: g
 - Axisymmetric weights differ by module: fem.assembly (scalar stiffness / mass / loads) integrates x r, fem.elasticity
   x 2 pi r (`RING`, whole rings). Code mixing them (thermoelastic damping: the scalar thermal operators against
   `assemble_strain_source`) scales the scalar ones by RING, else a ratio of the two is off by 2 pi.
+- Elastic drives (`elastic_drives.py`: point-stress and edge-traction drives at given quadrature points, the Brillouin
+  loads) take B, rows and ring weights from elasticity's own helpers (`_form_operator_at`, the stiffness groups' form;
+  `_weights`, `_azimuthal_terms`), so they pair with K / K_m by construction: a change of the elasticity rows, weights
+  or element chunks moves both (fem_elastic_drive_* pin transpose, loads and the order-m phi integral). Their
+  `DrivePoints` hold the dof map they were built on and refuse another: rebuild them after a re-assembly gives a new
+  map (a kept strain operator, `keep_operator`, dies with them). Edge drives take points, weights and normals from
+  `indicators.edge_sides` and the basis from `assembly._edge_quadrature` unchecked: both must keep one Gauss rule and
+  `edge_geometry` per degree (fem_elastic_drive_constant_stress compares the edge drive with assemble_edge_traction).
+  A stress drive on a mixed u-p solid takes `projection=` (`PressureProjection`: the solid's own B, M_p,g and free
+  pressure dofs, never a re-assembly on other rules): its mean normal stress goes in as B^T M_p^-1 int N_p s dV, since
+  the non-P1 part of tr eps carries no bulk stiffness and a plain point drive excites it (elastic_drives header). Its
+  normal rows must stay the rows `mixed_elasticity` sums into tr eps (fem_elastic_drive_pressure_projection).
 - Stable patterns: `_to_csr`, `blocks_csr`, `element_blocks_csr` and FixedPatternCsr keep explicit zeros, so every
   assembly over one dof map (same free / fixed split) has one CSR pattern whatever the coefficients: the precondition
   of cuDSS plan reuse. Never `eliminate_zeros` such an operator; sum terms per root "Solver contract"
@@ -196,7 +208,9 @@ file ("Triangle meshes"). Error indicators: section "Error indicators" (users: g
   and tr eps from the stiffness's own strain operator rows, never fem.assembly's x r: B must match K's rules. The
   integrands are polynomial on isoparametric P2 elements at the stiffness's rule degrees (CURVED_DEGREE,
   AXISYMMETRIC_DEGREE; 3D affine), so the row sums B^T 1 are exact to round-off: the mechanics gauge detection and
-  volume check (tolerance 1e-9) rely on it; a lower rule there breaks them.
+  volume check (tolerance 1e-9) rely on it; a lower rule there breaks them. A PML stretch (`stretch=`, 2D) keeps it:
+  tr eps J is an exact divergence in the stretched coordinates and the planar rule gains + 2 as the stiffness's (the
+  axisymmetric corner integrand reaches degree 6).
 - Pressure maps per group take the displacement map's geometry order; a group's dofs are offsets[g] + its own
   numbering (nodes shared by groups carry one dof per group): node values go through `nodal_pressure[_3d]` (groups
   averaged) or `pressure_at[_3d]`, never a global-id lookup; regions across groups through `pressure_regions(space,

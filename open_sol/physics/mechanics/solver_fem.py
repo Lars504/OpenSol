@@ -35,6 +35,7 @@ from ...fem.reduced_outputs import field_policy, wants_fields
 from ...solvers.arpack_shift_invert import ArpackShiftInvertSolver
 from .fields import (AZIMUTHAL_IMAG_FIELDS, ENERGY_DENSITY_FIELDS, HARMONIC_IMAG_FIELDS, INPUT_ARRAYS, OUTPUT_ARRAYS,
                      PRESSURE_FIELDS, SOURCE_SLOTS)
+from .brillouin_drive import SolidDriveInputs
 from .frequency_response import REACTION_WORK, FrequencyPoint, FrequencyTerm, HarmonicSystem
 from .generalized_plane_strain import (BENDING_TERMS, condition_matrix, condition_targets, strain_term_values,
                                        terms_about_origin)
@@ -45,7 +46,8 @@ from .modal import ModalPencil, MultiShiftModes
 from .nonlinear_start import NonlinearStart, solve_from_start
 from .pml2d import DEFAULT_PML_REFLECTION, check_ring, elastic_pml_ring, ring_wave_speed
 from .renderer import SolidRenderer
-from .solver import GENERALIZED_PLANE_STRAIN, GEOMETRIES, OUT_OF_PLANE_CONDITIONS, PLANE_STRAIN, PLANE_STRESS
+from .solver import (GENERALIZED_PLANE_STRAIN, GEOMETRIES, OUT_OF_PLANE_CONDITIONS, PLANE_STRAIN, PLANE_STRESS,
+                     PhysicsDriveHooks, refuse_reduced_drive_columns)
 from .solver_common import (MATERIAL_STATE_ARRAYS, FEMSolidCommon, HarmonicOperators, _copy_or_none,
                             host_array as _host, mixed_harmonic_operators)
 from .stiffness import (HOOP_NAMES, OPERATOR_NAMES, ElementStiffness, check_positive_definite, element_stiffness,
@@ -88,18 +90,19 @@ def _restricted(stiffness, elements) -> ElementStiffness:
                             np.asarray(stiffness.solid)[elements][:, None], stiffness.anisotropic, stiffness.monoclinic)
 
 
-class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
+class SolidMechanicsFEMPhysics(PhysicsDriveHooks, FEMSolidCommon, MultiShiftModes, PhysicsSolver):
     """2D static elasticity on a fem.domain.TriangleDomain (window elements; the PML layer ring is void unless pml_faces
-    make it an elastic PML, eigenfrequency only): host float64 solve, state() arrays per element (centroid values),
-    display fields by fem_field (P1 / P2 nodal: displacement exact, strain / stress / energy densities smoothed by nodal
-    averaging over the solid elements). azimuthal_order m >= 1 (axisymmetric; eigenfrequency, and frequency response
-    driven by prescribed displacements): the amplitudes (U_r, U_z, U_phi) of u_r, u_z ~ cos(m phi), u_phi ~ sin(m phi)
-    (fields u_x, u_y, u_z). geometric_nonlinearity: every static solve total-Lagrangian (Green-Lagrange strain, second
-    Piola-Kirchhoff stress outputs). Viscoelastic moduli (viscoelastic.py): the frequency response adds one fixed term
-    per parameter group and part. formulation mixed (frequency_response only, P2): Taylor-Hood u-p, x = [u; p] with a P1
-    pressure per parameter group (fem.mixed_elasticity, solver_common.mixed_harmonic_operators; the axis pressure held
-    at 0 at m >= 1), outputs sigma = 2 G* dev eps - p I and the pressure fields from the pressure unknowns; the static
-    K of the system (deviatoric where K0 is unset, liquids 0) only carries the dof map and the rigid-mode check."""
+    make it an elastic PML: eigenfrequency and frequency response, stretched at target_frequency): host float64 solve,
+    state() arrays per element (centroid values), display fields by fem_field (P1 / P2 nodal: displacement exact, strain
+    / stress / energy densities smoothed by nodal averaging over the solid elements). azimuthal_order m >= 1
+    (axisymmetric; eigenfrequency, and frequency response driven by prescribed displacements): the amplitudes (U_r, U_z,
+    U_phi) of u_r, u_z ~ cos(m phi), u_phi ~ sin(m phi) (fields u_x, u_y, u_z). geometric_nonlinearity: every static
+    solve total-Lagrangian (Green-Lagrange strain, second Piola-Kirchhoff stress outputs). Viscoelastic moduli
+    (viscoelastic.py): the frequency response adds one fixed term per parameter group and part. formulation mixed
+    (frequency_response only, P2): Taylor-Hood u-p, x = [u; p] with a P1 pressure per parameter group
+    (fem.mixed_elasticity, solver_common.mixed_harmonic_operators; the axis pressure held at 0 at m >= 1), outputs sigma
+    = 2 G* dev eps - p I and the pressure fields from the pressure unknowns; the static K of the system (deviatoric
+    where K0 is unset, liquids 0) only carries the dof map and the rigid-mode check."""
 
     _output_groups = _OUTPUT_GROUPS
 
@@ -130,10 +133,10 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
                 ('out_of_plane plane_stress / generalized_plane_strain',
                  geometry != 'axisymmetric' and out_of_plane != PLANE_STRAIN),
                 ('stress_stiffening', stress_stiffening), ('geometric_nonlinearity', geometric_nonlinearity),
-                ('an elastic PML', bool(tuple(pml_faces))), ('periodic axes', any(periodic))) if flag]
+                ('periodic axes', any(periodic))) if flag]
             if refused:
                 raise ValueError(f"formulation mixed is not available with {', '.join(refused)} (quadratic, plane "
-                                 'strain or axisymmetric, no prestress, PML or periodic axes)')
+                                 'strain or axisymmetric, no prestress or periodic axes)')
         # K_sigma of the static state in every pencil; free rigid motions allowed (None: target > 0)
         self.stress_stiffening = bool(stress_stiffening)
         self._free_body = None if free_body is None else bool(free_body)
@@ -153,7 +156,8 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
         self.azimuthal_order = int(azimuthal_order)
         if self.azimuthal_order and not self._axisymmetric:
             raise ValueError(f"azimuthal_order {self.azimuthal_order} needs geometry 'axisymmetric'")
-        # elastic PML ring (pml2d): its faces and target reflection; the eigenfrequency study only
+        # elastic PML ring (pml2d): its faces and target reflection (eigenfrequency and frequency_response studies; its
+        # strength is set at target_frequency in both)
         self.pml_faces = tuple(pml_faces)
         unknown = [face for face in self.pml_faces if face not in FACES]
         if unknown:
@@ -161,7 +165,8 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
         if self.pml_faces and self._axisymmetric and 'x_lo' in self.pml_faces:
             raise ValueError('an axisymmetric solid has no PML on x_lo (the axis r = 0 lies there)')
         if self.pml_faces and self.out_of_plane == GENERALIZED_PLANE_STRAIN:
-            raise ValueError('an elastic PML runs in the eigenfrequency study, which refuses generalized plane strain')
+            raise ValueError('an elastic PML runs in the eigenfrequency and frequency_response studies, which refuse '
+                             'generalized plane strain')
         self.pml_reflection = float(pml_reflection)
         # Bloch / Floquet axes (x, y) and wavenumbers [rad/m]: eigenfrequency modes on P^H K P (bloch2d), planar only
         self.periodic = tuple(bool(value) for value in periodic)
@@ -205,12 +210,18 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
         self.bending_moments = (float(bending_moment_x), float(bending_moment_y))   # [N m] about the drawing origin
         self.order = DISCRETIZATIONS[discretization]
         self.linear_solver = linear_solver   # 'linear' SparseDirectSolver runtime (None: system_fem makes a private one)
-        self.target_frequency = float(target_frequency)   # [Hz] eigenfrequency study target (0 = the lowest modes)
+        # [Hz] eigenfrequency study target (0 = the lowest modes); with an elastic PML also the reference frequency of
+        # its strength (frequency_response too: _pml_ring)
+        self.target_frequency = float(target_frequency)
         self._owns_eigen_solver = eigen_solver is None
         self.eigen_solver = ArpackShiftInvertSolver() if eigen_solver is None else eigen_solver
         self.eigen_solve = None          # modal.ModalSolve of the last solve_eigenfrequencies
         self.modal_mass = None           # host CSR consistent mass of that solve
         self.optomechanical_couplings = []   # optomechanics.OptomechanicalCoupling of the features (optomechanics study)
+        # physics drives (brillouin_drive.BrillouinDrive of brillouin_scattering features, added in every study; only
+        # the frequency_response study binds them: bind_physics_drives) and the extra drive columns solved so far
+        self.physics_drives = []
+        self._column_solves = 0
         self.selected_resonance = None   # 1-based mode shown, None = the static solve
         self.frequency_points = []       # frequency_response.FrequencyPoint per solved frequency (no electrodes)
         # (key, frequency_response.HarmonicSystem on the 'linear' runtime) of the driven solves, see _harmonic_system
@@ -269,6 +280,10 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
         self._shows_mode = False                     # a vibration mode is shown: no reactions
         self._shows_harmonic = False                 # a frequency-response solution is shown: no reactions
         self._harmonic_operators = None              # HarmonicOperators of the frequency response
+        # bound physics drives: (dof map, n_unknowns, ((drive, first column, count), ...), read-only W (k, n_unknowns)
+        # complex: the columns, also the HarmonicSystem functionals) of bind_physics_drives, None while unbound
+        # (PhysicsDriveHooks)
+        self._drive_columns = None
         self._unit_axial = None                      # generalized plane strain (terms, loads, solutions, matrix)
         self._axial_terms = np.zeros(3)              # its (e0, e1, e2) about the window centre
         x0, y0, x1, y1 = domain.mesh.window
@@ -298,15 +313,26 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
 
     def _hold_axis(self):
         """Regularity on the axis (x_lo): m = 0 u_r = 0; m = 1 u_z = 0 and u_phi = -u_r (tied); m >= 2 every
-        amplitude 0."""
+        amplitude 0 (_axis_ids: through the y PML rings too)."""
+        system = self.system
+        ids = self._axis_ids()
         if self.azimuthal_order == 0:
-            self.hold_face('x_lo', u_x=0.0)
+            system.hold(ids, u_x=0.0)
         elif self.azimuthal_order == 1:
-            self.hold_face('x_lo', u_y=0.0)
-            system = self.system
-            system.tie_axis(system.global_ids_of_edges(system.face_edges('x_lo')))
+            system.hold(ids, u_y=0.0)
+            system.tie_axis(ids)
         else:
-            self.hold_face('x_lo', 0.0, 0.0, u_z=0.0)
+            system.hold(ids, 0.0, 0.0, 0.0)
+
+    def _axis_ids(self) -> np.ndarray:
+        """Full-mesh dof ids on the axis r = 0 of an axisymmetric solid: the window's x_lo edge (face_edges), with an
+        elastic PML also its continuation through the y_lo / y_hi rings (the mesh's outer x_lo edges; x_lo itself
+        takes no ring), whose axis needs the same regularity rule."""
+        system = self.system
+        edges = system.face_edges('x_lo')
+        if self.pml_faces:
+            edges = np.union1d(edges, np.asarray(self.domain.mesh.edge_tags.get('x_lo', ()), dtype=np.int64))
+        return system.global_ids_of_edges(edges)
 
     def finalize(self) -> None:
         """Assemble once (fails early on a solid region that can move as a rigid body)."""
@@ -333,11 +359,11 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
         if names:
             self._prestress = None
 
-    def _eigen_only(self, azimuthal=True) -> str:
-        """Why the solid runs in the eigenfrequency study only ('' when not): an elastic PML, a Bloch phase != 1 (a
-        plain periodic cell, every bloch_k 0, has static solves) or (azimuthal: the static solves ask) an azimuthal
-        order, which also has a frequency response."""
-        if self.pml_faces:
+    def _eigen_only(self, azimuthal=True, harmonic=False) -> str:
+        """Why the solid runs in the eigenfrequency study only ('' when not): an elastic PML (harmonic: the frequency
+        response asks, which solves it too), a Bloch phase != 1 (a plain periodic cell, every bloch_k 0, has static
+        solves) or (azimuthal: the static solves ask) an azimuthal order, which also has a frequency response."""
+        if self.pml_faces and not harmonic:
             return 'an elastic PML'
         if any(value for value in self.bloch_k):
             return 'periodic axes with a bloch_k != 0 (a Bloch cell)'
@@ -353,10 +379,12 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
     def step(self, t: float = 0.0, dt: float = math.inf) -> None:
         """Re-solve only when the stiffness, a support, a load or an input changed (always at the first call); probes
         sample after a re-solve and at every dt = inf call. ValueError with an elastic PML or an azimuthal order (the
-        eigenfrequency study only)."""
+        eigenfrequency / frequency_response studies only)."""
         only = self._eigen_only()
         if only:
-            raise ValueError(f'{self._label()}: {only} is solved by the eigenfrequency study only (no stationary or '
+            studies = ('eigenfrequency study' if self._eigen_only(azimuthal=False, harmonic=True)
+                       else 'eigenfrequency and frequency_response studies')
+            raise ValueError(f'{self._label()}: {only} is solved by the {studies} only (no stationary or '
                              'time-dependent solve)')
         t = 0.0 if t is None else float(t)
         system = self.system
@@ -655,7 +683,7 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
         """The private eigen solver's counters once it ran; the private linear runtime's when no build runtime counts
         them (scripts; also the frequency-response factorisations, which run on it); the Newton loop of a geometrically
         nonlinear solid (its tangent factorisations count on the 'linear' runtime too; tangent_factorizations / _reuses
-        split the Newton iterations)."""
+        split the Newton iterations); column_solves: the extra physics-drive columns solved on the frequency factors."""
         counters = {}
         if self._owns_eigen_solver and self.eigen_solver.n_eigen_solves:
             counters.update(self.eigen_solver.work_counters())
@@ -665,7 +693,7 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
         if self._newton is not None and self._newton.n_runs:   # load steps run, Newton iterations, tangent factors
             counters.update(self._newton.work_counters())
             counters.update(self._tangent_policy.counters())
-        return counters
+        return self._add_drive_counters(counters)
 
     def solve_summary(self) -> str:
         summary = self.system.solve_summary()
@@ -739,6 +767,7 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
         for probe in self.probes:
             probe.clear()
         self.reset_frequency_response()
+        self._drive_columns = None   # the next frequency_response run binds its physics drives afresh
         if self.prestressed:
             self._prestress = None
         self._loads_dirty = True
@@ -916,9 +945,9 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
         self._shows_mode, self._shows_harmonic = True, False
         self.selected_resonance = number
 
-    def _stiffness_loss(self, stretched=True):
+    def _stiffness_loss(self):
         """Host CSR eta K of the solid elements (mechanical_loss_factor of the kept operator coefficients; an elastic
-        PML ring stretched as K unless stretched is False); None when every eta is 0."""
+        PML ring stretched as K); None when every eta is 0."""
         materials = self.domain.materials
         if LOSS_ARRAYS[0] not in set(materials.property_names()):
             return None
@@ -926,7 +955,7 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
         if not eta.any():
             return None
         scaled = {name: np.asarray(values, dtype=np.float64) * eta for name, values in self._coefficients.items()}
-        return self.system.stiffness(scaled, stretched=stretched and self.system.pml is not None)
+        return self.system.stiffness(scaled, stretched=self.system.pml is not None)
 
     # --- frequency_response study hooks -----------------------------------------
 
@@ -938,6 +967,8 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
             record.clear()
         for record in self._harmonic_reactions.values():
             record.clear()
+        for drive in self.physics_drives:   # the bound columns stay (bound before this reset)
+            drive.reset_records()
         self.reduced_sweep = None
         self._field_policy, self._unpublished_frequency = None, None
         self._record_rows = None
@@ -946,11 +977,33 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
 
     def _harmonic_inputs(self):
         """(load, HarmonicOperators) of a driven solve: the checks, assembly and harmonic operators (an azimuthal
-        order: driven by prescribed displacements only, its load is 0); the load over every unknown (mixed: [f; 0])."""
+        order: driven by prescribed displacements only, its load is 0); the load over every unknown (mixed: [f; 0]).
+        With physics drives the load is the first bound drive column (bind_physics_drives; ValueError unbound)."""
+        operators = self._checked_harmonic_operators()
+        system = self.system
+        # the load is frequency independent: kept until a load input changes (_loads_dirty) or the dof map / unknown
+        # count changes; the dead loads only: the initial stress and thermal strain are static (the prestress), never a
+        # drive; the mixed pressure rows carry no load
+        kept = self._harmonic_load
+        if kept is None or kept[0] is not system.dofs or kept[1].size != operators.n_unknowns:
+            if self.physics_drives:   # the drive is the only load (dead loads refused at bind and here)
+                load = self._drive_load(system.dofs, operators.n_unknowns)
+            else:
+                load = self._external_load()
+                if load.size < operators.n_unknowns:
+                    # booked (estimate): the padded mixed load, float64 (c n_u + n_p,), host (kept per sweep)
+                    load = np.concatenate([load, np.zeros(operators.n_unknowns - load.size)])
+            load.flags.writeable = False
+            self._harmonic_load = (system.dofs, load)
+        return self._harmonic_load[1], operators
+
+    def _checked_harmonic_operators(self) -> HarmonicOperators:
+        """The HarmonicOperators of a driven solve after its refusals (generalized plane strain; Bloch, periodic axes;
+        an elastic PML is solved: its stretched pencil at target_frequency) and the assembly they need."""
         if self.out_of_plane == GENERALIZED_PLANE_STRAIN:
             raise ValueError(f'{self._label()}: generalized plane strain has no frequency response (the uniform eps_zz '
                              'carries no mass)')
-        only = self._eigen_only(azimuthal=False) or ('periodic axes' if any(self.periodic) else '')
+        only = self._eigen_only(azimuthal=False, harmonic=True) or ('periodic axes' if any(self.periodic) else '')
         if only:
             raise ValueError(f'{self._label()}: {only} is solved by the eigenfrequency study only (no frequency '
                              'response yet)')
@@ -959,19 +1012,7 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
             self._assemble()
         if self._harmonic_operators is None:
             self._harmonic_operators = self._build_harmonic_operators()
-        operators = self._harmonic_operators
-        # the load is frequency independent: kept until a load input changes (_loads_dirty) or the dof map / unknown
-        # count changes; the dead loads only: the initial stress and thermal strain are static (the prestress), never a
-        # drive; the mixed pressure rows carry no load
-        kept = self._harmonic_load
-        if kept is None or kept[0] is not system.dofs or kept[1].size != operators.n_unknowns:
-            load = self._external_load()
-            if load.size < operators.n_unknowns:
-                # booked (estimate): the padded mixed load, float64 (c n_u + n_p,), host (kept per sweep)
-                load = np.concatenate([load, np.zeros(operators.n_unknowns - load.size)])
-            load.flags.writeable = False
-            self._harmonic_load = (system.dofs, load)
-        return self._harmonic_load[1], operators
+        return self._harmonic_operators
 
     def _harmonic_fixed(self, operators) -> np.ndarray:
         """Held values over every unknown of the harmonic system: the system's u values (0 on free dofs), mixed + 0 on
@@ -1007,7 +1048,11 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
                                                   column_map=operators.column_map, runtime=self.system.runtime,
                                                   previous=None if kept is None else kept[1].factor,
                                                   terms=operators.terms, scale_terms=operators.scale_terms))
-        return self._harmonic[1]
+        harmonic = self._harmonic[1]
+        weights = None if self._drive_columns is None else self._drive_columns[3]
+        if harmonic.functionals is not weights:   # bound / dropped physics drives (both None without any drive)
+            harmonic.set_functionals(weights)
+        return harmonic
 
     def _harmonic_solve(self, omega, fields=True):
         """(x, A x, load) at omega [rad/s] by the kept HarmonicSystem: one complex factor, or its plan_frequency_response
@@ -1044,6 +1089,12 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
         if method == 'direct':
             self._field_policy = field_policy(options, frequencies)
             return None
+        if method == 'modal' and self.pml_faces:
+            raise ValueError(f"{self._label()}: sweep_method 'modal' needs the real (K, M) modes of the solid, but an "
+                             'elastic PML stretches them complex (its PML modes would fill the basis): use '
+                             "sweep_method 'adaptive' or 'direct'")
+        if self._drive_columns is not None:
+            refuse_reduced_drive_columns(self._label(), method, len(self._drive_columns[3]))
         frequencies = np.asarray(frequencies, dtype=np.float64).ravel()
         if not (frequencies.size and np.all(np.isfinite(frequencies)) and np.all(frequencies > 0.0)):
             raise ValueError(f'{self._label()}: a reduced frequency sweep needs frequencies > 0 Hz')
@@ -1078,6 +1129,8 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
         displacement, pressure = self._split_harmonic(solution, operators)
         residual, _ = self._split_harmonic(product - load, operators)
         self._record_harmonic(frequency, displacement, residual)
+        if self._drive_columns is not None:   # physics drives: every column's readout on this factor
+            self._record_drives(frequency, omega)
         if fields:
             self._show_harmonic(displacement, omega=omega, pressure=pressure, space=operators.pressure)
         self._unpublished_frequency = None if fields else frequency
@@ -1098,6 +1151,44 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
         operators = self._harmonic_operators
         displacement, pressure = self._split_harmonic(solution, operators)
         self._show_harmonic(displacement, omega=omega, pressure=pressure, space=operators.pressure)
+
+    # --- physics drives (PhysicsDriveHooks: brillouin_scattering) ---
+
+    def _drive_target(self) -> tuple:
+        """(dof map, unknown count, (HarmonicOperators,)) for bind_physics_drives after the assembly and harmonic
+        operators; ValueError with plane stress / generalized plane strain (the optical stress pairs the plane-strain
+        rows). An elastic PML: the drive acts on the window elements only (_drive_inputs), the ring absorbs (its
+        radiated power is part of -Im(w^H u): an open, passive system)."""
+        if not self._axisymmetric and self.out_of_plane != PLANE_STRAIN:
+            raise ValueError(f'{self._label()}: a physics drive (brillouin_scattering) needs out_of_plane plane_strain '
+                             f'(its optical stress pairs the plane-strain rows), got {self.out_of_plane}')
+        operators = self._checked_harmonic_operators()
+        return self.system.dofs, operators.n_unknowns, (operators,)
+
+    def _drive_load_counts(self) -> tuple:
+        """(dofs with a dead load: tractions, applied or coupled body forces; dofs held at a value != 0)."""
+        loaded = int(np.count_nonzero(self._external_load()))   # m >= 1: raises itself for cos(m phi) loads
+        return loaded, int(np.count_nonzero(self.system.fixed_values()))
+
+    def _drive_inputs(self, operators) -> SolidDriveInputs:
+        """brillouin_drive.SolidDriveInputs of the last assembly (host copies of every material property, the element
+        moduli in their required form); the solved members of the window only (an elastic PML ring is no physical
+        medium: no drive point or reference cell there; without a ring every member is a window element)."""
+        materials = self.domain.materials
+        values = {name: np.array(_host(getattr(materials, name))) for name in materials.property_names()}   # copies
+        for array in values.values():
+            array.flags.writeable = False
+        moduli = self._viscoelastic_moduli()
+        if moduli is None:   # E / nu (or c_ij) only: the laws of the relaxed moduli
+            window = self._elastic_elements
+            moduli = element_moduli(materials, window, np.where(window, values['youngs_modulus'], 0.0),
+                                    np.where(window, values['poisson_ratio'], 0.0), self._label, required=True)
+        return SolidDriveInputs(label=self._label(), dofs=self.system.dofs, axisymmetric=self._axisymmetric,
+                                azimuthal_order=self.azimuthal_order, ring_angle=self.ring_angle,
+                                n_unknowns=int(operators.n_unknowns),
+                                solid=np.asarray(self._solid, dtype=bool) & self._window_elements,
+                                window=np.asarray(self._window_elements, dtype=bool), materials=values,
+                                moduli=moduli, locate=self.domain.locate, projection=operators.drive_projection())
 
     # --- complex records of the frequency response (K4) ------------------------
 
@@ -1171,11 +1262,12 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
         """HarmonicOperators of the last assembly: the loss operator eta K or None (eta = mechanical_loss_factor of the
         solid elements, viscoelastic ones included: eta multiplies their G0, K0), the consistent mass, the system's
         free set (m = 1: the axis tie prolongation, free over its columns) and the viscoelastic group terms (operator
-        None: the pencil stiffness); formulation mixed: _mixed_operators."""
+        None: the pencil stiffness); formulation mixed: _mixed_operators. An elastic PML: every term stretched like K
+        (loss, mass, group terms: complex symmetric; the pencil stiffness is the stretched K)."""
         if self.formulation == MIXED:
             return self._mixed_operators()
         system = self.system
-        loss = self._stiffness_loss(stretched=False)
+        loss = self._stiffness_loss()   # stretched with a PML (as the modal pencil), else the plain eta K
         mass = system.mass(self._solid_density('a frequency response'))
         column_map = system.prolongation
         free = system.free if column_map is None else np.ones(column_map.shape[1], dtype=bool)
@@ -1188,9 +1280,11 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
         map of the last assembly: the parameter groups of every member (viscoelastic.parameter_groups: the pressure
         zones, at most MAX_GROUPS), their unit-shear stiffness D_g (one gradient pass), the P1 pressure space and B /
         M_p,g (fem.mixed_elasticity, the elasticity ring weights), the consistent mass; pressure dofs on the axis held
-        at 0 at an azimuthal order m >= 1, the column map at m = 1 block_diag(axis ties, free pressure selection).
-        ValueError outside quadratic plane strain / axisymmetric or with a prestress (also refused by the constructor
-        and validation)."""
+        at 0 at an azimuthal order m >= 1 (through the PML rings too: _axis_ids), the column map at m = 1
+        block_diag(axis ties, free pressure selection). An elastic PML: D_g, B, M_p,g and the mass stretched (complex
+        symmetric: the stretched coordinates of every integral, so the saddle point keeps its complex symmetry and B^T 1
+        its exact row sums). ValueError outside quadratic plane strain / axisymmetric or with a prestress (also refused
+        by the constructor and validation)."""
         label = self._label
         if self.order != 2 or (not self._axisymmetric and self.out_of_plane != PLANE_STRAIN) or self.prestressed:
             raise ValueError(f'{label()}: formulation mixed needs discretization quadratic, plane strain or '
@@ -1203,17 +1297,18 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
         n_elements = self.domain.n_elements
         groups = parameter_groups(moduli, self._solid, label)
         indices = group_indices(groups, n_elements)
-        # booked (estimate): the unit-shear D_g CSR per group (float64, solid-map numbering c n_u), transient until
-        # embedded (mixed_harmonic_operators)
+        stretch = system.stretch_arguments()   # {} without an elastic PML
+        # booked (estimate): the unit-shear D_g CSR per group (float64; complex128 with a PML; solid-map numbering c
+        # n_u), transient until embedded (mixed_harmonic_operators)
         deviatoric = [matrices[0] for matrices in assemble_elastic_stiffness_groups(
             dofs, [unit_operator_coefficients('shear', n_elements, self._axisymmetric)], indices, len(groups),
-            axisymmetric=self._axisymmetric, azimuthal_order=self.azimuthal_order)]
+            axisymmetric=self._axisymmetric, azimuthal_order=self.azimuthal_order, **stretch)]
         space = pressure_space(dofs, indices, len(groups))
         coupling, pressure_masses = assemble_pressure_terms(dofs, space, axisymmetric=self._axisymmetric,
-                                                            azimuthal_order=self.azimuthal_order)
+                                                            azimuthal_order=self.azimuthal_order, **stretch)
         pressure_free = np.ones(space.n_dofs, dtype=bool)
         if self.azimuthal_order:   # a cos(m phi) pressure is regular on the axis only when 0 there (x_lo: r = 0)
-            pressure_free[axis_pressure_dofs(space, system.global_ids_of_edges(system.face_edges('x_lo')))] = False
+            pressure_free[axis_pressure_dofs(space, self._axis_ids())] = False
         return mixed_harmonic_operators(groups, deviatoric, coupling, pressure_masses, space,
                                         system.mass(self._solid_density('a frequency response')), system.free,
                                         pressure_free, system.prolongation, label)
@@ -1239,11 +1334,12 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
                       if any(group.law(part).frequency_dependent for group in groups))
         n_elements = self.domain.n_elements
         system = self.system
-        # booked (estimate): the group CSRs (float64, full numbering) of every (group, part), kept with the operators
+        # booked (estimate): the group CSRs (float64; complex128 stretched with an elastic PML, as K; full numbering) of
+        # every (group, part), kept with the operators
         matrices = assemble_elastic_stiffness_groups(
             system.dofs, [unit_operator_coefficients(part, n_elements, self._axisymmetric) for part in parts],
             group_indices(groups, n_elements), len(groups), axisymmetric=self._axisymmetric,
-            azimuthal_order=self.azimuthal_order)
+            azimuthal_order=self.azimuthal_order, **system.stretch_arguments())
         terms = []
         for group, group_matrices in zip(groups, matrices):
             for part, matrix in zip(parts, group_matrices):
@@ -1476,13 +1572,19 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
         self.system.assemble(coefficients, self._solid)
 
     def _pml_ring(self):
-        """fem.pml.PMLStretch of the elastic PML ring at the target frequency for the fastest wave sqrt(max c_II /
-        rho) of the ring's solid elements (the window's when the ring is void)."""
+        """fem.pml.PMLStretch of the elastic PML ring at target_frequency (the eigenfrequency target; the reference of
+        a frequency response sweep: frequency independent, absorbing R^(f / target) at f) for the fastest wave
+        sqrt(max c_II / rho) of the ring's solid elements (the window's when the ring is void; relaxed moduli: K0 + 4 /
+        3 G0 of a mixed liquid). ValueError when no ring member carries a wave (incompressible liquids only)."""
         coefficients = self._coefficients
         names = ('c11', 'c22', 'c66') + (('c33',) if self._axisymmetric else ())
         diagonal = np.max(np.stack([np.asarray(_host(coefficients[name])) for name in names]), axis=0)
         speed = ring_wave_speed(diagonal, _host(self.domain.materials.rho), self._solid, self._window_elements,
                                 self._label)
+        if not speed > 0.0:   # mixed: every ring member incompressible without a shear modulus (c_II = 0)
+            raise ValueError(f'{self._label()}: the elastic PML ring holds no member with a wave speed (an '
+                             'incompressible liquid, no bulk_modulus or shear modulus, has no sound wave to set the '
+                             'PML strength): give the liquid at the PML faces a bulk_modulus')
         return elastic_pml_ring(self.domain.mesh, self.pml_faces, 2.0 * math.pi * self.target_frequency, speed,
                                 self.pml_reflection, self._axisymmetric, self._label)
 
@@ -1584,9 +1686,9 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
 
     def _external_load(self):
         """The dead-load part of _total_load (2 n_dofs): tractions and the applied + coupled body forces of the solid
-        elements (no initial-stress or thermal term). An azimuthal order m >= 1 (a frequency response driven by
-        prescribed displacements): zeros (c n_dofs), ValueError when a traction or body force is set (cos(m phi) loads
-        are not modelled)."""
+        window elements (no initial-stress or thermal term; no load in an elastic PML ring). An azimuthal order m >= 1
+        (a frequency response driven by prescribed displacements): zeros (c n_dofs), ValueError when a traction or body
+        force is set (cos(m phi) loads are not modelled)."""
         dofs = self.system.dofs
         axisymmetric = self._axisymmetric
         if self.azimuthal_order:
@@ -1601,7 +1703,9 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
         for edges, t_x, t_y in self._tractions:
             load += assemble_edge_traction(dofs, edges, t_x, t_y, axisymmetric=axisymmetric)
         coupled = np.stack([_host(self.fields.body_force_x), _host(self.fields.body_force_y)], axis=1)
-        body = np.where(self._solid[:, None], self._body_force + coupled, 0.0)
+        # window members only: an elastic PML ring takes no load (a coupled slot reaches its elements by the clamped-
+        # centroid rule; without a ring every member is a window element)
+        body = np.where((self._solid & self._window_elements)[:, None], self._body_force + coupled, 0.0)
         load += assemble_body_load(dofs, body[:, 0], body[:, 1], axisymmetric=axisymmetric)
         return load
 
@@ -1879,10 +1983,7 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
 class SolidFEMRenderer(SolidRenderer):
     """SolidRenderer of a SolidMechanicsFEMPhysics: fem_field (Session on triangle meshes) and per-window-element
     device_field values. No om_integrand (the BOR coupling table has none), so default snapshots do not store it."""
-
-    def __init__(self, physics):
-        super().__init__(physics)
-        self.field_infos = {name: info for name, info in self.field_infos.items() if name != 'om_integrand'}
+    absent_fields = ('om_integrand',)
 
     def device_field(self, component: str):
         self.field_info(component)

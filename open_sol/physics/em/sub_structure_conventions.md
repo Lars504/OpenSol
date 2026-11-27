@@ -27,7 +27,8 @@ type's vocabulary and refusals are in its help texts and validation.
   em_fdfd_conical solve on the host on either backend: their recipes pass `backend='cpu'` to solver_work (line_block
   'shifted' factors stay on the run backend).
 - Self-test helpers live mostly in `selftests` (also selftests_fdfd `cpu_specs`, selftests_mode_ports
-  `slab_waveguide_spec`, selftests_bor, selftests_eigenfrequency): grep the sibling imports before writing one.
+  `slab_waveguide_spec`, selftests_bor, selftests_eigenfrequency, selftests_focused_beam `focused_beam_feature`, which
+  the mechanics Brillouin self-tests import): grep the sibling imports before writing one.
 
 ## FDTD and shared EM
 - Permittivity array / slot names per polarisation only from `placement.PERMITTIVITY_ARRAYS` / `PERMITTIVITY_SLOTS`
@@ -323,9 +324,11 @@ type's vocabulary and refusals are in its help texts and validation.
   em_fdfd_tfsf_graded_leakage.
 - Mode ports (`fdfd_ports`): unlike the drift-gated FDTD ports, modes are re-solved at finalize and after every
   reassembly (`PortLine.solve_modes` returns the last SlabModes when omega, counts, spacing, host rows and pole objects
-  are unchanged). Source = the TFSF formula on the line cells and their upstream neighbours; `add_to_rhs` refuses a
-  mode solved at another omega. The source re-selects `mode_number` per solve; the monitor tracks by overlap +
-  `align_phase`. power_* = |a|^2 W/m (FDTD 2 |a|^2). Only finalize's port warnings are reported.
+  are unchanged). Source = the TFSF formula on the line cells and their upstream neighbours, written by
+  `fdfd_sources.one_sided_tfsf_rhs` (the one 2D one-sided TFSF writer: mode source, focused beam; a new one-sided line
+  source goes through it); `add_to_rhs` refuses a mode solved at another omega. The source re-selects `mode_number`
+  per solve; the monitor tracks by overlap + `align_phase`. power_* = |a|^2 W/m (FDTD 2 |a|^2). Only finalize's port
+  warnings are reported.
 - `create` (FDFD and em_modes) builds at `first_solved_wavelength`, so ports select modes there; auto mesh at
   `shortest_solved_wavelength` with the static index; the resolution warning checks `all_solved_wavelengths` with |n|
   of the complex eps(omega) plus >= 2 cells per skin depth, so metals the static index (Drude eps_inf) misses are
@@ -378,7 +381,31 @@ type's vocabulary and refusals are in its help texts and validation.
   arrays (`_refresh_pending_state`); new readers of `_q_abs` / `_field_re` / `_field_im` refresh first.
 - Phasor sources with `set_amplitude(*values of amplitude_params)` re-set in place (a reused sweep build: nlfd
   `_FOLLOWING_SOURCE_PARAMS`): point / magnetic / dipole currents, sheet currents, TFSF plane wave, mode source
-  (rescales its solved incident phasors; power <= 0 raises at the run, not at validation).
+  (rescales its solved incident phasors; power <= 0 raises at the run, not at validation), focused beam.
+- Focused beams (`focused_beam.py`, `fdfd_sources.FocusedBeamPhasor`; feature focused_beam, tensor meshes only): the
+  incident field is a sum of discrete plane waves of the line medium, read per right-hand side from the assembled
+  operator (face weights, cell term) on the rows line_cell +- `NORMAL_RANGE` (a non-uniform block raises), so the launch
+  is exact and `power` is the discrete interface flux (unfolded over a mirror plane the line ends on, the focus on it).
+  Exact only on the operator's spacings: `FocusedBeamLine` takes `grid_cell_widths` (float32 grid.dx, ~1e-8 off
+  `Domain.cell_widths()`, which gave a 1.2e-8 launch residual) and steps its wave coordinates by them; incident values
+  off the TFSF rows go through `line.normal_coordinates`, never `cell_centers()`. (BOR assembles on
+  `Domain.cell_widths()`, as its beam.) Its interface face is a mode source's (`_total_field_regions` warns for both). The 2D and BOR beams share
+  `fdfd_sources.FocusedBeamSource` (power, wavelength, offset check; `MEDIUM_RTOL` / `uniform_value` of the line
+  medium), the 2D and BOR physics `focused_beam.FocusedBeamDrive` (names, drive_sources, the solve_moved_beam frame,
+  extra_solves; solver-specific: `_require_driven_solution`, `_moved_beam_solution`). Drive contract of
+  brillouin_scattering: `drive_sources()`, `solve_moved_beam(source, offset)` (one more solve on the kept factor,
+  every other source as it is; never touches solution, monitors, q_abs, n_solves or the face-field cache; refused
+  while `_system_dirty` / `_solution_dirty` or a resonance is shown) and `drive_fields(solution)`
+  (`focused_beam.DriveFields`, host window values on each component's own Yee points with their `grids`: hz E_x / E_y
+  on their faces, edge faces included, never a face mean along the beam, which the Brillouin drive would read as a
+  cos(k h / 2) amplitude loss; staircase cell eps). A new driven path through `_solve` keeps `_zero_fixed_rows` /
+  `_fill_wall_rows(solution=)` shared with it. Validation (`make_validate_focused_beam`) reports every runtime refusal
+  first; estimators book the scan solves through `definition_common.brillouin_scan_solves` /
+  `memory_estimates.brillouin_drive_items`. brillouin_scattering validation takes the beam lines and their
+  total-field bound (the downstream edge of the line cell) from `definition_feature_validation.focused_beam_lines`
+  and the line-end / off-the-line warnings of each scan position from `focused_beam_scan_messages` (the beams' own
+  messages are its offset (0, 0); 2D and BOR), both on the optics' own mesh estimate. nlfd does not offer it (absent
+  from its `_CHANNEL_FEATURE_NAMES`). Self-tests selftests_focused_beam, em_fdfd_cpu_gpu.
 - NLFD-chi (physics/nlfd): one FDFDPhysics per harmonic channel; nonlinear terms are sources whose `add_to_rhs` /
   `face_currents` read other channels' solutions (nothing assumes the rhs constant beyond `_solution_dirty`). Its
   channel features wrap the FDFD FeatureTypes: renaming an FDFD feature param, or a validate resolving FDFD params
@@ -479,7 +506,21 @@ type's vocabulary and refusals are in its help texts and validation.
   skips it in `_solve`, `HostFDFDBase.finalize`, `_solver_issues` and `solve_bor_resonances` (passed factor); a rejected
   line-block solve checks it in `_factorize_host` before the SuperLU fallback. Change them together.
 - Driven order sum: a new source type builds its own b(-m) (`term_rhs(system, order=)`, never a mirrored b(m)), a new
-  monitor type needs `record_order` and `record`; mode ports are refused.
+  monitor type needs `record_order` and `record`; mode ports and focused beams are refused. The list is the order sum
+  wherever `definition_common.eigen_solved` is False (create's test: also a background physics of frequency_response /
+  optomechanics), so a validation refusal of the sum tests the same, never the study type.
+- One TFSF writer for every BOR slice source: `bor_ports.slice_tfsf_rhs` (mode_source, focused beam) and its
+  interface power `slice_interface_power`; a new one-sided BOR source goes through them.
+- Focused beams (`bor_focused_beam`, feature focused_beam; derivation, signs and quadrature: its header): the
+  x-polarised beam on the axis IS the m = 1 standing wave, so the solve's unknowns are its amplitudes (E_r, u = -j E_phi, E_z);
+  azimuthal_order 1 only, no order sum, no pec / pmc z face. Ring weight of `power` / incident_power: module header
+  "Power" (pinned by em_bor_focused_beam_power); code normalising by it weights solid rings by
+  `core.metric.ring_angle(m)`. Launch: Yee-exact in z (semi-discrete kappa),
+  continuum Bessel in r, so the leakage is the radial O((k NA h)^2) (open: a bor_ports discrete-mode expansion of the
+  incident field would make it exact). Drive contract as the 2D FDFD's (`drive_sources`, `solve_moved_beam(source,
+  (0, dz))` on the kept factor, host active vector; `drive_fields` with components {'r', 'phi' = -j E_phi, 'z'} on
+  their Yee points (E_r on the r edges from the axis, E_z on the z edges: `yee_e_fields`), what
+  brillouin.azimuthal_parts reads). Self-tests em_bor_focused_beam_* (selftests_focused_beam), em_bor_cpu_gpu.
 - 2D fill is mild (SuperLU copes to ~1e6 unknowns): cuDSS (unmeasured) buys host relief at the largest many-order
   grids. Not yet: the 2.16 metric layer, a measured line-block vs SuperLU crossover, line-block port mode solves.
 - Self-tests: selftests_bor, selftests_bor_orders, selftests_bor_backend; examples em/analytic_bor_*. SuperLU-only

@@ -16,10 +16,10 @@ from ..solvers.host_direct import HOST_DIRECT_BACK_ENDS, HOST_DIRECT_DOUBLE_BACK
 from ..solvers.pcg import CG_ITERATIONS_PER_AXIS_CELL, SOLVER_DTYPE_NAMES, auto_max_iterations
 from ..solvers.roles import SolverRole, resolved_precision
 from .expressions import TIME_NAMES, Expression, ExpressionError, evaluate_scalar, referenced_names
-from .geometry import (bounding_box, domain_size_z, expand_entities, perimeter_weights, point_z,
-                       preview_pixel_centers)
+from .geometry import (bounding_box, domain_object_rasterizer, domain_size_z, expand_entities, perimeter_weights,
+                       point_z, preview_pixel_centers)
 from .schema import (EIGENFREQUENCY_STUDY, FREE_MESH_KINDS, FREQUENCY_RESPONSE_STUDY, Issue, Param, feature_path,
-                     known_physics, state_field_names)
+                     known_physics, resolve_values, state_field_names)
 
 
 def evaluates_to(value, parameters, predicate):
@@ -293,6 +293,28 @@ def study_frequencies(values, ascending=False) -> list:
         return [math.sqrt(start * stop) if values['log_spacing'] else 0.5 * (start + stop)]
     spaced = np.geomspace(start, stop, count) if values['log_spacing'] else np.linspace(start, stop, count)
     return [float(frequency) for frequency in spaced]
+
+
+def frequency_response_values(spec, registry, parameters):
+    """Resolved settings of the model's frequency_response study; None for another study or settings that do not
+    resolve (validate reports them)."""
+    study = spec.study
+    if study.type != FREQUENCY_RESPONSE_STUDY:
+        return None
+    try:
+        return resolve_values(registry.study_type(study.type).params, study.settings or {}, parameters)
+    except (KeyError, ValueError, TypeError):
+        return None
+
+
+def study_frequency_band(spec, registry, parameters):
+    """(lowest, highest) frequency [Hz] of a frequency_response study (study_frequencies of
+    frequency_response_values), None for another study or values that do not resolve."""
+    values = frequency_response_values(spec, registry, parameters)
+    if values is None:
+        return None
+    frequencies = study_frequencies(values)
+    return min(frequencies), max(frequencies)
 
 
 def wavelength_range_issues(values, path):
@@ -1219,6 +1241,34 @@ def conducting_fraction(vctx, conducting):
     return float(conducting_pixels.mean()) if conducting_pixels.size else None
 
 
+def preview_selection_mask(vctx, selection, max_cells=None):
+    """bool (mx, my) mask of a domain selection on the pixels of vctx.material_map(max_cells) (None: its default
+    size): the pixel centres inside its domain objects, rasterised as the preview paints them; None when the preview
+    or the selection does not resolve."""
+    material_map = vctx.material_map() if max_cells is None else vctx.material_map(max_cells)
+    if material_map is None:
+        return None
+    image, _, extent = material_map
+    try:
+        entities = expand_entities(vctx.spec, selection)
+    except (ValueError, KeyError, TypeError):
+        return None
+    if 'all' in entities:
+        return np.ones(image.shape, dtype=bool)
+    x_centres, y_centres = preview_pixel_centers(extent, image.shape)
+    object_mask = domain_object_rasterizer(vctx.shapes, x_centres, y_centres, np)
+    mask = np.zeros(image.shape, dtype=bool)
+    for entity in entities:
+        try:
+            window_mask = object_mask(entity)
+        except (ValueError, KeyError, TypeError):   # a failed part of a composite: reported at the geometry
+            continue
+        if window_mask is not None:
+            window, cropped = window_mask
+            mask[window] |= cropped
+    return mask
+
+
 def selected_material_data(spec, unresolved=False) -> list:
     """[(MaterialSpec, merged properties, poles)] of the spec materials with a selection, library / crystal data merged
     as the builder does; a material whose data does not resolve (reported at the material) is left out, or listed with
@@ -1330,8 +1380,22 @@ AZIMUTHAL_ORDER_PARAM = Param(
           'and ring totals carry pi instead of 2 pi: held currents / charges, scalar outputs and field integrals are '
           'cos(m phi) moments, a point source P is the order-m part of P at phi = 0, a dissipation density (q_joule) '
           "is twice its phi mean (its integral = the total power). Needs geometry 'axisymmetric' on a Cartesian "
-          'domain; every physics with this setting shares one m; couplings of an order-m physics warn (products such '
-          'as Joule heating are no single order). solid_mechanics: U_r, U_z ~ cos(m phi), U_phi ~ sin(m phi).'))
+          'domain; every physics with this setting shares one m (field derived values weight the rings of a model by '
+          'one angle), except two physics that each read the same optical physics through a brillouin_scattering '
+          'feature and share no coupling (the solid_mechanics orders 0 and 2 of one em_fdfd_bor beam: one-way reads, '
+          'no field passes between the orders; a field derived value then reads the fields of one of them only); '
+          'couplings of an order-m physics warn (products such as Joule heating are no single order). '
+          'solid_mechanics: U_r, U_z ~ cos(m phi), U_phi ~ sin(m phi).'))
+
+# physics-drive features: bound through solver_hooks.PhysicsDriveSolver by the frequency_response study after its
+# background stage (the solve flow lists its drive step for them: solve_flow._has_physics_drives); a new drive feature
+# joins it
+PHYSICS_DRIVE_FEATURES = ('brillouin_scattering',)
+# features through which a physics reads another physics' solved field one way at study time, feature type -> the param
+# naming that physics: two axisymmetric physics that each hold an enabled one reading the same physics and share no
+# coupling may differ in azimuthal_order (azimuthal_order_issues; brillouin_scattering: the solid orders 0 and 2 of one
+# em_fdfd_bor beam, no field passes between them)
+ORDER_SPLIT_READERS = {PHYSICS_DRIVE_FEATURES[0]: 'optical_physics'}
 
 
 def azimuthal_order_of(settings_values):
@@ -1341,7 +1405,8 @@ def azimuthal_order_of(settings_values):
 
 def azimuthal_order_issues(vctx, physics_spec, path, settings_values):
     """Rules of an azimuthal_order m != 0 (symmetry 2.14): geometry axisymmetric on a Cartesian domain (errors), one m
-    shared by every physics with the setting (error), a warning naming the coupled partners."""
+    shared by every physics with the setting (error; an info for a pair that reads one physics through
+    ORDER_SPLIT_READERS features and shares no coupling), a warning naming the coupled partners."""
     order = azimuthal_order_of(settings_values)
     if not order:
         return []
@@ -1352,23 +1417,78 @@ def azimuthal_order_issues(vctx, physics_spec, path, settings_values):
     if vctx.domain_map is not None and vctx.domain_map.mapped:
         issues.append(Issue('error', path, f'azimuthal_order {order} needs a Cartesian (r, z) domain, not the '
                                            f'{vctx.domain_map.grid_text} grid: set it to 0'))
+    partners = sorted(_coupled_partner_names(vctx, physics_spec))
     for other, other_type in known_physics(vctx.spec, vctx.registry):
         if other.name == physics_spec.name:
             continue
-        if not any(param is AZIMUTHAL_ORDER_PARAM for param in other_type.settings):
+        if not holds_azimuthal_order(other_type):
             continue
         other_values = vctx.values(other_type.settings, other.settings)
-        if other_values is not None and is_axisymmetric(other_values) and azimuthal_order_of(other_values) != order:
-            issues.append(Issue('error', path, f"azimuthal_order {order} differs from that of '{other.name}' "
-                                               f'({azimuthal_order_of(other_values)}): field derived values weight the '
-                                               'rings of a model by one angle (pi at m != 0, 2 pi at m = 0)'))
-    partners = sorted(_coupled_partner_names(vctx, physics_spec))
+        if other_values is None or not is_axisymmetric(other_values) or azimuthal_order_of(other_values) == order:
+            continue
+        other_order = azimuthal_order_of(other_values)
+        shared = sorted(order_split_reads(physics_spec) & order_split_reads(other))
+        if shared and other.name not in partners:
+            issues.append(Issue('info', path, f"azimuthal_order {order} differs from that of '{other.name}' "
+                                              f"({other_order}): allowed, both read '{shared[0]}' through "
+                                              f"{' / '.join(sorted(ORDER_SPLIT_READERS))} and share no coupling (no "
+                                              'field passes between the orders); a field derived value must read the '
+                                              'fields of one of them (one reading both, or no field on their shared '
+                                              'mesh, is refused: its ring angle would be ambiguous)'))
+            continue
+        issues.append(Issue('error', path, f"azimuthal_order {order} differs from that of '{other.name}' "
+                                           f'({other_order}): field derived values weight the rings of a model by one '
+                                           'angle (pi at m != 0, 2 pi at m = 0); only two physics that each read the '
+                                           f"same optical physics through {' / '.join(sorted(ORDER_SPLIT_READERS))} "
+                                           'and share no coupling may differ'))
     if partners:
         issues.append(Issue('warning', path, f"azimuthal_order {order}: the coupling(s) to "
                                              f"{', '.join(repr(name) for name in partners)} exchange order-{order} "
                                              'amplitudes as they are; a product such as Joule heating or a '
                                              'temperature-dependent coefficient is no single azimuthal order'))
     return issues
+
+
+def order_split_reads(physics_spec) -> set:
+    """Names of the physics an axisymmetric physics reads through its enabled ORDER_SPLIT_READERS features."""
+    names = set()
+    for feature in physics_spec.features:
+        param = ORDER_SPLIT_READERS.get(feature.type)
+        if param is None or not feature.enabled or not isinstance(feature.params, dict):
+            continue
+        name = feature.params.get(param)
+        if isinstance(name, str) and name:
+            names.add(name)
+    return names
+
+
+def holds_azimuthal_order(physics_type) -> bool:
+    """True when the type has the shared azimuthal_order setting (AZIMUTHAL_ORDER_PARAM, found by identity; the BOR EM
+    types carry an order of their own and count 2 pi ring angles)."""
+    return any(param is AZIMUTHAL_ORDER_PARAM for param in physics_type.settings)
+
+
+# field derived-value operations that weight the (r, z) rings by ring_angle r_c (the field_access reductions; 'at',
+# 'max' and 'min' read values only): ring_angle_conflict applies to these
+RING_WEIGHTED_OPERATIONS = ('mean', 'integral', 'mode_volume')
+
+
+def ring_angle_conflict(ordered_angles, reads_fields, mesh_name) -> str:
+    """'' when the axisymmetric physics holding the azimuthal_order setting whose rings one field derived value weighs
+    ({physics: ring angle [rad]}: those whose fields the expression reads; reads_fields False: every one on mesh
+    mesh_name, where an expression reading no field is evaluated) weigh alike, else the error text. They differ only
+    for an ORDER_SPLIT_READERS pair (azimuthal_order_issues), and such a value must read the fields of one of them.
+    The one rule of Session._ring_angle (raises the text) and validate (reports it at the derived value)."""
+    if len(set(ordered_angles.values())) < 2:
+        return ''
+    listed = ', '.join(f"'{physics}' ({angle / math.pi:g} pi)" for physics, angle in ordered_angles.items())
+    if reads_fields:
+        return ('the expression reads the fields of axisymmetric physics whose azimuthal orders weigh the (r, z) rings '
+                f'differently (ring angle 2 pi at m = 0, pi at m != 0): {listed}; read the fields of one of them per '
+                'derived value')
+    return (f"the expression reads no field, and the axisymmetric physics on mesh '{mesh_name}' weigh the (r, z) "
+            f'rings differently (ring angle 2 pi at m = 0, pi at m != 0): {listed}; name a field of the physics '
+            'whose rings it should weigh (e.g. add 0 * one of its fields)')
 
 
 def _coupled_partner_names(vctx, physics_spec) -> set:

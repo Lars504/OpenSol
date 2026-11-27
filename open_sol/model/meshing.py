@@ -119,6 +119,14 @@ class MeshEstimate:
             counts.append(self.nz - sides.get('z_lo', 0) - sides.get('z_hi', 0))
         return tuple(int(count) for count in counts)
 
+    def window_edges(self, axis) -> np.ndarray:
+        """float64 edges of the physical-window cells along 'x' / 'y' / 'z' (window_axis_cells + 1 of them: the
+        npml_sides padding dropped; [m] in the frame of x_edges, logical on polar / spherical grids): a view of
+        x_edges / y_edges / z_edges."""
+        edges = {'x': self.x_edges, 'y': self.y_edges, 'z': self.z_edges}[axis]
+        sides = self.npml_sides
+        return edges[int(sides.get(f'{axis}_lo', 0)):len(edges) - int(sides.get(f'{axis}_hi', 0))]
+
 
 @dataclass
 class TriangleSizing:
@@ -2250,6 +2258,16 @@ class MemoryContext:
                 return True
         return False
 
+    def mesh_material_arrays(self) -> list:
+        """MaterialGrid arrays of the physics' own mesh (material_array_names of mesh_material_types: what the builder
+        allocates there); KeyError for an unknown mesh (validate reports it)."""
+        mesh_name = self.spec.mesh_of(self.physics_spec).name
+        return material_array_names(self.spec, mesh_material_types(self.spec, self.registry, mesh_name))
+
+    def selection_cells(self, entities, shapes) -> int:
+        """selection_cells of a selection on the physics' own mesh (shapes: the resolve_geometry of the spec)."""
+        return selection_cells(self.spec, entities, shapes, self.mesh)
+
 
 def estimate_memory(spec, parameters, registry=None, mesh_estimate=None, by_mesh=None,
                     by_physics=None, shapes=None, plain_roles=frozenset()) -> MemoryEstimate:
@@ -2411,7 +2429,7 @@ def _mesh_memory(spec, parameters, registry, shapes, mesh, mesh_name, on_mesh, s
             if not isinstance(feature_spec.params, dict):
                 raise ValueError(f"feature '{feature_spec.name}': params must be a dict")
             values = resolve_values(feature_type.params, feature_spec.params, parameters)
-            n_cells = (_selection_cells(spec, feature_spec.selection, shapes, mesh)
+            n_cells = (selection_cells(spec, feature_spec.selection, shapes, mesh)
                        if feature_type.selection_kind is not None else 0)
             parts.append(feature_type.memory_estimate(values, n_cells, mesh).labelled(
                 f"feature '{physics_spec.name}.{feature_spec.name}'"))
@@ -2475,12 +2493,12 @@ def _material_region_infos(spec, shapes, mesh, present_types):
                 dispersion = []
             models = [pole.get('model') for pole in dispersion if isinstance(pole, dict)]
         bounds = _selection_bounds(spec, material.selection, shapes, mesh) if mesh.kind == 'tensor' else ()
-        regions.append(MaterialRegionInfo(material.name, _selection_cells(spec, material.selection, shapes, mesh),
+        regions.append(MaterialRegionInfo(material.name, selection_cells(spec, material.selection, shapes, mesh),
                                           models.count('drude'), models.count('lorentz'), bounds))
     return tuple(regions)
 
 
-def _selection_cells(spec, entities, shapes, mesh):
+def selection_cells(spec, entities, shapes, mesh):
     """Full-grid cells of the union bounding box of the selected objects (_selection_bounds; 0 when no object
     resolves); a triangle mesh: its elements times the box's share of the meshed area."""
     if mesh.kind == 'tensor':
@@ -2572,14 +2590,22 @@ def optional_material_arrays(spec, physics_types) -> dict:
     return {array: default for array, (default, triggers) in candidates.items() if not set_names.isdisjoint(triggers)}
 
 
-def _model_arrays_estimate(spec, registry, mesh, present_types, names=None):
-    """Model-level device arrays of one mesh: the present types' MaterialGrid arrays (material_schema union + the
-    triggered optional arrays), value + mask per state-dependent material property (DynamicMaterialUpdate), one
-    transfer array per enabled coupling into its physics; run items: fixed-point and solution-feedback copies, the
-    stored-cut plane fetches of 3D snapshots. names: the physics on the mesh (None: every physics, one mesh)."""
-    n_cells = int(mesh.n_cells)
+def material_array_names(spec, present_types) -> list:
+    """MaterialGrid array names of a mesh whose present types (mesh_material_types) are given: their material_schema
+    union, then the optional arrays a spec material triggers (optional_material_arrays), the arrays the builder
+    allocates."""
     arrays = list(dict.fromkeys(name for physics_type in present_types for name in physics_type.material_schema))
     arrays += [name for name in optional_material_arrays(spec, present_types) if name not in arrays]
+    return arrays
+
+
+def _model_arrays_estimate(spec, registry, mesh, present_types, names=None):
+    """Model-level device arrays of one mesh: the present types' MaterialGrid arrays (material_array_names), value +
+    mask per state-dependent material property (DynamicMaterialUpdate), one transfer array per enabled coupling into
+    its physics; run items: fixed-point and solution-feedback copies, the stored-cut plane fetches of 3D snapshots.
+    names: the physics on the mesh (None: every physics, one mesh)."""
+    n_cells = int(mesh.n_cells)
+    arrays = material_array_names(spec, present_types)
     n_all_updates = n_updates = _state_dependent_property_count(spec, registry)
     if names is not None:   # several meshes: the updates of properties a type on this mesh reads
         n_updates = _state_dependent_property_count(

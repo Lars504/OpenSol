@@ -5,10 +5,12 @@ revolution, conical incidence, 3D FDTD and the 3D FDFD eigensolver, nonlinear fr
 waveguide cross-section modes, heat conduction (planar, axisymmetric, polar / spherical, 3D), electric currents /
 electrostatics, magnetostatics (2D, 3D) and AC magnetic fields, semiconductor drift-diffusion, solid mechanics (2D,
 3D), elastic waves and laminar flow, and their couplings (Joule heating, thermo-optic, Pockels, strain-optic,
-photoacoustic, induction heating, convection, ...). Studies: stationary, time dependent, frequency domain, mode
-analysis, eigenfrequency, optimization, parameter sweeps and mesh refinement. Meshes: graded tensor grids, and FEM on
-triangles / tetrahedra for the physics that declare them. Models are JSON files (ModelSpec) that a GUI, a headless
-API and a CLI all read; scripts can also drive the solvers directly.
+photoacoustic, induction heating, convection, ...), plus spontaneous Brillouin scattering spectra of a focused
+beam (FDFD optics driving a solid's thermal vibrations, planar or axisymmetric confocal). Studies: stationary, time
+dependent, frequency domain, frequency response, mode analysis, eigenfrequency, optimization, parameter sweeps and
+mesh refinement. Meshes: graded tensor grids, and FEM on triangles / tetrahedra for the physics that declare them.
+Models are JSON files (ModelSpec) that a GUI, a headless API and a CLI all read; scripts can also drive the solvers
+directly.
 
 ## Install
 

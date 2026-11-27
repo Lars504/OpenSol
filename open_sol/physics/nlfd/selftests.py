@@ -10,8 +10,8 @@ import numpy as np
 
 from ...core.constants import C0, EPS0, MU0
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import (PERIODIC_Y, analytic_slab_index, normalized_result, probe_phasor, relative_error,
-                                       worst_result)
+from ...model.selftest_helpers import (PERIODIC_Y, analytic_slab_index, normalized_result, probe_phasor,
+                                       random_complex as _random_complex, relative_error, worst_result)
 from ...model.spec import (AnalyticCurveSpec, DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec,
                            MeshSpec, ModelSpec, ParameterSpec, PhysicsSpec, StudySpec, SweepSpec)
 
@@ -237,10 +237,6 @@ def _check_tensor_rotation(results):
         violations.append(f'n2 / beta round trip {round_trip:.3g}, Im chi3 = {chi_xxxx.imag:.3g} (must be < 0)')
     return _result(violations, {'kleinman_asymmetry': asymmetries, 'max_rotation_round_off': max(rotation_errors),
                                 'chi3_xxxx_silicon': [chi_xxxx.real, chi_xxxx.imag], 'n2_beta_round_trip': round_trip})
-
-
-def _random_complex(rng, shape):
-    return rng.normal(size=shape) + 1j * rng.normal(size=shape)
 
 
 def _check_collocation_transpose(results):

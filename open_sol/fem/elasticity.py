@@ -5,9 +5,9 @@ strains (nodal recovery: fem.assembly.nodal_average), the strain source int phi 
 the stiffness of element groups for several coefficient sets on one gradient pass (viscoelastic group terms).
 Prestress pieces: StressField, geometric
 stiffness K_sigma, initial-stress force, stress sampling and the total-Lagrangian Green-Lagrange internal force /
-tangent (geometric nonlinearity, K6; Newton iterations on TangentAssembler, a fixed pattern). PML coordinate stretches (stretch= of the stiffness / mass / K_sigma, K5) and the
-azimuthal order m >= 1 form (U_r, U_z, U_phi) of the axisymmetric solid (K7). Host numpy, scipy inside functions (via
-fem.assembly)."""
+tangent (geometric nonlinearity, K6; Newton iterations on TangentAssembler, a fixed pattern). PML coordinate
+stretches (stretch= of the stiffness / group stiffness / mass / K_sigma, K5) and the azimuthal order m >= 1 form (U_r,
+U_z, U_phi) of the axisymmetric solid (K7). Host numpy, scipy inside functions (via fem.assembly)."""
 # Stretch (the elastic PML, fem.pml): stretch(points (m, q, 2), elements) -> complex (m, q, 2) (s_x, s_y); gradients
 # d/dx_i -> d/dx_i / s_i, weights x s_x s_y, axisymmetric also x radial_ratio(points) = r~ / r and the hoop N / r~;
 # unconjugated (complex symmetric), rule + 2 (planar). Azimuthal order m >= 1: u_r = U_r cos(m phi), u_z = U_z cos(m
@@ -162,20 +162,22 @@ def assemble_elastic_stiffness(dofs, coefficients, *, axisymmetric=False, stretc
 
 
 def assemble_elastic_stiffness_groups(dofs, coefficient_sets, groups, n_groups, *, axisymmetric=False,
-                                      azimuthal_order=0):
+                                      azimuthal_order=0, stretch=None, radial_ratio=None):
     """[[CSR (c n, c n) of int B^T C_s B dV over the map elements of group g for each coefficient dict C_s] for each
     group g]; groups: int64 per mesh element (-1 = none). B, the rule weights (planar w det J, axisymmetric x 2 pi r,
     order m >= 1 x pi r: _weights / _azimuthal_terms) once per element chunk, then per set _material_blocks and per group
     a COO -> CSR (_to_csr: explicit zeros kept). Same rules / degrees as assemble_elastic_stiffness /
-    assemble_azimuthal_stiffness (the viscoelastic group terms of the mechanics frequency response)."""
+    assemble_azimuthal_stiffness (the viscoelastic group terms of the mechanics frequency response); stretch /
+    radial_ratio: their PML form (complex symmetric; None: real, unchanged)."""
     groups = np.asarray(groups, dtype=np.int64)
     components = AZIMUTHAL_COMPONENTS if azimuthal_order else COMPONENTS
     order = _check_azimuthal_order(azimuthal_order) if azimuthal_order else 0
     n_vector = components * dofs.n_dofs
-    # booked (estimate): the COO blocks of every (group, set) are held until the end ((c n_local)^2 float64 + 2 int64
-    # per element and set, as one assemble_elastic_stiffness per set), then one CSR per (group, set)
+    # booked (estimate): the COO blocks of every (group, set) are held until the end ((c n_local)^2 float64 (complex
+    # stretched) + 2 int64 per element and set, as one assemble_elastic_stiffness per set), then one CSR per (group,
+    # set)
     lists = [[([], [], []) for _ in coefficient_sets] for _ in range(int(n_groups))]
-    degree = 0 if azimuthal_order else max(2 * dofs.order - 2, 2)
+    degree = 0 if azimuthal_order else max(2 * dofs.order - 2, 2) + _stretch_degree(stretch)
     for positions, rule in _groups(dofs, axisymmetric or bool(azimuthal_order), degree):
         member_groups = groups[dofs.elements[positions]]
         keep = member_groups >= 0
@@ -183,11 +185,7 @@ def assemble_elastic_stiffness_groups(dofs, coefficient_sets, groups, n_groups, 
             continue
         positions, member_groups = positions[keep], member_groups[keep]
         elements = dofs.elements[positions]
-        if azimuthal_order:
-            _, basis, gradients, weights, radius = _azimuthal_terms(dofs, positions, rule, None, None)
-            operator = azimuthal_strain_operator(basis, gradients, radius, order)
-        else:
-            _, operator, weights = _operator_at(dofs, positions, rule, axisymmetric)
+        _, operator, weights = _form_operator_at(dofs, positions, rule, axisymmetric, order, stretch, radial_ratio)
         present = np.unique(member_groups)
         selections = {int(group): member_groups == group for group in present}
         for index, coefficients in enumerate(coefficient_sets):
@@ -766,6 +764,16 @@ def _azimuthal_terms(dofs, positions, rule, stretch, radial_ratio):
     gradients, weights, points = _stretched(geometry, gradients, weights, dofs.elements[positions], stretch,
                                             radial_ratio, True)
     return geometry, basis, gradients, weights, points[..., 0]
+
+
+def _form_operator_at(dofs, positions, rule, axisymmetric, order, stretch=None, radial_ratio=None):
+    """(geometry, B (m, q, k, c n), weights (m, q)) of the solid's form at a rule: planar / axisymmetric m = 0
+    (_operator_at: w det J, x 2 pi r) or azimuthal order m >= 1 (_azimuthal_terms + azimuthal_strain_operator: x pi r);
+    a PML stretch: the stretched B and weights."""
+    if order:
+        geometry, basis, gradients, weights, radius = _azimuthal_terms(dofs, positions, rule, stretch, radial_ratio)
+        return geometry, azimuthal_strain_operator(basis, gradients, radius, order), weights
+    return _operator_at(dofs, positions, rule, axisymmetric, stretch, radial_ratio)
 
 
 def _append_component_blocks(rows, cols, values, dofs, positions, blocks, components) -> None:

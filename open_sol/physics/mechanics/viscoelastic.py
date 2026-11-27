@@ -50,17 +50,27 @@ class ModulusLaw:
     def incompressible(self) -> bool:
         return math.isinf(self.relaxed)
 
-    def excess(self, omega) -> complex:
-        """The omega-dependent part j omega mu + sum_i G_i j omega tau_i / (1 + j omega tau_i) at omega [rad/s]."""
+    def excess(self, omega):
+        """The omega-dependent part j omega mu + sum_i G_i j omega tau_i / (1 + j omega tau_i) [Pa] at omega [rad/s]: a
+        number (complex) or an array (complex128 of omega's shape, the same expressions elementwise)."""
+        if np.ndim(omega) > 0:
+            jw = 1j * np.asarray(omega, dtype=np.float64)
+            value = jw * self.viscosity
+            for modulus, time in self.branches:
+                value = value + modulus * jw * time / (1.0 + jw * time)   # a new array: jw is never aliased
+            return np.asarray(value, dtype=np.complex128)
         jw = 1j * float(omega)
         value = jw * self.viscosity
         for modulus, time in self.branches:
             value += modulus * jw * time / (1.0 + jw * time)
         return complex(value)
 
-    def at(self, omega) -> complex:
-        """G*(omega) / K*(omega) [Pa]; complex(inf) for an incompressible law."""
+    def at(self, omega):
+        """G*(omega) / K*(omega) [Pa] at omega [rad/s], a number (complex) or an array (complex128 of omega's shape);
+        complex(inf) (per element for an array) for an incompressible law."""
         if self.incompressible:
+            if np.ndim(omega) > 0:
+                return np.full(np.shape(omega), complex(math.inf, 0.0), dtype=np.complex128)
             return complex(math.inf, 0.0)
         return complex(self.relaxed * (1.0 + 1j * self.loss_factor)) + self.excess(omega)
 

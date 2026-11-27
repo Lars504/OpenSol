@@ -23,7 +23,8 @@ import numpy as np
 from .assembly import _to_csr, append_blocks
 from .dofs import lagrange_dofs
 from .elasticity import (AZIMUTHAL_COMPONENTS, COMPONENTS, _azimuthal_terms, _basis_product_blocks,
-                         _check_azimuthal_order, _groups, _operator_at, azimuthal_strain_operator, component_dofs)
+                         _check_azimuthal_order, _groups, _operator_at, _stretch_degree, azimuthal_strain_operator,
+                         component_dofs)
 from .elements import lagrange_basis
 
 PRESSURE_LOCAL = 3   # P1 pressure dofs per triangle (its corners, mesh.triangles order)
@@ -91,12 +92,17 @@ def pressure_space(displacement_dofs, groups, n_groups) -> PressureSpace:
     return PressureSpace(tuple(maps), np.asarray(offsets, dtype=np.int64), table)
 
 
-def assemble_pressure_terms(displacement_dofs, space, *, axisymmetric=False, azimuthal_order=0) -> tuple:
+def assemble_pressure_terms(displacement_dofs, space, *, axisymmetric=False, azimuthal_order=0, stretch=None,
+                            radial_ratio=None) -> tuple:
     """(B (n_p, c n_u) CSR, [M_p,g (n_p, n_p) CSR per group]) on the displacement map's rules per element chunk (module
     header: B_ij = int N_p,i tr eps(N_u,j) dV, M_p,g = int N_p N_p dV over group g; c = 2, or 3 at an azimuthal order
     m >= 1); explicit zeros kept (fem.assembly._to_csr). Rules as assemble_elastic_stiffness (planar max(2 order - 2,
     2), axisymmetric AXISYMMETRIC_DEGREE, curved elements CURVED_DEGREE) / assemble_azimuthal_stiffness: exact for the
-    polynomial integrands on straight elements."""
+    polynomial integrands on straight elements. stretch / radial_ratio: the PML form of fem.elasticity (tr eps from
+    the stretched strain rows, dV x s_x s_y (x r~ / r): complex; None: real, unchanged). Stretched, tr eps J is still
+    an exact divergence (s_y d(u_x)/dx + s_x d(u_y)/dy; axisymmetric s_z d(r~ u_r)/dr + ...), so the row sums B^T 1
+    keep vanishing on free displacements (the planar rule + 2 integrates the quadratic profile; axisymmetric corner
+    elements reach degree 6 = AXISYMMETRIC_DEGREE)."""
     dofs = displacement_dofs
     order = _check_azimuthal_order(azimuthal_order) if azimuthal_order else 0
     components = AZIMUTHAL_COMPONENTS if order else COMPONENTS
@@ -111,17 +117,17 @@ def assemble_pressure_terms(displacement_dofs, space, *, axisymmetric=False, azi
     # vertex, M_p,g ~ the P1 pattern of the group), host
     coupling = ([], [], [])
     masses = [([], [], []) for _ in space.maps]
-    degree = 0 if order else max(2 * dofs.order - 2, 2)
+    degree = 0 if order else max(2 * dofs.order - 2, 2) + _stretch_degree(stretch)
     for positions, rule in _groups(dofs, ring, degree):
         positions = positions[group_of[positions] >= 0]
         if not positions.size:
             continue
         pressure_basis = lagrange_basis(1, rule.points)[0]   # (q, 3), the corners in mesh.triangles order
         if order:
-            _, basis, gradients, weights, radius = _azimuthal_terms(dofs, positions, rule, None, None)
+            _, basis, gradients, weights, radius = _azimuthal_terms(dofs, positions, rule, stretch, radial_ratio)
             operator = azimuthal_strain_operator(basis, gradients, radius, order)
         else:
-            _, operator, weights = _operator_at(dofs, positions, rule, axisymmetric)
+            _, operator, weights = _operator_at(dofs, positions, rule, axisymmetric, stretch, radial_ratio)
         normal_rows = 3 if ring else 2   # rr, zz, tt (rows 0-2) / xx, yy: their sum is tr eps of each basis vector
         trace = operator[..., 0, :] + operator[..., 1, :]
         if normal_rows == 3:

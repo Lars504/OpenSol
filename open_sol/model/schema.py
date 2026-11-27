@@ -219,7 +219,7 @@ class FeatureType:
     result: Callable | None = None   # result(session, solver, runtime_obj, feature_spec, options: dict) -> dict
     validate: Callable | None = None  # validate(vctx, physics_spec, feature_spec, values) -> list[Issue]
     # memory_estimate(values, n_selected_cells, mesh_estimate) -> core.memory_estimate.MemoryEstimate (CPU only;
-    # n_selected_cells = full-grid cells of the selection's bounding box, 3D boxes in 3D: meshing._selection_cells);
+    # n_selected_cells = full-grid cells of the selection's bounding box, 3D boxes in 3D: meshing.selection_cells);
     # set on features that allocate per-region or per-frequency arrays (meshing.estimate_memory)
     memory_estimate: Callable | None = None
     # stepper precisions the feature works at (validate checks the resolved 'stepper' solver)

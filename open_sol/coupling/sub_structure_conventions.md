@@ -40,6 +40,11 @@ Per-topic notes (transform physics, cadence, self-tests) live in the CouplingTyp
   a reader's every equals its target's (prepare warning) and a time-stepped source has one reader
   (`CouplingType.reads_absorbed_power`: validation error; the flag also counts as a q_accum reference in
   `definition_common._q_accum_referenced`).
+- Not a coupling: a study-time read of another physics' solved field that becomes a complex load and readout weight
+  (brillouin_scattering: per quadrature point, extra optical solves per scan position on the optics' kept factor,
+  bound once per frequency_response after the background stage) is a feature plus a study hook (root "Physics
+  definitions"; model sub file "Physics drives"). Slots carry real per-cell / per-element values on the runner's
+  cadence, so such a drive cannot be one.
 - Extension modules: each `coupling/definitions_<topic>.py` (discovered by `definitions.register`) returns early
   without its partners; order must not matter, so a check of another module's coupling type belongs in a template or
   selftest, not in register.

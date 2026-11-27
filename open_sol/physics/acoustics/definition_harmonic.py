@@ -26,11 +26,11 @@ from ...model.definition_helpers import (AXISYMMETRIC, AXISYMMETRIC_SPACE_SETTIN
                                          reduced_sweep_time_items,
                                          reports_model_checks, resolved_back_end, scalar_harmonic_build_items,
                                          scalar_harmonic_build_items_3d, selected_material_data,
-                                         shell_element_fraction, study_frequencies, validate_points_inside)
+                                         shell_element_fraction, study_frequency_band, validate_points_inside)
 from ...model.expressions import Expression, ExpressionError
 from ...model.geometry import expand_entities, point_z
 from ...model.schema import (FREQUENCY_RESPONSE_STUDY, DomainRequirements, FeatureType, Issue, Param, PhysicsType,
-                             SolverRole, feature_path, resolve_values)
+                             SolverRole, feature_path)
 from ...solvers.host_direct import factor_label, host_direct_precision, solver_host_bytes, superlu_bytes_scale
 from ...solvers.sparse_direct import CUDSS_BACK_ENDS, device_pencil_bytes, scipy_available
 from ..mechanics.pml3d import DEFAULT_PML_CELLS, PMLPadding
@@ -387,21 +387,6 @@ def _apply_surface(ctx, solver, feature_spec, values, selection):
 def _surface_result(session, solver, monitor, feature_spec, options):
     """The monitor's 'xy' result + sector_rule 'linear' (p_mean / p_weighted are linear in p: the sector mean)."""
     return {**solver.surface_result(monitor), 'sector_rule': 'linear'}
-
-
-# ---- study frequencies (CPU) ----
-def study_frequency_band(spec, registry, parameters):
-    """(lowest, highest) frequency [Hz] of a frequency_response study (definition_helpers.study_frequencies), None for
-    another study or values that do not resolve."""
-    study = spec.study
-    if study.type != FREQUENCY_RESPONSE_STUDY:
-        return None
-    try:
-        values = resolve_values(registry.study_type(study.type).params, study.settings or {}, parameters)
-    except (KeyError, ValueError, TypeError):
-        return None
-    frequencies = study_frequencies(values)
-    return min(frequencies), max(frequencies)
 
 
 # ---- physics factory ----
