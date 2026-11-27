@@ -41,10 +41,7 @@ Root rules: structure_conventions.md "Solver roles".
 - Precision: `solver_defaults.precision` also replaces a precision in a role's Automatic settings (e.g.
   solid_mechanics_3d gpu 'mixed'), and a node of the Automatic type that sets no precision takes the Automatic one
   (`with_node_precision`: a node added only for a tolerance keeps mixed). GUI-added nodes get the default written in at
-  creation (a later solver_defaults change does not reach them); JSON nodes without one follow it. A precision a role
-  runs only on some grid kinds goes into `SolverRole.precision_grids` (solver_misfit; the diffusion role's 'mixed2':
-  tensor meshes), never a runtime-only refusal; solver_defaults.precision cannot see grids, so a 'mixed2' default
-  makes a pcg node on a triangle mesh of those types a validation error (loud, not ignored).
+  creation (a later solver_defaults change does not reach them); JSON nodes without one follow it.
 - Study defaults (`SolverRole.study_defaults`, e.g. a kept sparse_direct factor in 2D diffusion / solid transients):
   `meshing.fitted_memory_estimate` resolves them without the study when the factor does not fit (`plain_roles`). The
   builder (`_fitted_estimate`), api.check and the GUI document fit once and hand the same plain_roles to
@@ -68,12 +65,7 @@ Root rules: structure_conventions.md "Solver roles".
   validate.
 - Self-tests: nodes through `model.selftest_helpers` (`with_exact_cg`, `with_direct_node`, `skip_without_host_direct`);
   `SelfTestCase.variants` get nodes `<variant>_<physics>_<role>` (api `_variant_spec` raises on a clash). A change of a
-  role's precisions or Automatic type updates its row in the `solver_default_precision` tables. A precision variant
-  with `roles=()` skips solver types without a precision setting (a SuperLU reference run keeps its solver); with
-  `roles=('linear',)` such a run raises. 'mixed2' variants (heat_multigrid_outer_graded, heat_3d_graded_z_robin,
-  potential_divider_plates_graded on the cpu, magnet_permeable_slab, magnet3d_layered_slab, magnet3d_permeable_sphere)
-  keep the case's tolerance: the float32 conductances move the discrete solution by ~1e-7, kappa-free; a mixed2
-  variant needing a looser tolerance points at an inexact off-diagonal (core sub file "DiffusionSystem").
+  role's precisions or Automatic type updates its row in the `solver_default_precision` tables.
 - Counters: a build-injected runtime reports in its role record (summary.json 'solvers', `study._solver_records`); a
   runtime a script constructor builds from a choice string or None is private and reports in the physics'
   `work_counters`.
@@ -109,13 +101,6 @@ Root rules: structure_conventions.md "Solver roles".
 - 'mixed' (`_iterate_mixed`: one float32 CG with residual replacement against the float64 residual): `last_stalled`
   means it stopped at the system's round-off floor, not at the iteration limit, so a caller with a fallback
   preconditioner must not take it for a weak preconditioner (ElasticSystem3D._guarded_solve).
-- 'mixed2' (`SPLIT_PRECISION`): the double CG loop on a `SplitCsr` (float32 CSR, every row's diagonal entry stored,
-  plus the float64 diagonal its products substitute: `csr_split_row_sum`, host twin `host_split_product` numpy / numba).
-  It accepts only a SplitCsr and a SplitCsr only at mixed2 (TypeError both ways), so FEM / elastic CSRs fail loudly;
-  only the DiffusionSystem builds one (exact float32 off-diagonals are its promise: a SplitCsr of a CSR with inexact
-  off-diagonals silently becomes another operator). The solver keeps no float64 copy: memory = the double workspace
-  plus `split_operator_bytes` (booked by `diffusion_system_estimate(split=)`); time recipe: `Spmv` with float32 values,
-  float64 vectors and the float64 diagonal per row (`vector_bytes`, `row_bytes`).
 - Users: the 'linear' role of the DiffusionSystem types (`DiffusionSystem(linear_solver=)`) and solid_mechanics(_3d)
   (`ElasticSystemBase(linear_solver=)`: block Jacobi, 'rhs'; `definition_common.solid_linear_solver` doubles the auto
   iteration limit). Both take the injected solver's precision and set its label and compute_residual.
@@ -128,14 +113,9 @@ Root rules: structure_conventions.md "Solver roles".
 - Never multiply the full fine operator on the backend: Galerkin products run in row blocks (`_row_blocks`) and on
   the gpu in column chunks of P (`_column_ranges`), both against cuSPARSE workspace limits. A cupyx / scipy CSR row
   slice copies even over the full range: block code takes `_rows`, never `matrix[start:stop]`.
-- A SplitCsr fine operator ('mixed2'; pcg's own hierarchy and magnetic's KeptPreconditionerSolver alike): aggregation,
-  P, R and every coarse level come from its float32 CSR (the hierarchy a double operator gets, `_low` makes no copy),
-  the strength filter scales by its float64 diagonal (float32 products of small diagonals would underflow), level 0
-  smooths on the split operator (`mg_presmooth_split` / `mg_correction_split`, float64 weights and level vectors), a
-  hierarchy without coarse levels solves the SplitCsr itself; `can_rebind` never mixes a SplitCsr and a plain CSR.
-- PCGSolver builds its own hierarchy only from an assembled scalar CSR at 'single' / 'double' / 'mixed2' (else it
-  raises); a matrix-free operator brings its own V-cycle callback (ElasticSystem3D: `physics.mechanics.multigrid3d`,
-  any precision), reporting through `PCGSolver.preconditioner_counters` and `SolverWork.setup_ops`.
+- PCGSolver builds its own hierarchy only from an assembled scalar CSR at 'single' / 'double' (else it raises); a
+  matrix-free operator brings its own V-cycle callback (ElasticSystem3D: `physics.mechanics.multigrid3d`, any
+  precision), reporting through `PCGSolver.preconditioner_counters` and `SolverWork.setup_ops`.
 - Jacobi binds and lagged setups (pcg module header; the own CSR hierarchy only, magnetic `KeptPreconditionerSolver`
   keeps its own outside them): the summary still names 'multigrid' (counters multigrid_jacobi_binds / _fallbacks /
   _lagged_*); the time recipe prices only the small-model bind as Jacobi (`bound_preconditioner`), the memory estimate

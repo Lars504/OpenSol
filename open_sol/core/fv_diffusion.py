@@ -9,14 +9,14 @@ the diagonal, rings weighted by pi.
 Array-module agnostic: the Domain's backend (cupy / cupyx on the gpu, numpy / scipy on the cpu)."""
 import numpy as np
 
-from ..solvers.pcg import DTYPE_PRECISIONS, SOLVER_DTYPE_NAMES, SPLIT_PRECISION, PCGSolver, SplitCsr
+from ..solvers.pcg import DTYPE_PRECISIONS, SOLVER_DTYPE_NAMES, PCGSolver
 from .backend import array_module_of, cp, host_copy, ndimage_module, sparse_module, to_host, write_host_into
 from .box_values import BoxValues
 from .constants import DTYPE, FACES, FACES_3D
 from .error_indicators import compliance, face_jump_indicator
 from .fv_diffusion_3d import (FACE_AXIS_3D, FaceGeometry, anchor_link_graph, assembled_operator, build_laplacian,
                               crossing_outflow, edge_extension_views_3d, face_cells, face_lower_shares,
-                              float32_rounded, flux_at_centres, off_diagonal_product)
+                              flux_at_centres, off_diagonal_product)
 from .fv_diffusion_fused import (face_parameters, geometry_factors, launch_shape, positive_pattern_moved,
                                  reassemble_elimination, reassemble_entries)
 from .kernels import axis_first_reduce, twin
@@ -123,9 +123,8 @@ def _quad_corner_shares(cross):
             cross.lower_x * (1.0 - cross.lower_y), (1.0 - cross.lower_x) * (1.0 - cross.lower_y))
 
 
-def cross_quads(c_xx, c_yy, c_xy, dx_cells, dy_cells, dtype, held=None, round_coefficients=False):
-    """CrossQuads of window coefficient arrays (host widths dx_cells / dy_cells, held a bool window mask or None);
-    round_coefficients (pcg mixed2): the quad coefficients float32_rounded (exact float32 corner entries c_q / 2)."""
+def cross_quads(c_xx, c_yy, c_xy, dx_cells, dy_cells, dtype, held=None):
+    """CrossQuads of window coefficient arrays (host widths dx_cells / dy_cells, held a bool window mask or None)."""
     xp = array_module_of(c_xx)
     dx_host = np.asarray(dx_cells, dtype=np.float64)
     dy_host = np.asarray(dy_cells, dtype=np.float64)
@@ -140,15 +139,13 @@ def cross_quads(c_xx, c_yy, c_xy, dx_cells, dy_cells, dtype, held=None, round_co
                  + (1.0 - lower_x) * (lower_y * c_xy[1:, :-1] + (1.0 - lower_y) * c_xy[1:, 1:]))
     spacing_x = xp.asarray(0.5 * (dx_host[:-1] + dx_host[1:]), dtype=dtype)[:, None]
     spacing_y = xp.asarray(0.5 * (dy_host[:-1] + dy_host[1:]), dtype=dtype)[None, :]
-    coefficient = xp.where(quad_conducting, quad_mean, 0.0).astype(dtype, copy=False)
-    if round_coefficients:
-        coefficient = float32_rounded(coefficient)
-    return CrossQuads(coefficient, quad_conducting, lower_x, lower_y, spacing_x, spacing_y)
+    return CrossQuads(xp.where(quad_conducting, quad_mean, 0.0), quad_conducting, lower_x, lower_y,
+                      spacing_x, spacing_y)
 
 
 def build_anisotropic_laplacian(c_xx, c_yy, c_xy, dx_cells, dy_cells, bcs,
                                 pattern=None, dtype=np.float32, reference=0.0, held=None, metric=None, held_wall=None,
-                                apertures=None, kxy_active=None, cross=None, geometry=None, round_conductances=False):
+                                apertures=None, kxy_active=None, cross=None, geometry=None):
     """2D FV diffusion operator (fv_diffusion_3d.build_laplacian): A [c], boundary rhs [c u], pattern, interior
     (conductance_x, conductance_y), {face: boundary_face_terms} and the phi-wrap conductance (nx,) (None without a
     wrap) for u - reference; c window-shaped (nx, ny) backend arrays (c_xx's module sets the backend: cupyx or scipy
@@ -164,8 +161,7 @@ def build_anisotropic_laplacian(c_xx, c_yy, c_xy, dx_cells, dy_cells, bcs,
     vertex: quad energy c_q/2 [(u_NE - u_SW)^2 - (u_NW - u_SE)^2] = 2 c_q (mean x difference) (mean y difference),
     the exact cross energy of a linear u over the rectangle between the four centres on any widths; c_q = the
     area-weighted mean c_xy of that rectangle (0 unless all four conduct or are held); no cross flux through outer
-    faces; for uniform c_xy the interior stencil is NE/SW pairs -c_xy/2, NW/SE pairs +c_xy/2 with no diagonal.
-    round_conductances (pcg mixed2): as fv_diffusion_3d.build_laplacian (a cross term built here is rounded too)."""
+    faces; for uniform c_xy the interior stencil is NE/SW pairs -c_xy/2, NW/SE pairs +c_xy/2 with no diagonal."""
     xp = array_module_of(c_xx)
     nx, ny = c_xx.shape
     dx_host = np.asarray(dx_cells, dtype=np.float64)
@@ -199,10 +195,9 @@ def build_anisotropic_laplacian(c_xx, c_yy, c_xy, dx_cells, dy_cells, bcs,
     if geometry is None:
         geometry = FaceGeometry(metric, dtype, xp)
     if kxy_active and cross is None:
-        cross = cross_quads(c_xx, c_yy, c_xy, dx_host, dy_host, dtype, held, round_coefficients=round_conductances)
+        cross = cross_quads(c_xx, c_yy, c_xy, dx_host, dy_host, dtype, held)
     return build_laplacian((c_xx, c_yy), geometry, bcs, pattern=pattern, dtype=dtype, reference=reference, held=held,
-                           held_wall=held_wall, apertures=apertures, cross=cross if kxy_active else None,
-                           round_conductances=round_conductances)
+                           held_wall=held_wall, apertures=apertures, cross=cross if kxy_active else None)
 
 
 def edge_extension_views(array, x_range, y_range):
@@ -391,9 +386,6 @@ class DiffusionSystem:
         linear_solver.label = label         # messages name the physics
         linear_solver.compute_residual = bool(compute_residual)
         self.linear_solver = linear_solver
-        # pcg 'mixed2' (also inside magnetic's KeptPreconditionerSolver): every assembly rounds its conductances to
-        # float32 and hands the solver a SplitCsr (float32 values, float64 diagonal) as A_solve
-        self.split_operator = getattr(linear_solver, 'precision', None) == SPLIT_PRECISION
         # A_solve is symmetric by construction (both entries of a face from one conductance array, c_xy / wrap pairs
         # alike, a symmetric elimination): a direct factor (bare or inside magnetic's KeptPreconditionerSolver) skips
         # cuDSS's device symmetry check and its transpose map
@@ -843,12 +835,10 @@ class DiffusionSystem:
         if self._fused_reassembly_applies(c_xx, c_yy, capacity_over_dt):
             self._assemble_fused(c_xx, c_yy, c_zz, bcs, reference, capacity_over_dt, check_anchors)
             return
-        split = self.split_operator
         if self.dimensions == 3:
             operator, rhs_bc, self.pattern, face_conductances_xy, face_terms, wrap_conductance = build_laplacian(
                 (c_xx, c_yy, c_zz), self._geometry, bcs,
-                pattern=self.pattern, dtype=dtype, reference=reference, held=self._held_cells,
-                round_conductances=split)
+                pattern=self.pattern, dtype=dtype, reference=reference, held=self._held_cells)
             cross = None
         else:
             if self._insulated_wall_test is not None:   # cut cells: the walls of this assembly's conducting cells
@@ -864,15 +854,14 @@ class DiffusionSystem:
                     if capacity_over_dt is not None and ratio is not None:   # computed on the previous areas
                         capacity_over_dt = xp.asarray(capacity_over_dt, dtype=dtype) * ratio
             # kept for the cross flux / dissipation post-processing (the operator raises off a Cartesian plane)
-            cross = (cross_quads(c_xx, c_yy, c_xy, self.dx_window, self.dy_window, dtype, self._held_cells,
-                                 round_coefficients=split)
+            cross = (cross_quads(c_xx, c_yy, c_xy, self.dx_window, self.dy_window, dtype, self._held_cells)
                      if self._kxy_active and (self.metric is None or self.metric.cartesian_planar) else None)
             operator, rhs_bc, self.pattern, face_conductances_xy, face_terms, wrap_conductance = (
                 build_anisotropic_laplacian(
                     c_xx, c_yy, c_xy, self.dx_window, self.dy_window, bcs,
                     pattern=self.pattern, dtype=dtype, reference=reference, held=self._held_cells, metric=self.metric,
                     held_wall=self.held_wall, apertures=self.apertures, kxy_active=self._kxy_active, cross=cross,
-                    geometry=self._geometry, round_conductances=split))
+                    geometry=self._geometry))
         pattern = self.pattern
         if not self._fused_pattern():   # a pattern released while fused, now re-assembled here (cut cells, held edges
             pattern.keep_assembly_maps()   # set later): kept again, no rebuild per assembly (no-op while kept)
@@ -915,7 +904,8 @@ class DiffusionSystem:
         if self._fused_pattern():
             pattern.release_assembly_maps()
         solve_data[diagonal_positions] += fixed.ravel().astype(dtype)
-        self.A_solve = self._solve_operator(solve_data)
+        self.A_solve = sparse_module(self.backend).csr_matrix((solve_data, pattern.indices, pattern.indptr),
+                                                              shape=(n_window, n_window))
         coupling_to_fixed = operator.dot(fixed_values.ravel()).reshape(window_shape)
         rhs_drive = rhs_bc + self.extra_rhs
         self.rhs_offset = free * (rhs_drive - coupling_to_fixed)
@@ -923,10 +913,8 @@ class DiffusionSystem:
             self.inverse_diagonal = 1.0 / solve_data[diagonal_positions]
         xp.copyto(self.unknown2d, fixed_values, where=fixed)
         # A_eff and assemble's other window temporaries go before the solver setup (a multigrid setup or a factor plan
-        # is the build peak; a deferred anchor check holds its own references): A_solve is the one kept CSR (mixed2:
-        # the float64 solve_data goes too, its SplitCsr holds the float32 copy)
+        # is the build peak; a deferred anchor check holds its own references): A_solve is the one kept CSR
         del operator, effective_data, effective_diagonal, diagonal_extra, unconnected, fixed, coupling_to_fixed, rhs_bc
-        del solve_data
         self._factorize_solver()
         self._keep_assembly(conduction_diagonal, azimuthal_diagonal, fixed_values, free, capacity_over_dt,
                             loss_anchor_cells, rhs_drive, face_terms, face_conductances_xy, wrap_conductance,
@@ -1047,8 +1035,8 @@ class DiffusionSystem:
             self.extra_diag if capacity_over_dt is None else capacity_over_dt, self.extra_rhs, self.fixed_user_values,
             self.unknown, pattern.indptr, data, conduction_diagonal, interior, face_buffer, fixed, fixed_values, free,
             rhs_drive, np.int32(counts[0]), np.int32(counts[1]), np.int32(counts[2]), np.int32(ndim),
-            np.int32(azimuthal_diagonal is not None), np.int32(capacity_over_dt is not None),
-            np.int32(self.split_operator)))
+            np.int32(azimuthal_diagonal is not None), np.int32(capacity_over_dt is not None)))
+        sparse = sparse_module(self.backend)
         face_terms = {}
         start = 0
         for face, size in zip(faces, face_sizes):   # views of one buffer: conductances, then the rhs terms
@@ -1073,8 +1061,7 @@ class DiffusionSystem:
             data, pattern.indptr, pattern.indices, pattern.diagonal_positions, free, fixed, fixed_values, rhs_drive,
             solve_data, inverse_diagonal, rhs_offset, self.unknown, np.int32(n_window)))
         del data   # A_eff: no kept CSR (full_operator), so the solver setup never holds it beside A_solve
-        self.A_solve = self._solve_operator(solve_data)
-        del solve_data   # mixed2: the float64 values go before the solver setup (the SplitCsr holds a float32 copy)
+        self.A_solve = sparse.csr_matrix((solve_data, pattern.indices, pattern.indptr), shape=(n_window, n_window))
         self.rhs_offset = rhs_offset
         if self._keeps_inverse_diagonal():
             self.inverse_diagonal = inverse_diagonal
@@ -1172,11 +1159,7 @@ class DiffusionSystem:
 
         free_flat = self.free.ravel()
         solve_diagonal = effective_diagonal * free_flat * free_flat + fixed.ravel().astype(dtype)
-        if self.split_operator:   # in place: the float64 diagonal the products read, its float32 rounding for setups
-            self.A_solve.diagonal_values[...] = solve_diagonal
-            self.A_solve.matrix.data[diagonal_positions] = solve_diagonal.astype(np.float32)
-        else:
-            self.A_solve.data[diagonal_positions] = solve_diagonal
+        self.A_solve.data[diagonal_positions] = solve_diagonal
         del effective_diagonal, free_flat
         # free rows: A_eff u_fix = its off-diagonal part (unchanged by the diagonal: fixed_values vanish on free cells)
         coupling_to_fixed = self._off_diagonal_product(self.fixed_values)
@@ -1195,22 +1178,6 @@ class DiffusionSystem:
         self.n_diagonal_refreshes += 1
         self.operator_dirty = False
         return True
-
-    def _solve_operator(self, solve_data):
-        """A_solve of an elimination's values (system dtype, on the kept pattern): the backend CSR of them, or with
-        split_operator (pcg mixed2) a SplitCsr of their float32 copy (the off-diagonals are rounded conductances, so
-        exact; the diagonal entries rounded) and their float64 diagonal, which its products read instead."""
-        pattern = self.pattern
-        n_window = self.n_window
-        sparse = sparse_module(self.backend)
-        if not self.split_operator:
-            return sparse.csr_matrix((solve_data, pattern.indices, pattern.indptr), shape=(n_window, n_window))
-        if solve_data.dtype != np.float64:
-            raise TypeError(f"{self.label()}: precision '{SPLIT_PRECISION}' needs a float64 system, got "
-                            f'{solve_data.dtype}')
-        values = sparse.csr_matrix((solve_data.astype(np.float32), pattern.indices, pattern.indptr),
-                                   shape=(n_window, n_window))
-        return SplitCsr(values, solve_data[pattern.diagonal_positions])
 
     def _keeps_inverse_diagonal(self) -> bool:
         """Whether an assembly keeps the Jacobi inverse diagonal: not for a linear solver that ignores the

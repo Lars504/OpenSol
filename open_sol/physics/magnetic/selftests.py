@@ -8,7 +8,7 @@ import math
 import numpy as np
 
 from ...core.constants import MU0
-from ...model.schema import GLOBAL_DERIVED_OPERATION, SelfTestCase, SelfTestVariant
+from ...model.schema import GLOBAL_DERIVED_OPERATION, SelfTestCase
 from ...model.selftest_helpers import (EXACT_CG_TOLERANCE, cell_edges, max_relative_error, relative_error, solver_role,
                                        with_direct_node, with_exact_cg, worst_error)
 from ...model.spec import (DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec,
@@ -18,10 +18,6 @@ MAGNETOSTATICS_TYPE_NAME = 'magnetostatics'   # = the definition's type name (th
 _MAGNETIC = 'magnetic'                        # physics instance name = the type's default instance
 _RUN = 'run'
 _TOLERANCE = 1e-6   # the exact-CG error ~1e4 x 1e-12 is far below it
-# pcg 'mixed2' on the exact pcg node: float32 face conductances (each within 6e-8 of the float64 one) and exact row sums
-# move the discrete solution by ~1e-7 at any mu_dc contrast (no condition-number factor; 'single' rounds the diagonal
-# apart, a sink amplified by the 1e5 contrast: percent errors), so the same tolerance
-_SPLIT_VARIANT = SelfTestVariant('mixed2', tolerance=_TOLERANCE, precision='mixed2', roles=('linear',))
 
 # Layout shared by the 1D cases: a 1 x 0.1 mm window of 10 um cells (100 x 10, no EM physics, so no PML), symmetry
 # (Neumann) y faces, so every quantity depends on x (axisymmetric: r) only. The band x in [0.4, 0.6] mm (cells
@@ -706,11 +702,8 @@ SELFTEST_CASES = (
                      'count their free half cell). error = max of the relative B_x, B_y, A, H_x and energy errors; '
                      f'{_BUDGET_TEXT}; the CG iterations are reported (details, flagged above 20 x the longest axis). '
                      'Pins the held-ring values at the inner faces (centre values would give B (1 + dx / L)), the '
-                     "1e5 contrast and H = B / (mu0 mu). Variant mixed2: the exact pcg node at precision 'mixed2' "
-                     '(Jacobi on the SplitCsr: float32 face reluctances, float64 diagonal and CG), same tolerance: '
-                     'exact row sums keep the 1e5 contrast from amplifying the float32 rounding (~1e-7 expected). Not '
-                     'yet run.'),
-        specs=_permeable_slab_specs, check=_check_permeable_slab, variants=(_SPLIT_VARIANT,)),
+                     '1e5 contrast and H = B / (mu0 mu).'),
+        specs=_permeable_slab_specs, check=_check_permeable_slab),
     SelfTestCase(
         name='magnet_uniform_field_axisymmetric', label='Magnetostatics: uniform axial field (axisymmetric)',
         description=(f'Axisymmetric magnetostatics in an empty {_UNIFORM_DOMAIN[0] * 1e3:g} x '

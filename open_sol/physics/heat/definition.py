@@ -20,7 +20,7 @@ from ...model.definition_helpers import (
     antiperiodic_wrap, axisymmetric_issues, azimuthal_order_issues, azimuthal_order_of, cg_solver_issues,
     conducting_fraction, conducts, cross_term_materials, element_order, evaluates_to,
     face_conflicts, geometry_param, held_object_conflicts, indefinite_cross_term_issue, is_axisymmetric,
-    linear_solver_direct, linear_solver_mixed, linear_solver_split, linear_solver_multigrid, linear_solver_precision, make_apply_inward_flux, make_point_probe,
+    linear_solver_direct, linear_solver_mixed, linear_solver_multigrid, linear_solver_precision, make_apply_inward_flux, make_point_probe,
     mapped_domain_issues, material_follows_state, mirror_face_issues, mirror_feature_issues, on_tetrahedra, on_triangles,
     optional_material_param, outline_full_grid, own_mirror_face_conflicts, outline_pieces_of, perimeter_flux_weights, plain_number, point_cells,
     reports_model_checks, selected_material_data, time_following_values, uses_time, validate_points_inside,
@@ -939,8 +939,7 @@ def _memory_estimate(settings_values, mesh, context):
     # setup aggregates
     from ...model.schema import solver_backend
     # conformal: cut cells keep the assembly maps (an upper bound where the domain's coordinates refuse them)
-    solver_options = dict(mixed=linear_solver_mixed(context), split=linear_solver_split(context),
-                          multigrid=linear_solver_multigrid(context),
+    solver_options = dict(mixed=linear_solver_mixed(context), multigrid=linear_solver_multigrid(context),
                           direct=linear_solver_direct(context), pcg=pcg_linear_solver(context.solvers), flux=True,
                           backend=solver_backend(context.spec),
                           conformal=bool(context.spec.solver_defaults.conformal_boundaries),

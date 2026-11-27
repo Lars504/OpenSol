@@ -9,7 +9,7 @@ import math
 import numpy as np
 
 from ...core.constants import MU0
-from ...model.schema import GLOBAL_DERIVED_OPERATION, SelfTestCase, SelfTestVariant
+from ...model.schema import GLOBAL_DERIVED_OPERATION, SelfTestCase
 from ...model.selftest_helpers import cell_centre, scaled_worst_result, solver_role, with_exact_cg, worst_error
 from ...model.spec import (AnalyticCurveSpec, DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec,
                            MeshAxisSpec, MeshBandSpec, MeshSpec, ModelSpec, ParameterSpec, PhysicsSpec, RefinementSpec,
@@ -21,9 +21,6 @@ from .selftests import (_IRON_PERMEABILITY, _IRON_SATURATION, _NONLINEAR_SETTING
 MAGNETOSTATICS_3D_TYPE_NAME = 'magnetostatics_3d'   # = the definition's type name (definition3d imports this module)
 _MAGNETIC = 'magnetic'                              # physics instance name = the type's default instance
 _TOLERANCE = 1e-6   # exact discrete identities: float64 CG 1e-12, float32 field storage
-# pcg 'mixed2' on the exact pcg node (layered slab, Jacobi; the permeable sphere has its own at its tolerance): float32
-# face conductances with exact row sums move the discrete solution by ~1e-7 at mu_dc 1e5 (no condition-number factor)
-_SPLIT_VARIANT = SelfTestVariant('mixed2', tolerance=_TOLERANCE, precision='mixed2', roles=('linear',))
 _AXES = 'xyz'
 _BOX_KEYS = ('x0', 'y0', 'z0', 'x1', 'y1', 'z1')
 
@@ -763,11 +760,8 @@ SELFTEST_CASES_3D = (
                      'sum, phi_m from the partial sums, B, H = 0 in the held layer). measured = largest deviation of '
                      'B and H per component (relative to max B_d / max H_d) and of phi_m (relative to Omega_0), '
                      f'tolerance {_TOLERANCE:g}. Pins c = mu_dc per axis (no xx / yy swap), the ideal-iron held '
-                     'value mu0 Omega, the symmetry face on every axis and B from the face fluxes. Not run yet. '
-                     "Variant mixed2: the exact pcg node (Jacobi) at precision 'mixed2' (7-point SplitCsr: float32 "
-                     'face conductances, float64 diagonal and CG), same tolerance: exact row sums keep the 1e5 '
-                     "contrast from amplifying the float32 rounding ('single' fails such contrasts). Not yet run."),
-        specs=_slab_runs, check=_check_slabs, variants=(_SPLIT_VARIANT,)),
+                     'value mu0 Omega, the symmetry face on every axis and B from the face fluxes. Not run yet.'),
+        specs=_slab_runs, check=_check_slabs),
     SelfTestCase(
         name='magnet3d_saturating_slab',
         label='Magnetostatics 3D: saturating slab (J_s curve and B-H table), normal and tangential',
@@ -797,13 +791,8 @@ SELFTEST_CASES_3D = (
                      'over the central half radius. At mu_r >> 1 the staircase raises the core field to first order '
                      'in h (~6 % coarse, ~3 % fine), so measured = the largest relative deviation of the first-order '
                      'Richardson values (2 fine - coarse), inf unless the fine run beats the coarse one; tolerance '
-                     f'{_SPHERE_EXTRAPOLATED_TOLERANCE:g} (far ring error ~ (1/6)^3, staircase scatter). Variant '
-                     "mixed2: both runs at pcg precision 'mixed2' (multigrid: float32 hierarchy from the SplitCsr, "
-                     'level 0 smoothing on it), same tolerance (its ~1e-7 shift of the discrete field is far below '
-                     'the staircase error; the 3D multigrid path of mixed2 at mu_r 1000). Not yet run.'),
-        specs=_permeable_sphere_runs, check=_check_permeable_sphere,
-        variants=(SelfTestVariant('mixed2', tolerance=_SPHERE_EXTRAPOLATED_TOLERANCE, precision='mixed2',
-                                  roles=('linear',)),)),
+                     f'{_SPHERE_EXTRAPOLATED_TOLERANCE:g} (far ring error ~ (1/6)^3, staircase scatter).'),
+        specs=_permeable_sphere_runs, check=_check_permeable_sphere),
     SelfTestCase(
         name='magnet3d_magnetized_sphere',
         label='Magnetostatics 3D: uniformly magnetised sphere',

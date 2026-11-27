@@ -107,17 +107,14 @@ _SPEC_FIELD_HELP = {
         'a validation error per physics) and every solver to fit it (explicit_kernels and sparse_direct cusolver_qr '
         'do not); on cpu the device memory estimate counts against the host RAM.'),
     'SolverDefaultsSpec.precision': (
-        "auto (default) | single | double | mixed | mixed2 | half_storage: model-wide solver precision. auto = each "
-        "solver's "
+        "auto (default) | single | double | mixed | half_storage: model-wide solver precision. auto = each solver's "
         'own default (pcg double, explicit_kernels single, ...). Otherwise every role solver whose type and role '
         'offer it takes it, unless its solver node sets its own precision; the others keep their default (a '
         'validation info names them), e.g. double makes pcg and the time steppers double (sparse_direct / '
         'arpack_shift_invert / banded are double anyway); mixed reaches only pcg nodes, Automatic pcg of heat, '
         'electric_currents, electrostatics and magnetostatics, and line_block / block_eigen nodes. A pcg node with '
-        'preconditioner multigrid and no own precision fails with mixed. mixed2 reaches only the pcg linear solvers '
-        'of heat, electric_currents, electrostatics and magnetostatics(_3d) (Automatic multigrid kept), and is a '
-        'validation error for a pcg node of those types on a triangle / tetrahedron mesh. check.json / summary.json '
-        'solvers record the precision each role resolved to.'),
+        'preconditioner multigrid and no own precision fails with mixed. check.json / summary.json solvers record '
+        'the precision each role resolved to.'),
     'SolverDefaultsSpec.memory_check': (
         'error (default) | warning: what a memory estimate over the budget does (the GPU estimate at its peak, cuDSS '
         'factors included, against the GPU budget; the host estimate against the available RAM; also per sweep value '
@@ -2022,7 +2019,6 @@ def _solvers_section(registry, physics_types):
                                    for (study, grid), (type_name, settings) in solver_role.study_defaults.items()},
             'auto_back_end_by_grid': dict(solver_role.auto_back_ends),
             'precisions': list(solver_role.precisions),
-            'precision_grids': {precision: list(grids) for precision, grids in solver_role.precision_grids.items()},
             'setting_choices': {name: list(values) for name, values in solver_role.setting_choices.items()}}
             for role, solver_role in physics_type.solver_roles.items()}
             for physics_type in physics_types if physics_type.solver_roles},

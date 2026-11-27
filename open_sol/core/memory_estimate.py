@@ -299,8 +299,7 @@ def diffusion_full_operator_bytes(window_cells, entries_per_row, n_slots, value_
 def diffusion_system_estimate(window_cells, precision, cross_term=False, transient=False,
                               dimensions=2, mixed=False, multigrid=False, direct=False,
                               azimuthal=False, wrap=False, flux=False, dissipation=False,
-                              backend=None, conformal=False, pcg=True, refactorizes=False,
-                              split=False) -> MemoryEstimate:
+                              backend=None, conformal=False, pcg=True, refactorizes=False) -> MemoryEstimate:
     """DiffusionSystem (core.fv_diffusion) on window_cells (3D: all window voxels, dimensions=3): prepare buffers, CSR
     pattern, the one kept operator (A_solve: no A_eff CSR is kept) and assembly vectors (steady; azimuthal: the kept
     azimuthal diagonal of an (r, z) order m != 0; ONE assembly: a re-assembly drops its predecessor first,
@@ -308,9 +307,7 @@ def diffusion_system_estimate(window_cells, precision, cross_term=False, transie
     False: a direct / banded solver, no CG workspace and no kept Jacobi diagonal); build extra:
     the larger of the pattern build + anchor check and (multigrid) the setup while assemble's locals live; conformal
     (solver_defaults.conformal_boundaries reaching a 2D system: cut cells) keeps the assembly maps; mixed
-    (a 'mixed' pcg, precision 'float64'): its float32 operator copy and refinement vectors; split (a 'mixed2' pcg,
-    precision 'float64'): A_solve as a SplitCsr (float32 values + the float64 diagonal: solvers.pcg.split_operator_bytes)
-    and its multigrid setup on the float32 CSR; multigrid (the pcg
+    (a 'mixed' pcg, precision 'float64'): its float32 operator copy and refinement vectors; multigrid (the pcg
     multigrid preconditioner): its hierarchy, setup products and the host aggregation (not on backend 'gpu', which
     aggregates on the device inside the setup's transients; None: booked); direct (a host SuperLU
     sparse_direct linear solver, the 2D cpu Automatic: True or 'scipy_splu'): the host factor and its float64 CSC input
@@ -352,16 +349,8 @@ def diffusion_system_estimate(window_cells, precision, cross_term=False, transie
         n_slots = 9 if wrap else entries_per_row   # fv_diffusion_3d._SlotLayout
         build_extra = (n_slots * (BOOL_BYTES + FLOAT64_BYTES) + (n_slots + 6 + entries_per_row) * value_bytes
                        + 8 * (BOOL_BYTES + 2 * INT32_BYTES) + 30) * cells
-    # A_solve data (the pattern's indices shared); A_eff is never kept (DiffusionSystem.full_operator rebuilds it);
-    # mixed2: float32 values and the float64 diagonal (its float64 elimination values are an assembly transient, freed
-    # before the solver setup, inside build_extra)
-    if split:
-        from ..solvers.pcg import split_operator_bytes   # numpy only (the fv_diffusion exception of the core rule)
-        if value_bytes != FLOAT64_BYTES:
-            raise ValueError(f"diffusion_system_estimate: pcg 'mixed2' runs a float64 system, got {precision!r}")
-        operators = split_operator_bytes(cells, entries_per_row * cells)
-    else:
-        operators = entries_per_row * value_bytes * cells
+    # A_solve data (the pattern's indices shared); A_eff is never kept (DiffusionSystem.full_operator rebuilds it)
+    operators = entries_per_row * value_bytes * cells
     # indptr + diagonal positions per row, indices per entry (int32); the per-entry assembly maps (slot_positions,
     # entry_rows: int32) stay only where re-assemblies run build_laplacian (c_xy, phi wrap, 2D cut cells:
     # DiffusionSystem._fused_pattern), else they live through the first assembly's build only
@@ -392,10 +381,7 @@ def diffusion_system_estimate(window_cells, precision, cross_term=False, transie
         items.append(('multigrid hierarchy (operators, prolongations, vectors)',
                       amg.hierarchy_bytes(cells, value_bytes, entries_per_row)))
         alive = (_FACTORIZE_ALIVE_VALUE_ARRAYS * value_bytes + _FACTORIZE_ALIVE_MASKS * BOOL_BYTES) * cells
-        # mixed2: the setup filters and multiplies the SplitCsr's float32 CSR (level 0 weights / vectors: float64, in
-        # hierarchy_bytes)
-        setup_value_bytes = FLOAT32_BYTES if split else value_bytes
-        setup = alive + amg.setup_extra_bytes(cells, setup_value_bytes, entries_per_row)
+        setup = alive + amg.setup_extra_bytes(cells, value_bytes, entries_per_row)
         build_extra = max(build_extra, setup)
         if not (backend == 'gpu' and amg.DEVICE_AGGREGATION):   # the device twin holds no host copy of the CSR
             host_items.append(('multigrid aggregation (transient)', amg.aggregation_host_bytes(cells, entries_per_row)))

@@ -50,10 +50,8 @@ extern "C" __global__ void fv_reassemble_entries(
     const real_t* capacity, const real_t* extra_rhs, const real_t* held_values, const real_t* unknown,
     const int* indptr, real_t* data, real_t* conduction_diagonal, real_t* interior, real_t* face_buffer,
     bool* fixed, real_t* fixed_values, real_t* free_mask, real_t* rhs_drive,
-    int nx, int ny, int nz, int ndim, int has_azimuthal, int has_capacity, int round_links)
+    int nx, int ny, int nz, int ndim, int has_azimuthal, int has_capacity)
 {
-    // round_links (pcg mixed2, fv_diffusion_3d.float32_rounded): every interior link rounded to float32 before the
-    // diagonal sums it, the same rounding from both of its cells (exact float32 off-diagonals, symmetric)
     const int n_cells = nx * ny * nz;
     const int count[3] = {nx, ny, nz};
     const int stride[3] = {ny * nz, nz, 1};
@@ -93,7 +91,6 @@ extern "C" __global__ void fv_reassemble_entries(
                     c_here, coefficient[axis][upper], length_here,
                     cell_length(factors, offsets, axis, neighbour[0], neighbour[1], neighbour[2]),
                     held_here, held[upper], factors, offsets, axis, face_index[0], face_index[1], face_index[2]);
-                if (round_links) upper_link[axis] = (real_t)(float)upper_link[axis];
                 diagonal += upper_link[axis];
                 int reduced[3] = {count[0], count[1], count[2]};
                 reduced[axis] -= 1;
@@ -108,7 +105,6 @@ extern "C" __global__ void fv_reassemble_entries(
                     coefficient[axis][lower], c_here,
                     cell_length(factors, offsets, axis, neighbour[0], neighbour[1], neighbour[2]), length_here,
                     held[lower], held_here, factors, offsets, axis, face_index[0], face_index[1], face_index[2]);
-                if (round_links) lower_link[axis] = (real_t)(float)lower_link[axis];
                 diagonal += lower_link[axis];
             }
         }
@@ -226,7 +222,7 @@ def _cut(axis, part):
 
 def _entries_host(c_x, c_y, c_z, held, factors, offsets, face_parameters, azimuthal, extra_diag, capacity, extra_rhs,
                   held_values, unknown, indptr, data, conduction_diagonal, interior, face_buffer, fixed,
-                  fixed_values, free_mask, rhs_drive, nx, ny, nz, ndim, has_azimuthal, has_capacity, round_links):
+                  fixed_values, free_mask, rhs_drive, nx, ny, nz, ndim, has_azimuthal, has_capacity):
     """numpy twin of fv_reassemble_entries (same arguments; writes the outputs in place)."""
     shape = (int(nx), int(ny), int(nz))
     ndim = int(ndim)
@@ -253,8 +249,6 @@ def _entries_host(c_x, c_y, c_z, held, factors, offsets, face_parameters, azimut
         free_lower = _scaled(two * c_lower / length_lower, area)
         link = np.where(held_lower & ~held_upper, free_upper, np.where(held_upper & ~held_lower, free_lower, series))
         link = np.broadcast_to(link, c_lower.shape).astype(dtype, copy=False)
-        if int(round_links):   # pcg mixed2: exact float32 links (fv_diffusion_3d.float32_rounded)
-            link = link.astype(np.float32).astype(dtype)
         diagonal[lower] += link
         diagonal[upper] += link
         interior[interior_start:interior_start + link.size] = link.ravel()

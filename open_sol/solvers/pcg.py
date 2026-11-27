@@ -1,7 +1,6 @@
 """'pcg' LinearSolver runtime: preconditioned CG on an assembled CSR or matrix-free operator, device-side scalars, the
 residual read on the host every check_interval iterations; 'mixed' = float32 CG corrections (a float32 CSR copy, or
-the caller's float32 matrix-free callbacks) refined against the float64 residual; 'mixed2' = float64 CG on a SplitCsr
-(float32 off-diagonal values, float64 diagonal, products summed in float64). Backend 'gpu' (cupy / cupyx CSR,
+the caller's float32 matrix-free callbacks) refined against the float64 residual. Backend 'gpu' (cupy / cupyx CSR,
 fused kernels built lazily, opt-in CUDA graphs of whole check blocks) or 'cpu' (numpy / scipy CSR, the numpy twins of
 the kernels, BLAS axpy and scipy's CSR kernel into preallocated vectors, numba loops on short vectors); cupy and scipy
 only inside functions."""
@@ -20,17 +19,11 @@ MULTIGRID_CHECK_INTERVAL = 2
 # cpu backend: no sync, the read costs one dot (~5 % of a Jacobi iteration): a short block keeps the overshoot of
 # warm-started solves (10-30 iterations) small without paying a dot per iteration on long cold solves; multigrid 1
 CPU_CG_CHECK_INTERVAL = 4
-# precision -> dtype of rhs / solution / operator (the system the physics assembles); 'mixed' iterates in float32,
-# 'mixed2' in float64 on a SplitCsr (its float32 values widened in every product)
-PRECISION_DTYPES = {'single': np.float32, 'double': np.float64, 'mixed': np.float64, 'mixed2': np.float64}
+# precision -> dtype of rhs / solution / operator (the system the physics assembles); 'mixed' iterates in float32
+PRECISION_DTYPES = {'single': np.float32, 'double': np.float64, 'mixed': np.float64}
 # dtype-name precision of the script constructors (DiffusionSystem, ElasticSystem, the physics classes)
 DTYPE_PRECISIONS = {'float32': 'single', 'float64': 'double'}
-SOLVER_DTYPE_NAMES = {'single': 'float32', 'double': 'float64', 'mixed': 'float64',   # system dtype per precision
-                      'mixed2': 'float64'}
-# the precision whose operator is a SplitCsr (only the DiffusionSystem assembles one: each conductance is rounded to
-# float32 before the float64 diagonal sums it, so the float32 off-diagonal storage is exact and every row sum is the
-# float64 one; 'single' rounds the diagonal apart from its off-diagonals: core sub file "DiffusionSystem")
-SPLIT_PRECISION = 'mixed2'
+SOLVER_DTYPE_NAMES = {'single': 'float32', 'double': 'float64', 'mixed': 'float64'}   # system dtype per precision
 FLOAT32_TOLERANCE_FLOOR = 1e-6         # single-precision CG stalls near this relative residual
 # mixed (one float32 CG with residual replacement): the float64 residual replaces the float32 recurrence one whenever
 # that fell by this factor since the last replacement ("reliable updates"; the usual single / double choice keeps the
@@ -190,42 +183,11 @@ __device__ __forceinline__ Acc csr_row_sum(const int* __restrict__ indptr, const
     const bool active = row < n_rows; \
     const bool first_lane = (threadIdx.x & (LANES - 1)) == 0;
 
-// SplitCsr ('mixed2'): the row's stored diagonal entry is replaced by the float64 diagonal[row], the float32
-// off-diagonal values widened, every product summed in double (the rows keep the float64 row sums of the assembly)
-template<int LANES>
-__device__ __forceinline__ double csr_split_row_sum(const int* __restrict__ indptr, const int* __restrict__ indices,
-                                                    const float* __restrict__ data,
-                                                    const double* __restrict__ diagonal,
-                                                    const double* __restrict__ x, const double* __restrict__ x_scale,
-                                                    int row, bool active) {
-    double sum = 0.0;
-    if (active) {
-        const int stop = indptr[row + 1];
-        for (int k = indptr[row] + (int)(threadIdx.x & (LANES - 1)); k < stop; k += LANES) {
-            const int column = indices[k];
-            const double value = x_scale ? x_scale[column] * x[column] : x[column];
-            sum += (column == row ? diagonal[row] : (double)data[k]) * value;
-        }
-    }
-    for (int offset = LANES / 2; offset > 0; offset >>= 1)   // every lane of the warp takes part
-        sum += __shfl_down_sync(0xffffffffu, sum, offset, LANES);
-    return sum;
-}
-
 // y = A x, summed in Y
 template<int LANES, typename M, typename X, typename Y>
 __global__ void csr_product(int n_rows, const int* indptr, const int* indices, const M* data, const X* x, Y* y) {
     CSR_ROW
     const Y sum = csr_row_sum<LANES, Y, M, X>(indptr, indices, data, x, (const X*)0, row, active);
-    if (active && first_lane) y[row] = sum;
-}
-
-// y = A x of a SplitCsr (float32 values; float64 diagonal, x and y)
-template<int LANES>
-__global__ void csr_split_product(int n_rows, const int* indptr, const int* indices, const float* data,
-                                  const double* diagonal, const double* x, double* y) {
-    CSR_ROW
-    const double sum = csr_split_row_sum<LANES>(indptr, indices, data, diagonal, x, (const double*)0, row, active);
     if (active && first_lane) y[row] = sum;
 }
 '''
@@ -308,7 +270,6 @@ def type_name(dtype) -> str:
 
 def _csr_product_functions() -> dict:
     names = [f'csr_product<{lanes}, {t}, {t}, {t}>' for lanes in CSR_LANE_CHOICES for t in ('float', 'double')]
-    names += [f'csr_split_product<{lanes}>' for lanes in CSR_LANE_CHOICES]
     return device_template_functions('pcg_csr_product', CSR_ROW_SOURCE, names)
 
 
@@ -342,136 +303,6 @@ class DeviceCsrProduct:
         self._function(self._grid, (CSR_THREADS,), (self._n_rows, matrix.indptr, matrix.indices, matrix.data, vector,
                                                      out))
         return out
-
-
-class SplitCsr:
-    """'mixed2' operator of a conductance-built Laplacian (DiffusionSystem): `matrix` = a float32 CSR of the backend
-    (canonical, every row's diagonal entry stored; gpu: int32 indices) whose off-diagonal values are exact float32
-    numbers (the assembly rounds each conductance to float32 before the float64 diagonal sums it) and whose diagonal
-    entries hold the float32 rounding of `diagonal_values`, the float64 diagonal every product reads instead, so each
-    row keeps the row sum of the float64 assembly. Products widen the values and sum in float64 (DeviceSplitProduct,
-    host_split_product); a multigrid hierarchy is built from `matrix` (float32, as from a double operator) and level 0
-    smooths on the split operator. dtype is the product / vector precision (float64)."""
-
-    __slots__ = ('matrix', 'diagonal_values')
-    dtype = np.dtype(np.float64)
-
-    def __init__(self, matrix, diagonal_values):
-        if np.dtype(matrix.dtype) != np.float32:
-            raise TypeError(f'SplitCsr: the stored values must be float32, got {matrix.dtype}')
-        n_rows = int(matrix.shape[0])
-        if int(matrix.shape[1]) != n_rows:
-            raise ValueError(f'SplitCsr: the operator must be square, got shape {matrix.shape}')
-        if np.dtype(diagonal_values.dtype) != np.float64 or tuple(diagonal_values.shape) != (n_rows,):
-            raise ValueError(f'SplitCsr: the diagonal must be a flat float64 array of {n_rows} values, got '
-                             f'{diagonal_values.dtype} {tuple(diagonal_values.shape)}')
-        if isinstance(matrix.data, np.ndarray) != isinstance(diagonal_values, np.ndarray):
-            raise TypeError('SplitCsr: the CSR values and the diagonal must live on one backend')
-        self.matrix = matrix
-        self.diagonal_values = diagonal_values
-
-    @property
-    def shape(self):
-        return self.matrix.shape
-
-    @property
-    def nnz(self) -> int:
-        return int(self.matrix.nnz)
-
-    @property
-    def indptr(self):
-        return self.matrix.indptr
-
-    @property
-    def indices(self):
-        return self.matrix.indices
-
-    @property
-    def data(self):
-        """The float32 CSR values (diagonal entries rounded: every product reads diagonal_values instead)."""
-        return self.matrix.data
-
-    def diagonal(self):
-        """The float64 diagonal (the kept array itself, not a copy)."""
-        return self.diagonal_values
-
-
-def split_operator_bytes(n_rows, nnz) -> int:
-    """Value bytes of a SplitCsr: float32 values per stored entry plus the float64 diagonal (the int32 pattern is the
-    caller's: DiffusionSystem shares its LaplacianPattern indices)."""
-    return 4 * int(nnz) + 8 * int(n_rows)
-
-
-class DeviceSplitProduct:
-    """gpu y = A x of a SplitCsr by csr_split_product (float32 values; float64 diagonal, vector and product;
-    capturable in a CUDA graph): call -> one owned vector, apply(vector, out) -> the caller's."""
-
-    def __init__(self, split):
-        import cupy as cp
-        matrix = split.matrix
-        if matrix.indptr.dtype != np.int32 or matrix.indices.dtype != np.int32:
-            raise TypeError(f'gpu CSR products need int32 indices, got {matrix.indptr.dtype} / {matrix.indices.dtype}')
-        n_rows = int(matrix.shape[0])
-        lanes = csr_lanes(n_rows, int(matrix.nnz))
-        self.split = split
-        self._function = _csr_product_functions()[f'csr_split_product<{lanes}>']
-        self._grid = csr_grid(n_rows, lanes)
-        self._n_rows = np.int32(n_rows)
-        self.out = cp.empty(n_rows, dtype=np.float64)
-
-    def __call__(self, vector):
-        return self.apply(vector, self.out)
-
-    def apply(self, vector, out):
-        """out = A vector (C-contiguous float64, not overlapping vector); returns out."""
-        for name, array in (('vector', vector), ('out', out)):
-            if array.dtype != np.float64 or not array.flags.c_contiguous:
-                raise ValueError(f'gpu split CSR product: {name} must be C-contiguous float64, got {array.dtype}')
-        split = self.split   # its arrays read per call: DiffusionSystem refreshes the diagonals in place
-        matrix = split.matrix
-        self._function(self._grid, (CSR_THREADS,), (self._n_rows, matrix.indptr, matrix.indices, matrix.data,
-                                                     split.diagonal_values, vector, out))
-        return out
-
-
-def _split_product_host(indptr, indices, data, diagonal, vector, out):
-    """numpy twin of csr_split_product: out = A vector from a host SplitCsr's arrays (scipy's upcast product widens
-    the float32 values and sums in float64, then the float64 diagonal replaces the rounded float32 one)."""
-    import scipy.sparse
-    n_rows = out.size
-    matrix = scipy.sparse.csr_matrix((data, indices, indptr), shape=(n_rows, n_rows))
-    out[...] = matrix.dot(vector)
-    out += (diagonal - matrix.diagonal().astype(np.float64)) * vector
-
-
-def _split_product_numba(numba):
-    """numba twin of csr_split_product: rows in parallel, each summed in CSR order in float64."""
-    @numba.njit(cache=True, parallel=True)
-    def product(indptr, indices, data, diagonal, vector, out):
-        for prange_row in numba.prange(out.size):
-            row = np.int64(prange_row)
-            total = 0.0
-            for position in range(indptr[row], indptr[row + 1]):
-                column = indices[position]
-                if column == row:
-                    total += diagonal[row] * vector[column]
-                else:
-                    total += np.float64(data[position]) * vector[column]
-            out[row] = total
-    return product
-
-
-def host_split_product(split, vector, out, numba=None):
-    """out = A vector of a host SplitCsr (float64 C-contiguous vector and out): the numba twin when numba is available
-    (core.kernels.host_twin; numba None), True / False forced; returns out."""
-    from ..core.kernels import host_twin
-    twin = host_twin('pcg.split_product', _split_product_host, _split_product_numba)
-    if numba and twin.host_kind != 'numba':
-        raise RuntimeError('pcg.host_split_product(numba=True): the numba twin is not available')
-    function = twin.cpu if numba is False else twin
-    matrix = split.matrix
-    function(matrix.indptr, matrix.indices, matrix.data, split.diagonal_values, vector, out)
-    return out
 
 
 class _DeviceReductions:
@@ -690,9 +521,8 @@ def workspace_bytes(n_unknowns, precision, jacobi=True, csr_entries=0, fused=Fal
     """Device bytes of the PCGSolver workspace (residual, direction, product (matrix-free workspace, the gpu CSR
     operator's or the cpu workspace's), + preconditioned unless Jacobi, + the second direction of a fused iteration);
     mixed: those in float32 plus the float64 residual and product, float32 correction, (Jacobi) inverse diagonal and the
-    float32 copy of the csr_entries operator values; mixed2: as double (float64 vectors; the SplitCsr is the
-    caller's, split_operator_bytes, its gpu product vector the third vector here). No solution vector; a matrix-free
-    mixed caller counts its own float32 operator copy (and a fused caller its partial sums)."""
+    float32 copy of the csr_entries operator values. No solution vector; a matrix-free mixed caller counts its own
+    float32 operator copy (and a fused caller its partial sums)."""
     n_vectors = 3 + int(not jacobi) + int(fused)
     if precision == 'mixed':   # + the two float32 / float64 start-norm slots
         return (n_vectors * int(n_unknowns) * 4 + 5 * 4 + 2 * 8
@@ -753,28 +583,6 @@ class _MatrixOperator:
                               out)
             return out
         return matrix.dot(vector)
-
-
-class _SplitOperator:
-    """SplitCsr operator ('mixed2'): gpu = csr_split_product into one owned float64 product vector, out unused; cpu =
-    host_split_product into out (the workspace product vector)."""
-
-    matrix_free = False
-
-    def __init__(self, split, backend='gpu'):
-        self.matrix = split   # pcg's own hierarchy is set up from it (_bind_hierarchy)
-        self.n_unknowns = int(split.shape[0])
-        self._device_product = None
-        if backend == 'gpu':
-            split.matrix.sum_duplicates()   # canonical rows (a no-op when already canonical)
-            self._device_product = DeviceSplitProduct(split)
-
-    def product(self, vector, out):
-        if self._device_product is not None:
-            return self._device_product(vector)
-        if out is None:
-            out = np.empty(self.n_unknowns, dtype=np.float64)
-        return host_split_product(self.matrix, vector, out)
 
 
 class _FunctionOperator:
@@ -957,8 +765,8 @@ class _MixedWorkspace:
 
 
 # 'jacobi': the physics' diagonal (block) preconditioner; 'multigrid': solvers.multigrid V-cycles built from an
-# assembled scalar CSR operator (DiffusionSystem; a SplitCsr at mixed2; not mixed, not a block preconditioner), or a
-# matrix-free caller's own V-cycle callback (ElasticSystem3D: physics.mechanics.multigrid3d; mixed too)
+# assembled scalar CSR operator (DiffusionSystem; not mixed, not a block preconditioner), or a matrix-free caller's own
+# V-cycle callback (ElasticSystem3D: physics.mechanics.multigrid3d; mixed too)
 PRECONDITIONERS = ('jacobi', 'multigrid')
 # fused_iteration protocol (factorize; ElasticSystem3D: kernels3d.FusedBrickIteration), device scalars as 0-d arrays,
 # no host sync and no allocation (CUDA graph capture): start(residual, preconditioned, direction, product, scratch,
@@ -1036,9 +844,8 @@ class PCGSolver:
     def factorize(self, operator, preconditioner=None, n_unknowns=None, single_operator=None,
                   single_preconditioner=None, fused_iteration=None, single_fused_iteration=None,
                   capture_blocks=False) -> None:
-        """Bind a CSR operator of the backend (cupyx / scipy; 'mixed2': a SplitCsr, required) or a matrix-free
-        apply(vector, out) (then n_unknowns required); preconditioner None (Jacobi from the CSR diagonal), an inverse
-        diagonal or precondition(residual, out).
+        """Bind a CSR operator of the backend (cupyx / scipy) or a matrix-free apply(vector, out) (then n_unknowns
+        required); preconditioner None (Jacobi from the CSR diagonal), an inverse diagonal or precondition(residual, out).
         Mixed matrix-free: single_operator / single_preconditioner = their float32 twins for the inner CG.
         fused_iteration (single_: the mixed inner one): an object whose start / step run the whole CG iteration of the
         matrix-free operator and callback preconditioner in a few fused launches (FUSED_ITERATION_PROTOCOL).
@@ -1079,19 +886,8 @@ class PCGSolver:
 
     def _factorize(self, operator, preconditioner, n_unknowns, single_operator, single_preconditioner, fused_iteration,
                    single_fused_iteration):
-        split = isinstance(operator, SplitCsr)
-        if split and self.precision != SPLIT_PRECISION:
-            raise TypeError(f"{self.label()}: a split operator (SplitCsr) needs precision '{SPLIT_PRECISION}', got "
-                            f"'{self.precision}'")
-        if self.precision == SPLIT_PRECISION and not split:
-            raise TypeError(f"{self.label()}: precision '{SPLIT_PRECISION}' runs only on the split operator of a "
-                            'conductance-built diffusion system (solvers.pcg.SplitCsr: float32 off-diagonal '
-                            'conductances, float64 diagonal: heat, electric_currents, electrostatics, magnetostatics '
-                            f"on a tensor mesh), got {type(operator).__name__}; use precision 'double' or 'mixed'")
         if not callable(operator):
             self._require_backend_array('operator', operator.data)
-        if split:
-            self._require_backend_array('operator diagonal', operator.diagonal_values)
         if not (preconditioner is None or callable(preconditioner)):
             self._require_backend_array('inverse diagonal', preconditioner)
         fused = single_fused_iteration if self.precision == 'mixed' else fused_iteration
@@ -1110,8 +906,6 @@ class PCGSolver:
             if n_unknowns is None:
                 raise ValueError(f'{self.label()}: a matrix-free operator needs n_unknowns')
             self._operator = _FunctionOperator(operator, n_unknowns)
-        elif split:
-            self._operator = _SplitOperator(operator, self.backend)
         else:
             self._operator = _MatrixOperator(operator, self.backend)
         if self.preconditioner == 'multigrid':
@@ -1616,15 +1410,10 @@ def time_estimate(values, work):
     from ..core import time_estimate as te
     precision = values.get('precision', 'double')
     n_unknowns = float(work.unknowns)
-    item_bytes = 4 if precision in ('single', 'mixed') else 8   # mixed iterates in float32, mixed2 in float64
+    item_bytes = 4 if precision in ('single', 'mixed') else 8   # mixed iterates in float32
     preconditioner = bound_preconditioner(values, work)
     multigrid = preconditioner == 'multigrid'
-    # mixed2: the SplitCsr product reads float32 values (+ int32 columns) per entry and the float64 diagonal per row
-    # beside the float64 vectors (csr_split_product)
-    split = precision == SPLIT_PRECISION
-    csr_product = (te.Spmv(n_unknowns, work.nnz, 4, vector_bytes=8, row_bytes=8) if split
-                   else te.Spmv(n_unknowns, work.nnz, item_bytes))
-    product = work.product_ops or (csr_product,)
+    product = work.product_ops or (te.Spmv(n_unknowns, work.nnz, item_bytes),)
     update = (te.elementwise(n_unknowns, 4, 2, item_bytes),)   # x += alpha p, r -= alpha q
     # preconditioner.start of a solve: z0 = M^-1 r0, rho = r0 . z0, the first direction (Jacobi: z0 into it)
     start = (te.Reduction(n_unknowns, item_bytes), te.elementwise(n_unknowns, 2, 1, item_bytes))
@@ -1680,9 +1469,9 @@ def time_estimate(values, work):
                                  counter=work.counter('refinements'), seconds_counter=work.counter('solve_seconds')))
     if work.setup_ops:   # a caller-built preconditioner's setup (solid_mechanics_3d geometric multigrid)
         setup = work.setup_ops
-    elif multigrid:   # mixed2: the setup reads the SplitCsr's float32 CSR (MultigridPreconditioner.setup)
+    elif multigrid:
         from .multigrid import setup_ops
-        setup = setup_ops(n_unknowns, work.nnz, 4 if split else item_bytes, work.backend)
+        setup = setup_ops(n_unknowns, work.nnz, item_bytes, work.backend)
     else:
         setup = (te.elementwise(n_unknowns, 1, 1, item_bytes),)
     count_name, seconds_name = work.setup_counters or ('factorizations', 'factorize_seconds')

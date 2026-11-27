@@ -19,8 +19,7 @@ from ...model.definition_helpers import (AXISYMMETRIC_SPACE_SETTINGS, AZIMUTHAL_
                                          element_order, evaluates_to, face_conflicts, geometry_param,
                                          held_object_conflicts, indefinite_cross_term_issue, is_axisymmetric,
                                          linear_solver_direct, linear_solver_mixed, linear_solver_multigrid,
-                                         linear_solver_precision, linear_solver_split, make_apply_inward_flux,
-                                         make_point_probe,
+                                         linear_solver_precision, make_apply_inward_flux, make_point_probe,
                                          mapped_domain_issues, material_follows_state,
                                          mirror_face_issues, mirror_feature_issues, on_tetrahedra, on_triangles,
                                          optional_material_param, own_mirror_face_conflicts, reports_model_checks,
@@ -914,7 +913,7 @@ def _make_memory_estimate(kind):
         cross_term = context.material_sets(spec.coefficient_arrays[2])
         from ...model.schema import solver_backend   # where a multigrid setup aggregates
         system = diffusion_system_estimate(window_cells, linear_solver_precision(context), cross_term=cross_term,
-                                           mixed=linear_solver_mixed(context), split=linear_solver_split(context),
+                                           mixed=linear_solver_mixed(context),
                                            multigrid=linear_solver_multigrid(context),
                                            direct=linear_solver_direct(context),
                                            pcg=pcg_linear_solver(context.solvers),

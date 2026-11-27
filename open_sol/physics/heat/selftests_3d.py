@@ -5,7 +5,7 @@ import math
 
 import numpy as np
 
-from ...model.schema import SelfTestCase, SelfTestVariant
+from ...model.schema import SelfTestCase
 from ...model.selftest_helpers import EXACT_CG_NAME, with_exact_cg
 from ...model.spec import (AnalyticCurveSpec, CouplingSpec, DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec,
                            MaterialSpec, MeshSpec, ModelSpec, PhysicsSpec, RefinementSpec, StudySpec)
@@ -21,9 +21,6 @@ WALL_TEMPERATURE = 300.0           # K, the Dirichlet faces; the held face of th
 ROBIN_H = 2e4                      # W/(m^2*K): 1 / h = 5e-5 m^2 K/W, comparable to L_z / k_zz = 4e-5
 ROBIN_AMBIENT = 400.0              # K
 EXACT_IDENTITY_TOLERANCE = 1e-5    # float32 T (~3e-5 K steps near 400 K) over rises of 16-100 K: ~2e-6
-# pcg 'mixed2' on the exact pcg node: the float32 face conductances change each series resistance by <= 6e-8, the
-# linear profile by as much (no condition-number factor): the same identity tolerance
-SPLIT_VARIANT = SelfTestVariant('mixed2', tolerance=EXACT_IDENTITY_TOLERANCE, precision='mixed2', roles=('linear',))
 _AXES = 'xyz'
 
 
@@ -461,11 +458,8 @@ SELFTEST_CASES_3D = (
                      'every cell centre. Checked on the mid-height cut and by the derived value max |T - linear| over '
                      f"every cell; measured = the larger / the rise, tolerance {EXACT_IDENTITY_TOLERANCE:g}. The check "
                      'raises unless the build has more z cells than the uniform grid and dx_min is the refinement '
-                     f'size within 5 %. Not yet run at {GRADED_FINE_CELL * 1e6:g} um. Variant mixed2: the exact pcg '
-                     "node (Jacobi) at precision 'mixed2' (7-point SplitCsr: float32 face conductances, float64 "
-                     'diagonal and CG), same tolerance (the float32 conductances move the linear profile by ~1e-7 of '
-                     'the rise). Not yet run.'),
-        specs=_graded_robin_runs, check=_check_graded_robin, variants=(SPLIT_VARIANT,)),
+                     f'size within 5 %. Not yet run at {GRADED_FINE_CELL * 1e6:g} um.'),
+        specs=_graded_robin_runs, check=_check_graded_robin),
     SelfTestCase(
         name='heat_3d_z_expressions', label='Heat 3D: z-dependent conductivity and heat source',
         description=('The heat_3d_field_access box with expressions of the height z. Run z_material: k_zz = '

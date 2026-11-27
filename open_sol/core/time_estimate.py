@@ -37,14 +37,10 @@ class Elementwise:
 
 @dataclass(frozen=True)
 class Spmv:
-    """CSR matrix-vector product on the run backend (rows, stored entries, value bytes: 4 / 8 / 16 complex; the
-    vectors' element bytes when they differ from the values' (0: item_bytes; pcg mixed2: float32 values, float64
-    vectors) and per-row bytes read beside indptr (pcg mixed2: its float64 diagonal))."""
+    """CSR matrix-vector product on the run backend (rows, stored entries, value bytes: 4 / 8 / 16 complex)."""
     rows: float
     nnz: float
     item_bytes: int = 8
-    vector_bytes: int = 0
-    row_bytes: int = 0
 
 
 @dataclass(frozen=True)
@@ -319,8 +315,6 @@ def diffusion_time_estimate(context, window_cells, dimensions=2, cross_term=Fals
     assembly = (Elementwise((6.0 - 3.0 * fused_share) * nnz * value_bytes, 2.0 * nnz * value_bytes,
                             launches=int(round(30 - fused_share * (30 - 8)))),
                 PythonCalls(60 - fused_share * (60 - 30)))
-    if precision == 'mixed2':   # solvers.pcg.SPLIT_PRECISION: A_solve's float32 copy and its float64 diagonal gather
-        assembly += (Elementwise(8.0 * nnz + 12.0 * cells, 4.0 * nnz + 8.0 * cells, launches=2), PythonCalls(6))
     rhs = (elementwise(cells, 6, 2, value_bytes, launches=6), PythonCalls(15))
     # DiffusionSystem.solve's w = u - u_fix and u = w + u_fix around the linear solve, then the physics' float32 field
     # from the unknown (heat: T from the rise); each probe stores one device scalar (index view + store)
@@ -388,8 +382,7 @@ def price(op, profile, backend) -> float:
             seconds = max(seconds, launches * profile.seconds(arithmetic, op.flops / launches))
         return seconds
     if isinstance(op, Spmv):
-        vector_bytes = op.vector_bytes or op.item_bytes
-        size = op.nnz * (op.item_bytes + INDEX_BYTES) + op.rows * (2 * vector_bytes + INDEX_BYTES + op.row_bytes)
+        size = op.nnz * (op.item_bytes + INDEX_BYTES) + op.rows * (2 * op.item_bytes + INDEX_BYTES)
         return profile.seconds('spmv', size) if size > 0 else 0.0
     if isinstance(op, Reduction):
         seconds = profile.seconds('dot', 2.0 * op.elements * op.item_bytes) if op.elements > 0 else 0.0
