@@ -8,6 +8,7 @@ FLOAT64_BYTES = 8
 COMPLEX64_BYTES = 8
 COMPLEX128_BYTES = 16
 INT32_BYTES = 4
+INT64_BYTES = 8
 BOOL_BYTES = 1
 # One CSR entry of a complex128 sparse matrix: value + int32 column index.
 COMPLEX128_CSR_ENTRY_BYTES = COMPLEX128_BYTES + INT32_BYTES
@@ -280,11 +281,65 @@ def host_real_lu_bytes(n_unknowns, dimensions=2) -> int:
 _FLUX_ARRAYS = {2: 6, 3: 9}
 _CROSS_FLUX_ARRAYS = 6
 _DISSIPATION_SHARE_ARRAYS = 2
-# assemble's window locals alive while linear_solver.factorize runs: A_eff, its diagonals, the coupling to fixed cells
-# and the masks are deleted before it (DiffusionSystem.assemble); only `fixed` (bool) stays, held by a deferred gpu
-# anchor check until the next solve
+# window locals alive while linear_solver.factorize runs in a re-assembly or an in-place refresh: every value array
+# is deleted (or handed to the system) before it (DiffusionSystem.assemble, _assemble_fused, _refresh_diagonal_terms);
+# two masks stay (`fixed` and the new anchor code of a deferred gpu anchor check until the next solve; `fixed` and the
+# loss anchors of a refresh). A first assembly holds none
 _FACTORIZE_ALIVE_VALUE_ARRAYS = 0
-_FACTORIZE_ALIVE_MASKS = 1
+_FACTORIZE_ALIVE_MASKS = 2
+# window arrays (solve dtype) of DiffusionSystem.refresh_capacity at its largest (the rhs offset): the new C/dt beside
+# the old one, the new solve diagonal, the off-diagonal product A_eff u_fix, the boundary rhs and the offset pair (its
+# difference and the new offset beside the old one)
+_REFRESH_ARRAYS = 6
+
+
+def _anchor_check_bytes(ndim) -> int:
+    """Bytes per window cell of an anchor labelling (DiffusionSystem._label_anchors) on top of the assembly: the bool
+    link image and its int32 labels at 2x resolution (2^ndim pixels per cell), the conducting and anchor masks, the
+    int32 scan and gathered labels of labels[anchors] (every cell an anchor with C/dt or an azimuthal order)."""
+    return 2 ** ndim * (BOOL_BYTES + INT32_BYTES) + 2 * BOOL_BYTES + 2 * INT32_BYTES
+
+
+def _assembly_stage_bytes(held, value_bytes, ndim, entries_per_row, n_slots, azimuthal=False, maps_kept=False,
+                          first=True, host_twins=False) -> dict:
+    """{stage: bytes per window cell} a build_laplacian assembly of DiffusionSystem.assemble holds at each stage, in
+    the order the code allocates (arrays are counted from their allocation to their del; the solver holds nothing yet:
+    the caller adds what it keeps through a re-assembly). held: what is alive when build_laplacian starts (prepare
+    buffers, the caller's C/dt and arrays, the owned coefficient copies, c_xy quads). first: the pattern is built here
+    and holds one per-entry map through the gather (LaplacianPattern.take_entry_rows / keep_assembly_maps come after
+    it), else both kept maps; maps_kept: the system keeps both maps (re-assemblies through build_laplacian), else
+    only entry_rows until the elimination; host_twins: the numpy twin of the elimination gathers free[row] /
+    free[column] (one entry-sized temporary at a time; the cupy kernel reads them raw)."""
+    index = (2 + entries_per_row) * INT32_BYTES   # indptr, diagonal positions, indices: the kept pattern
+    one_map = entries_per_row * INT32_BYTES       # slot_positions or entry_rows
+    stages = {}
+    if first:   # LaplacianPattern: indptr and diagonal positions, then the largest of
+        stages['pattern build'] = held + 2 * INT32_BYTES + max(
+            # the slot mask, the int32 scan of the device flatnonzero and its int64 positions
+            n_slots * (BOOL_BYTES + INT32_BYTES) + entries_per_row * INT64_BYTES,
+            # the slot mask, the int64 positions and their int32 copy (slot_positions)
+            n_slots * BOOL_BYTES + entries_per_row * (INT64_BYTES + INT32_BYTES),
+            # slot_positions, slot % n_slots (then the rows) and the gathered column offsets (the indices)
+            3 * one_map)
+    # the pattern and its map(s), the face conductances, the dense slot array, the boundary rhs and the gathered
+    # A_eff values (the conductance temporaries before the slots: at most 11 arrays with held edges, below these)
+    gather_maps = one_map if first else 2 * one_map
+    stages['entry gather'] = held + index + gather_maps + (ndim + n_slots + 1 + entries_per_row) * value_bytes
+    # from the gather to the solver setup: conductances, the one CSR value array (A_eff, eliminated in place into
+    # A_solve), boundary rhs (the rhs drive in place), conduction diagonal, fixed values, azimuthal diagonal; fixed
+    # mask, loss anchors, anchor code (the diagonal sums and the pinned-cell test before them: 2 arrays, below the
+    # anchor check)
+    maps = (2 if maps_kept else 1) * one_map
+    checked = (held + index + maps + (ndim + entries_per_row + 3 + int(bool(azimuthal))) * value_bytes
+               + 3 * BOOL_BYTES)
+    stages['anchor check'] = checked + _anchor_check_bytes(ndim)
+    # the free mask and A_eff u_fix (a CSR product: + its canonical-format test, one bool per row), in-place elimination
+    stages['elimination'] = (checked + 2 * value_bytes + BOOL_BYTES
+                             + (entries_per_row * value_bytes if host_twins else 0))
+    # entry_rows released unless both maps are kept; free mask, then 3 more arrays at a time: A_eff u_fix with the
+    # two temporaries of the fixed-diagonal update or with the rhs-offset pair, the offset with the Jacobi pair
+    stages['rhs offset'] = checked - (0 if maps_kept else one_map) + 4 * value_bytes
+    return stages
 
 
 def diffusion_full_operator_bytes(window_cells, entries_per_row, n_slots, value_bytes) -> int:

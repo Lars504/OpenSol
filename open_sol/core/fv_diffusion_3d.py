@@ -126,10 +126,12 @@ class FaceGeometry:
 class LaplacianPattern:
     """CSR index structure of the window operator (5 / 7 slots, + 4 corners of a 2D c_xy term, + 2 with a phi wrap;
     columns sorted per row); slot_positions picks the existing entries out of a dense (n_cells, n_slots) slot array,
-    so assembly needs no sort. The two per-entry assembly maps (slot_positions, entry_rows: int32 each) are kept from
-    the construction until release_assembly_maps (DiffusionSystem: after each build_laplacian assembly, since its
-    re-assemblies mostly run the fused kernels, which read only indptr / indices); afterwards each access rebuilds a
-    transient copy (a build_laplacian re-assembly: one pass of the size of its dense slot array). xp: numpy or cupy."""
+    so assembly needs no sort. Two per-entry assembly maps (int32 each): the construction keeps slot_positions (the
+    gather of build_laplacian); entry_rows (the fixed-cell elimination) is made from it on demand, IN PLACE of it by
+    take_entry_rows (DiffusionSystem after the gather, when its re-assemblies run the fused kernels, which read only
+    indptr / indices: one map at a time, none after release_assembly_maps) or beside it by keep_assembly_maps
+    (re-assemblies through build_laplacian). A map that is not kept is rebuilt as a transient copy per access (a
+    build_laplacian re-assembly: one pass of the size of its dense slot array). xp: numpy or cupy."""
 
     __slots__ = ("shape", "wrap", "cross", "layout", "indptr", "indices", "diagonal_positions", "_xp",
                  "_slot_positions", "_entry_rows")
@@ -154,11 +156,15 @@ class LaplacianPattern:
         self.indptr = xp.zeros(n_cells + 1, dtype=xp.int32)
         self.indptr[1:] = xp.cumsum(present.sum(axis=1, dtype=xp.int32))
         self.diagonal_positions = self.indptr[:-1] + present[:, :layout.diagonal].sum(axis=1, dtype=xp.int32)
-        self._slot_positions = xp.flatnonzero(present).astype(xp.int32)   # int32 (nnz,) into the (n_cells * n) slots
+        slot_positions = xp.flatnonzero(present).astype(xp.int32)   # int32 (nnz,) into the (n_cells * n) slots
         del present
-        self._entry_rows = self._slot_positions // n_slots
+        # column = the entry's row + its slot's column offset, the row added in place (no kept entry_rows beside
+        # slot_positions: at most three per-entry arrays live here, one map through the gather that follows)
         column_offsets = xp.asarray(layout.column_offsets(shape), dtype=xp.int32)
-        self.indices = self._entry_rows + column_offsets[self._slot_positions % n_slots]
+        self.indices = column_offsets[slot_positions % n_slots]
+        self.indices += slot_positions // n_slots
+        self._slot_positions = slot_positions
+        self._entry_rows = None
 
     def _present(self):
         """(n_cells, n_slots) bool: which slots of each row exist on the window (outer faces, phi wrap)."""
@@ -190,15 +196,28 @@ class LaplacianPattern:
 
     @property
     def entry_rows(self):
-        """int32 (nnz,) row of every stored entry (kept, or rebuilt from indptr)."""
+        """int32 (nnz,) row of every stored entry (kept, or rebuilt: from kept slot_positions, else from indptr)."""
         if self._entry_rows is not None:
             return self._entry_rows
+        if self._slot_positions is not None:
+            return self._slot_positions // self.layout.n_slots
         xp = self._xp
         rows = xp.searchsorted(self.indptr[1:], xp.arange(self.indices.size, dtype=self.indptr.dtype), side='right')
         return rows.astype(xp.int32)
 
+    def take_entry_rows(self) -> None:
+        """Turn the kept slot_positions into the kept entry_rows IN PLACE (row = slot position // n_slots): for a
+        pattern whose assembly has gathered its entries and whose maps go after its elimination (no second per-entry
+        array meanwhile); slot_positions is rebuilt per access from then on. A no-op without kept slot_positions or
+        with kept entry_rows."""
+        if self._slot_positions is None or self._entry_rows is not None:
+            return
+        rows, self._slot_positions = self._slot_positions, None
+        rows //= self.layout.n_slots
+        self._entry_rows = rows
+
     def release_assembly_maps(self) -> None:
-        """Drop the kept slot_positions / entry_rows (8 bytes per stored entry); later accesses rebuild them."""
+        """Drop the kept slot_positions / entry_rows (4 bytes per stored entry each); later accesses rebuild them."""
         self._slot_positions = self._entry_rows = None
 
     def keep_assembly_maps(self) -> None:

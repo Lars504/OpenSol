@@ -223,8 +223,9 @@ def _source_rhs_capacity_host(coupled_source, applied_source, cell_area, free_ma
 
 
 def _eliminate_fixed_entries_host(data, row, column, free, solve_data):
-    """numpy twin of _eliminate_fixed_entries."""
-    np.multiply(data * free[row], free[column], out=solve_data)
+    """numpy twin of _eliminate_fixed_entries (solve_data may be data: in place); one entry-sized gather at a time."""
+    np.multiply(data, free[row], out=solve_data)
+    solve_data *= free[column]
 
 
 def _anchor_code_host(c_xx, c_yy, c_zz, held, fixed, loss, capacity, code):
@@ -254,7 +255,8 @@ _source_rhs_capacity = twin('core.fv_source_rhs_capacity', cp.ElementwiseKernel(
     ' + capacity_over_dt * unknown_old;',
     'fv_source_rhs_capacity'), _source_rhs_capacity_host)
 
-# A_solve values of the fixed-cell elimination: entry x free(row) x free(column), one pass over the CSR entries.
+# A_solve values of the fixed-cell elimination: entry x free(row) x free(column), one pass over the CSR entries; each
+# entry reads only itself, so solve_data may be the data array (DiffusionSystem.assemble eliminates in place).
 _eliminate_fixed_entries = twin('core.fv_eliminate_fixed_entries', cp.ElementwiseKernel(
     'T data, I row, I column, raw T free', 'T solve_data',
     'solve_data = data * free[row] * free[column]',
@@ -853,6 +855,8 @@ class DiffusionSystem:
                     self.n_insulated_wall_locations += 1
                     if capacity_over_dt is not None and ratio is not None:   # computed on the previous areas
                         capacity_over_dt = xp.asarray(capacity_over_dt, dtype=dtype) * ratio
+                    del ratio   # a window array: not held through the assembly and the solver setup
+                del conducting, located
             # kept for the cross flux / dissipation post-processing (the operator raises off a Cartesian plane)
             cross = (cross_quads(c_xx, c_yy, c_xy, self.dx_window, self.dy_window, dtype, self._held_cells)
                      if self._kxy_active and (self.metric is None or self.metric.cartesian_planar) else None)
@@ -863,12 +867,22 @@ class DiffusionSystem:
                     held_wall=self.held_wall, apertures=self.apertures, kxy_active=self._kxy_active, cross=cross,
                     geometry=self._geometry))
         pattern = self.pattern
-        if not self._fused_pattern():   # a pattern released while fused, now re-assembled here (cut cells, held edges
-            pattern.keep_assembly_maps()   # set later): kept again, no rebuild per assembly (no-op while kept)
+        # the per-entry assembly maps: re-assemblies on a plain pattern run the fused kernels (indptr / indices only),
+        # so the gathered pattern holds one map at a time (its slot_positions become the elimination's entry_rows in
+        # place) and none after the elimination (full_operator rebuilds its slot positions transiently); a system that
+        # re-assembles through build_laplacian (c_xy, phi wrap, cut cells, held edges set later) keeps both: no
+        # rebuild (a sync) per step (a no-op while kept)
+        fused_pattern = self._fused_pattern()
+        if fused_pattern:
+            pattern.take_entry_rows()
+        else:
+            pattern.keep_assembly_maps()
         diagonal_positions = pattern.diagonal_positions
         window_shape = self.window_shape
         n_window = self.n_window
 
+        # window temporaries are deleted at their last read: the anchor check and the elimination below are the
+        # assembly's peak (core.memory_estimate._assembly_stage_bytes lists what each stage holds)
         diagonal_extra = self.extra_diag.copy()
         if capacity_over_dt is not None:
             capacity_over_dt = xp.asarray(capacity_over_dt, dtype=dtype)
@@ -879,13 +893,16 @@ class DiffusionSystem:
             effective_data[diagonal_positions] += azimuthal_diagonal.ravel()
         conduction_diagonal = effective_data[diagonal_positions]   # a copy: refresh_diagonal re-adds the losses to it
         effective_data[diagonal_positions] += diagonal_extra.ravel()
+        del diagonal_extra
 
         # Cells with an empty row (no conduction, loss or capacity) are pinned at their current value.
         effective_diagonal = effective_data[diagonal_positions].reshape(window_shape)
         unconnected = (effective_diagonal <= 0) & ~self.fixed_user
+        del effective_diagonal
         fixed = self.fixed_user | unconnected
         fixed_values = xp.where(self.fixed_user, self.fixed_user_values,
                                 xp.where(unconnected, self.unknown2d, 0.0)).astype(dtype, copy=False)
+        del unconnected
         loss_anchor_cells = self.extra_diag > 0
         self._run_anchor_check(check_anchors, c_xx, c_yy, fixed, capacity_over_dt, face_terms, c_zz, loss_anchor_cells)
         self._release_compared_terms()
@@ -894,27 +911,29 @@ class DiffusionSystem:
         # - A_eff u_fix). Keeping u_fix [u] out of b keeps every entry of b in [c u], so the tolerance relative to ||b||
         # does not depend on the coefficient scale (eps0-scaled rows used to stop after a few iterations).
         free = (~fixed).astype(dtype)
-        free_flat = free.ravel()
-        solve_data = xp.empty_like(effective_data)
-        _eliminate_fixed_entries(
-            effective_data, pattern.entry_rows, pattern.indices, free_flat, solve_data)
-        # the per-entry assembly maps go before the solver setup when the re-assemblies on this pattern run the fused
-        # kernels (indptr / indices only; full_operator rebuilds its slot positions transiently); a system that
-        # re-assembles through build_laplacian (c_xy, phi wrap, cut cells) keeps them: no rebuild (a sync) per step
-        if self._fused_pattern():
+        # A_eff u_fix is read first: the elimination then overwrites A_eff's values IN PLACE with A_solve's (one value
+        # array per assembly, never A_eff beside A_solve); nothing below reads A_eff (full_operator rebuilds it)
+        coupling_to_fixed = operator.dot(fixed_values.ravel()).reshape(window_shape)
+        del operator
+        solve_data = effective_data
+        del effective_data
+        _eliminate_fixed_entries(solve_data, pattern.entry_rows, pattern.indices, free.ravel(), solve_data)
+        if fused_pattern:
             pattern.release_assembly_maps()
         solve_data[diagonal_positions] += fixed.ravel().astype(dtype)
         self.A_solve = sparse_module(self.backend).csr_matrix((solve_data, pattern.indices, pattern.indptr),
                                                               shape=(n_window, n_window))
-        coupling_to_fixed = operator.dot(fixed_values.ravel()).reshape(window_shape)
-        rhs_drive = rhs_bc + self.extra_rhs
+        rhs_drive = rhs_bc   # owned (build_laplacian's boundary rhs): the loss drives are added in place
+        del rhs_bc
+        rhs_drive += self.extra_rhs
         self.rhs_offset = free * (rhs_drive - coupling_to_fixed)
+        del coupling_to_fixed
         if self._keeps_inverse_diagonal():
             self.inverse_diagonal = 1.0 / solve_data[diagonal_positions]
         xp.copyto(self.unknown2d, fixed_values, where=fixed)
-        # A_eff and assemble's other window temporaries go before the solver setup (a multigrid setup or a factor plan
-        # is the build peak; a deferred anchor check holds its own references): A_solve is the one kept CSR
-        del operator, effective_data, effective_diagonal, diagonal_extra, unconnected, fixed, coupling_to_fixed, rhs_bc
+        # the last window temporary goes before the solver setup (a multigrid setup or a factor plan is the build peak
+        # of those solvers; a deferred anchor check holds its own reference): A_solve is the one kept CSR
+        del fixed
         self._factorize_solver()
         self._keep_assembly(conduction_diagonal, azimuthal_diagonal, fixed_values, free, capacity_over_dt,
                             loss_anchor_cells, rhs_drive, face_terms, face_conductances_xy, wrap_conductance,
@@ -1149,6 +1168,7 @@ class DiffusionSystem:
         if capacity_over_dt is not None:
             diagonal_extra += capacity_over_dt
         effective_diagonal = self._conduction_diagonal + diagonal_extra.ravel()
+        del diagonal_extra
         fixed = self.fixed_user | (effective_diagonal.reshape(window_shape) <= 0)   # held | pinned (empty rows)
         loss_anchor_cells = self.extra_diag > 0
         changed = xp.any(fixed != (self.free == 0)) | xp.any(loss_anchor_cells != self._loss_anchor_cells)
@@ -1169,12 +1189,16 @@ class DiffusionSystem:
             rhs_bc[cells] += rhs
         self.rhs_drive = rhs_bc + self.extra_rhs
         self.rhs_offset = self.free * (self.rhs_drive - coupling_to_fixed)
-        if self._keeps_inverse_diagonal():
-            self.inverse_diagonal = 1.0 / solve_diagonal
+        if self._keeps_inverse_diagonal():   # in place (the same quotient): no second diagonal beside the bound one
+            if self.inverse_diagonal is None:   # out=None would silently leave the stale diagonal
+                raise RuntimeError(f"{self.label()}: the kept assembly has no Jacobi diagonal to refresh")
+            xp.divide(1.0, solve_diagonal, out=self.inverse_diagonal)
         del coupling_to_fixed, rhs_bc, solve_diagonal
+        # the replaced C/dt goes before the solver setup: beside steady it then holds only `fixed` (a multigrid setup
+        # here is the peak of a refresh; the estimate books it on the kept arrays)
+        self.capacity_over_dt = capacity_over_dt
         self._factorize_solver()
         xp.copyto(self.unknown2d, self.fixed_values, where=fixed)
-        self.capacity_over_dt = capacity_over_dt
         self.n_diagonal_refreshes += 1
         self.operator_dirty = False
         return True
