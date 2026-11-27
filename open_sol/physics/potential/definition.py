@@ -919,6 +919,8 @@ def _make_memory_estimate(kind):
                                            pcg=pcg_linear_solver(context.solvers),
                                            azimuthal=azimuthal_order_of(settings_values) != 0,
                                            wrap=mesh.domain_map is not None and mesh.domain_map.angle_wrap != 'none',
+                                           # polar / spherical window: the kept r_c d_angle length array
+                                           polar=mesh.domain_map is not None and mesh.domain_map.kind != 'cartesian',
                                            flux=True, dissipation=spec.with_joule,   # _update_derived_fields per solve
                                            backend=solver_backend(context.spec),
                                            conformal=bool(context.spec.solver_defaults.conformal_boundaries),

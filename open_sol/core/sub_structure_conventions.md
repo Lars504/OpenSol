@@ -329,29 +329,39 @@ A new accepted sync joins this list.
   the anchor shortcut compares (assembled c, C/dt: dropped right after the anchor check, `_release_compared_terms`,
   so the solver setup never holds two coefficient sets) and the anchor code. A new kept assembly array joins both
   `_release_assembly` and `_keep_assembly`; nothing may read the previous assembly inside assemble except those. The
-  `LaplacianPattern` assembly maps (slot_positions, entry_rows) are released after the first elimination where
-  `_fused_pattern` holds and rebuilt transiently on access (full_operator); systems re-assembling through
-  build_laplacian keep them (kept again, `keep_assembly_maps`, once a fused pattern stops being one: no rebuild sync
-  per step; estimate: `conformal=`, cross_term, wrap). A run that re-assembles or refreshes (k(T), radiation) books
-  its re-assembly temporaries and multigrid re-setup as run phases (`diffusion_system_estimate(refactorizes=)`).
-- One device CSR per assembly (A_solve): A_eff is never kept (`assembled` marks a kept assembly). Its readers take the
-  kept face terms: `_off_diagonal_product` (A_eff u_fix on free rows: refresh_diagonal / refresh_held_values),
-  `fv_diffusion_3d.crossing_outflow` (fixed_region_outflow) and the transient `full_operator()` (thermal noise,
-  parity checks; a dense slot array + slot_positions pass, so never per step). A new off-diagonal operator term goes
-  into `fv_diffusion_3d._off_diagonal_slots`, `off_diagonal_product` and `crossing_outflow` too, else those three
-  silently drop it (selftest diffusion_fused_reassembly checks them against A_solve / rhs_offset). Assemble deletes
-  A_eff and its window temporaries before `_factorize_solver` (the multigrid setup / factor plan is the build peak).
-  A direct or banded linear solver (`ignores_preconditioner`) gets no Jacobi diagonal (`_keeps_inverse_diagonal`).
+  `LaplacianPattern` assembly maps: where `_fused_pattern` holds, one at a time (slot_positions through the gather,
+  turned in place into entry_rows by `take_entry_rows`, released after the elimination, rebuilt transiently on
+  access: full_operator); systems re-assembling through build_laplacian keep both (kept again, `keep_assembly_maps`,
+  once a fused pattern stops being one: no rebuild sync per step; estimate: `conformal=`, cross_term, wrap). A run
+  that re-assembles or refreshes (k(T), radiation) books its re-assembly temporaries and multigrid re-setup as run
+  phases (`diffusion_system_estimate(refactorizes=)`).
+- One CSR value array per assembly: build_laplacian's A_eff values are eliminated IN PLACE into A_solve's (A_eff u_fix
+  is read first), so nothing in assemble may read A_eff after the elimination, and A_eff is never kept (`assembled`
+  marks a kept assembly). Its readers take the kept face terms: `_off_diagonal_product` (A_eff u_fix on free rows:
+  refresh_diagonal / refresh_held_values), `fv_diffusion_3d.crossing_outflow` (fixed_region_outflow) and the
+  transient `full_operator()` (thermal noise, parity checks; a dense slot array + slot_positions pass, so never per
+  step). A new off-diagonal operator term goes into `fv_diffusion_3d._off_diagonal_slots`, `off_diagonal_product` and
+  `crossing_outflow` too, else those three silently drop it (selftest diffusion_fused_reassembly checks them against
+  A_solve / rhs_offset). A direct or banded linear solver (`ignores_preconditioner`) gets no Jacobi diagonal
+  (`_keeps_inverse_diagonal`).
+- Memory of an assembly follows `memory_estimate._assembly_stage_bytes` (what each stage of assemble holds, in the
+  order it allocates): assemble deletes every window temporary at its last read and nothing but `fixed` reaches
+  `_factorize_solver`, so a new array in assemble (or one living longer) changes that stage list in the same edit.
+  The first assembly runs before the solver holds anything: the estimate compares its largest stage (the anchor
+  check) with the kept total instead of adding it, and books a multigrid setup above that total. Arrays a caller
+  holds through `system.assemble` (magnetic c = nu / r) live through the solver setup too: `caller_arrays=`. The
+  in-place refreshes rewrite the Jacobi diagonal in place and hand over the new C/dt before they factorize, so a
+  re-setup there holds no more than the build's.
 - Precision (why the system dtype, not float32 storage, follows the linear solver): A_solve, the CG vectors and the
   conduction diagonal must share the solve precision, since rounding a Laplacian's diagonal and off-diagonals apart
   breaks its exact zero row sums: a spurious sink of ~eps a_ii per row, amplified by kappa in the low modes (the
   'single' failures: float32 CG floor ~1e-6, iron |B| errors of percents in magnetostatics). Rounding coefficients
   consistently (g to float32, then the diagonal as their float64 sum) perturbs only the physics by ~eps32 (the
   material arrays are float32 already), with no kappa factor: float32 operator storage beside a float64 CG, built as
-  pcg 'mixed2' and dropped (correct, but no gain: solvers sub file "Tried and dropped"). The operator values are not
-  the memory lever: the device peak of a diffusion model is the first assembly's temporaries. pcg 'mixed' is no
-  memory saving here (the float64 A_solve stays for the residual, plus its float32 copy) and its CSR path is Jacobi
-  only, so the gpu Automatic stays double multigrid (its hierarchy is float32).
+  pcg 'mixed2' and dropped (correct, but no gain: solvers sub file "Tried and dropped"). pcg 'mixed' is no memory
+  saving here (the float64 A_solve stays for the residual, plus its float32 copy: its kept arrays exceed the first
+  assembly's peak, which is the same at every precision) and its CSR path is Jacobi only, so the gpu Automatic stays
+  double multigrid (its hierarchy is float32).
 - c_xy cross term (2D Cartesian only): never drop its diagonal part (row sums would act as a spurious exchange with
   u = 0 at window / region corners). Definite on graded cells only for c_xy^2 < c_xx c_yy x 4 r / (1 + r)^2 per axis
   (r = neighbour width ratio), stricter than the continuum bound. Whether c_xy is nonzero is decided (one sync) only

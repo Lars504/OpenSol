@@ -1190,9 +1190,10 @@ class DiffusionSystem:
         self.rhs_drive = rhs_bc + self.extra_rhs
         self.rhs_offset = self.free * (self.rhs_drive - coupling_to_fixed)
         if self._keeps_inverse_diagonal():   # in place (the same quotient): no second diagonal beside the bound one
-            if self.inverse_diagonal is None:   # out=None would silently leave the stale diagonal
-                raise RuntimeError(f"{self.label()}: the kept assembly has no Jacobi diagonal to refresh")
-            xp.divide(1.0, solve_diagonal, out=self.inverse_diagonal)
+            if self.inverse_diagonal is None:
+                self.inverse_diagonal = 1.0 / solve_diagonal
+            else:
+                xp.divide(1.0, solve_diagonal, out=self.inverse_diagonal)
         del coupling_to_fixed, rhs_bc, solve_diagonal
         # the replaced C/dt goes before the solver setup: beside steady it then holds only `fixed` (a multigrid setup
         # here is the peak of a refresh; the estimate books it on the kept arrays)

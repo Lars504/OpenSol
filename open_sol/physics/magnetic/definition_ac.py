@@ -346,7 +346,8 @@ def _assembly_only_system_estimate(window_cells) -> MemoryEstimate:
     or Jacobi diagonal (pcg=False: _AssemblyOnlySolver ignores the preconditioner), and its A_solve values a build
     transient (dropped after the checks: MagneticACPhysics._assemble). The linear-model nu / mu_dc window values are
     temporaries of the assembly (MagneticPhysics keeps them only while saturating, which this type never does)."""
-    system = diffusion_system_estimate(window_cells, 'float64', pcg=False)
+    # caller_arrays: c_xx, c_yy = nu / r of the inherited MagneticPhysics._assemble, held through the assembly
+    system = diffusion_system_estimate(window_cells, 'float64', pcg=False, caller_arrays=2)
     operator = [size for label, size in system.items if label == _A_SOLVE_ITEM]
     if len(operator) != 1:
         raise RuntimeError(f"magnetic_fields_ac estimate: diffusion_system_estimate has no single '{_A_SOLVE_ITEM}' "

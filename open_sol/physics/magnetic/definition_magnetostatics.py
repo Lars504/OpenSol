@@ -683,11 +683,13 @@ def _memory_estimate(settings_values, mesh, context):
         transient_items=(('saturation loop setup', 'multigrid setup of a saturation-loop assembly (beside the loop '
                           'state)', loop_setup),))
     from ...model.schema import solver_backend   # where a multigrid setup aggregates
+    # caller_arrays: c_xx, c_yy = nu / r of MagneticPhysics._assemble live through assemble and its solver setup,
+    # beside the system's own copies
     parts = [own, diffusion_system_estimate(window_cells, precision, flux=True, mixed=linear_solver_mixed(context),
                                             multigrid=linear_solver_multigrid(context),
                                             direct=linear_solver_direct(context),
                                             pcg=pcg_linear_solver(context.solvers),
-                                            backend=solver_backend(context.spec))]
+                                            backend=solver_backend(context.spec), caller_arrays=2)]
     cudss = cudss_back_end(context.solvers)
     if cudss:   # DiffusionDirectSolver on the kept A_solve, refactorised per saturation iteration
         parts.append(cudss_diffusion_estimate(window_cells, 5 * window_cells, 2, cudss, input_copy=False,

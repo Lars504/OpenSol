@@ -354,14 +354,19 @@ def diffusion_full_operator_bytes(window_cells, entries_per_row, n_slots, value_
 def diffusion_system_estimate(window_cells, precision, cross_term=False, transient=False,
                               dimensions=2, mixed=False, multigrid=False, direct=False,
                               azimuthal=False, wrap=False, flux=False, dissipation=False,
-                              backend=None, conformal=False, pcg=True, refactorizes=False) -> MemoryEstimate:
+                              backend=None, conformal=False, pcg=True, refactorizes=False, polar=False,
+                              caller_arrays=0) -> MemoryEstimate:
     """DiffusionSystem (core.fv_diffusion) on window_cells (3D: all window voxels, dimensions=3): prepare buffers, CSR
     pattern, the one kept operator (A_solve: no A_eff CSR is kept) and assembly vectors (steady; azimuthal: the kept
     azimuthal diagonal of an (r, z) order m != 0; ONE assembly: a re-assembly drops its predecessor first,
     DiffusionSystem._release_assembly); pcg (the resolved 'linear' solver is pcg, fem.diffusion.pcg_linear_solver;
-    False: a direct / banded solver, no CG workspace and no kept Jacobi diagonal); build extra:
-    the larger of the pattern build + anchor check and (multigrid) the setup while assemble's locals live; conformal
-    (solver_defaults.conformal_boundaries reaching a 2D system: cut cells) keeps the assembly maps; mixed
+    False: a direct / banded solver, no CG workspace and no kept Jacobi diagonal); polar (a 2D polar / spherical
+    window): its kept r_c d_angle length array; build extra: what the largest stage of the first assembly
+    (_assembly_stage_bytes: the solver holds nothing yet, so the stages are compared with the kept total, not added to
+    it) or (multigrid) the setup holds above the kept arrays; caller_arrays: window arrays of the solve dtype the
+    caller holds through every assemble call beside the system's own copies (magnetic c = nu / r), so also through
+    the solver setup; conformal (solver_defaults.conformal_boundaries reaching a 2D system: cut cells) keeps the
+    assembly maps; mixed
     (a 'mixed' pcg, precision 'float64'): its float32 operator copy and refinement vectors; multigrid (the pcg
     multigrid preconditioner): its hierarchy, setup products and the host aggregation (not on backend 'gpu', which
     aggregates on the device inside the setup's transients; None: booked); direct (a host SuperLU
@@ -373,71 +378,84 @@ def diffusion_system_estimate(window_cells, precision, cross_term=False, transie
     the 5 / 7 per row. flux (a caller computing flux_at_centres after its solves): its temporaries, transient phase
     'flux post-processing'; dissipation (2D dissipation_density): the share arrays it keeps (run items); refactorizes
     (the run re-assembles: k / C/dt follow a state or t): a re-assembly's temporaries (phase 're-assembly') and
-    (multigrid) the solver re-setup (phase 'refactorisation') beside the run items."""
+    (multigrid) the solver re-setup (phase 'refactorisation') beside the run items; transient: the in-place C/dt
+    refresh of a step of another length (phase 'capacity refresh'; its multigrid re-setup stays within the build's
+    setup peak)."""
     value_bytes = FLOAT64_BYTES if precision == 'float64' else FLOAT32_BYTES
-    entries_per_row = 9 if cross_term else 5
+    ndim = 3 if dimensions == 3 else 2
+    cross = bool(cross_term) and ndim == 2   # 3D: the 7-point operator (core.fv_diffusion_3d), no cross term
+    azimuthal = bool(azimuthal) and ndim == 2
+    cut_cells = bool(conformal) and ndim == 2
+    transient = bool(transient)
+    entries_per_row = 7 if ndim == 3 else 9 if cross else 5
+    n_slots = entries_per_row + (2 if wrap else 0)   # fv_diffusion_3d._SlotLayout (+ 2 phi-wrap slots)
     cells = int(window_cells)
-    # prepare: cell_area, rhs, unknown (the CG iterates on it: no solution vector), extra_diag / _rhs, fixed values,
-    # rhs_full buffer (+ pcg: the PCGSolver residual / direction / CSR product, solvers.pcg.workspace_bytes) + fixed
-    # mask + the cached uint8 anchor code (face-area divisors are separable 1D factors)
-    workspace = 3 if pcg else 0
-    buffers = ((7 + workspace) * value_bytes + BOOL_BYTES + 1) * cells
-    # (pcg) inverse diagonal, free, rhs_offset, fixed_values, rhs_drive, 2 face conductances, assembled c_xx / c_yy,
-    # the conduction diagonal (+ C/dt); the loss-anchor mask (bool); the kept c_xy quad coefficients and their bool mask
-    assembly = ((9 + int(pcg) + (1 if transient else 0) + (1 if azimuthal else 0) + (1 if cross_term else 0))
-                * value_bytes + (2 if cross_term else 1) * BOOL_BYTES) * cells
-    # pattern build (slot mask, int64 flatnonzero), dense slot array (+ 2 phi-wrap slots) and the A_eff values taken
-    # from it (an assembly transient now, through the elimination), assembly temporaries (the kept polar r_c dphi
-    # lengths among them), anchor check at 2x resolution (link image, int32 labels and their copy)
-    n_slots = entries_per_row + (2 if wrap else 0)   # fv_diffusion_3d._SlotLayout
-    build_extra = (n_slots * (BOOL_BYTES + FLOAT64_BYTES) + (n_slots + 7 + entries_per_row) * value_bytes
-                   + 4 * (BOOL_BYTES + 2 * INT32_BYTES) + 30) * cells
-    if dimensions == 3:   # 7-point operator (core.fv_diffusion_3d), no cross term, no face-length arrays
-        entries_per_row = 7
-        # cell volume, rhs, unknown, extra_diag / _rhs, fixed values, rhs_full buffer (+ pcg: 3 CG vectors) + fixed
-        # mask, the cached uint8 anchor code
-        buffers = ((7 + workspace) * value_bytes + BOOL_BYTES + 1) * cells
-        # as 2D with 3 face conductances and c_zz
-        assembly = (11 + int(pcg) + (1 if transient else 0)) * value_bytes * cells + BOOL_BYTES * cells
-        # pattern build (slot mask, int64 flatnonzero), dense slot array and the A_eff values, anchor check at 2x
-        # resolution (link image, int32 labels and their copy)
-        n_slots = 9 if wrap else entries_per_row   # fv_diffusion_3d._SlotLayout
-        build_extra = (n_slots * (BOOL_BYTES + FLOAT64_BYTES) + (n_slots + 6 + entries_per_row) * value_bytes
-                       + 8 * (BOOL_BYTES + 2 * INT32_BYTES) + 30) * cells
+    # sizes per window cell until the items. prepare: cell area / volume, rhs, unknown (the CG iterates on it: no
+    # solution vector), extra_diag / _rhs, fixed values, rhs_full buffer + fixed mask (face-area divisors are separable
+    # 1D factors; a 2D polar window: + the r_c d_angle lengths of FaceGeometry)
+    prepared = 7 * value_bytes + BOOL_BYTES + (value_bytes if polar and ndim == 2 else 0)
+    # + pcg: the PCGSolver residual / direction / CSR product (solvers.pcg.workspace_bytes) + the cached uint8 anchor
+    # code
+    workspace = (3 if pcg else 0) * value_bytes
+    buffers = prepared + workspace + 1
+    # free, rhs_offset, fixed_values, rhs_drive, the conduction diagonal, per axis a face conductance array and the
+    # assembled coefficient copy (+ pcg: inverse diagonal, + C/dt, + azimuthal diagonal); the loss-anchor mask (bool);
+    # the kept c_xy quad coefficients and their bool mask
+    assembly = ((5 + 2 * ndim + int(bool(pcg)) + int(transient) + int(azimuthal) + int(cross)) * value_bytes
+                + (1 + int(cross)) * BOOL_BYTES)
     # A_solve data (the pattern's indices shared); A_eff is never kept (DiffusionSystem.full_operator rebuilds it)
-    operators = entries_per_row * value_bytes * cells
-    # indptr + diagonal positions per row, indices per entry (int32); the per-entry assembly maps (slot_positions,
+    operators = entries_per_row * value_bytes
+    # indptr + diagonal positions per row, indices per entry (int32); the two per-entry assembly maps (slot_positions,
     # entry_rows: int32) stay only where re-assemblies run build_laplacian (c_xy, phi wrap, 2D cut cells:
-    # DiffusionSystem._fused_pattern), else they live through the first assembly's build only
-    pattern = (2 * INT32_BYTES + INT32_BYTES * entries_per_row) * cells
-    assembly_maps = 2 * INT32_BYTES * entries_per_row * cells
-    if cross_term or wrap or (conformal and dimensions != 3):
-        pattern += assembly_maps
-    else:
-        build_extra += assembly_maps
+    # DiffusionSystem._fused_pattern), else one at a time lives through the first assembly (its stages below)
+    maps_kept = cross or bool(wrap) or cut_cells
+    pattern = (2 + entries_per_row) * INT32_BYTES + (2 * entries_per_row * INT32_BYTES if maps_kept else 0)
+    kept_system = buffers - workspace + assembly + operators + pattern   # an assembly's kept arrays, no solver vectors
+    # held through a whole assemble call and its solver setup without being kept: the caller's arrays; cut cells with
+    # C/dt: the caller's C/dt beside its copy rescaled by the located volume fractions
+    through_assemble = int(caller_arrays) * value_bytes + (value_bytes if cut_cells and transient else 0)
+    # alive when build_laplacian starts: + the caller's C/dt, the owned coefficient copies, the c_xy quads (coefficient
+    # and mask), the cut cells' conducting mask
+    held = (prepared + (int(transient) + ndim + int(cross)) * value_bytes + int(cross) * BOOL_BYTES
+            + through_assemble + (BOOL_BYTES if cut_cells else 0))
+    host_twins = backend != 'gpu'   # None: booked
+    first_assembly = _assembly_stage_bytes(held, value_bytes, ndim, entries_per_row, n_slots, azimuthal, maps_kept,
+                                           first=True, host_twins=host_twins)
     reassembly = 0
-    if refactorizes:   # a run re-assembly (the pattern kept): the new coefficient copies beside the old ones until the
-        # anchor check (DiffusionSystem._release_compared_terms); fused kernels: + A_eff values and the Jacobi output;
-        # build_laplacian (c_xy, wrap, cut cells): its build temporaries (an upper bound: no pattern build). The anchor
-        # check's labelling runs only when a c > 0 pattern moved (not booked on the fused path)
-        ndim = 3 if dimensions == 3 else 2
-        fused = not (cross_term or wrap or (conformal and dimensions != 3))
-        reassembly = ((entries_per_row + ndim + 1) * value_bytes * cells if fused
-                      else build_extra + ndim * value_bytes * cells)
-    items = [('solver buffers', buffers), ('sparse pattern (int32)', pattern),
-             ('assembled operator (A_solve)', operators), ('assembly vectors', assembly)]
+    if refactorizes:   # a run re-assembly on the kept pattern, as bytes above the kept arrays (the solver keeps its
+        # vectors and hierarchy through it; its CSR product, mixed copy and Jacobi binding are released first)
+        if maps_kept:   # through build_laplacian (c_xy, wrap, cut cells): its stages, the previous coefficient copies
+            # and C/dt beside the new ones until the anchor check (DiffusionSystem._release_compared_terms)
+            previous = (ndim + int(transient)) * value_bytes
+            stages = _assembly_stage_bytes(held, value_bytes, ndim, entries_per_row, n_slots, azimuthal, maps_kept,
+                                           first=False, host_twins=host_twins)
+            reassembly = max(stages['entry gather'] + previous, stages['anchor check'] + previous,
+                             stages['elimination'], stages['rhs offset']) - kept_system
+        else:   # fused kernels: the new coefficient copies beside the old ones, A_eff values and the Jacobi output
+            # (an upper bound: these do not all overlap); or the anchor labelling of a moved c > 0 pattern, read at the
+            # next solve beside the kept arrays
+            reassembly = max((entries_per_row + ndim + 1) * value_bytes,
+                             _anchor_check_bytes(ndim) + _FACTORIZE_ALIVE_MASKS * BOOL_BYTES) + through_assemble
+        if multigrid:   # the previous A_solve values: the kept hierarchy's fine level holds them until the re-setup
+            reassembly += entries_per_row * value_bytes
+        reassembly *= cells
+    items = [('solver buffers', buffers * cells), ('sparse pattern (int32)', pattern * cells),
+             ('assembled operator (A_solve)', operators * cells), ('assembly vectors', assembly * cells)]
     if mixed:
         from ..solvers.pcg import mixed_extra_bytes   # numpy only (the fv_diffusion exception of the core rule)
         items.append(('mixed-precision CG (float32 operator copy, refinement vectors)',
                       mixed_extra_bytes(cells, entries_per_row * cells)))
     host_items = []
+    setup = 0
     if multigrid:
         from ..solvers import multigrid as amg   # numpy only (the fv_diffusion exception of the core rule)
         items.append(('multigrid hierarchy (operators, prolongations, vectors)',
                       amg.hierarchy_bytes(cells, value_bytes, entries_per_row)))
+        # one setup above every kept array. The first one runs before the CG residual and direction exist (2 vectors
+        # less), but a later one without a booked phase (the factorize of an in-place refresh, a lagged setup inside a
+        # solve) holds them and the two masks, and only the build peak covers it: booked on the full kept total
         alive = (_FACTORIZE_ALIVE_VALUE_ARRAYS * value_bytes + _FACTORIZE_ALIVE_MASKS * BOOL_BYTES) * cells
-        setup = alive + amg.setup_extra_bytes(cells, value_bytes, entries_per_row)
-        build_extra = max(build_extra, setup)
+        setup = alive + amg.setup_extra_bytes(cells, value_bytes, entries_per_row) + through_assemble * cells
         if not (backend == 'gpu' and amg.DEVICE_AGGREGATION):   # the device twin holds no host copy of the CSR
             host_items.append(('multigrid aggregation (transient)', amg.aggregation_host_bytes(cells, entries_per_row)))
         # aggregates and tentative prolongators between setups: numpy arrays (on the cpu backend beside its hierarchy)
@@ -446,26 +464,39 @@ def diffusion_system_estimate(window_cells, precision, cross_term=False, transie
     if direct:   # solvers.sparse_direct.DiffusionDirectSolver: one factor per assembly, the previous one dropped
         from ..solvers import host_direct   # numpy only (a function-level exception of the core rule)
         if direct in host_direct.HOST_DIRECT_BACK_ENDS:   # real SPD: PARDISO Cholesky / MUMPS LDL^T
-            mixed = host_direct.host_direct_precision(direct) == 'mixed'
-            host_items.append((f"host {host_direct.factor_label(direct)} factor ({'float32' if mixed else 'float64'}, "
-                               'heuristic, uncalibrated)',
+            mixed_factor = host_direct.host_direct_precision(direct) == 'mixed'
+            host_items.append((f"host {host_direct.factor_label(direct)} factor "
+                               f"({'float32' if mixed_factor else 'float64'}, heuristic, uncalibrated)",
                                host_direct.factor_host_bytes(cells, dimensions, complex_values=False, symmetric=True,
-                                                             mixed=mixed)))
+                                                             mixed=mixed_factor)))
             host_items.append((f'host {host_direct.factor_label(direct)} solver arrays (equilibrated operator, its '
                                'library copy, row scale; mixed: refinement vectors)',
                                host_direct.solver_host_bytes(cells, entries_per_row * cells, complex_values=False,
-                                                             mixed=mixed, symmetric=True)))
+                                                             mixed=mixed_factor, symmetric=True)))
         else:
             host_items.append(('host SuperLU factor L + U (float64)', host_real_lu_bytes(cells, dimensions)))
             host_items.append(('host CSC copy of the operator (float64)',
                                FLOAT64_CSR_ENTRY_BYTES * entries_per_row * cells + INT32_BYTES * cells))
+    # build peak, as bytes above the kept total (the items): the first assembly's largest stage, reached before the
+    # solver allocates anything (so compared with that total, which holds the CG workspace, mixed copies and hierarchy,
+    # never added to it); a pcg / mixed / direct setup allocates only kept arrays and ends at the total, with the
+    # caller's arrays still held; a multigrid setup runs above it
+    kept_total = sum(size for _, size in items)
+    build_extra = max(max(first_assembly.values()) * cells - kept_total, through_assemble * cells, setup)
     run_items, transient_items = [], []
     if reassembly:
         transient_items.append(('re-assembly', 'DiffusionSystem re-assembly temporaries (run)', reassembly))
         if multigrid:   # every re-assembly's factorize (fresh or lagged setup): the build's setup peak, in the run
             transient_items.append(('refactorisation', 'multigrid re-setup (run)', setup))
+    if transient:   # DiffusionSystem.refresh_capacity re-eliminates the kept assembly; mixed: the new float32 operator
+        # copy, both CSR products and the float32 Jacobi diagonal beside the bound ones while pcg factorizes
+        refresh = _REFRESH_ARRAYS * value_bytes
+        if mixed:
+            refresh = max(refresh, value_bytes + (entries_per_row + 2) * FLOAT32_BYTES)
+        transient_items.append(('capacity refresh', 'C/dt refresh temporaries (a step of another length)',
+                                refresh * cells))
     if flux:   # freed when the caller's post-processing returns
-        n_flux = _FLUX_ARRAYS[3 if dimensions == 3 else 2] + (_CROSS_FLUX_ARRAYS if cross_term else 0)
+        n_flux = _FLUX_ARRAYS[ndim] + (_CROSS_FLUX_ARRAYS if cross else 0)
         transient_items.append(('flux post-processing', f'flux post-processing temporaries ({n_flux} window arrays)',
                                 n_flux * value_bytes * cells))
     if dissipation and dimensions != 3:

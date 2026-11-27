@@ -953,8 +953,10 @@ def _memory_estimate(settings_values, mesh, context):
                                            **solver_options)
     else:
         window_cells = window_cell_count(mesh)
+        # polar / spherical window: the system keeps one window array of r_c d_angle lengths
+        polar = mesh.domain_map is not None and mesh.domain_map.kind != 'cartesian'
         system = diffusion_system_estimate(window_cells, precision, cross_term=cross_term, transient=transient,
-                                           azimuthal=azimuthal_order_of(settings_values) != 0, wrap=wrap,
+                                           azimuthal=azimuthal_order_of(settings_values) != 0, wrap=wrap, polar=polar,
                                            **solver_options)
     parts = [fields, system, _line_block_noise_estimate(mesh, context)]
     if cudss:   # DiffusionDirectSolver factorises the kept A_solve
