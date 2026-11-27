@@ -4,7 +4,7 @@ as one twin model on a graded mesh; the uniform divider fixture reused by heat's
 import numpy as np
 
 from ...core.constants import EPS0
-from ...model.schema import SelfTestCase
+from ...model.schema import SelfTestCase, SelfTestVariant
 from ...model.selftest_helpers import (EXACT_CG_TOLERANCE, cell_centre, cell_edges, max_relative_error, relative_error,
                                        with_exact_cg, worst_error)
 from ...model.spec import (CouplingSpec, DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec,
@@ -35,6 +35,9 @@ _INTERFACE_X = 0.5e-3              # m, a cell edge
 _INNER_FACE_B = _STRIP_LENGTH - _HELD_LENGTH                   # 0.9 mm, lo face of cell 90
 _VOLTAGE = 1.0                     # V across the strip
 _TOLERANCE = 1e-6
+# pcg 'mixed2' on the exact pcg node (cpu: the host SplitCsr product): each float32 face conductance is within 6e-8 of
+# the float64 one, so the series-resistor identities move by ~1e-7 at most (no condition-number factor): same tolerance
+_SPLIT_VARIANT = SelfTestVariant('mixed2', tolerance=_TOLERANCE, precision='mixed2', roles=('linear',))
 
 # Graded variant (potential_divider_plates_graded): mesh 'nonuniform' with a vertical refinement line on the interface,
 # x cells 2.5 um there blending linearly back to the 10 um base 0.45 mm away (past both inner held faces, so held-free
@@ -376,7 +379,10 @@ SELFTEST_CASES = (
                      'eps0 eps in place of sigma; error = max(|Q_hi - Q| / Q, |Q_lo + Q| / Q, D_x, V, the scalar '
                      'output), same tolerance. This pins the eps0-scaled operator, the terminal charge read-out and '
                      'that an eps_dc 1 electrode adds no vacuum layer on graded cells. Not yet run as one twin model '
-                     'on the cpu backend.'),
+                     "on the cpu backend. Variant mixed2: both exact pcg nodes at precision 'mixed2' (SplitCsr on the "
+                     'cpu: float32 face conductances, held-free half cells and eps0-scaled ones included, float64 '
+                     'diagonal and CG), same tolerance (the rounding moves the series-resistor identities by ~1e-7). '
+                     'Not yet run.'),
         specs=lambda: _terminal_divider_specs(graded=True, with_plates=True),
-        check=lambda results_by_name: _check_divider_plates(results_by_name, True)),
+        check=lambda results_by_name: _check_divider_plates(results_by_name, True), variants=(_SPLIT_VARIANT,)),
 )

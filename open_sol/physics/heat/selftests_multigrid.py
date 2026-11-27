@@ -3,7 +3,7 @@ on an outer-graded mesh solved by multigrid-PCG against a cpu SuperLU field, and
 Jacobi-PCG; specs fresh. Also the gpu device aggregation against the host numpy one (no model run)."""
 import numpy as np
 
-from ...model.schema import SelfTestCase
+from ...model.schema import SelfTestCase, SelfTestVariant
 from ...model.selftest_helpers import EXACT_CG_TOLERANCE, solver_role
 from ...model.spec import (DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec, PhysicsSpec,
                            RefinementSpec, SolverDefaultsSpec, SolverSpec, StudySpec)
@@ -26,6 +26,9 @@ MIN_ITERATION_RATIO = 5.0            # Jacobi iterations (to 1e-8) / multigrid i
 DIRECT_RUN = 'direct'                # cpu backend, Automatic linear solver (host SuperLU): the exact field reference
 PCG_RUNS = {'jacobi': {'tolerance': JACOBI_COUNT_TOLERANCE},
             'multigrid': {'tolerance': EXACT_CG_TOLERANCE, 'preconditioner': 'multigrid'}}
+# pcg 'mixed2' on both pcg runs (roles (): the SuperLU reference keeps its solver): float32 face conductances move the
+# discrete field by ~1e-7 of the rise with no condition-number factor, far below FIELD_TOLERANCE, so the same tolerance
+SPLIT_VARIANT = SelfTestVariant('mixed2', tolerance=FIELD_TOLERANCE, precision='mixed2')
 
 
 def _heated_dot_spec(run_name):
@@ -198,9 +201,14 @@ MULTIGRID_SELFTEST_CASES = (
                      'stop times the condition number of the graded operator and float32 T), the Jacobi run '
                      f'converged, the hierarchy has >= 2 levels and multigrid needs >= {MIN_ITERATION_RATIO:g}x '
                      'fewer CG iterations than Jacobi (to the looser Jacobi tolerance: a stricter test than at equal '
-                     'tolerances). Not yet run with the SuperLU reference and the 1e-8 Jacobi count run.'),
+                     'tolerances). Not yet run with the SuperLU reference and the 1e-8 Jacobi count run. Variant '
+                     "mixed2: both pcg runs at precision 'mixed2' (float32 face conductances, float64 diagonal and CG; "
+                     'the hierarchy level 0 smooths on that operator) against the same SuperLU field at the same '
+                     'tolerance (the rounding moves the discrete field by ~1e-7, no condition-number factor). Not yet '
+                     'run.'),
         specs=_heated_dot_runs,
         check=_check_heated_dot,
         backends=('gpu',),
-        max_wall_time=600.0),
+        max_wall_time=600.0,
+        variants=(SPLIT_VARIANT,)),
 )

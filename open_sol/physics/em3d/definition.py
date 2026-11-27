@@ -5,13 +5,13 @@ from dataclasses import replace
 
 from ...core.constants import FACE_LABELS, FACES_3D
 from ...core.domain import containing_cell
-from ...core.memory_estimate import COMPLEX64_BYTES, COMPLEX128_BYTES, FLOAT32_BYTES, BOOL_BYTES, MemoryEstimate
+from ...core.memory_estimate import COMPLEX64_BYTES, FLOAT32_BYTES, BOOL_BYTES, MemoryEstimate
 from ...core.kernels import numba_available
-from ...core.time_estimate import Elementwise, PythonCalls, explicit_step_estimate
+from ...core.time_estimate import Elementwise, HostStream, PythonCalls, TimeItem, Transfer, explicit_step_estimate
 from ...model.definition_helpers import (HALF_STORAGE_STEPPER_ROLE, parkable_material_arrays,
                                          resolved_stepper_precision, selected_material_data, validate_points_inside,
                                          wavelength_range_issues)
-from ...solvers.explicit_kernels import stepper_precision
+from ...solvers.explicit_kernels import SPECTRUM_PRECISIONS, stepper_precision, stepper_spectrum_precision
 from ...model.definition_resonance import resonance_monitor_feature
 from ...model.expressions import ExpressionError, referenced_names
 from ...model.geometry import expand_entities
@@ -28,12 +28,12 @@ from ..em.definition_harmonic_fdtd import HARMONIC_FDTD_TEXT, make_validate_harm
 from ..em.definition_resonance import RESONANCE_SUMMARY, em_resonance_probe
 from ..em.memory_estimates import _harmonic_wavelength_count, _point_trace_items
 from .boundaries3d import AXES, FACE_TYPES_3D, BoundaryConfig3D, cpml_psi_bytes
-from .definition_sources3d import (SOURCE_FEATURES, box_corners, box_edge_issues, box_face_spectra_memory,
-                                   domain_sizes, face_types, nearest_window_edge, plane_cells, plane_edge_message,
-                                   window_axes)
+from .definition_sources3d import (SOURCE_FEATURES, SPECTRUM_BLOCK_ITEM, box_corners, box_edge_issues,
+                                   box_face_spectra_memory, domain_sizes, face_types, nearest_window_edge, plane_cells,
+                                   plane_edge_message, resolved_spectrum_precision, spectra_memory, window_axes)
 from .engine3d import _INDEX_CHUNK_CELLS, COMPONENT_AXES, STEP_GRAPHS   # the chunk the estimate books
 from .harmonic3d import ENERGY_CHUNK_CELLS
-from .monitors3d import DFT_PLANE_QUANTITY, dft_plane_result, flux_result
+from .monitors3d import DFT_PLANE_QUANTITY, SPECTRUM_BLOCK_SAMPLES, dft_plane_result, flux_result
 from .physics3d import EMPhysics3D, MATERIAL_ARRAYS, PERMITTIVITY_SLOTS
 from .renderer3d import EMRenderer3D
 
@@ -59,6 +59,16 @@ _NUMPY_FIELD_PASSES = 65
 _NUMPY_CPML_PASSES = 40
 _NUMPY_PASSES_PER_LAUNCH = 4           # the cpu 'fused' profile call: 4 numpy passes over 5 float32 arrays
 _NUMPY_BYTES_PER_LAUNCH_CELL = 20
+# 'stepper' of em_fdtd_3d: single or fp16 field storage, plus the explicit_kernels opt-in setting spectrum_precision
+# (double / mixed2: monitors3d.SpectrumStore), offered by this role only
+EM3D_STEPPER_ROLE = replace(HALF_STORAGE_STEPPER_ROLE, setting_choices={'spectrum_precision': SPECTRUM_PRECISIONS})
+# mixed2 folds (monitors3d.SpectrumStore: per store every SPECTRUM_BLOCK_SAMPLES samples, at most every step): the
+# complex64 block to the host (Transfer of its bytes), the host add total += staging (8 B read + 16 B read and written
+# per value: 5 B of host traffic per block byte) and its calls (copy, event record, zero fill, event wait); spectrum
+# stores per feature: one per plane, a box six (a far field on a flux box's surface shares its box: as _step_launches)
+_FOLD_HOST_BYTES_PER_BLOCK_BYTE = 5.0
+_FOLD_CALLS = 4
+_SPECTRUM_STORES = {'flux_plane': 1, 'mode_monitor': 1, 'flux_box': 6, 'far_field': 6}
 
 # ---- settings ----
 _BC_HELP = ('cpml absorbs outgoing waves in pml_cells extra cells outside the domain (z faces too); pec = tangential E '
@@ -248,8 +258,10 @@ def _parked_material_arrays(spec, registry, physics_spec, parameters) -> tuple:
 def _create(ctx, physics_spec, settings_values):
     """EMPhysics3D with the dispersive poles of every material region, absorption tracking and the material arrays it
     parks on the host at finalize (_parked_material_arrays); finalize happens in the builder."""
-    physics = EMPhysics3D(ctx.domain, precision=stepper_precision(ctx.solvers(physics_spec.name)),
-                          park_arrays=_parked_material_arrays(ctx.spec, ctx.registry, physics_spec, ctx.parameters))
+    solvers = ctx.solvers(physics_spec.name)
+    physics = EMPhysics3D(ctx.domain, precision=stepper_precision(solvers),
+                          park_arrays=_parked_material_arrays(ctx.spec, ctx.registry, physics_spec, ctx.parameters),
+                          spectrum_precision=stepper_spectrum_precision(solvers))
     write_dispersive_regions_3d(ctx, physics)
     if settings_values['track_absorption'] or _q_accum_referenced(ctx.spec, physics_spec.name, ctx.registry):
         physics.engine.enable_q_accum = True
@@ -332,7 +344,9 @@ _FLUX_TEXT = ("Result 'flux_spectrum': power a.u. (dt-weighted spectra, Re(E x H
               'the plane and over two steps as the 2D flux monitor), power_per_cw [W] = power / (2 |S|^2) when every '
               'source shares one waveform (cw time-averaged power at unit source amplitude). half_storage stepper: '
               'fp16 field noise (~1e-3 of the peak field, ~-60 dB in power), so integrated powers keep ~1e-3 and deep '
-              'spectral nulls are not resolved.')
+              'spectral nulls are not resolved. Spectra: four complex128 per plane cell and wavelength (64 B); the '
+              "stepper's spectrum_precision mixed2 keeps 32 B of complex64 blocks on the device and the totals in "
+              'host RAM (~1e-5 of the gross power through the surface).')
 
 
 def _apply_dipole(ctx, solver, feature_spec, values, selection):
@@ -465,11 +479,9 @@ def _validate_dft_plane(vctx, physics_spec, feature_spec, values):
     return issues
 
 
-def _flux_plane_memory(values, n_selected_cells, mesh):
-    n_wavelengths = int(values['n_wavelengths'])
+def _flux_plane_memory(values, n_selected_cells, mesh, context):
     cells = plane_cells(mesh, AXES.index(values['normal']), window=True)
-    return MemoryEstimate.from_items(((f'plane spectra (4 x {n_wavelengths} wavelengths x complex128)',
-                                       4 * n_wavelengths * COMPLEX128_BYTES * cells),))
+    return spectra_memory('plane', int(values['n_wavelengths']), cells, context)
 
 
 def _dft_plane_memory(values, n_selected_cells, mesh):
@@ -508,7 +520,7 @@ _FEATURES = (
                 description=f'Spectral power through a plane spanning the whole physical window. {_FLUX_TEXT}',
                 summary='Measures the power crossing a plane, per wavelength.',
                 apply=_apply_flux_plane, result=object_result(flux_result, with_solver=True),
-                validate=_validate_flux_plane, memory_estimate=_flux_plane_memory),
+                validate=_validate_flux_plane, memory_estimate=_flux_plane_memory, memory_estimate_context=True),
     FeatureType('flux_box', 'Flux box', 'monitor', 'domain', params=FLUX_PARAMS, object_kinds=('box',),
                 max_entities=1, result_kind='flux_spectrum',
                 description='Net outward spectral power through the six faces of a box object, each snapped to the '
@@ -516,7 +528,7 @@ _FEATURES = (
                             f'a cell on both sides. {_FLUX_TEXT} Enclose a source to get its radiated power.',
                 summary='Measures the total power leaving a box, per wavelength.',
                 apply=_apply_flux_box, result=object_result(flux_result, with_solver=True),
-                validate=_validate_flux_box, memory_estimate=box_face_spectra_memory),
+                validate=_validate_flux_box, memory_estimate=box_face_spectra_memory, memory_estimate_context=True),
     FeatureType('dft_plane', 'Field map layer', 'monitor', None, params=_DFT_PLANE_PARAMS, result_kind='dft_fields',
                 description="Running DFT of E_x, E_y, E_z averaged to the cell centres of one window layer. Result "
                             f"'dft_fields': x / y centres and the extra 'z' [m]; quantity "
@@ -690,10 +702,38 @@ def _time_estimate(settings_values, mesh, context):
     numpy_twins = context.backend == 'cpu' and not numba_available()
     estimate = explicit_step_estimate(context, 'Yee 3D', mesh.dt, launches=launches, numba=not numpy_twins,
                                       numba_items=_numba_stepped, numba_launches=numba_launches)
+    estimate = replace(estimate, items=estimate.items + _spectrum_fold_items(context))
     if not numpy_twins:
         return estimate
     item = estimate.items[0]
-    return replace(estimate, items=(replace(item, ops=item.ops + _numpy_twin_ops(settings_values, mesh, n_sets)),))
+    return replace(estimate, items=(replace(item, ops=item.ops + _numpy_twin_ops(settings_values, mesh, n_sets)),)
+                   + estimate.items[1:])
+
+
+def _spectrum_fold_items(context) -> tuple:
+    """spectrum_precision mixed2: the per-step TimeItem of the SpectrumStore folds, bounded by one fold per store and
+    SPECTRUM_BLOCK_SAMPLES steps (a DFT sample interval of 1; counter 'spectrum_folds'), each its share of the block
+    bytes of the spectral features' memory items (SPECTRUM_BLOCK_ITEM) copied and added on the host; () with double
+    spectra or without a spectral feature."""
+    if resolved_spectrum_precision(context.solvers) == 'double' or context.memory is None:
+        return ()
+    features = [feature for feature in context.physics_spec.features if feature.enabled]
+    kinds = {feature.type for feature in features}
+    stores, block_bytes = 0, 0.0
+    for feature in features:
+        if feature.type not in _SPECTRUM_STORES or (feature.type == 'far_field' and 'flux_box' in kinds):
+            continue
+        owner = f"feature '{context.name}.{feature.name}': "
+        stores += _SPECTRUM_STORES[feature.type]
+        block_bytes += float(sum(size for label, size in context.memory.items
+                                 if label.startswith(owner) and SPECTRUM_BLOCK_ITEM in label))
+    if not stores or block_bytes <= 0.0:
+        return ()
+    per_store = block_bytes / stores
+    return (TimeItem('spectrum folds (mixed2)', 'fold', stores / SPECTRUM_BLOCK_SAMPLES, 'bounded',
+                     ops=(Transfer(per_store), HostStream(_FOLD_HOST_BYTES_PER_BLOCK_BYTE * per_store),
+                          PythonCalls(_FOLD_CALLS)),
+                     per_step=True, counter=('solvers', context.name, 'counters', 'spectrum_folds')),)
 
 
 def _memory_estimate(settings_values, mesh, context):
@@ -826,7 +866,7 @@ EM_FDTD_3D = PhysicsType(
     parked_material_arrays=_parked_material_arrays,
     time_estimate=_time_estimate,
     dimensions=(3,),
-    solver_roles={'stepper': HALF_STORAGE_STEPPER_ROLE},
+    solver_roles={'stepper': EM3D_STEPPER_ROLE},
     subpixel_smoothing=True,
     conformal_boundaries=True,   # pec_domain Dey-Mittra H faces (conformal_pec3d; 3D locator)
     conformal_dimensions=(3,),

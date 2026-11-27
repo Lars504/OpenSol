@@ -4,10 +4,10 @@ import numpy as np
 
 from ...core.constants import FACES_3D
 from ...core.domain import containing_cell
-from ...core.memory_estimate import COMPLEX128_BYTES, FLOAT32_BYTES, MemoryEstimate, host_lu_bytes
+from ...core.memory_estimate import COMPLEX64_BYTES, COMPLEX128_BYTES, FLOAT32_BYTES, MemoryEstimate, host_lu_bytes
 from ...core.mirror import MIRROR_SIGNS, plane_wave_mirror_issue
 from ...model.definition_helpers import wavelength_range_issues
-from ...model.schema import FeatureType, Issue, Param, feature_path, resolve_values
+from ...model.schema import FeatureType, Issue, Param, feature_path, resolve_values, solver_backend
 from ..em.cross_section_modes import size_issue_for
 from ..em.definition_common import (_monitor_wavelengths, object_result, single_object, source_time_kwargs,
                                     spectral_params, waveform_params)
@@ -20,6 +20,9 @@ from .tfsf3d import PLANE_WAVE_DIRECTIONS
 _EDGE_TOLERANCE = 1e-9   # relative to the domain size: a coordinate this close to an edge lies on it
 # stepper precisions of the TFSF / mode-port features: their kernels add float32 corrections in physical units
 _FLOAT32_FIELDS = ('single',)
+# label part of the complex64 device blocks of spectrum_precision mixed2 (spectra_memory; definition._time_estimate
+# prices their folds from these memory items)
+SPECTRUM_BLOCK_ITEM = 'spectrum blocks'
 
 # ---- params ----
 _PLANE_WAVE_PARAMS = (
@@ -90,10 +93,12 @@ _MODE_MONITOR_PARAMS = (
           help=f'{_MODE_NUMBER_HELP} Picked at the middle wavelength and followed to the others by overlap (the '
                f'build warns where the overlap stays below 0.9).'),
 ) + spectral_params(5, 'Each wavelength costs a cross-section mode solve at build (host scipy) and four complex128 '
-                       'window planes; 3-11 typical.',
+                       'window planes (stepper spectrum_precision mixed2: complex64 on the device, totals in host '
+                       'RAM); 3-11 typical.',
                     'Each wavelength adds a mode calculation at the start; 3 to 11 is typical.')
 _FAR_FIELD_PARAMS = spectral_params(5, 'Each wavelength stores four complex128 spectra on the six box faces (64 B '
-                                       'per face cell).',
+                                       'per face cell; stepper spectrum_precision mixed2: 32 B of complex64 on the '
+                                       'device, totals in host RAM).',
                                     'A few wavelengths are typical; each one adds memory on the box faces.') + (
     Param('cut_plane', 'choice', 'xz', label='Cut plane', choices=tuple(CUT_PLANES),
           choice_labels=(('xz', 'x-z plane'), ('yz', 'y-z plane'), ('xy', 'x-y plane')),
@@ -412,26 +417,49 @@ def _mode_source_memory(values, n_selected_cells, mesh):
                                      host_items=(('cross-section mode solve (SuperLU factor)', host_lu_bytes(2 * cells)),))
 
 
-def _mode_monitor_memory(values, n_selected_cells, mesh):
+def resolved_spectrum_precision(solvers) -> str:
+    """spectrum_precision of the resolved 'stepper' solver ({role: ResolvedSolver} of a MemoryContext /
+    ValidationContext, or None), 'double' without one."""
+    resolved = (solvers or {}).get('stepper')
+    return 'double' if resolved is None else resolved.values['spectrum_precision']
+
+
+def spectra_memory(what, n_wavelengths, cells, context, approximate=False, host_items=()):
+    """MemoryEstimate of the 4 x n_wavelengths running DFTs per plane cell (E and H of both tangential pairs) of `cells`
+    plane cells (monitors3d.SpectrumStore) by the stepper's spectrum_precision: 'double' one complex128 device item;
+    'mixed2' a complex64 device block (label SPECTRUM_BLOCK_ITEM: the time recipe folds it), complex128 host totals
+    and on the gpu backend the pinned complex64 staging copy. host_items: the feature's other host items."""
+    note = ', approximate' if approximate else ''
+    if resolved_spectrum_precision(context.solvers) == 'double':
+        return MemoryEstimate.from_items(
+            ((f'{what} spectra (4 x {n_wavelengths} wavelengths x complex128{note})',
+              int(4 * n_wavelengths * COMPLEX128_BYTES * cells)),), host_items=tuple(host_items))
+    blocks = ((f'{what} {SPECTRUM_BLOCK_ITEM} (4 x {n_wavelengths} wavelengths x complex64, mixed2{note})',
+               int(4 * n_wavelengths * COMPLEX64_BYTES * cells)),)
+    host = [(f'{what} spectrum totals (4 x {n_wavelengths} wavelengths x complex128, mixed2{note})',
+             int(4 * n_wavelengths * COMPLEX128_BYTES * cells))]
+    if solver_backend(context.spec) == 'gpu':
+        host.append((f'{what} spectrum staging (pinned complex64, mixed2{note})',
+                     int(4 * n_wavelengths * COMPLEX64_BYTES * cells)))
+    return MemoryEstimate.from_items(blocks, host_items=tuple(host) + tuple(host_items))
+
+
+def _mode_monitor_memory(values, n_selected_cells, mesh, context):
     axis = AXES.index(values['normal'])
     n_wavelengths = int(values['n_wavelengths'])
     full = plane_cells(mesh, axis, window=False)
-    return MemoryEstimate.from_items(
-        ((f'plane spectra (4 x {n_wavelengths} wavelengths x complex128)',
-          4 * n_wavelengths * COMPLEX128_BYTES * plane_cells(mesh, axis, window=True)),),
-        host_items=(('cross-section mode solves (SuperLU factor, one at a time)', host_lu_bytes(2 * full)),
-                    (f'followed modes ({n_wavelengths} x 8 complex128 planes)', n_wavelengths * 8 * COMPLEX128_BYTES
-                     * full)))
+    return spectra_memory('plane', n_wavelengths, plane_cells(mesh, axis, window=True), context, host_items=(
+        ('cross-section mode solves (SuperLU factor, one at a time)', host_lu_bytes(2 * full)),
+        (f'followed modes ({n_wavelengths} x 8 complex128 planes)', n_wavelengths * 8 * COMPLEX128_BYTES * full)))
 
 
-def box_face_spectra_memory(values, n_selected_cells, mesh):
-    """Six faces of 4 complex128 spectra (flux box, far field); the face cells of a cube with the selection's 3D box
-    cell count."""
+def box_face_spectra_memory(values, n_selected_cells, mesh, context):
+    """Six faces of 4 spectra (flux box, far field; spectra_memory); the face cells of a cube with the selection's 3D
+    box cell count."""
     n_wavelengths = int(values['n_wavelengths'])
     side = max(int(n_selected_cells), 1) ** (1.0 / 3.0)
     cells = 6 * side * side
-    return MemoryEstimate.from_items(((f'box face spectra (4 x {n_wavelengths} wavelengths x complex128, approximate)',
-                                       int(4 * n_wavelengths * COMPLEX128_BYTES * cells)),))
+    return spectra_memory('box face', n_wavelengths, cells, context, approximate=True)
 
 
 SOURCE_FEATURES = (
@@ -450,11 +478,12 @@ SOURCE_FEATURES = (
                 description=_MODE_MONITOR_TEXT,
                 summary='Measures how much power travels in one guided mode, in each direction, per wavelength.',
                 apply=_apply_mode_monitor, result=object_result(mode_monitor_result_3d, with_solver=True),
-                validate=_validate_mode_feature, memory_estimate=_mode_monitor_memory, precisions=_FLOAT32_FIELDS),
+                validate=_validate_mode_feature, memory_estimate=_mode_monitor_memory, memory_estimate_context=True,
+                precisions=_FLOAT32_FIELDS),
     FeatureType('far_field', 'Far-field pattern', 'monitor', 'domain', params=_FAR_FIELD_PARAMS, object_kinds=('box',),
                 max_entities=1, result_kind='far_field', description=_FAR_FIELD_TEXT,
                 summary='Computes the power radiated in each direction of a plane from the fields on a box around the '
                         'source.',
                 apply=_apply_far_field, result=_far_field_result, validate=_validate_far_field,
-                memory_estimate=box_face_spectra_memory),
+                memory_estimate=box_face_spectra_memory, memory_estimate_context=True),
 )

@@ -121,11 +121,38 @@ _dft_accum_pair_line_imag = twin('em.dft_accumulate_pair_line_imag', cp.Elementw
     'acc += complex<double>(-ph.imag(), ph.real()) * (0.5 * ((double)a + (double)b))',
     'dft_accumulate_pair_line_imag'), _dft_accum_pair_line_imag_host)
 
-# (accumulate, accumulate pair) kernels of the real and of the imaginary field set, box and line monitors.
+
+def _dft_accum_pair_block_host(a, b, ph, acc):
+    acc += ph * (np.float32(0.5) * (np.asarray(a, dtype=np.float32) + np.asarray(b, dtype=np.float32)))
+
+
+def _dft_accum_pair_block_imag_host(a, b, ph, acc):
+    acc += (1j * ph).astype(np.complex64) * (np.float32(0.5) * (np.asarray(a, dtype=np.float32)
+                                                                 + np.asarray(b, dtype=np.float32)))
+
+
+# complex64 block spectra of em_fdtd_3d's spectrum_precision 'mixed2' (em3d.monitors3d.SpectrumStore): the face mean in
+# float of the converted samples (never float16 arithmetic of half_storage fields: core sub file "Half storage"); the
+# single-sample accumulates are _dft_accum / _dft_accum_imag ((float)f).
+_dft_accum_pair_block = twin('em.dft_accumulate_pair_block', cp.ElementwiseKernel(
+    'F a, F b, complex64 ph',
+    'complex64 acc',
+    'acc += ph * (0.5f * ((float)a + (float)b))',
+    'dft_accumulate_pair_block'), _dft_accum_pair_block_host)
+
+_dft_accum_pair_block_imag = twin('em.dft_accumulate_pair_block_imag', cp.ElementwiseKernel(
+    'F a, F b, complex64 ph',
+    'complex64 acc',
+    'acc += complex<float>(-ph.imag(), ph.real()) * (0.5f * ((float)a + (float)b))',
+    'dft_accumulate_pair_block_imag'), _dft_accum_pair_block_imag_host)
+
+# (accumulate, accumulate pair) kernels of the real and of the imaginary field set, box, line and block monitors.
 _REAL_KERNELS = (_dft_accum, _dft_accum_pair)
 _IMAG_KERNELS = (_dft_accum_imag, _dft_accum_pair_imag)
 _REAL_LINE_KERNELS = (_dft_accum_line, _dft_accum_pair_line)
 _IMAG_LINE_KERNELS = (_dft_accum_line_imag, _dft_accum_pair_line_imag)
+_REAL_BLOCK_KERNELS = (_dft_accum, _dft_accum_pair_block)
+_IMAG_BLOCK_KERNELS = (_dft_accum_imag, _dft_accum_pair_block_imag)
 
 
 def _field_sets(fields, real_kernels, imag_kernels):

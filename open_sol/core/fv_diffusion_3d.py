@@ -261,6 +261,13 @@ def _wrap_pairs(values):
     return values[:, -1], values[:, 0]
 
 
+def float32_rounded(values):
+    """values rounded to the nearest float32 numbers, in their own dtype (a no-op on float32): the conductances of a
+    pcg 'mixed2' assembly, so the SplitCsr stores its off-diagonals exactly and the float64 diagonal sums the same
+    numbers (row sums exact; the rounding perturbs each conductance by <= 2^-24 relative, like float32 materials)."""
+    return values.astype(np.float32).astype(values.dtype, copy=False)
+
+
 def face_conductances(coefficients, geometry, held=None, held_wall=None, apertures=None):
     """Series conductances [c] of the interior faces normal to each axis (n - 1 along it; geometry a FaceGeometry);
     held a bool window mask (held-free faces: the free half cell), held_wall per-axis wall fractions (2D cut cells,
@@ -322,13 +329,16 @@ def boundary_face_terms(face, bc, coefficients, geometry, reference):
 
 
 def build_laplacian(coefficients, geometry, bcs, pattern=None, dtype=np.float64, reference=0.0, held=None,
-                    held_wall=None, apertures=None, cross=None):
+                    held_wall=None, apertures=None, cross=None, round_conductances=False):
     """FV operator A [c], boundary rhs [c u], pattern, interior face conductances per axis, {face:
     boundary_face_terms} over the window's outer faces and the phi-wrap conductance (None without a wrap) for u -
     reference; coefficients (c_xx, c_yy[, c_zz]) window-shaped backend arrays (their module sets the backend),
     geometry the window's FaceGeometry (in dtype), held / held_wall / apertures as face_conductances, cross a 2D
     CrossQuads (core.fv_diffusion: c_xy corners) or None. A wrap (geometry.wrap_sign s) couples the last and first
-    angle cells by -s g; y_lo / y_hi then take no condition (insulated only)."""
+    angle cells by -s g; y_lo / y_hi then take no condition (insulated only). round_conductances (pcg mixed2): the
+    interior and wrap conductances are float32_rounded before the diagonal sums them, so every off-diagonal entry is
+    an exact float32 number (a cross term's coefficients must be float32 numbers already: the caller rounds its
+    CrossQuads); the outer-face terms stay unrounded (diagonal and rhs only)."""
     xp = array_module_of(coefficients[0])
     shape = tuple(coefficients[0].shape)
     ndim = len(shape)
@@ -347,6 +357,8 @@ def build_laplacian(coefficients, geometry, bcs, pattern=None, dtype=np.float64,
     layout = pattern.layout
 
     conductances = face_conductances(coefficients, geometry, held, held_wall, apertures)
+    if round_conductances:
+        conductances = tuple(float32_rounded(conductance) for conductance in conductances)
     slots = xp.zeros(shape + (layout.n_slots,), dtype=dtype)
     diagonal = slots[..., layout.diagonal]   # view: the in-place updates below write into slots
     for axis, conductance in enumerate(conductances):
@@ -356,6 +368,8 @@ def build_laplacian(coefficients, geometry, bcs, pattern=None, dtype=np.float64,
     wrap_conductance = None
     if wrap_sign:   # g (u_last - s u_first)^2: +g on both diagonals, -s g on the pair (_off_diagonal_slots)
         wrap_conductance = wrap_face_conductance(coefficients[1], geometry, held)
+        if round_conductances:
+            wrap_conductance = float32_rounded(wrap_conductance)
         diagonal[:, -1] += wrap_conductance
         diagonal[:, 0] += wrap_conductance
 

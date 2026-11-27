@@ -13,8 +13,8 @@ from ..core.mirror import AXIS_UNFOLD_TYPES, MIRROR_SIGNS, mirror_faces
 from ..core.monitors import probe_result
 from ..fem.squeeze_film import SLIP_MODELS, VEIJOLA_KNUDSEN_LIMIT
 from ..solvers.host_direct import HOST_DIRECT_BACK_ENDS, HOST_DIRECT_DOUBLE_BACK_ENDS, HOST_DIRECT_MIXED_BACK_ENDS
-from ..solvers.pcg import CG_ITERATIONS_PER_AXIS_CELL, SOLVER_DTYPE_NAMES, auto_max_iterations
-from ..solvers.roles import SolverRole, resolved_precision
+from ..solvers.pcg import CG_ITERATIONS_PER_AXIS_CELL, SOLVER_DTYPE_NAMES, SPLIT_PRECISION, auto_max_iterations
+from ..solvers.roles import TENSOR_GRID_KINDS, SolverRole, resolved_precision
 from .expressions import (FIELD_COORDINATE_NAMES, TIME_NAMES, Expression, ExpressionError, evaluate_scalar,
                           referenced_names)
 from .geometry import (bounding_box, domain_size_z, expand_entities, perimeter_weights, point_z,
@@ -371,9 +371,12 @@ CG_ELASTIC_3D_LINEAR_ROLE = SolverRole('spd', 'pcg', precisions=('single', 'doub
 # mu_r makes cond(E) pass the float32 limit and one factor serves few solves). A time_dependent study on a 2D tensor
 # mesh: sparse_direct on both backends (study_defaults; heat_2d spent 5.0 of 5.6 s in 1000 multigrid
 # PCG solves, while a fixed dt keeps one factor, DiffusionSystem.refresh_capacity), back_end 'auto' = cudss on the gpu;
-# steady studies and 3D stay multigrid
+# steady studies and 3D stay multigrid. pcg 'mixed2' (opt-in): float64 CG on the DiffusionSystem's SplitCsr (float32
+# conductances, float64 diagonal: row sums exact), Jacobi or multigrid; tensor meshes only (precision_grids: an FEM
+# operator is no conductance Laplacian)
 CG_DIFFUSION_LINEAR_ROLE = SolverRole('spd', 'pcg', default_settings={'preconditioner': 'multigrid'},
-                                      precisions=('single', 'double', 'mixed'),
+                                      precisions=('single', 'double', 'mixed', 'mixed2'),
+                                      precision_grids={'mixed2': TENSOR_GRID_KINDS},
                                       setting_choices={'back_end': DIFFUSION_DIRECT_BACK_ENDS},
                                       backend_defaults={'cpu': ('sparse_direct', {})},
                                       grid_defaults={'line': ('banded', {}),
@@ -403,6 +406,13 @@ def linear_solver_mixed(context) -> bool:
     """Whether the physics' resolved 'linear' solver runs mixed precision (its estimator adds the float32 copies)."""
     resolved = context.solvers.get('linear')
     return resolved is not None and resolved_precision(resolved.solver_type, resolved.values) == 'mixed'
+
+
+def linear_solver_split(context) -> bool:
+    """Whether the physics' resolved 'linear' solver runs pcg 'mixed2' (the DiffusionSystem keeps a SplitCsr: its
+    estimator books float32 operator values and a float64 diagonal instead of float64 values)."""
+    resolved = context.solvers.get('linear')
+    return resolved is not None and resolved_precision(resolved.solver_type, resolved.values) == SPLIT_PRECISION
 
 
 def linear_solver_direct(context) -> str:
@@ -535,7 +545,7 @@ def single_precision_contrast_issues(vctx, physics_spec, path, property_names, l
               else "the Automatic linear solver (solver_defaults.precision 'single')")
     return [Issue('warning', path, f'{solver} runs single precision on a {label} contrast of {contrast:.3g} (>= '
                                    f'{SINGLE_PRECISION_CONTRAST:g}): float32 CG stops at a biased answer there (mu_dc '
-                                   "100 iron: ~8 % error); use precision 'double' or 'mixed'")]
+                                   "100 iron: ~8 % error); use precision 'double', 'mixed' or 'mixed2'")]
 
 
 def direct_unknowns(mesh, components=1) -> int:

@@ -429,7 +429,8 @@ class ModeMonitor3D:
         self.edge = int(edge)
         self.mode_number = _check_mode_number(mode_number)
         self.plane = PlaneFlux3D(self.normal_axis, self.edge, bounds, frequencies, engine.dt, engine.widths,
-                                 engine.shape, engine.periodic, xp=engine.xp)
+                                 engine.shape, engine.periodic, xp=engine.xp,
+                                 spectrum_precision=physics.spectrum_precision)
         self.frequencies = self.plane.frequencies
         self.dt = float(engine.dt)
         widths = engine.widths[self.normal_axis]
@@ -449,6 +450,10 @@ class ModeMonitor3D:
     @property
     def solved(self) -> bool:
         return self.modes is not None
+
+    @property
+    def spectrum_stores(self) -> tuple:
+        return self.plane.spectrum_stores
 
     def update(self, fields, t):
         self.plane.update(fields, t)

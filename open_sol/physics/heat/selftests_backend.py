@@ -125,12 +125,15 @@ def _fused_domain(backend, widths):
                   npml_sides={face: 0 for face in FACES}, backend=backend)
 
 
-def _fused_system(domain, fused, axisymmetric=False, azimuthal_order=0):
-    """Prepared float64 DiffusionSystem on domain with the fused re-assembly on / off."""
+def _fused_system(domain, fused, axisymmetric=False, azimuthal_order=0, split=False):
+    """Prepared float64 DiffusionSystem on domain with the fused re-assembly on / off (split: on a pcg 'mixed2'
+    solver, so every assembly rounds its conductances and keeps a SplitCsr)."""
     from ...core.fv_diffusion import DiffusionSystem
+    from ...solvers.pcg import SPLIT_PRECISION, PCGSolver
+    linear_solver = (PCGSolver(SPLIT_PRECISION, 1e-12, 1000, backend=domain.backend.name) if split else None)
     system = DiffusionSystem(domain, 'float64', 1e-12, 1000, lambda: 'fused re-assembly check', 'u',
                              'needs an anchor', 'hold a cell', axisymmetric=axisymmetric,
-                             azimuthal_order=azimuthal_order)
+                             azimuthal_order=azimuthal_order, linear_solver=linear_solver)
     system.fused_reassembly = fused
     system.prepare(domain)
     return system
@@ -167,13 +170,25 @@ def _fused_inputs(system, rng, three_d):
     return sets, ScalarBoundaryConfig(**faces), capacity
 
 
+def _solve_values(system):
+    """Host float64 A_solve values of a system (a SplitCsr: its float32 values with the float64 diagonal at the
+    diagonal positions, the values its products use)."""
+    from ...core.backend import to_host
+    from ...solvers.pcg import SplitCsr
+    operator = system.A_solve
+    values = np.asarray(to_host(operator.data), dtype=np.float64)
+    if isinstance(operator, SplitCsr):
+        values[np.asarray(to_host(system.pattern.diagonal_positions))] = to_host(operator.diagonal_values)
+    return values
+
+
 def _fused_differences(fused, reference):
     """{array: max |fused - reference| / max |reference|} over everything the two assemblies store."""
     from ...core.backend import to_host
 
     def pairs():
         yield 'operator', fused.full_operator().data, reference.full_operator().data
-        yield 'solve_operator', fused.A_solve.data, reference.A_solve.data
+        yield 'solve_operator', _solve_values(fused), _solve_values(reference)
         for name in ('inverse_diagonal', 'rhs_offset', 'rhs_drive', 'fixed_values', 'free', '_conduction_diagonal',
                      'unknown'):
             yield name, getattr(fused, name), getattr(reference, name)
@@ -223,19 +238,21 @@ def _kept_operator_differences(system):
     def relative(values, reference):
         return float(np.max(np.abs(values - reference), initial=0.0)) / max(float(np.max(np.abs(reference),
                                                                                         initial=0.0)), 1e-300)
-    return {'full_operator_eliminated': relative(eliminated, np.asarray(to_host(system.A_solve.data), np.float64)),
+    return {'full_operator_eliminated': relative(eliminated, _solve_values(system)),
             'full_operator_rhs_offset': relative(free * (rhs_drive - coupling), rhs_offset),
             'off_diagonal_rhs_offset': relative(free * (rhs_drive - product), rhs_offset),
             'crossing_outflow': abs(outflow - reference_outflow) / max(abs(reference_outflow), 1e-300)}
 
 
-def _fused_window(checks, backend, label, widths, axisymmetric=False, azimuthal_order=0):
-    """One window: fused vs reference systems through two assemblies; differences and counters into checks."""
+def _fused_window(checks, backend, label, widths, axisymmetric=False, azimuthal_order=0, split=False):
+    """One window: fused vs reference systems through two assemblies; differences and counters into checks (split:
+    pcg 'mixed2' systems, and their kept interior conductances float32 numbers on both paths)."""
+    from ...core.backend import to_host
     three_d = len(widths) == 3
     domain = _fused_domain(backend, widths)
     systems = {}
     for fused in (True, False):
-        system = _fused_system(domain, fused, axisymmetric, azimuthal_order)
+        system = _fused_system(domain, fused, axisymmetric, azimuthal_order, split)
         sets, bcs, capacity = _fused_inputs(system, np.random.default_rng(_FUSED_SEED), three_d)
         for number, coefficients in enumerate(sets):
             if number:
@@ -249,6 +266,12 @@ def _fused_window(checks, backend, label, widths, axisymmetric=False, azimuthal_
         for name, difference in _kept_operator_differences(system).items():
             checks.add_error(f'{backend}_{label}_{"fused" if fused else "reference"}_{name}', difference,
                              _FUSED_TOLERANCE)
+        if split:   # the rounding both paths must apply before the diagonal sums (exact float32 off-diagonals)
+            unrounded = max(float(np.max(np.abs(host - host.astype(np.float32)), initial=0.0))
+                            for host in (np.asarray(to_host(conductance), dtype=np.float64)
+                                         for conductance in system.face_conductances))
+            checks.add_error(f'{backend}_{label}_{"fused" if fused else "reference"}_float32_conductances',
+                             unrounded, 0.0)
     checks.add(f'{backend}_{label}_counters', systems[True].n_fused_assemblies == 1
                and systems[False].n_fused_assemblies == 0 and systems[True].n_anchor_shortcuts == 1,
                value={'fused': systems[True].n_fused_assemblies, 'reference': systems[False].n_fused_assemblies,
@@ -281,6 +304,9 @@ def _check_fused_reassembly():
         _fused_window(checks, backend, 'planar', (graded_x, graded_y))
         _fused_window(checks, backend, 'rz_order1', (graded_x, graded_y), axisymmetric=True, azimuthal_order=1)
         _fused_window(checks, backend, '3d', (graded_x[:6], graded_y[:5], 1.5e-5 * 1.1 ** np.arange(4)))
+        _fused_window(checks, backend, 'planar_mixed2', (graded_x, graded_y), split=True)
+        _fused_window(checks, backend, '3d_mixed2', (graded_x[:6], graded_y[:5], 1.5e-5 * 1.1 ** np.arange(4)),
+                      split=True)
     checks.add_raises('cpu_floating_region_after_coefficient_change', _floating_after_coefficient_change)
     return checks.result(backends=list(backends))
 
@@ -323,6 +349,8 @@ BACKEND_SELFTEST_CASES = (
                      "held box's crossing outflow against the per-entry CSR sum (same tolerance); plus the fused / "
                      'anchor-shortcut '
                      'counters, and on the cpu that a coefficient-only change opening a floating region still raises. '
-                     'The gpu half is skipped without a usable GPU.'),
+                     "The planar and 3D windows again on a pcg 'mixed2' solver (A_solve a SplitCsr, compared with its "
+                     'float64 diagonal in place; both paths must round every interior conductance to a float32 '
+                     'number: tolerance 0). The gpu half is skipped without a usable GPU. mixed2 not yet run.'),
         specs=lambda: {}, check=lambda _results: _check_fused_reassembly(), backends=('cpu', 'gpu')),
 )

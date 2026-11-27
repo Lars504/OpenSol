@@ -71,6 +71,10 @@ A new accepted sync joins this list.
   upload per subpixel refresh; elastic_waves with parked materials: the host coefficient rebuild (downloads, uploads)
   per rebuild (build, a new runner dt).
 - laminar_flow: the velocity check once per lattice check interval (>= 100 steps).
+- em_fdtd_3d spectrum_precision mixed2 (`em3d.monitors3d.SpectrumStore`): per fold (every SPECTRUM_BLOCK_SAMPLES
+  samples of a store) one event wait on the async block copy queued a fold earlier (complete unless the host ran a
+  whole block of samples ahead: it throttles the host, the device keeps its queue); per result read one event wait
+  and one block transfer.
 - Probe tables: `monitors.park_probe_rows` right after the time loops' per-chunk sync (study `_run_time_dependent`,
   `_run_harmonic_pulse`; `Simulation.run` per chunk), one transfer per table holding >= PROBE_PARK_ROWS rows; a HarmonicProbeRecord's stacked
   transfer every HARMONIC_PARK_VALUES device values (between frequency solves).
@@ -338,14 +342,25 @@ A new accepted sync joins this list.
   silently drop it (selftest diffusion_fused_reassembly checks them against A_solve / rhs_offset). Assemble deletes
   A_eff and its window temporaries before `_factorize_solver` (the multigrid setup / factor plan is the build peak).
   A direct or banded linear solver (`ignores_preconditioner`) gets no Jacobi diagonal (`_keeps_inverse_diagonal`).
-- Precision (why the system dtype, not float32 storage, follows the linear solver): A_solve, the CG vectors and the
-  conduction diagonal must share the solve precision, since rounding a Laplacian's diagonal and off-diagonals apart
-  breaks its exact zero row sums: a spurious sink of ~eps a_ii per row, amplified by kappa in the low modes (the
-  'single' failures: float32 CG floor ~1e-6, iron |B| errors of percents in magnetostatics). Rounding coefficients
-  consistently (g to float32, then the diagonal as their float64 sum) perturbs only the physics by ~eps32 (the
-  material arrays are float32 already), with no kappa factor: the route to float32 operator storage beside a float64
-  CG, not yet built. pcg 'mixed' is no memory saving here (the float64 A_solve stays for the residual, plus its
-  float32 copy) and its CSR path is Jacobi only, so the gpu Automatic stays double multigrid (its hierarchy is float32).
+- Precision (why the system dtype, not float32 storage, follows the linear solver; mixed2 below is the exception):
+  A_solve, the CG vectors and the conduction diagonal must share the solve precision, since rounding a Laplacian's
+  diagonal and off-diagonals apart breaks its exact zero row sums: a spurious sink of ~eps a_ii per row, amplified by
+  kappa in the low modes (the 'single' failures: float32 CG floor ~1e-6, iron |B| errors of percents in
+  magnetostatics). pcg 'mixed' is no memory saving here (the float64 A_solve stays for the residual, plus its float32
+  copy) and its CSR path is Jacobi only, so the gpu Automatic stays double multigrid (its hierarchy is float32).
+- pcg 'mixed2' (`split_operator`, opt-in): rounding coefficients consistently perturbs only the physics. Every assembly
+  rounds each interior / wrap conductance (and c_xy quad coefficient) to float32 BEFORE the float64 diagonal sums it
+  (`fv_diffusion_3d.float32_rounded`; fused path: `round_links` of fv_reassemble_entries, both twins), so A_eff is the
+  exact float64 operator of float32 conductances: off-diagonals exact in float32, row sums exact, outer-face /
+  loss / capacity / held terms float64 on the diagonal. A_solve is then a `pcg.SplitCsr` (float32 values on the shared
+  pattern, the float64 diagonal its products read instead of the rounded entries: 4 B per entry + 8 per row against 8
+  per entry). Accuracy: |delta g| <= 2^-24 g per face gives -eps A <= delta A <= eps A, so the solution moves by ~eps32
+  in energy, kappa-free (the materials are float32 anyway); 'single' has no such bound. Kept conductances (flux,
+  off_diagonal_product, crossing_outflow, full_operator) are the rounded ones, so post-processing stays consistent
+  with A_solve. A new off-diagonal term rounds the same way on both paths (else the SplitCsr stores it inexactly and
+  the row sums break silently; selftest diffusion_fused_reassembly checks float32-exact conductances). A diagonal
+  refresh writes both SplitCsr diagonals in place. Conductances below the float32 normal range (~1e-38 [c]) would
+  flush: not checked.
 - c_xy cross term (2D Cartesian only): never drop its diagonal part (row sums would act as a spurious exchange with
   u = 0 at window / region corners). Definite on graded cells only for c_xy^2 < c_xx c_yy x 4 r / (1 + r)^2 per axis
   (r = neighbour width ratio), stricter than the continuum bound. Whether c_xy is nonzero is decided (one sync) only
