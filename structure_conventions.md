@@ -367,7 +367,11 @@ first bring the background physics (those without the study's hook) to a station
   repairs only pairs whose vectors the fp32 relation kept, which are those near |theta_max|: a spectral map that
   spreads the wanted |theta| (the squared Cayley map: em3d, BOR, conical) keeps complex128 (em sub file,
   eigenfrequency `single_basis_search`, measured). Accumulators,
-  near-cancelling sums and gradients fed to an optimiser stay float64 / complex128. Lossless vs lossy is read from the
+  near-cancelling sums and gradients fed to an optimiser stay float64 / complex128 (the one reduced accumulator,
+  em_fdtd_3d's opt-in spectrum_precision 'mixed', sums bounded complex64 blocks into complex128 totals: em3d sub
+  file). A solver offers double plus the reduced variant(s) that measurably pay, 'single' and / or 'mixed': a further
+  variant needs a measured gain in peak memory or run time on a large model first (solvers sub file "Tried and
+  dropped"). Lossless vs lossy is read from the
   values, never the dtype: an operator complex only by a gauge (j k_z, j m) or a polished real pencil keeps a spurious
   Im (finite Q of a lossless mode) unless solved in a real gauge (em sub file, eigenfrequency "Real spectra").
 - A traceback keeps a failed build's frames and locals alive: inside `except` record only text, call
