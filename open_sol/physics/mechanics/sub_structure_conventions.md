@@ -122,7 +122,10 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   per-frequency term adds out of place (never `+=` a complex term into the real values; the host route casts the
   summed values once before the frequency terms), and the estimators book complex terms / factor only with
   `LOSS_ARRAYS` set, a resistive_load, a PML or viscoelastic terms (definition `_harmonic_complexity`, definition3d
-  `_lossy_response` / `_complex_response_factor`). Its pencil terms are vouched symmetric (`symmetric_known`: K, L,
+  `_lossy_response` / `_complex_response_factor`). Every solver hands HarmonicSystem a loss operator only for loss
+  values != 0 (an allocated all-zero array gives None: a material set to 0 allocates it, and the estimate books it
+  real). A host SuperLU factor is dropped inside `_factorize` before the next one is made (nothing reuses it; a
+  reduced model's training would hold two). Its pencil terms are vouched symmetric (`symmetric_known`: K, L,
   M, the frequency terms' slots, the mixed saddle point and the stretched terms are complex symmetric): a new
   unsymmetric term must drop the vouch.
 - Shown fields are the real parts with dT = 0 and no sigma0 (`_write_outputs(thermal=False)` on every mesh kind;

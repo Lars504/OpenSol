@@ -248,7 +248,12 @@ class HarmonicSystem:
         """Factor of the free-dof operator + j loss - omega^2 mass (+ j b / omega) (+ sum_k c_k X_k) at omega [rad/s]
         (counted)."""
         import scipy.sparse
-        from ...solvers.sparse_direct import SparseDirectSolver, factorize_host
+        from ...solvers.sparse_direct import Factorization, SparseDirectSolver, factorize_host
+        if isinstance(self.factor, Factorization):
+            # a host SuperLU factor hands nothing on (no plan, no release(); the factorisations below ignore it as
+            # `previous`): dropped before the next one is made, so two never live side by side (a direct sweep on a
+            # SuperLU back end, a reduced model's training and verification; the estimators book one factor)
+            self.factor = None
         coefficients = [1.0, -omega * omega] + ([] if self._load_values is None else [1j / omega])
         if self._pencil is None:
             terms = [self._fixed_values, self._mass_values] + ([] if self._load_values is None else [self._load_values])

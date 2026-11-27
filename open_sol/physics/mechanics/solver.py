@@ -914,7 +914,8 @@ class SolidMechanicsPhysics(PhysicsDriveHooks, MultiShiftModes, SolidMechanicsBa
 
     def _build_harmonic_operators(self):
         """Host float64 (stiffness or the coupled operator, loss operator or None, consistent mass) of the last
-        assembly for the frequency response: loss = eta K (+ tan delta K_phiphi with piezoelectric)."""
+        assembly for the frequency response: loss = eta K (+ tan delta K_phiphi with piezoelectric), None when every
+        loss value is 0."""
         import scipy.sparse
         system = self.system
         solid = self._solid
@@ -926,6 +927,10 @@ class SolidMechanicsPhysics(PhysicsDriveHooks, MultiShiftModes, SolidMechanicsBa
                if eta_name in names else None)
         tan_delta = (to_host(materials.dielectric_loss_tangent[system.window]).astype(np.float64)
                      if tan_name in names and self.piezoelectric else None)
+        # lossless is read from the values, never from an allocated array (a material may set a loss of 0): an all-zero
+        # loss gives no loss operator, so the pencil and its factor stay real (HarmonicSystem; the estimators book a
+        # complex factor only for a loss a material sets != 0)
+        eta, tan_delta = (None if values is None or not values.any() else values for values in (eta, tan_delta))
         if self.piezoelectric:
             mass = coupled_mass(density, system.dx_window, system.dy_window)
             loss = None
