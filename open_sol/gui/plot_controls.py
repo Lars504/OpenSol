@@ -100,8 +100,8 @@ _SCALE_BAR_STYLE_GROUPS = (
          'Share of the view the bar may span. The bar is the longest round length (1, 2 or 5 times a power of '
          'ten) that fits in it, so it changes in steps while zooming.'),
         ('scale_bar_width', 'Bar thickness (pt)', 'float', {'range': (0.25, 20.0), 'step': 0.25}, ''),
-        ('scale_bar_color', 'Bar colour', 'color', {},
-         'Grey by default: readable over dark and over light fields.'),
+        ('scale_bar_line_color', 'Bar colour', 'color', {'follows': 'scale_bar_text_color'},
+         'The font colour by default (auto); ↺ goes back to it.'),
         ('scale_bar_font_size', 'Font size (pt)', 'float', {'range': (4.0, 40.0), 'step': 0.5}, ''),
         ('scale_bar_bold', 'Bold text', 'bool', {}, ''),
         ('scale_bar_text_color', 'Font colour', 'color', {}, ''),
@@ -344,6 +344,7 @@ class PlotStyleForm(QtWidgets.QWidget):
         super().__init__(parent)
         self._style = style
         self._setters = {}   # PlotStyle field -> setter(value) of its editor (used by Defaults)
+        self._followers = {}   # PlotStyle field -> colour fields shown in its colour while automatic ('')
         grid = QtWidgets.QGridLayout(self)
         grid.setContentsMargins(0, 0, 0, 0)
         for index, (title, rows) in enumerate(groups):
@@ -391,6 +392,22 @@ class PlotStyleForm(QtWidgets.QWidget):
             editor.currentIndexChanged.connect(lambda index, keys=keys: commit(keys[index]))
             self._setters[name] = lambda new_value, editor=editor, keys=keys: editor.setCurrentIndex(
                 keys.index(new_value) if new_value in keys else 0)
+        elif kind == 'color' and 'follows' in options:   # '' = the colour of the followed field, shown 'auto'
+            followed = options['follows']
+            swatch = _ColorButton(value or getattr(self._style, followed), automatic=not value)
+            swatch.color_changed.connect(commit)
+            automatic_button = QtWidgets.QToolButton()
+            automatic_button.setText('↺')
+            automatic_button.clicked.connect(lambda _checked=False: commit(''))
+            editor = QtWidgets.QWidget()
+            editor_layout = QtWidgets.QHBoxLayout(editor)
+            editor_layout.setContentsMargins(0, 0, 0, 0)
+            editor_layout.addWidget(swatch)
+            editor_layout.addWidget(automatic_button)
+            editor_layout.addStretch(1)
+            self._setters[name] = lambda new_value, swatch=swatch, followed=followed: swatch.set_color(
+                new_value or getattr(self._style, followed), automatic=not new_value)
+            self._followers.setdefault(followed, []).append(name)
         elif kind == 'color':
             editor = _ColorButton(value)
             editor.color_changed.connect(commit)
@@ -406,6 +423,9 @@ class PlotStyleForm(QtWidgets.QWidget):
     def _commit(self, name, value):
         if getattr(self._style, name) != value:
             setattr(self._style, name, value)
+            if value == '' or name in self._followers:   # after ↺ / a followed edit: swatches show the colour drawn
+                for shown in (name, *self._followers.get(name, ())):
+                    self._setters[shown](getattr(self._style, shown))
             self.changed.emit()
 
     def refresh(self):
@@ -414,10 +434,12 @@ class PlotStyleForm(QtWidgets.QWidget):
             setter(getattr(self._style, name))
 
     def _reset(self):
-        """Every field to its default; the field is set before its editor, so the editor's own commit is a no-op."""
+        """Every field to its default; all fields are set before the editors (an automatic colour shows the default of
+        the field it follows), so each editor's own commit is a no-op."""
         defaults = PlotStyle()
-        for name, setter in self._setters.items():
+        for name in self._setters:
             setattr(self._style, name, getattr(defaults, name))
+        for name, setter in self._setters.items():
             setter(getattr(defaults, name))
         self.changed.emit()
 
@@ -688,7 +710,7 @@ class _ScaleBar:
             lengths[1] = _round_length(view_fraction * y_span)
         font, text_color = _font(style, style.scale_bar_font_size), QtGui.QColor(style.scale_bar_text_color)
         font.setBold(style.scale_bar_bold)
-        bar_pen = QtGui.QPen(QtGui.QColor(style.scale_bar_color))
+        bar_pen = QtGui.QPen(QtGui.QColor(style.bar_color()))
         bar_pen.setWidthF(style.scale_bar_width * px_per_pt)
         bar_pen.setCapStyle(QtCore.Qt.PenCapStyle.FlatCap)
         text_rects, text_sizes_pt = [], []

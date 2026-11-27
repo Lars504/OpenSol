@@ -48,13 +48,17 @@ class PlotStyle:
     scale_bar_location: str = 'lower right'
     scale_bar_length: float = 25.0   # % of the view side the bar may span (the longest 1-2-5 length within it)
     scale_bar_width: float = 2.0     # bar thickness
-    scale_bar_color: str = '#808080'   # mid grey: readable over dark and light fields without a box
+    scale_bar_line_color: str = ''   # '' = scale_bar_text_color (bar_color())
     scale_bar_font_size: float = 10.0
     scale_bar_bold: bool = True      # thin grey text fades over a dark field
-    scale_bar_text_color: str = '#808080'
+    scale_bar_text_color: str = '#808080'   # mid grey: readable over dark and light fields without a box
     scale_bar_box: bool = False      # background-coloured box behind the bar and its text
     dpi: int = 600                  # raster formats only
     transparent: bool = False
+
+    def bar_color(self) -> str:
+        """Colour of the scale bar itself: its own, else the scale bar text colour."""
+        return self.scale_bar_line_color or self.scale_bar_text_color
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -376,7 +380,7 @@ def _add_scale_bar(figure, ax, scale_bar, axes, style):
                                zorder=_SCALE_BAR_ZORDER))
     for x0, y0, x1, y1 in bars:
         (start_x, start_y), (end_x, end_y) = axes_fraction(x0, y0), axes_fraction(x1, y1)
-        added.append(Line2D([start_x, end_x], [start_y, end_y], transform=ax.transAxes, color=style.scale_bar_color,
+        added.append(Line2D([start_x, end_x], [start_y, end_y], transform=ax.transAxes, color=style.bar_color(),
                             linewidth=style.scale_bar_width, solid_capstyle='butt',
                             zorder=_SCALE_BAR_ZORDER + 1.0))
     for artist in added:
