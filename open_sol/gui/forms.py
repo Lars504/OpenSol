@@ -42,7 +42,7 @@ _EMPTY_SELECTION_HINTS = {
 }
 _ALL_ENTRY_TIP = ('The whole simulated region.\n\n'
                   'A material on it is the background: it fills only the cells no other material covers.')
-_STYLE_SELECTORS = ((QtWidgets.QComboBox, 'QComboBox'), (QtWidgets.QAbstractButton, 'QAbstractButton'),
+_STYLE_SELECTORS = ((QtWidgets.QAbstractButton, 'QAbstractButton'),   # combos: _mark_combo_invalid
                     (QtWidgets.QLabel, 'QLabel'), (QtWidgets.QAbstractSpinBox, 'QAbstractSpinBox'))
 
 
@@ -229,6 +229,9 @@ def set_param_help(widget, param):
 
 def mark_invalid(widget, message):
     """Red outline (line edits) or red text (other widgets) while `message` is set; plain style otherwise."""
+    if isinstance(widget, QtWidgets.QComboBox):
+        _mark_combo_invalid(widget, message)
+        return
     if not message:
         style = ''
     elif isinstance(widget, QtWidgets.QLineEdit):
@@ -238,6 +241,30 @@ def mark_invalid(widget, message):
         style = f'{selector} {{ color: {ERROR_COLOR}; }}' if selector else f'color: {ERROR_COLOR};'
     if widget.styleSheet() != style:
         widget.setStyleSheet(style)
+
+
+def _mark_combo_invalid(combo, message):
+    """Red text of a closed combo through its palette, active / inactive groups only, its popup list pinned to the
+    application's text colours: a style sheet colour (or the combo palette, which QComboBox copies to the popup)
+    would list every entry red, greyed-out (disabled) ones included."""
+    text_roles = (QtGui.QPalette.ColorRole.Text, QtGui.QPalette.ColorRole.ButtonText,
+                  QtGui.QPalette.ColorRole.WindowText)
+    application = QtWidgets.QApplication.palette(combo)
+    palette = QtGui.QPalette(application)
+    if message:
+        red = QtGui.QColor(ERROR_COLOR)
+        for group in (QtGui.QPalette.ColorGroup.Active, QtGui.QPalette.ColorGroup.Inactive):
+            for role in text_roles:
+                palette.setColor(group, role, red)
+    if combo.styleSheet():
+        combo.setStyleSheet('')
+    combo.setPalette(palette)
+    view_palette = QtGui.QPalette(application)
+    for group in (QtGui.QPalette.ColorGroup.Active, QtGui.QPalette.ColorGroup.Inactive,
+                  QtGui.QPalette.ColorGroup.Disabled):
+        for role in text_roles:   # setColor marks the role as set, so the copied combo palette does not override it
+            view_palette.setColor(group, role, application.color(group, role))
+    combo.view().setPalette(view_palette)
 
 
 def _show_problem(widget, help_text, problem, info=''):
@@ -865,6 +892,7 @@ class ValueComboBox(_FocusWheelMixin, QtWidgets.QComboBox):
             if not self._is_entry(value):
                 self.addItem(f"{value_text(value) or '(none)'}  (not available)")
                 self._item_values.append(value)
+                self.setItemData(0, QtGui.QBrush(QtGui.QColor(ERROR_COLOR)), QtCore.Qt.ItemDataRole.ForegroundRole)
             for entry_value, label in self._entries:
                 self.addItem(label)
                 self._item_values.append(entry_value)
@@ -1073,8 +1101,9 @@ class CheckList(QtWidgets.QListWidget):
 
 
 # ---- Param editors and forms ----
-def make_param_editor(param, value, ctx, on_commit):
-    """Editor widget for one Param of any PARAM_KINDS kind; on_commit(param.name, value) after each user edit."""
+def make_param_editor(param, value, ctx, on_commit, disabled_choices=None):
+    """Editor widget for one Param of any PARAM_KINDS kind; on_commit(param.name, value) after each user edit;
+    disabled_choices {choice: reason} greys those choices out (choice params only)."""
     kind = param.kind
     help_text = param_tooltip(param)
     if kind in ('float', 'int', 'expression'):
@@ -1086,7 +1115,7 @@ def make_param_editor(param, value, ctx, on_commit):
         entries = [(choice, choice_texts.get(choice, str(choice))) for choice in param.choices]
         if param.optional:   # None = the type's own default (e.g. em_fdfd_nonlinear: the channel's field)
             entries.insert(0, (None, '(default)'))
-        editor = ValueComboBox(entries, value, help_text)
+        editor = ValueComboBox(entries, value, help_text, disabled=disabled_choices)
     elif kind == 'str':
         editor = _TextEditor(param, value)
     elif kind == 'ref':
@@ -1110,9 +1139,9 @@ def make_param_editor(param, value, ctx, on_commit):
 
 class ParamForm(QtWidgets.QWidget):
     """Form of Param editors over a raw values dict (defaults shown when absent); rows hidden per visible_if;
-    on_commit(name, value) after each user edit."""
+    on_commit(name, value) after each user edit; disabled_choices {param name: {choice: reason}} greys choices out."""
 
-    def __init__(self, params, values, ctx, on_commit, parent=None):
+    def __init__(self, params, values, ctx, on_commit, disabled_choices=None, parent=None):
         super().__init__(parent)
         self._params = tuple(params)
         self._on_commit = on_commit
@@ -1126,7 +1155,8 @@ class ParamForm(QtWidgets.QWidget):
         for param in self._params:
             label = QtWidgets.QLabel(param_label(param))
             set_param_help(label, param)
-            editor = make_param_editor(param, filled.get(param.name), ctx, self._commit)
+            editor = make_param_editor(param, filled.get(param.name), ctx, self._commit,
+                                       (disabled_choices or {}).get(param.name))
             layout.addRow(label, editor)
             self._rows.append((param, label, editor))
         self._apply_visibility(filled)

@@ -138,6 +138,9 @@ class SolverType:
     # {setting name: values} a role accepts only where its setting_choices[name] lists them (sparse_direct back_end
     # cudss / cudss_mixed: offered by the roles whose physics handle a cuDSS factor)
     opt_in_settings: dict = field(default_factory=dict)
+    # unavailable_choices(backend) -> {setting name: {value: GUI reason}}: choice values this machine cannot run on the
+    # backend (package not installed, GPU-only on the cpu); find_spec only, so GUI-thread safe (unavailable_reason)
+    unavailable_choices: Callable | None = None
 
     def __post_init__(self):
         owner = f"SolverType '{self.name}'"
@@ -181,6 +184,18 @@ class ResolvedSolver:
 def resolved_precision(solver_type, values) -> str:
     """Precision a solver node runs at: its 'precision' setting, else the type's only precision."""
     return values.get('precision', solver_type.precisions[0])
+
+
+def unavailable_reason(solver_type, values, backend) -> str:
+    """'' when every choice setting in values runs on this machine and backend (SolverType.unavailable_choices), else
+    the GUI reason of the first that does not."""
+    if solver_type.unavailable_choices is None:
+        return ''
+    for name, reasons in solver_type.unavailable_choices(backend).items():
+        value = values.get(name)
+        if isinstance(value, str) and reasons.get(value):
+            return reasons[value]
+    return ''
 
 
 def solver_misfit(solver_type, values, physics_type, role, study, backend, grid) -> str:

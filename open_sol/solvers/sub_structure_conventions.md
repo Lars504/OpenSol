@@ -223,7 +223,9 @@ PARDISO: section "host_direct". Rules across files:
   the wrappers). `cudss_factor.gmres_refine` is checked on the GPU by solver_arpack_cudss, solver_sparse_direct_cudss
   and fem_harmonic_cudss_device_pencil, on the host by solver_host_direct_cpu_gpu.
 - Validation: the SolverType validate reports scipy / nvmath availability at a node; for Automatic the physics checks
-  report it (`definition_fdfd.direct_solver_issues`, also nlfd's) plus the size rule.
+  report it (`definition_fdfd.direct_solver_issues`, also nlfd's) plus the size rule. The GUI greys the same choices
+  through `SolverType.unavailable_choices` (`definition._direct_choice_reasons`): a new back end / factorization
+  needing a package joins both the validate and that table.
 
 ## banded (`BandedSolver`; role 'linear' of 1D models)
 - The runtime is the PCGSolver protocol: `factorize` copies the CSR to the host and raises ValueError above
